@@ -186,6 +186,9 @@ func fitting(t factoryd.Task, f capFacts) string {
 	case "running":
 		return "steer sends its session a message; its pull request comes when the session ends"
 	case "queued", "waiting-deps":
+		if t.Held() {
+			return "it is on hold, and the human's release_hold, or Release on its drawer, lets it start"
+		}
 		return "nothing to do until it starts"
 	case "waiting-image":
 		return "nothing to do until its image is pinned and it restarts; close ends it"
@@ -609,7 +612,7 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 		}
 		return strings.Join(said, " "), nil
 	}
-	issue, err := c.cfg.RetryCard(ctx, t.ID, a.s.user)
+	issue, err := c.cfg.RetryCard(ctx, t.ID, a.approver())
 	var no factoryd.ErrNoRetry
 	switch {
 	case errors.As(err, &no):
@@ -682,7 +685,7 @@ func tailContext(ctx context.Context) (context.Context, context.CancelFunc) {
 // the card closes on the note, so its wait ends at once. It answers the
 // note's comment.
 func (c *Console) goWork(ctx context.Context, a actor, t factoryd.Task) (string, int64, error) {
-	issue, err := c.cfg.GoCard(ctx, t.ID, a.s.user)
+	issue, err := c.cfg.GoCard(ctx, t.ID, a.approver())
 	var no factoryd.ErrNoGo
 	switch {
 	case errors.As(err, &no):
@@ -992,7 +995,7 @@ func (c *Console) doDecideHoldout(ctx context.Context, a actor, id string, revis
 		return err
 	}
 	var stale factoryd.ErrStalePlan
-	switch err := c.cfg.DecideHoldout(ctx, t.ID, revision, idx, verb, a.s.user); {
+	switch err := c.cfg.DecideHoldout(ctx, t.ID, revision, idx, verb, a.approver()); {
 	case errors.As(err, &stale):
 		return refuse(http.StatusConflict, stale.Error())
 	case errors.Is(err, factoryd.ErrAnswered):
@@ -1627,7 +1630,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		}
 	case value == factoryd.AnswerDismiss:
 		work = func(ctx context.Context) (int64, error) {
-			switch err := c.cfg.DismissStall(ctx, t.Repository, t.SHA, a.s.user); {
+			switch err := c.cfg.DismissStall(ctx, t.Repository, t.SHA, a.approver()); {
 			case errors.As(err, &gone):
 				return 0, refuse(http.StatusConflict, fmt.Sprintf("Card #%d: %s.", t.IssueNumber, gone))
 			case err != nil:
@@ -1824,7 +1827,7 @@ func (c *Console) callActWork(ctx context.Context, a actor, t factoryd.Task, cas
 			return factoryd.ActResult{}, err
 		}
 	}
-	in := factoryd.ActInput{TaskID: t.ID, CaseID: caseID, By: a.s.user, Via: a.via, Rung: a.rung(), Res: res, Post: post, Work: work,
+	in := factoryd.ActInput{TaskID: t.ID, CaseID: caseID, By: a.approver(), Via: a.via, Rung: a.rung(), Res: res, Post: post, Work: work,
 		Detail: stamped(ctx, c.eventOf(a, t.Repository, t.ID, t.IssueNumber, factoryd.EventQuestionAnswered, nil)).Detail}
 	if in.Rung == 2 && a.reads != nil {
 		in.Read = a.reads()
@@ -2076,6 +2079,9 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	if factoryd.Final(t.Status) && t.Status != "failed" {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d %s, so there is nothing to close: %s.", t.IssueNumber, factoryd.StatusMeaning(t.Status), fitting(t, capFacts{})))
 	}
+	if err := c.agentOnHeld(ctx, a, t, "close"); err != nil {
+		return "", err
+	}
 	k, err := c.newestCase(ctx, t)
 	if err != nil {
 		return "", err
@@ -2115,8 +2121,8 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 // closing words and closes as a, so the card ends closed. An issue close
 // that fails after the write is finished by the sweep.
 func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
-	approver := c.isApprover(ctx, a.s.user, t.Repository)
-	if err := c.cfg.CheckClosePlan(ctx, t.ID, note, approver); err != nil {
+	approver := c.isApprover(ctx, a.approver(), t.Repository)
+	if err := c.cfg.CheckClosePlan(ctx, t.ID, a.approver(), note, approver); err != nil {
 		return "", c.planCloseRefusal(ctx, a, t, err)
 	}
 	freed := ""
@@ -2126,7 +2132,7 @@ func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note 
 			return "", err
 		}
 	}
-	n, words, merged, err := c.cfg.CloseHeldPlan(ctx, t.ID, a.s.user, note, approver)
+	n, words, merged, err := c.cfg.CloseHeldPlan(ctx, t.ID, a.approver(), note, approver)
 	if err != nil {
 		return "", c.planCloseRefusal(ctx, a, t, err)
 	}
@@ -2166,6 +2172,8 @@ func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note 
 // it names the state and the action that fits.
 func (c *Console) planCloseRefusal(ctx context.Context, a actor, t factoryd.Task, err error) error {
 	switch {
+	case errors.Is(err, factoryd.ErrNotApprover) && a.decider == "agent":
+		return refuse(http.StatusConflict, fmt.Sprintf("This turn runs on no line the human typed, so it waives no criteria: plan #%d has open criteria, and its Close waives each of them. Give them the choice with ask, its press bound to close, or let them press Close on the plan's drawer.", t.IssueNumber))
 	case errors.Is(err, factoryd.ErrNotApprover):
 		return refuse(http.StatusForbidden, fmt.Sprintf("Only the approvers of project %s may close plan #%d while it has open criteria, because Close waives each of them: ask an approver to close it.", c.projectName(ctx, t.Repository), t.IssueNumber))
 	case errors.Is(err, factoryd.ErrNoReason):
@@ -2254,7 +2262,7 @@ func (c *Console) commentOnce(ctx context.Context, a actor, t factoryd.Task, tex
 // issue, or the card alone, and records note on the close.
 func (c *Console) closeIssueNoted(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
 	if t.IssueNumber == 0 || t.Status == "merged" {
-		if err := c.cfg.CloseCard(ctx, t.ID, a.s.user); err != nil {
+		if err := c.cfg.CloseCard(ctx, t.ID, a.approver()); err != nil {
 			log.Printf("console: %s closes %s: %v", a.s.user, t.ID, err)
 			return "", refuse(http.StatusConflict, "The card could not be closed: "+errText(err)+". Reload the board and press the button again.")
 		}
@@ -2373,6 +2381,9 @@ func (c *Console) doReplan(ctx context.Context, a actor, id, note string, offMai
 	}
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
+		return "", err
+	}
+	if err := c.agentOnHeld(ctx, a, t, "replan"); err != nil {
 		return "", err
 	}
 	poster, err := c.posterOf(ctx, a, t.Repository)
@@ -2566,7 +2577,7 @@ func (c *Console) setDependency(ctx context.Context, a actor, id, dependsOn stri
 			return "", refuse(http.StatusInternalServerError, "cannot read the card's dependencies")
 		}
 		if cycle {
-			return "", refuse(http.StatusConflict, fmt.Sprintf("#%d already depends on #%d, so #%d cannot depend on #%d.",
+			return "", refuse(http.StatusConflict, fmt.Sprintf("#%d already waits on #%d, through its dependencies or a hold, so #%d cannot depend on #%d.",
 				d.IssueNumber, t.IssueNumber, t.IssueNumber, d.IssueNumber))
 		}
 	}
@@ -2610,9 +2621,9 @@ func (c *Console) groupPlan(ctx context.Context, t factoryd.Task) int64 {
 	return p.IssueNumber
 }
 
-// crossGroup is the refusal of a dependency across two groups. Its action
-// follows their shape: a card of a plan changes through the plan, and a
-// direct card either waits or joins a plan.
+// crossGroup is the refusal of a dependency across two groups, which names
+// what keeps a card from starting until a card of another group lands: a
+// hold with that card as its release card.
 func (c *Console) crossGroup(ctx context.Context, t, d factoryd.Task) string {
 	label := func(n int64) string {
 		if n == 0 {
@@ -2620,21 +2631,182 @@ func (c *Console) crossGroup(ctx context.Context, t, d factoryd.Task) string {
 		}
 		return fmt.Sprintf("plan #%d", n)
 	}
-	pt, pd := c.groupPlan(ctx, t), c.groupPlan(ctx, d)
-	var action string
-	switch {
-	case pt != 0:
-		action = fmt.Sprintf("Ask for the change in plan #%d.", pt)
-	case pd != 0:
-		action = fmt.Sprintf("Ask for #%d in plan #%d.", t.IssueNumber, pd)
-	default:
-		action = fmt.Sprintf("Wait for #%d to finish and file #%d again after it, or file the work of both as one plan.", d.IssueNumber, t.IssueNumber)
-	}
-	return fmt.Sprintf("#%d is in %s and #%d is in %s. A dependency joins cards of one plan only. %s",
-		t.IssueNumber, label(pt), d.IssueNumber, label(pd), action)
+	return fmt.Sprintf("#%d is in %s and #%d is in %s. A dependency joins cards of one plan only: to keep #%d from starting until #%d is merged or done, hold #%d with #%d as its release card (hold_card, or Hold on its drawer).",
+		t.IssueNumber, label(c.groupPlan(ctx, t)), d.IssueNumber, label(c.groupPlan(ctx, d)), t.IssueNumber, d.IssueNumber, t.IssueNumber, d.IssueNumber)
 }
 
-// reaches: card from depends on card to, through dependencies not done.
+// maxHoldReason bounds a hold's reason: the board shows it on the card.
+const maxHoldReason = 300
+
+// doHoldCard puts card id, which has not started, on hold for a: it gets no
+// work slot until a human releases it, or until release, any card of its
+// project by task id or issue number ("" for none), is merged or done.
+// reason is what the board shows, on one line. A hold it holds already is
+// replaced.
+func (c *Console) doHoldCard(ctx context.Context, a actor, id, release, reason string) (string, error) {
+	reason = strings.Join(strings.Fields(reason), " ")
+	if reason == "" || utf8.RuneCountInString(reason) > maxHoldReason {
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("a reason of up to %d characters is required: the board shows it on the held card", maxHoldReason))
+	}
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	if err := unholdable(t, c.capFactsOf(ctx, t)); err != nil {
+		return "", err
+	}
+	var rel factoryd.Task
+	if release = strings.TrimPrefix(strings.TrimSpace(release), "#"); release != "" {
+		if rel, err = c.releaseCard(ctx, a, t, release); err != nil {
+			return "", err
+		}
+	}
+	ok, err := c.cfg.HoldCard(ctx, t.ID, rel.ID, reason, a.approver())
+	if err != nil {
+		log.Printf("console: %s holds %s: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusInternalServerError, "The hold could not be stored; hold the card again.")
+	}
+	if !ok {
+		fresh, found, err := c.cfg.Tasks.Task(ctx, t.ID)
+		if err != nil || !found {
+			log.Printf("console: card %s after its refused hold: %v", t.ID, err)
+			return "", refuse(http.StatusServiceUnavailable, fmt.Sprintf("Card #%d could not be read again after the store refused its hold, so nothing was held: hold it again in a minute.", t.IssueNumber))
+		}
+		if err := unholdable(fresh, c.capFactsOf(ctx, fresh)); err != nil {
+			return "", err
+		}
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's dependencies have all ended, so it starts or asks the human now: a hold comes too late. Close it, or steer it once it runs.", t.IssueNumber))
+	}
+	detail := map[string]any{"reason": reason}
+	said := fmt.Sprintf("#%d is on hold until a human releases it.", t.IssueNumber)
+	if rel.ID != "" {
+		detail["release"] = rel.IssueNumber
+		said = fmt.Sprintf("#%d is on hold until #%d is merged or done, or a human releases it.", t.IssueNumber, rel.IssueNumber)
+	}
+	log.Printf("console: %s held %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardHeld, detail)
+	return said, nil
+}
+
+// unholdable refuses a hold on t unless it has not started (Holdable),
+// naming its state and what fits it.
+func unholdable(t factoryd.Task, f capFacts) error {
+	switch {
+	case t.Holdable():
+		return nil
+	case t.Kind == "human":
+		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d is a human card: no agent starts it, so a hold keeps nothing. Close it, or leave it to its person.", t.IssueNumber))
+	case t.Unbound():
+		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d runs outside the work bound and starts at once, so a hold keeps nothing: close it if it must not run.", t.IssueNumber))
+	case t.Status == "queued" && t.ResumedAt != nil:
+		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d has run and waits for a slot to go on, not a card that has not started: close it, or steer it once it runs.", t.IssueNumber))
+	case t.Status == "queued":
+		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d took a work slot and starts now, not a card that has not started: close it, or steer it once it runs.", t.IssueNumber))
+	}
+	return wrongState(t, f, "a card that has not started")
+}
+
+// releaseCard is the release card name names for a hold on card t: a card
+// of t's project, by task id or issue number, that is not t and has not
+// ended: one merged or done would release the hold at once, one failed or
+// closed never does.
+func (c *Console) releaseCard(ctx context.Context, a actor, t factoryd.Task, name string) (factoryd.Task, error) {
+	var rel factoryd.Task
+	var err error
+	if n, perr := strconv.ParseInt(name, 10, 64); perr == nil && n > 0 {
+		var ok bool
+		rel, ok, err = c.cfg.Tasks.TaskByIssue(ctx, t.Repository, n)
+		if err == nil && (!ok || rel.Kind == factoryd.KindChat) {
+			err = refuse(http.StatusNotFound, fmt.Sprintf("There is no card #%d in this project: a release card is a card of #%d's project.", n, t.IssueNumber))
+		}
+	} else {
+		rel, err = c.cardIn(ctx, a, name)
+		if err == nil && rel.Repository != t.Repository {
+			err = refuse(http.StatusNotFound, fmt.Sprintf("There is no card %s in this project: a release card is a card of #%d's project.", name, t.IssueNumber))
+		}
+	}
+	var no *refusal
+	if err != nil && !errors.As(err, &no) {
+		log.Printf("console: the release card %s: %v", name, err)
+		return rel, refuse(http.StatusInternalServerError, "cannot read the release card")
+	}
+	if err != nil {
+		return rel, err
+	}
+	switch {
+	case rel.ID == t.ID:
+		return rel, refuse(http.StatusBadRequest, fmt.Sprintf("#%d cannot release its own hold: name another card, or hold it with none.", t.IssueNumber))
+	case rel.Track == policy.TrackPlan:
+		return rel, refuse(http.StatusConflict, fmt.Sprintf("#%d is a plan, which is done once it files its cards, before their work lands, so it would release the hold too early: name the plan's last card, the one whose merge lands its work.",
+			rel.IssueNumber))
+	case rel.Status == "merged" || rel.Status == "done":
+		return rel, refuse(http.StatusConflict, fmt.Sprintf("#%d is %s already, so it would release the hold at once: hold #%d with no release card, or name a card that has not ended.",
+			rel.IssueNumber, rel.Status, t.IssueNumber))
+	case factoryd.Final(rel.Status):
+		fit := "name a card that has not ended"
+		for _, next := range []string{factoryd.SuccessorID(rel.ID), factoryd.RetryID(rel.ID)} {
+			if k, ok, _ := c.cfg.Tasks.Task(ctx, next); ok && k.IssueNumber != 0 {
+				fit = fmt.Sprintf("name #%d, which carries its work", k.IssueNumber)
+			}
+		}
+		return rel, refuse(http.StatusConflict, fmt.Sprintf("#%d ended %s, so it would never release the hold: %s, or hold #%d with none.",
+			rel.IssueNumber, rel.Status, fit, t.IssueNumber))
+	}
+	loop, err := c.reaches(ctx, rel.ID, t.ID)
+	if err != nil {
+		log.Printf("console: what %s waits on: %v", rel.ID, err)
+		return rel, refuse(http.StatusInternalServerError, "cannot read what the release card waits on")
+	}
+	if loop {
+		return rel, refuse(http.StatusConflict, fmt.Sprintf("#%d waits on #%d, through its dependencies or a hold, so a hold of #%d until #%d lands would keep both from starting: name another card, or hold #%d with none.",
+			rel.IssueNumber, t.IssueNumber, t.IssueNumber, rel.IssueNumber, t.IssueNumber))
+	}
+	return rel, nil
+}
+
+// doReleaseHold ends card id's hold for a, a human: a queued card queues
+// for a work slot, one in waiting-deps waits on its dependencies alone.
+func (c *Console) doReleaseHold(ctx context.Context, a actor, id string) (string, error) {
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	if !t.Held() {
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is not on hold, so there is nothing to release: hold_card, or Hold on its drawer, puts a card that has not started on hold.", t.IssueNumber))
+	}
+	ok, err := c.cfg.ReleaseCardHold(ctx, t.ID)
+	if err != nil {
+		log.Printf("console: %s releases %s: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusInternalServerError, "The hold could not be released; release it again.")
+	}
+	if !ok {
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is not on hold any more: reload the board.", t.IssueNumber))
+	}
+	log.Printf("console: %s released %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardHoldEnded, map[string]any{"reason": t.Hold.Reason})
+	if t.Status == "waiting-deps" {
+		return fmt.Sprintf("#%d's hold is released: it waits on its dependencies alone.", t.IssueNumber), nil
+	}
+	return fmt.Sprintf("#%d's hold is released: it queues for a work slot.", t.IssueNumber), nil
+}
+
+// agentOnHeld refuses the agent's own action on card t, which a human
+// holds: only the human releases, starts or closes a held card, and a turn
+// on no line the human typed decides as the agent.
+func (c *Console) agentOnHeld(ctx context.Context, a actor, t factoryd.Task, action string) error {
+	if !t.Held() || a.decider != "agent" {
+		return nil
+	}
+	line := "on hold: " + t.Hold.Reason
+	if bt, ok, err := c.cfg.Tasks.BoardTask(ctx, t.ID); err == nil && ok && bt.HoldView.Line != "" {
+		line = bt.HoldView.Line
+	}
+	return refuse(http.StatusConflict, fmt.Sprintf("Card #%d is %s. Only the human releases, starts or closes a held card, and this turn runs on no line the human typed, so it takes no %s: ask the human with ask, or let them %s it on its card.",
+		t.IssueNumber, line, action, action))
+}
+
+// reaches: card from waits on card to, through dependencies not done and
+// the release cards of holds.
 func (c *Console) reaches(ctx context.Context, from, to string) (bool, error) {
 	seen := map[string]bool{from: true}
 	for next := []string{from}; len(next) > 0; next = next[1:] {
@@ -2642,13 +2814,26 @@ func (c *Console) reaches(ctx context.Context, from, to string) (bool, error) {
 		if err != nil {
 			return false, err
 		}
+		var waits []string
 		for _, x := range deps {
-			if x.TaskID == to && x.Status != "done" {
+			if x.Status != "done" {
+				waits = append(waits, x.TaskID)
+			}
+		}
+		k, _, err := c.cfg.Tasks.Task(ctx, next[0])
+		if err != nil {
+			return false, err
+		}
+		if k.Held() && k.Hold.Release != "" {
+			waits = append(waits, k.Hold.Release)
+		}
+		for _, id := range waits {
+			if id == to {
 				return true, nil
 			}
-			if x.Status != "done" && !seen[x.TaskID] {
-				seen[x.TaskID] = true
-				next = append(next, x.TaskID)
+			if !seen[id] {
+				seen[id] = true
+				next = append(next, id)
 			}
 		}
 	}
@@ -2734,7 +2919,7 @@ func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string
 	if t.Status != "running" {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a running session")
 	}
-	switch err := c.cfg.Steer(ctx, t.ID, a.s.user, text); {
+	switch err := c.cfg.Steer(ctx, t.ID, a.approver(), text); {
 	case errors.Is(err, factoryd.ErrNoLiveSession), errors.Is(err, harness.ErrNotRunning):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d runs no session right now.", t.IssueNumber))
 	case errors.Is(err, harness.ErrNotSupported):
@@ -2836,6 +3021,8 @@ func (c *Console) decide(ctx context.Context, a actor, q factoryd.ApprovalReques
 	switch {
 	case errors.Is(err, factoryd.ErrNotFound) && q.Kind == factoryd.ApprovalMerge:
 		log.Printf("console: approval request %d was decided by the factory before %s's %s was recorded", q.ID, a.s.user, status)
+	case errors.Is(err, factoryd.ErrNotPerson):
+		return refuse(http.StatusConflict, err.Error())
 	case err != nil:
 		log.Printf("console: decide approval request %d: %v", q.ID, err)
 		return refuse(http.StatusInternalServerError, "cannot record the decision: "+errText(err)+". Try again in a moment.")
@@ -3193,8 +3380,13 @@ func (c *Console) criterionVerdict(ctx context.Context, a actor, q factoryd.Appr
 	var row *criterionRow
 	switch q.Kind {
 	case factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
-		if verb != "waived" {
-			return "", refuse(http.StatusConflict, noRows)
+		switch verb {
+		case "met":
+			return "", refuse(http.StatusConflict, "This request records no Met for one criterion. Confirm the delivered cards with your evidence, "+
+				"which meets every open criterion, or waive this criterion with your reason.")
+		case "not_met":
+			return "", refuse(http.StatusConflict, "This request records no Not met for one criterion. Grant one more bounded card for the open criteria, "+
+				"or waive this criterion with your reason.")
 		}
 	case factoryd.ApprovalMerge:
 		t, _, err := c.cfg.Tasks.Task(ctx, q.TaskID)
@@ -3238,13 +3430,15 @@ func (c *Console) criterionVerdict(ctx context.Context, a actor, q factoryd.Appr
 			return "", err
 		}
 	} else {
-		switch err := c.cfg.DecideCriterion(ctx, plan, cid, verb, a.s.user, reason); {
+		switch err := c.cfg.DecideCriterion(ctx, plan, cid, verb, a.approver(), reason); {
 		case errors.Is(err, factoryd.ErrNoCriterion):
 			return "", refuse(http.StatusConflict, fmt.Sprintf("The plan holds no criterion %s. Reload the board.", cid))
 		case errors.Is(err, factoryd.ErrCriterionMet):
 			return "", refuse(http.StatusConflict, fmt.Sprintf("Criterion %s is met already. Reload the board.", cid))
 		case errors.Is(err, factoryd.ErrNotHuman):
 			return "", refuse(http.StatusConflict, fmt.Sprintf("Criterion %s is the gate's to judge.", cid))
+		case errors.Is(err, factoryd.ErrNotPerson):
+			return "", refuse(http.StatusConflict, err.Error())
 		case errors.Is(err, factoryd.ErrNotFound):
 			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", plan))
 		case err != nil:
@@ -3278,7 +3472,8 @@ func (c *Console) denyCriteria(ctx context.Context, a actor, q factoryd.Approval
 // delivered cards meet its criteria: every open criterion met at once,
 // their line the evidence, on the human's own word when it arrives via
 // chat. The sweep that reads the rows ends the request and closes the
-// plan; a card of the plan not done or merged refuses, naming it.
+// plan; a card of the plan not done, merged or closed refuses, naming it,
+// and so does an empty line beside a closed card.
 func (c *Console) doConfirmCriteria(ctx context.Context, a actor, id int64, line string) (string, error) {
 	q, err := c.pendingRequest(ctx, a, id)
 	if err != nil {
@@ -3292,10 +3487,14 @@ func (c *Console) doConfirmCriteria(ctx context.Context, a actor, id int64, line
 
 // confirmCriteria is the work of the confirmation Act runs for a on request q.
 func (c *Console) confirmCriteria(ctx context.Context, a actor, q factoryd.ApprovalRequest, line string) (string, error) {
-	n, err := c.cfg.ConfirmDeliveredCriteria(ctx, q.TaskID, a.s.user, line)
+	n, err := c.cfg.ConfirmDeliveredCriteria(ctx, q.TaskID, a.approver(), line)
 	switch {
 	case errors.Is(err, factoryd.ErrChildOpen):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Cannot confirm the delivered cards: %v.", err))
+	case errors.Is(err, factoryd.ErrNoEvidence):
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Cannot confirm the delivered cards: %v. Type the line that shows main meets the criteria, then confirm again.", err))
+	case errors.Is(err, factoryd.ErrNotPerson):
+		return "", refuse(http.StatusConflict, err.Error())
 	case errors.Is(err, factoryd.ErrNotFound):
 		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", q.TaskID))
 	case err != nil:

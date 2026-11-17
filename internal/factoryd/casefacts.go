@@ -33,6 +33,7 @@ type CaseFacts struct {
 	PR             int64  `json:"pr,omitempty"`
 	Factory        bool   `json:"factory,omitempty"`         // the pull request is one factoryd opened
 	PROpen         bool   `json:"pr_open,omitempty"`         // PR is set and the card neither merged nor ended
+	MergeConflict  string `json:"merge_conflict,omitempty"`  // Forgejo's refusal to merge main into Head, while PROpen (standingConflict)
 	Checks         string `json:"checks,omitempty"`          // green, red, pending or ""
 	ReviewApproved bool   `json:"review_approved,omitempty"` // the newest model_review on Head was reviewed and approved
 	RerunOnHead    bool   `json:"rerun_on_head,omitempty"`   // Head's checks ran again, or a rerun made Head
@@ -77,6 +78,9 @@ type CaseFacts struct {
 	// while they stand unresolved (findingsLead).
 	ReviewFindings []string `json:"review_findings,omitempty"`
 	AuditFindings  []string `json:"audit_findings,omitempty"`
+	// AuditConfirmable are those of AuditFindings at a file, the ones a
+	// human's confirm_audit covers.
+	AuditConfirmable []string `json:"audit_confirmable,omitempty"`
 	// FailedTests are the tests the red checks on Head failed, read when
 	// Checks is red; HeadCommits are the pull request's commits after the
 	// newest session's push, each "<sha8> <author> <subject>".
@@ -130,9 +134,15 @@ type CaseFacts struct {
 	Siblings     []SiblingFact `json:"siblings,omitempty"`
 	Running      bool          `json:"running,omitempty"` // a session is live: the card runs and holds a live session row
 	Autonomy     string        `json:"autonomy"`
-	PoolLeft     policy.Draw   `json:"pool_left"`
-	CardDrawLeft policy.Draw   `json:"card_draw_left"`
-	Partial      []string      `json:"partial,omitempty"` // the readers that failed, by name; an entry may carry the read's error after the name and ": "
+	OpenCriteria int           `json:"open_criteria,omitempty"` // the plan's criteria neither met nor waived, as its Close counts them (PlanOpenCriteria)
+	// Hold is the hold that keeps the card from starting, "card #N is " and
+	// its line (HoldView), "" for none; PlanHold is the same of a held card
+	// of its plan, read through the successors its cards were cut into.
+	Hold         string      `json:"hold,omitempty"`
+	PlanHold     string      `json:"plan_hold,omitempty"`
+	PoolLeft     policy.Draw `json:"pool_left"`
+	CardDrawLeft policy.Draw `json:"card_draw_left"`
+	Partial      []string    `json:"partial,omitempty"` // the readers that failed, by name; an entry may carry the read's error after the name and ": "
 	// Flag and Wait are the monitor flag a monitor case holds and the wait it
 	// names; RunGone: the card is live and runs a workflow, and none runs.
 	Flag    string `json:"flag,omitempty"`
@@ -314,14 +324,18 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			}
 			return err
 		}},
-		{"timeline", func() error {
+		{partialTimeline, func() error {
 			tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 			if err == nil {
 				lines, _ := lineSteps(r.Scrub, tl)
 				f.Findings, reran = headFindings(lines, f.Head), rerunHeads(tl)
 				f.FindingTexts, f.FindingOrder = headFindingTexts(lines, f.Head, f.Findings)
-				f.ReviewFindings, f.AuditFindings = newestKindFindings(lines, f.Head, "review"), newestKindFindings(lines, f.Head, "audit")
+				review, audit := newestOfKind(lines, f.Head, "review"), newestOfKind(lines, f.Head, "audit")
+				f.ReviewFindings, f.AuditFindings, f.AuditConfirmable = review.Findings, audit.Findings, audit.atFile
 				pushed = pushedCommit(tl)
+				if f.PROpen {
+					f.MergeConflict = standingConflict(tl, f.Head)
+				}
 			}
 			return err
 		}},
@@ -457,6 +471,39 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			f.WaitedOnHead = f.Head != "" && err == nil && slices.ContainsFunc(cases, func(c Case) bool {
 				return c.Resolution != nil && c.Resolution.Action == ActWaitChecks && c.Facts["head"] == f.Head
 			})
+			return err
+		}},
+		{"open criteria", func() error {
+			if f.Plan == "" {
+				return nil
+			}
+			rev, ok, err := r.store.PlanRevision(ctx, f.Plan, 0)
+			if err != nil || !ok {
+				return err
+			}
+			var p Plan
+			if err := json.Unmarshal(rev.Plan, &p); err != nil {
+				return err
+			}
+			open, err := PlanOpenCriteria(ctx, r.store, f.Plan, p)
+			f.OpenCriteria = len(open)
+			return err
+		}},
+		{partialHold, func() (err error) {
+			f.Hold, err = r.holdFact(ctx, t)
+			return err
+		}},
+		{partialPlanHold, func() error {
+			if f.Plan == "" {
+				return nil
+			}
+			cards, err := planWaits(ctx, r.store, f.Plan)
+			if err != nil {
+				return err
+			}
+			if i := slices.IndexFunc(cards, Task.Held); i >= 0 {
+				f.PlanHold, err = r.holdFact(ctx, cards[i])
+			}
 			return err
 		}},
 		{"siblings", func() error {
@@ -635,18 +682,18 @@ func commitsAfter(commits []PRCommit, head, pushed string, scrub *redact.Scrubbe
 	return out
 }
 
-// newestKindFindings are the finding ids of head's newest step of kind
-// (review, audit), nil before one of that kind judged head.
-func newestKindFindings(steps []DigestStep, head, kind string) []string {
+// newestOfKind is head's newest step of kind (review, audit), none before
+// one of that kind judged head.
+func newestOfKind(steps []DigestStep, head, kind string) DigestStep {
 	if head == "" {
-		return nil
+		return DigestStep{}
 	}
 	for _, s := range slices.Backward(steps) {
 		if s.commit == head && s.Kind == kind {
-			return s.Findings
+			return s
 		}
 	}
-	return nil
+	return DigestStep{}
 }
 
 // headFindings are the sorted finding ids that head's newest checks, its
@@ -684,6 +731,40 @@ func rerunHeads(tl []byte) []string {
 		}
 	}
 	return heads
+}
+
+// stepMergeConflict is the timeline's line of Forgejo's refusal to merge
+// main into a head (commit) of the pull request (pr); stepMergeMovedHead
+// is the line, the merge gate's own or the synchronize webhook's event,
+// of the pull request's head moving to head outside the run.
+const (
+	stepMergeConflict  = "merge_conflict"
+	stepMergeMovedHead = "merge_moved_head"
+)
+
+// standingConflict is the refusal of timeline tl's newest merge conflict
+// on head, "" for none. A push or a sync of main moves the run's head, so
+// none stands on the new one; a head moved outside the run leaves the run
+// on head, and the conflict stands no more: a reverify takes the moved
+// head through the gates.
+func standingConflict(tl []byte, head string) string {
+	if head == "" {
+		return ""
+	}
+	for _, raw := range slices.Backward(bytes.Split(tl, []byte("\n"))) {
+		var l struct{ Step, Event, Commit, Head, Refusal string }
+		if json.Unmarshal(raw, &l) != nil {
+			continue
+		}
+		moved := l.Step == stepMergeMovedHead || l.Step == StepEvent && l.Event == stepMergeMovedHead
+		switch {
+		case moved && l.Head != "" && l.Head != head:
+			return ""
+		case l.Step == stepMergeConflict && l.Commit == head:
+			return l.Refusal
+		}
+	}
+	return ""
 }
 
 // checksWord is a head's checks state as the facts name it.

@@ -477,7 +477,7 @@ func TestBriefFactsCarryTheCriteriaGap(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t-plan", Project: "sf/code",
-		Spec: spec, Reason: "the plan's cards ran out with a criterion unmet"}
+		Spec: spec, Reason: "every card of the plan ended with a criterion unmet"}
 	criteria := []criterionFact{
 		{ID: "c1", Kind: "test", Text: "go test ./... is green", Verdict: "met", Evidence: "the review read the diff"},
 		{ID: "c2", Kind: "human", Text: "the feature reads well", Verdict: "open"},

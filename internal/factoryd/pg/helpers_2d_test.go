@@ -303,45 +303,10 @@ func serveWriters(t *testing.T, w http.ResponseWriter, r *http.Request) {
 // noneCompleted is the heal pass's run check where no run completed.
 func noneCompleted(context.Context, string) (bool, error) { return false, nil }
 
-// caseSignals records the signals that reached the workflows.
-type caseSignals struct {
-	Workflows
-	mu  sync.Mutex
-	got []reopenCall
-}
-
-func (w *caseSignals) Signal(_ context.Context, taskID, name string, sig TaskSignal) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.got = append(w.got, reopenCall{taskID, name, sig})
-	return nil
-}
-
-func (w *caseSignals) Terminate(context.Context, string, string, string) error { return nil }
-
-func (w *caseSignals) Alive(context.Context, string) (bool, error)       { return true, nil }
-func (w *caseSignals) RunningRuns(context.Context) ([]RunningRun, error) { return nil, nil }
-
-// actRig holds the store whose rows the moved rig reads; the full rig
-// stays in factoryd beside the tests that use its runner and forge.
-type actRig struct {
-	s *factoryd.PGStore
-}
-
-func (g actRig) rows(t *testing.T, kind string) []Event {
-	t.Helper()
-	events, err := g.s.TaskEvents(context.Background(), "t1", 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out []Event
-	for i := len(events) - 1; i >= 0; i-- {
-		if events[i].Kind == kind {
-			out = append(out, events[i])
-		}
-	}
-	return out
-}
+// caseSignals and actRig moved with the act tests: act_pg_test.go in this
+// package now holds the full rig beside the tests that use its runner and
+// forge, and the minimal store-and-rows copy below is what stayed behind
+// in factoryd for the ladder and monitor files not yet moved.
 
 // tripForge is the Forgejo the trip stub serves.
 type tripForge struct {

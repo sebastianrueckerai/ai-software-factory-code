@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -16,14 +17,17 @@ import (
 
 // The push rules, one rule set for both pushes: the worker's end push
 // (commitAndPush, cmd/agent-worker/main.go, whose local names alias
-// these) and factoryd's interim push at a check-in. WorkflowDirs
-// (activities.go) names the directories the workflow-directory rule
-// guards; each pusher brings only its git.
+// these) and factoryd's interim push at a check-in, which holds all but
+// the card's line bound (FitBound). SyncOnMain shapes the tree the worker
+// stages for either push. WorkflowDirs (activities.go) names the
+// directories the workflow-directory rule guards; each pusher brings only
+// its git.
 
 // PushGit is the git the push rules run. Git answers a token-free git
 // command's stdout in dir; RunGit one under an extra environment — a
-// commit identity, an index file. The worker's end push brings its own
-// hardened git; factoryd's interim push brings the scratch repo's.
+// commit identity, an index file. A failed command's error wraps its
+// *exec.ExitError. The worker's end push brings its own hardened git;
+// factoryd's interim push brings the scratch repo's.
 type PushGit interface {
 	Git(dir string, args ...string) (string, error)
 	RunGit(dir string, env []string, args ...string) (string, error)
@@ -47,7 +51,7 @@ var ErrPushOverBound = errors.New("push refused: over the card's line bound")
 // request's diff. A branch whose diff against its merge base is over the
 // bound is merged with main by the rule when that fits; what no merge can
 // fit is refused by name. identity and message make the rule's merge
-// commit: the end push's attribution, an interim push's work-in-progress.
+// commit: the end push's attribution.
 func FitBound(g PushGit, send, head, tree, base, guard, mainHead string, bound int, identity []string, message string) (string, string, error) {
 	if bound <= 0 {
 		return head, guard, nil
@@ -119,14 +123,65 @@ func fits(g PushGit, send, a, b string, bound int) bool {
 }
 
 // mergedTree is the three-way merge of head and mainHead over base as a
-// tree, when git can make it without conflicts.
+// tree, when git can make it without conflicts. head and mainHead may be
+// trees. A path one side deletes and the other leaves alone is deleted.
 func mergedTree(g PushGit, send, base, head, mainHead string) (string, error) {
 	idx := filepath.Join(send, "fit-index")
 	defer os.Remove(idx)
-	if _, err := g.RunGit(send, []string{"GIT_INDEX_FILE=" + idx}, "read-tree", "-m", base, head, mainHead); err != nil {
+	if _, err := g.RunGit(send, []string{"GIT_INDEX_FILE=" + idx}, "read-tree", "-m", "--aggressive", base, head, mainHead); err != nil {
 		return "", err
 	}
 	return g.RunGit(send, []string{"GIT_INDEX_FILE=" + idx}, "write-tree")
+}
+
+// MainBases are the two merge bases with main's head a push weighs, each
+// with its read's error: Start, of the session's base, the main commit the
+// start holds; Fork, of the agent's HEAD.
+type MainBases struct {
+	Start, Fork       string
+	StartErr, ForkErr error
+}
+
+// ReadMainBases reads base's and agent's merge bases with mainHead.
+func ReadMainBases(g PushGit, send, base, mainHead, agent string) MainBases {
+	var b MainBases
+	b.Start, b.StartErr = g.Git(send, "merge-base", base, mainHead)
+	b.Fork, b.ForkErr = g.Git(send, "merge-base", agent, mainHead)
+	return b
+}
+
+// SyncOnMain is the tree a push commits on the session's start base: tree
+// itself, unless the agent's HEAD forks from main before the main commit
+// the start holds (it reset behind the start's sync with main), the merge
+// bases b tells. The start's ancestry holds main's commits between the two
+// and tree lacks them, so a commit of tree on the start would revert them,
+// unseen when the line bound fits them. Then it is the start's main
+// content plus the agent's own changes since its fork, or a refusal where
+// both change the same files. A HEAD with no history in common with main
+// is refused: nothing tells which of its files are its own changes. The
+// refusals fit the 300 bytes factoryd reads of a refused /wip answer.
+func SyncOnMain(g PushGit, send string, b MainBases, base, agent, tree string) (string, error) {
+	start, err := b.Start, b.StartErr
+	if err != nil {
+		return tree, nil
+	}
+	fork, err := b.Fork, b.ForkErr
+	if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return "", fmt.Errorf("%w: your branch shares no history with main (your HEAD %s has no commit in common with it): run `git reset --soft %s` to put your files on the session's start, check that `git diff --cached %s` shows only your changes, and run the checks",
+			ErrPushRefused, short(agent), short(base), short(base))
+	}
+	if err != nil || fork == start {
+		return tree, nil
+	}
+	if _, err := g.Git(send, "merge-base", "--is-ancestor", fork, start); err != nil {
+		return tree, nil
+	}
+	merged, err := mergedTree(g, send, fork, tree, start)
+	if err != nil {
+		return "", fmt.Errorf("%w: your HEAD forks from main at %s, behind main's %s that the start already holds; your files lack main's commits between the two, and your branch and main both change some of the same files: run `git merge origin/main`, resolve any conflicts and run the checks",
+			ErrPushRefused, short(fork), short(start))
+	}
+	return merged, nil
 }
 
 // RefuseWorkflowDirChange stops a push whose tree entries for the

@@ -549,12 +549,6 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	if err != nil {
 		return PolicyGate{}, err
 	}
-	// a call with no commit checks no head
-	if commit != "" {
-		if _, err := r.headIs(ctx, repo, pr, commit); err != nil {
-			return PolicyGate{}, err
-		}
-	}
 	files, err := r.forgejo.PullRequestFiles(ctx, repo.Owner, repo.Name, pr)
 	if err != nil {
 		return PolicyGate{}, err
@@ -563,6 +557,14 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	unread := errors.Is(err, ErrDiffTooLong)
 	if err != nil && !unread {
 		return PolicyGate{}, err
+	}
+	// the head is checked after the reads, which go by the pull request's
+	// number, so a push before them is a moved head and never classifies
+	// another head as commit; a call with no commit checks no head
+	if commit != "" {
+		if _, err := r.headIs(ctx, repo, pr, commit); err != nil {
+			return PolicyGate{}, err
+		}
 	}
 	// a path either list names counts against its class: a file moved out
 	// of a guarded directory by its old name, a path the diff parser misses
@@ -1021,12 +1023,16 @@ func (r *Runner) proofRuns(ctx context.Context, t Task, repo Repo, ref, commit, 
 // runProofs runs entries through proofRuns and answers the runs it read
 // beside each entry's outcome, by its id. A pod that ended before it
 // reported every entry returns them with a *proofsEnded: the entries it
-// reached keep theirs, the rest are no report.
+// reached keep theirs, the rest are no report. A worker that ran no entry
+// and says why, as a fetch that failed for good, is a *startFailure.
 func (r *Runner) runProofs(ctx context.Context, t Task, repo Repo, ref, commit, at string, entries []harness.Proof) (runs map[string]harness.ProofRun, outcomes map[string]proofOutcome, err error) {
 	runs, runErr, err := r.proofRuns(ctx, t, repo, ref, commit, at, entries, proofsBudget)
 	ended := errors.Is(err, errLogEnded)
 	if err != nil && !ended {
 		return nil, nil, err
+	}
+	if !ended && len(runs) == 0 && runErr != "" {
+		return nil, nil, &startFailure{step: stepProofs, text: "start failed: " + runErr}
 	}
 	if ended {
 		runErr = proofsEndedEarly
@@ -1390,7 +1396,10 @@ func (r *Runner) proofsPodSpec(t Task, repo Repo, ref, commit, at, bearer string
 // agent-written command or the tree's check holds no token at all.
 // Neither run mounts the project's shared cache, where an agent may have
 // planted a binary or a build result: Go and npm build cold in the pod's
-// own emptyDir, with PATH naming no cache directory.
+// own emptyDir, with PATH naming no cache directory. ref is a pull
+// request's head ref; a run at a commit of a branch has none and fetches
+// commit by itself, which Git's protocol v2 serves though the branch has
+// moved on since its head was read.
 func (r *Runner) runnerPodSpec(t Task, repo Repo, ref, commit, at string, mode []map[string]any) map[string]any {
 	pod := r.sandboxPodSpec(t, r.sandboxImage(t), "", slices.Concat(mode, []map[string]any{
 		{"name": "TASK_ID", "value": t.ID},
@@ -1413,7 +1422,7 @@ func (r *Runner) runnerPodSpec(t Task, repo Repo, ref, commit, at string, mode [
 		{"name": "REPO_URL", "value": r.repoURL(repo)},
 		{"name": "REPO_TOKEN", "valueFrom": map[string]any{
 			"secretKeyRef": map[string]any{"name": "task-git", "key": "REPO_TOKEN"}}},
-		{"name": "PR_REF", "value": ref},
+		{"name": "PR_REF", "value": cmp.Or(ref, commit)},
 		{"name": "REPO_SHA", "value": commit},
 	}
 	if at != "" {
@@ -2026,6 +2035,9 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		}
 		return rv, nil
 	}
+	prFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr.Number)
+	// the head is checked after the read, which goes by the pull request's
+	// number, so a push before it is a moved head, never another head's diff
 	if moved, err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
 		if !isTerminal(err) && !isHeadMoved(err) {
 			return Review{}, err
@@ -2034,7 +2046,6 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		rv.MovedTo = moved
 		return rv, err
 	}
-	prFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr.Number)
 	if errors.Is(err, ErrDiffTooLong) {
 		return notRun(err.Error())
 	}
@@ -2638,7 +2649,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 		log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 	}
 	r.record(ctx, t.ID, "merged", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "merged_by": MergeUser}))
-	r.timeline.recordEvent(ctx, t.ID, EventPullRequestMerged, map[string]any{"pr": pr, "by": MergeUser})
+	r.timeline.recordEvent(ctx, t.ID, EventPullRequestMerged, map[string]any{"pr": pr, "by": MergeUser, "head": commit})
 	return MergeResult{Merged: true}, nil
 }
 
@@ -2653,7 +2664,7 @@ func (r *Runner) mergedAlready(ctx context.Context, t Task, pr int64, commit, ap
 			log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 		}
 		r.record(ctx, t.ID, "merged", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "merged_by": MergeUser}))
-		r.timeline.recordEvent(ctx, t.ID, EventPullRequestMerged, map[string]any{"pr": pr, "by": MergeUser})
+		r.timeline.recordEvent(ctx, t.ID, EventPullRequestMerged, map[string]any{"pr": pr, "by": MergeUser, "head": st.HeadSHA})
 		return MergeResult{Merged: true}
 	}
 	by := cmp.Or(st.MergedBy, "an unknown user")
@@ -2794,7 +2805,7 @@ func (r *Runner) movedHead(ctx context.Context, t Task, repo Repo, pr int64, com
 	if err := r.store.ResolveApprovals(ctx, t.ID, ApprovalMerge, "denied", FactoryDecider, note); err != nil {
 		log.Printf("task %s: void the approval request: %v", t.ID, err)
 	}
-	r.record(ctx, t.ID, "merge_moved_head", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "head": head, "approver": approver}))
+	r.record(ctx, t.ID, stepMergeMovedHead, gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "head": head, "approver": approver}))
 	return res
 }
 
@@ -2916,7 +2927,7 @@ func (r *Runner) mergeConflict(ctx context.Context, t Task, repo Repo, pr int64,
 	r.comment(ctx, t, repo, pr, fmt.Sprintf(
 		"factoryd: the merge of %s after %s's approval was refused: the pull request no longer merges into main (%s). The task goes back to the agent to merge main into the branch.",
 		commit, approver, res.Refusal))
-	r.record(ctx, t.ID, "merge_conflict", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
+	r.record(ctx, t.ID, stepMergeConflict, gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
 	return res
 }
 

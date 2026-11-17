@@ -76,6 +76,9 @@ type DigestHead struct {
 	// MergeQueue is the card's place in its project's merge queue, nil
 	// when it holds no queue row.
 	MergeQueue *QueuePlace
+	// Hold is the line of a human's hold on the card (HoldView), "" when
+	// none holds it: the wait is the human's, no owned one.
+	Hold string
 }
 
 // DigestStep is one step of the card's life. Actor is who acted; for a
@@ -109,6 +112,9 @@ type DigestStep struct {
 	// texts are the finding texts of a checks, proofs, review or audit line,
 	// in the order the gate raised them
 	texts []string
+	// atFile are the ids of an audit line's findings at a file, the ones a
+	// confirmation covers
+	atFile []string
 	// refused marks a check-in whose every call was refused, which ended
 	// as a handover with no note
 	refused bool
@@ -292,6 +298,13 @@ func (r *Runner) digestHead(ctx context.Context, t Task, events []Event) (Digest
 	if t.GateSince != nil {
 		h.Since = *t.GateSince
 	}
+	if t.Held() {
+		v, err := holdView(ctx, r.store, t)
+		if err != nil {
+			return DigestHead{}, err
+		}
+		h.Hold = v.Line
+	}
 	for _, e := range events {
 		if e.Kind == EventTaskStatus {
 			h.StatusSince = e.At
@@ -376,7 +389,7 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 		word := func(k string) string { s, _ := e.Detail[k].(string); return s }
 		number := func(k string) int { n, _ := toInt(e.Detail[k]); return n }
 		amount, _ := e.Detail["amount_eur"].(float64)
-		s := DigestStep{At: e.At, Actor: e.Actor, Ref: DigestRef{Event: strconv.FormatInt(e.ID, 10)}}
+		s := DigestStep{At: e.At, Actor: eventActor(e), Ref: DigestRef{Event: strconv.FormatInt(e.ID, 10)}}
 		comment := number("comment")
 		if comment > 0 {
 			s.Ref.Comment = strconv.Itoa(comment)
@@ -431,6 +444,19 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 				continue
 			}
 			s.Kind, s.Outcome = "criteria", word("criterion")+" not met"
+		case EventCardHeld:
+			s.Kind, s.Outcome = "held", digestText(scrub, word("reason"))
+			if n := number("release"); n > 0 {
+				s.Outcome = fmt.Sprintf("until #%d is merged or done: %s", n, s.Outcome)
+			}
+		case EventCardHoldEnded:
+			s.Kind, s.Outcome = "hold ended", "released"
+			if n := number("release"); n > 0 {
+				s.Outcome = fmt.Sprintf("#%d %s", n, word("status"))
+			}
+			if moved := word("card_status"); moved != "" {
+				s.Outcome = "the card moved to " + moved
+			}
 		case EventDependencySet:
 			s.Kind, s.Outcome = "dependency", "depends on "+issueOf(word("depends_on"))
 			if removed, _ := e.Detail["removed"].(bool); removed {

@@ -56,7 +56,7 @@ const noVerdict = "the review gave no verdict: "
 const stepAdjudicated = "finding_adjudicated"
 
 // stepAuditConfirmed records a person's confirmation of one audit finding
-// (audit-confirm): the finding's text prefix a person judged a fixture,
+// (audit-confirm): the text of the finding a person judged a fixture,
 // with who, why and when, which the audit's verdict settles past.
 const stepAuditConfirmed = "audit_finding_confirmed"
 

@@ -8,12 +8,13 @@ import (
 
 // gatePlanCard seeds a criteria plan whose integration card t-int is open
 // and holds PR 12 at head c7, and returns the store, the card and the
-// plan as filedPlan hands it over.
-func gatePlanCard(t *testing.T, settled bool) (*fakeStore, Task, Plan) {
+// plan as filedPlan hands it over. settled gives every criterion a met row
+// of that source.
+func gatePlanCard(t *testing.T, settled string) (*fakeStore, Task, Plan) {
 	t.Helper()
 	s := seedVerdictPlan(t, "t-plan", "t-int", "open")
-	if settled {
-		if err := s.PutCriteriaVerdicts(context.Background(), "t-int", "review", FactoryDecider, []CriterionVerdict{
+	if settled != "" {
+		if err := s.PutCriteriaVerdicts(context.Background(), "t-int", settled, FactoryDecider, []CriterionVerdict{
 			{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
 			{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},
 			{Criterion: "c3", Verdict: "met", Kind: CriterionInvariant},
@@ -35,20 +36,21 @@ func TestGateTriggerTable(t *testing.T) {
 		pr        int64
 		pull      string
 		pullsDown bool
-		settled   bool
+		settled   string
 		planKey   string
 		notACard  bool
 		want      bool
 		wantErr   bool
 	}{
-		{"open PR on the integration card with unsettled criteria", 12, openPR, false, false, "", false, true, false},
-		{"no PR", 0, "", false, false, "", false, false, false},
-		{"merged PR", 12, mergedPR, false, false, "", false, false, false},
-		{"plain feature card", 12, openPR, false, false, "foundation", false, false, false},
-		{"criteria settled", 12, openPR, false, true, "", false, false, false},
-		{"delta card with open PR", 12, openPR, false, false, "delta-2", false, true, false},
-		{"card off any plan", 12, openPR, false, false, "", true, false, false},
-		{"failed forge read on a card that holds a PR", 12, openPR, true, false, "", false, false, true},
+		{"open PR on the integration card with unsettled criteria", 12, openPR, false, "", "", false, true, false},
+		{"no PR", 0, "", false, "", "", false, false, false},
+		{"merged PR", 12, mergedPR, false, "", "", false, false, false},
+		{"plain feature card", 12, openPR, false, "", "foundation", false, false, false},
+		{"criteria settled by the approver", 12, openPR, false, CriteriaSourceApprover, "", false, false, false},
+		{"criteria met only at the open head", 12, openPR, false, CriteriaSourceGate, "", false, true, false},
+		{"delta card with open PR", 12, openPR, false, "", "delta-2", false, true, false},
+		{"card off any plan", 12, openPR, false, "", "", true, false, false},
+		{"failed forge read on a card that holds a PR", 12, openPR, true, "", "", false, false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -87,7 +89,7 @@ func TestGateTriggerTable(t *testing.T) {
 // request, and answers green facts for an open one.
 func TestCheckinPRFactsReadTheForge(t *testing.T) {
 	const openPR = `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t-int","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
-	s, card, _ := gatePlanCard(t, false)
+	s, card, _ := gatePlanCard(t, "")
 	forge := &prForgejo{
 		pulls: map[int64]string{12: openPR},
 		statusesBySHA: map[string][]string{
@@ -134,21 +136,22 @@ func gateTriggerAsk(t *testing.T, s *fakeStore, card Task) *CheckInAsk {
 
 // TestCheckinStatementNamesGateTriggerPR: the session check-in's statement
 // for a card whose open PR is the gate's trigger names the PR's number, its
-// checks state, the trigger and the gate consequence, and carries the
-// changeless-round rule; a plain feature card's PR is named without them,
-// and the no-PR ask names none of it.
+// checks state, the trigger and the gate consequence, and what a close
+// without it leaves to the gate on main; a plain feature card's PR is
+// named without them, and the no-PR ask names none of it.
 func TestCheckinStatementNamesGateTriggerPR(t *testing.T) {
 	t.Run("open PR on the integration card", func(t *testing.T) {
-		s, card, _ := gatePlanCard(t, false)
+		s, card, _ := gatePlanCard(t, "")
 		got := checkinStatement(gateTriggerAsk(t, s, card), nil, 3, 2.5, 1000)
-		for _, want := range []string{"#12", "green", "criteria-gate trigger", "merge press", "A changeless round's pull request is still owed as the gate's trigger", "strands the plan's criteria"} {
+		for _, want := range []string{"#12", "green", "criteria-gate trigger", "merge press", "its merge press runs the plan's criteria gate on its head",
+			"Closing this card without its pull request leaves the plan's criteria to the gate's run on main once every card of the plan has ended, without this pull request's work"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("statement lacks %q:\n%s", want, got)
 			}
 		}
 	})
 	t.Run("open PR on a plain feature card", func(t *testing.T) {
-		s, card, _ := gatePlanCard(t, false)
+		s, card, _ := gatePlanCard(t, "")
 		card.PlanKey = "foundation"
 		got := checkinStatement(gateTriggerAsk(t, s, card), nil, 3, 2.5, 1000)
 		for _, want := range []string{"#12", "green", "not the plan's criteria-gate trigger"} {
@@ -156,14 +159,14 @@ func TestCheckinStatementNamesGateTriggerPR(t *testing.T) {
 				t.Errorf("statement lacks %q:\n%s", want, got)
 			}
 		}
-		for _, gone := range []string{"merge press", "changeless round", "strands the plan's criteria"} {
+		for _, gone := range []string{"merge press", "Closing this card", "the gate's run on main"} {
 			if strings.Contains(got, gone) {
 				t.Errorf("non-trigger statement names %q:\n%s", gone, got)
 			}
 		}
 	})
 	t.Run("no PR", func(t *testing.T) {
-		s, card, _ := gatePlanCard(t, false)
+		s, card, _ := gatePlanCard(t, "")
 		card.PRNumber, card.SHA = 0, ""
 		got := checkinStatement(gateTriggerAsk(t, s, card), nil, 3, 2.5, 1000)
 		for _, gone := range []string{"#12", "criteria-gate trigger", "merge press", "changeless round"} {

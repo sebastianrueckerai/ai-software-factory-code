@@ -118,7 +118,7 @@ func (r *Runner) runAtMain(ctx context.Context, t Task, repo Repo, head string, 
 		return nil, err
 	}
 	defer done()
-	_, outcomes, err := r.runProofs(ctx, t, repo, branchRef(prBase), head, "", entries)
+	_, outcomes, err := r.runProofs(ctx, t, repo, "", head, "", entries)
 	var ended *proofsEnded
 	if errors.As(err, &ended) {
 		err = nil

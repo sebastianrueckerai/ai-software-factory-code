@@ -899,7 +899,10 @@ func (r *Runner) ClimbExpired(ctx context.Context, steps []CaseStep) error {
 // found: a row Act refused or failed hands the case up with why, so rung
 // 0 never keeps the human from being asked.
 func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, cases []Case) (*Resolution, string, error) {
-	if partial := slices.DeleteFunc(slices.Clone(f.Partial), func(n string) bool { return n == "siblings" || n == "head_commits" || n == "checks_log" }); len(partial) > 0 {
+	// an unread hold refuses the answers it guards itself (holdRefusal)
+	if partial := slices.DeleteFunc(slices.Clone(f.Partial), func(n string) bool {
+		return slices.Contains([]string{"siblings", "head_commits", "checks_log", partialHold, partialPlanHold}, n)
+	}); len(partial) > 0 {
 		return nil, "facts read partly: " + textutil.AndList(partial) + ", so rung 0 took nothing", nil
 	}
 	if i := slices.IndexFunc(cases, func(e Case) bool {
@@ -1074,8 +1077,9 @@ func (r *Runner) waitsAtHuman(ctx context.Context, t Task, c Case, found string)
 // its face is written, with the card's cases, for OpenCase to open. The kind is caseKindOf's
 // of the reason, or in's own with its key. The problem is the shaped
 // question's ask where a template names the decision, else the reason's
-// first line, led by the findings standing on the head for a money or
-// cap ask (findingsLead). The facts are f with the reason, its source, what the reason
+// first line, led by a merge conflict standing on the head (conflictLead)
+// and the findings standing on it for a money or cap ask (FindingsLead).
+// The facts are f with the reason, its source, what the reason
 // names and in's extra facts, the money the card's for a stop on its own
 // budget, with what the next opening needs at the floor. The case follows
 // the card's newest ended one.
@@ -1121,11 +1125,12 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 	if in.Kind != "" {
 		key = in.StateKey
 	}
-	// a money or cap ask cannot fire bare while unresolved review or
-	// audit findings stand on the head: it leads with them, so the human
-	// reads what the money would build on before the ask itself
-	if lead := FindingsLead(kind, f); lead != "" {
-		facts["findings_lead"] = lead
+	// an ask leads with what stands on the head: a merge conflict, which
+	// only a session clears, and for a money or cap ask the unresolved
+	// review or audit findings, so the human reads what the money would
+	// build on before the ask itself
+	if lead := strings.TrimSpace(conflictLead(kind, f) + " " + FindingsLead(kind, f)); lead != "" {
+		facts["ask_lead"] = lead
 		problem = lead + " " + problem
 	}
 	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: key,
@@ -1184,6 +1189,18 @@ func FindingsLead(kind CaseKind, f CaseFacts) string {
 	}
 	return fmt.Sprintf("The review or the audit left %s unresolved on the head %s: %s.",
 		count, f.Head, strings.Join(items, "; "))
+}
+
+// conflictLead is the sentence a stop at the head, or a repeat of the
+// findings, leads with while the pull request no longer merges into main:
+// the ask names the one answer that clears it before the ask itself. ""
+// for any other kind, or when no conflict stands.
+func conflictLead(kind CaseKind, f CaseFacts) string {
+	if f.MergeConflict == "" || !slices.Contains(headKinds, kind) && kind != CaseFindingsRepeated {
+		return ""
+	}
+	return fmt.Sprintf("The pull request no longer merges into main: Forgejo refused to merge main into head %s. "+
+		"Only a session that merges main into the branch clears it, and no gate rerun does.", short(f.Head))
 }
 
 // tripKey is the state key of a trip's case of kind: head for a stop at
@@ -1452,10 +1469,10 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		} else {
 			shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
 		}
-		// the money or cap ask leads with the findings standing on its
-		// head, as its case stored them (findingsLead): no ask for money
-		// fires bare over unresolved review or audit findings
-		if lead, _ := c.Facts["findings_lead"].(string); lead != "" {
+		// the ask leads with what stands on its head, as its case stored
+		// it (tripCase): a merge conflict, and unresolved review or audit
+		// findings under an ask for money
+		if lead, _ := c.Facts["ask_lead"].(string); lead != "" {
 			shaped.Ask = r.untrusted(t, lead) + " " + shaped.Ask
 		}
 		// the refusal the newest session ended on rides with the ask,
@@ -1545,7 +1562,11 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 			log.Printf("task %s: the offers of case %d: %v", t.ID, c.ID, err)
 		} else if offers, refusals, ok := storeOffers(c, t, f); ok {
 			asked["offers"] = withTableOffers(asked["offers"], offers)
-			asked["refusals"] = nonNilList(refusals)
+			// with no refusals stored the offers pass weighs them again
+			// once the timeline, whose actions are refused unread, reads
+			if !slices.Contains(f.Partial, partialTimeline) {
+				asked["refusals"] = nonNilList(refusals)
+			}
 		}
 	}
 	// the ask's record comes before the wait: a card that waits on a human

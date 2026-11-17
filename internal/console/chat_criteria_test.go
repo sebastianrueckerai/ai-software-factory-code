@@ -49,6 +49,9 @@ func TestChatWaivesACriterionOnTheHumansWord(t *testing.T) {
 	if a := r.approvals.get(30); a.Status != "pending" {
 		t.Errorf("the waiver decided the request itself: %+v", a)
 	}
+	if len(r.acted) != 1 || r.acted[0].Rung != 3 || r.acted[0].By != "sebastian" {
+		t.Errorf("Act took %+v, want one answer of sebastian's on rung 3: the typed line is the human's word", r.acted)
+	}
 }
 
 // The chat settles the integration card's rows on the human's word: Met
@@ -152,6 +155,34 @@ func TestChatConfirmsTheDeliveredCriteriaOnTheHumansWord(t *testing.T) {
 	}
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-plan", IssueNumber: 3,
 		Kind: factoryd.EventCriterionDecided, Detail: map[string]any{"approval": int64(30), "criteria": 2, "verb": "met"}})
+	if len(r.acted) != 1 || r.acted[0].Rung != 3 || r.acted[0].By != "sebastian" {
+		t.Errorf("Act took %+v, want one answer of sebastian's on rung 3: the typed line is the human's word", r.acted)
+	}
+}
+
+// Met on one criterion of a criteria_rerun request is refused naming the
+// state and the fitting actions, Confirm with the human's evidence or
+// Waive, and nothing is decided.
+func TestChatMetOnACriteriaRerunNamesConfirmAndWaive(t *testing.T) {
+	r, _, g := newChatRig(t)
+	verdictRig(r)
+	r.approvals.rows[len(r.approvals.rows)-1].Kind = factoryd.ApprovalCriteriaRerun
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	var calls []string
+	r.c.cfg.DecideCriterion = func(_ context.Context, id, cid, verdict, by, reason string) error {
+		calls = append(calls, id+" "+cid+" "+verdict)
+		return nil
+	}
+	ck, s := r.loggedIn(t)
+	args := `{"task_id":"t-plan","action":"met","criterion":"c3","reason":"green on main"}`
+	g.replies = [][]string{{call(1, "answer_criteria", args)}, {say("Refused.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"c3 is met: green on main"}})
+	words := "This request records no Met for one criterion. Confirm the delivered cards with your evidence, which meets every open criterion, or waive this criterion with your reason."
+	equal(t, "stream", events, []string{
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"answer_criteria","result":"Refused: ` + words + `"}`, `text {"text":"Refused."}`, `done {}`})
+	if len(calls) != 0 {
+		t.Errorf("the refused Met decided %q", calls)
+	}
 }
 
 // A wake's turn acts on no human's word: with no line of theirs in the

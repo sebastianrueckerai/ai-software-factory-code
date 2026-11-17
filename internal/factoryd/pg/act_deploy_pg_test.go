@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -71,7 +71,7 @@ func (g rungRig) openHeldPlan(t *testing.T, id string, issue int64, merged time.
 		return cid
 	}
 	cid := card(issue+1, "merged")
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET merge_commit = 'm1', finished_at = $2 WHERE id = $1`, cid, merged); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET merge_commit = 'm1', finished_at = $2 WHERE id = $1`, cid, merged); err != nil {
 		t.Fatal(err)
 	}
 	for n, status := range others {
@@ -84,7 +84,7 @@ func newHeldRig(t *testing.T, state string) heldRig {
 	ctx := context.Background()
 	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
 	g.atAutonomy(state)
-	if _, err := g.s.db.ExecContext(ctx, `DELETE FROM releases`); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `DELETE FROM releases`); err != nil {
 		t.Fatal(err)
 	}
 	h := heldRig{rungRig: g, stub: &deployStub{}, forge: &chainForgejo{}}
@@ -96,7 +96,7 @@ func newHeldRig(t *testing.T, state string) heldRig {
 	now := heldAt(16, 0)
 	own, _ := SplitRepo(codeRepo)
 	h.clock = &now
-	h.keeper = &ReleaseKeeper{Store: pgKeeperStore{g.s}, Forgejo: h.forge.srv(t), Timeline: g.r.timeline, Own: own, Now: func() time.Time { return now }}
+	h.keeper = &ReleaseKeeper{Store: pgKeeperStore{g.s}, Forgejo: h.forge.srv(t), Timeline: g.r.PgTimeline(), Own: own, Now: func() time.Time { return now }}
 	if err := h.keeper.Pass(ctx); err != nil {
 		t.Fatalf("the keeper's pass: %v", err)
 	}
@@ -109,7 +109,7 @@ func newHeldRig(t *testing.T, state string) heldRig {
 		t.Fatalf("NewestAskCase = %+v, %v", c, err)
 	}
 	h.caseID, h.cardID = c.ID, card.ID
-	g.r.forgejo = h.forge.srv(t)
+	g.r.PgSetForgejo(h.forge.srv(t))
 	return h
 }
 
@@ -274,11 +274,11 @@ func TestRung2DeployNowRunsOrProposesByLevel(t *testing.T) {
 				}
 				return
 			}
-			if len(h.stub.calls) != 1 || h.stub.calls[0] != (deployCall{heldRepo, "sebastian", ViaChat, "agent"}) {
+			if len(h.stub.calls) != 1 || h.stub.calls[0] != (deployCall{heldRepo, ChatUser, ViaChat, "agent"}) {
 				t.Fatalf("DeployNow calls %+v, want one as the agent", h.stub.calls)
 			}
-			if c.Status != CaseResolved || c.Resolution == nil || c.Resolution.Rung != 2 || c.Resolution.By != "sebastian" {
-				t.Errorf("case %s, resolution %+v; want resolved on rung 2 by sebastian", c.Status, c.Resolution)
+			if c.Status != CaseResolved || c.Resolution == nil || c.Resolution.Rung != 2 || c.Resolution.By != ChatUser {
+				t.Errorf("case %s, resolution %+v; want resolved on rung 2 by %s", c.Status, c.Resolution, ChatUser)
 			}
 			if want := "Deploy now: main of demo-app/demo-app at 9d9d9d9 goes to production."; !strings.Contains(out.Text, want) {
 				t.Errorf("text %q lacks %q", out.Text, want)
@@ -311,7 +311,7 @@ func TestDeployNowIsRefusedOnOtherCases(t *testing.T) {
 	h := newHeldRig(t, policy.AutonomyFullAuto)
 	out := h.trip(t, tripCap)
 	h.settle()
-	_, err := h.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActDeployNow}})
+	_, err := h.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: out.CaseID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActDeployNow}})
 	if err == nil || !strings.HasPrefix(err.Error(), notRollHeld) {
 		t.Fatalf("Act on a session cap = %v, want %q", err, notRollHeld)
 	}
@@ -322,8 +322,8 @@ func TestDeployNowIsRefusedOnOtherCases(t *testing.T) {
 		if err := h.s.CreateTask(ctx, card); err != nil {
 			t.Fatal(err)
 		}
-		q := HumanQuestion{Ask: "Main of " + state + " is red. Deploy anyway?", Why: "red", Info: "x", Choices: []QuestionChoice{{ActDeployNow, "Deploy anyway"}}}
-		if err := recordAsk(ctx, h.r.timeline, card, q, "factoryd", SourceStillRed, ViaFactoryd, "", nil); err != nil {
+		q := HumanQuestion{Ask: "Main of " + state + " is red. Deploy anyway?", Why: "red", Info: "x", Choices: []QuestionChoice{{Value: ActDeployNow, Label: "Deploy anyway"}}}
+		if err := recordAsk(ctx, h.r.PgTimeline(), card, q, "factoryd", SourceStillRed, ViaFactoryd, "", nil); err != nil {
 			t.Fatal(err)
 		}
 		c, err := h.s.NewestAskCase(ctx, card.ID)
@@ -352,7 +352,7 @@ func TestNoAnswerRunsOnAnEndedCard(t *testing.T) {
 			for _, rung := range []int{2, 3} {
 				t.Run(fmt.Sprintf("%s %s rung %d", state, status, rung), func(t *testing.T) {
 					h := newHeldRig(t, state)
-					if _, err := h.s.db.ExecContext(context.Background(), `UPDATE tasks SET status = $2, finished_at = now() WHERE id = $1`, h.cardID, status); err != nil {
+					if _, err := h.s.PgDB().ExecContext(context.Background(), `UPDATE tasks SET status = $2, finished_at = now() WHERE id = $1`, h.cardID, status); err != nil {
 						t.Fatal(err)
 					}
 					_, err := h.deployAct(rung, "sebastian")
@@ -385,10 +385,10 @@ func TestEndedCardTakesNoReplanButStillCloses(t *testing.T) {
 	ctx := context.Background()
 	out := h.trip(t, tripCap)
 	h.settle()
-	if _, err := h.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'closed', finished_at = now() WHERE id = 't1'`); err != nil {
+	if _, err := h.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'closed', finished_at = now() WHERE id = 't1'`); err != nil {
 		t.Fatal(err)
 	}
-	_, err := h.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActReplan}})
+	_, err := h.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActReplan}})
 	if want := "ended closed, so its case takes no replan"; err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("replan on a closed card = %v, want %q", err, want)
 	}
@@ -396,7 +396,7 @@ func TestEndedCardTakesNoReplanButStillCloses(t *testing.T) {
 		t.Errorf("card %s after the refused replan, want closed", card.Status)
 	}
 
-	if _, err := h.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = $1`, h.cardID); err != nil {
+	if _, err := h.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = $1`, h.cardID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.r.Act(ctx, ActInput{TaskID: h.cardID, CaseID: h.caseID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActClose}}); err != nil {
@@ -462,7 +462,7 @@ func TestDeployNowFailures(t *testing.T) {
 // what to do, not with words about an action: Wait is no action of the table.
 func TestAChoiceAfterTheCardEndedNamesTheEnd(t *testing.T) {
 	h := newHeldRig(t, policy.AutonomyFullAuto)
-	if _, err := h.s.db.ExecContext(context.Background(), `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = $1`, h.cardID); err != nil {
+	if _, err := h.s.PgDB().ExecContext(context.Background(), `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = $1`, h.cardID); err != nil {
 		t.Fatal(err)
 	}
 	for _, rung := range []int{2, 3} {
@@ -479,11 +479,11 @@ func TestAChoiceAfterTheCardEndedNamesTheEnd(t *testing.T) {
 func TestSetAskInfoLeavesAProposalAndWritesNothingTwice(t *testing.T) {
 	h := newHeldRig(t, policy.AutonomyFullAuto)
 	ctx := context.Background()
-	h.r.timeline.RecordRow(ctx, h.cardID, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"source": "chat", "info": "proposal info",
+	h.r.PgTimeline().RecordRow(ctx, h.cardID, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"source": "chat", "info": "proposal info",
 		"recommendation": "close it", "preselected": map[string]any{"action": ActClose}})
 	xmins := func() string {
 		var out string
-		if err := h.s.db.QueryRowContext(ctx, `SELECT string_agg(xmin::text, ',' ORDER BY id) FROM events WHERE task_id = $1 AND kind = $2`, h.cardID, EventQuestionAsked).Scan(&out); err != nil {
+		if err := h.s.PgDB().QueryRowContext(ctx, `SELECT string_agg(xmin::text, ',' ORDER BY id) FROM events WHERE task_id = $1 AND kind = $2`, h.cardID, EventQuestionAsked).Scan(&out); err != nil {
 			t.Fatal(err)
 		}
 		return out

@@ -130,6 +130,29 @@ func TestAnswerSchemaDerivesFromOffered(t *testing.T) {
 	}
 }
 
+// A pull request that no longer merges into main takes no gate rerun from
+// rung 1 or rung 2: their decision enums hold neither route_approval nor
+// reverify, which they hold on the same head with no conflict, and still
+// hold the answers that start a session, extend and continue.
+func TestAMergeConflictTakesNoGateRerunFromTheRungs(t *testing.T) {
+	f := rungFacts
+	f.ReviewApproved = true
+	conflict := f
+	conflict.MergeConflict = "the branch conflicts with its base"
+	for rung := 1; rung <= 2; rung++ {
+		if got := answerDecisions(f, rung); !slices.Contains(got, ActRouteApproval) || !slices.Contains(got, ActReverify) {
+			t.Errorf("rung %d, no conflict: decisions %v, want route_approval and reverify among them", rung, got)
+		}
+		got := answerDecisions(conflict, rung)
+		if slices.Contains(got, ActRouteApproval) || slices.Contains(got, ActReverify) {
+			t.Errorf("rung %d, conflict: decisions %v hold a gate rerun", rung, got)
+		}
+		if !slices.Contains(got, ActExtend) || !slices.Contains(got, ActContinue) {
+			t.Errorf("rung %d, conflict: decisions %v, want extend and continue among them", rung, got)
+		}
+	}
+}
+
 // The verdicts part is keyed by the facts' finding ids: each id holds
 // one of the check-in's three verdicts with its evidence, and the
 // findings themselves are the required list. Facts without findings

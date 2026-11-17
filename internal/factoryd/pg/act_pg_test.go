@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -113,8 +113,8 @@ func newActRig(t *testing.T) actRig {
 	signals, forge := &caseSignals{}, &actForge{}
 	cfg.Workflows = signals
 	objects := &fakeObjectStore{}
-	r := &Runner{store: s, objects: objects, cfg: cfg, timeline: &Timeline{Objects: objects, Events: s, Store: s},
-		forgejo: &Forgejo{BaseURL: forge.serve(t).URL, BotUser: "factory-agent", BotPassword: "pw"}}
+	r := PgRigRunner(s, objects, cfg, &Timeline{Objects: objects, Events: s, Store: s},
+		&Forgejo{BaseURL: forge.serve(t).URL, BotUser: "factory-agent", BotPassword: "pw"})
 	return actRig{r: r, s: s, c: c, signals: signals, forge: forge}
 }
 
@@ -233,7 +233,8 @@ func TestActRefusesARungsDrawPastThePool(t *testing.T) {
 	}
 	_, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: ChatUser, Rung: 2, Res: oneSession})
 	var refused ErrActRefused
-	const pool = "the escalation pool leaves 0 sessions, 0 seconds of agent time and 0.00 EUR this month: only the human draws more"
+	const pool = "the escalation pool leaves 0 sessions, 0 seconds of agent time and 0.00 EUR this month: only the human draws more. " +
+		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand_up with it as the recommendation"
 	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), pool+", and rung 2 may take ") {
 		t.Fatalf("rung 2's extend = %v, want the pool's refusal", err)
 	}
@@ -639,6 +640,65 @@ func TestResolveCaseWeighsThePoolUnderItsLock(t *testing.T) {
 	}
 }
 
+// Case 6354's pool: the human drew past it, to 49 sessions, 52554 s and
+// 84.30 EUR of its 30 sessions, 30 hours and 60 EUR. Under the lock rung
+// 2's draw of a session and 30 minutes is refused naming the sessions and
+// the fit, and its draw of the 30 minutes alone lands: a part drawn past its
+// bound refuses only a draw that asks for some of it.
+func TestResolveCaseNamesTheFitOfAnOverdrawnPool(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	for _, e := range []Event{
+		{Kind: EventCardExtended, Detail: map[string]any{"pool": true, "rung": 3, "sessions": 49, "agent_time_s": 52554}},
+		{Kind: EventCardFunded, Detail: map[string]any{"pool": true, "rung": 3, "amount_eur": 84.30}},
+	} {
+		e.Repository, e.TaskID, e.Actor, e.Via = "demo-app/demo-app", "t1", "sebastian", ViaConsole
+		if _, err := g.s.Record(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	draw := CaseDraw{Rung: 2, Extend: policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, Pool: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60},
+		Need:  policy.Draw{AgentTime: time.Minute},
+		Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: ChatUser, Via: ViaChat, Detail: map[string]any{"pool": true, "rung": 2}}}
+	res := CaseResolution{By: ChatUser, Rung: 2, Action: ActExtend}
+	const want = "the escalation pool leaves 0 sessions, 924 minutes of agent time and 0.00 EUR this month: only the human draws more. " +
+		"This draw does not fit in sessions (asked 1, left 0). The largest draw that fits is 0 sessions, 30 minutes of agent time and 0.00 EUR: ask for that"
+	var spent *DrawBoundError
+	err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, &CaseStep{Rung: 2, Actor: ChatUser}, nil)
+	if !errors.As(err, &spent) || spent.Want != (policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}) || err.Error() != want {
+		t.Fatalf("rung 2's session and 30 minutes = %v, want the pool's refusal\n%s", err, want)
+	}
+	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseAtHuman || g.card(t).Usage.RaisedTime != 0 {
+		t.Fatalf("case %s, raised %v: want it live and nothing raised", c.Status, g.card(t).Usage.RaisedTime)
+	}
+	draw.Extend = policy.Draw{AgentTime: 30 * time.Minute}
+	if err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, &CaseStep{Rung: 2, Actor: ChatUser}, nil); err != nil || g.card(t).Usage.RaisedTime != 30*time.Minute {
+		t.Fatalf("rung 2's 30 minutes alone = %v, raised %v; want them drawn", err, g.card(t).Usage.RaisedTime)
+	}
+}
+
+// The store names a fit by the answer's need as drawWithin does: with the
+// pool's 30 hours drawn, rung 2's session and 30 minutes at an agent time
+// cap, whose extend needs a minute, fits nothing, not the session alone.
+func TestResolveCaseNamesNoFitWithoutTheNeed(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: EventCardExtended, Actor: "sebastian", Via: ViaConsole,
+		Detail: map[string]any{"pool": true, "rung": 3, "sessions": 10, "agent_time_s": 108000}}); err != nil {
+		t.Fatal(err)
+	}
+	draw := CaseDraw{Rung: 2, Extend: policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, Pool: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60},
+		Need:  policy.Draw{AgentTime: time.Minute},
+		Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: ChatUser, Via: ViaChat, Detail: map[string]any{"pool": true, "rung": 2}}}
+	const want = "the escalation pool leaves 20 sessions, 0 seconds of agent time and 60.00 EUR this month: only the human draws more. " +
+		"This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: hand_up with it as the recommendation"
+	err := g.s.ResolveCase(ctx, g.c.ID, CaseResolution{By: ChatUser, Rung: 2, Action: ActExtend}, &draw, &CaseStep{Rung: 2, Actor: ChatUser}, nil)
+	var spent *DrawBoundError
+	if !errors.As(err, &spent) || err.Error() != want {
+		t.Fatalf("rung 2's session and 30 minutes = %v, want\n%s", err, want)
+	}
+}
+
 // The card's draw bound is weighed in the transaction too: with rung 1's
 // draws of 3 sessions on t1, the whole bound of a large card, rung 1's
 // draw of one more is refused naming the bound and the case stays live.
@@ -656,7 +716,8 @@ func TestResolveCaseWeighsTheCardsDrawBoundUnderTheLock(t *testing.T) {
 	res := CaseResolution{By: FactoryDecider, Rung: 1, Action: ActExtend}
 	var bound *DrawBoundError
 	err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, nil, nil)
-	if !errors.As(err, &bound) || !bound.Card || err.Error() != "the card's draw bound leaves 0 sessions, 90 minutes of agent time and 6.00 EUR: rung 2 or the human may draw more" {
+	if !errors.As(err, &bound) || !bound.Card || err.Error() != "the card's draw bound leaves 0 sessions, 90 minutes of agent time and 6.00 EUR: rung 2 or the human may draw more. "+
+		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand_up with it as the recommendation" {
 		t.Fatalf("ResolveCase past the card's bound = %v, want the card's DrawBoundError", err)
 	}
 	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseAtHuman || g.card(t).Usage.RaisedSessions != 0 {
@@ -899,14 +960,13 @@ func TestActRefusesAnExtendOnAnEndedCard(t *testing.T) {
 	}
 }
 
-// A draw of nothing is not weighed: an extend of lines or of a check-in
-// share on rung 2 goes through on a pool the month has overdrawn, where a
-// session is refused.
-func TestActWeighsNoDrawOfNothing(t *testing.T) {
+// A lines extend on rung 2 lands on a pool the month has overdrawn in a
+// part it does not draw: in sessions, where a session is refused.
+func TestActLandsALinesExtendOnAPoolOverdrawnInAnotherPart(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
-	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t0", Kind: EventCardFunded, Actor: "sebastian", Via: ViaConsole,
-		Detail: map[string]any{"pool": true, "rung": 3, "amount_eur": 61.0}}); err != nil {
+	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t0", Kind: EventCardExtended, Actor: "sebastian", Via: ViaConsole,
+		Detail: map[string]any{"pool": true, "rung": 3, "sessions": 31}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", By: ChatUser, Rung: 2, CaseID: g.c.ID, Res: oneSession}); err == nil {
@@ -944,7 +1004,7 @@ func TestActStepNamesEveryPartOfAnExtend(t *testing.T) {
 func TestTripCaseKeepsTheCheckinStop(t *testing.T) {
 	g := newActRig(t)
 	repeat := CheckinSpendAsk + "The restart produced no new commit, the head is still c1. What should the agent do?"
-	c, _, err := g.r.tripCase(context.Background(), g.card(t), CaseFacts{}, TripInput{TaskID: "t1", Reason: repeat, CheckinStop: CheckinStopCallCap})
+	c, _, err := g.r.PgTripCase(context.Background(), g.card(t), CaseFacts{}, TripInput{TaskID: "t1", Reason: repeat, CheckinStop: CheckinStopCallCap})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1111,7 +1171,7 @@ func TestARetriedDrawThatFilledItsBoundPasses(t *testing.T) {
 func TestRecordGrantCountsItsInterventionOnce(t *testing.T) {
 	g := newActRig(t)
 	m, reader := testMetrics(t)
-	g.r.cfg.Metrics = m
+	g.r.PgSetMetrics(m)
 	key := IdentityKey(EventCardExtended, "run-1", "3")
 	for range 2 {
 		if err := g.r.RecordGrant(context.Background(), "t1", "sebastian", policy.Draw{Sessions: 1, AgentTime: 9 * time.Minute}, key); err != nil {
@@ -1205,8 +1265,8 @@ func TestSalvageCloseWithdrawsTheCardsOtherCases(t *testing.T) {
 	}
 	back := &recordingBackend{forgejoStatus: 204, litellmStatus: 200}
 	fjURL, llURL := back.srv(t)
-	g.r.completion = newCompletion(g.s, fjURL, llURL)
-	g.r.kube = newFakeKube()
+	g.r.PgSetCompletion(newCompletion(g.s, fjURL, llURL))
+	g.r.PgSetKube(newFakeKube())
 	if err := g.r.Finish(ctx, "t1", "closed", "salvaged into #9"); err != nil {
 		t.Fatal(err)
 	}

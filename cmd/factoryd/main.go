@@ -663,8 +663,8 @@ func main() {
 		DecideCriterion: func(ctx context.Context, id, cid, verdict, by, reason string) error {
 			return factoryd.DecideCriterion(ctx, store, id, cid, verdict, by, reason)
 		},
-		CheckClosePlan: func(ctx context.Context, id, note string, approver bool) error {
-			return runner.CheckClosePlan(ctx, id, note, approver)
+		CheckClosePlan: func(ctx context.Context, id, by, note string, approver bool) error {
+			return runner.CheckClosePlan(ctx, id, by, note, approver)
 		},
 		CloseHeldPlan: func(ctx context.Context, id, by, note string, approver bool) (int, string, bool, error) {
 			return runner.CloseHeldPlan(ctx, id, by, note, approver)
@@ -748,6 +748,8 @@ func main() {
 		SetIssueDependency: forgejo.SetIssueDependency,
 		RerunStall:         chainPoller.RerunStall,
 		DismissStall:       store.DismissChainStall,
+		HoldCard:           runner.HoldCard,
+		ReleaseCardHold:    runner.ReleaseCardHold,
 		RetryRoll: func(ctx context.Context, card factoryd.Task) error {
 			return factoryd.RetryRoll(ctx, store, forgejo, card)
 		},

@@ -64,6 +64,8 @@ var funcs = template.FuncMap{
 	"maxWaiverNote": func() int { return factoryd.MaxWaiverNote },
 	// maxReplan is the Replan box's bound, the replan step's
 	"maxReplan": func() int { return factoryd.MaxReplanComment },
+	// maxHoldReason is the Hold form's reason bound
+	"maxHoldReason": func() int { return maxHoldReason },
 	// lease renders minutes as whole hours when they are
 	"lease": func(minutes int) string {
 		if minutes%60 == 0 {
@@ -253,7 +255,7 @@ func stageRank(stage string) int {
 func shows(k card, only string) bool {
 	switch only {
 	case "blocked":
-		return k.Blocked > 0 || k.WaitingOn != ""
+		return k.Blocked > 0 || k.WaitingOn != "" || k.HoldLine != ""
 	case "exceptional":
 		return k.Stale || k.Provider || k.NearBudget || k.Retrying
 	case "failed":
@@ -391,7 +393,7 @@ func faceWords(k card, a *approvalCard) string {
 	if k.WaitingOn != "" {
 		w = append(w, "waiting on "+k.WaitingOn)
 	}
-	w = append(w, k.SlotWait)
+	w = append(w, k.SlotWait, k.HoldLine)
 	if k.Checks != "" {
 		w = append(w, k.Checks+" checks")
 	}
@@ -460,7 +462,7 @@ func isState(k card, v string) bool {
 	case "failed":
 		return k.Status == "failed"
 	case "blocked":
-		return k.Blocked > 0 || k.WaitingOn != ""
+		return k.Blocked > 0 || k.WaitingOn != "" || k.HoldLine != ""
 	case "stale":
 		return k.Stale
 	case "provider":
@@ -544,6 +546,11 @@ type card struct {
 	Retry                     *retry // a failed plan card's Retry, for an approver
 	Activity                  string // the task's newest event as one line, or the escalation's question
 	WaitingForActivity        bool   // the activity line stands for the wait's reason
+	// HoldLine is a human's hold on the card as the board words it, ""
+	// for none; HoldWarn marks one whose release card ended failed or
+	// closed and releases nothing.
+	HoldLine string
+	HoldWarn bool
 	// Title is the face's first line: human_summary when a writer set
 	// one, else the objective's first paragraph, the title as the issue
 	// was filed.
@@ -622,6 +629,10 @@ func (k card) Closes() bool {
 	ownClose := k.Kind == "human" && k.Question != nil && k.Question.Offers(factoryd.AnswerClose)
 	return k.MayWriteSummary && !k.ChoiceCard() && !ownClose && (k.Status == "waiting-human" || k.Status == "failed" || k.DonePlan)
 }
+
+// Holds: the drawer offers its viewer, a writer, the Hold form on a card
+// that has not started, and Release on a held one.
+func (k card) Holds() bool { return k.MayWriteSummary && (k.Holdable() || k.Held()) }
 
 // OpenPhrase counts the done plan's open criteria in words.
 func (k card) OpenPhrase() string { return factoryd.OpenCriteriaPhrase(k.OpenCriteria) }
@@ -2047,6 +2058,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 			minutes(max(bt.ChainGreenAt.Sub(*bt.FinishedAt), 0)))
 	}
 	k.WaitingOn, k.SlotWait, k.MergeBehind, k.HeldFor = bt.WaitingOn, bt.SlotWait, bt.MergeBehind, bt.HeldFor
+	k.HoldLine, k.HoldWarn = bt.HoldView.Line, bt.HoldView.Warn
 	// "blocked by n" counts the dependencies that are not done yet;
 	// WaitingOn already says so for a card in waiting-deps, where the
 	// face shows that chip and never both.
@@ -4183,11 +4195,18 @@ func (c *Console) prFiles(r *http.Request, repository string, pr int64) ([]prFil
 		fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files?", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), pr), filesPages)
 }
 
+// planReader is the store a plan's open criteria are read from: its cards
+// and rows on the tasks port, its criteria gate's runs on the events port.
+type planReader struct {
+	Tasks
+	Events
+}
+
 // planHold fills k with plan t's production hold: Close is offered while no
 // plan_closed row stands (a closed plan: while criteria are open), and with
 // the note's form while criteria are open.
 func (c *Console) planHold(ctx context.Context, v *boardView, t factoryd.Task, p factoryd.Plan, k *card) {
-	open, openErr := factoryd.PlanOpenCriteria(ctx, c.cfg.Tasks, t.ID, p)
+	open, openErr := factoryd.PlanOpenCriteria(ctx, planReader{c.cfg.Tasks, c.cfg.Events}, t.ID, p)
 	_, closed, closedErr := c.cfg.Tasks.PlanClosed(ctx, t.ID)
 	if err := cmp.Or(openErr, closedErr); err != nil {
 		log.Printf("console: the criteria of %s: %v", t.ID, err)

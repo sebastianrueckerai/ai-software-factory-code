@@ -374,7 +374,7 @@ func (w *FreezeCard) CloseOnRetry(ctx context.Context, repository, class string)
 // marker as a whole line, so a close matches the class's own card only —
 // the big class's press does not close bigv2's card.
 func objectiveHasClassLine(objective, class string) bool {
-	want := freezeClassMarker(class)
+	want := strings.TrimSuffix(freezeClassMarker(class), "\n")
 	for _, line := range strings.Split(objective, "\n") {
 		if strings.TrimSpace(line) == want {
 			return true

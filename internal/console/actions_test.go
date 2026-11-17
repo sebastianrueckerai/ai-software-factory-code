@@ -1102,11 +1102,16 @@ func TestThePlansWaitAnswersOnItsOwnFace(t *testing.T) {
 }
 
 // catchStore is the store factoryd.GrantCriteria reads through the rig's plan
-// and records the catch rows it writes.
+// and events, and records the catch rows it writes.
 type catchStore struct {
 	factoryd.Store
 	t       *fakeTasks
+	e       *fakeEvents
 	catches []string
+}
+
+func (s *catchStore) TaskEventsOfKind(ctx context.Context, id, kind string, limit int) ([]factoryd.Event, error) {
+	return s.e.TaskEventsOfKind(ctx, id, kind, limit)
 }
 
 func (s *catchStore) Task(ctx context.Context, id string) (factoryd.Task, bool, error) {
@@ -1147,7 +1152,7 @@ func TestGrantOnANeverJudgedPlanDraftsOneCard(t *testing.T) {
 	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan, SHA256: "sha-1"}}}
 	r.tasks.criteria = nil
 	r.approvals.rows[len(r.approvals.rows)-1].Kind = factoryd.ApprovalCriteriaRerun
-	st := &catchStore{t: r.tasks}
+	st := &catchStore{t: r.tasks, e: r.events}
 	r.c.cfg.GrantCriteria = func(ctx context.Context, id, by string, approval int64) (int, error) {
 		return factoryd.GrantCriteria(ctx, st, id, by, approval)
 	}

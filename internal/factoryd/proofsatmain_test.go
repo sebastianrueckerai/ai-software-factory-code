@@ -132,7 +132,7 @@ func passedRun(t *testing.T, id, name string) harness.ProofRun {
 
 // A plan card whose every cited criterion passes at main's head closes on
 // it: main's head and the criteria in the plan's order. The pod fetches
-// main at its head and runs each cited criterion once, a stored proof
+// main's head by its commit, which stands though main moves on, and runs each cited criterion once, a stored proof
 // with its file and an invariant's suite, and no criterion the card does
 // not cite, nor a hold-out. Nothing opens and no row is written.
 func TestProofsAtMainClosesOnAFullPass(t *testing.T) {
@@ -150,8 +150,8 @@ func TestProofsAtMainClosesOnAFullPass(t *testing.T) {
 		t.Fatalf("pods = %d, want one", len(g.kube.podOrder))
 	}
 	fetch := containerEnv(initContainer(t, g.kube.podAt(0).spec["spec"].(map[string]any), "fetch"))
-	if fetch["PR_REF"] != "refs/heads/main" || fetch["REPO_SHA"] != "29b0d33aa" {
-		t.Fatalf("fetch env = %v, want main at 29b0d33aa", fetch)
+	if fetch["PR_REF"] != "29b0d33aa" || fetch["REPO_SHA"] != "29b0d33aa" {
+		t.Fatalf("fetch env = %v, want main's head 29b0d33aa fetched by itself", fetch)
 	}
 	want := []harness.Proof{
 		{ID: "size_bound", Suite: "./proofs/size_bound", Name: "TestSizeBound", File: &harness.ProofFile{Path: "proofs/size_bound/size_bound_test.go", Content: sizeBoundCode}},
@@ -301,6 +301,21 @@ func TestProofsAtMainThatCannotStart(t *testing.T) {
 	step := timelineStep(t, g.objects, "t1", "proofs_at_main")
 	if failed, _ := step["start_failed"].(string); step["head"] != "29b0d33aa" || !strings.HasPrefix(failed, "start failed: image pull: ") || step["criteria"] != nil {
 		t.Fatalf("line = %v, want main's head and the start failure", step)
+	}
+	g.untouched(t)
+}
+
+// A worker that ran no entry and says why is a start failure too: its
+// line, no finding and no error.
+func TestProofsAtMainOfAWorkerThatRanNoEntry(t *testing.T) {
+	g := newProofsAtMainRig(t, "sizes", proofsAtMainPlan(), proofsAtMainRows())
+	closing, _ := json.Marshal(harness.WorkerEnvelope{Type: "proofs", Proofs: &harness.Proofs{Error: "proofs mode: the fetch failed"}})
+	res, err := g.run(t, string(closing))
+	if err != nil || !reflect.DeepEqual(res, ProofsAtMain{}) {
+		t.Fatalf("result = %+v, %v; want none and no error", res, err)
+	}
+	if step := timelineStep(t, g.objects, "t1", "proofs_at_main"); step["start_failed"] != "start failed: proofs mode: the fetch failed" || step["criteria"] != nil {
+		t.Fatalf("line = %v, want the start failure", step)
 	}
 	g.untouched(t)
 }

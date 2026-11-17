@@ -238,6 +238,62 @@ func TestTripFactsReadsTheGatesUnmetCriteria(t *testing.T) {
 	}
 }
 
+// A merge conflict stands on the head the newest merge_conflict line
+// names, with that line's refusal: none on a head no line names, none on
+// no head, none on an empty timeline, and none once the pull request's
+// head moved outside the run to another head after it, by the merge
+// gate's line or the synchronize webhook's event.
+func TestStandingConflictIsTheNewestRefusalOnTheHead(t *testing.T) {
+	const conflict = `{"step":"merge_conflict","commit":"aaa","refusal":"X"}` + "\n"
+	one := []byte(conflict + `{"step":"pushed","commit":"bbb"}` + "\n")
+	two := []byte(`{"step":"merge_conflict","commit":"aaa","refusal":"X1"}` + "\n" + `{"step":"merge_conflict","commit":"aaa","refusal":"X2"}` + "\n")
+	webhook := []byte(conflict + `{"step":"event","event":"merge_moved_head","pr":9,"head":"ccc"}` + "\n")
+	gate := []byte(conflict + `{"step":"merge_moved_head","pr":9,"commit":"aaa","head":"ccc","approver":"sebastian"}` + "\n")
+	before := []byte(`{"step":"event","event":"merge_moved_head","pr":9,"head":"ccc"}` + "\n" + conflict)
+	same := []byte(conflict + `{"step":"event","event":"merge_moved_head","pr":9,"head":"aaa"}` + "\n")
+	for _, c := range []struct {
+		name string
+		tl   []byte
+		head string
+		want string
+	}{
+		{"the conflict's head", one, "aaa", "X"},
+		{"the pushed head", one, "bbb", ""},
+		{"no head", one, "", ""},
+		{"two lines on the head", two, "aaa", "X2"},
+		{"no lines", nil, "aaa", ""},
+		{"moved by the webhook", webhook, "aaa", ""},
+		{"the webhook's moved head", webhook, "ccc", ""},
+		{"moved at the merge gate", gate, "aaa", ""},
+		{"moved before the conflict", before, "aaa", "X"},
+		{"moved onto the conflict's head", same, "aaa", "X"},
+	} {
+		if got := standingConflict(c.tl, c.head); got != c.want {
+			t.Errorf("%s: standingConflict = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// The facts of a card whose head Forgejo refused to merge main into hold
+// the refusal; once the pull request is no longer open none stands.
+func TestTripFactsReadTheMergeConflictOnTheHead(t *testing.T) {
+	g := newFactsRig(t)
+	ctx := context.Background()
+	refusal := "the branch conflicts with its base: status 409: merge failed because of conflict"
+	if err := g.tl.Append(ctx, "t1", "merge_conflict", map[string]any{"pr": 9, "commit": "h2", "refusal": refusal}); err != nil {
+		t.Fatal(err)
+	}
+	card := g.store.tasks["t1"]
+	f, err := g.r.tripFacts(ctx, card, "h2", "")
+	if err != nil || f.MergeConflict != refusal {
+		t.Fatalf("facts = %+v, %v; want the conflict %q on h2", f, err, refusal)
+	}
+	card.Status = "merged"
+	if f, err := g.r.tripFacts(ctx, card, "h2", ""); err != nil || f.MergeConflict != "" {
+		t.Fatalf("merged card's conflict = %q, %v; want none", f.MergeConflict, err)
+	}
+}
+
 // A card with no timeline object has no findings, and no reader failed.
 func TestTripFactsTakesAMissingTimelineAsNoFindings(t *testing.T) {
 	g := newFactsRig(t)

@@ -542,8 +542,9 @@ func (r *Runner) proofAtHead(ctx context.Context, repo Repo, commit, path string
 	return content, err == nil, err
 }
 
-// GateCriteria runs the plan's criteria against the pull request head in a
-// fresh sandbox with no agent: one runner pod runs every gate run that is
+// GateCriteria runs the plan's criteria against the pull request head, or
+// main's head when pr is 0, in a fresh sandbox with no agent: one runner
+// pod runs every gate run that is
 // not held, flagged or absent at the head, the hold-outs last, through the
 // tree's check test. An invariant criterion runs no pod: HeadChecks reads
 // the required checks of checked, or of commit when checked is empty,
@@ -559,7 +560,8 @@ func (r *Runner) proofAtHead(ctx context.Context, repo Repo, commit, path string
 // event on the card and on the plan, once per head, before its row turns
 // opened. The artifacts the run wrote are stored on the integration card,
 // and each judgement criterion's is judged (judgeArtifacts) before the
-// comment; the stand is read from that card's rows after them. The
+// comment on the pull request, which main's head has none of; the stand
+// is read from that card's rows after them. The
 // namespace and the token go when it ends, however it ends.
 func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, commit, checked string) (CriteriaResult, error) {
 	// the namespace wait, the image pull and the tests take minutes
@@ -589,6 +591,10 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	if err != nil {
 		return CriteriaResult{}, err
 	}
+	writer := ""
+	if pr != 0 {
+		writer = t.ID
+	}
 	waits, err := r.proofsPending(ctx, t, rows, p)
 	if err != nil {
 		return CriteriaResult{}, err
@@ -606,10 +612,10 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 			}
 		}
 		rep := criteriaReport(p, commit, held, nil)
-		if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceGate, FactoryDecider, gateRows(rep.proofs)); err != nil {
+		if err := r.store.PutGateVerdicts(ctx, writer, home.ID, CriteriaSourceGate, gateRows(rep.proofs), nil); err != nil {
 			return CriteriaResult{}, err
 		}
-		if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceJudgement, FactoryDecider, rep.noVerdict); err != nil {
+		if err := r.store.PutGateVerdicts(ctx, writer, home.ID, CriteriaSourceJudgement, rep.noVerdict, nil); err != nil {
 			return CriteriaResult{}, err
 		}
 		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "proofs": rep.proofs, "escalate": proofsNotStored}))
@@ -662,7 +668,11 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 			return cannotStart(err)
 		}
 		defer done()
-		ran, outcomes, err := r.runProofs(ctx, t, repo, pullRef(pr), commit, "", entries)
+		ref := ""
+		if pr != 0 {
+			ref = pullRef(pr)
+		}
+		ran, outcomes, err := r.runProofs(ctx, t, repo, ref, commit, "", entries)
 		// a pod that ended early leaves the criteria it did not reach
 		// unmet; a hold-out it did not reach is no verdict, so the
 		// activity fails and runs again
@@ -688,23 +698,18 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	for _, o := range rep.opened {
 		opened = append(opened, cmp.Or(o.run.stored.Criterion, o.run.stored.ID))
 	}
-	if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceGate, FactoryDecider, gateRows(rep.proofs)); err != nil {
+	if err := r.store.PutGateVerdicts(ctx, writer, home.ID, CriteriaSourceGate, gateRows(rep.proofs), nil); err != nil {
 		return CriteriaResult{}, err
 	}
-	if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceJudgement, FactoryDecider, rep.noVerdict); err != nil {
+	if err := r.store.PutGateVerdicts(ctx, writer, home.ID, CriteriaSourceJudgement, rep.noVerdict, rep.unreached); err != nil {
 		return CriteriaResult{}, err
-	}
-	for _, id := range rep.unreached {
-		if err := r.store.DeleteVerdictsButApprover(ctx, home.ID, id); err != nil {
-			return CriteriaResult{}, err
-		}
 	}
 	for _, o := range rep.opened {
 		if err := r.openProof(ctx, t, commit, o); err != nil {
 			return CriteriaResult{}, err
 		}
 	}
-	judged, unjudged, met, err := r.judgeArtifacts(ctx, t, home.ID, p, rep.artifacts)
+	judged, unjudged, met, err := r.judgeArtifacts(ctx, t, writer, home.ID, p, rep.artifacts)
 	if err != nil {
 		return CriteriaResult{}, err
 	}
@@ -721,6 +726,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		}
 	}
 	switch {
+	case pr == 0:
 	case slices.ContainsFunc(runs, func(c criterionRun) bool { return c.held == "" }):
 		r.commentOnce(ctx, t, repo, pr, r.untrusted(t, criteriaComment(commit, rep.met+met, of, rep.lines)))
 	case len(all) > 0:
@@ -730,6 +736,14 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	}
 	r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit,
 		"proofs": rep.proofs, "holdouts": rep.holdouts, "opened": opened, "findings": all}))
+	if pr != 0 {
+		// an invariant read another head's checks: the record names no head
+		judged := commit
+		if checks != nil && checks.checked != commit {
+			judged = ""
+		}
+		r.timeline.RecordRow(ctx, t.ID, EventCriteriaJudged, FactoryDecider, ViaFactoryd, map[string]any{"pr": pr, "head": judged})
+	}
 	return CriteriaResult{Findings: rep.findings, Card: rep.card, Stand: stand, Pending: rep.pending}, nil
 }
 

@@ -38,11 +38,12 @@ type BoardDigestCard struct {
 }
 
 // BoardDigestQueued is a queued card, by issue and task id (the one name
-// a card without an issue has), and what holds it: the reason admit last
-// refused it ("waits on #N", "project month cap", "work bound H of B" with
-// H the slots held then) and Age, the time since the first refusal with
-// that reason. A card admit never refused is "no issue" while it has
-// none, else "next", with no age.
+// a card without an issue has), and what holds it: a human's hold, its
+// line and the time since it was put, else the reason admit last refused
+// it ("waits on #N", "project month cap", "work bound H of B" with H the
+// slots held then) and Age, the time since the first refusal with that
+// reason. A card admit never refused is "no issue" while it has none,
+// else "next", with no age.
 type BoardDigestQueued struct {
 	Issue  int
 	TaskID string
@@ -99,6 +100,8 @@ func (r *Runner) BoardDigest(ctx context.Context, repository string) (BoardDiges
 		}
 		q := BoardDigestQueued{Issue: int(t.IssueNumber), TaskID: t.ID, Reason: t.QueueReason}
 		switch {
+		case t.HoldView.Line != "":
+			q.Reason, q.Age = t.HoldView.Line, max(now.Sub(t.Hold.At), 0)
 		case t.QueueSince != nil:
 			q.Age = max(now.Sub(*t.QueueSince), 0)
 		case t.IssueNumber == 0:

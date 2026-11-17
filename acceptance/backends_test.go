@@ -1157,6 +1157,12 @@ func (s *acceptanceStore) CriteriaVerdicts(context.Context, string) ([]factoryd.
 
 func (s *acceptanceStore) CriteriaVerdictTasks(context.Context) ([]string, error) { return nil, nil }
 
+func (s *acceptanceStore) PlansAwaitingCriteria(context.Context) ([]string, error) { return nil, nil }
+
+func (s *acceptanceStore) PutGateVerdicts(context.Context, string, string, string, []factoryd.CriterionVerdict, []string) error {
+	return nil
+}
+
 func (s *acceptanceStore) PlanCatches(context.Context, string) ([]factoryd.PlanCatch, error) {
 	return nil, nil
 }
@@ -1547,6 +1553,19 @@ func (s *acceptanceStore) ProjectMonthSpend(context.Context, string, time.Time) 
 }
 
 func (s *acceptanceStore) CountQueue(context.Context, string) (int, error) { return 0, nil }
+
+// The holds: no acceptance run holds a card.
+func (s *acceptanceStore) SetCardHold(context.Context, string, factoryd.CardHold) (bool, error) {
+	return false, nil
+}
+
+func (s *acceptanceStore) EndCardHold(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+
+func (s *acceptanceStore) HeldOn(context.Context, string) ([]factoryd.Task, error) {
+	return nil, nil
+}
 
 var _ factoryd.Store = (*acceptanceStore)(nil)
 

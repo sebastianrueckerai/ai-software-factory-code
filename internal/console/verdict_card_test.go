@@ -42,7 +42,7 @@ func verdictRig(r *rig) {
 		{Criterion: "c1", Verdict: "met", Evidence: "go test ./... exits 0, 214 tests", Kind: factoryd.CriterionTest, Source: "review"},
 	}}
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 30, Kind: factoryd.ApprovalCriteria, TaskID: "t-plan",
-		Project: "sf/code", Status: "pending", Reason: "criteria not met with the plan's cards done: c2, c3",
+		Project: "sf/code", Status: "pending", Reason: "criteria not met once every card of the plan ended: c2, c3",
 		Spec: json.RawMessage(`{"revision":0,"task":"t-int"}`)})
 }
 
@@ -56,7 +56,7 @@ func TestCriteriaGapCardHoldsVerdictsAndForms(t *testing.T) {
 	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
 	for _, want := range []string{
 		"Criteria gap",
-		"The plan's cards ran out with a criterion still unmet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason.",
+		"Every card of the plan has ended with a criterion still unmet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason.",
 		`<fieldset class="question"><legend>c2 (human): open</legend>`,
 		"the pages read well",
 		`<div class="carousel" role="group" aria-label="The card's criteria">`,
@@ -248,10 +248,18 @@ func TestCriteriaGapWaiveAndGrant(t *testing.T) {
 		t.Fatalf("an unknown criterion's waiver = %d %q", rec.Code, rec.Body.String())
 	}
 	a := actor{s: s, via: factoryd.ViaButton}
-	for _, press := range [][3]string{{"c2", "met", ""}, {"c2", "not_met", "x"}} {
-		_, err := r.c.doDecide(t.Context(), a, 30, press[0], press[1], press[2])
-		refusedAs(t, err, http.StatusConflict, "This card has no criterion rows.")
+	const (
+		met    = "This request records no Met for one criterion. Confirm the delivered cards with your evidence, which meets every open criterion, or waive this criterion with your reason."
+		notMet = "This request records no Not met for one criterion. Grant one more bounded card for the open criteria, or waive this criterion with your reason."
+	)
+	for _, kind := range []string{factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun} {
+		r.approvals.rows[len(r.approvals.rows)-1].Kind = kind
+		for _, press := range [][4]string{{"c2", "met", "", met}, {"c1", "met", "", met}, {"c2", "not_met", "x", notMet}} {
+			_, err := r.c.doDecide(t.Context(), a, 30, press[0], press[1], press[2])
+			refusedAs(t, err, http.StatusConflict, press[3])
+		}
 	}
+	r.approvals.rows[len(r.approvals.rows)-1].Kind = factoryd.ApprovalCriteria
 	if a := r.approvals.get(30); a.Status != "pending" {
 		t.Errorf("a refused press decided the request: %+v", a)
 	}
@@ -292,7 +300,7 @@ func TestCriteriaNeverJudgedCardOffersGrantWaiveAndConfirm(t *testing.T) {
 	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
 	for _, want := range []string{
 		"Criteria never judged",
-		"No review judged these criteria. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason, or confirm the delivered cards.",
+		"Every card of the plan has ended, and no verdict on main settles these criteria yet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason, or confirm the delivered cards with your evidence.",
 		`<legend>c2 (human): open</legend>`,
 		`aria-label="Waive criterion c2 of t-plan"`,
 		`aria-label="Approve the criteria grant 30 of t-plan"`,
@@ -424,6 +432,64 @@ func TestCriteriaRerunDeliveredFollowsACutCardToItsSuccessor(t *testing.T) {
 	r.tasks.mu.Unlock()
 	if card := board(); strings.Contains(card, `action="/approvals/30/confirm"`) {
 		t.Errorf("a plan with a cut card whose successor is open offers the confirm button:\n%s", card)
+	}
+}
+
+// A card of the plan closed with no successor (a replan cut it, or a
+// person closed it) does not keep the Confirm button off: the press takes
+// the evidence typed beside it, and the store's refusal of an empty line
+// names the closed card and what to type. A failed card keeps it off.
+func TestCriteriaRerunConfirmsOverAClosedCard(t *testing.T) {
+	r := newRig(t)
+	verdictRig(r)
+	r.approvals.rows[len(r.approvals.rows)-1].Kind = factoryd.ApprovalCriteriaRerun
+	closed := factoryd.BoardTask{Task: factoryd.Task{ID: "t-cut-card", Kind: "agent", Repository: "sf/code", Status: "closed",
+		Parent: "t-plan", Source: factoryd.SourcePlan, PlanKey: "cut"}}
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, closed)
+	r.tasks.mu.Unlock()
+	var calls []string
+	r.c.cfg.ConfirmDeliveredCriteria = func(_ context.Context, id, by, line string) (int, error) {
+		calls = append(calls, fmt.Sprintf("confirm %s by %s: %q", id, by, line))
+		if line == "" {
+			return 0, fmt.Errorf("t-cut-card is closed: %w", factoryd.ErrNoEvidence)
+		}
+		return 3, nil
+	}
+	ck, s := r.loggedIn(t)
+	board := func() string {
+		return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+	}
+	card := board()
+	if !strings.Contains(card, `action="/approvals/30/confirm"`) || !strings.Contains(card, `aria-label="Confirm the delivered cards of t-plan"`) {
+		t.Fatalf("a plan with a closed card lacks the confirm button:\n%s", card)
+	}
+	if !regexp.MustCompile(`<input type="text" id="confirm-30[^"]*" name="note" maxlength="2000" hx-preserve>`).MatchString(card) {
+		t.Errorf("the confirm form lacks its evidence line:\n%s", card)
+	}
+	rec := r.do(post("/approvals/30/confirm", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	if want := "Cannot confirm the delivered cards: t-cut-card is closed: a confirmation over closed cards needs your evidence. " +
+		"Type the line that shows main meets the criteria, then confirm again."; rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("an empty confirm = %d %q, want 400 with %q", rec.Code, rec.Body.String(), want)
+	}
+	const line = "main at 6e3b46e: the tests pass and ci / test is green"
+	rec = r.do(post("/approvals/30/confirm", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "note": {line}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("confirm with evidence = %d %q", rec.Code, rec.Body.String())
+	}
+	if want := []string{`confirm t-plan by sebastian: ""`, fmt.Sprintf("confirm t-plan by sebastian: %q", line)}; !slices.Equal(calls, want) {
+		t.Errorf("calls = %q, want %q", calls, want)
+	}
+
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == closed.ID {
+			r.tasks.tasks[i].Status = "failed"
+		}
+	}
+	r.tasks.mu.Unlock()
+	if card := board(); strings.Contains(card, `action="/approvals/30/confirm"`) {
+		t.Errorf("a plan with a failed card offers the confirm button:\n%s", card)
 	}
 }
 

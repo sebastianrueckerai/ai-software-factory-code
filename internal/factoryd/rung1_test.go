@@ -107,6 +107,55 @@ func TestRung1StatementOrderMoneyAndRefusals(t *testing.T) {
 	}
 }
 
+// A pull request that no longer merges into main is said right after the
+// problem, with Forgejo's refusal, and route_approval and reverify are
+// listed as not offered for it.
+func TestRung1StatementSaysThePullRequestNoLongerMerges(t *testing.T) {
+	f := rungFacts
+	f.ReviewApproved, f.MergeConflict = true, "the branch conflicts with its base: status 409"
+	got := (&Runner{}).rungStatement(Case{Kind: CaseGateStop, Problem: "PROBLEM"}, f, "DIGEST", nil, 1)
+	said := "The pull request does not merge into main: the branch conflicts with its base: status 409. Neither reverify nor route_approval clears it:" +
+		" extend the card for a session that merges main into the branch, or the card closes as superseded."
+	refusal := func(name string) string {
+		return "- " + name + ": not offered: the pull request no longer merges into main (Forgejo refused to merge main into c1), so " + name +
+			" only runs the gates into the same refusal at the merge queue: extend the card for a session that merges main into the branch," +
+			" or the card closes as superseded when main already carries its work\n"
+	}
+	for _, w := range []string{"PROBLEM\n" + said + "\n", refusal(ActRouteApproval), refusal(ActReverify), "- extend\n"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("statement lacks %q:\n%s", w, got)
+		}
+	}
+}
+
+// A case that opened on a merge conflict whose pull request's head moved
+// since says the conflict no longer stands, and offers the reverify; a
+// conflict that stands, a case that opened on none, or a timeline that
+// could not be read, which leaves the conflict unknown, says nothing of it.
+func TestRung1StatementSaysAConflictNoLongerStands(t *testing.T) {
+	cleared := "The merge conflict standing when this case opened no longer stands: the pull request's head moved since.\n"
+	f := rungFacts
+	f.ReviewApproved = true
+	opened := Case{Kind: CaseGateStop, Problem: "PROBLEM", Facts: map[string]any{"merge_conflict": "the branch conflicts with its base"}}
+	got := (&Runner{}).rungStatement(opened, f, "DIGEST", nil, 1)
+	if !strings.Contains(got, "PROBLEM\n"+cleared) || !strings.Contains(got, "- reverify\n") {
+		t.Errorf("cleared conflict: statement lacks %q right after the problem, or the reverify:\n%s", cleared, got)
+	}
+	standing := f
+	standing.MergeConflict = "the branch conflicts with its base"
+	if got := (&Runner{}).rungStatement(opened, standing, "DIGEST", nil, 1); strings.Contains(got, cleared) {
+		t.Errorf("standing conflict: statement says it no longer stands:\n%s", got)
+	}
+	if got := (&Runner{}).rungStatement(Case{Kind: CaseGateStop, Problem: "PROBLEM"}, f, "DIGEST", nil, 1); strings.Contains(got, cleared) {
+		t.Errorf("no conflict at the opening: statement says one no longer stands:\n%s", got)
+	}
+	unread := f
+	unread.Partial = []string{"timeline"}
+	if got := (&Runner{}).rungStatement(opened, unread, "DIGEST", nil, 1); strings.Contains(got, cleared) {
+		t.Errorf("unread timeline: statement says the conflict no longer stands:\n%s", got)
+	}
+}
+
 func TestRung1StatementCutsAndScrubs(t *testing.T) {
 	found := "clone failed https://user:pass@host/x and Authorization: Bearer abc123 " + strings.Repeat("x", 400)
 	got := (&Runner{}).rungStatement(Case{}, CaseFacts{}, "D", []CaseStep{{Rung: 1, Actor: "checkin", Found: found}}, 1)

@@ -1308,6 +1308,10 @@ func TestReplanFindings(t *testing.T) {
 		}, nil},
 		{"R8 the plan card's own work unnamed", func(st *replanState, _ *Plan) { ownWork(st) },
 			[]string{`the cut card #10 holds work on its branch: name "#10" in the "from" of the card that lands it`}},
+		{"R8 a cut successor's continued work unnamed", func(st *replanState, _ *Plan) {
+			st.plan.Source, st.plan.PlanKey = SourceSuccessor, "fixes"
+			ownWork(st)
+		}, []string{`the cut card #10 holds work on its branch: name "fixes" in the "from" of the card that lands it`}},
 		{"a second clean revision keeps cli2's from", filed, nil},
 		{"R9 a kept key's from changed", func(st *replanState, p *Plan) {
 			filed(st, p)

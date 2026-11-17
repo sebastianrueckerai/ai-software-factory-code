@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -15,19 +15,19 @@ import (
 // Postgres (FACTORYD_TEST_DATABASE_URL).
 func TestFreezeCardCursorPersistsPG(t *testing.T) {
 	ctx := context.Background()
-	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	s, err := OpenStore(ctx, schematest.DSN(t, "pg_freezecard"))
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
-	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE events CASCADE; UPDATE freeze_cursor SET cursor = 0 WHERE id = 1`); err != nil {
+	t.Cleanup(func() { s.DB().Close() })
+	if _, err := s.DB().ExecContext(ctx, `TRUNCATE events CASCADE; UPDATE freeze_cursor SET cursor = 0 WHERE id = 1`); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
 	var ids []int64
 	for i, kind := range []string{"class_frozen", "class_frozen", "class_resumed"} {
 		var id int64
-		if err := s.db.QueryRowContext(ctx, `INSERT INTO events (at, repository, task_id, kind, actor, via, detail)
+		if err := s.DB().QueryRowContext(ctx, `INSERT INTO events (at, repository, task_id, kind, actor, via, detail)
 			VALUES ($1, 'sf/acme', '', $2, 'gateway', 'gateway', $3) RETURNING id`,
 			base.Add(time.Duration(i)*time.Minute), kind,
 			`{"class":"big","reset":"`+base.Add(4*time.Hour).Format(time.RFC3339)+`","words":"free quota exhausted"}`).Scan(&id); err != nil {
@@ -39,7 +39,7 @@ func TestFreezeCardCursorPersistsPG(t *testing.T) {
 		t.Fatalf("SetFreezeCursor: %v", err)
 	}
 	var stored int64
-	if err := s.db.QueryRowContext(ctx, `SELECT cursor FROM freeze_cursor WHERE id = 1`).Scan(&stored); err != nil {
+	if err := s.DB().QueryRowContext(ctx, `SELECT cursor FROM freeze_cursor WHERE id = 1`).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
 	if stored != ids[1] {

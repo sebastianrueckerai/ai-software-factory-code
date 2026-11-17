@@ -191,10 +191,16 @@ func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.C
 	return servePort(messageHandler(tokenSHA256, gate, send, ck, wip), log)
 }
 
-// servePort serves h on harness.MessagePort until the returned stop, which
-// lets the requests in flight finish.
+// listenPort opens the listener servePort serves on: harness.MessagePort
+// on every interface. A var, so a test can hand it a free loopback port.
+var listenPort = func() (net.Listener, error) {
+	return net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort)) // #nosec G102 -- the harness reaches this endpoint across the pod network; its handler rejects every request without the session token
+}
+
+// servePort serves h on listenPort's listener until the returned stop,
+// which lets the requests in flight finish.
 func servePort(h http.Handler, log func(string, ...any)) (stop func(), err error) {
-	ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort)) // #nosec G102 -- the harness reaches this endpoint across the pod network; its handler rejects every request without the session token
+	ln, err := listenPort()
 	if err != nil {
 		return nil, err
 	}

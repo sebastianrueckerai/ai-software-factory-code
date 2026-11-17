@@ -71,6 +71,8 @@ var Refusals = map[string]Refusal{
 		Want: []string{`processes/spec.yaml: merge: queue "area", want one of [none project]`}},
 	"groups_value": {Change: in(spec, "merge: {queue: project}", "merge: {queue: project, groups: serial}"),
 		Want: []string{`processes/spec.yaml: merge: groups "serial", want one of [free one_at_a_time]`}},
+	"plan_queue": {Change: in(spec, "merge: {queue: project}", "merge: {queue: none}"),
+		Want: []string{`processes/spec.yaml: tracks.plan: needs merge.queue project: with queue none no card's branch is synced with main before its merge, so the head the criteria gate judged need not be the code main holds; set merge: {queue: project}`}},
 	"groups_queue": {Change: in(maint, "merge: {queue: none}", "merge: {queue: none, groups: one_at_a_time}"),
 		Want: []string{`processes/maintenance.yaml: merge: groups one_at_a_time needs queue project: the merge queue admits one plan's cards at a time`}},
 	"dependencies_value": {Change: in(spec, "wait_until: done", "wait_until: merged"),

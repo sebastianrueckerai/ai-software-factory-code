@@ -344,7 +344,7 @@ func TestRestartPlanClosesThePlanAndSaysWhenTheNewOneCannotBeFiled(t *testing.T)
 		Repository: "sf/code", IssueNumber: 50, Objective: "Build the stats.\n\nCount the hits."}})
 	r.tasks.mu.Unlock()
 	var closes []string
-	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
 	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, bool, error) {
 		closes = append(closes, id+" by "+by+": "+note)
 		return 0, factoryd.PlanCloseWords(by, note, false), false, nil
@@ -490,7 +490,7 @@ func TestRestartPlanFilesTheNewPlan(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-br", Kind: "agent", Status: "done", Track: policy.TrackPlan,
 		Repository: "linkshort/linkshort", Objective: "Build the stats.\n\nCount the hits."}})
 	r.tasks.mu.Unlock()
-	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
 	var leftToAct bool
 	r.c.cfg.CloseHeldPlan = func(ctx context.Context, _, by, note string, _ bool) (int, string, bool, error) {
 		leftToAct = factoryd.CaseLeftToAct(ctx)

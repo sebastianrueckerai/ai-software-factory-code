@@ -2995,6 +2995,11 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		found = revisionFindings(revisions, p)
 	}
 	found = append(found, takeOffReasonFindings(p)...)
+	held, err := r.heldFindings(ctx, st, p)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	found = append(found, held...)
 	if found = append(found, replanFindings(st, p)...); len(found) > 0 {
 		return refuse(found)
 	}
@@ -3987,10 +3992,8 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		}
 		if fresh {
 			r.timeline.recordEvent(ctx, card.ID, EventCardCreated, map[string]any{"by": approver, "issue": card.IssueNumber, "plan": t.ID, "track": policy.TrackDirect, "budget_eur": card.BudgetEUR})
-			if inherits && (card.Usage.RaisedSessions > 0 || card.Usage.RaisedTime > 0 || card.Usage.ExtraLines > 0 || card.CeilingEUR > 0) {
-				r.timeline.recordEvent(ctx, card.ID, EventCardExtended, map[string]any{"inherited_from": from.ID, "inherited_issue": from.IssueNumber, "pool": false,
-					"sessions": card.Usage.RaisedSessions, "agent_time_s": int64(card.Usage.RaisedTime / time.Second), "lines": card.Usage.ExtraLines,
-					"amount_eur": 0.0, "ceiling_eur": card.CeilingEUR})
+			if inherits {
+				r.recordInherited(ctx, from, card)
 			}
 		}
 		cards[c.Key] = card
@@ -4024,6 +4027,16 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		}
 	}
 	return out, nil
+}
+
+// recordInherited records the raises card took over from old card from,
+// when it holds any: a card_extended row that is no pool draw.
+func (r *Runner) recordInherited(ctx context.Context, from, card Task) {
+	if u := card.Usage; u.RaisedSessions > 0 || u.RaisedTime > 0 || u.ExtraLines > 0 || card.CeilingEUR > 0 {
+		r.timeline.recordEvent(ctx, card.ID, EventCardExtended, map[string]any{"inherited_from": from.ID, "inherited_issue": from.IssueNumber, "pool": false,
+			"sessions": u.RaisedSessions, "agent_time_s": int64(u.RaisedTime / time.Second), "lines": u.ExtraLines,
+			"amount_eur": 0.0, "ceiling_eur": card.CeilingEUR})
+	}
 }
 
 // EditIssueComment replaces comment id's body.

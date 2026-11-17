@@ -677,7 +677,7 @@ func (s *fakeTasks) PlanCards(_ context.Context, plan string) ([]factoryd.Task, 
 }
 
 // PlanDelivered mirrors factoryd.PlanDelivered: a plan card counts
-// delivered when it is done or merged, or its successor — the row
+// delivered when it is done, merged or closed, or its successor — the row
 // factoryd.SuccessorID names, whatever source it filed under — is.
 func (s *fakeTasks) PlanDelivered(_ context.Context, plan string) (bool, factoryd.Task, error) {
 	s.mu.Lock()
@@ -699,7 +699,7 @@ func (s *fakeTasks) PlanDelivered(_ context.Context, plan string) (bool, factory
 			}
 			c = next
 		}
-		if c.Status != "done" && c.Status != "merged" {
+		if c.Status != "done" && c.Status != "merged" && c.Status != "closed" {
 			if open.ID == "" {
 				open = t.Task
 			}
@@ -788,6 +788,23 @@ func (s *fakeTasks) FinishedTasks(_ context.Context, q factoryd.FinishedQuery) (
 	defer s.mu.Unlock()
 	page, rest := factoryd.FinishedPage(s.tasks, q)
 	return page, rest, nil
+}
+
+// setHold puts hold h on card id, as the store takes one, on a card that
+// has not started; nil ends the hold that holds it. False: the card took
+// none, or no hold held it.
+func (s *fakeTasks) setHold(id string, h *factoryd.CardHold) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := slices.IndexFunc(s.tasks, func(t factoryd.BoardTask) bool { return t.ID == id })
+	if i < 0 || h != nil && !s.tasks[i].Holdable() || h == nil && !s.tasks[i].Held() {
+		return false
+	}
+	s.tasks[i].Hold = h
+	if h == nil {
+		s.tasks[i].HoldView = factoryd.HoldView{}
+	}
+	return true
 }
 
 func (s *fakeTasks) BoardTask(_ context.Context, id string) (factoryd.BoardTask, bool, error) {
@@ -1707,6 +1724,12 @@ func newRig(t *testing.T) *rig {
 		GoCard: func(_ context.Context, taskID, by string) (int64, error) {
 			r.handed = append(r.handed, taskID+" by "+by)
 			return 16, r.goErr
+		},
+		HoldCard: func(_ context.Context, taskID, release, reason, by string) (bool, error) {
+			return r.tasks.setHold(taskID, &factoryd.CardHold{Reason: reason, Release: release, By: by}), nil
+		},
+		ReleaseCardHold: func(_ context.Context, taskID string) (bool, error) {
+			return r.tasks.setHold(taskID, nil), nil
 		},
 		RequestImage: func(_ context.Context, repository, tool, need, image, by string, admit func(string) error) (factoryd.ImageAsk, error) {
 			r.imageAsks = append(r.imageAsks, repository+": "+tool+" | "+need+" | "+image+", by "+by)

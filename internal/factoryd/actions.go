@@ -121,6 +121,8 @@ var Actions = []Action{
 	}},
 	{Name: ActRouteApproval, Rungs: rungs(0, 1, 2), InRun: true, Applies: func(f CaseFacts, _ Resolution) string {
 		switch {
+		case f.MergeConflict != "":
+			return conflictRefusal(f, ActRouteApproval)
 		case f.Kind == CaseGateStop && f.Gate == ActivityWaitChecks:
 			return "a checks wait's stop goes on with wait_checks, not route_approval"
 		case !f.PROpen:
@@ -134,6 +136,8 @@ var Actions = []Action{
 	}},
 	{Name: ActReverify, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, _ Resolution) string {
 		switch {
+		case f.MergeConflict != "":
+			return conflictRefusal(f, ActReverify)
 		case !f.PROpen:
 			return "no pull request is open"
 		case f.Head == "":
@@ -167,14 +171,23 @@ var Actions = []Action{
 	// the human decides whether a finding is a fixture.
 	{Name: ActConfirmAudit, Rungs: rungs(3), Applies: func(f CaseFacts, r Resolution) string {
 		switch {
-		case len(f.AuditFindings) == 0:
-			return "the head's newest audit holds no finding a person could confirm"
+		case slices.Contains(f.Partial, partialTimeline):
+			return "the card's timeline could not be read, so the head's audit findings and whether the pull request still merges into main are unknown: try again in a minute"
+		case f.MergeConflict != "":
+			return conflictRefusal(f, ActConfirmAudit)
+		case len(f.AuditConfirmable) == 0:
+			return "the head's newest audit holds no finding at a file a human could confirm: reverify runs the audit on the head again"
 		case strings.TrimSpace(r.Note) == "":
 			return "a one-line reason is required"
 		}
 		for _, p := range confirmAuditFindings(r.Args) {
-			if !f.auditFindingNamed(p) {
-				return fmt.Sprintf("the head's audit holds no finding %q names; name each finding as its audit section shows it, or none to confirm them all", p)
+			switch _, n := f.auditFindingNamed(p); {
+			case n == 0 && slices.ContainsFunc(f.AuditFindings, func(id string) bool { return strings.HasPrefix(f.FindingTexts[id], p) }):
+				return fmt.Sprintf("%q names a finding at no file, which no confirmation covers; name the findings at a file, or none to confirm them all", p)
+			case n == 0:
+				return fmt.Sprintf("the head's audit holds no finding %q names; name each finding as the case lists it, its item at its file, or none to confirm them all", p)
+			case n > 1:
+				return fmt.Sprintf("%q starts %d findings of the head's audit; name each one whole, one per line, or none to confirm them all", p, n)
 			}
 		}
 		return ""
@@ -200,7 +213,17 @@ var Actions = []Action{
 		case d.AgentTime > MaxExtendMinutes*time.Minute:
 			return fmt.Sprintf("an extend raises at most %d minutes of agent time at once", MaxExtendMinutes)
 		case f.Kind == CaseAgentTimeCap && d.AgentTime == 0:
-			return "this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none"
+			card, pool := int(f.CardDrawLeft.AgentTime/time.Minute), int(f.PoolLeft.AgentTime/time.Minute)
+			upTo := func(minutes int) string {
+				if minutes <= 0 {
+					return "none"
+				}
+				return "up to " + textutil.Plural(minutes, "minute", "minutes")
+			}
+			return fmt.Sprintf("this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none. "+
+				"The card's draw leaves %s and the pool %s of agent time, so rung 1 may ask for %s, rung 2 for %s and the human for %s",
+				textutil.Plural(card, "minute", "minutes"), textutil.Plural(pool, "minute", "minutes"),
+				upTo(min(card, pool, MaxExtendMinutes)), upTo(min(pool, MaxExtendMinutes)), upTo(MaxExtendMinutes))
 		case !d.IsZero() && boughtNothing(f):
 			return boughtNothingText(f)
 		}
@@ -336,8 +359,8 @@ var Actions = []Action{
 	}},
 	{Name: ActAnswerCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
 		switch verdict := argString(r.Args, "verdict"); {
-		case f.Kind != CasePlanCriteria && !(f.Kind == CaseMergeApproval && f.Criteria):
-			return "answer_criteria judges a plan's criteria, and this case holds none"
+		case criteriaCaseRefusal(f, ActAnswerCriteria) != "":
+			return criteriaCaseRefusal(f, ActAnswerCriteria)
 		case verdict != "met" && verdict != "not_met" && verdict != "waive":
 			return "answer_criteria takes the verdict met, not_met or waive"
 		case argString(r.Args, "criterion") == "":
@@ -348,13 +371,13 @@ var Actions = []Action{
 		return ""
 	}},
 	{Name: ActGrantCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
-		return criteriaRequestRefusal(f, ActGrantCriteria)
+		return criteriaCaseRefusal(f, ActGrantCriteria)
 	}},
 	{Name: ActConfirmCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
-		return criteriaRequestRefusal(f, ActConfirmCriteria)
+		return criteriaCaseRefusal(f, ActConfirmCriteria)
 	}},
 	{Name: ActDenyCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
-		if why := criteriaRequestRefusal(f, ActDenyCriteria); why != "" {
+		if why := criteriaCaseRefusal(f, ActDenyCriteria); why != "" {
 			return why
 		}
 		if strings.TrimSpace(r.Note) == "" {
@@ -399,6 +422,45 @@ var Actions = []Action{
 	}},
 }
 
+// conflictRefusal refuses action, which runs the gates again, on a head
+// that no longer merges into main: the merge queue's turn meets the same
+// refusal, and only a session that merges main clears it (conflictFit).
+func conflictRefusal(f CaseFacts, action string) string {
+	return fmt.Sprintf("the pull request no longer merges into main (Forgejo refused to merge main into %s), so %s only runs the gates into the same refusal at the merge queue: "+
+		"%s, or the card closes as superseded when main already carries its work", short(f.Head), action, conflictFit(f))
+}
+
+// rerunGates are the answers that run the gates again, which a head that
+// no longer merges into main only runs into the merge queue's refusal.
+var rerunGates = []string{ActRouteApproval, ActReverify}
+
+// timelineUnread refuses rung the action, one of rerunGates, while the
+// card's timeline, which records a merge conflict, could not be read: try
+// again, or a rung below the human hands it up.
+func timelineUnread(action string, rung int) string {
+	why := "the card's timeline could not be read, so it is unknown whether the pull request still merges into main, which " + action + " needs: try again in a minute"
+	if rung < 3 {
+		why += ", or hand it up"
+	}
+	return why
+}
+
+// conflictFit is the answer, by the stop's kind, that starts the session a
+// merge conflict needs: an extend where the stop asks for a session, a
+// fund at the budget floor, the cap's own turn at a cap wait, else a
+// continue with a note.
+func conflictFit(f CaseFacts) string {
+	switch {
+	case slices.Contains(extendKinds, f.Kind):
+		return "extend the card for a session that merges main into the branch"
+	case f.Kind == CaseBudgetFloor:
+		return "fund the card for a session that merges main into the branch"
+	case f.Kind == CaseDayCap || f.Kind == CaseMonthCap || f.Kind == CaseProjectCap:
+		return "the card's next session, once the cap turns, merges main into the branch"
+	}
+	return "continue the card with a note for a session that merges main into the branch"
+}
+
 // monitorActions are the actions a monitor flag's case takes: those Act carries
 // out itself, since the card's run waits on no such case and drops its
 // resolution.
@@ -441,14 +503,24 @@ var probes = map[string]Resolution{
 	ActConfirmAudit:     {Note: "probe"},
 }
 
-// criteriaRequestRefusal is why action decides no criteria request on f: only
-// a plan_criteria case holds one.
-func criteriaRequestRefusal(f CaseFacts, action string) string {
-	if f.Kind != CasePlanCriteria {
+// criteriaCaseRefusal is why action has no criteria to decide on f, "" when
+// it has: answer_criteria judges those of a plan_criteria case or of a
+// criteria card's merge, and a criteria request's decisions need a
+// plan_criteria case, which alone holds one.
+func criteriaCaseRefusal(f CaseFacts, action string) string {
+	switch {
+	case action == ActAnswerCriteria && f.Kind != CasePlanCriteria && !(f.Kind == CaseMergeApproval && f.Criteria):
+		return "answer_criteria judges a plan's criteria, and this case holds none"
+	case action != ActAnswerCriteria && f.Kind != CasePlanCriteria:
 		return action + " decides a plan's criteria request, and this case is none"
 	}
 	return ""
 }
+
+// humanWordActions settle a plan's criteria by word: a verdict on a
+// criterion, a waiver among them, a confirmation and a denial. A person
+// takes them (ErrNotPerson); rung 2 hands them up.
+var humanWordActions = []string{ActAnswerCriteria, ActConfirmCriteria, ActDenyCriteria}
 
 // fileCardKinds are the cases whose cause may lie outside the card: the
 // work is filed as a card of its own.
@@ -464,9 +536,9 @@ func argString(args map[string]any, key string) string {
 	return s
 }
 
-// confirmAuditFindings is confirm_audit's findings argument: the finding
-// text prefixes a person confirms, one per line; empty confirms every
-// finding the head's newest audit holds.
+// confirmAuditFindings is confirm_audit's findings argument: the findings
+// a person confirms, one per line, each by its text or a start of it;
+// empty confirms every finding the head's newest audit holds.
 func confirmAuditFindings(args map[string]any) []string {
 	var out []string
 	for _, line := range strings.Split(argString(args, "findings"), "\n") {
@@ -477,14 +549,22 @@ func confirmAuditFindings(args map[string]any) []string {
 	return out
 }
 
-// auditFindingNamed: text prefixes one of f's audit findings' texts.
-func (f CaseFacts) auditFindingNamed(text string) bool {
-	for _, id := range f.AuditFindings {
-		if strings.HasPrefix(f.FindingTexts[id], text) {
-			return true
+// auditFindingNamed is the text of the finding of the head's newest audit
+// at a file that text names: the one whose text it is, else the one whose
+// text it starts. n is how many it names; key is "" unless n is 1.
+func (f CaseFacts) auditFindingNamed(text string) (key string, n int) {
+	for _, id := range f.AuditConfirmable {
+		switch t := f.FindingTexts[id]; {
+		case t == text:
+			return t, 1
+		case strings.HasPrefix(t, text):
+			key, n = t, n+1
 		}
 	}
-	return false
+	if n != 1 {
+		return "", n
+	}
+	return key, n
 }
 
 // boardActions are the actions whose work the console's code does
@@ -517,6 +597,14 @@ func probe(a Action, f CaseFacts) Resolution {
 		p.Args = map[string]any{"agent_time_s": 60}
 	}
 	return p
+}
+
+// need is the smallest draw an answer by a takes on f, its probe's: an
+// extend's session, or its minute at an agent time cap, and a fund's or a
+// raise's cent. Zero for an action that draws nothing of its own.
+func (a Action) need(f CaseFacts) policy.Draw {
+	d, _ := Resolution{Action: a.Name, Args: probe(a, f).Args}.draw()
+	return d
 }
 
 // fittingActions is the action a stop's own kind asks for, which leads
@@ -595,6 +683,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	if !a.Rungs[rung] && !ended {
 		return fmt.Sprintf("%s may not pick %s: %s may", who(rung), a.Name, rungsText(a.Rungs))
 	}
+	if why := holdRefusal(f, rung, a.Name, r.Args); why != "" {
+		return why
+	}
 	if rung == 1 && a.Name == ActWithdraw && f.Kind != CaseMonitorFlag {
 		return "withdraw ends a monitor flag's case alone: the card's run waits on this case, so rung 1 answers it or hands it up"
 	}
@@ -605,6 +696,12 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 		case a.Name != ActClose && !slices.Contains(monitorActions, a.Name):
 			return a.Name + " would do nothing on a monitor flag's case: the card's run waits on none"
 		}
+	}
+	if slices.Contains(rerunGates, a.Name) && slices.Contains(f.Partial, partialTimeline) {
+		return timelineUnread(a.Name, rung)
+	}
+	if rung == 2 && slices.Contains(humanWordActions, a.Name) && criteriaCaseRefusal(f, a.Name) == "" {
+		return ErrNotPerson.Error()
 	}
 	if why := a.Applies(f, r); why != "" {
 		return why
@@ -618,6 +715,13 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	}
 	if rung == 2 && a.Name == ActApproveMerge && len(f.UnreadGates) > 0 {
 		return (&UnreviewedMergeError{Stages: f.UnreadGates}).Error()
+	}
+	if rung == 2 && a.Name == ActRestartPlan && slices.Contains(f.Partial, "open criteria") {
+		return "the plan's open criteria could not be read, so rung 2 cannot tell whether a restart's close waives any, and a waiver is the human's: hand it up with restart_plan as the recommendation"
+	}
+	if rung == 2 && a.Name == ActRestartPlan && f.OpenCriteria > 0 {
+		return fmt.Sprintf("the plan holds %s, which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: hand it up with restart_plan as the recommendation",
+			OpenCriteriaPhrase(f.OpenCriteria))
 	}
 	if slices.Contains(mergeDecisions, a.Name) && (r.Fund != nil || !r.drawIsZero()) {
 		return a.Name + " decides the merge request alone: it draws nothing"
@@ -642,14 +746,14 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	case buys && boughtNothing(f):
 		return boughtNothingText(f)
 	}
-	if why := drawWithin(f, rung, d, false); why != "" || budget == 0 {
+	if why := drawWithin(f, rung, d, a.need(f), r.lines(), false); why != "" || budget == 0 {
 		return why
 	}
 	if r.Action == ActRaiseCeiling {
 		raise, _ := r.Args["eur"].(float64)
 		f.CeilingEUR += raise
 	}
-	return drawWithin(f, rung, policy.Draw{EUR: budget}, true)
+	return drawWithin(f, rung, policy.Draw{EUR: budget}, policy.Draw{}, 0, true)
 }
 
 // draw is everything r draws from the pool: an extend's sessions and
@@ -795,7 +899,7 @@ func retryRefusal(d DepFact) string {
 func boughtNothing(f CaseFacts) bool {
 	d, ok := weighedDraw(f)
 	return ok && !d.Pushed && !d.Revised && d.Head == f.Head && d.Checks == f.Checks &&
-		(d.Findings == nil || slices.Contains(f.Partial, "timeline") || slices.Equal(d.Findings, f.Findings))
+		(d.Findings == nil || slices.Contains(f.Partial, partialTimeline) || slices.Equal(d.Findings, f.Findings))
 }
 
 // weighedDraw is the draw the guard weighs on f: none on a card that has
@@ -833,16 +937,18 @@ func boughtNothingText(f CaseFacts) string {
 		"the checks and the findings unchanged: hand over, start a successor, replan or close"
 }
 
-// drawWithin reports why draw d does not fit rung's bounds on f: the pool for
-// rungs 0 to 2, the card bound for rungs 0 and 1, the ceiling for fund.
-func drawWithin(f CaseFacts, rung int, d policy.Draw, toBudget bool) string {
-	switch {
-	case rung < 0 || rung > 3:
+// drawWithin reports why draw d, lines beside it, does not fit rung's
+// bounds on f: the pool for rungs 0 to 2, the card bound for rungs 0 and 1,
+// the ceiling for fund. need is the smallest draw the answer's action
+// takes (Action.need).
+func drawWithin(f CaseFacts, rung int, d, need policy.Draw, lines int, toBudget bool) string {
+	if rung < 0 || rung > 3 {
 		return fmt.Sprintf("there is no rung %d", rung)
-	case rung <= 1 && !fitsIn(d, f.CardDrawLeft):
-		return (&DrawBoundError{Card: true, Left: f.CardDrawLeft}).Error()
-	case rung <= 2 && !fitsIn(d, f.PoolLeft):
-		return (&DrawBoundError{Left: f.PoolLeft}).Error()
+	}
+	if e := newDrawBound(rung, d, need, lines, f.CardDrawLeft, f.PoolLeft); e != nil {
+		return e.Error()
+	}
+	switch {
 	case toBudget && Cents(f.BudgetEUR)+Cents(d.EUR) > Cents(f.CeilingEUR):
 		return fmt.Sprintf("%.2f EUR more takes the budget of %.2f EUR past the card's ceiling of %.2f EUR: raise the ceiling first",
 			d.EUR, f.BudgetEUR, f.CeilingEUR)

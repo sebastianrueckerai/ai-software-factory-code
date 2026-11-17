@@ -592,9 +592,8 @@ func stoppable(k Task) bool {
 // replanStoppable folds gateTrigger into stoppable: origin names the ask
 // behind the stop, and a machine origin — a check-in's cut, a round, a
 // plan-wide stop that names no card — never stops a card whose open pull
-// request is its plan's criteria-gate trigger, for the gate runs only at
-// that pull request's merge press and the plan's settle path dies with
-// the card. A person's ask (ReplanPerson, the person named this card)
+// request is its plan's criteria-gate trigger, for its merge press runs
+// the gate on the card's work, which a stop drops. A person's ask (ReplanPerson, the person named this card)
 // stays free: it stops the card whatever it holds. When the forge read
 // fails, replanStoppable returns the error and never a false — a caller
 // refuses toward preservation, so the stop is never taken on a guess.
@@ -639,11 +638,11 @@ func (r *Runner) gateSpared(ctx context.Context, k, p Task) (spared bool, refuse
 }
 
 // gateTriggerNote names card k's open pull request as its plan's
-// criteria-gate trigger and the gate consequence: the gate runs only at
-// that pull request's merge press, so the card is held alive for a person
-// or the merge press.
+// criteria-gate trigger and the gate consequence: its merge press runs the
+// gate on the card's work, which a stop drops, so the card is held alive
+// for a person or the merge press.
 func gateTriggerNote(k Task) string {
-	return fmt.Sprintf("card #%d's pull request #%d is open and is its plan's criteria-gate trigger: the criteria gate runs only at that pull request's merge press",
+	return fmt.Sprintf("card #%d's pull request #%d is open and is its plan's criteria-gate trigger: its merge press runs the criteria gate on the card's work",
 		k.IssueNumber, k.PRNumber)
 }
 
@@ -1671,6 +1670,13 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 			state = "never started" + onBranch
 		default:
 			state = "running" + onBranch
+		}
+		if k.Held() {
+			v, err := holdView(ctx, r.store, k)
+			if err != nil {
+				return replanRecord{}, false, err
+			}
+			state += ", " + oneLine(sanitize.Inbound(v.Line))
 		}
 		// the title is planner text drawn from an issue, and a finding is
 		// one line

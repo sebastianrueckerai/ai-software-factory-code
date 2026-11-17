@@ -432,8 +432,8 @@ type SuccessorInput struct {
 }
 
 // SourceSuccessor is a card a stuck card closed into, carrying the patch
-// and the findings: it starts from main's tip, or from the old card's
-// branch when that holds the old card's work over its line bound.
+// and the findings: it continues the old card's branch, or starts from
+// main's tip when the old card has none.
 const SourceSuccessor = "successor"
 
 // successorFindings heads the findings a successor's objective carries.
@@ -487,13 +487,16 @@ func successorMarker(id string) string {
 // Successor files the successor of the stuck card in (task 6): a card of
 // the same objective with the findings so far, the carried pull request
 // and the card's size and budget, queued on the direct track under the
-// work bound. Its first session starts from main's tip, with no base of
-// its own, unless the findings' first line, factoryd's note, says the old
-// card's work over its line bound is an interim commit on its branch: then
-// the successor continues that branch with the old card's base. The row
-// lands first, with the old card's dependencies and its dependents, and its
-// issue after, so a filing that stops part way runs again to the same one
-// card: the row's identity holds the card and the marker holds the issue.
+// work bound. It continues the old card's branch with the old card's base,
+// as a plan card that goes on from another does, so its first session
+// starts at that head and its clone holds the work: an interim commit the
+// line bound refused, or work the old card took on through its from. An
+// old card with no branch leaves it to start from main's tip. A successor
+// that carries work, a pull request or a branch, keeps the old card's line
+// raise. The row lands first, with the old card's dependencies and its
+// dependents, and its issue after, so a filing that stops part way runs
+// again to the same one card: the row's identity holds the card and the
+// marker holds the issue.
 func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, error) {
 	old, repo, err := r.task(ctx, in.TaskID)
 	if err != nil {
@@ -512,6 +515,10 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		if !ok {
 			return "", errNoTrack(p)
 		}
+		head, err := r.ContinueBranch(ctx, old, Task{ID: SuccessorID(old.ID)})
+		if err != nil && !errors.Is(err, ErrNoBranch) {
+			return "", err
+		}
 		var lines []string
 		if in.Findings != "" {
 			lines = append(lines, successorFindings+in.Findings)
@@ -523,16 +530,8 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 			lines = append(lines, "Size: "+old.Size)
 		}
 		lines = append(lines, fmt.Sprintf("Budget: %.2f EUR", old.BudgetEUR))
-		// work an end push the line bound refused sits on the old card's
-		// branch as an interim commit: the successor continues that branch,
-		// as a plan card that goes on from another does, so its first session
-		// starts at that head and its clone holds the work
-		head, err := "", error(nil)
-		if strings.HasPrefix(in.Findings, "\n- "+overBoundNote) {
-			head, err = r.ContinueBranch(ctx, old, Task{ID: SuccessorID(old.ID)})
-			if err != nil && !errors.Is(err, ErrNoBranch) {
-				return "", err
-			}
+		if head != "" {
+			lines = append(lines, workLine(old))
 		}
 		if t, err = fileEntry(p, Task{ID: SuccessorID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass,
 			BudgetEUR: old.BudgetEUR, Size: old.Size, Objective: old.Objective + "\n\n" + r.untrusted(old, strings.Join(lines, "\n")),
@@ -545,6 +544,9 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		t.Process = old.Process
 		if head != "" {
 			t.SHA = old.SHA
+		}
+		if pr > 0 || head != "" {
+			t.Usage.ExtraLines = old.Usage.ExtraLines
 		}
 		if err := r.store.CreateSuccessor(ctx, old.ID, t); err != nil {
 			return "", err
@@ -575,6 +577,7 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 			return "", fmt.Errorf("the successor of %s: link its issue #%d: %w", old.ID, t.IssueNumber, err)
 		}
 		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": r.forgejo.BotUser, "issue": t.IssueNumber, "successor_of": old.ID, "track": t.Track, "budget_eur": t.BudgetEUR})
+		r.recordInherited(ctx, old, t)
 	}
 	if err := r.cfg.Workflows.Start(ctx, t.ID); err != nil {
 		log.Printf("task %s: start the successor %s: %v", old.ID, t.ID, err)
@@ -615,7 +618,17 @@ func (r *Runner) personAnswered(ctx context.Context, id string) bool {
 		return false
 	}
 	i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventQuestionAnswered || e.Kind == EventSessionGranted })
-	return i >= 0 && events[i].Detail["decider"] != "agent" && isPerson(events[i].Actor)
+	return i >= 0 && isPerson(eventActor(events[i]))
+}
+
+// eventActor is who acted in row e: the console writes the project
+// agent's own decision in a human's turn or a wake under that human's
+// login with decider agent, and that row's actor is the chat user.
+func eventActor(e Event) string {
+	if e.Detail["decider"] == "agent" {
+		return ChatUser
+	}
+	return e.Actor
 }
 
 // capRefusals open the card of a task whose attempt the day's, the
@@ -1801,8 +1814,8 @@ func earliest(a, b time.Time) time.Time {
 
 // sessionDeadline is a session's overall deadline: the earlier of
 // activityDeadline (with sessionGrace to record the outcome after) and now
-// plus agentTime, the task's resolved agent time (SessionInput.AgentTime,
-// or the pinned policy's limits when the task carries none).
+// plus agentTime, the card's agent time (SessionInput.AgentTime, or the
+// pinned policy's limits when the input carries none).
 func sessionDeadline(activityDeadline time.Time, agentTime time.Duration) time.Time {
 	return earliest(activityDeadline.Add(-sessionGrace), time.Now().Add(agentTime))
 }

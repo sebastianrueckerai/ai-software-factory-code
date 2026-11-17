@@ -53,6 +53,21 @@ const (
 	EventDependencySet        = "dependency_set"
 	EventCardReplanned        = "card_replanned"
 	EventCardFunded           = "card_funded"
+	// EventCardHeld is a human's hold put on a card, or put on it again:
+	// detail {"reason", and "release", the release card's issue, when it
+	// names one}.
+	EventCardHeld = "card_held"
+	// EventCardHoldEnded is a card's hold ended: by a human's release,
+	// detail {"reason"}; as factoryd's row by its release card, detail
+	// {"release", "status"}; or by the card's own move to a final status
+	// or the human lane, detail {"reason", "card_status"}.
+	EventCardHoldEnded = "card_hold_ended"
+	// EventCardHoldStranded is factoryd's row on a held card whose release
+	// card ended failed or closed and so releases nothing, once per hold
+	// and end, which the Poker tells the human: detail {"release_task",
+	// "release", the release card's name and its plan's, "release_issue",
+	// "status"}.
+	EventCardHoldStranded = "card_hold_stranded"
 	// EventCardExtended is an approver's raise of a card's caps — its
 	// session cap, line bound and budget — the console's Extend the card:
 	// detail {"sessions", "lines", "amount_eur", "from_eur", "to_eur"}.

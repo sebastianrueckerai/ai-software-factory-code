@@ -200,7 +200,8 @@ func TestRung1ResolvesWithinBound(t *testing.T) {
 
 // The same card with two sessions drawn already, one on rung 0 and one on
 // rung 1: the medium card's draw bound of 2 sessions, 1h and 4 EUR leaves 0
-// sessions, so the extend is refused naming it, rung 1's step ends handed
+// sessions, so the extend is refused naming it and that nothing of the
+// session fits, rung 1's step ends handed
 // up with the refusal in its found and the answer's recommendation as its
 // decision, and the case goes to the human.
 func TestRung1RefusedDrawGoesToTheHuman(t *testing.T) {
@@ -217,7 +218,8 @@ func TestRung1RefusedDrawGoesToTheHuman(t *testing.T) {
 	g.settle()
 	g.afterRung2(t, out.CaseID)
 
-	refusal := fmt.Sprintf("the card's draw bound leaves 0 sessions, %s of agent time and 4.00 EUR: rung 2 or the human may draw more", minutesWord(policy.SizeAgentTime("medium", time.Hour)))
+	refusal := fmt.Sprintf("the card's draw bound leaves 0 sessions, %s of agent time and 4.00 EUR: rung 2 or the human may draw more. "+
+		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand_up with it as the recommendation, ", minutesWord(policy.SizeAgentTime("medium", time.Hour)))
 	steps := g.steps(t, out.CaseID)
 	if len(steps) != 4 || steps[1].Rung != 1 || steps[1].Outcome != StepHandedUp || !strings.Contains(steps[1].Found, "rung 1's answer extend was refused: "+refusal) ||
 		steps[1].Decision != "successor" || steps[1].Grounds != "one more session would do" || steps[2].Rung != 2 || steps[3].Rung != 3 {

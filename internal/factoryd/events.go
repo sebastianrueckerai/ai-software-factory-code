@@ -66,10 +66,21 @@ const (
 	EventPlanClosed = "plan_closed"
 	// EventCriteriaGateRun records a run of the criteria gate on a done
 	// plan whose criteria held no verdict row, on the plan task: detail
-	// {"task", "pr", "commit", "outcome", "attempt"}, the outcome ran, cut
-	// no_room or started (written before the run), the attempt "1" or "2" (a cut run runs once more). A
-	// quiet record, no poke.
+	// {"task", "pr", "commit", "outcome", "attempt", "cards", "met"}, pr 0
+	// for a run on main's head, cards the plan's revision and the states
+	// of its cards it judged (cardsMark), met the criteria the run left
+	// met, space-separated, on an outcome after the run, the outcome ran,
+	// cut, pending, no_room or started (written before the run), the
+	// attempt "1" or "2" (a cut run runs once more). A quiet record, no
+	// poke.
 	EventCriteriaGateRun = "criteria_gate_run"
+	// EventCriteriaJudged records, on a plan's integration or delta card,
+	// the head of its pull request the criteria gate judged and wrote the
+	// plan's rows for: detail {"pr", "head"}, the head empty when an
+	// invariant read another head's checks. The plan's close counts those
+	// rows as main's only when the pull request merged at that head
+	// (pull_request_merged's "head"). A quiet record, no poke.
+	EventCriteriaJudged = "criteria_judged"
 	// EventProductionReleased records the end of a project's production
 	// hold (roadmap 336), a row of the project: detail {"how", "held_since",
 	// "hours"}, how closed when no plan is open on main any more (by
@@ -219,7 +230,8 @@ var allDoneMu sync.Mutex
 
 // taskEnded records task t's end in state final, with why when one is
 // told (a failure's reason as its issue comment carries it, which its
-// poke tells), ends the run of a routine's card and wakes the cards
+// poke tells), and on each card a hold keeps until t that a failed or
+// closed t strands, ends the run of a routine's card and wakes the cards
 // waiting on it (wf nil wakes none). When t is the last of a plan's cards
 // to turn done, a card cut into a successor done through it, and the
 // plan's newest revision leaves no part to a later round, the plan records
@@ -230,6 +242,9 @@ func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo,
 		detail["reason"] = why
 	}
 	tl.recordEvent(ctx, t.ID, EventTaskEnded, detail)
+	if final == "failed" || final == "closed" {
+		strandedHolds(ctx, tl, store, t, final)
+	}
 	if t.Source == SourceRoutine {
 		endRoutineRun(ctx, store, t, final)
 	}

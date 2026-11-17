@@ -102,7 +102,8 @@ func TestTokenStampsEveryDecisionEvent(t *testing.T) {
 }
 
 // The analysis_attached row, which the store writes in its own
-// transaction, names the chat token whose turn attached the analysis.
+// transaction, names the chat token whose turn attached the analysis, and
+// the project agent, whose analysis it is, as its actor.
 func TestTokenStampsAttachAnalysis(t *testing.T) {
 	r, _, g := newChatRig(t)
 	cfg := r.c.cfg
@@ -119,8 +120,8 @@ func TestTokenStampsAttachAnalysis(t *testing.T) {
 	g.replies = [][]string{{call(1, "attach_analysis", `{"task_id":"t-e","found":"The replica adds 12 ms of lag."}`)}, {say("Noted.")}}
 	answerOf(t, tokenSession(t, r), "chat_send", map[string]any{"message": "attach what you found"})
 	evs := eventsOf(r, factoryd.EventAnalysisAttached)
-	if len(evs) != 1 || evs[0].TaskID != "t-e" || evs[0].Actor != "sebastian" {
-		t.Fatalf("analysis rows = %+v, want sebastian's on t-e", evs)
+	if len(evs) != 1 || evs[0].TaskID != "t-e" || evs[0].Actor != factoryd.ChatUser {
+		t.Fatalf("analysis rows = %+v, want the project agent's on t-e", evs)
 	}
 	equal(t, "the analysis row's token", evs[0].Detail["token"], map[string]any{"id": int64(1), "name": "laptop"})
 }

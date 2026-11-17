@@ -684,10 +684,12 @@ func authHeader(token string) string {
 }
 
 // safeGit is prepended to every worker git command: agent-planted hooks and
-// fsmonitor never run. "-c" reaches nested gits through GIT_CONFIG_PARAMETERS,
-// except upload-pack on a local fetch: git clears that variable for it, so
-// uploadPack puts the flags on its command line.
-var safeGit = []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
+// fsmonitor never run, and no git runs in a repository's alternate to list
+// its refs, under the alternate's own config and without these flags.
+// "-c" reaches nested gits through GIT_CONFIG_PARAMETERS, except upload-pack
+// on a local fetch: git clears that variable for it, so uploadPack puts the
+// flags on its command line.
+var safeGit = []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.alternateRefsCommand=true"}
 
 var uploadPack = "--upload-pack=git " + strings.Join(safeGit, " ") + " upload-pack"
 
@@ -948,10 +950,12 @@ func (e workerEnv) runGitCtx(ctx context.Context, dir string, env []string, args
 	cmd.Env = append(gitEnv(e.gitTrace), env...)
 	out, errOut := &capBuffer{max: maxGitOutput}, &capBuffer{max: maxGitOutput}
 	cmd.Stdout, cmd.Stderr = out, errOut
+	// a program git started can outlive it holding the pipes
+	cmd.WaitDelay = 5 * time.Second
 	err := cmd.Run()
 	if err != nil {
 		scrub := redact.New(e.repoToken, e.pushToken).String
-		return "", fmt.Errorf("git %s: %v: %s", scrub(strings.Join(args, " ")), err, scrub(strings.TrimSpace(out.String()+"\n"+errOut.String())))
+		return "", fmt.Errorf("git %s: %w: %s", scrub(strings.Join(args, " ")), err, scrub(strings.TrimSpace(out.String()+"\n"+errOut.String())))
 	}
 	if out.cut {
 		return "", fmt.Errorf("git %s: output past %d bytes", strings.Join(args, " "), maxGitOutput)
@@ -1104,7 +1108,14 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	if err := os.WriteFile(filepath.Join(send, ".git", "objects", "info", "alternates"), []byte(filepath.Join(own, ".git", "objects")+"\n"), 0o600); err != nil {
 		return "", err
 	}
-	parents, guard := sessionParents(e, send, base, mainHead, agent)
+	bases := factoryd.ReadMainBases(pushRulesGit{context.Background(), e}, send, base, mainHead, agent)
+	if tree, err = factoryd.SyncOnMain(pushRulesGit{context.Background(), e}, send, bases, base, agent, tree); err != nil {
+		return "", err
+	}
+	if tree == baseTree && !e.startWip {
+		return "", nil
+	}
+	parents, guard := sessionParents(e, send, base, bases)
 	guardTree, err := e.git(send, "rev-parse", guard+"^{tree}")
 	if err != nil {
 		return "", err
@@ -1187,13 +1198,19 @@ func sameRepoPath(a, b string) bool {
 // and the local names stay as thin aliases delegating to factoryd's, so
 // commitAndPush and its tests read as today.
 
-// pushRulesGit is the worker's hardened git as the push rules run it.
-type pushRulesGit struct{ e workerEnv }
+// pushRulesGit is the worker's hardened git as the push rules run it,
+// bounded by ctx.
+type pushRulesGit struct {
+	ctx context.Context
+	e   workerEnv
+}
 
-func (p pushRulesGit) Git(dir string, args ...string) (string, error) { return p.e.git(dir, args...) }
+func (p pushRulesGit) Git(dir string, args ...string) (string, error) {
+	return p.e.runGitCtx(p.ctx, dir, nil, args...)
+}
 
 func (p pushRulesGit) RunGit(dir string, env []string, args ...string) (string, error) {
-	return p.e.runGit(dir, env, args...)
+	return p.e.runGitCtx(p.ctx, dir, env, args...)
 }
 
 // errPushOverBound is the named refusal of the card's line bound, now
@@ -1203,46 +1220,57 @@ var errPushOverBound = factoryd.ErrPushOverBound
 // fitBound is the card's line-bound rule on the end push, with the
 // worker's own merge commit: the session's attribution message.
 func fitBound(e workerEnv, send, head, tree, base, guard, mainHead string, bound int) (string, string, error) {
-	return factoryd.FitBound(pushRulesGit{e}, send, head, tree, base, guard, mainHead, bound, botIdentity, commitMessage(e))
+	return factoryd.FitBound(pushRulesGit{context.Background(), e}, send, head, tree, base, guard, mainHead, bound, botIdentity, commitMessage(e))
 }
 
 // changedLines is the insertions plus deletions between two commits,
 // trees or both; a diff git cannot run is an error, never zero lines.
 func changedLines(e workerEnv, send, a, b string) (int, error) {
-	return factoryd.ChangedLines(pushRulesGit{e}, send, a, b)
+	return factoryd.ChangedLines(pushRulesGit{context.Background(), e}, send, a, b)
 }
 
 // sessionParents answers the pushed commit's parents and the commit whose
-// workflow directories it must keep. The start commit is the parent, unless
-// the agent pulled main commits newer than the one the start is on (the
-// merge base of its HEAD and mainHead descends from the start's): then
-// that newest main commit is the parent, next to the start when the start
-// is a resumed session's pushed work in progress, so main's changes stay
-// main's in the pull request's diff. The agent holds no token, so the main
-// it can pull is the clone's.
-func sessionParents(e workerEnv, send, base, mainHead, agent string) ([]string, string) {
-	start, err := e.git(send, "merge-base", base, mainHead)
-	if err != nil {
+// workflow directories it must keep. The start commit base is the parent,
+// unless the agent pulled main commits newer than the one the start is on
+// (the merge base of its HEAD and main's head descends from the start's,
+// as bases tell): then that newest main commit is the parent, next to the
+// start when the start is a resumed session's pushed work in progress, so
+// main's changes stay main's in the pull request's diff. The agent holds
+// no token, so the main it can pull is the clone's.
+func sessionParents(e workerEnv, send, base string, bases factoryd.MainBases) ([]string, string) {
+	start, tip := pulledMain(pushRulesGit{context.Background(), e}, send, bases)
+	switch {
+	case tip == "":
 		return []string{"-p", base}, base
-	}
-	tip, err := e.git(send, "merge-base", agent, mainHead)
-	if err != nil || tip == start {
-		return []string{"-p", base}, base
-	}
-	if _, err := e.git(send, "merge-base", "--is-ancestor", start, tip); err != nil {
-		return []string{"-p", base}, base
-	}
-	if start == base {
+	case start == base:
 		return []string{"-p", tip}, tip
 	}
 	return []string{"-p", base, "-p", tip}, tip
+}
+
+// pulledMain is the main commit the start is on (bases' Start) and the
+// newer one the agent pulled past it (bases' Fork, when that descends from
+// the start's), tip "" when it pulled none or a merge base could not be
+// read.
+func pulledMain(g factoryd.PushGit, dir string, bases factoryd.MainBases) (start, tip string) {
+	if bases.StartErr != nil {
+		return "", ""
+	}
+	start, tip = bases.Start, bases.Fork
+	if bases.ForkErr != nil || tip == start {
+		return start, ""
+	}
+	if _, err := g.Git(dir, "merge-base", "--is-ancestor", start, tip); err != nil {
+		return start, ""
+	}
+	return start, tip
 }
 
 // refuseWorkflowDirChange is the workflow-directory rule, now factoryd's
 // (pushrules.go): no agent changes a workflow directory, and the refusal
 // names the action.
 func refuseWorkflowDirChange(e workerEnv, own, base, head string) error {
-	return factoryd.RefuseWorkflowDirChange(pushRulesGit{e}, own, base, head)
+	return factoryd.RefuseWorkflowDirChange(pushRulesGit{context.Background(), e}, own, base, head)
 }
 
 // workflowDirGuard watches the session's file-change events and, at the
@@ -1327,7 +1355,7 @@ func workflowDirMessage(dir, file string) string {
 // (pushrules.go): it judges the added .sql files under the policy's
 // migration directory globs.
 func refuseMisnamedMigrations(e workerEnv, own, base, head string) error {
-	return factoryd.RefuseMisnamedMigrations(pushRulesGit{e}, e.migrationGlobs, own, base, head)
+	return factoryd.RefuseMisnamedMigrations(pushRulesGit{context.Background(), e}, e.migrationGlobs, own, base, head)
 }
 
 var botIdentity = []string{
@@ -1393,17 +1421,21 @@ type diffStat struct{ Files, Insertions, Deletions int }
 
 // checkpointer measures the agent's diff against the base commit for the
 // supervisor's churn detector and progress digest. Like the push path it
-// never runs git with the agent repo as its repository: store holds the
-// base objects, fetched before the agent starts, and every measurement
-// indexes the agent's work tree into a fresh repo of the worker's own that
-// borrows those objects. Hooks and fsmonitor are off, diffs run without
-// external diff or textconv, system and global config are ignored, and
-// no token is in the environment. The agent runs under the same uid and
+// never runs git with the agent repo as its repository. store holds the
+// base and main objects, fetched before the agent starts; no git runs in it
+// after that, for the agent can write to it. Every measurement makes a
+// fresh repo of the worker's own that borrows the store's objects, and any
+// the agent adds to the store's alternates, but never its refs or config:
+// its own refs name base and main, and safeGit keeps git from listing an
+// alternate's refs. It fetches the agent's HEAD there the push's way and
+// indexes the agent's work tree. Hooks and fsmonitor are off, diffs run
+// without external diff or textconv, system and global config are ignored,
+// and no token is in the environment. The agent runs under the same uid and
 // could still write to a fresh repo while it exists; what it could plant
 // there runs with the rights it already has.
 type checkpointer struct {
-	e                       workerEnv
-	work, store, base, fork string
+	e                             workerEnv
+	work, store, base, main, fork string
 	// stage runs the checkpoint's git commands. It defaults to the worker's
 	// own runGitCtx; only a test replaces it, to make one staging step fail.
 	stage func(ctx context.Context, dir string, env []string, args ...string) (string, error)
@@ -1429,7 +1461,7 @@ func newCheckpointer(agentRepo string, e workerEnv, base, mainHead string) (*che
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint store: %w", err)
 	}
-	return &checkpointer{e: e, work: agentRepo, store: store, base: base, fork: fork}, nil
+	return &checkpointer{e: e, work: agentRepo, store: store, base: base, main: mainHead, fork: fork}, nil
 }
 
 // maxPatch bounds the diff text a checkpoint carries, and maxCheckpointFiles
@@ -1477,7 +1509,12 @@ func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch 
 	if err != nil {
 		return diffStat{}, diffStat{}, "", nil, err
 	}
-	cardShort, err := run(ctx, tmp, env, append(diff, "--shortstat", c.fork)...)
+	tree, err := run(ctx, tmp, env, "write-tree")
+	if err != nil {
+		return diffStat{}, diffStat{}, "", nil, err
+	}
+	from, to := c.cardTrees(ctx, run, tmp, tree)
+	cardShort, err := run(ctx, tmp, nil, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", "--shortstat", from, to)
 	if err != nil {
 		return diffStat{}, diffStat{}, "", nil, err
 	}
@@ -1501,6 +1538,41 @@ func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch 
 		patch = patch[:maxPatch] + "\n… (diff truncated)"
 	}
 	return parseShortstat(short), parseShortstat(cardShort), patch, files, nil
+}
+
+// cardTrees are the two sides of the card's diff as the push bills it: the
+// main commit the push stands on (the start's, or a newer one the agent
+// pulled, as sessionParents picks it) and the tree the push takes
+// (SyncOnMain), so an agent reset behind the start is not measured for
+// main's lines it lacks. Where the push refuses the tree until the agent
+// merges main, the agent's own lines since its fork are the card's; with
+// no fork or no HEAD to read, the work tree's against the start's main.
+func (c *checkpointer) cardTrees(ctx context.Context, run func(context.Context, string, []string, ...string) (string, error), tmp, tree string) (from, to string) {
+	// the fetch's haves, so only the agent's new objects transfer
+	for ref, id := range map[string]string{"refs/heads/base": c.base, "refs/heads/main": c.main} {
+		if _, err := run(ctx, tmp, nil, "update-ref", ref, id); err != nil {
+			return c.fork, tree
+		}
+	}
+	if _, err := run(ctx, tmp, nil, "fetch", "-q", "--no-tags", uploadPack, c.work, "+HEAD:refs/heads/agent"); err != nil {
+		return c.fork, tree
+	}
+	agent, err := run(ctx, tmp, nil, "rev-parse", "refs/heads/agent")
+	if err != nil {
+		return c.fork, tree
+	}
+	g := pushRulesGit{ctx, c.e}
+	bases := factoryd.ReadMainBases(g, tmp, c.base, c.main, agent)
+	if synced, err := factoryd.SyncOnMain(g, tmp, bases, c.base, agent, tree); err == nil {
+		if _, tip := pulledMain(g, tmp, bases); tip != "" {
+			return tip, synced
+		}
+		return c.fork, synced
+	}
+	if bases.ForkErr == nil {
+		return bases.Fork, tree
+	}
+	return c.fork, tree
 }
 
 var shortstatPart = regexp.MustCompile(`(\d+) (file|insertion|deletion)`)

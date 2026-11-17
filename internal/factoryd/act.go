@@ -139,7 +139,9 @@ func keepsOpen(c Case, t Task, res Resolution) bool {
 // records a step and ends nothing. A human card's case takes a value of its question's
 // choices, which Act records and runs nothing for, deploy_now excepted, which
 // runs outside the run. Rung 0 is factoryd's,
-// and factoryd answers on rung 0 alone. An answer holds its case from its
+// and factoryd answers on rung 0 alone. Rung 2 is the project agent's:
+// its answer is recorded as ChatUser, never as the human whose turn woke
+// it, so no record of it reads as the human's. An answer holds its case from its
 // first read to its end, so a second answer on it waits, then finds it
 // ended, with nothing of its own run.
 func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
@@ -150,6 +152,11 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		return ActResult{}, ErrActRefused(fmt.Sprintf("rung 0 is factoryd's own, and factoryd answers on rung 0 alone: answer on rung 0, not rung %d", in.Rung))
 	case in.Rung != 1 && in.By == CheckinDecider:
 		return ActResult{}, ErrActRefused(fmt.Sprintf("the check-in answers on rung 1 alone, not rung %d", in.Rung))
+	case in.Rung != 2 && in.By == ChatUser:
+		return ActResult{}, ErrActRefused(fmt.Sprintf("the project agent answers on rung 2 alone, not rung %d", in.Rung))
+	}
+	if in.Rung == 2 {
+		in.By = ChatUser
 	}
 	out, err := r.act(ctx, in)
 	if err != nil && in.CaseID != 0 {
@@ -451,8 +458,13 @@ func (r *Runner) refreshOffersOf(ctx context.Context, taskID string, caseID int6
 	}
 }
 
-// refreshOffers stores the offers of case c anew on facts f.
+// refreshOffers stores the offers of case c anew on facts f; on facts
+// whose timeline could not be read it stores nothing, so the offers pass
+// weighs them again.
 func (r *Runner) refreshOffers(ctx context.Context, t Task, c Case, f CaseFacts) {
+	if slices.Contains(f.Partial, partialTimeline) {
+		return
+	}
 	offers, refusals, ok := storeOffers(c, t, f)
 	if !ok {
 		return
@@ -762,19 +774,24 @@ func answersACase(a Action) bool {
 }
 
 // confirmAudit records the audit findings a person's confirm_audit marks
-// fixtures (audit-confirm): each finding text prefix they named, or every
-// finding the head's newest audit holds when none, as an
-// audit_finding_confirmed step with who, why and when. Every GateAudit of
-// the task reads the steps off the timeline and settles its verdict past
-// them, on this attempt and a fresh one alike, until the head's audit
-// clears on its own. A confirmation stands once: one already recorded
-// under the same prefix is not recorded again.
+// fixtures (audit-confirm): each finding they named, under its whole text
+// (auditFindingNamed), or every finding at a file the head's newest audit
+// holds when none, as an audit_finding_confirmed step with who, why and
+// when. Every GateAudit of the task reads the steps off the timeline and
+// settles its verdict past the findings of those texts, on this attempt
+// and a fresh one alike, until the head's audit clears on its own. A
+// confirmation stands once: one already recorded under the same text is
+// not recorded again.
 func (r *Runner) confirmAudit(ctx context.Context, t Task, f CaseFacts, in ActInput) error {
-	named := confirmAuditFindings(in.Res.Args)
-	if len(named) == 0 {
-		for _, id := range f.AuditFindings {
+	var texts []string
+	for _, p := range confirmAuditFindings(in.Res.Args) {
+		text, _ := f.auditFindingNamed(p)
+		texts = append(texts, text)
+	}
+	if len(texts) == 0 {
+		for _, id := range f.AuditConfirmable {
 			if text := f.FindingTexts[id]; text != "" {
-				named = append(named, text)
+				texts = append(texts, text)
 			}
 		}
 	}
@@ -782,14 +799,15 @@ func (r *Runner) confirmAudit(ctx context.Context, t Task, f CaseFacts, in ActIn
 	if err != nil {
 		return err
 	}
-	for _, prefix := range named {
-		if _, done := seen[prefix]; done {
+	for _, text := range texts {
+		if _, done := seen[text]; done {
 			continue
 		}
-		detail := map[string]any{"finding": prefix, "by": in.By, "why": strings.TrimSpace(in.Res.Note)}
+		detail := map[string]any{"finding": text, "by": in.By, "why": strings.TrimSpace(in.Res.Note)}
 		if err := r.timeline.Append(ctx, t.ID, stepAuditConfirmed, detail); err != nil {
 			return err
 		}
+		seen[text] = Adjudication{}
 	}
 	return nil
 }
@@ -1111,13 +1129,14 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 	v := r.cfg.Policy()
 	_, project, _ := v.ProjectOf(t.Repository)
 	detail := map[string]any{"pool": true, "rung": in.Rung, "case_id": c.ID, "head": f.Head, "checks": f.Checks}
-	if !slices.Contains(f.Partial, "timeline") {
+	if !slices.Contains(f.Partial, partialTimeline) {
 		detail["findings"] = nonNil(f.Findings)
 	}
 	beside(detail, in.Detail)
 	esc := v.EscalationOf(t.Repository)
+	a, _ := ActionByName(in.Res.Action)
 	draw := &CaseDraw{Rung: in.Rung, Extend: policy.Draw{Sessions: d.Sessions, AgentTime: d.AgentTime}, FundEUR: budget,
-		PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size), Pool: esc.Pool,
+		PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size), Pool: esc.Pool, Need: a.need(f),
 		Event: Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Actor: in.By, Via: via, Detail: detail}}
 	switch in.Res.Action {
 	case ActRaiseCeiling:

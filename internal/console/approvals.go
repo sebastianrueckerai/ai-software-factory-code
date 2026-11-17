@@ -59,7 +59,7 @@ type approvalCard struct {
 	Resource      cloudres.ResourceSpec
 	// a plan's criteria gap: the spec, the open criteria with their
 	// standing verdicts, whether every card of the plan is delivered
-	// (done or merged), which the confirm button keys on, and whether a
+	// (done, merged or closed), which the confirm button keys on, and whether a
 	// criterion is still open, which the grant answers
 	CriteriaSpec factoryd.CriteriaSpec
 	// Criteria are the card's rows the carousel pages (one-face 6b): one
@@ -704,6 +704,27 @@ func (c *Console) takeOffOf(ctx context.Context, id string, p factoryd.Plan) (re
 	return refs, whys, nil
 }
 
+// waivesCriteria reports whether a close of card id waives criteria: it is
+// a plan at rest whose criteria stand open, and a waiver drops a
+// requirement of the spec, so the chat proposes that close at every
+// autonomy level and only the human's press runs it. A read that fails
+// counts as a waiver.
+func (c *Console) waivesCriteria(ctx context.Context, id string) bool {
+	k, ok, err := c.cfg.Tasks.Task(ctx, id)
+	if err != nil {
+		return true
+	}
+	if !ok || !factoryd.ClosablePlan(k) {
+		return false
+	}
+	_, p, _, err := c.planTable(ctx, k.ID, 0)
+	if err != nil {
+		return true
+	}
+	open, err := factoryd.PlanOpenCriteria(ctx, planReader{c.cfg.Tasks, c.cfg.Events}, k.ID, p)
+	return err != nil || len(open) > 0
+}
+
 // planTable is revision n (0 the newest) of plan task id's plan: the
 // revision and its plan; false when there is none.
 func (c *Console) planTable(ctx context.Context, id string, n int) (factoryd.PlanRevision, factoryd.Plan, bool, error) {
@@ -812,11 +833,11 @@ func (c *Console) criterionFragment(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// confirm records the member's confirmation that the plan's delivered
-// cards meet its criteria (doConfirmCriteria).
+// confirm records the human's confirmation that the plan's delivered
+// cards meet its criteria, their note the evidence (doConfirmCriteria).
 func (c *Console) confirm(w http.ResponseWriter, r *http.Request) {
 	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
-		return c.doConfirmCriteria(ctx, a, id, "")
+		return c.doConfirmCriteria(ctx, a, id, r.PostFormValue("note"))
 	})
 }
 

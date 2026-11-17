@@ -388,8 +388,10 @@ type SessionInput struct {
 	// its limits from it; 0 (a workflow from before the pin) reads the
 	// version in force.
 	PolicyVersion int64
-	// AgentTime and CheckIn are TaskConfig's, the task's resolved values;
-	// zero falls back to the pinned policy's limits.
+	// AgentTime is the card's whole agent time, its class's sized by the
+	// card's size and with what was added to it (versionSessionTime);
+	// CheckIn is TaskConfig's. Zero falls back to the pinned policy's
+	// limits.
 	AgentTime time.Duration
 	CheckIn   time.Duration
 	// CheckInAsk is the check-in the workflow asks of the session's
@@ -776,6 +778,19 @@ const (
 	// the class's unsized time. A run from before reads that, and such a
 	// card asks the agent-time cap before its first session.
 	versionSizedLeast workflow.Version = 1
+	// versionCardHold (change id "card-hold"): a card in its dependency wait
+	// that a human holds (DepState.Hold) stays in the wait with no
+	// dependency open, until the hold ends. Read where the wait would end. A
+	// run from before starts the card once no dependency is open.
+	versionCardHold workflow.Version = 1
+	// versionSessionTime (change id "session-time"): a session's own agent
+	// time (SessionInput.AgentTime) is the card's whole agent time, sized
+	// and with what was added to it, so a session ends at the card's cap
+	// and its wall_clock stop is that cap. Read where it differs from the
+	// class's unsized time. A run from before gives a session the class's
+	// time, at which a large or an extended card's session stops with time
+	// of the card left.
+	versionSessionTime workflow.Version = 1
 	// versionTripModel (change id "trip-model"): a trip of a run that reads
 	// a session's opening floor (the lifecycle's, a report's) carries the
 	// model its next session opens on, so the stop's facts weigh the floor
@@ -1777,11 +1792,16 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		began := workflow.Now(t.ctx)
 		var res SessionResult
+		agentTime := t.cfg.Task.AgentTime
+		if card := t.cfg.WallClockCap + u.TimeAdded(); card != agentTime &&
+			workflow.GetVersion(t.ctx, "session-time", workflow.DefaultVersion, versionSessionTime) >= versionSessionTime {
+			agentTime = card
+		}
 		in := SessionInput{
 			TaskID: t.taskID, Attempt: attempt, Sessions: t.cfg.MaxSessions + u.SessionsAdded(), Model: model,
 			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			ParentStop: parentStop, ParentOutcome: parentOutcome, ParentTrip: parentTrip, ParentDeadEnd: parentDeadEnd,
-			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
+			PolicyVersion: t.cfg.PolicyVersion, AgentTime: agentTime, CheckIn: t.cfg.Task.CheckIn,
 		}
 		checkinPending := (t.gateFindings || t.deadFrom != "") && t.cfg.Task.CheckIn > 0
 		var gates *GateResults
