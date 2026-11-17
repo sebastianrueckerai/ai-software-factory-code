@@ -147,7 +147,10 @@ activities, each with a timeline step and a comment on the pull request:
    reaches it over the message port under a bearer of which it holds the
    hash alone. Each entry is bounded by `REPRO_TIMEOUT`, the whole run by
    `PROOFS_BUDGET` (35 minutes), and neither mounts the project's shared
-   cache: Go and npm build cold under `/build`.
+   cache: Go and npm build cold under `/build`. A worker that ran no
+   entry and says why, as a fetch that failed for good, ran no
+   criterion: it is the start escalation, with no row, and the answer
+   runs the gate again.
    Per entry the worker writes the proof's file into the tree and runs
    `bash check test <suite> [<name>]` there by exec, with `CHECK_REPORT`
    and `CHECK_ARTIFACTS` bound, and one stdout line answers the exit, the

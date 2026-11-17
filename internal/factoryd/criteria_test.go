@@ -1337,8 +1337,8 @@ func TestGateCriteriaOpensAProofOnce(t *testing.T) {
 }
 
 // A blind proof the worker never started had no try: a pod that ended
-// before it, a worker that ran no entry, or an entry the worker could not
-// start (its budget ran out, or its file could not be placed). It stays
+// before it, or an entry the worker could not start (its budget ran out,
+// or its file could not be placed). It stays
 // stored and opens nothing; a criterion's row is unmet and its line,
 // which carries no code, is the finding; a hold-out stays out of every
 // surface, its verdict on the line unrunnable.
@@ -1347,7 +1347,6 @@ func TestGateCriteriaKeepsABlindProofThePodNeverRan(t *testing.T) {
 	plan := Plan{Criteria: []PlanCriterion{{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."}, blindPlan().Criteria[0]}}
 	green := harness.ProofRun{ID: "all_green", Started: true, Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))}
 	ended := proofLines(green)
-	closing, _ := json.Marshal(harness.WorkerEnvelope{Type: "proofs", Proofs: &harness.Proofs{Error: "proofs mode: the fetch failed"}})
 	const outOfBudget = "proofs mode: the run's 35m0s ran out before this entry"
 	unstarted := proofLines(green, harness.ProofRun{ID: "size_bound", Exit: -1, Output: outOfBudget},
 		harness.ProofRun{ID: "holdout-4", Exit: -1, Output: "proofs mode: write proofs/key_log/key_log_test.go: no room"})
@@ -1357,7 +1356,6 @@ func TestGateCriteriaKeepsABlindProofThePodNeverRan(t *testing.T) {
 		holdouts  string
 	}{
 		"a pod that ended early":           {ended[:strings.LastIndex(ended, "\n")], proofsEndedEarly, blindRows()[:1], `[]`},
-		"a worker that ran none":           {string(closing), "proofs mode: the fetch failed", []PlanProof{blindRows()[0], blindRows()[3]}, `[{"id":"holdout-4","verdict":"unrunnable"}]`},
 		"entries the worker did not start": {unstarted, "check test wrote no report (exit -1): " + outOfBudget, []PlanProof{blindRows()[0], blindRows()[3]}, `[{"id":"holdout-4","verdict":"unrunnable"}]`},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1399,6 +1397,30 @@ func TestGateCriteriaKeepsABlindProofThePodNeverRan(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A worker that ran no entry and says why, as a fetch that failed for
+// good, ran no criterion: it is the start escalation, no row and no
+// finding, and the answer runs the gate again.
+func TestGateCriteriaEscalatesAWorkerThatRanNoEntry(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	r, _, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+	proofsWorker(t, r)
+	seedBlindPlan(t, store, Plan{Criteria: []PlanCriterion{{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."}, blindPlan().Criteria[0]}}, []PlanProof{blindRows()[0], blindRows()[3]})
+	closing, _ := json.Marshal(harness.WorkerEnvelope{Type: "proofs", Proofs: &harness.Proofs{Error: "proofs mode: the fetch failed"}})
+	results, errs := runCriteriaWithPods(t, r, kube, string(closing))
+	want := "the sandbox cannot start at proofs mode, and no session can fix it: fix the cause below, " +
+		"then answer to run the criteria gate again, or close the card.\nstart failed: proofs mode: the fetch failed"
+	if errs[0] != nil || results[0].Escalate != want || len(results[0].Findings) != 0 || EscalationSource(results[0].Escalate) != "start" {
+		t.Fatalf("result = (%+v, %v), want the start escalation:\n%s", results[0], errs[0], want)
+	}
+	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(rows) != 0 {
+		t.Fatalf("verdict rows = %+v, want none from a run of no entry", rows)
+	}
+	if step := timelineStep(t, objects, "t1", "gate_criteria"); step["start_failed"] != "start failed: proofs mode: the fetch failed" {
+		t.Fatalf("line = %v, want the start failure", step)
 	}
 }
 
