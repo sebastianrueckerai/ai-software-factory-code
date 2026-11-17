@@ -97,11 +97,20 @@ type QueuePlace struct {
 }
 
 // MergeQueuePlaces answers the place of every task in any project's merge
-// queue, ordered as QueueHead orders them.
+// queue, as EnterQueue gives the turn: ordered as QueueHead orders them,
+// except that a paused queue puts its pause's own cards first and holds
+// every other task behind them.
 func (s *PGStore) MergeQueuePlaces(ctx context.Context) (map[string]QueuePlace, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT q.task_id, q.ahead, q.head, COALESCE(h.issue_number, 0) FROM (
-		SELECT task_id, row_number() OVER w - 1 AS ahead, first_value(task_id) OVER w AS head FROM merge_queue
-		WINDOW w AS (PARTITION BY project ORDER BY entered_at, task_id)) q JOIN tasks h ON h.id = q.head`)
+	rows, err := s.db.QueryContext(ctx, `SELECT r.task_id, r.ahead, r.head, COALESCE(h.issue_number, 0) FROM (
+		SELECT q.task_id,
+			CASE WHEN q.is_pause THEN 0
+			     ELSE row_number() OVER (PARTITION BY q.project, q.is_pause ORDER BY q.entered_at, q.task_id) - 1 + q.paused::int END AS ahead,
+			CASE WHEN q.paused THEN q.pause_head ELSE first_value(q.task_id) OVER (PARTITION BY q.project ORDER BY q.entered_at, q.task_id) END AS head
+		FROM (SELECT mq.project, mq.task_id, mq.entered_at, p.project IS NOT NULL AS paused,
+			COALESCE(mq.task_id IN (p.fix_task, p.revert_task), false) AS is_pause,
+			CASE WHEN p.fix_task <> '' THEN p.fix_task ELSE COALESCE(p.revert_task, '') END AS pause_head
+			FROM merge_queue mq LEFT JOIN queue_pauses p ON p.project = mq.project) q) r
+		LEFT JOIN tasks h ON h.id = r.head`)
 	if err != nil {
 		return nil, err
 	}

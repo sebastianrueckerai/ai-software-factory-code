@@ -2129,7 +2129,7 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 		titled := k.Kind == "human" && k.Question != nil
 		if e, ok := newest[k.ID]; ok {
 			k.Activity = activityLine(e)
-			if f, _ := e.Detail["issue"].(float64); e.Kind == "queue_group_wait" && f > 0 {
+			if f, _ := e.Detail["issue"].(float64); e.Kind == "queue_group_wait" && f > 0 && k.Gate == factoryd.GateMergeQueue {
 				k.Activity, live = fmt.Sprintf("waits for plan #%d to close", int64(f)), false
 			}
 			if k.MergeBehind > 0 {

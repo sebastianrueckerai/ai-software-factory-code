@@ -53,7 +53,7 @@ func (d CardDigest) Render() string {
 		head = append(head, "slot held")
 	}
 	head = append(head, statusText(h.Status, h.Gate))
-	if h.MergeQueue != nil && h.MergeQueue.Ahead > 0 {
+	if h.MergeQueue != nil && h.MergeQueue.Ahead > 0 && h.MergeQueue.HeadIssue > 0 {
 		head = append(head, fmt.Sprintf("waits to merge behind #%d", h.MergeQueue.HeadIssue))
 	}
 	var b strings.Builder

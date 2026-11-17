@@ -56,14 +56,29 @@ func (s *fakeStore) QueueHead(ctx context.Context, project string) (string, bool
 
 func (s *fakeStore) MergeQueuePlaces(ctx context.Context) (map[string]QueuePlace, error) {
 	out := map[string]QueuePlace{}
-	heads := map[string]queueEntry{}
+	heads := map[string]string{}
 	ahead := map[string]int{}
 	for _, e := range s.queue {
-		if _, ok := heads[e.project]; !ok {
-			heads[e.project] = e
+		p, paused := s.pauses[e.project]
+		isPause := paused && (e.task == p.FixTask || e.task == p.RevertTask)
+		head, ok := heads[e.project]
+		if !ok {
+			head = e.task
+			if paused {
+				head = cmp.Or(p.FixTask, p.RevertTask)
+			}
+			heads[e.project] = head
+			if paused {
+				ahead[e.project] = 1
+			}
 		}
-		out[e.task] = QueuePlace{Ahead: ahead[e.project], HeadTask: heads[e.project].task, HeadIssue: s.tasks[heads[e.project].task].IssueNumber}
-		ahead[e.project]++
+		n := ahead[e.project]
+		if isPause {
+			n = 0
+		} else {
+			ahead[e.project]++
+		}
+		out[e.task] = QueuePlace{Ahead: n, HeadTask: head, HeadIssue: s.tasks[head].IssueNumber}
 	}
 	return out, nil
 }
@@ -2176,27 +2191,35 @@ func TestPGStoreMergeQueuePlaces(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, merge_queue CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	for id, n := range map[string]int64{"a1": 1949, "a2": 1984, "a3": 2098, "b1": 77} {
+	for id, n := range map[string]int64{"a1": 1949, "a2": 1984, "a3": 2098, "b1": 77, "p1": 10, "p2": 11, "fix": 12} {
 		repo := "sf/code"
-		if id == "b1" {
+		switch id {
+		case "b1":
 			repo = "sf/other"
+		case "p1", "p2", "fix":
+			repo = "sf/paused"
 		}
 		if err := s.CreateTask(ctx, Task{ID: id, Status: "in-review", Repository: repo, Track: "direct", IssueNumber: n}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, q := range []struct{ project, id, at string }{{"sf/code", "a3", "2026-11-16T12:02:00Z"}, {"sf/code", "a1", "2026-11-16T09:00:00Z"},
-		{"sf/other", "b1", "2026-11-16T10:00:00Z"}, {"sf/code", "a2", "2026-11-16T09:46:00Z"}} {
+		{"sf/other", "b1", "2026-11-16T10:00:00Z"}, {"sf/code", "a2", "2026-11-16T09:46:00Z"},
+		{"sf/paused", "p1", "2026-11-16T08:00:00Z"}, {"sf/paused", "p2", "2026-11-16T08:30:00Z"}, {"sf/paused", "fix", "2026-11-16T09:00:00Z"}} {
 		if _, err := s.db.ExecContext(ctx, `INSERT INTO merge_queue (project, task_id, entered_at) VALUES ($1, $2, $3)`, q.project, q.id, q.at); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO queue_pauses (project, run_id, sha, since, fix_task) VALUES ('sf/paused', 5, 'red1', now(), 'fix')`); err != nil {
+		t.Fatal(err)
 	}
 	got, err := s.MergeQueuePlaces(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]QueuePlace{
-		"a1": {0, "a1", 1949}, "a2": {1, "a1", 1949}, "a3": {2, "a1", 1949}, "b1": {0, "b1", 77}}
+		"a1": {0, "a1", 1949}, "a2": {1, "a1", 1949}, "a3": {2, "a1", 1949}, "b1": {0, "b1", 77},
+		"fix": {0, "fix", 12}, "p1": {1, "fix", 12}, "p2": {2, "fix", 12}}
 	if !maps.Equal(got, want) {
 		t.Fatalf("MergeQueuePlaces = %v, want %v", got, want)
 	}

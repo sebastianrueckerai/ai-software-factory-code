@@ -115,10 +115,16 @@ func TestBoardNamesTheCardAheadInTheMergeQueue(t *testing.T) {
 	old := time.Now().Add(-4 * time.Hour)
 	r.tasks.set("",
 		factoryd.Task{ID: "t-behind", Kind: "agent", Status: "in-review", Gate: factoryd.GateMergeQueue, Repository: "sf/code", Objective: "behind", CreatedAt: old},
-		factoryd.Task{ID: "t-held", Kind: "agent", Status: "in-review", Gate: factoryd.GateMergeQueue, Repository: "sf/code", Objective: "held", CreatedAt: old})
-	r.tasks.tasks[0].MergeBehind = 1949
+		factoryd.Task{ID: "t-held", Kind: "agent", Status: "in-review", Gate: factoryd.GateMergeQueue, Repository: "sf/code", Objective: "held", CreatedAt: old},
+		factoryd.Task{ID: "t-front", Kind: "agent", Status: "in-review", Gate: factoryd.GateMergeQueue, Repository: "sf/code", Objective: "front", CreatedAt: old})
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-behind" {
+			r.tasks.tasks[i].MergeBehind = 1949
+		}
+	}
 	for id, e := range map[string]factoryd.Event{
 		"t-behind": {Kind: factoryd.EventTaskStatus, Detail: map[string]any{"status": "in-review", "gate": factoryd.GateMergeQueue}},
+		"t-front":  {Kind: factoryd.EventTaskStatus, Detail: map[string]any{"status": "in-review", "gate": factoryd.GateMergeQueue}},
 		"t-held":   {Kind: "queue_group_wait", Detail: map[string]any{"project": "sf/code", "plan": "p-g", "issue": float64(1939)}},
 	} {
 		e.Repository, e.TaskID, e.Actor, e.Via, e.At = "sf/code", id, "factoryd", factoryd.ViaButton, old
@@ -132,5 +138,8 @@ func TestBoardNamesTheCardAheadInTheMergeQueue(t *testing.T) {
 		if strings.Contains(face, "stale") || strings.Contains(face, "nothing for over") || !strings.Contains(face, words) {
 			t.Errorf("%s is stale or lacks %q:\n%s", id, words, face)
 		}
+	}
+	if face := faceOf(t, body, "t-front"); !strings.Contains(face, "stale") || strings.Contains(face, "waits to merge behind") || strings.Contains(face, "waits for plan") {
+		t.Errorf("the card at the front of the queue lacks the ring or names a card ahead:\n%s", face)
 	}
 }

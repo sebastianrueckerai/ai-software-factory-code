@@ -221,7 +221,7 @@ func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTas
 		return nil, err
 	}
 	for i := range tasks {
-		if p, ok := places[tasks[i].ID]; ok && p.Ahead > 0 {
+		if p, ok := places[tasks[i].ID]; ok && p.Ahead > 0 && p.HeadIssue > 0 {
 			tasks[i].MergeBehind = p.HeadIssue
 		}
 	}

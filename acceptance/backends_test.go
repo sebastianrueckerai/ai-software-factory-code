@@ -1501,7 +1501,7 @@ func (s *acceptanceStore) MergeQueuePlaces(context.Context) (map[string]factoryd
 	defer s.mu.Unlock()
 	out := map[string]factoryd.QueuePlace{}
 	for i, id := range s.queue {
-		out[id] = factoryd.QueuePlace{Ahead: i, HeadTask: s.queue[0]}
+		out[id] = factoryd.QueuePlace{Ahead: i, HeadTask: s.queue[0], HeadIssue: s.tasks[s.queue[0]].IssueNumber}
 	}
 	return out, nil
 }
