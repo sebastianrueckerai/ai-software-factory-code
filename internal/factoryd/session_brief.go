@@ -56,23 +56,35 @@ func (s *PGStore) SessionBriefs(ctx context.Context, taskID string) ([]SessionBr
 // same text again is stored once, and another refused
 // (ErrSessionBriefStored).
 func (s *PGStore) StoreSessionBrief(ctx context.Context, taskID, sessionID, text string) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
 	var n int
-	var kept bool
-	err := s.db.QueryRowContext(ctx, `WITH me AS (SELECT created_at, id FROM sessions WHERE id = $2 AND task_id = $1),
+	var inserted bool
+	if err := tx.QueryRowContext(ctx, `WITH me AS (SELECT created_at, id FROM sessions WHERE id = $2 AND task_id = $1),
 			n AS (SELECT count(*)::int AS n FROM sessions s, me WHERE s.task_id = $1 AND (s.created_at, s.id) <= (me.created_at, me.id)),
 			ins AS (INSERT INTO session_briefs (task_id, session, brief) SELECT $1, n, $3 FROM n WHERE n > 0
 				ON CONFLICT (task_id, session) DO NOTHING RETURNING 1)
-		SELECT n, EXISTS (SELECT 1 FROM ins) OR EXISTS (SELECT 1 FROM session_briefs WHERE task_id = $1 AND session = n AND brief = $3) FROM n`,
-		taskID, sessionID, text).Scan(&n, &kept)
-	switch {
-	case err != nil:
+		SELECT n, EXISTS (SELECT 1 FROM ins) FROM n`, taskID, sessionID, text).Scan(&n, &inserted); err != nil {
 		return 0, err
-	case n == 0:
-		return 0, fmt.Errorf("session %s of %s: %w", sessionID, taskID, ErrNotFound)
-	case !kept:
-		return n, ErrSessionBriefStored{Task: taskID, Session: n}
 	}
-	return n, nil
+	if n == 0 {
+		return 0, fmt.Errorf("session %s of %s: %w", sessionID, taskID, ErrNotFound)
+	}
+	if !inserted {
+		// a statement of its own: its snapshot holds the row a store that
+		// raced this one committed while the insert waited on it
+		var same bool
+		if err := tx.QueryRowContext(ctx, `SELECT brief = $3 FROM session_briefs WHERE task_id = $1 AND session = $2`, taskID, n, text).Scan(&same); err != nil {
+			return 0, err
+		}
+		if !same {
+			return n, ErrSessionBriefStored{Task: taskID, Session: n}
+		}
+	}
+	return n, tx.Commit()
 }
 
 // maxSessionBriefBody bounds the body of the gateway's hand-over: a text at

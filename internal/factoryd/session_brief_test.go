@@ -151,6 +151,52 @@ func TestStoreSessionBriefNumbersTheCardsSessions(t *testing.T) {
 	}
 }
 
+// A post that arrives while another one's row of the same session is not
+// committed yet waits for it, then compares the texts: the same text is
+// stored once and succeeds, another is refused.
+func TestStoreSessionBriefWhileAnotherStores(t *testing.T) {
+	ctx := context.Background()
+	for text, want := range map[string]error{"the text": nil, "a rebuilt text": ErrSessionBriefStored{Task: "t-1", Session: 1}} {
+		s := pgSessionStore(t)
+		if err := s.CreateTask(ctx, Task{ID: "t-1", Kind: "agent", Status: "running", Track: policy.TrackDirect, Repository: "sf/r", BudgetEUR: 2, Objective: "Fix it"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.InsertSession(ctx, Session{ID: "s-1", TaskID: "t-1"}); err != nil {
+			t.Fatal(err)
+		}
+		first, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := first.ExecContext(ctx, `INSERT INTO session_briefs (task_id, session, brief) VALUES ('t-1', 1, 'the text')`); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := s.StoreSessionBrief(ctx, "t-1", "s-1", text)
+			done <- err
+		}()
+		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			var waiting int
+			if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+				t.Fatal(err)
+			}
+			if waiting > 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the second post never waited on the first's row")
+			}
+		}
+		if err := first.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-done; !errors.Is(err, want) {
+			t.Errorf("%q while the first stores: %v, want %v", text, err, want)
+		}
+	}
+}
+
 // fakeSessionBriefs answers StoreSessionBrief with err and records the call.
 type fakeSessionBriefs struct {
 	got []string
