@@ -212,7 +212,8 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		o.Brief.Approvals = append(o.Brief.Approvals, ap)
 	}
 	cs, err := c.caseSetOf(ctx, bt.Repository)
-	if err != nil {
+	casesRead := err == nil
+	if !casesRead {
 		problem("cases", "Reload the board.", err)
 	}
 	v.cases = cs
@@ -245,6 +246,10 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 				o.Ask.denied = append(o.Ask.denied, a.Label)
 				return nil, nil
 			}
+			if o.Pending && a.OwnWords() {
+				// the answers the run has not taken come first
+				return nil, nil
+			}
 			return casePress(v, k, *row, a, key)
 		}, r.URL.Query().Get("press"), seen)
 		o.Ask.whoMay()
@@ -271,7 +276,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		if k.Reason != "" {
 			o.Brief.Evidence = append(o.Brief.Evidence, evidence{Label: "The raw text, for copying", Raw: sanitize.Outbound(scrubText(k.Reason), v.policy.Document.LinkHosts)})
 		}
-	case k.Status == "waiting-human" && len(o.Brief.Approvals) == 0:
+	case casesRead && k.Status == "waiting-human" && len(o.Brief.Approvals) == 0:
 		o.Sent = true
 	}
 	if o.Ask == nil && !o.Sent && len(o.Brief.Approvals) > 0 {
@@ -326,7 +331,9 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 	if err != nil {
 		problem("brief", "Reload the board.", err)
 	} else {
-		o.AgentView = brief.AgentText()
+		if bt.Kind != "human" {
+			o.AgentView = brief.AgentText()
+		}
 		// the life fold names the routine, so the body drops its stamp
 		body := brief.Text.Body
 		if i := strings.LastIndex(body, "\n"); o.Life.Routine != nil && strings.HasPrefix(body[i+1:], factoryd.RoutineProvenance) {
@@ -848,9 +855,18 @@ func (c *Console) planFoldOf(ctx context.Context, v *boardView, k card, p *facto
 	return f
 }
 
+// requestHints are what the full brief holds of each kind of request.
+var requestHints = map[string]string{factoryd.ApprovalMerge: "the pull request", factoryd.ApprovalResource: "the server",
+	factoryd.ApprovalPlan: "the plan", factoryd.ApprovalCriteria: "the promises", factoryd.ApprovalCriteriaRerun: "the promises"}
+
 // briefHint is the full brief's hint: what it holds, counted.
 func briefHint(b briefFold) string {
 	var parts []string
+	for _, ap := range b.Approvals {
+		if h := requestHints[ap.Kind]; h != "" && !slices.Contains(parts, h) {
+			parts = append(parts, h)
+		}
+	}
 	if n := len(b.Acceptance); n > 0 {
 		parts = append(parts, fmt.Sprintf("%d %s", n, plural(n, "promise")))
 	}

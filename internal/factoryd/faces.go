@@ -168,6 +168,9 @@ func RecommendationOf(detail map[string]any) Recommendation {
 // mostAnswers bounds the answers of one face.
 const mostAnswers = 4
 
+// OwnWords says answer a sends the human's own words.
+func (a Answer) OwnWords() bool { return a.Variant == variantOwnWords }
+
 // Key names answer a: its action, its action and variant, or for the words
 // an agent offered, "say:" and the words.
 func (a Answer) Key() string {

@@ -1,7 +1,9 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -64,11 +66,12 @@ func textOutside(n *html.Node, skip func(*html.Node) bool) string {
 func quoted(n *html.Node) bool { return hasClass(n, "quote") }
 
 // openedProse are the classes of the prose above an opened card's folds.
-var openedProse = []string{"o-title", "o-why", "o-question", "o-askwhy", "o-story", "o-by", "o-who", "o-note", "o-sent", "o-summary"}
+var openedProse = []string{"o-title", "o-why", "o-question", "o-askwhy", "o-story", "o-by", "o-who", "o-note", "o-sent", "o-summary", "effect", "problem"}
 
 // Every opened card of the gallery meets the contract: the head, the ask
 // block, the summary and the folds in that order; at most 900 characters
-// of prose above the folds; 2 to 4 answers in the ask block, each a
+// of its own prose above the folds, effect and problem lines counted and
+// a writer's quoted words, shown whole, not; 2 to 4 answers in the ask block, each a
 // button with its effect line, and beside an answer the viewer may not
 // press, or in place of all, the line that names who can; no field shows
 // before a press; every fold is
@@ -147,11 +150,13 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 	prose := 0
 	for _, name := range openedProse {
 		for _, p := range classed(o, name) {
-			prose += utf8.RuneCountInString(nodeText(p))
+			if !within(p, o, func(n *html.Node) bool { return n == folds }) {
+				prose += utf8.RuneCountInString(textOutside(p, quoted))
+			}
 		}
 	}
 	if prose > 900 {
-		t.Errorf("the opened card holds %d characters of prose above its folds, want at most 900:\n%s", prose, shown)
+		t.Errorf("the opened card holds %d characters of its own prose above its folds, want at most 900:\n%s", prose, shown)
 	}
 
 	if ask != nil {
@@ -189,10 +194,32 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 			t.Errorf("a fold stands open: %s", nodeText(n))
 		}
 		field := n.Data == "select" || n.Data == "textarea" || n.Data == "input" && htmlAttr(n, "type") != "hidden"
+		typed := n.Data == "textarea" || n.Data == "input" && slices.Contains([]string{"text", "number"}, htmlAttr(n, "type"))
+		if typed && (htmlAttr(n, "id") == "" || !slices.ContainsFunc(n.Attr, func(a html.Attribute) bool { return a.Key == "hx-preserve" })) {
+			t.Errorf("the typed field %s loses its words on a swap:\n%s", htmlAttr(n, "name"), shown)
+		}
 		if field && !within(n, o, func(p *html.Node) bool {
 			return slices.ContainsFunc(p.Attr, func(a html.Attribute) bool { return a.Key == "hidden" }) || standingForm(p)
 		}) {
 			t.Errorf("the field %s shows before a press:\n%s", htmlAttr(n, "name"), shown)
+		}
+	}
+
+	// each press's fields sit in its own answer's form, so a send posts
+	// that answer's fields alone
+	for n := range o.Descendants() {
+		box := htmlAttr(n, "aria-controls")
+		if n.Type != html.ElementNode || !hasClass(n, "pick") || box == "" {
+			continue
+		}
+		form := n.Parent
+		for form != nil && form.Data != "form" {
+			form = form.Parent
+		}
+		if form == nil || !slices.ContainsFunc(slices.Collect(form.Descendants()), func(d *html.Node) bool {
+			return d.Type == html.ElementNode && d.Data == "fieldset" && htmlAttr(d, "id") == box
+		}) {
+			t.Errorf("the press %q opens fields outside its own form:\n%s", nodeText(n), shown)
 		}
 	}
 
@@ -251,7 +278,7 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 	read := func(n *html.Node) {
 		texts, whole = append(texts, textOutside(n, quoted)), append(whole, textOutside(n, func(*html.Node) bool { return false }))
 	}
-	for _, name := range append(slices.Clone(openedProse), "o-line", "pick", "effect", "o-label") {
+	for _, name := range append(slices.Clone(openedProse), "o-line", "pick", "o-label") {
 		for _, p := range classed(o, name) {
 			read(p)
 		}
@@ -544,5 +571,63 @@ func TestAddMoneyOpensWithTheAsksAmount(t *testing.T) {
 		if got.Res.Action != tc.key || fmt.Sprintf("%.2f", got.Res.Args["eur"]) != tc.amount || got.TaskID != target {
 			t.Errorf("%s: Act took %+v, want %s of %s EUR", tc.kind, got.Res, tc.key, tc.amount)
 		}
+	}
+}
+
+// A card that holds answers its run has not taken says so, and its
+// answers in the human's own words wait: "Answer in my words" shows
+// disabled, while the answers that end or hold the card stay.
+func TestPendingAnswersHoldTheOwnWords(t *testing.T) {
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 15,
+		Objective: "add the feed"}, AnswersPending: 1}}
+	seatAsk(r, "t-q", factoryd.CaseAgentEscalate, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts = 1 }))
+	r.openCases["t-q"][0].Problem = factoryd.AgentAsks + "Which port does the feed use?"
+	ck, _ := r.loggedIn(t)
+	body := drawer(t, r, ck, "t-q", "overview")
+	ask := askBlockOf(t, body)
+	if !strings.Contains(body, `<p class="o-sent liveness" role="status">This card holds answers its run has not taken.`) ||
+		!strings.Contains(ask, `<button type="button" class="pick" disabled>Answer in my words</button>`) || strings.Contains(ask, `data-answer="continue/own_words"`) {
+		t.Errorf("a card with pending answers offers its own words:\n%s", ask)
+	}
+	for _, key := range []string{factoryd.ActNote, factoryd.ActClose} {
+		if !strings.Contains(ask, `data-answer="`+key+`"`) {
+			t.Errorf("a card with pending answers lost %s:\n%s", key, ask)
+		}
+	}
+}
+
+// A waiting card whose cases could not be read says the read failed, not
+// that its answer is on its way.
+func TestAFailedCaseReadSaysSo(t *testing.T) {
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 15,
+		Objective: "add the feed"}}}
+	r.c.cfg.CaseDesk = func(context.Context, string) (factoryd.CaseDesk, error) {
+		return factoryd.CaseDesk{}, errors.New("the store did not answer")
+	}
+	ck, _ := r.loggedIn(t)
+	body := drawer(t, r, ck, "t-q", "overview")
+	if strings.Contains(body, "on its way") || !strings.Contains(body, "The cases could not be read: the store did not answer. Reload the board.") {
+		t.Errorf("the opened card of a failed case read:\n%s", body)
+	}
+}
+
+// The folds' hints say what they hold: the full brief of a card with a
+// pending request names the request's evidence, and a human card, which no
+// agent works, holds no agent's view.
+func TestTheFoldsSayWhatTheyHold(t *testing.T) {
+	for _, tc := range []struct{ group, kind, hint string }{
+		{"approval", factoryd.ApprovalMerge, "the pull request"},
+		{"approval", factoryd.ApprovalResource, "the server"},
+	} {
+		_, _, _, _, body := openedEntry(t, tc.group, tc.kind, "")
+		if want := `<summary>The full brief<span class="hint">` + tc.hint; !strings.Contains(body, want) {
+			t.Errorf("%s: the full brief's hint is no %q:\n%s", tc.kind, tc.hint, body)
+		}
+	}
+	_, _, _, _, body := openedEntry(t, "case", string(factoryd.CaseHumanCard), "")
+	if strings.Contains(body, `data-sec="view"`) {
+		t.Errorf("a human card shows an agent's view:\n%s", body)
 	}
 }

@@ -1019,8 +1019,9 @@ form.poolctl button { height: 28px; background: none; color: var(--text); border
   .doc-pin, .doc-pin-add { height: 44px; }
   .doc-pin-add { padding: 0 10px; }
   #doc-article { padding: 12px 14px 40px; }
-  .tabs { overflow-x: auto; }
-  .tabs button { height: 44px; }
+  .tabs { flex-wrap: wrap; padding: 0 6px; }
+  .tabs button { flex: 1 0 auto; height: 44px; padding: 0 8px; }
+  .tabs button[aria-selected=true]::after { left: 8px; right: 8px; }
   .drawer-close { top: 6px; right: 6px; width: 44px; height: 44px; }
   .dr-title { padding-right: 48px; }
 }
@@ -1168,9 +1169,9 @@ details.more > summary:hover, details.more > summary:focus-visible { color: var(
 .lvlpop [data-lvl] .lw { grid-column: 2 / 4; color: var(--text-muted); font-size: 11.5px; line-height: 1.4; }
 .lvlpop [data-lvl]:hover, .lvlpop [data-lvl]:focus-visible { background: var(--bg-hover); }
 .lvlpop [data-lvl][aria-checked="true"] { background: color-mix(in srgb, var(--accent) 9%, transparent); }
-.answer { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 14px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--need) 5%, var(--bg-raised)); }
-.answer[hidden] { display: none; }
-.answer button { height: auto; min-height: 28px; margin: 0; white-space: normal; }
+.chat .answer { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 14px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--need) 5%, var(--bg-raised)); }
+.chat .answer[hidden] { display: none; }
+.chat .answer button { height: auto; min-height: 28px; margin: 0; white-space: normal; }
 .answer-l { color: var(--need-text); font: 600 12px var(--font-ui); font-variant-caps: all-small-caps; letter-spacing: .06em; }
 .answer-or { color: var(--text-faint); font: 11.5px var(--font-mono); }
 .thead .tacts { display: inline-flex; gap: 2px; margin-left: auto; }
@@ -1206,7 +1207,7 @@ details.more > summary:hover, details.more > summary:focus-visible { color: var(
   .msg.settled .fold, .msg.wake .fold { min-height: 44px; align-items: center; }
   .cmd { min-height: 44px; }
   .thead .tacts button { height: 44px; }
-  .answer button { width: 100%; height: 44px; }
+  .chat .answer button { width: 100%; height: 44px; }
   #level-btn { height: 44px; }
   .lvlpop { width: min(330px, calc(100vw - 48px)); }
   .lvlpop [data-lvl] { min-height: 44px; }
@@ -1384,7 +1385,7 @@ form.composer:has(> .growbar:hover), form.composer:has(> .growbar:focus-visible)
 .opened .o-line :is(.flag, .unchecked) { color: var(--need-text); }
 .opened .o-line a { color: inherit; }
 .opened :is(.o-ask, .o-sent, .o-summary, .o-folds) { margin: 0; padding: 14px 0; border-top: 1px solid var(--line); }
-.opened .o-label { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; color: var(--need-text); font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.opened .o-label { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; color: var(--need-text); font-size: 12px; font-weight: 600; letter-spacing: .06em; font-variant-caps: all-small-caps; }
 .opened .o-pages { display: flex; gap: 2px; margin-left: auto; }
 .opened .o-pages :is(a, span) { min-width: 24px; color: var(--accent); font-size: 16px; line-height: 1; text-align: center; text-decoration: none; }
 .opened .o-pages span { color: var(--text-faint); }
