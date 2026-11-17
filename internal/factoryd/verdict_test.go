@@ -1808,6 +1808,12 @@ func TestPlanCloseOffMainTakesAnInvariantTheGateMet(t *testing.T) {
 // criterion c2 and a runner whose gate is gate.
 func gatePlan(t *testing.T, budget, spent float64, gate func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error)) (*Runner, *fakeStore) {
 	t.Helper()
+	return gatePlanOn(t, &prForgejo{pulls: map[int64]string{9: `{"number":9,"state":"closed","merged":true,"head":{"sha":"h9"},"base":{"ref_name":"main"}}`}}, budget, spent, gate)
+}
+
+// gatePlanOn is gatePlan on forgejo fj.
+func gatePlanOn(t *testing.T, fj *prForgejo, budget, spent float64, gate func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error)) (*Runner, *fakeStore) {
+	t.Helper()
 	ctx := context.Background()
 	s := seedVerdictPlan(t, "t-plan", "t-int", "done")
 	integration := s.tasks["t-int"]
@@ -1818,7 +1824,6 @@ func gatePlan(t *testing.T, budget, spent float64, gate func(*fakeStore) func(co
 	if err := s.PutCriteriaVerdicts(ctx, "t-int", "approver", "sebastian", []CriterionVerdict{{Criterion: "c2", Verdict: "met", Kind: CriterionHuman}}); err != nil {
 		t.Fatal(err)
 	}
-	fj := &prForgejo{pulls: map[int64]string{9: `{"number":9,"state":"closed","merged":true,"head":{"sha":"h9"},"base":{"ref_name":"main"}}`}}
 	forgejo := &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
 	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}, forgejo: forgejo}
 	r.criteriaGate = gate(s)
@@ -2961,58 +2966,92 @@ func gateOutcomes(s *fakeStore) []string {
 	return out
 }
 
-// A gate whose invariant's checks still run records pending: no attempt is
-// spent, no ask opens, and the next pass reads the checks again; green then
-// writes the rows and records ran on the same attempt.
-func TestCriteriaGatePassReadsPendingChecksAgain(t *testing.T) {
-	ctx := context.Background()
-	answers := []CriteriaResult{{Pending: true, Card: []string{"criterion c3: the required checks are still running on h9"}}, {}}
-	calls := 0
-	r, s := gatePlan(t, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+// pendingGate is a plan whose gate answers pending on its first call and
+// then the next answer of later, over a head h9 whose checks are those of
+// statuses, in order; calls counts the gate's calls.
+func pendingGate(t *testing.T, statuses []string, later CriteriaResult) (r *Runner, s *fakeStore, calls *int, now *time.Time) {
+	t.Helper()
+	fj := &prForgejo{pulls: map[int64]string{9: `{"number":9,"state":"closed","merged":true,"head":{"sha":"h9"},"base":{"ref_name":"main"}}`},
+		statusesBySHA: map[string][]string{"h9": statuses}}
+	calls = new(int)
+	r, s = gatePlanOn(t, fj, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 		return func(ctx context.Context, taskID string, _ int64, _, _ string) (CriteriaResult, error) {
-			res := answers[calls]
-			calls++
-			if !res.Pending {
-				return res, gateMet(ctx, s, taskID)
+			*calls++
+			if *calls == 1 {
+				return CriteriaResult{Pending: true}, nil
 			}
-			return res, nil
+			if !later.Pending {
+				return later, gateMet(ctx, s, taskID)
+			}
+			return later, nil
 		}
 	})
+	t0 := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	now = &t0
+	r.now = func() time.Time { return *now }
+	return r, s, calls, now
+}
+
+var (
+	checksRunning = statusBody("pending", [4]string{"pending", "pr / test", "", "running"})
+	checksGreen   = statusBody("success", [4]string{"success", "pr / test", "", ""})
+)
+
+// An invariant's checks still running record one pending outcome; a later
+// pass within the checks bound reads the head's checks alone: still
+// pending, it records nothing and starts no gate run, and no ask opens.
+func TestCriteriaGatePassWaitsOnPendingChecks(t *testing.T) {
+	ctx := context.Background()
+	r, s, calls, now := pendingGate(t, []string{checksRunning}, CriteriaResult{})
 	sweep(ctx, r)
-	if pending, _ := s.ApprovalRequests(ctx, "pending"); calls != 1 || len(pending) != 0 || !slices.Equal(gateOutcomes(s), []string{"pending#1"}) {
-		t.Fatalf("after the first pass: calls %d, pending %+v, outcomes %v; want one pending run and no ask", calls, pending, gateOutcomes(s))
+	if *calls != 1 || !slices.Equal(gateOutcomes(s), []string{"pending#1"}) {
+		t.Fatalf("first pass: calls %d, outcomes %v; want one gate run and one pending record", *calls, gateOutcomes(s))
 	}
-	if due, err := r.gateDue(ctx, "t-plan", s.tasks["t-int"]); err != nil || !due {
-		t.Fatalf("gateDue = %v, %v; want due", due, err)
-	}
+	events := len(s.events)
+	*now = now.Add(time.Minute)
 	sweep(ctx, r)
-	r.CriteriaPass(ctx)
-	if pending, _ := s.ApprovalRequests(ctx, "pending"); calls != 2 || len(pending) != 0 || closeRows(s) != 1 || !slices.Equal(gateOutcomes(s), []string{"pending#1", "ran#1"}) {
-		t.Fatalf("after the second pass: calls %d, pending %+v, closes %d, outcomes %v; want ran on attempt 1 and the plan closed", calls, pending, closeRows(s), gateOutcomes(s))
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); *calls != 1 || len(s.events) != events || len(pending) != 0 {
+		t.Fatalf("second pass: calls %d, new events %d, pending %+v; want no gate run, no record, no ask", *calls, len(s.events)-events, pending)
 	}
 }
 
-// Checks still pending past the checks wait's bound, counted from the
-// first pending record, cut the attempt, which the existing ask follows.
-func TestCriteriaGatePassCutsPendingChecksPastTheBound(t *testing.T) {
+// Once the checks conclude, the next pass runs the gate: its rows land and
+// ran is recorded on the same attempt, and the plan closes with no ask.
+func TestCriteriaGatePassRunsTheGateWhenPendingChecksConclude(t *testing.T) {
 	ctx := context.Background()
-	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
-			return CriteriaResult{Pending: true}, nil
-		}
-	})
-	now := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
-	r.now = func() time.Time { return now }
-	bound := r.cfg.Policy().ChecksBound("sf/code")
+	r, s, calls, now := pendingGate(t, []string{checksGreen}, CriteriaResult{})
 	sweep(ctx, r)
-	now = now.Add(bound - time.Minute)
+	*now = now.Add(time.Minute)
 	sweep(ctx, r)
-	if want := []string{"pending#1", "pending#1"}; !slices.Equal(gateOutcomes(s), want) {
-		t.Fatalf("within the bound: outcomes %v, want %v", gateOutcomes(s), want)
+	r.CriteriaPass(ctx)
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); *calls != 2 || len(pending) != 0 || closeRows(s) != 1 || !slices.Equal(gateOutcomes(s), []string{"pending#1", "ran#1"}) {
+		t.Fatalf("calls %d, pending %+v, closes %d, outcomes %v; want the gate run once more, ran on attempt 1 and the plan closed", *calls, pending, closeRows(s), gateOutcomes(s))
 	}
-	now = now.Add(2 * time.Minute)
+}
+
+// Past the checks wait's bound from the pending record, the gate runs once
+// more; checks still running end it as ran, with the reason, and the
+// criteria_rerun ask opens for the criterion with no row.
+func TestCriteriaGatePassEndsPendingChecksPastTheBound(t *testing.T) {
+	ctx := context.Background()
+	r, s, calls, now := pendingGate(t, []string{checksRunning}, CriteriaResult{Pending: true})
 	sweep(ctx, r)
-	if want := []string{"pending#1", "pending#1", "cut#1"}; !slices.Equal(gateOutcomes(s), want) {
-		t.Fatalf("past the bound: outcomes %v, want %v", gateOutcomes(s), want)
+	*now = now.Add(r.cfg.Policy().ChecksBound("sf/code") + time.Minute)
+	sweep(ctx, r)
+	if *calls != 2 || !slices.Equal(gateOutcomes(s), []string{"pending#1", "ran#1"}) {
+		t.Fatalf("calls %d, outcomes %v; want the gate run once more and ran on attempt 1", *calls, gateOutcomes(s))
+	}
+	last := s.events[len(s.events)-1]
+	if last.Detail["reason"] != "the required checks were still running on h9 after the bound" {
+		t.Fatalf("the ran record's detail = %v", last.Detail)
+	}
+	r.CriteriaPass(ctx)
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	if len(pending) != 1 || pending[0].Kind != ApprovalCriteriaRerun {
+		t.Fatalf("pending asks = %+v, want the one criteria_rerun ask", pending)
+	}
+	sweep(ctx, r)
+	if *calls != 2 {
+		t.Fatalf("calls = %d after the ask, want the gate left alone", *calls)
 	}
 }
