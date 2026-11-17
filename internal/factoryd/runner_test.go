@@ -4144,6 +4144,19 @@ func TestRunSessionWarnsNearTheBudget(t *testing.T) {
 	}
 }
 
+// messagesOf counts the warning posts among the worker's texts: the brief's
+// refusal is retried at startPoll inside one endpointWait, so only the
+// /message posts say a warning reached the worker.
+func messagesOf(texts []string) int {
+	n := 0
+	for _, text := range texts {
+		if strings.HasPrefix(text, "POST /message ") {
+			n++
+		}
+	}
+	return n
+}
+
 // A warning the worker did not take comes again on the next tick.
 func TestRunSessionRepeatsAWarningTheWorkerRefused(t *testing.T) {
 	kube := newFakeKube()
@@ -4163,9 +4176,9 @@ func TestRunSessionRepeatsAWarningTheWorkerRefused(t *testing.T) {
 		deadline := time.Now().Add(6 * time.Second)
 		for time.Now().Before(deadline) {
 			worker.mu.Lock()
-			n := len(worker.texts)
+			n := messagesOf(worker.texts)
 			worker.mu.Unlock()
-			if n >= 4 {
+			if n >= 3 {
 				break
 			}
 			time.Sleep(10 * time.Millisecond)
@@ -4174,9 +4187,9 @@ func TestRunSessionRepeatsAWarningTheWorkerRefused(t *testing.T) {
 	}()
 	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big"}, nil, hangLogs)
 	worker.mu.Lock()
-	n := len(worker.texts)
+	n := messagesOf(worker.texts)
 	worker.mu.Unlock()
-	if n < 4 {
+	if n < 3 {
 		t.Fatalf("worker got %d warnings, want the refused one again each tick", n)
 	}
 	timeline, _ := runner.objects.Get(context.Background(), "sessions/t2/timeline.jsonl")
