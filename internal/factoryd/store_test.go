@@ -1420,7 +1420,7 @@ func (s *fakeStore) ResetTaskUsage(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
-	t.Usage = TaskUsage{}
+	t.Usage = TaskUsage{ExtraLines: t.Usage.ExtraLines}
 	s.tasks[id] = t
 	return nil
 }
@@ -3050,8 +3050,8 @@ func TestPGStore(t *testing.T) {
 	if err := s.ResetTaskUsage(ctx, "t1"); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, _ := s.Task(ctx, "t1"); got.Usage != (TaskUsage{}) {
-		t.Fatalf("usage after the reset = %+v, want every counter zero, the raises too", got.Usage)
+	if got, _, _ := s.Task(ctx, "t1"); got.Usage != (TaskUsage{ExtraLines: 150}) {
+		t.Fatalf("usage after the reset = %+v, want every counter zero but the line raise of 150", got.Usage)
 	}
 	// t1 holds 10 EUR: a write that read 1000 cents sets the budget, one
 	// that read 200 sets the size and leaves it

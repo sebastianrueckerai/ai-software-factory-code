@@ -1772,11 +1772,13 @@ func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) erro
 	return oneRow(res, err, "task "+id)
 }
 
-// ResetTaskUsage zeroes every usage counter of task id, the console's
-// raises included: BecomePlan and a replan's reopen start the card over.
+// ResetTaskUsage zeroes every usage counter of task id and the console's
+// raised sessions and agent time: BecomePlan and a replan's reopen start
+// the card over. The line raise stays: a planner pushes nothing, and the
+// card that lands the plan row's work inherits it.
 func (s *PGStore) ResetTaskUsage(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = 0, attempts = 0, extra_time_ns = 0, extra_attempts = 0, poster_attempts = 0,
-		last_uncounted = false, retry_time_ns = 0, extra_lines = 0, proof_lines = 0, raised_sessions = 0, raised_time_s = 0 WHERE id = $1`, id)
+		last_uncounted = false, retry_time_ns = 0, proof_lines = 0, raised_sessions = 0, raised_time_s = 0 WHERE id = $1`, id)
 	return oneRow(res, err, "task "+id)
 }
 
