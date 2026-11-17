@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -113,8 +113,8 @@ func newActRig(t *testing.T) actRig {
 	signals, forge := &caseSignals{}, &actForge{}
 	cfg.Workflows = signals
 	objects := &fakeObjectStore{}
-	r := &Runner{store: s, objects: objects, cfg: cfg, timeline: &Timeline{Objects: objects, Events: s, Store: s},
-		forgejo: &Forgejo{BaseURL: forge.serve(t).URL, BotUser: "factory-agent", BotPassword: "pw"}}
+	r := PgRigRunner(s, objects, cfg, &Timeline{Objects: objects, Events: s, Store: s},
+		&Forgejo{BaseURL: forge.serve(t).URL, BotUser: "factory-agent", BotPassword: "pw"})
 	return actRig{r: r, s: s, c: c, signals: signals, forge: forge}
 }
 
@@ -944,7 +944,7 @@ func TestActStepNamesEveryPartOfAnExtend(t *testing.T) {
 func TestTripCaseKeepsTheCheckinStop(t *testing.T) {
 	g := newActRig(t)
 	repeat := CheckinSpendAsk + "The restart produced no new commit, the head is still c1. What should the agent do?"
-	c, _, err := g.r.tripCase(context.Background(), g.card(t), CaseFacts{}, TripInput{TaskID: "t1", Reason: repeat, CheckinStop: CheckinStopCallCap})
+	c, _, err := g.r.PgTripCase(context.Background(), g.card(t), CaseFacts{}, TripInput{TaskID: "t1", Reason: repeat, CheckinStop: CheckinStopCallCap})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1111,7 +1111,7 @@ func TestARetriedDrawThatFilledItsBoundPasses(t *testing.T) {
 func TestRecordGrantCountsItsInterventionOnce(t *testing.T) {
 	g := newActRig(t)
 	m, reader := testMetrics(t)
-	g.r.cfg.Metrics = m
+	g.r.PgSetMetrics(m)
 	key := IdentityKey(EventCardExtended, "run-1", "3")
 	for range 2 {
 		if err := g.r.RecordGrant(context.Background(), "t1", "sebastian", policy.Draw{Sessions: 1, AgentTime: 9 * time.Minute}, key); err != nil {
@@ -1205,8 +1205,8 @@ func TestSalvageCloseWithdrawsTheCardsOtherCases(t *testing.T) {
 	}
 	back := &recordingBackend{forgejoStatus: 204, litellmStatus: 200}
 	fjURL, llURL := back.srv(t)
-	g.r.completion = newCompletion(g.s, fjURL, llURL)
-	g.r.kube = newFakeKube()
+	g.r.PgSetCompletion(newCompletion(g.s, fjURL, llURL))
+	g.r.PgSetKube(newFakeKube())
 	if err := g.r.Finish(ctx, "t1", "closed", "salvaged into #9"); err != nil {
 		t.Fatal(err)
 	}

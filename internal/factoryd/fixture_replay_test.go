@@ -1142,7 +1142,7 @@ func TestReplayFixtures(t *testing.T) {
 var replayCoverage = map[string]string{
 	"I1":  "TestFilePlanRefileOfTheNewestIsANoop",
 	"I2":  "open: declined, the ask quotes the refusal instead",
-	"I3":  "TestOneSendCarriesTheDecisionTheFundAndTheNote",
+	"I3":  "internal/factoryd/pg TestOneSendCarriesTheDecisionTheFundAndTheNote",
 	"I4":  "internal/console TestChatCarriesAQuestionAStopOrAFailureLeftUnanswered",
 	"I5":  "TestIdenticalPlanRefileResolvesItsCase",
 	"I6":  "testdata/fixtures/1347.json",
@@ -1184,7 +1184,7 @@ var replayCoverage = map[string]string{
 	"S22": "testdata/fixtures/1347.json",
 	"S23": "TestReportSessionRefusesAnOpeningTheBudgetCannotPay",
 	"S24": "open: by decision, a done integration card re-runs no review",
-	"S25": "TestRung2ProposesAtAssistedAndManual",
+	"S25": "internal/factoryd/pg TestRung2ProposesAtAssistedAndManual",
 	"S26": "TestPassLoopBoundsARunAndFlagsIt",
 	"S27": "TestReplayOfAHistoryWithoutTheCasesMarkerIsRefused",
 	"S28": "TestWorkflowRunRestartedAtClosingFinishesWithItsStoredEnd",
