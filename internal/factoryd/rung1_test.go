@@ -127,7 +127,8 @@ func TestHumanOnly(t *testing.T) {
 	ci := func(kind string) Case {
 		return Case{Kind: CaseCheckinHuman, Facts: map[string]any{"reason_kind": kind}}
 	}
-	need := func(eur float64) Case { return Case{Kind: CaseBudgetFloor, Money: &CaseMoney{NeedEUR: eur}} }
+	// a card with nothing left whose next session needs 5 EUR to open
+	floor := Case{Kind: CaseBudgetFloor}
 	for _, c := range []struct {
 		name string
 		c    Case
@@ -145,14 +146,33 @@ func TestHumanOnly(t *testing.T) {
 		{"day_cap", Case{Kind: CaseDayCap}, 0, true},
 		{"merge_approval", Case{Kind: CaseMergeApproval}, 0, false},
 		{"gate_stop", Case{Kind: CaseGateStop}, 0, false},
-		{"floor beyond pool", need(5), 4, true},
-		{"floor within pool", need(5), 60, false},
-		{"floor equal to pool", need(5), 5, false},
+		{"floor beyond pool", floor, 4, true},
+		{"floor within pool", floor, 60, false},
+		{"floor equal to pool", floor, 5, false},
 	} {
-		got, why := humanOnly(c.c, CaseFacts{PoolLeft: policy.Draw{EUR: c.pool}})
+		got, why := humanOnly(c.c, CaseFacts{FloorEUR: 5, PoolLeft: policy.Draw{EUR: c.pool}})
 		if got != c.want || got == (why == "") {
 			t.Errorf("%s: humanOnly = %v %q, want %v with a reason iff true", c.name, got, why, c.want)
 		}
+	}
+}
+
+// Rung 1's human-only check, the rung's statement and the face weigh one
+// amount on a budget floor: the board's ask, the price of a session like
+// the last one past what the card may spend, 2.62 + 0.40 - 0.34 = 2.68 EUR,
+// read from the live facts, whatever the case stored when it opened.
+func TestTheRungsWeighTheBoardsAmount(t *testing.T) {
+	c := Case{Kind: CaseBudgetFloor, Money: &CaseMoney{Kind: "budget", NeedEUR: 0.66}}
+	f := CaseFacts{Kind: CaseBudgetFloor, BudgetEUR: 5.7, SpentEUR: 5.36, LeftEUR: 0.34, ReserveEUR: 0.4, FloorEUR: 0.6, CeilingEUR: 18,
+		Attempts: 2, LastSession: &LastSessionFacts{CostEUR: 2.62}, PoolLeft: policy.Draw{EUR: 2}}
+	if got, why := humanOnly(c, f); !got || why != "the card needs 2.68 EUR and the pool holds 2.00 EUR" {
+		t.Errorf("humanOnly = %v %q, want the human for 2.68 EUR against the pool's 2.00", got, why)
+	}
+	if got := (&Runner{}).rungStatement(c, f, "D", nil, 1); !strings.Contains(got, "; the next session needs 2.68 EUR more.\n") {
+		t.Errorf("the statement names no 2.68 EUR:\n%s", got)
+	}
+	if ask := FaceOf(c, Facts{CaseFacts: f}).Ask; !strings.Contains(ask, "Add 2.68 EUR") {
+		t.Errorf("the face asks %q, want 2.68 EUR", ask)
 	}
 }
 
