@@ -133,7 +133,7 @@ func TestChatClose(t *testing.T) {
 
 	ck, s := r.loggedIn(t)
 	before = r.events.count()
-	rec := r.do(post("/tasks/t-m/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-m/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the button", []any{rec.Code, rec.Header().Get("Location")}, []any{http.StatusSeeOther, "/?project=ai-software-factory-code"})
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-m", detail: map[string]any{"note": ""}})
 	equal(t, "the button's patch", r.fg.patched[1:], []string{`/api/v1/repos/sf/code/issues/5 {"state":"closed"}`})
@@ -161,7 +161,7 @@ func TestClosingAMergedCard(t *testing.T) {
 
 	ck, s := r.loggedIn(t)
 	before = r.events.count()
-	rec := r.do(post("/tasks/t-mg/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-mg/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the button", []any{rec.Code, rec.Header().Get("Location")}, []any{http.StatusSeeOther, "/?project=ai-software-factory-code"})
 	equal(t, "closed by the button", r.closed, []string{"t-mg by sebastian", "t-mg by sebastian"})
 	equal(t, "the patches", r.fg.patched, []string(nil))
@@ -1419,7 +1419,7 @@ func TestCloseADonePlan(t *testing.T) {
 		t.Errorf("the board shows a problem for a plan's criteria")
 	}
 
-	rec := r.do(post("/tasks/t-br/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-br/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the button", rec.Code, http.StatusSeeOther)
 	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/50 {"state":"closed"}`})
 	equal(t, "the closing words", r.fg.comments["/api/v1/repos/sf/code/issues/50/comments"], "closed by sebastian; its merged cards stay on main")
@@ -1466,7 +1466,7 @@ func TestCloseADonePlan(t *testing.T) {
 		r.fg.mu.Unlock()
 		return 1, factoryd.PlanCloseWords(by, note, true), true, nil
 	}
-	rec = r.do(post("/tasks/t-one/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "note": {"swept first"}}), ck)
+	rec = r.do(post("/tasks/t-one/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "close.note": {"swept first"}}), ck)
 	equal(t, "the press after the sweep", rec.Code, http.StatusSeeOther)
 	equal(t, "the words once", r.fg.commentBodies(issue53), []string{words})
 	r.c.cfg.CloseHeldPlan = func(context.Context, string, string, string, bool) (int, string, bool, error) {
@@ -1540,11 +1540,11 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 			t.Errorf("the small card of %s offers Close:\n%s", id, face)
 		}
 	}
-	if esc := escalationOf(t, r, ck, "t-cap"); !strings.Contains(esc, `name="action" value="extend" class="secondary">Allow more sessions</button>`) {
-		t.Errorf("the capped card's answer form =\n%s\nwant it to extend", esc)
+	if extend := answerForm(t, drawer(t, r, ck, "t-cap", "overview"), factoryd.ActExtend); extend.Action != "/tasks/t-cap/resolve" || extend.Label != "Allow more sessions" {
+		t.Errorf("the capped card's answer = %+v, want it to extend", extend)
 	}
-	if esc := escalationOf(t, r, ck, "t-e"); !strings.Contains(esc, `<textarea id="note-t-e-d" name="note"`) || !strings.Contains(esc, `name="action" value="note" class="secondary">Not now</button>`) {
-		t.Errorf("the question's answer form =\n%s\nwant its case's answers and the note for the words", esc)
+	if note := answerForm(t, drawer(t, r, ck, "t-e", "overview"), factoryd.ActNote); note.Action != "/tasks/t-e/resolve" || note.Label != "Not now" || !note.Values.Has("note.note") {
+		t.Errorf("the question's answer = %+v, want its case's Not now with the note for the words", note)
 	}
 	before := r.events.count()
 	rec := r.do(post("/tasks/t-cap/answer", url.Values{"csrf": {s.csrf}, "answer": {"Trim to 1 MB first."}}), ck)
@@ -1573,7 +1573,7 @@ func TestCloseACardWithoutAnIssue(t *testing.T) {
 
 	ck, s := r.loggedIn(t)
 	before = r.events.count()
-	rec := r.do(post("/tasks/t-nf/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-nf/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the button", rec.Code, http.StatusSeeOther)
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-nf", detail: map[string]any{"note": ""}})
 	equal(t, "CloseCard", r.closed, []string{"t-n by sebastian", "t-nf by sebastian"})
@@ -1651,7 +1651,7 @@ func TestCloseRemovesTheCardsOwnDependencies(t *testing.T) {
 	r, _ := newWritesRig(t)
 	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7, 9)}
 	ck, s := r.loggedIn(t)
-	rec := r.do(post("/tasks/t-f/close", url.Values{"csrf": {s.csrf}, "note": {"Not needed."}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-f/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "close.note": {"Not needed."}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the button", rec.Code, http.StatusSeeOther)
 	equal(t, "the removals", r.fg.deleted, []string{depsPath + " 7", depsPath + " 9"})
 	equal(t, "the note", r.fg.comments["/api/v1/repos/sf/code/issues/31/comments"], "Not needed.\n\nIt no longer waits on #7 and #9.")
@@ -1664,7 +1664,7 @@ func TestCloseNamesASingleDependency(t *testing.T) {
 	r, _ := newWritesRig(t)
 	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7)}
 	ck, s := r.loggedIn(t)
-	r.do(post("/tasks/t-f/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	r.do(post("/tasks/t-f/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the note", r.fg.comments["/api/v1/repos/sf/code/issues/31/comments"], "It no longer waits on #7.")
 }
 
@@ -1675,7 +1675,7 @@ func TestCloseRefusedWhenARemovalFails(t *testing.T) {
 	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7)}
 	r.fg.failDeps = "no push to https://user:pass@git.example/x with Authorization: Bearer abcdef0123456789"
 	ck, s := r.loggedIn(t)
-	rec := r.do(post("/tasks/t-f/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-f/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the status", rec.Code, http.StatusBadGateway)
 	for _, leak := range []string{"user:pass", "abcdef0123456789"} {
 		if strings.Contains(rec.Body.String(), leak) {
@@ -1695,7 +1695,7 @@ func TestCloseRefusedForGoodNamesTheEdge(t *testing.T) {
 	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7)}
 	r.fg.failDeps, r.fg.depsStatus = "not found", http.StatusNotFound
 	ck, s := r.loggedIn(t)
-	rec := r.do(post("/tasks/t-f/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-f/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the refusal", []any{rec.Code, strings.TrimSpace(rec.Body.String())}, []any{http.StatusBadGateway,
 		"Forgejo refused to remove #31's dependency on sf/code#7: not found. Remove that dependency in Forgejo, then press Close again."})
 	equal(t, "the patches", r.fg.patched, []string(nil))
@@ -1708,7 +1708,7 @@ func TestCloseRefusalNamesForgejosReason(t *testing.T) {
 	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7)}
 	r.fg.depsStay = true
 	ck, s := r.loggedIn(t)
-	rec := r.do(post("/tasks/t-f/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-f/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the refusal", []any{rec.Code, strings.TrimSpace(rec.Body.String())}, []any{http.StatusBadGateway,
 		"Forgejo refused to close the issue: cannot close this issue because it still has open dependencies. Try again in a moment."})
 }
@@ -1735,10 +1735,10 @@ func TestClosePlanRemovesItsOwnDependencies(t *testing.T) {
 	r.fg.deps = map[string][]map[string]any{plan: dependsOn(7)}
 	r.fg.failDeps = "no push"
 	ck, s := r.loggedIn(t)
-	rec := r.do(post("/tasks/t-dep/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec := r.do(post("/tasks/t-dep/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "a refused removal", []any{rec.Code, closes}, []any{http.StatusBadGateway, 0})
 	r.fg.failDeps = ""
-	rec = r.do(post("/tasks/t-dep/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	rec = r.do(post("/tasks/t-dep/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the button", rec.Code, http.StatusSeeOther)
 	equal(t, "the order", writesOf(r.fg), []string{"DELETE " + plan, "DELETE " + plan, "POST /api/v1/repos/sf/code/issues/60/comments",
 		"POST /api/v1/repos/sf/code/issues/60/comments", "PATCH /api/v1/repos/sf/code/issues/60"})
@@ -1749,7 +1749,7 @@ func TestClosePlanRemovesItsOwnDependencies(t *testing.T) {
 	// a closed plan's issue is closed already: its dependencies stay
 	r.fg.deleted = nil
 	r.fg.deps = map[string][]map[string]any{"/api/v1/repos/sf/code/issues/62/dependencies": dependsOn(7)}
-	r.do(post("/tasks/t-shut/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	r.do(post("/tasks/t-shut/resolve", url.Values{"action": {factoryd.ActClose}, "csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	// (the fake refuses the PATCH over an open dependency whatever the issue's
 	// state; only the removal is under test)
 	equal(t, "the removals on a closed plan", r.fg.deleted, []string(nil))

@@ -1,16 +1,15 @@
 package acceptance
 
 // One face every asking kind (plan #1850, criterion
-// one_face_every_asking_kind_suite): each asking card's opened card —
-// a merge request's, a resource request's, an escalation's ask, a plan's
-// question — renders exactly one decide block in the five-part shape,
-// built from the shared case-decide partial with the table's offers as
-// buttons, exactly one fund control and one note box, and its one send
-// lands the chosen answer, the fund beside it and the note in one
-// request. The merge and resource faces seat their board fixtures, as
-// the internal pinning loop does (face_test.go), so their ask and why
-// assert what approvalDecide builds from the request's own spec, never
-// the case's empty problem or its kind's placeholder.
+// one_face_every_asking_kind_suite): each asking card's opened card — a
+// merge request's, a resource request's, an escalation's ask, a plan's
+// question — renders exactly one ask block: the register's question and
+// why, built from the request's own spec, never the case's empty problem
+// or its kind's placeholder, and the register's answers, each its own
+// form with its own fields and no fund beside it. One answer's send lands
+// that answer and its words in one request. The merge and resource faces
+// seat their board fixtures, as the internal pinning loop does
+// (face_test.go).
 
 import (
 	"cmp"
@@ -75,13 +74,23 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 	}
 	mfx := seat("board-merge.json", 41)
 	rfx := seat("board-resource.json", 42)
-	// the escalation's ask on the standing waiting card, and a plan's
-	// question at the human on a plan card, as caseFromAsk opens them
+	// the escalation's ask on the standing waiting card, with the room a
+	// session needs as the Runner's facts carry it, and a plan's question
+	// at the human on a plan card, as caseFromAsk opens them
+	room, err := json.Marshal(factoryd.CaseFacts{Kind: factoryd.CaseAgentEscalate, SessionCap: 3, AgentTimeCapS: 3600, BudgetEUR: 2, LeftEUR: 2,
+		FloorEUR: 0.3, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 2}, PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var facts map[string]any
+	if err := json.Unmarshal(room, &facts); err != nil {
+		t.Fatal(err)
+	}
 	r.mu.Lock()
 	r.caseNext++
 	escalationID := r.caseNext
 	r.cases["t-e"] = []factoryd.Case{{ID: escalationID, TaskID: "t-e", Repository: "sf/code",
-		Kind: factoryd.CaseAgentEscalate, Status: factoryd.CaseAtHuman, Problem: "Use a replica for the reads?",
+		Kind: factoryd.CaseAgentEscalate, Status: factoryd.CaseAtHuman, Problem: "Use a replica for the reads?", Facts: facts,
 		OpenedAt: time.Now().Add(-90 * time.Second)}}
 	r.caseNext++
 	planID := r.caseNext
@@ -109,78 +118,65 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 	r.mu.Unlock()
 
 	ck, csrf := r.Login(t)
-	// each asking card decides on its opened card: its case's ask, else
-	// the request it waits on
-	faceOf := func(id string) string {
+	// each asking card decides on its opened card: its case's ask (a merge
+	// request's case, as the store opens it), else the request it waits on
+	askOf := func(id string) string {
 		t.Helper()
 		opened := r.request(http.MethodGet, "/cards/"+id+"/drawer?tab=overview", nil, ck).Body.String()
-		for _, head := range []string{`<article class="need" id="need-` + id + `-d">`, `<article class="card approval`} {
-			if at := strings.Index(opened, head); at >= 0 {
-				return opened[at : at+strings.Index(opened[at:], "</article>")]
-			}
+		at := strings.Index(opened, `<section class="o-ask"`)
+		if at < 0 {
+			t.Fatalf("the opened card of %s holds no ask:\n%s", id, opened)
 		}
-		t.Fatalf("the opened card of %s holds no ask:\n%s", id, opened)
-		return ""
+		if strings.Count(opened, `<section class="o-ask"`) != 1 {
+			t.Errorf("the opened card of %s holds more than one ask:\n%s", id, opened)
+		}
+		return opened[at : at+strings.Index(opened[at:], "</section>")]
 	}
-	// the one decide of each asking face: one send (the form's one
-	// action), one fund control, one note box — the shared partial, never
-	// a second form beside it
+	// each answer its own send: no fund control, at most one note box a
+	// form, and the door the kind answers through
 	for _, tc := range []struct {
 		id, action string
 	}{
-		{mfx.Card.TaskID, "/approvals/41/approve"},
+		{mfx.Card.TaskID, "/tasks/" + mfx.Card.TaskID + "/resolve"},
 		{rfx.Card.TaskID, "/approvals/42/approve"},
 		{"t-e", "/tasks/t-e/resolve"},
 		{"t-bp", "/tasks/t-bp/plan/answer"},
 	} {
-		face := faceOf(tc.id)
-		for what, want := range map[string]int{
-			`name="fund_eur"`:            1,
-			`<textarea`:                  1,
-			`action="` + tc.action + `"`: 1,
-		} {
-			if got := strings.Count(face, what); got != want {
-				t.Errorf("%s: the face holds %s %d times, want %d:\n%s", tc.id, what, got, want, face)
+		ask := askOf(tc.id)
+		if strings.Contains(ask, `name="fund_eur"`) || !strings.Contains(ask, `action="`+tc.action+`"`) {
+			t.Errorf("%s: the ask holds a fund or no answer through %s:\n%s", tc.id, tc.action, ask)
+		}
+		for _, form := range strings.Split(ask, "<form ")[1:] {
+			if strings.Count(form, "<textarea") > 1 || strings.Count(form, `type="submit"`) != 1 {
+				t.Errorf("%s: an answer is no send of its own:\n%s", tc.id, form)
 			}
 		}
-		if strings.Count(face, `class="decide`) != 1 {
-			t.Errorf("%s: the face holds more than one decide block:\n%s", tc.id, face)
-		}
 	}
-	// the approval faces carry their own five parts — the ask with its
-	// numbers and the why the request's spec builds — never the case's
-	// empty problem or its kind's placeholder
-	for _, fx := range []factoryd.Fixture{mfx, rfx} {
-		face := faceOf(fx.Card.TaskID)
-		for _, want := range []string{
-			`<p class="ask">` + fx.Asks[0].Ask + `</p>`,
-			`<p class="why">` + fx.Asks[0].Why + `</p>`,
-		} {
-			if !strings.Contains(face, want) {
-				t.Errorf("%s: the face lacks %q:\n%s", fx.Card.TaskID, want, face)
+	for id, want := range map[string][]string{
+		mfx.Card.TaskID: {`<p class="o-question">Merge this card&#39;s pull request?</p>`,
+			`<p class="o-askwhy">The factory&#39;s rules let only a human merge this change.</p>`},
+		rfx.Card.TaskID: {`<p class="o-question">Rent a cx33 server for 5 hours at about 0.07 EUR?</p>`,
+			`<p class="o-askwhy">The card needs it for the load-test the feed cache.</p>`},
+		"t-e": {`<p class="o-question">Use a replica for the reads?</p>`,
+			`<p class="o-askwhy">The agent stopped because it needs a decision only a human can make.</p>`,
+			`data-press="continue/own_words">Answer in my words</button>`, `<span class="effect">The card keeps waiting for your answer.</span>`},
+		"t-bp": {`<p class="o-question">Which cache holds the reads?</p>`,
+			`<p class="o-askwhy">The planner needs your answer before it can finish the plan.</p>`,
+			`<p class="o-by">suggested by the planner: <span class="quote">it already holds the board keys</span></p>`,
+			`<input type="hidden" name="choice" value="1">`, `<input type="hidden" name="choice" value="2">`},
+	} {
+		ask := askOf(id)
+		for _, w := range want {
+			if !strings.Contains(ask, w) {
+				t.Errorf("%s: the ask lacks %q:\n%s", id, w, ask)
 			}
 		}
-		if strings.Contains(face, `<p class="ask"></p>`) || strings.Contains(face, "The case is the") {
-			t.Errorf("%s: the face still shows the empty ask or the placeholder:\n%s", fx.Card.TaskID, face)
+		if strings.Contains(ask, `<p class="o-question"></p>`) || strings.Contains(ask, "The case is the") {
+			t.Errorf("%s: the ask shows the empty question or the placeholder:\n%s", id, ask)
 		}
-	}
-	// the escalation's ask and the plan's question keep theirs: the case's
-	// own words, the plan's one line, the register's answers as buttons
-	if face := faceOf("t-e"); !strings.Contains(face, `<p class="ask">Use a replica for the reads?</p>`) ||
-		!strings.Contains(face, `<p class="why">The agent stopped because it needs a decision only a human can make.</p>`) ||
-		!strings.Contains(face, `<span class="effect">The card keeps waiting for your answer.</span>`) {
-		t.Errorf("the escalation face lacks its ask, why or offers:\n%s", face)
-	}
-	if face := faceOf("t-bp"); !strings.Contains(face, `<p class="ask">Which cache holds the reads?</p>`) ||
-		!strings.Contains(face, `<p class="why">The planner needs your answer before it can finish the plan.</p>`) ||
-		!strings.Contains(face, `name="choice" value="1" checked`) || !strings.Contains(face, `name="choice" value="2"`) ||
-		!strings.Contains(face, `<p class="recommendation">Recommendation (the planner): it already holds the board keys</p>`) {
-		t.Errorf("the plan face lacks its ask, why, choices or the seated recommendation:\n%s", face)
 	}
 
-	// each face's one send: the chosen answer, the fund and the note ride
-	// one POST and land as one row on the card (the escalation's fund its
-	// own draw row, as the store lands it)
+	// each send lands its one answer as one row on the card, and no fund
 	send := func(path string, form url.Values) {
 		t.Helper()
 		form.Set("csrf", csrf)
@@ -200,59 +196,37 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 	rows := func(before int) []factoryd.Event { return r.Events()[before:] }
 
 	before := len(r.Events())
-	send("/approvals/41/approve", url.Values{"action": {"approve"}, "fund_eur": {"1.50"}, "note": {"the shard is sound"}})
+	send("/tasks/"+mfx.Card.TaskID+"/resolve", url.Values{"case_id": {"7041"}, "action": {factoryd.ActApproveMerge}})
 	if q := r.Approval(41); q.Status != "approved" {
 		t.Errorf("the merge request is %s, want approved", q.Status)
 	}
-	if got, want := budget(mfx.Card.TaskID), mfx.Card.BudgetEUR+1.5; got != want {
-		t.Errorf("the merge card's budget is %v, want %v raised by the fund", got, want)
-	}
-	if rs := rows(before); len(rs) != 1 || rs[0].Kind != factoryd.EventMergeApproved || rs[0].TaskID != mfx.Card.TaskID ||
-		fmt.Sprint(rs[0].Detail["fund_eur"]) != "1.5" || fmt.Sprint(rs[0].Detail["reason"]) != "the shard is sound" {
-		t.Errorf("the merge send landed %v, want the one approval row with the fund and the note", rs)
+	if rs := rows(before); len(rs) != 1 || rs[0].Kind != factoryd.EventMergeApproved || rs[0].TaskID != mfx.Card.TaskID || budget(mfx.Card.TaskID) != mfx.Card.BudgetEUR {
+		t.Errorf("the merge send landed %v, want the one approval row and the budget as it was", rs)
 	}
 
 	before = len(r.Events())
-	send("/approvals/42/approve", url.Values{"action": {"approve"}, "fund_eur": {"1.50"}, "note": {"the lease is worth it"}})
+	send("/approvals/42/approve", url.Values{"action": {"approve"}})
 	if q := r.Approval(42); q.Status != "approved" {
 		t.Errorf("the resource request is %s, want approved", q.Status)
 	}
-	if got, want := budget(rfx.Card.TaskID), rfx.Card.BudgetEUR+1.5; got != want {
-		t.Errorf("the resource card's budget is %v, want %v raised by the fund", got, want)
-	}
-	if rs := rows(before); len(rs) != 1 || rs[0].Kind != factoryd.EventMergeApproved || rs[0].TaskID != rfx.Card.TaskID ||
-		fmt.Sprint(rs[0].Detail["fund_eur"]) != "1.5" || fmt.Sprint(rs[0].Detail["reason"]) != "the lease is worth it" {
-		t.Errorf("the resource send landed %v, want the one approval row with the fund and the note", rs)
+	if rs := rows(before); len(rs) != 1 || rs[0].Kind != factoryd.EventMergeApproved || rs[0].TaskID != rfx.Card.TaskID || budget(rfx.Card.TaskID) != rfx.Card.BudgetEUR {
+		t.Errorf("the resource send landed %v, want the one approval row and the budget as it was", rs)
 	}
 
 	before = len(r.Events())
-	send("/tasks/t-e/resolve", url.Values{"case_id": {fmt.Sprint(escalationID)}, "action": {factoryd.ActContinue},
-		"fund_eur": {"1.50"}, "note": {"the replica holds"}})
-	var funded, answered int
-	for _, e := range rows(before) {
-		switch {
-		case e.Kind == factoryd.EventCardFunded && fmt.Sprint(e.Detail["amount_eur"]) == "1.5":
-			funded++
-		case e.Kind == factoryd.EventQuestionAnswered && e.TaskID == "t-e" && fmt.Sprint(e.Detail["answer"]) == "the replica holds":
-			answered++
-		}
-	}
-	if funded != 1 || answered != 1 || budget("t-e") != 1.5 {
-		t.Errorf("the escalation send landed %d fund rows and %d answer rows at budget %v, want one of each at 1.50",
-			funded, answered, budget("t-e"))
+	own := factoryd.ActContinue + "/own_words"
+	send("/tasks/t-e/resolve", url.Values{"case_id": {fmt.Sprint(escalationID)}, "action": {own}, own + ".note": {"the replica holds"}})
+	if rs := rows(before); len(rs) != 1 || rs[0].Kind != factoryd.EventQuestionAnswered || rs[0].TaskID != "t-e" ||
+		fmt.Sprint(rs[0].Detail["answer"]) != "the replica holds" || budget("t-e") != 0 {
+		t.Errorf("the escalation send landed %v at budget %v, want the one answer row and no fund", rs, budget("t-e"))
 	}
 
 	before = len(r.Events())
-	// the press of the recommended button: the send's guard reads the
-	// seated question and answers with its choice's own words
-	send("/tasks/t-bp/plan/answer", url.Values{"revision": {"2"}, "index": {"1"}, "choice": {"1"},
-		"fund_eur": {"1.50"}, "note": {"worth it"}})
+	// the press of the suggested answer: the send's guard reads the seated
+	// question and answers with its choice's own words
+	send("/tasks/t-bp/plan/answer", url.Values{"revision": {"2"}, "index": {"1"}, "choice": {"1"}})
 	if rs := rows(before); len(rs) != 1 || rs[0].Kind != factoryd.EventPlanQuestionAnswered || rs[0].TaskID != "t-bp" ||
-		fmt.Sprint(rs[0].Detail["fund_eur"]) != "1.5" ||
-		fmt.Sprint(rs[0].Detail["answer"]) != "Redis — worth it" {
-		t.Errorf("the plan send landed %v, want the one answer row with the fund and the note", rs)
-	}
-	if got := budget("t-bp"); got != 1.5 {
-		t.Errorf("the plan card's budget is %v, want 1.50 raised by the fund", got)
+		fmt.Sprint(rs[0].Detail["answer"]) != "Redis" || budget("t-bp") != 0 {
+		t.Errorf("the plan send landed %v at budget %v, want the one answer row and no fund", rs, budget("t-bp"))
 	}
 }

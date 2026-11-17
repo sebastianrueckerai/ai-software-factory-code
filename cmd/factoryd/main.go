@@ -714,6 +714,7 @@ func main() {
 		Kustomization:  kube.KustomizationState,
 		Metrics:        metrics,
 		Steer:          runner.MessageSession,
+		SessionBriefs:  store.SessionBriefs,
 		CardDigest:     runner.CardDigest,
 		CardStep:       runner.CardStep,
 		BoardDigest:    runner.BoardDigest,

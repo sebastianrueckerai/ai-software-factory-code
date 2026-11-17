@@ -644,7 +644,7 @@ var humanSources = []humanSource{
 	}), factoryd.BriefFacts{Name: Repository}},
 	{factoryd.SourceChat, func(b *builder, group, name string, n int64) Fixture {
 		q := factoryd.HumanQuestion{Ask: "Should the factory move the nightly snapshots off the cluster to S3?",
-			Why:     "The human asked in the chat to keep the board when the cluster is lost; only a human sets where the snapshots go.",
+			Why:     "Only a human sets where the snapshots go, and the human asked in the chat to keep the board when the cluster is lost.",
 			Info:    "Today the snapshots sit on the cluster's volume beside Postgres, so they share its fate. S3 costs about 0.02 EUR a month for 30 snapshots.",
 			Choices: []factoryd.QuestionChoice{{Value: "s3", Label: "Move them to S3"}, {Value: factoryd.AnswerPark, Label: "Keep them on the cluster"}}}
 		return b.human(group, name, n, factoryd.SourceChat, "sebastian", factoryd.HumanAsk{Q: q, By: "sebastian", Asker: "agent", Via: factoryd.ViaChat}, 35*time.Minute)

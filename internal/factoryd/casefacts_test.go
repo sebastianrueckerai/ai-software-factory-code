@@ -432,7 +432,7 @@ func firstRaise(t *testing.T, r *Runner, card Task, why, model string) float64 {
 // facts f.
 func pressedFund(t *testing.T, f Facts) float64 {
 	t.Helper()
-	a, _ := answerFor(ActFund, f)
+	a, _ := AnswerFor(ActFund, f)
 	res, err := a.Press(f, nil, "")
 	if err != nil {
 		t.Fatal(err)

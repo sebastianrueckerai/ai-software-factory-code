@@ -50,10 +50,11 @@ func getPage(r *rig, ck *http.Cookie, path string) *httptest.ResponseRecorder {
 	return r.do(httptest.NewRequest(http.MethodGet, path, nil), ck)
 }
 
-// A card a routine filed names the routine in its drawer, under the top
-// block: its title opens the routine's drawer, the run that filed the
-// card, and the routine's newest other run. A routine since removed
-// keeps its name without the door; another card says nothing.
+// A card a routine filed names the routine in its life fold: its title
+// opens the routine's drawer, the run that filed the card, and the
+// routine's newest other run; the brief's body drops the stamp it
+// repeats. A routine since removed keeps its name without the door;
+// another card says nothing.
 func TestCardDrawerCarriesTheProvenanceLine(t *testing.T) {
 	r := newRig(t)
 	r.routines.views = []factoryd.RoutineView{weeklyBump()}
@@ -66,30 +67,30 @@ func TestCardDrawerCarriesTheProvenanceLine(t *testing.T) {
 	line := func(want string) {
 		t.Helper()
 		d := getPage(r, ck, "/cards/t-790/drawer?tab=overview").Body.String()
-		at := strings.Index(d, `<p class="provenance">filed by the factory`)
-		if !strings.Contains(d, want) || at < strings.Index(d, "</dl>") || at > strings.Index(d, `data-sec="time"`) {
-			t.Fatalf("the drawer lacks, under its top block,\n%s\n%s", want, d)
+		life := d[strings.Index(d, `data-sec="life"`):]
+		if !strings.Contains(life[:strings.Index(life, "</details>")], want) {
+			t.Fatalf("the life fold lacks\n%s\n%s", want, d)
 		}
 	}
-	const head = `<p class="provenance">filed by the factory · routine <button type="button" class="linkbtn" data-open-routine="` + bumpKey + `">Weekly bump</button> · run 15`
-	line(head + ` · last run #781 merged in 2 d</p>`)
-	if d := getPage(r, ck, "/cards/t-790/drawer?tab=overview").Body.String(); !strings.Contains(d, `<p class="objective-body">Bump the pins.</p>`) {
-		t.Fatalf("the objective repeats the routine's line:\n%s", d)
+	const head = `<p class="provenance">filed by the routine <button type="button" class="linkbtn" data-open-routine="` + bumpKey + `">Weekly bump</button>, run 15`
+	line(head + `, last run #781 merged in 2 d</p>`)
+	if d := getPage(r, ck, "/cards/t-790/drawer?tab=overview").Body.String(); !strings.Contains(d, `<div class="o-body"><p>Bump the pins.</p>`+"\n"+`</div>`) {
+		t.Fatalf("the brief repeats the routine's line:\n%s", d)
 	}
 
 	// a run since: the routine's newest run other than the card's
 	r.routines.runs[bumpKey] = append([]factoryd.RoutineRun{{Project: "ai-software-factory-code", Routine: "weekly-bump", Run: 16, Outcome: "held",
 		Note: "held: #790 is still open"}}, bumpRuns()...)
-	line(head + ` · last run held</p>`)
+	line(head + `, last run held</p>`)
 
 	// the routine's first run has none before it
 	r.routines.runs[bumpKey] = bumpRuns()[:1]
 	line(head + `</p>`)
 
 	r.routines.views = nil
-	line(`<p class="provenance">filed by the factory · routine weekly-bump · run 15</p>`)
+	line(`<p class="provenance">filed by the routine weekly-bump, run 15</p>`)
 
-	if d := getPage(r, ck, "/cards/t-455/drawer?tab=overview").Body.String(); strings.Contains(d, "filed by the factory") {
+	if d := getPage(r, ck, "/cards/t-455/drawer?tab=overview").Body.String(); strings.Contains(d, "filed by the") {
 		t.Fatalf("a card no routine filed names one:\n%s", d)
 	}
 }

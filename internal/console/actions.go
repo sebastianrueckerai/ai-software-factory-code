@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -776,8 +775,11 @@ func (c *Console) planIn(ctx context.Context, a actor, id string) (factoryd.Task
 // maxPlanAnswer bounds a human's answer to a plan's question, one line.
 const maxPlanAnswer = 1000
 
+// maxCriterionReason bounds a human's reason beside a criterion's verdict.
+const maxCriterionReason = 2000
+
 // holdoutsWait is the sentence a confirmation meets while the revision's
-// hold-outs are open: how many wait for their okay or drop, or the plan by
+// hold-outs are open: how many wait to be kept or dropped, or the plan by
 // name when the count cannot be read.
 func (c *Console) holdoutsWait(ctx context.Context, t factoryd.Task, revision int) string {
 	n := 0
@@ -793,9 +795,9 @@ func (c *Console) holdoutsWait(ctx context.Context, t factoryd.Task, revision in
 		if n == 1 {
 			verb = "waits"
 		}
-		return fmt.Sprintf("%d %s %s for your okay or drop below.", n, plural(n, "hold-out"), verb)
+		return fmt.Sprintf("%d %s %s for your Keep it or Drop it below.", n, plural(n, "hold-out"), verb)
 	}
-	return fmt.Sprintf("The hold-outs of plan #%d wait for your okay or drop below.", t.IssueNumber)
+	return fmt.Sprintf("The hold-outs of plan #%d wait for your Keep it or Drop it below.", t.IssueNumber)
 }
 
 // doAnswerPlanQuestion answers question idx of revision revision of plan
@@ -804,19 +806,15 @@ func (c *Console) holdoutsWait(ctx context.Context, t factoryd.Task, revision in
 // guard). factoryd stores the answer under that login and signals the
 // plan's workflow, then the answer is posted on the issue with the same
 // login's session (posterOf, factoryd.PlanAnswerComment), which intake
-// knows for no change request. eur is the fund the decision draws beside
-// it, 0 for none: the card's budget rises by it and the answer's one
-// event row names it. A fund that cannot be drawn leaves the answer
-// standing — its event row and comment still land, and the refusal says
-// the answer is recorded and only the fund failed.
-func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, revision, idx int, decision, answer string, eur float64) (string, error) {
+// knows for no change request.
+func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, revision, idx int, decision, answer string) (string, error) {
 	answer = strings.Join(strings.Fields(answer), " ")
 	if decision != factoryd.DecisionConfirm && decision != factoryd.DecisionRevise && decision != "" {
 		return "", refuse(http.StatusBadRequest, "a confirmation is decided by confirm or revise.")
 	}
 	switch {
 	case answer == "" && decision == factoryd.DecisionRevise:
-		return "", refuse(http.StatusBadRequest, "Request changes needs its words: they go to the next planner round.")
+		return "", refuse(http.StatusBadRequest, "Ask for changes needs your words: they go to the next planner round.")
 	case answer == "" && decision != factoryd.DecisionConfirm, utf8.RuneCountInString(answer) > maxPlanAnswer:
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("an answer of 1 to %d characters is required", maxPlanAnswer))
 	}
@@ -840,11 +838,11 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 	case errors.Is(err, factoryd.ErrNotFound):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan #%d revision %d has no question %d.", t.IssueNumber, revision, idx))
 	case errors.Is(err, factoryd.ErrDecisionRequired):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Question %d of plan #%d is its confirmation: Confirm fixes the spec and the criteria, Request changes sends your words to the planner.", idx, t.IssueNumber))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Question %d of plan #%d is its confirmation: Confirm the plan fixes the spec and the criteria, Ask for changes sends your words to the planner.", idx, t.IssueNumber))
 	case errors.Is(err, factoryd.ErrDecisionReserved):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Question %d of plan #%d takes an answer, not a decision.", idx, t.IssueNumber))
 	case errors.Is(err, factoryd.ErrReviseWords):
-		return "", refuse(http.StatusBadRequest, "Request changes needs its words: they go to the next planner round.")
+		return "", refuse(http.StatusBadRequest, "Ask for changes needs your words: they go to the next planner round.")
 	case errors.Is(err, factoryd.ErrHoldoutsOpen):
 		return "", refuse(http.StatusConflict, c.holdoutsWait(ctx, t, revision))
 	case errors.Is(err, factoryd.ErrAnswerUnsignalled):
@@ -854,22 +852,9 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 		log.Printf("console: %s answers question %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
 		return "", refuse(http.StatusConflict, fmt.Sprintf("The answer could not be recorded: %s. Read the plan again and answer the open questions of its newest revision.", errText(err)))
 	}
-	detail := decisionDetail(a, revision, idx, decision, answer)
-	var fundDown error
-	if eur > 0 {
-		if _, _, err := c.cfg.Tasks.RaiseTaskBudget(ctx, t.ID, eur); err != nil {
-			log.Printf("console: %s drew %.2f EUR beside the answer to question %d of plan %s: %v", a.s.user, eur, idx, t.ID, err)
-			fundDown = err
-		} else {
-			detail["fund_eur"] = eur
-		}
-	}
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered, detail)
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered, decisionDetail(a, revision, idx, decision, answer))
 	if err := c.comment(ctx, poster, t, factoryd.PlanAnswerComment(idx, factoryd.PlanQuestion{Decision: decision, Answer: answer}), nil); err != nil {
 		return "", &forgejoRefusal{what: "post the answer on the issue (the answer is recorded)", err: err}
-	}
-	if fundDown != nil {
-		return "", refuse(http.StatusConflict, "The fund beside the answer could not be drawn: "+errText(fundDown)+". The answer is recorded; only the fund failed.")
 	}
 	log.Printf("console: %s answered question %d of plan %s via %s", a.s.user, idx, t.ID, a.via)
 	switch decision {
@@ -994,7 +979,7 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 		}
 		switch {
 		case text == "" && ans.Decision == factoryd.DecisionRevise:
-			return "", refuse(http.StatusBadRequest, "Request changes needs its words: they go to the next planner round.")
+			return "", refuse(http.StatusBadRequest, "Ask for changes needs your words: they go to the next planner round.")
 		case text == "" && ans.Decision != factoryd.DecisionConfirm, utf8.RuneCountInString(text) > maxPlanAnswer:
 			return "", refuse(http.StatusBadRequest, fmt.Sprintf("an answer of 1 to %d characters is required", maxPlanAnswer))
 		}
@@ -1009,11 +994,11 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 	case errors.Is(err, factoryd.ErrNotFound):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan #%d revision %d has no such question.", t.IssueNumber, revision))
 	case errors.Is(err, factoryd.ErrDecisionRequired):
-		return "", refuse(http.StatusConflict, "One of those questions is its confirmation: Confirm fixes the spec and the criteria, Request changes sends your words to the planner.")
+		return "", refuse(http.StatusConflict, "One of those questions is its confirmation: Confirm the plan fixes the spec and the criteria, Ask for changes sends your words to the planner.")
 	case errors.Is(err, factoryd.ErrDecisionReserved):
 		return "", refuse(http.StatusConflict, "One of those questions takes an answer, not a decision.")
 	case errors.Is(err, factoryd.ErrReviseWords):
-		return "", refuse(http.StatusBadRequest, "Request changes needs its words: they go to the next planner round.")
+		return "", refuse(http.StatusBadRequest, "Ask for changes needs your words: they go to the next planner round.")
 	case errors.Is(err, factoryd.ErrHoldoutsOpen):
 		return "", refuse(http.StatusConflict, c.holdoutsWait(ctx, t, revision))
 	case errors.Is(err, factoryd.ErrAnswerUnsignalled):
@@ -1066,7 +1051,7 @@ func (c *Console) doDecideHoldout(ctx context.Context, a actor, id string, revis
 		return refuse(http.StatusConflict, err.Error())
 	case err != nil:
 		log.Printf("console: %s decides hold-out %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
-		return refuse(http.StatusConflict, fmt.Sprintf("The decision could not be recorded: %s. Reload the board and press Okay or Drop again.", errText(err)))
+		return refuse(http.StatusConflict, fmt.Sprintf("The decision could not be recorded: %s. Reload the board and press Keep it or Drop it again.", errText(err)))
 	}
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventHoldoutDecided, map[string]any{"revision": revision, "index": idx, "verb": verb})
 	log.Printf("console: %s %s hold-out %d of revision %d of plan %s via %s", a.s.user, verb, idx, revision, t.ID, a.via)
@@ -1247,32 +1232,82 @@ func (c *Console) doAnswerCase(ctx context.Context, a actor, id string, caseID i
 }
 
 // doPressCase answers case caseID of card id with a press of answer on its
-// face: the resolution the press makes on the case's facts, its fields at
-// values and the note, the fund beside it. An answer that takes an amount
-// itself takes the fund as that amount, when its own is left empty.
-func (c *Console) doPressCase(ctx context.Context, a actor, id string, caseID int64, answer factoryd.Answer, values map[string]string, note string, fund float64) (string, error) {
-	note = strings.TrimSpace(note)
-	if i := slices.IndexFunc(answer.Fields, func(f factoryd.Field) bool { return f.Kind == factoryd.FieldMoney }); i >= 0 && fund > 0 {
-		field := answer.Fields[i]
-		typed := strings.TrimSpace(values[field.Name])
-		if v, err := strconv.ParseFloat(typed, 64); typed != "" && err == nil && factoryd.Cents(v) != factoryd.Cents(fund) {
-			return "", refuse(http.StatusBadRequest, fmt.Sprintf("%s says %s EUR and the fund beside it says %.2f EUR. Write the amount in one of them.", field.Label, typed, fund))
-		}
-		if typed == "" {
-			values[field.Name] = strconv.FormatFloat(fund, 'f', -1, 64)
-		}
-		fund = 0
-	}
-	return c.answerCase(ctx, a, id, caseID, note, answer.Action, func(f factoryd.Facts) (factoryd.Resolution, error) {
-		res, err := answer.Press(f, values, note)
+// face: the resolution the press makes on the case's facts, its fields,
+// the note among them, at values.
+func (c *Console) doPressCase(ctx context.Context, a actor, id string, caseID int64, answer factoryd.Answer, values map[string]string) (string, error) {
+	return c.answerCase(ctx, a, id, caseID, strings.TrimSpace(values["note"]), answer.Action, func(f factoryd.Facts) (factoryd.Resolution, error) {
+		res, err := answer.Press(f, values, "")
 		if err != nil {
 			return res, refuse(http.StatusBadRequest, err.Error()+".")
 		}
-		if fund > 0 {
-			res.Fund = &policy.Draw{EUR: fund}
-		}
 		return res, nil
 	})
+}
+
+// cardRules are the access rules of the card's own actions that ask more
+// than a writer: an approver's retry, replan, sessions and money.
+var cardRules = map[string]accessRule{
+	factoryd.ActRetry:  {need: approver, scope: scCard, what: "retry a card"},
+	factoryd.ActReplan: {need: approver, scope: scCard, what: "replan a card"},
+	factoryd.ActExtend: {need: approver, scope: scCard, what: "extend a card"},
+	factoryd.ActFund:   {need: approver, scope: scCard, what: "fund a card"},
+}
+
+// caseRules are the access rules of the case answers that ask more than a
+// writer: an approver's merge and decisions on a plan's criteria, as the
+// requests' own doors ask.
+var caseRules = map[string]accessRule{
+	factoryd.ActApproveMerge:    accessTable["approve_merge"],
+	factoryd.ActGrantCriteria:   accessTable["answer_criteria"],
+	factoryd.ActConfirmCriteria: accessTable["answer_criteria"],
+	factoryd.ActAnswerCriteria:  accessTable["answer_criteria"],
+}
+
+// doCardAnswer presses card id's own action key, one its Other actions
+// list (factoryd.MoreOf) where no case holds the card: its door, after the
+// action's access rule, with the press's fields read by field.
+func (c *Console) doCardAnswer(ctx context.Context, a actor, id, key string, field func(string) string) (string, error) {
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	more := factoryd.MoreOf(t, factoryd.Facts{})
+	i := slices.IndexFunc(more, func(m factoryd.Answer) bool { return m.Key() == key })
+	if i < 0 {
+		return "", refuse(http.StatusBadRequest, "This answer names no question of the card. Reload the board and press the answer again.")
+	}
+	answer := more[i]
+	if rule, ok := cardRules[answer.Action]; ok {
+		if err := c.admit(ctx, rule, a, t.Repository, issueRef(t.ID, t.IssueNumber)); err != nil {
+			return "", err
+		}
+	}
+	args, eur, err := factoryd.ArgsOf(answer, field)
+	if err != nil {
+		return "", refuse(http.StatusBadRequest, err.Error()+".")
+	}
+	n := func(name string) int { v, _ := args[name].(int); return v }
+	note := strings.TrimSpace(field("note"))
+	switch answer.Action {
+	case factoryd.ActRetry:
+		return c.doRetry(ctx, a, id)
+	case factoryd.ActReplan:
+		return c.doReplan(ctx, a, id, note, field(factoryd.OffMainField) != "")
+	case factoryd.ActExtend:
+		return c.doExtend(ctx, a, id, n("sessions"), n("lines"), n("agent_time_s")/60, 0, note)
+	case factoryd.ActFund:
+		return c.doFund(ctx, a, id, eur, note, 0)
+	case factoryd.AnswerSteer:
+		return c.doSteer(ctx, a, id, note)
+	case factoryd.ActClose:
+		return c.doClose(ctx, a, id, note)
+	case factoryd.AnswerEditBrief:
+		return c.doEdit(ctx, a, id, factoryd.BriefText{Title: field("title"), Why: field("why"), Summary: field("summary")})
+	case factoryd.AnswerAccent:
+		_, err := c.doSetAccent(ctx, a, id, field("accent"))
+		return "", err
+	}
+	return "", refuse(http.StatusBadRequest, "This answer opens the card's thread: press it on the opened card.")
 }
 
 // answerCase answers case caseID of card id with the resolution resolve
@@ -1312,6 +1347,11 @@ func (c *Console) answerCase(ctx context.Context, a actor, id string, caseID int
 	res, err := resolve(factoryd.Facts{CaseFacts: factoryd.FactsOf(open[i]), Card: t})
 	if err != nil {
 		return "", err
+	}
+	if rule, ok := caseRules[res.Action]; ok {
+		if err := c.admit(ctx, rule, a, t.Repository, issueRef(t.ID, t.IssueNumber)); err != nil {
+			return "", err
+		}
 	}
 	post := c.posting(a, t, res)
 	switch {
@@ -1786,14 +1826,11 @@ func (c *Console) actOnWork(ctx context.Context, a actor, t factoryd.Task, caseI
 	return out, c.actErr(ctx, a, t, res, err)
 }
 
-// callAct answers card t's case caseID (0 for none) with res through Act, as
-// a's user on a's rung, the rows carrying a's chat detail and token, post
-// the answer's comment (nil for none). Money a human draws is an
-// approver's, as the Fund form's. Act's own errors come back as they are.
-func (c *Console) callAct(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post func(context.Context) (int64, error)) (factoryd.ActResult, error) {
-	return c.callActWork(ctx, a, t, caseID, res, post, nil)
-}
-
+// callActWork answers card t's case caseID (0 for none) with res through
+// Act, as a's user on a's rung, the rows carrying a's chat detail and
+// token, post the answer's comment (nil for none) and work a board
+// action's work. Money a human draws is an approver's. Act's own errors
+// come back as they are.
 func (c *Console) callActWork(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post, work func(context.Context) (int64, error)) (factoryd.ActResult, error) {
 	if a.rung() == 3 && (res.Action == factoryd.ActFund || res.Action == factoryd.ActRaiseCeiling || res.Fund != nil && res.Fund.EUR > 0) {
 		if err := c.admit(ctx, accessTable["fund"], a, t.Repository, "task "+t.ID); err != nil {
@@ -1867,8 +1904,8 @@ func (c *Console) ceilingOf(ctx context.Context, t factoryd.Task) float64 {
 // extend through Act on its live case, the human's answer to its findings
 // the note. On a case that asked a question it is an extend of one
 // session, which Act's table refuses there, naming the question. A card
-// with no case is at no cap, which a grant needs: the Extend form raises a
-// running card.
+// with no case is at no cap, which a grant needs: the opened card's Allow
+// more sessions raises a running card.
 func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) (string, error) {
 	text = strings.TrimSpace(text)
 	if err := answerFits(text); err != nil {
@@ -1883,7 +1920,7 @@ func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) 
 	case err != nil:
 		return "", err
 	case k.ID == 0:
-		return "", refuse(http.StatusConflict, "this card is not at a cap, so there is nothing to grant: the Extend form raises a running card")
+		return "", refuse(http.StatusConflict, "this card is not at a cap, so there is nothing to grant: Allow more sessions among the opened card's other actions raises a running card")
 	}
 	args, ok := grantOf(k, c.cardTime(ctx, t))
 	if !ok {
@@ -1908,37 +1945,20 @@ func answerFits(text string) error {
 	return nil
 }
 
-// unfundedSession is the refusal a card's remaining budget owes a session's
-// opening calls (SessionFunded), "" when they can run or the card cannot be
-// judged; the error is the failed read the caller answers with a verdict. A
-// card with no alias yet is priced on its class's session model.
-func (c *Console) unfundedSession(ctx context.Context, t factoryd.Task) (string, error) {
-	if c.cfg.SessionFunded == nil {
-		return "", nil
-	}
-	return c.cfg.SessionFunded(ctx, t.ID, t.ModelAlias)
-}
-
-// unreadBudget is the verdict of a budget read that failed: the answer
-// names the state and the fitting action instead of dying mid-request.
-func unreadBudget() error {
-	return refuse(http.StatusServiceUnavailable, "The card's budget could not be read; the answer was not posted. Try again.")
-}
-
 // doFund raises card id's budget by eur through Act, a fund on the card's
 // live case, or on no case when it waits on none: an approver's, or the
-// agent's own from the pool on rung 2. The note is the answer Act has
-// posted as the human's comment when the fund ends the case, so the raise
-// resumes the card in one step. raise lifts the card's ceiling first, the fund
-// drawn beside it (0 for none): the Fund form's ceiling field.
+// agent's own from the pool on rung 2. The note, or when none a line naming
+// the raise, is the answer Act has posted as the human's comment when the
+// fund ends the case, so the raise resumes the card in one step. raise
+// lifts the card's ceiling first, the fund drawn beside it (0 for none).
 func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, note string, raise float64) (string, error) {
-	note = strings.TrimSpace(note)
 	switch {
 	case !(eur > 0) || math.IsInf(eur, 0):
 		return "", refuse(http.StatusBadRequest, "an amount in EUR above zero is required")
 	case !(raise >= 0) || math.IsInf(raise, 0):
 		return "", refuse(http.StatusBadRequest, "the ceiling's raise is an amount in EUR, 0 for none")
 	}
+	note = cmp.Or(strings.TrimSpace(note), fmt.Sprintf("Funded the card: +%.2f EUR.", eur))
 	if err := answerFits(note); err != nil {
 		return "", err
 	}
@@ -2847,8 +2867,7 @@ func (c *Console) issueOf(ctx context.Context, id string) int64 {
 	return t.IssueNumber
 }
 
-// doApprove approves approval request id with the human's note and, above
-// zero, the fund amount the decide's send rode beside it: a resource
+// doApprove approves approval request id: a resource
 // request for its task (one commission of that spec; the project's
 // envelope is its file's); a merge request gets the human's APPROVED
 // review on the pull request, and only once Forgejo has it is the
@@ -2862,54 +2881,22 @@ func (c *Console) issueOf(ctx context.Context, id string) int64 {
 // still red, its approval refuses naming what fits the card. The agent
 // never approves a GitHub sync's pull request: a human approves the
 // GitHub commits it carries.
-func (c *Console) doApprove(ctx context.Context, a actor, id int64, note string, fund float64) (string, error) {
+func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, error) {
 	q, err := c.pendingRequest(ctx, a, id)
 	if err != nil {
 		return "", err
 	}
-	note = strings.TrimSpace(note)
-	// the fund applies before anything is decided: the same fault on every
-	// kind refuses and records nothing, so the human can approve again
-	raise := func() error {
-		if fund <= 0 {
-			return nil
-		}
-		if _, _, err := c.cfg.Tasks.RaiseTaskBudget(ctx, q.TaskID, fund); err != nil {
-			log.Printf("console: the budget of %s: %v", q.TaskID, err)
-			return refuse(http.StatusInternalServerError, "The fund could not be applied: "+errText(err)+". Nothing is decided; approve again.")
-		}
-		return nil
-	}
 	switch q.Kind {
 	case factoryd.ApprovalResource:
-		if err := raise(); err != nil {
+		if err := c.decide(ctx, a, q, "approved", "approved for the task"); err != nil {
 			return "", err
 		}
-		if err := c.decide(ctx, a, q, "approved", cmp.Or(note, "approved for the task")); err != nil {
-			return "", err
-		}
-		detail := map[string]any{"approval": q.ID, "kind": "resource"}
-		if fund > 0 {
-			detail["fund_eur"] = fund
-		}
-		if note != "" {
-			detail["reason"] = note
-		}
-		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved, detail)
+		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved, map[string]any{"approval": q.ID, "kind": "resource"})
 		return "Approved the resource for its task.", nil
 	case factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
 		return c.answerRequest(ctx, a, q, factoryd.Resolution{Action: factoryd.ActGrantCriteria})
 	case factoryd.ApprovalMerge:
-		if err := raise(); err != nil {
-			return "", err
-		}
-		// the fund rides the resolution, so the merge's one row carries
-		// the choice, the fund and the note together (approveMerge)
-		res := factoryd.Resolution{Action: factoryd.ActApproveMerge, Note: note}
-		if fund > 0 {
-			res.Args = map[string]any{"fund_eur": fund}
-		}
-		return c.answerRequest(ctx, a, q, res)
+		return c.answerRequest(ctx, a, q, factoryd.Resolution{Action: factoryd.ActApproveMerge})
 	}
 	return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which the board decides", q.ID, q.Kind))
 }
@@ -3162,8 +3149,8 @@ func (c *Console) doDecide(ctx context.Context, a actor, id int64, cid, verb, re
 	switch {
 	case verb != "met" && verb != "not_met" && verb != "waived":
 		return "", refuse(http.StatusBadRequest, "Choose Met, Not met or Waive: the verb is met, not_met or waived.")
-	case verb != "met" && (reason == "" || len(reason) > 2000):
-		return "", refuse(http.StatusBadRequest, "a one-line reason of up to 2000 characters is required for Not met and Waive")
+	case verb != "met" && (reason == "" || len(reason) > maxCriterionReason):
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("a one-line reason of up to %d characters is required for Not met and Waive", maxCriterionReason))
 	}
 	q, err := c.pendingRequest(ctx, a, id)
 	switch {
@@ -3223,8 +3210,8 @@ func (c *Console) criterionVerdict(ctx context.Context, a actor, q factoryd.Appr
 			seen = row.Artifact.Name + " at " + row.Artifact.Head[:min(7, len(row.Artifact.Head))]
 		}
 		reason = fmt.Sprintf("%s (%s)", cmp.Or(reason, "met"), seen)
-		if len(reason) > 2000 {
-			return "", refuse(http.StatusBadRequest, fmt.Sprintf("Met takes up to %d characters of words beside what you saw.", 2000-len(seen)-3))
+		if len(reason) > maxCriterionReason {
+			return "", refuse(http.StatusBadRequest, fmt.Sprintf("Met takes up to %d characters of words beside what you saw.", maxCriterionReason-len(seen)-3))
 		}
 	}
 	if verb == "not_met" {

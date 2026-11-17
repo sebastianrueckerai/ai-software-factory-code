@@ -354,6 +354,9 @@ type Config struct {
 	// (factoryd's Runner.MessageSession); nil offers the project agent no
 	// steer.
 	Steer func(ctx context.Context, taskID, user, text string) error
+	// SessionBriefs are the texts each session of a card got (factoryd's
+	// Store.SessionBriefs); nil shows none.
+	SessionBriefs func(ctx context.Context, taskID string) ([]factoryd.SessionBrief, error)
 	// CardDigest is a card's digest (factoryd's Runner.CardDigest), which
 	// the card read leads with; CardStep one step of it in full, a step
 	// the digest lacks factoryd.ErrNoStep naming cardRead
@@ -554,7 +557,6 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		{"GET /projects/{name}/metrics", c.projectMetrics, "", "a project's figures over the window and the one before: the page, and json for the seam"},
 		{"GET /projects/{name}/events/stream", c.projectEventsStream, "", "the event stream: the live half of the events fragment"},
 		{"GET /cards/{id}", c.cardFragment, "", "a card's face: a fragment of the board page, whose tool is card"},
-		{"GET /approvals/{id}/criteria/{at}", c.criterionFragment, "", "the criteria card's page at one criterion: a fragment of the board page, whose tool is board"},
 		{"GET /projects/{name}/cards/{id}/cases/{case}", c.caseFragment, "", "a card's case in the Needs you column: a fragment of the board page, whose tool is board"},
 		{"GET /cards/{id}/drawer", c.cardDrawer, "", "a card's drawer: a fragment of the board page, whose tool is card"},
 		{"GET /tasks/{id}/digest", c.cardLife, "", "the drawer's fold of a card's life: a fragment of the board page, whose tool is card"},
@@ -595,18 +597,11 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks", http.HandlerFunc(c.createTask), nil},
 		{"POST /tasks/{id}/answer", http.HandlerFunc(c.answer), nil},
 		{"POST /tasks/{id}/resolve", http.HandlerFunc(c.resolve), nil},
-		{"POST /tasks/{id}/fund", http.HandlerFunc(c.fundCard), nil},
-		{"POST /tasks/{id}/extend", http.HandlerFunc(c.extendCard), nil},
-		{"POST /tasks/{id}/brief", http.HandlerFunc(c.editBrief), nil},
-		{"POST /tasks/{id}/accent", http.HandlerFunc(c.setAccent), nil},
 		{"POST /cards/{id}/thread", http.HandlerFunc(c.cardThreadStart), nil},
 		{"POST /tasks/{id}/plan/answer", http.HandlerFunc(c.planAnswer), nil},
 		{"POST /tasks/{id}/plan/holdout", http.HandlerFunc(c.planHoldout), nil},
 		{"POST /tasks/{id}/plan/changes", http.HandlerFunc(c.planChanges), nil},
-		{"POST /tasks/{id}/retry", http.HandlerFunc(c.retryCard), nil},
-		{"POST /tasks/{id}/close", http.HandlerFunc(c.closeCard), nil},
 		{"POST /tasks/{id}/steer", http.HandlerFunc(c.steerCard), nil},
-		{"POST /tasks/{id}/replan", http.HandlerFunc(c.replanCard), nil},
 		{"POST /projects/{name}/deploy-now", http.HandlerFunc(c.deployNow), nil},
 		{"POST /approvals/{id}/approve", http.HandlerFunc(c.approve), nil},
 		{"POST /approvals/{id}/deny", http.HandlerFunc(c.deny), nil},

@@ -224,7 +224,7 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 			if err := c.admit(ctx, accessTable["approve_merge"], a, t.Repository, "task "+id); err != nil {
 				return "", err
 			}
-			return c.doApprove(ctx, a, q.ID, "", 0)
+			return c.doApprove(ctx, a, q.ID)
 		case q.Kind == factoryd.ApprovalMerge && choice == labelOf(factoryd.ActRerunChecks):
 			if err := c.admit(ctx, accessTable["rerun_checks"], a, t.Repository, "task "+id); err != nil {
 				return "", err

@@ -453,14 +453,16 @@ func TestRetryAnswersEveryDependentsCase(t *testing.T) {
 	checkRows(t, r.events, before, answered("t-d1", 5), answered("t-d2", 6))
 }
 
-// A human card's own Close ends its case through Act as the human's close
-// once its work went through: the note posted, the issue closed, and the
-// note's comment handed to Act.
+// A human card's "End the card" ends its case through Act as the human's
+// close once its work went through: the note posted, the issue closed, and
+// the note's comment handed to Act.
 func TestCloseOfAHumanCardResolvesItsCase(t *testing.T) {
 	r := newRig(t)
 	r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerPark, Label: "Wait for it"})}
-	ck, s := r.loggedIn(t)
-	if rec := r.do(post("/tasks/t-hq/close", url.Values{"csrf": {s.csrf}, "note": {"done by hand"}}), ck); rec.Code != http.StatusSeeOther {
+	ck, _ := r.loggedIn(t)
+	end := answerForm(t, drawer(t, r, ck, "t-hq", "overview"), factoryd.ActClose)
+	end.Values.Set("close.note", "done by hand")
+	if rec := r.do(post(end.Action, end.Values), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("close = %d: %s", rec.Code, rec.Body)
 	}
 	if !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
@@ -475,11 +477,11 @@ func TestCloseOfAHumanCardResolvesItsCase(t *testing.T) {
 }
 
 // A ceiling refusal names the control the human holds where they are: the
-// Fund form's ceiling field on the board, the answer's raise_ceiling in
-// the chat.
+// opened card's Raise the spend limit on the board, the answer's
+// raise_ceiling in the chat.
 func TestCeilingRefusalNamesTheActorsControl(t *testing.T) {
 	for via, want := range map[string]string{
-		factoryd.ViaButton: "Card #13 holds €4.50 now, and €0.90 more passes its ceiling of €5.00: raise the ceiling in the Fund form's ceiling field as you fund.",
+		factoryd.ViaButton: "Card #13 holds €4.50 now, and €0.90 more passes its ceiling of €5.00: press Raise the spend limit on the opened card, which funds beside it.",
 		factoryd.ViaChat:   "Card #13 holds €4.50 now, and €0.90 more passes its ceiling of €5.00: raise the ceiling first (answer with action raise_ceiling), then fund.",
 	} {
 		r := needRig(t)
@@ -490,20 +492,6 @@ func TestCeilingRefusalNamesTheActorsControl(t *testing.T) {
 		if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != want {
 			t.Errorf("%s: doFund = %v, want %q", via, err, want)
 		}
-	}
-}
-
-// The board's Fund form raises the ceiling as it funds: its ceiling field
-// is a raise_ceiling with the fund drawn beside it.
-func TestFundFormRaisesTheCeiling(t *testing.T) {
-	r := needRig(t)
-	ck, s := r.loggedIn(t)
-	if rec := r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.9"}, "ceiling": {"1"}, "reason": {"worth it"}}), ck); rec.Code != http.StatusSeeOther {
-		t.Fatalf("fund = %d: %s", rec.Code, rec.Body)
-	}
-	got, _ := actedOnce(t, r)
-	if want := (factoryd.Resolution{Action: factoryd.ActRaiseCeiling, Args: map[string]any{"eur": 1.0}, Fund: &policy.Draw{EUR: 0.9}, Note: "worth it"}); !reflect.DeepEqual(got.Res, want) {
-		t.Fatalf("Act took %+v, want %+v", got.Res, want)
 	}
 }
 
@@ -595,7 +583,7 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 			r.tasks.set(tc.reason, card)
 			r.openCases = map[string][]factoryd.Case{"t-k": {k}}
 			a := actor{s: s, repository: "sf/code", via: factoryd.ViaButton}
-			if _, err := r.c.doPressCase(t.Context(), a, "t-k", 1, answer, sample, "", 0); err != nil || len(r.acted) != 1 {
+			if _, err := r.c.doPressCase(t.Context(), a, "t-k", 1, answer, sample); err != nil || len(r.acted) != 1 {
 				t.Errorf("%s, %s: %v, Act took %+v", tc.kind, answer.Key(), err, r.acted)
 				continue
 			}
@@ -753,7 +741,7 @@ func TestGrantSessionNeedsACap(t *testing.T) {
 	r.tasks.set("", factoryd.Task{ID: "t-d", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 13})
 	_, err := runTool(t, r, "grant_session", "member", toolInput{TaskID: "t-d", Text: "one more"})
 	var no *refusal
-	if want := "this card is not at a cap, so there is nothing to grant: the Extend form raises a running card"; !errors.As(err, &no) ||
+	if want := "this card is not at a cap, so there is nothing to grant: Allow more sessions among the opened card's other actions raises a running card"; !errors.As(err, &no) ||
 		no.status != http.StatusConflict || no.msg != want || len(r.acted) != 0 {
 		t.Fatalf("grant_session on a done card = %v, Act took %+v; want 409 %q", err, r.acted, want)
 	}
@@ -779,8 +767,8 @@ func TestTimeCappedCardNamesItsGrant(t *testing.T) {
 		Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Objective: "Trim the logs."})
 	seatAsk(r, "t-tc", factoryd.CaseAgentTimeCap, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.AgentTimeS = 1, 7200 }))
 	esc := escalationOf(t, r, ck, "t-tc")
-	minutes, sessions, button := strings.Index(esc, `name="extend.minutes"`), strings.Index(esc, `name="extend.sessions"`), strings.Index(esc, `name="action" value="extend"`)
-	if minutes < 0 || sessions < minutes || button < sessions {
+	first, minutes, sessions := strings.Index(esc, `data-answer="`), strings.Index(esc, `name="extend.minutes"`), strings.Index(esc, `name="extend.sessions"`)
+	if first < 0 || !strings.HasPrefix(esc[first:], `data-answer="extend"`) || minutes < 0 || sessions < minutes {
 		t.Fatalf("the time-capped card's answer form =\n%s\nwant the extend first, its minutes before its sessions", esc)
 	}
 	if got, want := fitting(factoryd.Task{Status: "waiting-human", IssueNumber: 13}, capFacts{capped: true, timeCap: true}),
@@ -928,8 +916,10 @@ func TestCloseThroughActLeavesTheDependenciesToAct(t *testing.T) {
 	r := newRig(t)
 	caseCard(r)
 	r.fg.deps = map[string][]map[string]any{"/api/v1/repos/sf/code/issues/13/dependencies": dependsOn(7)}
-	ck, s := r.loggedIn(t)
-	if rec := r.do(post("/tasks/t-e/close", url.Values{"csrf": {s.csrf}, "note": {"Done."}}), ck); rec.Code != http.StatusSeeOther {
+	ck, _ := r.loggedIn(t)
+	end := answerForm(t, drawer(t, r, ck, "t-e", "overview"), factoryd.ActClose)
+	end.Values.Set("close.note", "Done.")
+	if rec := r.do(post(end.Action, end.Values), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("close = %d: %s", rec.Code, rec.Body)
 	}
 	got, _ := actedOnce(t, r)
@@ -938,8 +928,9 @@ func TestCloseThroughActLeavesTheDependenciesToAct(t *testing.T) {
 	r = newRig(t)
 	caseCard(r)
 	r.actErr = errors.New("forgejo PATCH https://user:pass@git.example/x: edge refused, Authorization: Bearer abcdef0123456789")
-	ck, s = r.loggedIn(t)
-	rec := r.do(post("/tasks/t-e/close", url.Values{"csrf": {s.csrf}}), ck)
+	ck, _ = r.loggedIn(t)
+	end = answerForm(t, drawer(t, r, ck, "t-e", "overview"), factoryd.ActClose)
+	rec := r.do(post(end.Action, end.Values), ck)
 	equal(t, "the status", rec.Code, http.StatusInternalServerError)
 	for _, leak := range []string{"user:pass", "abcdef0123456789"} {
 		if strings.Contains(rec.Body.String(), leak) {

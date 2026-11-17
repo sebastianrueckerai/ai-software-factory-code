@@ -96,9 +96,9 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	}
 	// the documents' save is login-only too: its handler judges the
 	// project's sight, as its read does (TestDocsReadAccess).
-	if pages != 46 || !slices.Equal(skipped, []string{"POST /messengers/telegram", "POST /mcp", "POST /notifications/telegram/code",
+	if pages != 39 || !slices.Equal(skipped, []string{"POST /messengers/telegram", "POST /mcp", "POST /notifications/telegram/code",
 		"POST /notifications/disconnect", "POST /notifications/level", "POST /notifications/tokens", "POST /notifications/tokens/revoke", "POST /logout", "POST /projects/{name}/docs/{path...}"}) {
-		t.Fatalf("%d POST routes driven, skipped %v: want 46 driven and only the telegram webhook, /mcp, the notifications' posts, the chat tokens' posts, logout and the documents' save skipped", pages, skipped)
+		t.Fatalf("%d POST routes driven, skipped %v: want 39 driven and only the telegram webhook, /mcp, the notifications' posts, the chat tokens' posts, logout and the documents' save skipped", pages, skipped)
 	}
 
 	// The chat: every write tool by the member its scope refuses — bob on
@@ -309,5 +309,53 @@ func TestChatTimelineIsACard(t *testing.T) {
 	costs := r.do(httptest.NewRequest(http.MethodGet, "/costs", nil), ak)
 	if costs.Code != http.StatusOK || !strings.Contains(costs.Body.String(), `href="/tasks/`+task.ID+`/timeline"`) {
 		t.Fatalf("the costs page as alice = %d, want demo's chat task linked:\n%s", costs.Code, costs.Body)
+	}
+}
+
+// The opened card's answers keep their doors' rules: a writer who is no
+// approver sees the merge disabled beside the line that says so, and gets
+// 403 for an approver's answer, on a merge case (approve_merge) and on a
+// card's own door (retry, replan, extend, fund), and nothing changes.
+func TestAWriterPressesNoApproversAnswer(t *testing.T) {
+	r := newRig(t)
+	withRequestCards(r)
+	k, err := factoryd.RequestCase(r.approvals.get(4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	k.ID = 90
+	r.openCases = map[string][]factoryd.Case{"t-m": {k}}
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 22, BudgetEUR: 2}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-f", Kind: "agent", Status: "failed", Repository: "sf/code", IssueNumber: 23}})
+	r.fg.user, r.repoWriters["sf/code"] = "alice", []string{"sebastian", "alice"}
+	r.forgetWriters()
+	ck, s := r.loggedIn(t)
+	ask := askBlockOf(t, drawer(t, r, ck, "t-m", "overview"))
+	if !strings.Contains(ask, `<p class="o-who">Only the project&#39;s approvers may approve.</p>`) ||
+		!strings.Contains(ask, `<button type="button" class="pick" disabled>Merge it</button>`) || !strings.Contains(ask, `data-answer="deny_merge"`) {
+		t.Errorf("a writer's merge ask lacks the line, the disabled merge or the return:\n%s", ask)
+	}
+	before := r.events.count()
+	for _, tc := range []struct {
+		id   string
+		form url.Values
+	}{
+		{"t-m", url.Values{"case_id": {"90"}, "action": {factoryd.ActApproveMerge}}},
+		{"t-f", url.Values{"action": {factoryd.ActRetry}}},
+		{"t-run", url.Values{"action": {factoryd.ActReplan}, "replan.note": {"cut it smaller"}}},
+		{"t-run", url.Values{"action": {factoryd.ActExtend}, "extend.sessions": {"1"}}},
+		{"t-run", url.Values{"action": {factoryd.ActFund}, "fund.eur": {"1.00"}}},
+	} {
+		tc.form.Set("csrf", s.csrf)
+		if rec := r.do(post("/tasks/"+tc.id+"/resolve", tc.form), ck); rec.Code != http.StatusForbidden {
+			t.Errorf("%s by a writer on %s = %d, want 403: %s", tc.form.Get("action"), tc.id, rec.Code, rec.Body)
+		}
+	}
+	if r.approvals.get(4).Status != "pending" || r.events.count() != before {
+		t.Errorf("a refused press acted: request %s, %d rows", r.approvals.get(4).Status, r.events.count()-before)
+	}
+	if k, _, _ := r.tasks.Task(t.Context(), "t-run"); k.BudgetEUR != 2 || k.Status != "running" {
+		t.Errorf("t-run = %s with %.2f EUR, want running with 2.00", k.Status, k.BudgetEUR)
 	}
 }

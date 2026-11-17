@@ -15,11 +15,10 @@ import (
 )
 
 // The oversized needs-you card, held fixed at the construction point:
-// the small card holds the register's ask and none of the parts' tails,
-// so no field or card kind can grow the column's copy again. The opened
-// card decides through the one partial (one-face), so it carries every
-// part of the ask and the whole text (the
-// 2026-10-17 card, reconciled to the one-face plan).
+// the small card and the opened card's ask hold the register's ask and
+// none of the parts' tails, so no field or card kind can grow the copy
+// again; the opened card's full brief holds the whole text (the
+// 2026-10-17 card).
 func TestMergeFaceWhispers(t *testing.T) {
 	r := newRig(t)
 	pad := func(n int) string {
@@ -50,54 +49,52 @@ func TestMergeFaceWhispers(t *testing.T) {
 			t.Errorf("the small card carries %s:\n%s", tail, small)
 		}
 	}
-	// the opened card's decide carries every part of the ask from its
-	// first line — the ask, the why, what the call needs, the
-	// recommendation, and each offer's one line of effect
-	face := requestOf(t, r, ck, "t-m", 4)
+	// the opened card's ask holds the register's question, why, the model
+	// review's pick in its first sentence and each answer's one line of
+	// effect, and none of the parts' tails; the full brief holds them whole
+	body := drawer(t, r, ck, "t-m", "overview")
+	ask := askBlockOf(t, body)
 	for _, want := range []string{
-		`<p class="ask">Merge PR #9 of t-m? normal risk.</p>`,
-		`<p class="why">a human decides this merge. pad 0`,
-		`<p>Model review: the change is safe. pad 0`,
-		`<p class="recommendation">Recommendation (the model review): the change is safe. pad 0`,
-		`<span class="effect">merges PR #9: factoryd merges it</span>`,
-		`<span class="effect">sends the pull request back to its agent with your note</span>`,
+		`<p class="o-question">Merge this card&#39;s pull request?</p>`,
+		`<p class="o-askwhy">The change is of normal risk, and the factory&#39;s rules let only a human merge it.</p>`,
+		`<p class="o-by">suggested by the model review: <span class="quote">the change is safe.</span></p>`,
+		`<span class="effect">Merges the pull request.</span>`,
+		`<span class="effect">Returns the pull request to its agent with your note.</span>`,
+		`<span class="effect">Closes the pull request. The card ends.</span>`,
 	} {
-		if !strings.Contains(face, want) {
-			t.Errorf("the decide lacks the part's first line %q:\n%s", want, face)
+		if !strings.Contains(ask, want) {
+			t.Errorf("the ask lacks %q:\n%s", want, ask)
 		}
 	}
-	// the one decide: one form, one send, one fund control, one note box
-	for what, want := range map[string]int{`class="decide resolve"`: 1, `action="/approvals/4/approve"`: 1,
-		`name="fund_eur"`: 1, `<textarea`: 1} {
-		if got := strings.Count(face, what); got != want {
-			t.Errorf("the decide carries %s %d times, want %d:\n%s", what, got, want, face)
+	for _, tail := range []string{"RECO_TAIL_MARKER", "SUMMARY_TAIL_MARKER", "FINDING_TAIL_MARKER", "WHY_TAIL_MARKER", "F4_TAIL_MARKER", "pad 0"} {
+		if strings.Contains(ask, tail) {
+			t.Errorf("the ask carries %s:\n%s", tail, ask)
 		}
 	}
-	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
+	// one form an answer, each its own send: no fund control beside them,
+	// and a note box for each answer that takes words
+	for what, want := range map[string]int{`<form `: 3, `action="/approvals/4/approve"`: 1, `action="/approvals/4/deny"`: 2,
+		`name="fund_eur"`: 0, `<textarea`: 2} {
+		if got := strings.Count(ask, what); got != want {
+			t.Errorf("the ask carries %s %d times, want %d:\n%s", what, got, want, ask)
+		}
+	}
 	for _, whole := range []string{"RECO_TAIL_MARKER", "SUMMARY_TAIL_MARKER", "FINDING_TAIL_MARKER", "WHY_TAIL_MARKER", "F4_TAIL_MARKER"} {
-		if !strings.Contains(drawer, whole) {
-			t.Errorf("the drawer lost the whole text (%s):\n%s", whole, drawer)
+		if !strings.Contains(body, whole) {
+			t.Errorf("the drawer lost the whole text (%s):\n%s", whole, body)
 		}
 	}
-	// the one send: the answer, the fund and the note ride one POST, and
-	// land together on the card as one row
+	// Merge it's send merges and lands one row on the card
 	before := r.events.count()
-	note := "one send carries all three"
 	if rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
-		"action": {"approve"}, "fund_eur": {"1.50"}, "note": {note}}), ck); rec.Code != http.StatusSeeOther {
-		t.Fatalf("the one send = %d: %s", rec.Code, rec.Body)
+		"action": {"approve"}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the send = %d: %s", rec.Code, rec.Body)
 	}
-	// the merge approve's note rides its row and the pull request's
-	// review, not the request's own DecisionNote (the deny keeps its own)
 	if a := r.approvals.get(4); a.Status != "approved" || a.DecidedBy != "sebastian" || a.DecisionNote != "" {
-		t.Errorf("the request = %q by %q, note %q, want approved by sebastian, note %q", a.Status, a.DecidedBy, a.DecisionNote, "")
-	}
-	if k, ok, _ := r.tasks.Task(t.Context(), "t-m"); !ok || k.BudgetEUR != 1.5 {
-		t.Errorf("t-m's budget = %v (ok %v), want the 1.50 the one send carried", k.BudgetEUR, ok)
+		t.Errorf("the request = %q by %q, note %q, want approved by sebastian, no note", a.Status, a.DecidedBy, a.DecisionNote)
 	}
 	checkRows(t, r.events, before,
-		wantRow{kind: factoryd.EventMergeApproved, repo: "sf/code", taskID: "t-m",
-			detail: map[string]any{"pr": int64(9), "approval": int64(4), "fund_eur": 1.5, "reason": note}})
+		wantRow{kind: factoryd.EventMergeApproved, repo: "sf/code", taskID: "t-m", detail: map[string]any{"pr": int64(9)}})
 }
 
 // The agent's board read runs as no member (a session-less turn): a

@@ -725,7 +725,7 @@ func (t *turn) answerIn(ctx context.Context, in toolInput) (string, error) {
 		if len(in.Answers) > 0 {
 			return t.c.doAnswerPlanQuestions(ctx, a, in.TaskID, in.Revision, in.Answers)
 		}
-		return t.c.doAnswerPlanQuestion(ctx, a, in.TaskID, in.Revision, in.Question, in.Decision, in.Text, 0)
+		return t.c.doAnswerPlanQuestion(ctx, a, in.TaskID, in.Revision, in.Question, in.Decision, in.Text)
 	case in.Question > 0 || in.Decision != "":
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
 	case in.Action != "" || in.FundEUR != 0 || len(in.Args) > 0:
@@ -1641,7 +1641,7 @@ func init() {
 				if err != nil {
 					return "", nil, err
 				}
-				note, err := t.c.doApprove(t.r.Context(), t.a, q.ID, "", 0)
+				note, err := t.c.doApprove(t.r.Context(), t.a, q.ID)
 				return note, nil, err
 			}},
 		{name: "deny_merge", title: "Deny a merge", write: true,
@@ -1703,7 +1703,7 @@ func init() {
 					note, err := t.c.doDecide(t.r.Context(), t.a, q.ID, in.Criterion, in.Action, in.Reason)
 					return note, nil, err
 				case "grant":
-					note, err := t.c.doApprove(t.r.Context(), t.a, q.ID, "", 0)
+					note, err := t.c.doApprove(t.r.Context(), t.a, q.ID)
 					return note, nil, err
 				case "confirm":
 					note, err := t.c.doConfirmCriteria(t.r.Context(), t.a, q.ID, line)
@@ -2287,7 +2287,7 @@ func (t *turn) fund(in toolInput) (string, error) {
 // capSpent is the refusal of money res draws past card issue's ceiling,
 // held the budget it met: it names the raise that makes room by the
 // control the human has where they are, the answer's raise_ceiling in the
-// chat, the Fund form's ceiling field elsewhere.
+// chat, the opened card's Raise the spend limit elsewhere.
 func capSpent(issue int64, held float64, res factoryd.Resolution, ceiling float64, via string) string {
 	eur, _ := res.Args["eur"].(float64)
 	if res.Action != factoryd.ActFund {
@@ -2296,7 +2296,7 @@ func capSpent(issue int64, held float64, res factoryd.Resolution, ceiling float6
 	if res.Fund != nil {
 		eur += res.Fund.EUR
 	}
-	raise := "raise the ceiling in the Fund form's ceiling field as you fund"
+	raise := "press Raise the spend limit on the opened card, which funds beside it"
 	if via == factoryd.ViaChat {
 		raise = "raise the ceiling first (answer with action raise_ceiling), then fund"
 	}

@@ -543,7 +543,7 @@ func TestCapWaitReplyByAgentTime(t *testing.T) {
 // in each row drives through the run (no test drives a row no trip
 // reaches: unreached says why). A kind whose reply buys a session names the
 // reply with room, the cap's Extend at the agent-time cap or the session
-// limit, and the Fund form with the budget short of a session, after the
+// limit, and Add money with the budget short of a session, after the
 // wait on a day, month or project cap that binds first; a share
 // stop's with the pull request open takes its head through the gates
 // again; a plan's with its automatic session to come starts it; the gate's

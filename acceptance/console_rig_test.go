@@ -396,7 +396,8 @@ func cardReads(cfg *console.Config, rig *AcceptanceRig, tasks console.Tasks) {
 		}
 		return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
 	}
-	// each pending merge or criteria request has its case, as the store opens one
+	// each pending merge or criteria request has its case, as the store
+	// opens one
 	cfg.OpenCasesOf = func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 		open, err := ownCases(ctx, taskID)
 		if cfg.Approvals == nil {
@@ -404,11 +405,10 @@ func cardReads(cfg *console.Config, rig *AcceptanceRig, tasks console.Tasks) {
 		}
 		pending, _ := cfg.Approvals.ApprovalRequests(ctx, "pending")
 		for _, q := range pending {
-			kind := map[string]factoryd.CaseKind{factoryd.ApprovalMerge: factoryd.CaseMergeApproval, factoryd.ApprovalCriteria: factoryd.CasePlanCriteria,
-				factoryd.ApprovalCriteriaRerun: factoryd.CasePlanCriteria}[q.Kind]
-			if q.TaskID == taskID && kind != "" {
-				open = append(open, factoryd.Case{ID: 7000 + q.ID, TaskID: taskID, Repository: q.Project, Kind: kind,
-					Status: factoryd.CaseAtHuman, Facts: map[string]any{"approval": q.ID}})
+			if k, ok, kerr := requestCaseOf(q); kerr != nil {
+				return nil, kerr
+			} else if ok && q.TaskID == taskID {
+				open = append(open, k)
 			}
 		}
 		return open, err
@@ -444,7 +444,15 @@ func cardReads(cfg *console.Config, rig *AcceptanceRig, tasks console.Tasks) {
 		return d, err
 	}
 	cfg.CaseSteps = func(context.Context, int64) ([]factoryd.CaseStep, error) { return nil, nil }
-	cfg.CaseByID = func(_ context.Context, id int64) (factoryd.Case, error) {
+	cfg.CaseByID = func(ctx context.Context, id int64) (factoryd.Case, error) {
+		if cfg.Approvals != nil {
+			pending, _ := cfg.Approvals.ApprovalRequests(ctx, "pending")
+			for _, q := range pending {
+				if k, ok, err := requestCaseOf(q); ok && k.ID == id || err != nil {
+					return k, err
+				}
+			}
+		}
 		return factoryd.Case{}, fmt.Errorf("case %d: %w", id, factoryd.ErrNotFound)
 	}
 	// the newest of the cases OpenCasesOf answers that an answer on the
@@ -2091,3 +2099,15 @@ func (s *AcceptanceRig) PlanClosed(context.Context, string) (time.Time, bool, er
 }
 
 func (s *AcceptanceRig) PlanMerged(context.Context, string) (bool, error) { return false, nil }
+
+// requestCaseOf is the case the store opens for pending request q,
+// numbered 7000 and its id: a merge or a criteria request's, none for a
+// resource or a plan request.
+func requestCaseOf(q factoryd.ApprovalRequest) (factoryd.Case, bool, error) {
+	if q.Kind == factoryd.ApprovalResource || q.Kind == factoryd.ApprovalPlan {
+		return factoryd.Case{}, false, nil
+	}
+	k, err := factoryd.RequestCase(q)
+	k.ID = 7000 + q.ID
+	return k, err == nil, err
+}

@@ -142,7 +142,7 @@ func TestTheAskTeachesTheDecisions(t *testing.T) {
 	if strings.Contains(qs[0].Text, "answer okay") {
 		t.Fatalf("the ask still teaches the word: %s", qs[0].Text)
 	}
-	for _, want := range []string{"Confirm", "Request changes"} {
+	for _, want := range []string{"Confirm the plan", "Ask for changes"} {
 		if !strings.Contains(qs[0].Text, want) {
 			t.Fatalf("the ask lacks %q: %s", want, qs[0].Text)
 		}

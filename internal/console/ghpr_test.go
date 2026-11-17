@@ -118,8 +118,8 @@ func TestCardGitHubPullRequest(t *testing.T) {
 			GitHubPRState: "failed: GitHub refused the pull request: GitHub answered 422 Validation Failed"})
 	ck, _ := r.loggedIn(t)
 	for id, want := range map[string]string{
-		"t-x": `<dt>GitHub</dt><dd><a href="https://github.com/acme/app/pull/12" target="_blank" rel="noopener">PR #12</a> merged</dd>`,
-		"t-y": `<dt>GitHub</dt><dd>failed: GitHub refused the pull request: GitHub answered 422 Validation Failed</dd>`,
+		"t-x": `<p class="provenance">on GitHub <a href="https://github.com/acme/app/pull/12" target="_blank" rel="noopener">pull request #12</a> merged</p>`,
+		"t-y": `<p class="provenance">on GitHub failed: GitHub refused the pull request: GitHub answered 422 Validation Failed</p>`,
 	} {
 		if opened := drawer(t, r, ck, id, "overview"); !strings.Contains(opened, want) {
 			t.Errorf("%s's opened card lacks %s:\n%s", id, want, opened)

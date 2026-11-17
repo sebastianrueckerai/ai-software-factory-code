@@ -68,9 +68,11 @@ func TestDrawerFoldsTheCardsLifeLazily(t *testing.T) {
 		t.Fatalf("the board = %d", rec.Code)
 	}
 	drawer := getPage(r, ak, "/cards/t-c/drawer?tab=overview").Body.String()
-	if want := `<details class="sec" data-sec="life" hx-get="/tasks/t-c/digest" hx-trigger="toggle once" hx-target="find .sec-body">` +
-		`<summary>The card's life</summary><div class="sec-body"><p class="meta">Loading…</p></div></details>`; !strings.Contains(drawer, want) {
-		t.Fatalf("the drawer lacks the fold\n%s\nin\n%s", want, drawer)
+	for _, want := range []string{`<details class="fold" data-sec="life" hx-get="/tasks/t-c/digest" hx-trigger="toggle once" hx-target="find .sec-body"><summary>The card's life`,
+		`<div class="sec-body"><p class="meta">Loading…</p></div></details>`} {
+		if !strings.Contains(drawer, want) {
+			t.Fatalf("the drawer lacks the fold\n%s\nin\n%s", want, drawer)
+		}
 	}
 	if strings.Contains(drawer, "revealed") {
 		t.Fatal("the drawer loads something once it is in view")

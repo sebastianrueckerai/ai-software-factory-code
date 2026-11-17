@@ -112,23 +112,47 @@ func ReadCardBrief(ctx context.Context, s BriefReads, id string) (CardBrief, err
 	if err != nil || plan.ID == "" {
 		return b, err
 	}
+	if b.Plan, err = planOfBrief(ctx, s, t, plan, p, revision, &b); err != nil {
+		return CardBrief{}, err
+	}
+	return b, nil
+}
+
+// ReadPlanBrief is plan's own plan as a brief names it, for the plan's
+// card: its cards with none of them its own; nil while it holds no
+// revision.
+func ReadPlanBrief(ctx context.Context, s BriefReads, plan Task) (*BriefPlan, error) {
+	rev, ok, err := s.PlanRevision(ctx, plan.ID, 0)
+	if err != nil || !ok {
+		return nil, err
+	}
+	p, err := revisionPlan(rev)
+	if err != nil {
+		return nil, err
+	}
+	return planOfBrief(ctx, s, plan, plan, p, rev.Revision, &CardBrief{})
+}
+
+// planOfBrief is plan p, at revision of plan task plan, as card t reads it,
+// t's acceptance items and their criteria set on b.
+func planOfBrief(ctx context.Context, s BriefReads, t, plan Task, p Plan, revision int, b *CardBrief) (*BriefPlan, error) {
 	rows, err := s.PlanCards(ctx, plan.ID)
 	if err != nil {
-		return CardBrief{}, fmt.Errorf("the cards of plan %s: %w", plan.ID, err)
+		return nil, fmt.Errorf("the cards of plan %s: %w", plan.ID, err)
 	}
 	bp := &BriefPlan{Task: plan.ID, Issue: int(plan.IssueNumber), Name: cmp.Or(plan.PlanName, CardTitle(plan)), Key: t.PlanKey,
 		Summary: strings.TrimSpace(p.Summary), Brief: storedBrief(plan)}
 	if p.Spec != nil {
 		bp.Outcome, bp.Glossary = strings.TrimSpace(p.Spec.Outcome), p.Spec.Glossary
 	}
-	order := planOrder(p, planEdges(p))
+	order := p.FilingOrder()
 	bp.Of = len(order)
 	for i, c := range order {
 		ref := CardRef{Title: c.Title}
 		if row := slices.IndexFunc(rows, func(r Task) bool { return r.PlanKey == c.Key }); row >= 0 {
 			end, ok, err := throughSuccessors(ctx, s, rows[row])
 			if err != nil {
-				return CardBrief{}, err
+				return nil, err
 			}
 			if !ok {
 				end = rows[row]
@@ -149,7 +173,7 @@ func ReadCardBrief(ctx context.Context, s BriefReads, id string) (CardBrief, err
 	for rev := 0; rev <= revision; rev++ {
 		qs, err := s.PlanQuestions(ctx, plan.ID, rev)
 		if err != nil {
-			return CardBrief{}, fmt.Errorf("the questions of plan %s revision %d: %w", plan.ID, rev, err)
+			return nil, fmt.Errorf("the questions of plan %s revision %d: %w", plan.ID, rev, err)
 		}
 		for _, q := range qs {
 			a := AnsweredQuestion{Question: strings.TrimSpace(q.Text), Answer: strings.TrimSpace(q.Reply())}
@@ -158,8 +182,7 @@ func ReadCardBrief(ctx context.Context, s BriefReads, id string) (CardBrief, err
 			}
 		}
 	}
-	b.Plan = bp
-	return b, nil
+	return bp, nil
 }
 
 // cardPlan is the plan card t belongs to, none (a zero plan task) for a

@@ -656,3 +656,29 @@ func TestARequestsNotNowNamesTheDayItsWaitEnds(t *testing.T) {
 		t.Errorf("answers %+v, want Not now with %q", face.Answers, want)
 	}
 }
+
+// A pull request factoryd opened has no agent to send it back to: its merge
+// face offers the merge and the close, on red checks the re-run and the
+// close. An agent's pull request also goes back to its agent, and on red
+// checks only goes back or closes: its agent fixes the checks. The question
+// asks what the answers do.
+func TestAFactoryPullRequestsMergeFaceClosesIt(t *testing.T) {
+	for _, tc := range []struct {
+		factory bool
+		checks  string
+		ask     string
+		want    []string
+	}{
+		{true, "green", "Merge this card's pull request?", []string{"Merge it", "Reject and close it"}},
+		{true, "red", "The checks of this card's pull request are red. Run them again, or close it?", []string{"Run the failed checks again", "Reject and close it"}},
+		{false, "green", "Merge this card's pull request?", []string{"Merge it", "Send it back", "Reject and close it"}},
+		{false, "red", "The checks of this card's pull request are red. Send it back to its agent?", []string{"Send it back", "Reject and close it"}},
+	} {
+		c := factoryd.Case{Kind: factoryd.CaseMergeApproval, Facts: map[string]any{"approval": 4, "pr": 31, "head": "def456", "pr_open": true,
+			"checks": tc.checks, "factory": tc.factory}}
+		face := factoryd.FaceOf(c, factoryd.Facts{CaseFacts: factoryd.FactsOf(c), Card: factoryd.Task{ID: "t1", Kind: "agent", IssueNumber: 4, PRNumber: 31}})
+		if got := labels(face.Answers); face.Ask != tc.ask || !slices.Equal(got, tc.want) {
+			t.Errorf("factory %v, checks %s: %q %v, want %q %v", tc.factory, tc.checks, face.Ask, got, tc.ask, tc.want)
+		}
+	}
+}

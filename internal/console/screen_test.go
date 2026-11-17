@@ -518,11 +518,12 @@ func TestWideViewKeepsTheStatesAndSurvivesThePoll(t *testing.T) {
 		t.Error("the wide view's poll answers the five columns")
 	}
 	if opened := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c7/drawer?project=linkshort&view=wide", nil), ck).Body.String(); !strings.Contains(opened,
-		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide"><button type="submit" aria-label="Retry #7">Retry</button>`) {
+		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide"><input type="hidden" name="action" value="retry">`) {
 		t.Errorf("the opened card under the wide view's query keeps no view on its forms: %s", opened)
 	}
-	form := url.Values{"csrf": {s.csrf}, "why": {"So links stay short."}, "summary": {"The links"}, "project": {"linkshort"}, "view": {"wide"}}
-	req := post("/tasks/t-c2/brief", form)
+	form := url.Values{"csrf": {s.csrf}, "action": {factoryd.AnswerEditBrief}, "edit_brief.why": {"So links stay short."}, "edit_brief.summary": {"The links"},
+		"project": {"linkshort"}, "view": {"wide"}}
+	req := post("/tasks/t-c2/resolve", form)
 	req.Header.Set("HX-Request", "true")
 	if rec := r.do(req, ck); !pressRefreshes(rec) {
 		t.Errorf("a form of the wide view answers %d: %s", rec.Code, rec.Body)
@@ -530,8 +531,8 @@ func TestWideViewKeepsTheStatesAndSurvivesThePoll(t *testing.T) {
 	if task, _, _ := r.tasks.Task(t.Context(), "t-c2"); task.Summary != "The links" {
 		t.Errorf("the wide view's form stored the summary %q, want The links", task.Summary)
 	}
-	form.Set("summary", "The links, kept short")
-	if rec := r.do(post("/tasks/t-c2/brief", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=linkshort&view=wide" {
+	form.Set("edit_brief.summary", "The links, kept short")
+	if rec := r.do(post("/tasks/t-c2/resolve", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=linkshort&view=wide" {
 		t.Errorf("a browser's form of the wide view: %d to %q", rec.Code, rec.Header().Get("Location"))
 	}
 	five := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
@@ -630,68 +631,76 @@ func drawerTabMarkup(id, name, title string, on bool) string {
 		`/drawer?tab=` + name + `" hx-target="#drawer" hx-swap="innerHTML">` + title + `</button>`
 }
 
-// The drawer's Overview: the four tabs, the objective as its headline, a
-// planned card's provenance line and its body, the related cards in their
-// live state, each opening in the drawer (blocked by the dependencies not
-// done, part of plan; a plan's children), the plan's table and a pending
-// merge's reviews and audit.
+// The drawer's Overview is the opened card: the tabs, the title, the
+// brief's body, the cards it waits on that are not done in their live
+// state, its plan with this card marked and the link to the plan's card,
+// the full timeline, and a pending merge's reviews and audit.
 func TestDrawerOverview(t *testing.T) {
 	r, ck := drawerRig(t)
-	open := func(id, label string) string {
-		return `<a href="#card=` + id + `" hx-get="/cards/` + id + `/drawer" hx-target="#drawer" hx-swap="innerHTML">` + label + `</a></li>`
+	// the plan's rows name the children by key, and the board's waiting
+	// line names the dependencies not done, as the store reads them
+	r.tasks.mu.Lock()
+	for i, key := range map[string]string{"t-c2": "foundation", "t-c4": "links-api"} {
+		for j := range r.tasks.tasks {
+			if r.tasks.tasks[j].ID == i {
+				r.tasks.tasks[j].PlanKey = key
+			}
+			if r.tasks.tasks[j].ID == "t-c4" {
+				r.tasks.tasks[j].WaitingOn = "#3"
+			}
+		}
 	}
+	r.tasks.mu.Unlock()
 	tab := drawerTabMarkup
 	card := drawer(t, r, ck, "t-c4", "")
 	for _, want := range []string{
 		`<div class="drawer-content" data-drawer="t-c4">`,
-		`<div class="dr-title"><a class="dr-ref" href="https://git.example/linkshort/linkshort/issues/4" target="_blank" rel="noopener" data-tip="the issue">#4</a> - <h2 tabindex="-1">Links API</h2></div>`,
 		`<nav class="tabs" role="tablist" aria-label="The card's tabs">` + tab("t-c4", "overview", "Overview", true) +
 			tab("t-c4", "chat", "Session", false) + tab("t-c4", "activity", "Activity", false) + tab("t-c4", "files", "Files", false) +
 			tab("t-c4", "receipt", "Receipt", false) + `</nav>`,
-		`<dt>Task</dt><dd>Links API</dd>`, `<details class="sec" data-sec="time"><summary>Time<span class="hint">`,
-		`<p class="provenance">Card links-api of plan #1 (3 of 4), filed for sebastian. Written by the planner.</p>`,
-		"<p class=\"objective-body\">Build the links API.\nDepends on: #3</p>",
-		`<li><span class="why">blocked by</span> <span class="pill st-queued">queued</span> ` + open("t-c3", "#3 card 3"),
-		`<li><span class="why">part of plan</span> <span class="pill st-done">done</span> ` + open("t-plan", "#1 Link shortener"),
+		`<h2 class="o-title" tabindex="-1">Links API.</h2>`,
+		`<span class="it place"><a class="ref-link" href="#card=t-plan">Link shortener</a> 2/3</span>`,
+		`<summary>The full brief<span class="hint">waits on 1 card</span></summary>`,
+		`<div class="o-body"><p>Card links-api of plan #1 (3 of 4), filed for sebastian. Written by the planner.</p>` + "\n" +
+			"<p>Build the links API.\nDepends on: #3</p>",
+		`<h4>It waits on</h4><ul><li><a class="ref-link" href="#card=t-c3">#3</a> <span class="ref-of">(card 3, queued)</span></li></ul>`,
+		`<ol class="plan-rows"><li><a class="ref-link" href="#card=t-c2">#2</a> <span class="ref-of">(card 2, queued)</span></li>` +
+			`<li class="this" aria-current="true"><a class="ref-link" href="#card=t-c4">#4</a> <span class="ref-of">(Links API, queued)</span> <span class="meta">this card</span></li>` +
+			`<li>Acceptance tests <span class="meta">not filed yet</span></li></ol>`,
+		`<a href="#card=t-plan">open the plan's card</a>`,
 		`<a href="/tasks/t-c4/timeline">the full timeline</a>`,
 	} {
 		if !strings.Contains(card, want) {
 			t.Errorf("t-c4's overview lacks %s:\n%s", want, card)
 		}
 	}
-	if strings.Contains(card, "t-c5") || strings.Count(card, "<li>") != 2 {
-		t.Errorf("t-c4's related cards are not exactly #3 and the plan:\n%s", card)
+	if strings.Contains(card, "#card=t-c5") {
+		t.Errorf("t-c4 waits on its done #5:\n%s", card)
 	}
 
 	plan := drawer(t, r, ck, "t-plan", "overview")
-	for _, want := range []string{`<dt>Task</dt><dd>Link shortener</dd>`,
-		"<p>Foundation first, then the API, then the acceptance tests.</p>",
-		"<tr><td>foundation</td><td>foundation</td><td>Foundation</td><td>medium</td><td></td></tr>",
-		"<tr><td>links-api</td><td>feature</td><td>Links API</td><td>medium</td><td>foundation</td></tr>",
-		"<tr><td>integration</td><td>integration</td><td>Acceptance tests</td><td>small</td><td>foundation, links-api</td></tr>",
-		`<li><span class="why">child</span> <span class="pill st-queued">queued</span> ` + open("t-c2", "#2 card 2"),
-		`<li><span class="why">child</span> <span class="pill st-queued">queued</span> ` + open("t-c3", "#3 card 3"),
-		`<li><span class="why">child</span> <span class="pill st-waiting">waiting-deps</span> ` + open("t-c4", "#4 Links API"),
-		`<li><span class="why">child</span> <span class="pill st-done">done</span> ` + open("t-c5", "#5 card 5"),
+	for _, want := range []string{`<h2 class="o-title" tabindex="-1">Link shortener.</h2>`, `<span class="it place">plan of 3 cards</span>`,
+		`<summary>The plan<span class="hint">Link shortener, 3 cards, 0 ended</span></summary>`,
+		`<li><a class="ref-link" href="#card=t-c2">#2</a> <span class="ref-of">(card 2, queued)</span></li>`,
 	} {
 		if !strings.Contains(plan, want) {
-			t.Errorf("the plan's overview lacks %s", want)
+			t.Errorf("the plan's overview lacks %s:\n%s", want, plan)
 		}
 	}
-	if strings.Contains(plan, "provenance") || strings.Contains(plan, "objective-body") {
-		t.Error("the plan's one-line objective shows a provenance or a body")
+	if strings.Contains(plan, "open the plan's card") || strings.Contains(plan, `class="this"`) {
+		t.Errorf("the plan's own card links itself or marks a card as this one:\n%s", plan)
 	}
 
 	merge := drawer(t, r, ck, "t-m", "overview")
-	for _, want := range []string{`<h4>Reviews and audit of <a href="https://git.example/sf/code/pulls/9" target="_blank" rel="noopener">PR #9</a></h4>`,
-		"<dd>approve: adds the column safely<br>- remark: a follow-up files the docs<br>- dropped (grep finds the client closed in handler.go:40): internal/api.go: the handler leaks the client</dd>",
+	for _, want := range []string{
+		"<dt>Model review</dt><dd>approve: adds the column safely<br>- remark: a follow-up files the docs<br>- dropped (grep finds the client closed in handler.go:40): internal/api.go: the handler leaks the client</dd>",
 		"<dt>Earlier review 1</dt><dd>concerns: the column lacks a default<br>- 0018_x.sql: add a default<br>- dropped (main already held the default): 0018_x.sql: add a default</dd>",
 		"<dt>Security audit</dt><dd>findings (big, zai/glm-5.3)<br>- secret in the diff: private key: <code>internal/x/x_test.go:14</code>"} {
 		if !strings.Contains(merge, want) {
-			t.Errorf("t-m's overview lacks %s", want)
+			t.Errorf("t-m's overview lacks %s:\n%s", want, merge)
 		}
 	}
-	if strings.Contains(drawer(t, r, ck, "t-pr", ""), `data-sec="reviews"`) {
+	if strings.Contains(drawer(t, r, ck, "t-pr", ""), "<dt>Model review</dt>") {
 		t.Error("a card without a pending merge shows reviews")
 	}
 }
@@ -833,6 +842,7 @@ func TestDrawerChat(t *testing.T) {
 			drawerTabMarkup("t-run", "activity", "Activity", false) + drawerTabMarkup("t-run", "files", "Files", false) +
 			drawerTabMarkup("t-run", "receipt", "Receipt", false) + `</nav>`,
 		`<div id="drawer-panel" class="drawer-body" role="tabpanel">
+<h2 class="dr-title" tabindex="-1">fix the cache</h2>
 <p class="meta">Session 2 · big · running</p>
 <div id="session-log" class="session-log" role="log" aria-label="The messages of session 2" data-task="t-run" data-session="s-2">
 <div class="msg agent" data-key="s-2@2026-10-11T10:01:00.5Z"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">agent</span> <time>10-11 10:01Z</time></p><p class="said">Reading the cache first.</p></div>
@@ -1009,10 +1019,9 @@ func TestOldVerdictEventsStillRender(t *testing.T) {
 
 // The approval cards' forms carry the board's filter and land on it: an
 // approval of another project's merge goes back to that project's board.
-// Each card's one decide send carries the answer, the fund and the note
-// in one request — an approve takes all three, a deny takes no fund —
-// and the decision lands on the card: its request decided by the sender,
-// the fund on the task's budget, and one row holding all three.
+// Each answer is its own send, and the decision lands on the card: its
+// request decided by the sender and one row. An approve that names
+// another answer decides nothing.
 func TestApprovalFormsKeepTheBoard(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
@@ -1022,60 +1031,52 @@ func TestApprovalFormsKeepTheBoard(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks,
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-lm", Kind: "agent", Status: "in-review", Repository: "linkshort/linkshort", IssueNumber: 12}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-res", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 21}})
-	card := approvalFaceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/cards/t-lm/drawer?project=linkshort", nil), ck).Body.String(), "t-lm")
+	ask := askBlockOf(t, r.do(httptest.NewRequest(http.MethodGet, "/cards/t-lm/drawer?project=linkshort", nil), ck).Body.String())
 	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort">`
-	if got := strings.Count(card, filter); got != 1 {
-		t.Errorf("the merge card's one decide form carries the filter %d times, want one:\n%s", got, card)
+	if forms, got := strings.Count(ask, "<form "), strings.Count(ask, filter); forms != 3 || got != forms {
+		t.Errorf("the merge card's %d answers carry the filter %d times, want 3 each once:\n%s", forms, got, ask)
 	}
 	before := r.events.count()
+	if rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {"deny"}}), ck); rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), "the action deny is not one the face offers") || r.approvals.get(4).Status != "pending" {
+		t.Errorf("an approve naming deny = %d %q, request %q", rec.Code, rec.Body, r.approvals.get(4).Status)
+	}
 	for _, tc := range []struct {
 		path string
 		form url.Values
 		want string
 	}{
-		{"/approvals/30/approve", url.Values{"project": {"linkshort"}, "action": {"approve"}, "fund_eur": {"1.50"}, "note": {"ship it"}}, "/?project=linkshort"},
-		{"/approvals/3/approve", url.Values{"project": {"ai-software-factory-code"}, "view": {"wide"}, "action": {"approve"}, "fund_eur": {"1.50"}, "note": {"load away"}}, "/?project=ai-software-factory-code&view=wide"},
-		{"/approvals/4/approve", url.Values{"project": {"ai-software-factory-code"}, "action": {"deny"}, "note": {"not now"}}, "/?project=ai-software-factory-code"},
+		{"/approvals/30/approve", url.Values{"project": {"linkshort"}, "action": {"approve"}}, "/?project=linkshort"},
+		{"/approvals/3/approve", url.Values{"project": {"ai-software-factory-code"}, "view": {"wide"}}, "/?project=ai-software-factory-code&view=wide"},
+		{"/approvals/4/deny", url.Values{"project": {"ai-software-factory-code"}, "action": {"request_changes"}, "note": {"not now"}}, "/?project=ai-software-factory-code"},
 	} {
 		tc.form.Set("csrf", s.csrf)
 		if rec := r.do(post(tc.path, tc.form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != tc.want {
 			t.Errorf("POST %s = %d to %q, want 303 to %q: %s", tc.path, rec.Code, rec.Header().Get("Location"), tc.want, rec.Body)
 		}
 	}
-	// every send landed on its request, decided by the one who sent it —
-	// the deny on the approve path answers deny, not approve
 	for id, want := range map[int64][2]string{
 		30: {"approved", ""},
-		3:  {"approved", "load away"},
+		3:  {"approved", "approved for the task"},
 		4:  {"denied", "changes requested: not now"},
 	} {
 		if a := r.approvals.get(id); a.Status != want[0] || a.DecidedBy != "sebastian" || a.DecisionNote != want[1] {
 			t.Errorf("approval %d = %q by %q, note %q, want %s by sebastian, note %q", id, a.Status, a.DecidedBy, a.DecisionNote, want[0], want[1])
 		}
 	}
-	// each approve's fund reached its task's budget in the same request
-	for _, id := range []string{"t-lm", "t-res"} {
-		if k, ok, _ := r.tasks.Task(t.Context(), id); !ok || k.BudgetEUR != 1.5 {
-			t.Errorf("%s's budget = %v (ok %v), want the 1.50 its approve's one send carried", id, k.BudgetEUR, ok)
-		}
-	}
-	// one row per send: the answer, the fund and the note together on the
-	// card, the deny's row its request changes
 	checkRows(t, r.events, before,
-		wantRow{kind: factoryd.EventMergeApproved, repo: "linkshort/linkshort", taskID: "t-lm",
-			detail: map[string]any{"pr": int64(12), "approval": int64(30), "fund_eur": 1.5, "reason": "ship it"}},
-		wantRow{kind: factoryd.EventMergeApproved, repo: "sf/code", taskID: "t-res",
-			detail: map[string]any{"approval": int64(3), "kind": "resource", "fund_eur": 1.5, "reason": "load away"}},
+		wantRow{kind: factoryd.EventMergeApproved, repo: "linkshort/linkshort", taskID: "t-lm", detail: map[string]any{"pr": int64(12)}},
+		wantRow{kind: factoryd.EventMergeApproved, repo: "sf/code", taskID: "t-res", detail: map[string]any{"approval": int64(3), "kind": "resource"}},
 		wantRow{kind: factoryd.EventMergeDenied, repo: "sf/code", taskID: "t-m",
 			detail: map[string]any{"pr": int64(9), "action": "request_changes"}})
 }
 
 // The merge item on the four-column board is a small card that asks its
-// merge, with its model review's pick as its one press and no facts. Its opened card holds the headline
-// with the risk and migration chips, the five parts of the ask (the ask,
-// why a human, the model review, the recommendation), the one decide form
-// whose two offers, fund and note apply together, and every part's whole
-// text (item 4).
+// merge, with its model review's pick as its one press and no facts. Its
+// opened card asks the merge with why a human decides it, the model
+// review's pick and each answer's effect, one send per answer and no fund
+// beside them, and its full brief holds the facts: the risk, the
+// migration, the reviews, the recommendation and why a human (item 4).
 func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -1092,31 +1093,30 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 	if strings.Count(face, "<form") != 1 || !strings.Contains(face, `action="/approvals/4/approve"`) {
 		t.Errorf("the merge item holds a form other than its pick's press:\n%s", face)
 	}
-	card := requestOf(t, r, ck, "t-m", 4)
-	for _, want := range []string{`<span class="chip risk">high risk</span> <span class="chip migration">migration</span>`,
-		`<p class="ask">Merge PR #9 of t-m? high risk. It carries a migration.</p>`,
-		`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`,
-		`<div class="info"><p>Model review: adds the column safely</p>`,
-		`<p class="recommendation">Recommendation (the model review): adds the column safely</p>`,
-		`action="/approvals/4/approve"`, `<button type="submit" name="action" value="approve"`, `<button type="submit" name="action" value="deny"`,
-		`<span class="effect">merges PR #9: factoryd merges it</span>`,
-		`sends the pull request back to its agent with your note`} {
-		if !strings.Contains(card, want) {
-			t.Errorf("the merge decide lacks %s:\n%s", want, card)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
+	ask := askBlockOf(t, body)
+	for _, want := range []string{`<p class="o-question">Merge this card&#39;s pull request?</p>`,
+		`<p class="o-askwhy">The change is high risk, and the factory&#39;s rules let only a human merge it.</p>`,
+		`<p class="o-by">suggested by the model review: <span class="quote">adds the column safely</span></p>`,
+		`<span class="effect">Merges the pull request.</span>`, `<span class="effect">Returns the pull request to its agent with your note.</span>`,
+		`<span class="effect">Closes the pull request. The card ends.</span>`} {
+		if !strings.Contains(ask, want) {
+			t.Errorf("the merge ask lacks %s:\n%s", want, ask)
 		}
 	}
-	for what, want := range map[string]int{`class="decide resolve"`: 1, `name="fund_eur"`: 1, `<textarea`: 1} {
-		if got := strings.Count(card, what); got != want {
-			t.Errorf("the merge decide carries %s %d times, want %d:\n%s", what, got, want, card)
+	for what, want := range map[string]int{`<form `: 3, `action="/approvals/4/approve"`: 1, `<input type="hidden" name="action" value="request_changes">`: 1,
+		`<input type="hidden" name="action" value="reject">`: 1, `name="fund_eur"`: 0, `<textarea`: 2} {
+		if got := strings.Count(ask, what); got != want {
+			t.Errorf("the merge ask carries %s %d times, want %d:\n%s", what, got, want, ask)
 		}
 	}
-	if strings.Contains(card, `<form method="post" action="/approvals/4/deny"`) || strings.Contains(card, `name="action" value="request_changes"`) {
-		t.Errorf("the merge decide keeps a second form:\n%s", card)
-	}
-	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="why">risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<dt>Agent's recommendation</dt><dd class="reason">Adds the column; merge it.</dd>`} {
-		if !strings.Contains(drawer, want) {
-			t.Errorf("the merge drawer lacks %s", want)
+	for _, want := range []string{`<dt>Risk class</dt><dd>high</dd>`,
+		`<dt>Migration</dt><dd>yes, human review required: <code>internal/factoryd/migrations/0018_x.sql</code></dd>`,
+		`<dt>Model review</dt><dd>approve: adds the column safely<br>`,
+		`<dt>Agent's recommendation</dt><dd class="reason">Adds the column; merge it.</dd>`,
+		`<dt>Why a human</dt><dd>the project&#39;s merge rule is human; risk class high is requires_approval</dd>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the merge card's brief lacks %s:\n%s", want, body)
 		}
 	}
 }
@@ -1644,8 +1644,8 @@ func TestFinishedPageReadsItsColumnAlone(t *testing.T) {
 
 // A plan's name is a find word and a plan: value: plan:558 matches the
 // cards of plan 558 and the plan's own card, by issue number exactly and never a name that merely contains 558, any
-// other value is a case-insensitive part of the name; the drawer's Plan
-// row carries the name after the linked issue.
+// other value is a case-insensitive part of the name; the opened card's
+// head names the plan, linked to the plan's card.
 func TestFindAndDrawerSpeakThePlanName(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
@@ -1680,13 +1680,13 @@ func TestFindAndDrawerSpeakThePlanName(t *testing.T) {
 	drawer := func() string {
 		return r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c5/drawer?tab=overview&project=linkshort", nil), ck).Body.String()
 	}
-	const link = `<dt>Plan</dt><dd><a class="ref" href="https://git.example/linkshort/linkshort/issues/1" target="_blank" rel="noopener">#1</a>`
-	if d := drawer(); !strings.Contains(d, link+` · Fix prod latency · <span class="mono">k5</span></dd>`) {
-		t.Errorf("the drawer lacks its named Plan row:\n%s", d)
+	const link = `<span class="it place"><a class="ref-link" href="#card=t-plan">`
+	if d := drawer(); !strings.Contains(d, link+`Fix prod latency</a></span>`) {
+		t.Errorf("the drawer lacks its named plan:\n%s", d)
 	}
 	r.tasks.tasks[0].PlanName = ""
-	if d := drawer(); !strings.Contains(d, link+` · Link shortener · <span class="mono">k5</span></dd>`) {
-		t.Errorf("the drawer lacks its unnamed Plan row, which names the plan's title:\n%s", d)
+	if d := drawer(); !strings.Contains(d, link+`Link shortener</a></span>`) {
+		t.Errorf("the drawer lacks its unnamed plan, named by the plan's title:\n%s", d)
 	}
 }
 

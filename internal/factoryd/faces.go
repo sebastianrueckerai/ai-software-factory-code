@@ -231,7 +231,7 @@ func FaceOf(c Case, f Facts) AskFace {
 	}
 	var answers []Answer
 	for _, key := range spec.Answers(f) {
-		if a, ok := answerFor(key, f); ok && answerHolds(a, f) && !slices.ContainsFunc(answers, func(o Answer) bool { return o.Key() == a.Key() || o.Label == a.Label }) {
+		if a, ok := AnswerFor(key, f); ok && answerHolds(a, f) && !slices.ContainsFunc(answers, func(o Answer) bool { return o.Key() == a.Key() || o.Label == a.Label }) {
 			answers = append(answers, a)
 		}
 	}
@@ -241,7 +241,7 @@ func FaceOf(c Case, f Facts) AskFace {
 		}
 		i := slices.IndexFunc(answers, func(o Answer) bool { return o.Key() == key || o.Value == key })
 		if i < 0 {
-			a, ok := answerFor(key, f)
+			a, ok := AnswerFor(key, f)
 			if !ok {
 				return false
 			}
@@ -271,7 +271,7 @@ func FaceOf(c Case, f Facts) AskFace {
 	}
 	if len(answers) < 2 {
 		for _, key := range []string{ActNote, ActClose} {
-			if a, ok := answerFor(key, f); ok && answerHolds(a, f) && !slices.ContainsFunc(answers, func(o Answer) bool { return o.Action == a.Action }) {
+			if a, ok := AnswerFor(key, f); ok && answerHolds(a, f) && !slices.ContainsFunc(answers, func(o Answer) bool { return o.Action == a.Action }) {
 				answers = append(answers, a)
 			}
 		}
@@ -287,15 +287,36 @@ func FaceOf(c Case, f Facts) AskFace {
 	return face
 }
 
-// answerFor is the answer key names on facts f, its effect line filled from
+// AnswerFor is the answer key names on facts f, its effect line filled from
 // the facts where the vocabulary leaves it to them.
-func answerFor(key string, f Facts) (Answer, bool) {
+func AnswerFor(key string, f Facts) (Answer, bool) {
 	if value, ok := strings.CutPrefix(key, choicePrefix); ok {
 		return choiceAnswer(value, f)
 	}
 	a, ok := AnswerOf(key)
 	if !ok {
 		return Answer{}, false
+	}
+	if a.Action == ActExtend && f.Kind == CaseAgentTimeCap {
+		// the stop asks agent time: its minutes lead
+		a.Fields = slices.Clone(a.Fields)
+		if i := slices.IndexFunc(a.Fields, func(x Field) bool { return x.Name == "minutes" }); i > 0 {
+			minutes := a.Fields[i]
+			a.Fields = slices.Insert(slices.Delete(a.Fields, i, i+1), 0, minutes)
+		}
+	}
+	if names := criteriaNames(f); a.Action == ActAnswerCriteria && len(names) > 0 {
+		// the request names its open promises: the human picks one
+		a.Fields = slices.Clone(a.Fields)
+		for i, field := range a.Fields {
+			if field.Name == "criterion" {
+				field.Kind, field.Default, field.Options = FieldChoice, fixed(names[0]), nil
+				for _, n := range names {
+					field.Options = append(field.Options, Option{n, n})
+				}
+				a.Fields[i] = field
+			}
+		}
 	}
 	if a.Action == ActConfirmAudit {
 		a.Fields = slices.Clone(a.Fields)
@@ -322,7 +343,7 @@ func answerHolds(a Answer, f Facts) bool {
 	switch {
 	case !ok || a.Value != "":
 		return true
-	case ChoiceCase(f.Case, f.Card.Kind) && a.Action != ActClose:
+	case ChoiceCase(f.Case, f.Card.Kind) && a.Action != ActClose && a.Key() != ActNote+"/"+variantOwnWords:
 		return false
 	}
 	written := map[string]string{}
@@ -343,25 +364,61 @@ func answerHolds(a Answer, f Facts) bool {
 func moreActions(f Facts) []Answer {
 	var out []Answer
 	for _, name := range HumanActions() {
-		if a, ok := answerFor(name, f); ok && answerHolds(a, f) {
+		if a, ok := AnswerFor(name, f); ok && answerHolds(a, f) {
 			out = append(out, a)
 		}
 	}
 	return out
 }
 
-// MoreOf are the other actions of card t, which holds no case, on facts
-// f: a replan, more sessions, a word to the running session, the brief,
-// the colour and a thread.
+// MoreOf are the actions of card t, which holds no case, by its state: a
+// live card's replan, more sessions, money, a word to its running session
+// and its end; a failed card's retry and its close; a plan at rest its
+// close, whose note waives the promises it leaves open; and on every card
+// its brief, its colour and a thread.
+// The card's own replan says why it goes back, and a plan's card may take
+// the plan's merged cards off main first. Who may press which is the
+// console's to judge.
 func MoreOf(t Task, f Facts) []Answer {
 	f.Card = t
+	var keys []string
+	switch {
+	case ClosablePlan(t):
+		keys = []string{ActClose}
+	case t.Status == "failed":
+		keys = []string{ActRetry, ActClose}
+	case !Final(t.Status):
+		keys = []string{ActReplan, ActExtend, ActFund, AnswerSteer, ActClose}
+	}
 	var out []Answer
-	for _, key := range []string{ActReplan, ActExtend, AnswerSteer, AnswerEditBrief, AnswerAccent, AnswerThread} {
-		a, ok := answerFor(key, f)
+	for _, key := range append(keys, AnswerEditBrief, AnswerAccent, AnswerThread) {
+		a, ok := AnswerFor(key, f)
 		switch {
-		case !ok, a.Action == AnswerSteer && !f.Running:
-		case answerHolds(a, f):
-			out = append(out, a)
+		case !ok, a.Action == AnswerSteer && t.Status != "running":
+			continue
+		case a.Action == ActReplan:
+			a.Fields = []Field{requiredNote("Why it goes back", "What the planner should do differently")}
+			if InPlan(t) {
+				a.Fields = append(a.Fields, Field{Name: OffMainField, Label: "Take the plan's merged cards off main first", Kind: FieldCheck, Default: none})
+			}
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// OffMainField is the box of a card's own replan that takes its plan's
+// merged cards off main first.
+const OffMainField = "off_main"
+
+// Defaults are the values answer a's fields open with on facts f, as its
+// press reads a field left empty; a required field has none.
+func (a Answer) Defaults(f Facts) map[string]string {
+	f.CaseFacts = f.atCap()
+	out := map[string]string{}
+	for _, field := range a.Fields {
+		if field.Default != nil {
+			out[field.Name] = field.Default(f)
 		}
 	}
 	return out
@@ -418,16 +475,13 @@ func ArgsOf(a Answer, get func(name string) string) (map[string]any, float64, er
 // note as its reason. A required field left empty refuses the press,
 // saying what to write.
 func (a Answer) Press(f Facts, values map[string]string, note string) (Resolution, error) {
+	defaults := a.Defaults(f)
 	f.CaseFacts = f.atCap()
 	get := func(name string) string {
 		if v := values[name]; strings.TrimSpace(v) != "" {
 			return v
 		}
-		i := slices.IndexFunc(a.Fields, func(x Field) bool { return x.Name == name })
-		if i < 0 || a.Fields[i].Default == nil {
-			return ""
-		}
-		return a.Fields[i].Default(f)
+		return defaults[name]
 	}
 	for _, field := range a.Fields {
 		v := get(field.Name)

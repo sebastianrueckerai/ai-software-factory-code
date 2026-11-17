@@ -185,6 +185,14 @@ func (s *labScene) seat(fx facefixtures.Fixture) {
 	if fx.Approval != nil {
 		s.approvals = append(s.approvals, *fx.Approval)
 	}
+	// each session that ran got the card's brief as its agent reads it
+	text := factoryd.CardBrief{Text: factoryd.BriefText{Title: factoryd.CardTitle(fx.Task), Why: fx.Task.Why, Summary: fx.Task.Summary}}.AgentText()
+	for n := 1; n <= fx.Task.Usage.Attempts; n++ {
+		if s.briefs == nil {
+			s.briefs = map[string][]factoryd.SessionBrief{}
+		}
+		s.briefs[fx.Task.ID] = append(s.briefs[fx.Task.ID], factoryd.SessionBrief{Session: n, Brief: text, At: fx.Task.CreatedAt})
+	}
 	if p := fx.Plan; p != nil {
 		revision := 0
 		if len(p.Questions) > 0 {
@@ -201,7 +209,7 @@ func (s *labScene) seat(fx facefixtures.Fixture) {
 }
 
 // boardEntries are the board's own items: a card holding three cases at
-// the human, a card closed into its successor, a plan question whose
+// the human (its run's ask and two of the monitor's flags beside it), a card closed into its successor, a plan question whose
 // suggested choice is as long as a choice may be, a card queued at its
 // project's month cap, a card behind another in the merge queue, a card
 // waiting on its author, a card whose title and why line hold words
@@ -227,8 +235,8 @@ func boardEntries(all []facefixtures.Fixture) []galleryEntry {
 		{galleryBoard, "three open cases", func(r *rig) string {
 			fx := fixture(facefixtures.GroupCase, string(factoryd.CaseAgentEscalate))
 			s := fixtureScene(fx, all)
-			for i, kind := range []factoryd.CaseKind{factoryd.CaseSessionCap, factoryd.CaseGateStop} {
-				c := *fixture(facefixtures.GroupCase, string(kind)).Case
+			for i, flag := range []string{"wait_over_bound", "session_no_push"} {
+				c := *fixture(facefixtures.GroupFlag, flag).Case
 				c.ID, c.TaskID = fx.Case.ID+int64(i+1), fx.Task.ID
 				s.cases[fx.Task.ID] = append(s.cases[fx.Task.ID], c)
 				s.asks[c.ID] = factoryd.CaseAsk{At: c.OpenedAt, Detail: maps.Clone(c.Facts)}

@@ -345,8 +345,8 @@ func TestRequestPlanAsksTheConfirmation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	want := "Confirmation of the spec and the criteria of plan revision 1: Confirm fixes the spec and the criteria; " +
-		"Request changes sends your words to the next planner round. The criteria are fixed only when this is confirmed.\n" +
+	want := "Confirmation of the spec and the criteria of plan revision 1: Confirm the plan fixes the spec and the criteria; " +
+		"Ask for changes sends your words to the next planner round. The criteria are fixed only when this is confirmed.\n" +
 		"Outcome: A link shortener: links with slugs that redirect and count clicks.\n" +
 		"Glossary: slug: the short key a link gets; click: one redirect served\n" +
 		"Criteria: links_crud (test), redirect_302 (test), all_green (invariant).\n" +

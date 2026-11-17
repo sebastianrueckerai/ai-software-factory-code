@@ -264,16 +264,12 @@ func lifeLine(runs []run, spent float64) string {
 	return strings.Join(parts, " · ")
 }
 
-// lifeOf reads card t's runs: its events, its timeline and its model
-// calls; a read that fails leaves its part out and is logged.
-func (c *Console) lifeOf(ctx context.Context, t factoryd.Task) []run {
+// lifeOf is card t's runs from its events, its timeline's steps and its
+// model calls; a read that fails leaves its part out and is logged.
+func (c *Console) lifeOf(ctx context.Context, t factoryd.Task, steps []map[string]any) []run {
 	events, err := c.cfg.Events.TaskEvents(ctx, t.ID, eventLimitMax)
 	if err != nil {
 		log.Printf("console: the events of %s: %v", t.ID, err)
-	}
-	steps, err := c.readTimeline(ctx, t.ID)
-	if err != nil {
-		log.Printf("console: the timeline of %s: %v", t.ID, err)
 	}
 	var calls []policy.ModelCall
 	if c.cfg.Costs != nil {

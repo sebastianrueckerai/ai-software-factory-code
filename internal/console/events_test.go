@@ -169,10 +169,6 @@ func newRigWithEvents(t *testing.T) (*rig, *fakeEvents) {
 	return r, r.events
 }
 
-// postedDetail is the detail an answer event carries: the comment Forgejo
-// gave the button's own comment.
-func postedDetail(id int64) map[string]any { return map[string]any{"comment": id} }
-
 // action is one POST handler: the request to send, what it needs on the
 // rig, and the event exactly one row must carry afterwards.
 type action struct {
@@ -252,8 +248,8 @@ var actions = []action{
 		url.Values{"revision": {"2"}, "index": {"1"}, "answer": {"60 seconds"}}),
 	boardAction("planChanges", "/tasks/t-plan/plan/changes", factoryd.EventPlanChangesRequested, "linkshort/linkshort", "t-plan",
 		nil, planRig, url.Values{"text": {"Split the web pages into two cards."}}),
-	boardAction("retryCard", "/tasks/t-c2/retry", factoryd.EventCardRetried, "linkshort/linkshort", "t-c2",
-		map[string]any{"replacement": 9}, failedPlanCard, url.Values{}),
+	boardAction("retryCard", "/tasks/t-c2/resolve", factoryd.EventCardRetried, "linkshort/linkshort", "t-c2",
+		map[string]any{"replacement": 9}, failedPlanCard, url.Values{"action": {factoryd.ActRetry}}),
 	boardAction("approve resource", "/approvals/3/approve", factoryd.EventMergeApproved, "sf/code", "t-res",
 		map[string]any{"approval": 3, "kind": "resource"}, nil, url.Values{}),
 	boardAction("approve merge", "/approvals/4/approve", factoryd.EventMergeApproved, "sf/code", "t-m",
@@ -264,13 +260,14 @@ var actions = []action{
 		map[string]any{"pr": 9, "action": "request_changes"}, nil, url.Values{"note": {"split it"}, "action": {"request_changes"}}),
 	boardAction("deny reject", "/approvals/4/deny", factoryd.EventMergeDenied, "sf/code", "t-m",
 		map[string]any{"pr": 9, "action": "reject"}, nil, url.Values{"note": {"not wanted"}, "action": {"reject"}}),
-	boardAction("editBrief", "/tasks/t-m/brief", factoryd.EventCardEdited, "sf/code", "t-m",
+	boardAction("editBrief", "/tasks/t-m/resolve", factoryd.EventCardEdited, "sf/code", "t-m",
 		map[string]any{"title": "Fix the cache eviction", "why": "So the board loads at once.", "summary": "The cache keeps its entries. A test reads them back."},
-		queuedCard, url.Values{"title": {"Fix the cache eviction"}, "why": {"So the board loads at once."}, "summary": {"The cache keeps its entries. A test reads them back."}}),
-	boardAction("closeCard", "/tasks/t-m/close", factoryd.EventCardClosed, "sf/code", "t-m",
-		map[string]any{"note": ""}, queuedCard, url.Values{"project": {"ai-software-factory-code"}}),
-	boardAction("setAccent", "/tasks/t-m/accent", factoryd.EventAccentSet, "sf/code", "t-m",
-		map[string]any{"accent": "blue"}, queuedCard, url.Values{"value": {"blue"}}),
+		queuedCard, url.Values{"action": {factoryd.AnswerEditBrief}, "edit_brief.title": {"Fix the cache eviction"}, "edit_brief.why": {"So the board loads at once."},
+			"edit_brief.summary": {"The cache keeps its entries. A test reads them back."}}),
+	boardAction("closeCard", "/tasks/t-m/resolve", factoryd.EventCardClosed, "sf/code", "t-m",
+		map[string]any{"note": ""}, queuedCard, url.Values{"project": {"ai-software-factory-code"}, "action": {factoryd.ActClose}}),
+	boardAction("setAccent", "/tasks/t-m/resolve", factoryd.EventAccentSet, "sf/code", "t-m",
+		map[string]any{"accent": "blue"}, queuedCard, url.Values{"action": {factoryd.AnswerAccent}, "accent.accent": {"blue"}}),
 	boardAction("promote", "/resources/11/promote", factoryd.EventResourcePromoted, "sf/code", "t-res",
 		map[string]any{"resource": 11, "kind": "server"}, standingResource, url.Values{}),
 	boardAction("release", "/resources/11/release", factoryd.EventResourceReleased, "sf/code", "t-res",

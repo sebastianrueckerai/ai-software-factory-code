@@ -1017,7 +1017,7 @@ func TestRungTwoStatementOffersTheConfirmationWhereTheGuardPasses(t *testing.T) 
 			t.Errorf("revision %d with a hold-out undecided: statement %q", rev, text)
 		}
 		if i == 0 && !strings.Contains(text, "You may confirm this plan with the answer tool (revision 1, question 1, decision confirm)") ||
-			i == 1 && (strings.Contains(text, "You may confirm") || !strings.Contains(text, "takes merged work off main, or its reverts could not be read, so its confirmation is the human's, made with the plan's Confirm button.")) {
+			i == 1 && (strings.Contains(text, "You may confirm") || !strings.Contains(text, "takes merged work off main, or its reverts could not be read, so its confirmation is the human's, made with Confirm the plan on the plan's card.")) {
 			t.Errorf("revision %d (takes off main %v): statement %q", rev, takeOff, text)
 		}
 	}

@@ -360,6 +360,8 @@ type labScene struct {
 	// criteria are the criteria verdict rows by task
 	criteria  map[string][]factoryd.CriterionVerdict
 	approvals []factoryd.ApprovalRequest
+	// briefs are the texts each card's sessions got, by task id
+	briefs    map[string][]factoryd.SessionBrief
 	objects   map[string]string
 	events    []factoryd.Event
 	chat      []factoryd.ChatMessage
@@ -767,7 +769,7 @@ func (r *rig) seedScene(s labScene) string {
 	r.tasks.tasks, r.tasks.chain, r.tasks.deps, r.tasks.plans, r.tasks.questions = s.tasks, s.chain, s.deps, s.plans, s.questions
 	r.tasks.criteria = s.criteria
 	r.tasks.mu.Unlock()
-	r.openCases, r.caseSteps, r.caseAsks = s.cases, s.steps, s.asks
+	r.openCases, r.caseSteps, r.caseAsks, r.briefs = s.cases, s.steps, s.asks, s.briefs
 	// the lab's intake: an issue filed on the repository is the card after
 	// the scene's highest, in the lane its labels ask for
 	var highest int64

@@ -2,7 +2,6 @@ package console
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -236,17 +235,6 @@ func raHeldRig(t *testing.T, q factoryd.HumanQuestion) (*rig, *[]replanCall, *[]
 		Repository: "sf/code", IssueNumber: 51, Objective: "needs you: production is held"}, Escalation: q.Ask, Question: &q}
 	r.tasks.tasks = append(r.tasks.tasks, bt)
 	return r, replans, deploys
-}
-
-func raErrText(err error) string {
-	if err == nil {
-		return ""
-	}
-	var no *refusal
-	if errors.As(err, &no) {
-		return fmt.Sprintf("%d %s", no.status, no.msg)
-	}
-	return err.Error()
 }
 
 // Every choice of a human card, at manual, assisted and full auto, for rung 2

@@ -1066,6 +1066,10 @@ func planCycle(p Plan, edges map[string][]string) []string {
 	return nil
 }
 
+// FilingOrder is p's cards in the order the plan files them, the order a
+// card's place in its plan counts in.
+func (p Plan) FilingOrder() []PlanCard { return planOrder(p, planEdges(p)) }
+
 // planOrder is the plan's cards in topological order of edges: each after
 // every card it depends on, ties in the plan's order.
 func planOrder(p Plan, edges map[string][]string) []PlanCard {
@@ -3718,7 +3722,7 @@ func specChanged(prev, next Plan) bool {
 // later rounds plan, and where the whole plan reads.
 func ConfirmationQuestion(revision int, p Plan) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Confirmation of the spec and the criteria of plan revision %d: Confirm fixes the spec and the criteria; Request changes sends your words to the next planner round. The criteria are fixed only when this is confirmed.",
+	fmt.Fprintf(&b, "Confirmation of the spec and the criteria of plan revision %d: Confirm the plan fixes the spec and the criteria; Ask for changes sends your words to the next planner round. The criteria are fixed only when this is confirmed.",
 		revision)
 	if p.Spec != nil {
 		if o := strings.TrimSpace(p.Spec.Outcome); o != "" {

@@ -336,7 +336,8 @@ func smallCard(t *testing.T, r *rig, ck *http.Cookie, id string) string {
 // A face's one button is the suggested answer: on #2004 at its budget
 // floor the factory agent's successor, which posts the answer on its case
 // at once; beside it who suggests it and the count of the others. A
-// suggested answer with a field holds no button: its label opens the card.
+// suggested answer with a field holds no button: its label opens the card
+// with that answer's fields open.
 func TestTheSuggestedAnswerIsTheOneButton(t *testing.T) {
 	all := facefixtures.All()
 	i := slices.IndexFunc(all, func(fx facefixtures.Fixture) bool {
@@ -375,7 +376,7 @@ func TestTheSuggestedAnswerIsTheOneButton(t *testing.T) {
 	ck, _ = r.loggedIn(t)
 	r.seedScene(scene)
 	face = smallCard(t, r, ck, fx.Task.ID)
-	if strings.Contains(face, `type="submit"`) || !strings.Contains(face, `<a class="pick-link" href="#card=t-e758758121d7">Add money</a>`) {
+	if strings.Contains(face, `type="submit"`) || !strings.Contains(face, `<a class="pick-link" href="#card=t-e758758121d7:press=fund">Add money</a>`) {
 		t.Fatalf("a suggestion with a field shows a button, or no link that opens the card:\n%s", face)
 	}
 }

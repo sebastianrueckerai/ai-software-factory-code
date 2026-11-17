@@ -25,7 +25,7 @@ func SpecAnswers(c Case, f Facts) []Answer {
 	c, f = facing(c, f)
 	var out []Answer
 	for _, key := range faceSpecOf(c, f).Answers(f) {
-		if a, ok := answerFor(key, f); ok {
+		if a, ok := AnswerFor(key, f); ok {
 			out = append(out, a)
 		}
 	}

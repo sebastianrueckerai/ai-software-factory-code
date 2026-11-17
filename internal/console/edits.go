@@ -12,22 +12,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
-// editBrief is POST /tasks/{id}/brief, the drawer's Edit the brief
-// (doEdit): the title, the why line and the summary.
-func (c *Console) editBrief(w http.ResponseWriter, r *http.Request) {
-	_, err := c.doEdit(r.Context(), button(r), r.PathValue("id"), factoryd.BriefText{
-		Title: r.PostFormValue("title"), Why: r.PostFormValue("why"), Summary: r.PostFormValue("summary")})
-	c.pressed(w, r, err)
-}
-
-// setAccent is POST /tasks/{id}/accent (doSetAccent). The accent shows as
-// a chip and the card's left edge; it never changes a state rendering and
-// never enters an agent's brief.
-func (c *Console) setAccent(w http.ResponseWriter, r *http.Request) {
-	_, err := c.doSetAccent(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("value"))
-	c.pressed(w, r, err)
-}
-
 // cardRefs resolves the references of card t's brief for a: #N is the
 // project's card of issue N, else any issue or pull request of the
 // repository, and a document link a file of the project's document

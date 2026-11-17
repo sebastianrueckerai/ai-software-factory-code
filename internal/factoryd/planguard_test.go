@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	humanConfirmButton = "made with the plan's Confirm button."
+	humanConfirmButton = "made with Confirm the plan on the plan's card."
 	belowFullAutoWord  = "below full auto is the human's"
 	offMainWord        = "takes merged work off main"
 )
@@ -163,7 +163,7 @@ func TestActAsksThePlanAnswerGuard(t *testing.T) {
 // off_main, which answers that the plan has no card on main. A plain replan
 // is not refused for it.
 func TestActRefusesAnAgentsReplanOffMain(t *testing.T) {
-	const why = "A replan that takes merged work off main is the human's, made with the Replan button's off-main box."
+	const why = "A replan that takes merged work off main is the human's, made with the off-main box of the card's Send back to the planner."
 	args := map[string]any{"off_main": true}
 	for _, c := range []struct {
 		name, autonomy, by string

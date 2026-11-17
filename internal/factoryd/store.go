@@ -1614,13 +1614,6 @@ func (s *PGStore) SetCaseFace(ctx context.Context, caseID int64, keys map[string
 	return err
 }
 
-func nonNilList[T any](l []T) []T {
-	if l == nil {
-		return []T{}
-	}
-	return l
-}
-
 func (s *PGStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, recommendation, by string, preselected map[string]any) error {
 	pre, err := json.Marshal(preselected)
 	if err != nil {

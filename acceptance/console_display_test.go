@@ -71,7 +71,7 @@ func TestAcceptancePlanChildHeadlineAndChip(t *testing.T) {
 		t.Errorf("%d places name plan #531 display fixes, want the child's one:\n%s", got, body)
 	}
 	drawer := r.request(http.MethodGet, "/cards/t-drawer/drawer", nil, ck).Body.String()
-	if want := `<h2 tabindex="-1">` + headline + `</h2>`; !strings.Contains(drawer, want) {
+	if want := `<h2 class="o-title" tabindex="-1">` + headline + `.</h2>`; !strings.Contains(drawer, want) {
 		t.Errorf("the plan child's drawer does not head with its headline %s:\n%s", want, drawer)
 	}
 }

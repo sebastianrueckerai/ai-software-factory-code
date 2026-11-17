@@ -9,61 +9,23 @@ import (
 	"strings"
 )
 
-// retryCard files a failed card again (doRetry).
-func (c *Console) retryCard(w http.ResponseWriter, r *http.Request) {
-	c.press(w, r, c.doRetry)
-}
-
-// closeCard closes a card (doClose, on the form's note).
-func (c *Console) closeCard(w http.ResponseWriter, r *http.Request) {
-	c.press(w, r, func(ctx context.Context, a actor, id string) (string, error) {
-		return c.doClose(ctx, a, id, r.PostFormValue("note"))
-	})
-}
-
-// replanCard is the drawer's Replan (doReplan, on the form's note and its
-// off_main box).
-func (c *Console) replanCard(w http.ResponseWriter, r *http.Request) {
-	c.press(w, r, func(ctx context.Context, a actor, id string) (string, error) {
-		return c.doReplan(ctx, a, id, r.PostFormValue("note"), r.PostFormValue("off_main") == "on")
-	})
-}
-
 // planAnswer posts a writer's answer to a question of the plan
-// (doAnswerPlanQuestion): the words are the free text, else the chosen
+// (doAnswerPlanQuestion): the words are the human's own, else the chosen
 // answer, which the form names by its place among the question's choices,
-// with the note after them and the fund drawn beside the decision — one
-// request carries the decision, the fund and the note together.
+// else a decision's words.
 func (c *Console) planAnswer(w http.ResponseWriter, r *http.Request) {
 	revision, _ := strconv.Atoi(r.PostFormValue("revision"))
 	idx, _ := strconv.Atoi(r.PostFormValue("index"))
-	main := strings.TrimSpace(r.PostFormValue("own"))
-	if pick, _ := strconv.Atoi(r.PostFormValue("choice")); main == "" && pick != 0 {
+	words := strings.TrimSpace(r.PostFormValue("own"))
+	if pick, _ := strconv.Atoi(r.PostFormValue("choice")); words == "" && pick != 0 {
 		var err error
-		if main, err = c.planChoiceOf(r.Context(), button(r), r.PathValue("id"), revision, idx, pick); err != nil {
+		if words, err = c.planChoiceOf(r.Context(), button(r), r.PathValue("id"), revision, idx, pick); err != nil {
 			c.pressed(w, r, err)
 			return
 		}
 	}
-	main = cmp.Or(main, strings.TrimSpace(r.PostFormValue("answer")))
-	note := strings.TrimSpace(r.PostFormValue("note"))
-	if main == "" && note != "" && r.PostFormValue("decision") == "" {
-		c.pressed(w, r, refuse(http.StatusBadRequest, "A note is not an answer: pick one of the choices or write your own answer, and the note goes with it."))
-		return
-	}
-	words := main
-	if note != "" {
-		words += " — " + note
-	}
-	var eur float64
-	if v := strings.TrimSpace(r.PostFormValue("fund_eur")); v != "" {
-		var err error
-		if eur, err = strconv.ParseFloat(v, 64); err != nil || eur < 0 {
-			c.pressed(w, r, refuse(http.StatusBadRequest, "fund_eur is an amount in EUR"))
-			return
-		}
-	}
-	_, err := c.doAnswerPlanQuestion(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("decision"), strings.TrimSpace(words), eur)
+	words = cmp.Or(words, strings.TrimSpace(r.PostFormValue("answer")))
+	_, err := c.doAnswerPlanQuestion(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("decision"), words)
 	c.pressed(w, r, err)
 }
 

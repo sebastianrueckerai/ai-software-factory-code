@@ -58,7 +58,7 @@ func TestASendWithNoCaseIsRefused(t *testing.T) {
 	seatBoardFixture(t, r, "board-agent-escalate.json")
 	ck, s := r.loggedIn(t)
 	rec := r.do(post("/tasks/t-board-escalate/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
-		"action": {"note"}, "fund_eur": {"1.50"}, "note": {"the schema change is mine to make"}}), ck)
+		"action": {"note"}, "note.note": {"the schema change is mine to make"}}), ck)
 	if want := "This answer names no question of the card. Reload the board and press the answer again."; rec.Code != http.StatusBadRequest ||
 		!strings.Contains(rec.Body.String(), want) || len(r.acted) != 0 {
 		t.Fatalf("a send with no case = %d %q, Act took %+v; want 400 %q and nothing acted", rec.Code, rec.Body, r.acted, want)
@@ -232,9 +232,9 @@ func seatBoardFixture(t *testing.T, r *rig, name string) factoryd.Fixture {
 	return fx
 }
 
-var actionButtons = regexp.MustCompile(`name="action" value="(\w+)"`)
+var actionButtons = regexp.MustCompile(`data-answer="([^"]+)"`)
 
-// buttonsOf are the action buttons of card id's answer form, in order.
+// buttonsOf are the answers of card id's ask, in order.
 func buttonsOf(t *testing.T, r *rig, id string) []string {
 	t.Helper()
 	ck, _ := r.loggedIn(t)
@@ -248,7 +248,7 @@ func buttonsOf(t *testing.T, r *rig, id string) []string {
 // The face's buttons are the register's answers for the case on its facts:
 // on the check-in's seed review gate stop, check the work again, go on with
 // a note, send back to the planner and end the card. An answer the ask
-// preselected leads, and its button names who recommended it.
+// preselected leads, and its line names who recommended it.
 func TestFaceButtonsAreTheRegistersAnswers(t *testing.T) {
 	seed := factoryd.CaseFacts{Kind: factoryd.CaseGateStop, Gate: "review", Attempts: 1, SessionCap: 3, AgentTimeCapS: 3600,
 		BudgetEUR: 5, SpentEUR: 1, LeftEUR: 4, FloorEUR: 0.3, CeilingEUR: 7, PROpen: true, Head: "c1", Checks: "green",
@@ -271,15 +271,16 @@ func TestFaceButtonsAreTheRegistersAnswers(t *testing.T) {
 		t.Fatalf("the face's buttons with replan preselected = %v, want %v", got, want)
 	}
 	ck, _ := r.loggedIn(t)
-	if !strings.Contains(escalationOf(t, r, ck, "t-g"), `aria-label="Send back to the planner, recommended by the factory agent"`) {
+	if !strings.Contains(escalationOf(t, r, ck, "t-g"), `<p class="o-by">suggested by the factory agent</p>`+"\n"+`<button type="button" class="pick" aria-expanded="false" aria-controls="f-t-g-1-replan-note-set" data-press="replan">Send back to the planner</button>`) {
 		t.Errorf("the recommended button does not name who recommended it:\n%s", escalationOf(t, r, ck, "t-g"))
 	}
 }
 
-// One send: the form posts the case, the action its button names with that
-// action's inputs, the fund beside it and the note, and Act is called once with
-// one resolution: handover on the same model, a draw of 1.50 EUR and the
-// note, which the console posts as the human's comment.
+// One send carries one answer: the form posts the case, the action and
+// that action's own fields, and Act is called once with one resolution:
+// handover on the same model. Another answer's fields, a fund and a note
+// the answer does not take ride nothing: the comment is the answer's own
+// sentence (Resolution.Sentence), not the stray note.
 func TestOneSendCarriesDecisionFundAndNote(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
@@ -290,15 +291,15 @@ func TestOneSendCarriesDecisionFundAndNote(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("resolve = %d: %s", rec.Code, rec.Body)
 	}
-	got, posts := actedOnce(t, r)
+	got, _ := actedOnce(t, r)
 	want := factoryd.ActInput{TaskID: "t-g", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActHandover, Args: map[string]any{"model": "same"}, Fund: &policy.Draw{EUR: 1.5}, Note: "go on with the cache"}}
+		Res: factoryd.Resolution{Action: factoryd.ActHandover, Args: map[string]any{"model": "same"}}}
 	got.Detail = nil
-	if !reflect.DeepEqual(got, want) || !posts {
-		t.Fatalf("Act took %+v (post %v), want %+v with a post", got, posts, want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Act took %+v, want %+v", got, want)
 	}
-	if c := r.fg.comments["/api/v1/repos/sf/code/issues/21/comments"]; c != "go on with the cache" {
-		t.Fatalf("comment = %q, want the note", c)
+	if c := r.fg.comments["/api/v1/repos/sf/code/issues/21/comments"]; c != "handover" {
+		t.Fatalf("comment = %q, want the answer's sentence", c)
 	}
 }
 
@@ -370,14 +371,10 @@ func TestAnAsksOwnAnswersLeadAndTheRegistersFollow(t *testing.T) {
 		Facts: facts}}}
 	ck, _ := r.loggedIn(t)
 	esc := escalationOf(t, r, ck, "t-ch")
-	var got []string
-	for _, m := range regexp.MustCompile(`name="action" value="([^"]+)" class="(\w+)"`).FindAllStringSubmatch(esc, -1) {
-		got = append(got, m[1]+" "+m[2])
+	if got, want := buttonsOf(t, r, "t-ch"), []string{"say:Postgres", "say:SQLite", "note", "close"}; !slices.Equal(got, want) || strings.Contains(esc, "suggested") {
+		t.Fatalf("answers = %q, want %q and none suggested:\n%s", got, want, esc)
 	}
-	if want := []string{"say:Postgres secondary", "say:SQLite secondary", "note secondary", "close secondary"}; !slices.Equal(got, want) {
-		t.Fatalf("buttons = %q, want %q:\n%s", got, want, esc)
-	}
-	if !strings.Contains(esc, `<li>The agent&#39;s view: SQLite, one file is enough</li>`) || strings.Contains(esc, `class="recommendation"`) || strings.Contains(esc, `class="reason"`) || strings.Count(esc, "hich store?") != 1 {
+	if !strings.Contains(esc, `<li>The agent&#39;s view: <span class="quote">SQLite, one file is enough</span></li>`) || strings.Contains(esc, `class="reason"`) || strings.Count(esc, "hich store?") != 1 {
 		t.Errorf("the opened card lacks the agent's view, or shows the ask more than once:\n%s", esc)
 	}
 	if face := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "t-ch"); strings.Contains(face, "The agent asks") ||
@@ -514,9 +511,9 @@ func TestRestartPlanFilesTheNewPlan(t *testing.T) {
 }
 
 // A case whose ask stores no face renders the register's face on the
-// case's own facts in the case's own form, with the fund and the note: at
-// the session cap, allow more sessions, end the card and not now. The old
-// answer, fund and extend forms are gone for a cased card.
+// case's own facts, each answer a send of its own to the case's resolve:
+// at the session cap, allow more sessions, end the card and not now. The
+// old answer, fund and extend forms are gone for a cased card.
 func TestACaseWithNoStoredFaceRendersTheRegistersAndNoOldForms(t *testing.T) {
 	r := newRig(t)
 	r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
@@ -524,8 +521,8 @@ func TestACaseWithNoStoredFaceRendersTheRegistersAndNoOldForms(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	esc := escalationOf(t, r, ck, "t-g")
 	if strings.Contains(esc, `action="/tasks/t-g/answer"`) || strings.Contains(esc, `action="/tasks/t-g/fund"`) || strings.Contains(esc, `action="/tasks/t-g/extend"`) ||
-		!strings.Contains(esc, `action="/tasks/t-g/resolve"`) || !strings.Contains(esc, `name="fund_eur"`) || !strings.Contains(esc, `name="note"`) {
-		t.Fatalf("the face of a case with no stored face =\n%s\nwant the resolve form alone, with the fund and the note", esc)
+		strings.Count(esc, `action="/tasks/t-g/resolve"`) != 3 || strings.Contains(esc, "fund_eur") || !strings.Contains(esc, `name="note.note"`) {
+		t.Fatalf("the face of a case with no stored face =\n%s\nwant the resolve forms alone, Not now's note its own field", esc)
 	}
 	if got := buttonsOf(t, r, "t-g"); !slices.Equal(got, []string{"extend", "close", "note"}) {
 		t.Fatalf("buttons = %v, want the register's extend, close and note", got)

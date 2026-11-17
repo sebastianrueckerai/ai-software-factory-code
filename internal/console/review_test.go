@@ -59,7 +59,7 @@ func TestStageAgeFromTheNewestStatusRow(t *testing.T) {
 	if face := faceOf(t, body, "t-run"); !strings.Contains(face, `<span class="st st-running"><i class="dot" aria-hidden="true"></i>building</span> 20 min</span>`) {
 		t.Errorf("the face lacks the time in its stage:\n%s", face)
 	}
-	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-run/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, "<dd>building, 20 min, 4 h 0 min in all</dd>") {
+	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-run/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, `building</span></span> <span class="it">20 min</span>`) {
 		t.Errorf("the drawer counts the stage from the admission, not the newest status row:\n%s", drawer)
 	}
 }

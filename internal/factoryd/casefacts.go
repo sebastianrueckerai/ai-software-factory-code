@@ -340,15 +340,13 @@ type SiblingFact struct {
 	Status string `json:"status"`
 }
 
-// tripFacts reads every fact of card t on head, the head of the card's
-// newest gate_head row when head is "", with the next session on model,
-// the card's last session's when model is "", and names the readers that
-// failed in Partial, their facts left zero. It fails only when ctx ends,
-// since facts read past that are no facts.
-func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (CaseFacts, error) {
-	v := r.cfg.Policy()
+// CardFacts are the facts card t's own record holds under policy v, with
+// the next session on model, the card's own when "": its pull request,
+// stage, sessions, agent time, money and state, and none a reader of its
+// events, timeline or checks would add.
+func CardFacts(t Task, v policy.Version, model string) CaseFacts {
 	_, project, _ := v.ProjectOf(t.Repository)
-	f := CaseFacts{Head: head, PR: t.PRNumber, PROpen: t.PRNumber > 0 && t.Status != "merged" && !Final(t.Status), Stage: t.Gate,
+	f := CaseFacts{PR: t.PRNumber, PROpen: t.PRNumber > 0 && t.Status != "merged" && !Final(t.Status), Stage: t.Gate,
 		Attempts: t.Usage.Attempts, SessionCap: SessionCap(t, v.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
 		AgentTimeS: t.Usage.AgentTime.Seconds(), Model: sessionModel(v.Document, t, cmp.Or(model, t.ModelAlias)),
 		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), ReserveEUR: v.Document.Limits.GateReserve(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
@@ -364,6 +362,18 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 	if InPlan(t) {
 		f.Plan = GroupOf(t)
 	}
+	return f
+}
+
+// tripFacts reads every fact of card t on head, the head of the card's
+// newest gate_head row when head is "", with the next session on model,
+// the card's last session's when model is "", and names the readers that
+// failed in Partial, their facts left zero. It fails only when ctx ends,
+// since facts read past that are no facts.
+func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (CaseFacts, error) {
+	v := r.cfg.Policy()
+	f := CardFacts(t, v, model)
+	f.Head = head
 	esc := v.EscalationOf(t.Repository)
 	var reran []string
 	var pushed string

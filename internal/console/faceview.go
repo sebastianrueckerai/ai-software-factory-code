@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -45,6 +46,8 @@ type faceView struct {
 	Status, Accent          string
 	// Open: the viewer may open the card.
 	Open bool
+	// Sent: the card's answer was taken and its run has not read it yet.
+	Sent bool
 	// CaseID names the ask in view, which a board read keeps.
 	CaseID int64
 }
@@ -64,11 +67,21 @@ type askView struct {
 	Prev, Next   string
 }
 
-// answerView is one answer of a face: its key, its label and the fields
-// its press opens.
+// answerView is one answer of a face: its key, its label, the line that
+// says what happens next, who suggests it and on what grounds, the fields
+// its press opens with their defaults, and the press that sends it, nil
+// where the viewer may not. Thread is the card whose thread its press
+// opens.
+// Open: its fields stand open, as the small card's pick asked.
 type answerView struct {
 	Action, Label string
-	Fields        []factoryd.Field
+	Effect        template.HTML
+	Suggested     bool
+	By, Grounds   string
+	Fields        []fieldView
+	Press         *pressForm
+	Thread        string
+	Open          bool
 }
 
 // pressForm is the form of the one button: where it posts, with what.
@@ -77,6 +90,9 @@ type pressForm struct {
 	Values       []hidden
 	CSRF         string
 	Filter       boardFilter
+	// Max bounds the press's words where its door takes fewer than an
+	// answer's, 0 where it takes as many.
+	Max int
 }
 
 // faceOf is the one builder of a board item's small card: a card in its
@@ -111,7 +127,9 @@ func (c *Console) faceOf(ctx context.Context, v *boardView, n need, needs bool) 
 				f.Key = ""
 			}
 			f.Since = row.Waiting()
-			c.askFace(ctx, v, &f, k, *row, n.PlanDecide())
+			c.askFace(ctx, v, &f, k, *row)
+		} else {
+			f.Sent = k.Status == "waiting-human"
 		}
 		return f
 	}
@@ -130,9 +148,9 @@ func (f *faceView) title(html template.HTML, words string) {
 }
 
 // askFace sets face f of card k from its ask row: the ask as its title,
-// its why line, and the answer row. plan is the plan ask's form, which
-// sends a plan question's suggested choice.
-func (c *Console) askFace(ctx context.Context, v *boardView, f *faceView, k card, row caseRow, plan *decide) {
+// its why line, and the answer row, whose one button sends the suggested
+// answer as the opened card's would.
+func (c *Console) askFace(ctx context.Context, v *boardView, f *faceView, k card, row caseRow) {
 	face := row.Face
 	f.title(c.linkRefs(ctx, v, k.Repository, face.Ask), face.Ask)
 	f.Why = c.linkRefs(ctx, v, k.Repository, face.Why)
@@ -152,49 +170,22 @@ func (c *Console) askFace(ctx context.Context, v *boardView, f *faceView, k card
 		return
 	}
 	o := face.Offers[i]
-	answer, _ := factoryd.AnswerOf(o.Value)
-	a.Suggested = &answerView{Action: o.Value, Label: o.Label, Fields: answer.Fields}
+	answer, ok := factoryd.AnswerFor(o.Value, factoryd.Facts{CaseFacts: factoryd.FactsOf(row.Case), Card: k.Task, Case: row.Case})
+	if !ok {
+		answer, _ = factoryd.AnswerOf(o.Value)
+	}
+	a.Suggested = &answerView{Action: o.Value, Label: o.Label}
 	a.By = pickBy(face.Source)
 	a.Others--
-	if slices.ContainsFunc(answer.Fields, needsField) || !k.MayWriteSummary {
-		return
-	}
-	press := &pressForm{CSRF: v.csrf, Filter: k.Filter, DataTo: "running"}
+	ap := row.Approval
 	switch {
-	case row.Decides:
-		press.Post = "/tasks/" + k.ID + "/resolve"
-		press.Values = []hidden{{"case_id", strconv.FormatInt(row.Case.ID, 10)}, {"action", o.Value}}
-	case row.Answers && factoryd.ChoiceCase(row.Case, k.Kind) && k.Question != nil:
-		j := slices.IndexFunc(k.Question.Choices, func(q factoryd.QuestionChoice) bool { return q.Label == o.Label })
-		if j < 0 {
-			return
-		}
-		value := k.Question.Choices[j].Value
-		press.Post = "/tasks/" + k.ID + "/answer"
-		press.Values = []hidden{{"case", strconv.FormatInt(row.Case.ID, 10)}, {"value", value}}
-		press.DataTo = "off"
-		if slices.Contains([]string{factoryd.AnswerPark, factoryd.AnswerKeepWaiting, factoryd.AnswerRerunAgain}, value) {
-			press.DataTo = ""
-		}
-	case row.Approval != nil:
-		ap := row.Approval
-		if o.Value != factoryd.ActApproveMerge || !ap.Approver || len(ap.Unsettled) > 0 || ap.HeadUnread {
-			return
-		}
-		press.Post, press.DataTo = fmt.Sprintf("/approvals/%d/approve", ap.ID), ap.TaskStatus
-		press.Values = []hidden{{"action", "approve"}}
-	case plan != nil && plan.Plan != nil && !plan.Plan.Confirm:
-		j := slices.IndexFunc(plan.Plan.Choices, func(p planChoice) bool { return p.Label == o.Label })
-		if j < 0 {
-			return
-		}
-		press.Post = "/tasks/" + k.ID + "/plan/answer"
-		press.Values = []hidden{{"revision", strconv.Itoa(plan.Plan.Revision)}, {"index", strconv.Itoa(plan.Plan.Index)},
-			{"choice", strconv.Itoa(plan.Plan.Choices[j].Index)}}
+	case slices.ContainsFunc(answer.Fields, needsField) || !k.MayWriteSummary:
+	case ap != nil && (!ap.Approver || answer.Action == factoryd.ActApproveMerge && (len(ap.Unsettled) > 0 || ap.HeadUnread)):
+	case ap != nil && row.Case.ID == 0:
+		a.Press, _ = requestPress(v, k, *ap, answer, o.Value)
 	default:
-		return
+		a.Press, _ = casePress(v, k, row, answer, o.Value)
 	}
-	a.Press = press
 }
 
 // needsField says the human must fill field f before an answer sends: a
@@ -220,16 +211,16 @@ func (c *Console) approvalFace(ctx context.Context, v *boardView, a approvalCard
 	}
 	t := v.byID[a.TaskID]
 	t.ID, t.Repository = cmp.Or(t.ID, a.TaskID), cmp.Or(t.Repository, a.Project)
-	k, face := requestFace(a.ApprovalRequest, t)
+	k, face := requestFace(a, t)
 	f.Place = c.placeOf(ctx, v, card{Task: t, PlanName: a.PlanName}, true)
-	c.askFace(ctx, v, &f, card{Task: t, MayWriteSummary: a.Writer, Filter: a.Filter}, caseRow{Case: k, Face: v.scrubbed(face), At: 1, Of: 1, Approval: &a}, nil)
+	c.askFace(ctx, v, &f, card{Task: t, MayWriteSummary: a.Writer, Filter: a.Filter}, caseRow{Case: k, Face: v.scrubbed(face), At: 1, Of: 1, Approval: &a})
 	return f
 }
 
 // requestFace is the register's case and face of approval request a on
 // card t; a request whose spec does not read faces as its kind's.
-func requestFace(a factoryd.ApprovalRequest, t factoryd.Task) (factoryd.Case, factoryd.Face) {
-	k, err := factoryd.RequestCase(a)
+func requestFace(a approvalCard, t factoryd.Task) (factoryd.Case, factoryd.Face) {
+	k, err := factoryd.RequestCase(a.ApprovalRequest)
 	switch {
 	case a.Kind == factoryd.ApprovalPlan:
 		k = factoryd.Case{Kind: factoryd.CasePlanConfirmation, TaskID: a.TaskID, Repository: a.Project}
@@ -237,7 +228,23 @@ func requestFace(a factoryd.ApprovalRequest, t factoryd.Task) (factoryd.Case, fa
 		log.Printf("console: approval request %d: %v", a.ID, err)
 		k = factoryd.Case{TaskID: a.TaskID, Repository: a.Project, Facts: map[string]any{"approval": a.ID, "approval_kind": a.Kind}}
 	}
+	if a.Healed {
+		return healedFace(k, t)
+	}
+	if a.Kind == factoryd.ApprovalCriteria || a.Kind == factoryd.ApprovalCriteriaRerun {
+		k = openPromises(k, a)
+	}
 	return k, factoryd.CaseFace(k, t, factoryd.CaseAsk{})
+}
+
+// healedFace is red merge case k of card t whose head's checks turned
+// green since (#1013): the case on green checks and its face, which says so.
+func healedFace(k factoryd.Case, t factoryd.Task) (factoryd.Case, factoryd.Face) {
+	k.Facts = maps.Clone(k.Facts)
+	k.Facts["checks"], k.Facts["red_checks"] = "green", false
+	face := factoryd.CaseFace(k, t, factoryd.CaseAsk{})
+	face.Story.Left = "The checks healed after a re-run."
+	return k, face
 }
 
 // scrubbed is face with its texts as a face shows them: no secret, and a
@@ -285,7 +292,7 @@ func (c *Console) placeOf(ctx context.Context, v *boardView, k card, asks bool) 
 		}
 		out := `<a class="ref-link" href="#card=` + template.HTMLEscapeString(t.Parent) + `">` + template.HTMLEscapeString(name) + `</a>`
 		if p, ok := v.planOf(ctx, c, t.Parent); ok {
-			if i := slices.IndexFunc(p.Cards, func(pc factoryd.PlanCard) bool { return pc.Key == t.PlanKey }); t.PlanKey != "" && i >= 0 {
+			if i := slices.IndexFunc(p.FilingOrder(), func(pc factoryd.PlanCard) bool { return pc.Key == t.PlanKey }); t.PlanKey != "" && i >= 0 {
 				out += fmt.Sprintf(" %d/%d", i+1, len(p.Cards))
 			}
 		}

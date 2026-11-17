@@ -31,28 +31,33 @@ func TestMergeApprovalYieldsTheCardInNeedsYou(t *testing.T) {
 	}
 }
 
-// The drawer's merge card: each why-a-human entry is its own line, and an
-// agent pull request on red checks shows its return and close directly,
-// not behind a disclosure button that hides them.
+// The opened merge card: its full brief holds each why-a-human entry, and
+// an agent pull request on red checks asks its return and close as the
+// case's own answers, with no merge.
 func TestMergeDrawerRendersTheAskAndItsActions(t *testing.T) {
 	r := newRig(t)
-	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{
-		ID: 6, Kind: factoryd.ApprovalMerge, TaskID: "t-red", Project: "sf/code", PRNumber: 10, Status: "pending",
-		Spec: json.RawMessage(`{"risk_class":"normal","red_checks":true,"why_human":["checks round 1 failed","review round 2 said the same"]}`),
-	})
+	ap := factoryd.ApprovalRequest{ID: 6, Kind: factoryd.ApprovalMerge, TaskID: "t-red", Project: "sf/code", PRNumber: 10, Status: "pending",
+		Spec: json.RawMessage(`{"risk_class":"normal","red_checks":true,"why_human":["checks round 1 failed","review round 2 said the same"]}`)}
+	r.approvals.rows = append(r.approvals.rows, ap)
 	r.tasks.set("", factoryd.Task{ID: "t-red", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 8, PRNumber: 10})
-	r.openCases = map[string][]factoryd.Case{"t-red": {{ID: 8, TaskID: "t-red", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseAtHuman,
-		Facts: map[string]any{"approval": 6.0}}}}
+	k, err := factoryd.RequestCase(ap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k.ID = 8
+	r.openCases = map[string][]factoryd.Case{"t-red": {k}}
 	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-red/drawer?tab=overview", nil), ck).Body.String()
-	if got := strings.Count(body, `class="why"`); got != 2 {
-		t.Fatalf("the drawer renders %d why lines, want one per entry", got)
+	body := drawer(t, r, ck, "t-red", "overview")
+	if !strings.Contains(body, "<dt>Why a human</dt><dd>checks round 1 failed; review round 2 said the same</dd>") {
+		t.Errorf("the full brief lacks the why-a-human entries:\n%s", body)
 	}
-	if !strings.Contains(body, `action="/approvals/6/deny"`) || strings.Contains(body, `id="deny-6-d" hidden`) {
-		t.Fatal("the return and close form hides behind a disclosure")
+	for _, key := range []string{factoryd.ActDenyMerge, factoryd.ActDenyMerge + "/reject"} {
+		if f := answerForm(t, body, key); f.Action != "/tasks/t-red/resolve" || f.Values.Get("case_id") != "8" || f.Values.Get("action") != key {
+			t.Errorf("the %s answer posts %s %v, want the case's resolve", key, f.Action, f.Values)
+		}
 	}
-	if strings.Contains(body, `aria-controls="deny-6-d"`) {
-		t.Fatal("the card still offers a disclosure button for its actions")
+	if strings.Contains(askBlockOf(t, body), "Merge it") {
+		t.Errorf("the red pull request's ask offers the merge:\n%s", askBlockOf(t, body))
 	}
 }
 
@@ -75,7 +80,7 @@ func TestDrawerShowsTheOpenedProofBesideTheRepositorysVersion(t *testing.T) {
 			`<pre class="proof original" tabindex="0">v1 code</pre>`}, 1},
 		{"not in the pull request", nil, false, []string{`<h5>group_open: acceptance/group_open_test.go, not in the pull request</h5>`,
 			`<pre class="proof original" tabindex="0">v1 code</pre>`}, 1},
-		{"unread", nil, true, []string{`<p class="problem">The console could not read the opened proofs; reload the board.</p>`}, 0},
+		{"unread", nil, true, []string{`<p class="problem">The console could not read the opened proofs. Reload the board.</p>`}, 0},
 		{"a feature card", map[string]string{"8e3a1b0c acceptance/group_open_test.go": "v2 code"}, false, nil, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -118,8 +123,8 @@ func TestDrawerShowsTheOpenedProofBesideTheRepositorysVersion(t *testing.T) {
 	}
 }
 
-// The drawer's pill reads the card's state like the face's: a merged
-// card's drawer says merged, a done card's says done.
+// The opened card's head reads the card's state like the face's: a merged
+// card's says its chain's state, a done card's says done.
 func TestDrawerPillReadsTheState(t *testing.T) {
 	r := newRig(t)
 	r.tasks.set("",
@@ -127,8 +132,8 @@ func TestDrawerPillReadsTheState(t *testing.T) {
 		factoryd.Task{ID: "t-done", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 8, PRNumber: 10})
 	ck, _ := r.loggedIn(t)
 	for id, want := range map[string]string{
-		"t-merged": `<span class="pill st-merged">merged</span>`,
-		"t-done":   `<span class="pill st-done">done</span>`,
+		"t-merged": `<p class="o-line"><span class="it"><span class="st st-merged"><i class="dot" aria-hidden="true"></i>waiting for the chain</span></span>`,
+		"t-done":   `<p class="o-line"><span class="it st">done</span>`,
 	} {
 		body := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+"/drawer?tab=overview", nil), ck).Body.String()
 		if !strings.Contains(body, want) {
@@ -205,8 +210,8 @@ func TestDeployStageWords(t *testing.T) {
 }
 
 // A roll task is a card like any other: running, it sits in In progress
-// under its title; its drawer lists the cards it carries, and the merged
-// card's drawer names the roll it waits for.
+// under its title; its full brief lists the cards it carries, and the
+// merged card's head names the roll it waits for.
 func TestARollCardShowsOnTheBoard(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -221,12 +226,12 @@ func TestARollCardShowsOnTheBoard(t *testing.T) {
 		t.Fatalf("In progress lacks the roll card:\n%s", progress)
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-roll/drawer?tab=overview", nil), ck).Body.String()
-	if !strings.Contains(drawer, `<span class="why">carries</span>`) || !strings.Contains(drawer, `hx-get="/cards/t-m/drawer"`) {
-		t.Errorf("the roll's drawer does not list the card it carries:\n%s", drawer)
+	if !strings.Contains(drawer, `<h4>It carries</h4><ul><li><a class="ref-link" href="#card=t-m">#7</a>`) {
+		t.Errorf("the roll's opened card does not list the card it carries:\n%s", drawer)
 	}
 	drawer = r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
-	if !strings.Contains(drawer, `<span class="why">blocked by</span>`) || !strings.Contains(drawer, `hx-get="/cards/t-roll/drawer"`) {
-		t.Errorf("the merged card's drawer does not name its roll:\n%s", drawer)
+	if !strings.Contains(drawer, `<a href="#card=t-roll">blocked by roll #1162</a>`) {
+		t.Errorf("the merged card's opened card does not name its roll:\n%s", drawer)
 	}
 }
 
@@ -244,11 +249,10 @@ func TestAFiledRollCardIsQueued(t *testing.T) {
 
 // A card's press moves the card at once (C31): every column names the
 // statuses it holds, in the four columns and the wide view, and the
-// approval's one decide form the status of its task, whose card the
-// decided request leaves standing. The press is the decide's one send —
-// the answer, the fund and the note ride one POST, landing together in
-// one row — and it answers with the board's refresh alone when htmx
-// sends it; a browser's form keeps its redirect.
+// approval's answer the status of its task, whose card the decided request
+// leaves standing. The press lands in one row, and it answers with the
+// board's refresh alone when htmx sends it; a browser's form keeps its
+// redirect.
 func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 	r := newRig(t)
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-card", Kind: "agent", Status: "in-review",
@@ -265,7 +269,7 @@ func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 		"/?project=ai-software-factory-code": {`id="needs-you" data-holds="waiting-human waiting-poster">`,
 			`data-holds="queued waiting-deps waiting-image">`, `data-holds="running closing in-review merged">`, `data-holds="done failed closed"`},
 		"/cards/t-card/drawer?tab=overview": {
-			`<form method="post" action="/approvals/31/approve" hx-post="/approvals/31/approve" class="decide resolve" data-to="in-review">`},
+			`<form method="post" action="/approvals/31/approve" hx-post="/approvals/31/approve" class="answer" data-answer="approve_merge" data-to="in-review">`},
 		"/?project=ai-software-factory-code&view=wide": {`data-holds="queued waiting-deps">`, `data-holds="running closing">`, `data-holds="in-review">`, `data-holds="merged">`,
 			`data-holds="failed"`, `data-holds="closed"`},
 	} {
@@ -276,9 +280,7 @@ func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 			}
 		}
 	}
-	// the one send: the answer, the fund and the note ride one POST
-	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
-		"action": {"approve"}, "fund_eur": {"1.50"}, "note": {"the board alone answers"}}
+	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {"approve"}}
 	before := r.events.count()
 	rec := r.do(htmxPost("/approvals/31/approve", form), ck)
 	if body := rec.Body.String(); rec.Code != http.StatusNoContent || body != "" || rec.Header().Get("HX-Trigger") != "board-refresh" {
@@ -287,13 +289,7 @@ func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 	if !slices.Equal(approved, []string{"t-card #9 by sebastian"}) {
 		t.Fatalf("the htmx approve merged %v, want t-card #9 by sebastian", approved)
 	}
-	// the one send landed the fund and the note with the answer, one row
-	if k, ok, _ := r.tasks.Task(t.Context(), "t-card"); !ok || k.BudgetEUR != 1.5 {
-		t.Errorf("t-card's budget = %v (ok %v), want the 1.50 the one send carried", k.BudgetEUR, ok)
-	}
-	checkRows(t, r.events, before,
-		wantRow{kind: factoryd.EventMergeApproved, repo: "sf/code", taskID: "t-card",
-			detail: map[string]any{"pr": int64(9), "approval": int64(31), "fund_eur": 1.5, "reason": "the board alone answers"}})
+	checkRows(t, r.events, before, wantRow{kind: factoryd.EventMergeApproved, repo: "sf/code", taskID: "t-card", detail: map[string]any{"pr": int64(9)}})
 	if rec := r.do(post("/approvals/31/approve", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code" {
 		t.Fatalf("the browser's approve = %d to %q", rec.Code, rec.Header().Get("Location"))
 	}

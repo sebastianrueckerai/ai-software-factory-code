@@ -1,0 +1,104 @@
+{{define "opened"}}<article class="opened" data-opened="{{.Face.ID}}">
+<header class="o-head">
+<h2 class="o-title" tabindex="-1">{{.Face.Title}}{{.Face.Stop}}</h2>
+{{with .Face.Why}}<p class="o-why">{{.}}</p>
+{{end}}<p class="o-line">{{if .Face.Final}}<span class="it st">{{.Face.State}}</span>{{else}}<span class="it"><span class="st {{.Face.Hue}}"><i class="dot" aria-hidden="true"></i>{{.Face.State}}</span></span>{{end}}{{with .Face.Clock}} <span class="it">{{.}}</span>{{end}}{{range .Face.Marks}} <span class="it{{with .Class}} {{.}}{{end}}">{{.Words}}</span>{{end}}{{with .Face.Place}} <span class="it place">{{.}}</span>{{end}}{{with .Face.Ref}} <span class="it ref">{{if $.Issue}}<a href="{{$.Issue}}" target="_blank" rel="noopener">{{.}}</a>{{else}}{{.}}{{end}}</span>{{end}}{{with .Face.Waits}} <span class="it waits">{{.}}</span>{{end}}{{with .PR}} <span class="it"><a href="{{.}}" target="_blank" rel="noopener">pull request #{{$.PRNumber}}</a></span>{{end}}{{if .Face.Unchecked}} <span class="it unchecked">brief not checked</span>{{end}}{{with .Face.Accent}} <span class="it accent"><i class="dot acc-{{.}}" aria-hidden="true"></i>{{.}}</span>{{end}}</p>
+</header>
+{{if .Pending}}<p class="o-sent liveness" role="status">This card holds answers its run has not taken. The run may be gone, and the factory's heal pass will chase it. Hold further answers.</p>
+{{end}}{{range .Problems}}<p class="problem" role="status">{{.}}</p>
+{{end}}{{with .Ask}}<section class="o-ask" aria-label="Your call">
+<p class="o-label">Your call{{if gt .Of 1}} · {{.Position}} of {{.Of}}<span class="o-pages">{{if .Prev}}<a class="prev" href="{{.Prev}}" hx-get="{{.Prev}}" hx-target="#drawer" hx-swap="innerHTML" aria-label="The ask before">‹</a>{{else}}<span class="prev" aria-hidden="true">‹</span>{{end}}{{if .Next}}<a class="next" href="{{.Next}}" hx-get="{{.Next}}" hx-target="#drawer" hx-swap="innerHTML" aria-label="The ask after">›</a>{{else}}<span class="next" aria-hidden="true">›</span>{{end}}</span>{{end}}</p>
+<p class="o-question">{{.Question}}</p>
+{{with .Why}}<p class="o-askwhy">{{.}}</p>
+{{end}}{{with .Story}}<ul class="o-story">{{range .}}<li>{{.Lead}}{{with .Quote}}<span class="quote">{{.}}</span>{{end}}</li>{{end}}</ul>
+{{end}}{{with .Note}}<p class="o-note">{{.}}</p>
+{{end}}{{with .Who}}<p class="o-who">{{.}}</p>
+{{end}}{{with .Answers}}<div class="o-answers">{{range .}}{{template "answer" .}}{{end}}</div>
+{{end}}</section>
+{{end}}{{if .Sent}}<p class="o-sent" role="status">The answer is on its way to the card.</p>
+{{end}}{{with .Summary}}<p class="o-summary">{{.}}</p>
+{{end}}<div class="o-folds">
+{{with .AgentView}}<details class="fold" data-sec="view"><summary>The agent's view<span class="hint">the text its agent gets</span></summary><pre class="exact">{{.}}</pre></details>
+{{end}}{{with .Brief}}{{if or .Body .Acceptance .Criteria .DependsOn .Carries .Evidence .Approvals}}<details class="fold" data-sec="brief"><summary>The full brief{{with .Hint}}<span class="hint">{{.}}</span>{{end}}</summary><div class="fold-body">
+{{with .Body}}<div class="o-body">{{.}}</div>
+{{end}}{{with .Acceptance}}<h4>Done when</h4><ul>{{range .}}<li>{{.}}</li>{{end}}</ul>
+{{end}}{{with .Criteria}}<h4>The promises it proves</h4><ul>{{range .}}<li>{{.}}</li>{{end}}</ul>
+{{end}}{{with .DependsOn}}<h4>It waits on</h4><ul>{{range .}}<li>{{.}}</li>{{end}}</ul>
+{{end}}{{with .Carries}}<h4>It carries</h4><ul>{{range .}}<li>{{.}}</li>{{end}}</ul>
+{{end}}{{range .Evidence}}<h4>{{.Label}}</h4>{{with .Text}}<div class="info">{{.}}</div>{{end}}{{with .Quote}}<p class="quote">{{.}}</p>{{end}}{{with .Raw}}<pre class="exact">{{.}}</pre>{{end}}
+{{end}}{{range .Approvals}}{{template "evidence-approval" .}}{{end}}</div></details>
+{{end}}{{end}}{{with .Plan}}<details class="fold" data-sec="plan"><summary>The plan<span class="hint">{{.Hint}}</span></summary><div class="fold-body">
+{{with .Outcome}}<p>{{.}}</p>
+{{end}}<ol class="plan-rows">{{range .Cards}}<li{{if .This}} class="this" aria-current="true"{{end}}>{{.Title}}{{if not .Issue}} <span class="meta">not filed yet</span>{{end}}{{if .This}} <span class="meta">this card</span>{{end}}</li>{{end}}</ol>
+{{if or .Section .Whole}}<p class="links">{{with .Section}}{{.}}{{end}}{{if and .Section .Whole}} · {{end}}{{with .Whole}}<a href="{{.}}">open the plan's card</a>{{end}}</p>
+{{end}}</div></details>
+{{end}}<details class="fold" data-sec="life" hx-get="/tasks/{{.Face.ID}}/digest" hx-trigger="toggle once" hx-target="find .sec-body"><summary>The card's life{{with .Life.Line}}<span class="hint">{{.}}</span>{{end}}</summary>
+{{if gt .Life.Budget 0.0}}<p class="spend{{if .Life.Near}} near{{end}}"><span class="mono">{{eur2 .Life.Spent}} of {{eur2 .Life.Budget}}, {{pct .Life.Spent .Life.Budget}} percent</span>{{if .Life.Near}} ⚠ near its budget{{end}}{{with .Life.Calls}} <span class="mono" title="the task's model calls to date: the tokens its providers reported and the modeled pay-as-you-go cost of them, never money billed">· {{.}}</span>{{end}}</p>
+{{end}}{{with .Life.Model}}<p class="meta">Its agent runs on <span class="mono">{{.}}</span>.</p>
+{{end}}{{with .Life.Runs}}<div class="life">{{range .}}<span class="mono">{{.At}}</span><span class="k {{.Class}}">{{.Kind}}</span><span class="mono num">{{.Duration}}</span><span class="mono num">{{if .Costs}}{{eur2 .EUR}}{{end}}</span><span class="tnote">{{.Note}}</span>{{end}}</div>
+{{end}}{{with .Life.Thread}}<p class="thread-link">{{if not .Own}}From {{.Who}}'s chat thread {{.Number}}{{else if .Title}}From your chat thread <button type="button" class="linkbtn" data-open-thread="{{.Number}}">{{.Title}}</button>{{else}}From your chat thread {{.Number}}, since deleted{{end}}</p>
+{{end}}{{with .Life.Routine}}<p class="provenance">filed by the routine {{if .Title}}<button type="button" class="linkbtn" data-open-routine="{{.Project}}/{{.Name}}">{{.Title}}</button>{{else}}{{.Name}}{{end}}, run {{.Run}}{{with .LastWords}}, last run {{.}}{{end}}</p>
+{{end}}{{with .Life.GitHub}}<p class="provenance">on GitHub {{if $.Life.GitHubURL}}<a href="{{$.Life.GitHubURL}}" target="_blank" rel="noopener">pull request #{{$.Life.GitHubPR}}</a> {{end}}{{.}}</p>
+{{end}}<p class="links">{{with .Life.Diff}}<a href="{{.}}" target="_blank" rel="noopener">the diff</a> · {{end}}<a href="/tasks/{{.Face.ID}}/timeline">the full timeline</a></p>
+<div class="sec-body"><p class="meta">Loading…</p></div></details>
+<details class="fold" data-sec="sessions"><summary>What each session got<span class="hint">{{.SessionsHint}}</span></summary>{{range .Sessions}}<details class="fold"><summary>Session {{.N}}{{with .Outcome}}<span class="hint">{{.}}</span>{{end}}</summary><pre class="exact">{{.Text}}</pre></details>{{end}}</details>
+<details class="fold" data-sec="more"><summary>Other actions<span class="hint">{{.MoreHint}}</span></summary><div class="fold-body o-answers">{{range .More}}{{template "answer" .}}{{end}}</div></details>
+{{template "glosses" .Glosses}}</div>
+</article>{{end}}
+
+{{define "answer"}}{{with .Thread}}<div class="answer"><button type="button" class="pick" data-card-thread="{{.}}">{{$.Label}}</button> <span class="effect">{{$.Effect}}</span></div>{{else}}{{with .Press}}<form method="post" action="{{.Post}}" hx-post="{{.Post}}" class="answer{{if $.Suggested}} suggested{{end}}" data-answer="{{$.Action}}"{{with .DataTo}} data-to="{{.}}"{{end}}><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}{{range .Values}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}
+{{if $.Suggested}}<p class="o-by">suggested{{with $.By}} by {{.}}{{end}}{{with $.Grounds}}: <span class="quote">{{.}}</span>{{end}}</p>
+{{end}}{{if $.Fields}}<button type="button" class="pick" aria-expanded="{{$.Open}}" aria-controls="{{(index $.Fields 0).ID}}-set" data-press="{{$.Action}}">{{$.Label}}</button>{{else}}<button type="submit" class="pick">{{$.Label}}</button>{{end}} <span class="effect">{{$.Effect}}</span>
+{{with $.Fields}}<fieldset class="fields" id="{{(index . 0).ID}}-set"{{if not $.Open}} hidden{{end}}><legend class="visually-hidden">{{$.Label}}</legend>{{range .}}{{template "field" .}}{{end}}
+<button type="submit" class="send">Send</button></fieldset>
+{{end}}</form>{{else}}<div class="answer{{if $.Suggested}} suggested{{end}}">{{if $.Suggested}}<p class="o-by">suggested{{with $.By}} by {{.}}{{end}}{{with $.Grounds}}: <span class="quote">{{.}}</span>{{end}}</p>{{end}}<button type="button" class="pick" disabled>{{$.Label}}</button> <span class="effect">{{$.Effect}}</span></div>{{end}}{{end}}{{end}}
+
+{{define "field"}}{{if eq .Kind "checks"}}<fieldset class="field"><legend>{{.Label}}</legend>{{with .Hint}}<p class="hint">{{.}}</p>{{end}}{{$f := .}}{{range .Options}}<label><input type="checkbox" name="{{$f.Name}}" value="{{.Value}}"{{if .Checked}} checked{{end}}> <span class="quote">{{.Label}}</span></label>{{end}}</fieldset>{{else if eq .Kind "check"}}<label class="field"><input type="checkbox" name="{{.Name}}" value="yes"{{if eq .Value "yes"}} checked{{end}}> {{.Label}}</label>{{else}}<label class="field" for="{{.ID}}">{{.Label}}</label>{{if eq .Kind "choice"}}<select id="{{.ID}}" name="{{.Name}}">{{range .Options}}<option value="{{.Value}}"{{if .Checked}} selected{{end}}>{{.Label}}</option>{{end}}</select>{{else if eq .Kind "note"}}<textarea id="{{.ID}}" name="{{.Name}}" rows="2" maxlength="{{.Max}}"{{with .Hint}} placeholder="{{.}}"{{end}}{{if .Required}} required{{end}} hx-preserve>{{.Value}}</textarea>{{else if or (eq .Kind "money") (eq .Kind "number")}}<input type="number" id="{{.ID}}" name="{{.Name}}" min="0" step="{{if eq .Kind "money"}}0.01{{else}}1{{end}}" value="{{.Value}}"{{if .Required}} required{{end}}>{{else}}<input type="text" id="{{.ID}}" name="{{.Name}}" value="{{.Value}}"{{with .Hint}} placeholder="{{.}}"{{end}}{{if .Required}} required{{end}} hx-preserve>{{end}}{{end}}{{end}}
+
+{{define "evidence-approval"}}{{if eq .Kind "merge"}}<h4>The pull request</h4>{{template "merge-facts" .}}
+{{range .Merge.FailedTests}}<p class="failed-test">Red in the log: {{.}}</p>
+{{end}}{{if .Merge.FailedTestsMore}}<p class="failed-test">and {{.Merge.FailedTestsMore}} more</p>
+{{end}}{{with .Opened}}<h4>Opened proofs</h4><p class="meta">Each shows the original test, then the pull request's version when the two differ.</p>
+{{range .}}<h5>{{.Criterion}}: {{.Path}}, {{if .Missing}}not in the pull request{{else if .Changed}}changed{{else}}unchanged{{end}}</h5>
+<pre class="proof original" tabindex="0">{{.Original}}</pre>
+{{if .Changed}}<pre class="proof repository" tabindex="0">{{.Repository}}</pre>
+{{end}}{{end}}{{end}}{{if .OpenedUnread}}<p class="problem">The console could not read the opened proofs. Reload the board.</p>
+{{end}}{{if .HeadUnread}}<p class="problem">The head's current checks could not be read: {{.HeadUnreadWhy}}. Reload the board, or read the checks on the pull request.</p>
+{{end}}{{template "evidence-criteria" .}}{{else if eq .Kind "resource"}}<h4>The server</h4><p>{{.Resource.ServerType}}{{if .Resource.VolumeGB}} with a {{.Resource.VolumeGB}} GB volume{{end}}, for {{.Resource.Purpose}}. {{lease .Resource.LeaseMinutes}}, {{eur4 .Monthly}} EUR a month, {{eur4 .Resource.ReservationEUR}} EUR for this lease.</p>
+{{with .Resource.BeyondEnvelope}}<p>Beyond the project's envelope: {{range $i, $v := .}}{{if $i}}; {{end}}{{$v}}{{end}}</p>
+{{end}}{{else if eq .Kind "plan"}}<h4>The plan</h4>{{with .PlanSummary}}<div class="info">{{markup .}}</div>
+{{end}}{{with .PlanOutcome}}<p>{{.}}</p>
+{{end}}{{with .PlanGlossary}}<ul class="glossary">{{range .}}<li>{{.}}</li>{{end}}</ul>
+{{end}}{{with .PlanRows}}<ul>{{range .}}<li>{{.Title}}</li>{{end}}</ul>
+{{end}}{{with .PlanStill}}<p>Still to plan: {{join . ", "}}.</p>
+{{end}}{{with .TakeOffWhys}}<ul>{{range .}}<li>{{.}}</li>{{end}}</ul>
+{{end}}{{range .Questions}}{{if .Answered}}<p class="answered">{{if eq .Kind "confirmation"}}{{askline .Text}}{{else}}{{.Text}}{{end}}: {{.Reply}} ({{.AnsweredBy}})</p>
+{{end}}{{end}}{{template "evidence-criteria" .}}{{if .Holdouts}}<div class="holdouts" id="holdouts-{{.TaskID}}{{.IDSuffix}}">
+<p class="meta">A hold-out is a behaviour the plan promises to keep intact, kept out of the plan the agent sees and proved at the gate.</p>
+{{range $h := .Holdouts}}<fieldset class="question"><legend>Hold-out {{$h.Index}}</legend>
+<p class="claim">{{$h.Claim}}</p>
+<p class="meta">Inputs: {{$h.Inputs}}<br>Expected: {{$h.Expected}}</p>
+{{with $h.Blurb}}<p class="meta">{{.}}</p>
+{{end}}{{if $h.Decides}}<form method="post" action="/tasks/{{$.TaskID}}/plan/holdout" hx-post="/tasks/{{$.TaskID}}/plan/holdout">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$h.Idx}}">
+<button type="submit" name="verb" value="okay">Keep it</button>
+<button type="submit" name="verb" value="drop">Drop it</button>
+</form>{{end}}
+</fieldset>
+{{end}}</div>{{end}}{{else}}{{range .GateLines}}<p class="meta gate-line">{{.ID}}: {{.Word}}: {{.Evidence}}</p>
+{{end}}{{template "evidence-criteria" .}}{{end}}{{end}}
+
+{{define "evidence-criteria"}}{{$a := .}}{{with .Criteria}}<h4>The promises</h4>{{range $r := .}}<div class="criterion"><p><b>{{.ID}}</b>: {{if .Verdict}}{{.Verdict}}{{else}}open{{end}}{{with .Word}} ({{.}}){{end}}. {{or .Claim .Suite}}</p>
+{{with .Evidence}}<p class="reason">{{.}}</p>
+{{end}}{{with .Artifact}}<p class="meta">{{.Name}} at {{printf "%.7s" .Head}}{{with $r.CutLine}}, {{.}}{{end}}</p>
+<pre class="artifact" tabindex="0">{{.Content}}</pre>
+{{else}}{{if $r.Human}}{{with $r.PlanCriterion.Evidence}}<p class="meta">Evidence: {{.}}</p>
+{{end}}{{end}}{{end}}{{if and (eq $a.Kind "merge") $a.Approver (ne $r.Verdict "met") (ne $r.Verdict "waived")}}<form method="post" action="/approvals/{{$a.ID}}/criterion" hx-post="/approvals/{{$a.ID}}/criterion">
+{{if $r.Human}}<button type="submit" disabled hidden></button>{{end}}<input type="hidden" name="csrf" value="{{$a.CSRF}}">{{template "filter" $a.Filter}}<input type="hidden" name="criterion" value="{{$r.ID}}">
+<label for="waive-{{$a.ID}}{{$a.IDSuffix}}-{{$r.ID}}">{{if $r.Human}}Your words, one line. Not met and Waive need them.{{else}}Why it no longer holds, one line{{end}}</label>
+<input type="text" id="waive-{{$a.ID}}{{$a.IDSuffix}}-{{$r.ID}}" name="reason" maxlength="2000"{{if not $r.Human}} required{{end}} hx-preserve>
+{{if $r.Human}}<button type="submit" name="verb" value="met" aria-label="Met: promise {{$r.ID}}">Met</button>
+<button type="submit" name="verb" value="not_met" aria-label="Not met: promise {{$r.ID}}">Not met</button>
+{{end}}<button type="submit" name="verb" value="waived" aria-label="Waive promise {{$r.ID}}">Waive</button>
+</form>
+{{end}}</div>{{end}}{{end}}{{end}}

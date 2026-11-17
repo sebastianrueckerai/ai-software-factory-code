@@ -109,7 +109,8 @@ var Vocabulary = []Answer{
 	{Action: ActClose, Variant: variantDone, Label: "I did it", Effect: "Closes the card. The factory runs no check of the work."},
 	{Action: ActClose, Variant: variantNoted, Label: "Noted", Effect: "Ends this notice."},
 	{Action: ActClose, Variant: variantDismiss, Label: "End the card", Effect: "Ends the card and stops watching the chain until main moves."},
-	{Action: ActClose, Variant: variantPlanWait, Label: "End the failed card", Effect: "Ends the failed card. The plan goes on without it."},
+	{Action: ActClose, Variant: variantPlanWait, Label: "End the failed card", Effect: "Ends the failed card. The plan goes on without it.",
+		Fields: []Field{optionalNote("A note on why")}},
 	{Action: ActApproveMerge, Label: "Merge it", Effect: "Merges the pull request."},
 	{Action: ActDenyMerge, Label: "Send it back", Effect: "Returns the pull request to its agent with your note.",
 		Fields: []Field{requiredNote("What to change", "What the agent should change")}},
@@ -145,6 +146,8 @@ var Vocabulary = []Answer{
 	{Action: ActSalvage, Label: "Rescue the work into a new card", Effect: "Ends the card's run and starts a new card from its branch."},
 	{Action: ActNote, Label: "Not now", Effect: "The card keeps waiting for your answer.", Fields: []Field{optionalNote("A note")}},
 	{Action: ActNote, Variant: variantPark, Label: "Not now", Effect: "The card keeps waiting for your answer."},
+	{Action: ActNote, Variant: variantOwnWords, Label: "Answer in my words", Effect: "Posts your answer on the issue as you. The card waits until you end it.",
+		Fields: []Field{requiredNote("Your answer", "The answer, posted on the issue as you")}},
 	{Action: AnswerGo, Label: "Have the factory do it", Effect: "Files the work as a card for an agent."},
 	{Action: AnswerRerunAgain, Label: "Run the chain again", Effect: "Runs the stalled deploy chain again."},
 	{Action: AnswerCheckAgain, Label: "Look again", Effect: "Reads the chain's state again."},
@@ -158,8 +161,12 @@ var Vocabulary = []Answer{
 		Fields: []Field{requiredNote("Your reason", "Why the card should do without it")}},
 	{Action: AnswerSteer, Label: "Tell the running session", Effect: "The running session reads your message at its next step.",
 		Fields: []Field{requiredNote("Your message", "What the session should know")}},
-	{Action: AnswerEditBrief, Label: "Edit the brief", Effect: "Changes the title, why line and summary for the agent and the board."},
-	{Action: AnswerAccent, Label: "Colour", Effect: "Marks the card with a colour."},
+	{Action: AnswerEditBrief, Label: "Edit the brief", Effect: "Changes the title, why line and summary for the agent and the board.",
+		Fields: []Field{{Name: "title", Label: "Title", Kind: FieldText, Default: func(f Facts) string { return CardTitle(f.Card) }},
+			{Name: "why", Label: "Why", Kind: FieldText, Default: func(f Facts) string { return f.Card.Why }},
+			{Name: "summary", Label: "Summary", Kind: FieldText, Default: func(f Facts) string { return f.Card.Summary }}}},
+	{Action: AnswerAccent, Label: "Colour", Effect: "Marks the card with a colour.",
+		Fields: []Field{{Name: "accent", Label: "Colour", Kind: FieldChoice, Default: func(f Facts) string { return f.Card.Accent }, Options: accentOptions()}}},
 	{Action: AnswerThread, Label: "Talk about this card", Effect: "Opens a chat thread on this card."},
 	{Action: AnswerFundChat, Label: "Add money to the chat", Effect: "Raises the chat's budget for this month. The card closes.",
 		Fields: []Field{{Name: "eur", Label: "EUR to add", Kind: FieldMoney, Default: func(f Facts) string { return money(f.Card.BudgetEUR) }}}},
@@ -186,6 +193,15 @@ func auditFindings(f Facts) string {
 
 func criterionField() Field {
 	return Field{Name: "criterion", Label: "The promise", Hint: "The promise's name", Kind: FieldText, Required: true}
+}
+
+// accentOptions are the colours a card may wear, and none.
+func accentOptions() []Option {
+	out := []Option{{"", "none"}}
+	for _, a := range Accents {
+		out = append(out, Option{a, a})
+	}
+	return out
 }
 
 func sizeOptions() []Option {
@@ -452,8 +468,15 @@ func init() {
 			Why: func(f Facts) string {
 				return cmp.Or(whyOf(agentLine(f, "Why")), "The agent stopped because it needs a decision only a human can make.")
 			},
-			Story:   agentStory,
-			Answers: func(f Facts) []string { return append(sayKeys(f), ActNote, ActClose) },
+			Story: agentStory,
+			Answers: func(f Facts) []string {
+				say := sayKeys(f)
+				if len(say) == 0 {
+					// a question with no answers offered takes the human's words
+					say = []string{ActContinue + "/" + variantOwnWords}
+				}
+				return append(say, ActNote, ActClose)
+			},
 			Suggest: func(f Facts) (string, string, string) {
 				return agentPick(f), "the agent", agentLine(f, "Recommendation")
 			}}),
@@ -493,7 +516,7 @@ func keys(k ...string) func(Facts) []string { return func(Facts) []string { retu
 // kind offers only in some of its states.
 func holding(f Facts, keys ...string) []string {
 	return slices.DeleteFunc(keys, func(key string) bool {
-		a, ok := answerFor(key, f)
+		a, ok := AnswerFor(key, f)
 		return !ok || !answerHolds(a, f)
 	})
 }
@@ -1346,8 +1369,11 @@ var planConfirmFace = FaceSpec{
 
 var mergeFace = FaceSpec{
 	Ask: func(f Facts) string {
-		if f.Checks == "red" {
-			return "The checks of this card's pull request are red. Run them again, or send it back?"
+		switch {
+		case f.Checks == "red" && f.Factory:
+			return "The checks of this card's pull request are red. Run them again, or close it?"
+		case f.Checks == "red":
+			return "The checks of this card's pull request are red. Send it back to its agent?"
 		}
 		return "Merge this card's pull request?"
 	},
@@ -1362,10 +1388,19 @@ var mergeFace = FaceSpec{
 	},
 	Story: workStory,
 	Answers: func(f Facts) []string {
-		if f.Checks == "red" {
-			return []string{ActRerunChecks, ActDenyMerge, ActDenyMerge + "/reject"}
+		deny := []string{ActDenyMerge, ActDenyMerge + "/reject"}
+		if !f.Factory {
+			if f.Checks == "red" {
+				return deny
+			}
+			return append([]string{ActApproveMerge}, deny...)
 		}
-		return []string{ActApproveMerge, ActDenyMerge, ActDenyMerge + "/reject"}
+		// no agent works on a pull request factoryd opened: a deny closes
+		// it, and its red checks run again
+		if f.Checks == "red" {
+			return []string{ActRerunChecks, ActDenyMerge + "/reject"}
+		}
+		return []string{ActApproveMerge, ActDenyMerge + "/reject"}
 	},
 	Suggest: func(f Facts) (string, string, string) {
 		if f.Checks == "red" || !f.ReviewApproved {
@@ -1469,11 +1504,15 @@ var humanFace = FaceSpec{
 	},
 }
 
-// humanAnswers are the keys of the choices a human card's ask stores.
+// humanAnswers are the keys of the choices a human card's ask stores; a
+// question that stores none takes the human's words.
 func humanAnswers(f Facts) []string {
-	var out []string
+	out := []string{}
 	for _, c := range storedChoices(f.Case) {
 		out = append(out, choicePrefix+c.Value)
+	}
+	if len(out) == 0 && cmp.Or(factString(f.Case, "ask"), f.Case.Problem) != "" {
+		out = append(out, ActNote+"/"+variantOwnWords)
 	}
 	return out
 }
@@ -1525,7 +1564,7 @@ func choiceAnswer(value string, f Facts) (Answer, bool) {
 	default:
 		return Answer{Action: v, Label: c.Label, Effect: "Posts these words as the answer and closes the card.", Value: v}, true
 	}
-	a, ok := answerFor(key, f)
+	a, ok := AnswerFor(key, f)
 	a.Value = value
 	if plan := planRef.FindString(c.Label); plan != "" && a.Action == ActReplan {
 		a.Effect = strings.Replace(a.Effect, "the plan", "plan "+plan, 1)
@@ -1640,7 +1679,7 @@ func flagFaces() map[string]FaceSpec {
 		"wait_over_bound": {fact: waitedFact, why: "A card that waits past its limit may be stuck.", fitting: ActSalvage, question: "Rescue the work into a new card?"},
 	} {
 		fits := func(f Facts) bool {
-			a, ok := answerFor(ff.fitting, f)
+			a, ok := AnswerFor(ff.fitting, f)
 			return ff.fitting != "" && ok && answerHolds(a, f)
 		}
 		out[flag] = FaceSpec{

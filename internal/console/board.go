@@ -59,12 +59,8 @@ var funcs = template.FuncMap{
 	"mRoundName": mRoundName, "mRoundSpans": mRoundSpans, "mOriginSpans": mOriginSpans,
 	"mGateCov": mGateCov, "mSessCov": mSessCov, "mEconCov": mEconCov,
 	"mGroupCov": mGroupCov, "mHoldCov": mHoldCov, "mReviewCov": mReviewCov,
-	// accents are the colour labels a writer may put on a card
-	"accents": func() []string { return factoryd.Accents },
 	// maxAnswer is the answer box's bound (answerFits)
 	"maxAnswer": func() int { return factoryd.MaxAnswer },
-	// maxReplan is the Replan box's bound, the replan step's
-	"maxReplan": func() int { return factoryd.MaxReplanComment },
 	// lease renders minutes as whole hours when they are
 	"lease": func(minutes int) string {
 		if minutes%60 == 0 {
@@ -93,8 +89,6 @@ var funcs = template.FuncMap{
 	"pct100": func(spent, cap float64) int { return min(pct(spent, cap), 100) },
 	// initial is a member's avatar letter
 	"initial": func(s string) string { return strings.ToUpper(string([]rune(s)[:min(1, len([]rune(s)))])) },
-	// andlist is "a, b and c"
-	"andlist": textutil.AndList,
 	// words is a stored word of the factory's, its underscores spaces
 	"words": func(s string) string { return strings.ReplaceAll(s, "_", " ") },
 	// switch is whether the top bar shows the project select: the board
@@ -117,9 +111,8 @@ var funcs = template.FuncMap{
 		}
 		return ""
 	},
-	"inc":             func(i int) int { return i + 1 },
-	"join":            strings.Join,
-	"alertSupervisor": alertSupervisor,
+	"inc":  func(i int) int { return i + 1 },
+	"join": strings.Join,
 }
 
 // alertSupervisor is what the supervisor did on a machine alert.
@@ -485,40 +478,18 @@ type card struct {
 	IssueURL string
 	PRURL    string
 	// RollID is the roll task a merged card waits for.
-	RollID  string
-	Reason  string   // an escalation's reason
-	Choices []string // the answers its agent offered, a button each
-	Capped  bool     // an escalated card at its session or agent time cap, which an answer grants what the cap asks for
-	// TimeCapped: the cap is its agent time's, which an answer grants more of
-	TimeCapped bool
-	// Ask says the card waits on an answer: an intake row holds its ask.
-	// Without one a human card that waits offers the factory or a close
-	// (roadmap 1131).
-	Ask bool
-	// Question is the escalation's five-part question (the question
-	// format): the ask as the headline, the why under it, its buttons by
-	// value, and the info and recommendation behind the fold. nil on a
-	// card whose ask no template shaped.
+	RollID string
+	Reason string // an escalation's reason, which the find reads
+	// Question is the escalation's question: a human card's ask is its
+	// title, and the activity line names it. nil on a card whose ask no
+	// template shaped.
 	Question *factoryd.HumanQuestion
-	// AnswersPending counts the trusted answers the card's workflow has
-	// not taken: one that holds some cannot process another, so its
-	// answer box yields to the liveness warning.
-	AnswersPending int
-	// Fund is the approver's Fund action on an escalated card whose
-	// remaining budget cannot fund a call, which
-	// raises its budget (roadmap 210).
-	Fund *fundForm
-	// Extend is the approver's Extend action on a card whose question
-	// offers the exit (a stop that names the owner's decision): the
-	// stated sessions, lines and EUR raise its caps and answer the stop.
-	Extend *extendForm
-	// Replan is the drawer's Replan of a card that may go back to the
-	// planner, for an approver.
-	Replan *replanForm
-	// Total is the task's time so far, or in all once it finished; GateAge
-	// how long it has been in its gate, which GateText names as the card
-	// reads it.
-	Total, GateAge string
+	// MayExtend: the viewer may give the live agent card more sessions and
+	// money, MayReplan send it back to the planner, MayRetry file the
+	// failed plan card again; each an approver's action.
+	MayExtend, MayReplan, MayRetry bool
+	// Total is the task's time so far, or in all once it finished.
+	Total string
 	// Cover is a done card's cover clause (C38): the run that ran its
 	// change live and how long after its merge, "" for a card the chain
 	// does not cover.
@@ -529,7 +500,6 @@ type card struct {
 	// StageURL is the chain word's link, the run on the forge the word
 	// names (C38), "" for a word that names none.
 	Stage, StageAge, StageURL string
-	GateText                  string
 	WaitingOn                 string // a card in waiting-deps: the issues it waits on
 	SlotWait                  string // a card queued for a work slot: "waits for its turn to start, N ahead (L running)"
 	PlanIssue                 int64  // a plan's card: the plan's issue
@@ -537,7 +507,6 @@ type card struct {
 	PlanName                  string // a plan's card: the plan's name, on the face's plan chip
 	PlanKey                   string // a plan's card: its key in the plan, on the face's plan chip
 	Plan                      []card // a done plan's cards, which its drawer lists
-	Retry                     *retry // a failed plan card's Retry, for an approver
 	Activity                  string // the task's newest event as one line, or the escalation's question
 	WaitingForActivity        bool   // the activity line stands for the wait's reason
 	// Title is the face's first line: the card's title, the objective's
@@ -596,16 +565,6 @@ type card struct {
 	Failure string
 	// Face is the card's small card (faceOf).
 	Face faceView
-}
-
-// ChoiceCard: the card answers by its question's choices alone, no free
-// answer and no close of its own (choiceCard).
-func (k card) ChoiceCard() bool { return choiceCard(k.Task) }
-
-// PressOnly: a human card whose question has choices takes a press of one
-// of them, never free words (doHumanAnswer refuses those).
-func (k card) PressOnly() bool {
-	return k.Kind == "human" && k.Question != nil && len(k.Question.Choices) > 0
 }
 
 // Routine: a routine's run filed the card, which wears the chip (C16).
@@ -859,31 +818,6 @@ func plural(n int, word string) string {
 		return word
 	}
 	return word + "s"
-}
-
-// fundForm is an approver's Fund action beside a capped card's answer box:
-// the stated amount raises the card's budget_eur (roadmap 210).
-type fundForm struct{ CSRF string }
-
-// extendForm is an approver's Extend action on a live card: the stated
-// sessions, lines and EUR raise the card's caps, and on a waiting card the
-// note answers the stop. Cap, Bound,
-// Budget and Left are the card's numbers the raise starts from.
-type extendForm struct {
-	CSRF       string
-	Cap, Bound int
-	Budget     float64
-	Left       float64
-}
-
-// retry is a failed plan card's Retry button.
-type retry struct{ CSRF string }
-
-// replanForm is the drawer's Replan; Group: the card is a plan or a
-// plan's card, so its plan goes back.
-type replanForm struct {
-	CSRF  string
-	Group bool
 }
 
 type column struct {
@@ -1428,7 +1362,7 @@ func (c *Console) counts(d boardData) ([]string, error) {
 func (d boardData) faces() string {
 	var b strings.Builder
 	add := func(k card) {
-		fmt.Fprintf(&b, "%s %t %q %t %t %s %s %s %s %s\n", k.ID, k.Stale, k.StaleText, k.Provider, k.Retrying, k.Checks, k.Total, k.GateAge, k.StageAge, k.Attempt)
+		fmt.Fprintf(&b, "%s %t %q %t %t %s %s %s %s\n", k.ID, k.Stale, k.StaleText, k.Provider, k.Retrying, k.Checks, k.Total, k.StageAge, k.Attempt)
 	}
 	for _, col := range d.Columns {
 		for _, k := range col.Cards {
@@ -1473,9 +1407,6 @@ func (c *Console) card(t factoryd.Task) card {
 	}
 	if !t.CreatedAt.IsZero() {
 		k.Total = minutes(end.Sub(t.CreatedAt))
-	}
-	if t.Gate != "" && t.GateSince != nil {
-		k.GateAge, k.GateText = minutes(time.Since(*t.GateSince)), t.Gate
 	}
 	k.StatusClass = statusClass(t.Status)
 	k.Stage, k.StageAge = stage(t, end)
@@ -1855,13 +1786,6 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	}
 	// a merged card's row may still name gate merge-queue
 	k.QueueAhead, k.MergeBehind = bt.QueueAhead, bt.MergeBehind
-	switch inQueue := t.Status == "in-review" && t.Gate == factoryd.GateMergeQueue; {
-	case inQueue && bt.QueueAhead < 0:
-		k.GateText = "merge queue, after the open plan,"
-	case inQueue:
-		k.GateText = fmt.Sprintf("merge queue, %d ahead,", bt.QueueAhead)
-	}
-	k.Ask = bt.Escalation != ""
 	if v.humanLane(t) {
 		k.Question = bt.Question
 		if bt.Question != nil {
@@ -1892,33 +1816,12 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	_, cut := v.byID[factoryd.SuccessorID(t.ID)]
 	if t.Status == "failed" && t.Source == factoryd.SourcePlan && t.Parent != "" && (t.PlanKey != "" || retried && replacement.IssueNumber == 0) &&
 		!cut && v.approves(t.Repository) {
-		k.Retry = &retry{CSRF: v.csrf}
+		k.MayRetry = true
 	}
-	if factoryd.MayReplan(t, v.planTrack[t.Repository]) && v.approves(t.Repository) {
-		k.Replan = &replanForm{CSRF: v.csrf, Group: factoryd.InPlan(t)}
-	}
-	// the Extend action is offered on every live agent card, to its
-	// approvers, with its numbers the raise starts from
-	if v.approves(t.Repository) && extendable(t) {
-		k.Extend = &extendForm{CSRF: v.csrf,
-			Cap:    factoryd.SessionCap(t, v.policy.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
-			Bound:  factoryd.EffectiveLineBound(t.Size, v.policy.Document.Risk.LargeLines, t.Usage),
-			Budget: t.BudgetEUR, Left: t.Left()}
-	}
+	k.MayReplan = factoryd.MayReplan(t, v.planTrack[t.Repository]) && v.approves(t.Repository)
+	k.MayExtend = v.approves(t.Repository) && extendable(t)
 	if v.escalated(t) {
-		k.Reason, k.Choices = cardReason(bt.Escalation), bt.Choices
-		k.Question, k.AnswersPending = bt.Question, bt.AnswersPending
-		f := capFactsFrom(t, v.policy.Document.Limits.Sessions, bt.Escalation, v.pending)
-		k.Capped, k.TimeCapped = f.capped, f.timeCap
-		// the Fund action is offered where the fund's floor refuses a
-		// session's opening calls for want of budget (roadmap 243): the same
-		// card, to its project's approvers; a refusal no raise answers
-		// offers none
-		if why, err := c.unfundedSession(ctx, t); err != nil {
-			log.Printf("console: task %s's remaining budget: %v", t.ID, err)
-		} else if v.approves(t.Repository) && factoryd.BudgetRefusal(why) {
-			k.Fund = &fundForm{CSRF: v.csrf}
-		}
+		k.Reason, k.Question = cardReason(bt.Escalation), bt.Question
 	}
 	return k
 }
@@ -2270,9 +2173,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		human, col := v.humanLane(t), fiveColumn(t)
 		// a done plan that waits on its failed card holds its case at the
 		// human: its row of Needs you carries the case
-		holds := slices.ContainsFunc(cs.byCard[t.ID], func(o factoryd.Case) bool {
-			return !factoryd.Final(t.Status) || factoryd.PlanWaitCase(o, t)
-		})
+		holds := cs.holds(t)
 		// the status line counts the project's cards, whatever the accent;
 		// a card that holds a case at the human counts once, as its row,
 		// and a plan that waits for its answers counts as its approval
@@ -2348,18 +2249,11 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			continue
 		}
 		// the card's row holds its approvals, unless the card has ended and has no row
-		if t := v.byID[a.TaskID]; len(cs.byCard[a.TaskID]) > 0 && !factoryd.Final(t.Status) {
+		if cs.holds(v.byID[a.TaskID]) {
 			continue
 		}
 		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver, true)
 		k.Filter, k.Writer = f, d.Writes
-		k.buildDecide()
-		k.Asks = a.Kind == factoryd.ApprovalPlan
-		// an escalation from before this revision's request (a cap a
-		// writer granted) no longer holds
-		if e := escalations[a.TaskID]; a.Kind == factoryd.ApprovalPlan && e.EscalatedAt.After(a.CreatedAt) {
-			k.Escalation = cardReason(e.Escalation)
-		}
 		d.Status.NeedYou++
 		if wide {
 			d.Approvals = append(d.Approvals, need{Since: a.CreatedAt, Approval: &k})
@@ -3062,29 +2956,26 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 	c.pressed(w, r, nil)
 }
 
-// resolve answers POST /tasks/{id}/resolve: the one send of the case's
-// face. The form posts the case, the answer its button names with that
-// answer's fields ("<answer>.<field>"), the fund beside it and the note;
-// doPressCase makes the one resolution and Act runs it once.
+// resolve answers POST /tasks/{id}/resolve: the one send of an answer of
+// the opened card. The form posts the answer its button names, with that
+// answer's fields ("<answer>.<field>"), the note among them, and the case
+// it answers; doPressCase makes the one resolution and Act runs it once.
+// A form that names no case presses one of the card's own actions
+// (doCardAnswer).
 func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
-	id, action, note := r.PathValue("id"), r.PostFormValue("action"), r.PostFormValue("note")
-	caseID, err := strconv.ParseInt(cmp.Or(r.PostFormValue("case_id"), "0"), 10, 64)
-	if err != nil || caseID < 0 {
+	id, action, named := r.PathValue("id"), r.PostFormValue("action"), r.PostFormValue("case_id")
+	field := func(name string) string { return strings.Join(r.PostForm[action+"."+name], "\n") }
+	if named == "" {
+		_, err := c.doCardAnswer(r.Context(), button(r), id, action, field)
+		c.pressed(w, r, err)
+		return
+	}
+	caseID, err := strconv.ParseInt(named, 10, 64)
+	if err != nil || caseID <= 0 {
 		c.fail(w, r, refuse(http.StatusBadRequest, "case_id is a case number"))
 		return
 	}
-	var fund float64
-	if v := strings.TrimSpace(r.PostFormValue("fund_eur")); v != "" {
-		if fund, err = strconv.ParseFloat(v, 64); err != nil || fund < 0 {
-			c.fail(w, r, refuse(http.StatusBadRequest, "fund_eur is an amount in EUR above zero"))
-			return
-		}
-	}
-	if caseID == 0 {
-		c.fail(w, r, refuse(http.StatusBadRequest, "This answer names no question of the card. Reload the board and press the answer again."))
-		return
-	}
-	if err := c.answersLiveAsk(r.Context(), id, r.PostFormValue("case_id")); err != nil {
+	if err := c.answersLiveAsk(r.Context(), id, named); err != nil {
 		c.fail(w, r, err)
 		return
 	}
@@ -3095,9 +2986,9 @@ func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 	}
 	values := map[string]string{}
 	for _, f := range answer.Fields {
-		values[f.Name] = strings.Join(r.PostForm[action+"."+f.Name], "\n")
+		values[f.Name] = field(f.Name)
 	}
-	_, err = c.doPressCase(r.Context(), button(r), id, caseID, answer, values, note, fund)
+	_, err = c.doPressCase(r.Context(), button(r), id, caseID, answer, values)
 	c.pressed(w, r, err)
 }
 
@@ -3117,6 +3008,13 @@ func (c *Console) answersLiveAsk(ctx context.Context, id, named string) error {
 		log.Printf("console: the cases of %s: %v", id, err)
 		return refuse(http.StatusServiceUnavailable, "The card's cases could not be read, so nothing was answered. Try again.")
 	}
+	if live.ID != shown {
+		// a merge's, a plan's criteria and a monitor's flag are answered by
+		// their own number, beside the card's live ask
+		if k, err := c.cfg.CaseByID(ctx, shown); err == nil && k.TaskID == id && !factoryd.AnsweredOnCard(k.Kind) {
+			return nil
+		}
+	}
 	switch {
 	case live.ID == 0:
 		return refuse(http.StatusConflict, fmt.Sprintf("Case %d is not the card's live ask: the card has no live ask, so nothing was answered. Reload the board.", shown))
@@ -3124,55 +3022,6 @@ func (c *Console) answersLiveAsk(ctx context.Context, id, named string) error {
 		return refuse(http.StatusConflict, fmt.Sprintf("Case %d is not the card's live ask: the card's live ask is case %d, so nothing was answered. Reload the board.", shown, live.ID))
 	}
 	return nil
-}
-
-// extendCard raises a waiting card's caps (doExtend): its sessions, its
-// minutes of agent time, its lines and its budget.
-func (c *Console) extendCard(w http.ResponseWriter, r *http.Request) {
-	sessions, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("sessions")))
-	if err != nil {
-		c.fail(w, r, refuse(http.StatusBadRequest, "sessions is a whole number"))
-		return
-	}
-	minutes, err := 0, error(nil)
-	if m := strings.TrimSpace(r.PostFormValue("minutes")); m != "" {
-		minutes, err = strconv.Atoi(m)
-	}
-	if err != nil {
-		c.fail(w, r, refuse(http.StatusBadRequest, "minutes is a whole number"))
-		return
-	}
-	lines, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("lines")))
-	if err != nil {
-		c.fail(w, r, refuse(http.StatusBadRequest, "lines is a whole number"))
-		return
-	}
-	eur, err := strconv.ParseFloat(strings.TrimSpace(r.PostFormValue("eur")), 64)
-	if err != nil {
-		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR is required"))
-		return
-	}
-	_, err = c.doExtend(r.Context(), button(r), r.PathValue("id"), sessions, lines, minutes, eur, r.PostFormValue("reason"))
-	c.pressed(w, r, err)
-}
-
-// fundCard raises a waiting card's budget (doFund), its ceiling first by
-// the optional ceiling field.
-func (c *Console) fundCard(w http.ResponseWriter, r *http.Request) {
-	eur, err := strconv.ParseFloat(strings.TrimSpace(r.PostFormValue("eur")), 64)
-	if err != nil {
-		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR above zero is required"))
-		return
-	}
-	var raise float64
-	if v := strings.TrimSpace(r.PostFormValue("ceiling")); v != "" {
-		if raise, err = strconv.ParseFloat(v, 64); err != nil {
-			c.fail(w, r, refuse(http.StatusBadRequest, "the ceiling's raise is an amount in EUR, 0 for none"))
-			return
-		}
-	}
-	_, err = c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"), raise)
-	c.pressed(w, r, err)
 }
 
 // chatFund raises the project's chat task's monthly budget (doChatFund),
@@ -3260,7 +3109,7 @@ func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
 		log.Printf("console: the cases of %s: %v", bt.ID, err)
 	} else {
 		v.cases = cs
-		if len(cs.byCard[bt.ID]) > 0 && !factoryd.Final(bt.Status) && !v.filter.wide() {
+		if cs.holds(bt.Task) && !v.filter.wide() {
 			all, _ := c.coderProjects(ctx)
 			if i := slices.IndexFunc(all, func(p factoryd.Project) bool { return p.Repository == bt.Repository }); i >= 0 {
 				v.filter.Project = all[i].Name
@@ -3272,19 +3121,6 @@ func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
 	c.render(w, "face", c.faceOf(ctx, v, n, needs))
 }
 
-// slotInView is the plan question card k's small card shows, the slot of
-// its case in view, 0 when no case holds one.
-func (c *Console) slotInView(ctx context.Context, v *boardView, r *http.Request, bt factoryd.BoardTask, k card) int {
-	cs, err := c.caseSetOf(ctx, bt.Repository)
-	if err != nil || len(cs.byCard[bt.ID]) == 0 {
-		return 0
-	}
-	if d := c.caseNeed(ctx, v, button(r), bt, k, cs, casesInView(r)[bt.ID]).PlanDecide(); d != nil {
-		return d.Plan.Index
-	}
-	return 0
-}
-
 // drawerTab is a tab of the card drawer: its ?tab= and its title.
 type drawerTab struct{ Name, Title string }
 
@@ -3293,50 +3129,24 @@ type drawerTab struct{ Name, Title string }
 // the stored receipt of a merged task.
 var drawerTabs = []drawerTab{{"overview", "Overview"}, {"chat", "Session"}, {"activity", "Activity"}, {"files", "Files"}, {"receipt", "Receipt"}}
 
-// drawerData is the card drawer on one tab, under the card's face.
-// Overview: the objective as its headline, a planned card's provenance
-// line and its body, the plan's rounds and what is still to plan, its
-// table, a pending merge's reviews and audit, and the related cards.
+// drawerData is the card drawer on one tab. Overview: the opened card.
 // Activity: the timeline page's gates and steps. Files: the pull
 // request's changed files. Chat: the newest session's messages, and the
 // input that steers it while it runs.
 type drawerData struct {
-	Card                       card
-	Tab                        string
-	Tabs                       []drawerTab
-	Headline, Provenance, Body string
-	PlanSummary                string
-	PlanRounds                 []factoryd.RoundItem
-	PlanStill                  []string
-	PlanRows                   []factoryd.PlanRow
-	TakeOffMain                []string
-	Merge                      *approvalCard
-	PlanApproval               *approvalCard
-	Approval                   *approvalCard
-	Related                    []related
-	Gates                      []gateRow
-	Longest                    int
-	Entries                    []timelineEntry
-	Files                      []prFile
-	MoreFiles                  bool // Files are the first filesPages pages
-	Session                    *sessionRef
-	Said                       []said
-	Steers                     bool   // the session runs and takes the member's messages
-	Problem                    string // what the tab could not read
-	// Runs are the card's life for the Time section (C10) and Life its
-	// at-a-glance line; Need is the open question with its actions when
-	// the card waits on a person.
-	Runs []run
-	Life string
-	Need *need
-	// Thread is the chat thread the card came from, nil for none.
-	Thread *threadLink
-	// Door is the card door: the card waits on a person and its own
-	// thread is the viewer's or not bound yet (the main agent concept).
-	Door bool
-	// RoutineLine names the routine run that filed the card, nil for a
-	// card no routine filed.
-	RoutineLine *routineProvenance
+	Card      card
+	Tab       string
+	Tabs      []drawerTab
+	Opened    *openedView
+	Gates     []gateRow
+	Longest   int
+	Entries   []timelineEntry
+	Files     []prFile
+	MoreFiles bool // Files are the first filesPages pages
+	Session   *sessionRef
+	Said      []said
+	Steers    bool   // the session runs and takes the human's messages
+	Problem   string // what the tab could not read
 	// Chain is the chain behind the card's change as the Chain section
 	// reads it (C38), nil while the chain holds nothing to say.
 	Chain *chainReadout
@@ -3400,9 +3210,6 @@ func receiptViewOf(r factoryd.MergeReceipt) *receiptView {
 	}
 	return v
 }
-
-// Suffix is the drawer's id suffix on the fields of the forms it shares with the column's copy.
-func (drawerData) Suffix() string { return "-d" }
 
 // chainReadout is the Chain section of a merged or done card's Activity
 // tab and timeline (C38): the chain behind its change in the drawer's
@@ -3536,26 +3343,6 @@ func (c *Console) cardThread(ctx context.Context, t factoryd.Task, viewer string
 	return l
 }
 
-// Age is the card's time in its stage, or in all once it ended.
-func (d drawerData) Age() string {
-	var parts []string
-	if d.Card.StageAge != "" {
-		parts = append(parts, d.Card.StageAge)
-	}
-	// the card's place in the merge queue, the one gate worth a word here;
-	// the Time section holds the rest
-	if strings.HasPrefix(d.Card.GateText, "merge queue") {
-		parts = append(parts, strings.TrimSuffix(d.Card.GateText, ","))
-	}
-	if d.Card.Total != "" {
-		parts = append(parts, d.Card.Total+" in all")
-	}
-	return strings.Join(parts, ", ")
-}
-
-// Word is the pill's word in the drawer's facts.
-func (d drawerData) Word() string { return stateWord(d.Card.Task) }
-
 // said is a message of a session in the drawer's Chat: the agent's text
 // between its tool calls, or a member's steer. Key is what the stream's
 // copy of it carries, so the live one is not added twice.
@@ -3563,12 +3350,6 @@ type said struct {
 	Key, Who, Text string
 	Agent          bool
 	At             time.Time
-}
-
-// related is a card the drawer's card relates to, Why, in its live state.
-type related struct {
-	Why  string
-	Card card
 }
 
 // cardDrawer answers GET /cards/{id}/drawer?tab=overview|activity|files|chat|receipt
@@ -3705,82 +3486,11 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 	}
 	switch tab {
 	case "overview":
-		d.Headline, d.Provenance, d.Body = objectiveParts(bt.Objective)
-		if bt.Track == policy.TrackPlan {
-			if _, p, _, err := c.planTable(ctx, bt.ID, 0); err != nil {
-				problem("plan", "Open the card again, or read the plan on its issue.", err)
-			} else {
-				d.PlanSummary, d.PlanRows, d.TakeOffMain = p.Summary, factoryd.PlanRows(p), p.TakeOffLines()
-				if p.Round > 1 || len(p.Outline) > 0 {
-					if cards, err := c.cfg.Tasks.PlanCards(ctx, bt.ID); err != nil {
-						problem("plan's cards", "Reload the board.", err)
-					} else {
-						d.PlanRounds = slices.DeleteFunc(factoryd.RoundItems(p, cards), func(i factoryd.RoundItem) bool { return i.Still })
-						d.PlanStill = p.Outline
-					}
-				}
-			}
+		steps, err := c.readTimeline(ctx, bt.ID)
+		if err != nil {
+			log.Printf("console: the timeline of %s: %v", bt.ID, err)
 		}
-		for _, a := range v.pending {
-			if a.TaskID == bt.ID {
-				m := c.approvalCard(ctx, a, button(r), v.byID, v.csrf, v.approves(a.Project), false)
-				m.Filter, m.IDSuffix = k.Filter, "-d"
-				m.buildDecide()
-				m.Writer = true // the drawer's route already asked for a writer
-				switch a.Kind {
-				case factoryd.ApprovalMerge:
-					d.Merge = &m
-				case factoryd.ApprovalPlan:
-					m.scrubLayers(v.policy.Document.LinkHosts)
-					m.Slot = c.slotInView(ctx, v, r, bt, k)
-					// an escalation from before this revision's request (a cap a
-					// writer granted) no longer holds
-					if bt.EscalatedAt.After(a.CreatedAt) {
-						m.Escalation = cardReason(bt.Escalation)
-					}
-					d.PlanApproval = &m
-				default:
-					d.Approval = &m
-				}
-			}
-		}
-		// the card's ask: its case at the human answers from the case's own
-		// face, the one its small card shows, where no request of the card
-		// carries the ask; a card asks only by a case
-		if v.escalated(bt.Task) && bt.Escalation != "" || d.Merge == nil && d.PlanApproval == nil && d.Approval == nil {
-			cs, err := c.caseSetOf(ctx, bt.Repository)
-			if err != nil {
-				problem("cases", "Reload the board.", err)
-			}
-			if err == nil && slices.ContainsFunc(cs.byCard[bt.ID], func(o factoryd.Case) bool {
-				return !factoryd.Final(bt.Status) || factoryd.PlanWaitCase(o, bt.Task)
-			}) {
-				n := c.caseNeed(ctx, v, button(r), bt, k, cs, casesInView(r)[bt.ID])
-				n.Suffix = "-d"
-				d.Need = &n
-			}
-		}
-		d.Runs = c.lifeOf(ctx, bt.Task)
-		d.Life = lifeLine(d.Runs, bt.SpentEUR)
-		d.Thread = c.cardThread(ctx, bt.Task, current(r).user)
-		if v.escalated(bt.Task) && c.cfg.Chat != nil {
-			// the card door: its own thread, unbound for the first
-			// member to start, bound for every member to open
-			d.Door = true
-		}
-		var err error
-		if bt.Source == factoryd.SourceRoutine && c.cfg.Routines != nil {
-			if d.RoutineLine, err = c.routineLineOf(ctx, bt.ID); err != nil {
-				problem("routine", "Reload the board.", err)
-			}
-			// a human card's body ends in the line factoryd filed it with, which the routine line says
-			if i := strings.LastIndex(d.Body, "\n"); d.RoutineLine != nil && strings.HasPrefix(d.Body[i+1:], factoryd.RoutineProvenance) {
-				d.Body = strings.TrimSpace(d.Body[:max(i, 0)])
-			}
-		}
-		if d.Related, err = c.relatedCards(ctx, bt, k); err != nil {
-			problem("related cards", "Reload the board.", err)
-		}
+		d.Opened = c.opened(ctx, r, v, bt, k, steps, problem)
 	case "activity":
 		steps, err := c.readTimeline(ctx, bt.ID)
 		if err != nil {
@@ -3858,68 +3568,6 @@ func (c *Console) sessionChat(r *http.Request, k factoryd.Task) (*sessionRef, []
 	}
 	slices.SortStableFunc(out, func(a, b said) int { return a.At.Compare(b.At) })
 	return &s, out, err
-}
-
-// objectiveParts is an objective as the drawer shows it: its first line
-// the headline, a planned card's "Card k of plan #n ..." line its
-// provenance, the rest its body.
-func objectiveParts(objective string) (headline, provenance, body string) {
-	headline, body, _ = strings.Cut(strings.TrimSpace(objective), "\n")
-	body = strings.TrimSpace(body)
-	if line, rest, _ := strings.Cut(body, "\n"); strings.HasPrefix(line, "Card ") && strings.Contains(line, " of plan #") {
-		provenance, body = strings.TrimSpace(line), strings.TrimSpace(rest)
-	}
-	return strings.TrimSpace(headline), provenance, body
-}
-
-// relatedCards are the cards t relates to, each in its live state: those
-// it waits on that are not done, the plan it is part of, and an accepted
-// plan's cards (k's Plan).
-func (c *Console) relatedCards(ctx context.Context, bt factoryd.BoardTask, k card) ([]related, error) {
-	t := bt.Task
-	var ids, whys []string
-	deps, err := c.cfg.Tasks.Dependencies(ctx, t.ID)
-	if err != nil {
-		return nil, err
-	}
-	for _, dep := range deps {
-		if dep.Status != "done" {
-			ids, whys = append(ids, dep.TaskID), append(whys, "blocked by")
-		}
-	}
-	if t.Source == factoryd.SourcePlan && t.Parent != "" {
-		ids, whys = append(ids, t.Parent), append(whys, "part of plan")
-	}
-	var out []related
-	if bt.RollID != "" {
-		if roll, ok, err := c.cfg.Tasks.Task(ctx, bt.RollID); err != nil {
-			return nil, err
-		} else if ok {
-			out = append(out, related{"blocked by", c.card(roll)})
-		}
-	}
-	if t.Source == factoryd.SourceRoll {
-		carried, err := c.cfg.Tasks.RollCarries(ctx, t.ID)
-		if err != nil {
-			return nil, err
-		}
-		for _, ct := range carried {
-			out = append(out, related{"carries", c.card(ct)})
-		}
-	}
-	for i, id := range ids {
-		rt, ok, err := c.cfg.Tasks.Task(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			out = append(out, related{whys[i], c.card(rt)})
-		}
-	}
-	for _, child := range k.Plan {
-		out = append(out, related{"child", child})
-	}
-	return out, nil
 }
 
 // prFile is a changed file of a pull request, as Forgejo lists it.

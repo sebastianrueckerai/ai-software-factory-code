@@ -1243,6 +1243,8 @@ type rig struct {
 	caseSteps    map[int64][]factoryd.CaseStep
 	// caseAsks are the newest ask of each case by id
 	caseAsks map[int64]factoryd.CaseAsk
+	// briefs are the texts each card's sessions got, by task id
+	briefs map[string][]factoryd.SessionBrief
 	// web is the chat's fake web door; the gateway is the lab's scripted
 	// model, nil in the tests
 	web     *fakeWeb
@@ -1367,7 +1369,11 @@ func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, e
 	kind, facts := factoryd.CaseOther, map[string]any(nil)
 	switch {
 	case k.Kind == "human":
+		// the question rides on its case, as the ask that opens it stores it
 		kind = factoryd.CaseHumanCard
+		if q := bt.Question; q != nil {
+			facts = factoryd.HumanAsk{Q: *q, Asker: "agent", Via: factoryd.ViaChat}.Event(k).Detail
+		}
 	case k.Track == policy.TrackPlan:
 		kind = factoryd.CasePlanQuestion
 	case strings.HasPrefix(bt.Escalation, factoryd.AgentAsks):
@@ -1511,6 +1517,9 @@ func newRig(t *testing.T) *rig {
 		},
 		BoardDigest: func(_ context.Context, repository string) (factoryd.BoardDigest, error) {
 			return r.boardDigests[repository], nil
+		},
+		SessionBriefs: func(_ context.Context, taskID string) ([]factoryd.SessionBrief, error) {
+			return r.briefs[taskID], nil
 		},
 		OpenCasesOf: func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 			base, err := r.ownCasesOf(ctx, taskID)
@@ -2145,7 +2154,7 @@ func TestBoardRendersColumnsFromTheStore(t *testing.T) {
 		"t-r":   {"€1.23 of €5.00", `href="https://git.example/sf/code/pulls/12"`},
 		"t-e":   {`action="/tasks/t-e/resolve"`},
 		"t-h":   {`action="/tasks/t-h/answer"`},
-		"t-res": {"8.9900 EUR per month"},
+		"t-res": {"8.9900 EUR a month"},
 	} {
 		drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+"/drawer?tab=overview", nil), ck).Body.String()
 		for _, want := range wants {
@@ -2834,55 +2843,47 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	}
 	res, merge := requestOf(t, r, ck, "t-res", 3), requestOf(t, r, ck, "t-m", 4)
 	for _, want := range []string{
-		// the resource request: type, purpose, lease, monthly cost, project, the task
-		`<a href="#card=t-res" class="open">Resource request</a>`,
-		`<p class="need-line"><b>cx33</b> · load test</p>`,
-		`<p class="need-line">5 h · 8.9900 EUR per month, this lease 0.0720 EUR · sf/code</p>`,
-		"a lease of 300 minutes exceeds the envelope&#39;s 4 h", `href="https://git.example/sf/code/issues/21"`,
-		`href="/tasks/t-res/timeline"`, `action="/approvals/3/approve"`, `<div class="info"><p>Approves the one request of this task; a wider envelope for the project changes its file in Git.</p>`,
-		// the resource face's five-part ask: the ask with its numbers, the
-		// why, each offer's effect one line
-		`<p class="ask">Commission a cx33 for load test? 8.9900 EUR per month, this lease 0.0720 EUR.</p>`,
-		`<p class="why">a lease of 300 minutes exceeds the envelope&#39;s 4 h</p>`,
-		`<span class="effect">commissions the server for this lease; the project&#39;s envelope is its file&#39;s</span>`,
-		`<span class="effect">refuses the request; the agent is told your reason</span>`,
+		// the resource request's ask: the server and its price, why the
+		// card needs it, each answer's effect one line; its facts in the
+		// full brief
+		`<p class="o-question">Rent a cx33 server for 5 hours at about 0.07 EUR?</p>`,
+		`<p class="o-askwhy">The card needs it for the load test.</p>`,
+		`<span class="effect">Rents a cx33 server for 5 hours at about 0.07 EUR.</span>`,
+		`<span class="effect">The card goes on without the resource.</span>`,
+		`action="/approvals/3/approve"`,
+		`<h4>The server</h4><p>cx33, for load test. 5 h, 8.9900 EUR a month, 0.0720 EUR for this lease.</p>`,
+		"a lease of 300 minutes exceeds the envelope&#39;s 4 h",
 	} {
 		if !strings.Contains(res, want) {
-			t.Errorf("the resource request lacks %q", want)
+			t.Errorf("the resource request lacks %q:\n%s", want, res)
 		}
 	}
 	for _, want := range []string{
-		// the merge request: the PR, the chips and the one decide block
-		`<a href="#card=t-m" class="open">Merge</a> <a href="https://git.example/sf/code/pulls/9" target="_blank" rel="noopener">PR #9</a>`,
-		`<span class="chip risk">high risk</span>`, `<span class="chip migration">migration</span>`,
-		`<p class="ask">Merge PR #9 of t-m? high risk. It carries a migration.</p>`,
-		`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`,
-		`<div class="info"><p>Model review: adds the column safely</p>`,
-		`<p class="recommendation">Recommendation (the model review): adds the column safely</p>`,
-		`<span class="by">Recommended by the model review</span>`,
-		`action="/approvals/4/approve"`, `<button type="submit" name="action" value="approve"`, `<button type="submit" name="action" value="deny"`,
-		`sends the pull request back to its agent with your note`,
-		`name="csrf" value="` + s.csrf + `"`, `<label for="note-t-m-d">Note, posted on the issue as you; the actions marked "stays on the step" keep it there</label>`, `<textarea id="note-t-m-d" name="note"`,
+		// the merge request's ask, the review's pick and the answers; the
+		// facts, the review, the recommendation and why a human in the
+		// full brief
+		`<p class="o-question">Merge this card&#39;s pull request?</p>`,
+		`<p class="o-askwhy">The change is high risk, and the factory&#39;s rules let only a human merge it.</p>`,
+		`<p class="o-by">suggested by the model review: <span class="quote">adds the column safely</span></p>`,
+		`<input type="hidden" name="action" value="approve">`, `<input type="hidden" name="action" value="request_changes">`,
+		`<span class="effect">Returns the pull request to its agent with your note.</span>`,
+		`name="csrf" value="` + s.csrf + `"`, `action="/approvals/4/approve"`,
+		`<dt>Migration</dt><dd>yes, human review required: <code>internal/factoryd/migrations/0018_x.sql</code></dd>`,
+		`<dt>Model review</dt><dd>approve: adds the column safely`,
+		`<dt>Agent's recommendation</dt><dd class="reason">Adds the column; merge it.</dd>`,
+		`<dt>Why a human</dt><dd>the project&#39;s merge rule is human; risk class high is requires_approval</dd>`,
+		`<p class="failed-test">Red in the log: TestA (p/q): failed (job test)</p>`,
 	} {
 		if !strings.Contains(merge, want) {
-			t.Errorf("the merge request lacks %q", want)
+			t.Errorf("the merge request lacks %q:\n%s", want, merge)
 		}
 	}
-	// each asking face holds exactly one decide: one send, one fund
-	// control, one note box (the one-face contract)
-	for id, kard := range map[string]string{"t-res": res, "t-m": merge} {
-		for what, want := range map[string]int{`<form`: 1, `class="decide resolve"`: 1, `name="fund_eur"`: 1, `<textarea`: 1} {
-			if got := strings.Count(kard, what); got != want {
-				t.Errorf("the %s card's decide carries %s %d times, want %d:\n%s", id, what, got, want, kard)
-			}
-		}
-	}
-	// the drawer carries the merge request's five-part ask: why a
-	// human, the model review's verdict and summary, the recommendation
-	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="why">risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<dt>Agent's recommendation</dt><dd class="reason">Adds the column; merge it.</dd>`, `<p class="failed-test">Red in the log: TestA (p/q): failed (job test)</p>`} {
-		if !strings.Contains(drawer, want) {
-			t.Errorf("the merge drawer lacks %q", want)
+	// each answer is a send of its own, its note its own field, no fund
+	// beside it
+	for id, want := range map[string][2]int{"t-res": {2, 1}, "t-m": {3, 2}} {
+		ask := askBlockOf(t, drawer(t, r, ck, id, "overview"))
+		if forms, notes := strings.Count(ask, "<form "), strings.Count(ask, "<textarea"); forms != want[0] || notes != want[1] || strings.Contains(ask, "fund") {
+			t.Errorf("the %s ask holds %d forms and %d notes, want %d and %d, and no fund:\n%s", id, forms, notes, want[0], want[1], ask)
 		}
 	}
 	for _, wall := range []string{"<dl class=\"facts\">", "Risk class", "Earlier review", "Security audit", "Why a human", "Agent's recommendation", "Red in the log"} {
@@ -2993,26 +2994,24 @@ func withRequestCards(r *rig) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 9}})
 }
 
-// requestOf is the approval article of request id on card task's opened
-// card.
+// requestOf is the ask and the full brief of card task's opened card,
+// whose answers decide request id and whose brief holds its evidence.
 func requestOf(t *testing.T, r *rig, ck *http.Cookie, task string, id int64) string {
 	t.Helper()
 	body := drawer(t, r, ck, task, "overview")
-	at := strings.Index(body, fmt.Sprintf(`action="/approvals/%d/`, id))
-	if at < 0 {
-		t.Fatalf("the opened card of %s shows no form of request %d:\n%s", task, id, body)
+	if !strings.Contains(body, fmt.Sprintf(`action="/approvals/%d/`, id)) {
+		t.Fatalf("the opened card of %s shows no answer of request %d:\n%s", task, id, body)
 	}
-	start := strings.LastIndex(body[:at], `<article class="card approval`)
-	return body[start : start+strings.Index(body[start:], "</article>")]
+	return approvalFaceOf(t, body, task)
 }
 
 // A factory pull request card's approval offers what fits its head
 // (roadmap 264): on red checks a re-run and a close, no Approve, and an
 // approve refuses naming them; on green Approve and a close, and a re-run
-// refuses. The close is the deny box without a choice of action: no agent
-// works on the pull request, so the member's words go to its workflow,
-// which closes the card and the pull request with them, whatever branch
-// the pull request has; no review is posted.
+// refuses. The close is the one deny: no agent works on the pull request,
+// so the human's words go to its workflow, which closes the card and the
+// pull request with them, whatever branch the pull request has; no review
+// is posted.
 func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
@@ -3030,14 +3029,13 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 
 	factory(true)
 	got := item()
-	for _, want := range []string{`action="/approvals/4/rerun"`, `aria-label="Re-run the checks of PR #9 of t-m">Re-run the checks</button>`,
-		`aria-controls="deny-4-d">Close</button>`, `<label for="note-4-d">Why it closes, posted on its issue and pull request</label>`,
-		`aria-label="Close PR #9 of t-m and its card">Close</button>`} {
+	for _, want := range []string{`action="/approvals/4/rerun"`, `<button type="submit" class="pick">Run the failed checks again</button>`,
+		`<input type="hidden" name="action" value="reject">`, `data-press="deny_merge/reject">Reject and close it</button>`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the red factory request lacks %q:\n%s", want, got)
 		}
 	}
-	for _, not := range []string{`action="/approvals/4/approve"`, `name="action"`, ">Deny</button>", "Only the project&#39;s approvers may approve."} {
+	for _, not := range []string{`name="action" value="approve"`, "Send it back", "Only the project&#39;s approvers may answer this."} {
 		if strings.Contains(got, not) {
 			t.Errorf("the red factory request shows %q:\n%s", not, got)
 		}
@@ -3053,21 +3051,14 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 
 	factory(false)
 	got = item()
-	for _, want := range []string{`action="/approvals/4/approve"`, `<button type="submit" name="action" value="approve"`,
-		`<button type="submit" name="action" value="deny" class="secondary" aria-label="Close PR #9 of t-m and its card">Close</button>`,
-		`closes PR #9 and its card with your note: no agent works on a pull request factoryd opened`} {
+	for _, want := range []string{`<input type="hidden" name="action" value="approve">` + "\n" + `<button type="submit" class="pick">Merge it</button>`,
+		`data-press="deny_merge/reject">Reject and close it</button> <span class="effect">Closes the pull request. The card ends.</span>`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the green factory request lacks %q:\n%s", want, got)
 		}
 	}
-	// the one decide: one send, one fund control, one note box
-	for what, want := range map[string]int{`class="decide resolve"`: 1, `name="fund_eur"`: 1, `<textarea`: 1} {
-		if n := strings.Count(got, what); n != want {
-			t.Errorf("the green factory request carries %s %d times, want %d:\n%s", what, n, want, got)
-		}
-	}
-	if strings.Contains(got, `action="/approvals/4/rerun"`) {
-		t.Errorf("the green factory request offers a re-run:\n%s", got)
+	if strings.Contains(got, `action="/approvals/4/rerun"`) || strings.Contains(got, "Send it back") || strings.Contains(got, "fund") {
+		t.Errorf("the green factory request offers a re-run, a return or a fund:\n%s", got)
 	}
 	r.fg.calls = nil
 	rec := r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck)
@@ -3081,23 +3072,18 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 		len(r.fg.calls) != 0 {
 		t.Fatalf("re-run of an agent's pull request = %d %q, calls %q", rec.Code, rec.Body, r.fg.calls)
 	}
-	// the one send: the answer, the fund and the note ride one POST to the
-	// approve endpoint, and land together as one row on the card
+	// Merge it is one press to the approve endpoint, which lands as one
+	// row on the card
+	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","factory":true}`)
+	merge := answerForm(t, drawer(t, r, ck, "t-m", "overview"), factoryd.ActApproveMerge)
 	before := r.events.count()
-	note := "the factory's own pull request, closed by its human"
-	if rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
-		"action": {"approve"}, "fund_eur": {"1.50"}, "note": {note}}), ck); rec.Code != http.StatusSeeOther {
-		t.Fatalf("the one send = %d: %s", rec.Code, rec.Body)
+	if rec := r.do(post(merge.Action, merge.Values), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the merge = %d: %s", rec.Code, rec.Body)
 	}
 	if a := r.approvals.get(4); a.Status != "approved" || a.DecidedBy != "sebastian" {
 		t.Errorf("the request = %q by %q, want approved by sebastian", a.Status, a.DecidedBy)
 	}
-	if k, ok, _ := r.tasks.Task(t.Context(), "t-m"); !ok || k.BudgetEUR != 1.5 {
-		t.Errorf("t-m's budget = %v (ok %v), want the 1.50 the one send carried", k.BudgetEUR, ok)
-	}
-	checkRows(t, r.events, before,
-		wantRow{kind: factoryd.EventMergeApproved, repo: "sf/code", taskID: "t-m",
-			detail: map[string]any{"pr": int64(9), "approval": int64(4), "fund_eur": 1.5, "reason": note}})
+	checkRows(t, r.events, before, wantRow{kind: factoryd.EventMergeApproved, repo: "sf/code", taskID: "t-m", detail: map[string]any{"pr": int64(9)}})
 }
 
 // An agent card's merge request on red checks (#838: the cap reached, the sync
@@ -3106,25 +3092,28 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 func TestAgentApprovalOnRedChecksOffersReturnAndClose(t *testing.T) {
 	r := newRig(t)
 	withRequestCards(r)
-	ck, s := r.loggedIn(t)
+	ck, _ := r.loggedIn(t)
 	r.approvals.mu.Lock()
 	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
 	r.approvals.mu.Unlock()
 
+	page := drawer(t, r, ck, "t-m", "overview")
 	got := requestOf(t, r, ck, "t-m", 4)
-	for _, want := range []string{`action="/approvals/4/deny"`, `name="action" value="request_changes" checked`, "return it to the agent",
-		`name="action" value="reject"`, "close it (closes the pull request)", `aria-label="Return or close PR #9 of t-m">Send</button>`} {
+	for _, want := range []string{`<input type="hidden" name="action" value="request_changes">`, `data-press="deny_merge">Send it back</button>`,
+		`<input type="hidden" name="action" value="reject">`, `data-press="deny_merge/reject">Reject and close it</button>`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the red agent request lacks %q:\n%s", want, got)
 		}
 	}
-	for _, not := range []string{`action="/approvals/4/approve"`, `action="/approvals/4/rerun"`, ">Deny</button>", `aria-controls="deny-4-d"`, `id="deny-4-d" hidden`} {
+	for _, not := range []string{`name="action" value="approve"`, `action="/approvals/4/rerun"`, "Run the failed checks again"} {
 		if strings.Contains(got, not) {
 			t.Errorf("the red agent request shows %q:\n%s", not, got)
 		}
 	}
 	r.fg.calls = nil
-	rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"make the stub match the interface"}}), ck)
+	back := answerForm(t, page, factoryd.ActDenyMerge)
+	back.Values.Set("note", "make the stub match the interface")
+	rec := r.do(post(back.Action, back.Values), ck)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("return = %d: %s", rec.Code, rec.Body)
 	}
@@ -3171,19 +3160,19 @@ func TestHealedRedChecksCardOffersApprove(t *testing.T) {
 	}
 
 	r.fg.statuses = map[string]string{"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`}
-	if got := item(); strings.Contains(got, `action="/approvals/4/approve"`) || strings.Contains(got, "checks healed after a re-run") {
+	if got := item(); strings.Contains(got, `name="action" value="approve"`) || strings.Contains(got, "healed") {
 		t.Errorf("the still-red card offers an approve or says the checks healed:\n%s", got)
 	}
 
 	r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
 	r.fg.calls = nil
 	got := item()
-	for _, want := range []string{`action="/approvals/4/approve"`, "checks healed after a re-run"} {
+	for _, want := range []string{`<input type="hidden" name="action" value="approve">`, "<li>The checks healed after a re-run.</li>"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the healed card lacks %q:\n%s", want, got)
 		}
 	}
-	for _, not := range []string{`action="/approvals/4/rerun"`, `aria-controls="deny-4-d">Return or close</button>`} {
+	for _, not := range []string{`action="/approvals/4/rerun"`, "are red"} {
 		if strings.Contains(got, not) {
 			t.Errorf("the healed card shows %q:\n%s", not, got)
 		}
@@ -3210,7 +3199,7 @@ func TestRedChecksDoNotHealOnAMovedBranchHead(t *testing.T) {
 		"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`,
 		"def456": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
 	body := drawer(t, r, ck, "t-m", "overview")
-	if strings.Contains(body, `action="/approvals/4/approve"`) || strings.Contains(body, "branch moved on") {
+	if strings.Contains(body, `name="action" value="approve"`) || strings.Contains(body, "healed") {
 		t.Error("a moved green branch head offers an approve on the red recorded head")
 	}
 
@@ -3226,10 +3215,10 @@ func TestRedChecksDoNotHealOnAMovedBranchHead(t *testing.T) {
 		"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`,
 		"def456": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`}
 	body = drawer(t, r2, ck2, "t-m", "overview")
-	if strings.Contains(body, `action="/approvals/4/approve"`) || strings.Contains(body, "checks green at def456") {
-		t.Errorf("the still-red moved head offers an approve or a healed chip")
+	if strings.Contains(body, `name="action" value="approve"`) || strings.Contains(body, "healed") {
+		t.Errorf("the still-red moved head offers an approve or a healed line")
 	}
-	if !strings.Contains(body, `action="/approvals/4/deny"`) || strings.Contains(body, `id="deny-4-d" hidden`) {
+	if !strings.Contains(body, `name="action" value="request_changes"`) || !strings.Contains(body, `name="action" value="reject"`) {
 		t.Errorf("the still-red moved head lost its return and close")
 	}
 }
@@ -3249,7 +3238,7 @@ func TestUnreadHealedHeadKeepsTheRedFaceAndSaysSo(t *testing.T) {
 	if !strings.Contains(body, "The head's current checks could not be read") {
 		t.Errorf("the card does not say the head's checks were unread:\n%s", body)
 	}
-	if strings.Contains(body, "checks healed after a re-run") || strings.Contains(body, `action="/approvals/4/approve"`) {
+	if strings.Contains(body, "healed") || strings.Contains(body, `name="action" value="approve"`) {
 		t.Errorf("the unread card offers an approve or says the checks healed:\n%s", body)
 	}
 }
@@ -3446,7 +3435,7 @@ func TestSpendActionsNeedAPolicyApprover(t *testing.T) {
 	// alice writes the code project, no other: she asks for it
 	opened := drawer(t, r, ck, "t-res", "overview")
 	if strings.Contains(opened, "/approve\"") || !strings.Contains(opened, `action="/approvals/3/deny"`) ||
-		!strings.Contains(opened, "Only the project's approvers may approve.") {
+		!strings.Contains(opened, `<p class="o-who">Only the project&#39;s approvers may approve.</p>`) {
 		t.Fatalf("the opened card for a non-approver: approve buttons %v, deny %v", strings.Contains(opened, "/approve\""),
 			strings.Contains(opened, "/deny\""))
 	}
@@ -3517,23 +3506,16 @@ func TestStoreErrorRefusalNamesTheErrorAndMasksTokens(t *testing.T) {
 	}
 }
 
-// Each repeated button names its row for screen readers.
+// Each repeated button names its row for screen readers: the resources
+// page's rows. An opened card's answers are its one card's, under its
+// title.
 func TestRepeatedButtonsNameTheirRow(t *testing.T) {
 	r := newRig(t)
 	withRequestCards(r)
 	ck, _ := r.loggedIn(t)
 	r.resources.rows = []cloudres.Resource{{ID: 11, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live",
 		Size: "cx33", LeaseExpires: time.Now().Add(time.Hour)}}
-	board := drawer(t, r, ck, "t-res", "overview") + drawer(t, r, ck, "t-m", "overview")
 	page := r.do(httptest.NewRequest(http.MethodGet, "/resources", nil), ck).Body.String()
-	for _, want := range []string{
-		`aria-label="Approve resource request 3 of t-res"`, `aria-label="Deny resource request 3 of t-res"`,
-		`aria-label="Approve merge PR #9 of t-m"`, `aria-label="Deny merge PR #9 of t-m"`,
-	} {
-		if !strings.Contains(board, want) {
-			t.Errorf("the opened cards lack %s", want)
-		}
-	}
 	for _, want := range []string{`aria-label="Promote cx33 server 11 of t-res"`, `aria-label="Release cx33 server 11 of t-res"`} {
 		if !strings.Contains(page, want) {
 			t.Errorf("/resources lacks %s", want)
@@ -3588,7 +3570,8 @@ func TestResponsesCarryHSTS(t *testing.T) {
 }
 
 // The small card's one time is the stage's age while the task is in a
-// stage and a finished task's total; the drawer names both.
+// stage and a finished task's total; the opened card's head names the
+// stage's age, and a quiet card's mark how long it has been on the card.
 func TestBoardCardShowsTotalAndCurrentGate(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -3608,8 +3591,9 @@ func TestBoardCardShowsTotalAndCurrentGate(t *testing.T) {
 			t.Errorf("the face of %s lacks %q:\n%s", id, want, face)
 		}
 	}
-	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c/drawer", nil), ck).Body.String(); !strings.Contains(drawer, "<dd>verifying, 25 min, 2 h 5 min in all</dd>") {
-		t.Errorf("the drawer's Status lacks the stage's time and the total:\n%s", drawer)
+	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c/drawer", nil), ck).Body.String(); !strings.Contains(drawer,
+		`verifying</span></span> <span class="it">25 min</span> <span class="it flag">stale, no event yet, 2 h 5 min on the card</span>`) {
+		t.Errorf("the opened card's head lacks the stage's time and the time on the card:\n%s", drawer)
 	}
 	if strings.Count(body, `class="gate"`) != 0 {
 		t.Error("a card's face shows its gate")
@@ -3643,7 +3627,7 @@ func TestBoardCardShowsSlotWait(t *testing.T) {
 	}
 }
 
-// A card waiting in its project's merge queue reads how many entries are
+// A card waiting in its project's merge queue reads how many cards are
 // ahead of it and since when it waits; a card held out of the queue
 // (QueueAhead -1) waits after the open plan.
 func TestBoardCardShowsMergeQueuePlace(t *testing.T) {
@@ -3655,8 +3639,8 @@ func TestBoardCardShowsMergeQueuePlace(t *testing.T) {
 		ahead int
 		want  string
 	}{
-		{2, "<dd>verifying, 6 min, merge queue, 2 ahead, 6 min in all</dd>"},
-		{-1, "<dd>verifying, 6 min, merge queue, after the open plan, 6 min in all</dd>"},
+		{2, `verifying</span></span> <span class="it">6 min</span> <span class="it waits">waits to merge behind 2 cards</span>`},
+		{-1, `verifying</span></span> <span class="it">6 min</span> <span class="it waits">waits to merge after the open plan</span>`},
 	} {
 		r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "in-review", Objective: "queued work",
 			Repository: "linkshort/linkshort", CreatedAt: since, Gate: factoryd.GateMergeQueue, GateSince: &since}, QueueAhead: c.ahead}}
@@ -3665,7 +3649,7 @@ func TestBoardCardShowsMergeQueuePlace(t *testing.T) {
 			t.Fatalf("%d ahead: the face names the merge queue:\n%s", c.ahead, faceOf(t, body, "t-q"))
 		}
 		if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-q/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, c.want) {
-			t.Fatalf("%d ahead: the drawer's Status lacks %s:\n%s", c.ahead, c.want, drawer)
+			t.Fatalf("%d ahead: the opened card's head lacks %s:\n%s", c.ahead, c.want, drawer)
 		}
 	}
 }

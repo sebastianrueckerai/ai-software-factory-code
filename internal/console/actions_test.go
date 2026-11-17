@@ -55,33 +55,24 @@ func TestStallCardAnswers(t *testing.T) {
 		return r, ev, before, rec.Code, rec.Body.String()
 	}
 
-	// the drawer offers the three as buttons, the re-run kept off the issue
+	// the opened card offers the three by the register's labels, each
+	// posting its value: the re-run keeps the card where it stands, check
+	// again and dismiss take it off the board (C31)
 	r, _ := newRigWithEvents(t)
 	r.tasks.tasks = []factoryd.BoardTask{stallCard()}
 	ck, _ := r.loggedIn(t)
-	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-stall/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{
-		`<input type="hidden" name="value" value="rerun_again">` + "\n" + `<button type="submit" aria-label="Re-run again, kept off the issue: the card stays waiting">Re-run again</button>`,
-		`<input type="hidden" name="value" value="check_again">` + "\n" + `<button type="submit" aria-label="Check again, posted on the issue as you">Check again</button>`,
-		`<input type="hidden" name="value" value="dismiss">` + "\n" + `<button type="submit" aria-label="Dismiss, posted on the issue as you">Dismiss</button>`,
+	opened := drawer(t, r, ck, "t-stall", "overview")
+	for _, want := range []struct{ value, label, to string }{
+		{factoryd.AnswerRerunAgain, "Run the chain again", ""}, {factoryd.AnswerCheckAgain, "Look again", "off"}, {factoryd.AnswerDismiss, "End the card", "off"},
 	} {
-		if !strings.Contains(drawer, want) {
-			t.Fatalf("the drawer lacks %q:\n%s", want, drawer)
+		if got := answerForm(t, opened, "choice:"+want.value); got.Action != "/tasks/t-stall/answer" || got.Values.Get("value") != want.value ||
+			got.Label != want.label || got.To != want.to {
+			t.Errorf("the %s answer is %+v, want %q posting its value to the answer, moving to %q", want.value, got, want.label, want.to)
 		}
 	}
 	// only its choices: no close of its own, no free answer
-	if strings.Contains(drawer, `action="/tasks/t-stall/close"`) || strings.Contains(drawer, `name="answer"`) {
-		t.Errorf("the drawer offers a close of its own or a free answer; want the three choices alone:\n%s", drawer)
-	}
-	// a press moves the card where its answer takes it (C31): the re-run
-	// keeps it waiting, check again and dismiss close it, and a closed
-	// human card shows in no column
-	for value, want := range map[string]string{factoryd.AnswerRerunAgain: `class="inline">`,
-		factoryd.AnswerCheckAgain: `class="inline" data-to="off">`, factoryd.AnswerDismiss: `class="inline" data-to="off">`} {
-		at := strings.Index(drawer, `name="value" value="`+value+`"`)
-		if form := drawer[strings.LastIndex(drawer[:at], "<form"):at]; !strings.Contains(form, `action="/tasks/t-stall/answer" hx-post="/tasks/t-stall/answer" `+want) {
-			t.Errorf("the %s form does not end its tag with %s:\n%s", value, want, form)
-		}
+	if strings.Contains(opened, `data-answer="close"`) || strings.Contains(askBlockOf(t, opened), `name="answer"`) {
+		t.Errorf("the opened card offers a close of its own or a free answer; want the three choices alone:\n%s", opened)
 	}
 
 	r, ev, before, code, body := click(t, factoryd.AnswerRerunAgain)
@@ -225,38 +216,27 @@ func TestRollFailedCardAnswers(t *testing.T) {
 		return r, ev, before, rec.Code, rec.Body.String()
 	}
 
-	// the opened card offers the three as buttons; a press of park keeps
-	// the card where it is, retry and close take it off
+	// the opened card offers the three by the register's labels; a press of
+	// park keeps the card where it is, retry and close take it off, and the
+	// close opens a note that goes with it
 	r, _ := newRigWithEvents(t)
 	r.tasks.tasks = []factoryd.BoardTask{rollFailedCard()}
 	ck, _ := r.loggedIn(t)
-	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-roll/drawer?tab=overview", nil), ck).Body.String()
-	for name, page := range map[string]string{"drawer": drawer} {
-		// only its choices: the question's Close alone, no free answer
-		if strings.Contains(page, `action="/tasks/t-roll/close"`) || strings.Contains(page, `name="answer"`) {
-			t.Errorf("the %s has a close form of its own or a free answer form; want the choices alone:\n%s", name, page)
+	opened := drawer(t, r, ck, "t-roll", "overview")
+	for _, want := range []struct{ value, label, to string }{
+		{factoryd.AnswerRetryRoll, "Try the roll again", "off"}, {factoryd.AnswerPark, "Not now", ""}, {factoryd.AnswerClose, "End the card", "off"},
+	} {
+		if got := answerForm(t, opened, "choice:"+want.value); got.Action != "/tasks/t-roll/answer" || got.Values.Get("value") != want.value ||
+			got.Label != want.label || got.To != want.to {
+			t.Errorf("the %s answer is %+v, want %q posting its value to the answer, moving to %q", want.value, got, want.label, want.to)
 		}
-		for value, want := range map[string]string{
-			factoryd.AnswerRetryRoll: `class="inline" data-to="off">` + "\n" + `<input type="hidden" name="csrf"`,
-			factoryd.AnswerPark:      `class="inline">` + "\n" + `<input type="hidden" name="csrf"`,
-		} {
-			at := strings.Index(page, `name="value" value="`+value+`"`)
-			if at < 0 {
-				t.Fatalf("the %s lacks the %s button:\n%s", name, value, page)
-			}
-			if form := page[strings.LastIndex(page[:at], "<form"):at]; !strings.Contains(form, `action="/tasks/t-roll/answer" hx-post="/tasks/t-roll/answer" `+want) {
-				t.Errorf("the %s's %s form does not end its tag with %s:\n%s", name, value, want, form)
-			}
-		}
-		for _, want := range []string{
-			`<button type="submit" aria-label="Retry the roll, resets the failed rolls and closes the card">Retry the roll</button>`,
-			`<button type="submit" aria-label="Park, kept off the issue: the card stays waiting">Park</button>`,
-			`<input type="hidden" name="value" value="close">` + "\n" + `<button type="submit" class="deny" aria-label="Close, posted on the issue as you">Close</button>`,
-		} {
-			if !strings.Contains(page, want) {
-				t.Errorf("the %s lacks %q:\n%s", name, want, page)
-			}
-		}
+	}
+	if got := answerForm(t, opened, "choice:"+factoryd.AnswerClose); !got.Values.Has("answer") {
+		t.Errorf("the close opens no note: %+v", got)
+	}
+	// only its choices: no close of its own, no free answer
+	if ask := askBlockOf(t, opened); strings.Contains(opened, `data-answer="close"`) || strings.Count(ask, `name="answer"`) != 1 {
+		t.Errorf("the opened card offers a close of its own or a free answer; want the choices alone:\n%s", ask)
 	}
 
 	act := func(action, note string) factoryd.ActInput {
@@ -482,18 +462,19 @@ func TestExtendRefusesWhatChangesNothing(t *testing.T) {
 	}
 }
 
-// The extend route refuses a non-numeric field with its own line and
+// The card's own extend refuses a non-numeric field with its own line and
 // changes nothing.
 func TestExtendRouteRefusesNonNumeric(t *testing.T) {
 	r := fundRig(t)
+	setStatus(r, "running")
 	ck, s := r.loggedIn(t)
-	rec := r.do(post("/tasks/t-e/extend", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
-		"sessions": {"many"}, "lines": {"500"}, "eur": {"2"}}), ck)
+	rec := r.do(post("/tasks/t-e/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.ActExtend},
+		"extend.sessions": {"many"}, "extend.lines": {"500"}}), ck)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "whole number") {
 		t.Fatalf("extend = %d: %s", rec.Code, rec.Body)
 	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 {
-		t.Errorf("a refused extend raised the budget to %v", task.BudgetEUR)
+	if len(r.acted) != 0 {
+		t.Errorf("a refused extend acted: %+v", r.acted)
 	}
 }
 
@@ -509,7 +490,7 @@ func TestExtendFormShowsWhereTheAskOffersIt(t *testing.T) {
 	seatAsk(r, "t-e", factoryd.CaseGateStop, facts)
 	ck, _ := r.loggedIn(t)
 	body := escalationOf(t, r, ck, "t-e")
-	for _, want := range []string{`action="/tasks/t-e/resolve"`, `name="extend.minutes"`, `name="extend.sessions"`, `name="extend.lines"`, `name="fund_eur"`,
+	for _, want := range []string{`action="/tasks/t-e/resolve"`, `name="extend.minutes"`, `name="extend.sessions"`, `name="extend.lines"`,
 		`name="action" value="` + factoryd.ActReverify + `/overrule"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the card lacks %s", want)
@@ -533,30 +514,34 @@ func TestExtendFormLeadsWithMinutesAtAPlannerTimeStop(t *testing.T) {
 	}
 }
 
-// The extend route reads the minutes field into the card's agent time, as
-// the chat's extend carries it, and bounds it: 20 minutes act as 1200
-// seconds, 601 are refused naming the bound and draw nothing.
+// The card's own extend reads the minutes field into the card's agent
+// time, as the chat's extend carries it, and bounds it: 20 minutes act as
+// 1200 seconds, 601 are refused naming the bound and draw nothing.
 func TestExtendRouteTakesMinutes(t *testing.T) {
 	r := fundRig(t)
+	setStatus(r, "running")
 	ck, s := r.loggedIn(t)
 	form := func(minutes string) url.Values {
-		return url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "sessions": {"0"}, "minutes": {minutes}, "lines": {"0"}, "eur": {"0"}}
+		return url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.ActExtend},
+			"extend.sessions": {"0"}, "extend.minutes": {minutes}, "extend.lines": {"0"}}
 	}
-	if rec := r.do(post("/tasks/t-e/extend", form("20")), ck); rec.Code >= 400 {
+	if rec := r.do(post("/tasks/t-e/resolve", form("20")), ck); rec.Code >= 400 {
 		t.Fatalf("extend = %d: %s", rec.Code, rec.Body)
 	}
 	got, _ := actedOnce(t, r)
 	equal(t, "the posted minutes", got.Res.Args, map[string]any{"sessions": 0, "lines": 0, "agent_time_s": 1200})
 	r = fundRig(t)
+	setStatus(r, "running")
 	ck, s = r.loggedIn(t)
-	rec := r.do(post("/tasks/t-e/extend", form("601")), ck)
+	rec := r.do(post("/tasks/t-e/resolve", form("601")), ck)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "at most 600 minutes") {
 		t.Fatalf("extend of 601 minutes = %d: %s", rec.Code, rec.Body)
 	}
 	if n := len(r.acted); n != 0 {
 		t.Errorf("a refused extend acted %d times", n)
 	}
-	if rec := r.do(post("/tasks/t-e/extend", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "sessions": {"1"}, "lines": {"0"}, "eur": {"0"}}), ck); rec.Code >= 400 {
+	if rec := r.do(post("/tasks/t-e/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.ActExtend},
+		"extend.sessions": {"1"}, "extend.lines": {"0"}}), ck); rec.Code >= 400 {
 		t.Errorf("an extend with no minutes field = %d: %s", rec.Code, rec.Body)
 	}
 }
@@ -605,28 +590,31 @@ func TestExtendRefusesADoneCard(t *testing.T) {
 	}
 }
 
-// A running card's drawer offers the Extend form to an approver, its
-// status left where it is, and offers none to a viewer who is not one.
+// A running card's opened card offers more sessions and money among its
+// other actions to an approver, the card left where it stands, and
+// offers neither to a viewer who is not one.
 func TestExtendFormShowsOnALiveCardToApprovers(t *testing.T) {
 	r := fundRig(t)
 	setStatus(r, "running")
 	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-e/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{`action="/tasks/t-e/extend"`, `name="minutes"`, `name="sessions"`, `name="lines"`, `name="eur"`} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the running card's drawer lacks %s", want)
+	more := otherActionsOf(t, drawer(t, r, ck, "t-e", "overview"))
+	for _, want := range []string{`action="/tasks/t-e/resolve"`, `data-answer="extend"`, `name="extend.minutes"`, `name="extend.sessions"`, `name="extend.lines"`,
+		`data-answer="fund"`, `name="fund.eur"`} {
+		if !strings.Contains(more, want) {
+			t.Errorf("the running card's other actions lack %s:\n%s", want, more)
 		}
 	}
-	form := body[strings.Index(body, `action="/tasks/t-e/extend"`):]
-	if form = form[:strings.Index(form, ">")]; strings.Contains(form, "data-to") {
-		t.Errorf("the extend form of a running card moves it: %s", form)
+	_, extend, _ := strings.Cut(more, `data-answer="extend"`)
+	if extend, _, _ = strings.Cut(extend, ">"); strings.Contains(extend, "data-to") {
+		t.Errorf("the extend of a running card moves it: %s", extend)
 	}
 
 	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "morgan")
 	r.forgetWriters()
 	mk, _ := memberLogin(t, r, "morgan")
-	if body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-e/drawer?tab=overview", nil), mk).Body.String(); strings.Contains(body, `/extend"`) {
-		t.Error("a non-approver's drawer offers the extend form")
+	if more := otherActionsOf(t, r.do(httptest.NewRequest(http.MethodGet, "/cards/t-e/drawer?tab=overview", nil), mk).Body.String()); strings.Contains(more, `data-answer="extend"`) ||
+		strings.Contains(more, `data-answer="fund"`) {
+		t.Errorf("a non-approver's opened card offers more sessions or money:\n%s", more)
 	}
 }
 
@@ -670,7 +658,7 @@ func TestAgentCannotApproveAFactoryPullRequest(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := factoryRig(t, factoryd.SourceGitHubSync)
-			_, err := r.c.doApprove(t.Context(), tc.actor(t, r), 4, "", 0)
+			_, err := r.c.doApprove(t.Context(), tc.actor(t, r), 4)
 			var no *refusal
 			if !errors.As(err, &no) || no.status != http.StatusForbidden || no.msg != "A human approves a factory pull request that carries GitHub commits: record what you found with attach_analysis." {
 				t.Fatalf("the agent's approval = %v, want 403 naming the human", err)
@@ -682,7 +670,7 @@ func TestAgentCannotApproveAFactoryPullRequest(t *testing.T) {
 	}
 	t.Run("the human", func(t *testing.T) {
 		r := factoryRig(t, factoryd.SourceGitHubSync)
-		note, err := r.c.doApprove(t.Context(), inTurn(t, r, "member"), 4, "", 0)
+		note, err := r.c.doApprove(t.Context(), inTurn(t, r, "member"), 4)
 		if err != nil || note != "Approved pull request #9; factoryd merges it." ||
 			!slices.Equal(r.fg.calls, []string{"POST /api/v1/repos/sf/code/pulls/9/reviews Bearer access-1", "SIGNAL approved t-m #9 by sebastian"}) {
 			t.Fatalf("the human's approval = %q, %v, calls %q: want their review and their approval", note, err, r.fg.calls)
@@ -690,7 +678,7 @@ func TestAgentCannotApproveAFactoryPullRequest(t *testing.T) {
 	})
 	t.Run("a template update in a wake", func(t *testing.T) {
 		r := factoryRig(t, factoryd.SourceTemplateUpdate)
-		note, err := r.c.doApprove(t.Context(), inWake(t, r), 4, "", 0)
+		note, err := r.c.doApprove(t.Context(), inWake(t, r), 4)
 		if err != nil || note != "Approved pull request #9; factoryd merges it." || !slices.Equal(r.fg.calls, []string{"SIGNAL approved t-m #9 by factory-chat"}) {
 			t.Fatalf("the agent's approval = %q, %v, calls %q: want it signalled as factory-chat's", note, err, r.fg.calls)
 		}
@@ -719,15 +707,16 @@ func overruleOf(reason string) factoryd.Resolution {
 		Verdicts: map[string]factoryd.CheckVerdict{"rename the flag": drop, "the flag lacks a test": drop}}
 }
 
-// A case's form posts the answer its button names with the note: the
+// A case's form posts the answer its button names with its note: the
 // overrule re-verifies with its drops, End the card closes with the note,
-// and an overrule with no note is refused naming its field, with no Act.
+// and an overrule with no note, or with a note past the answer's bound,
+// which the opened card's box holds to, is refused with no Act.
 func TestAFacePressAnswersAsItsAnswer(t *testing.T) {
 	press := func(t *testing.T, action, note string) (*rig, *httptest.ResponseRecorder) {
 		t.Helper()
 		r := overruleCard(t)
 		ck, s := r.loggedIn(t)
-		return r, r.do(post("/tasks/t-e/resolve", url.Values{"csrf": {s.csrf}, "case_id": {"1"}, "action": {action}, "note": {note}}), ck)
+		return r, r.do(post("/tasks/t-e/resolve", url.Values{"csrf": {s.csrf}, "case_id": {"1"}, "action": {action}, action + ".note": {note}}), ck)
 	}
 	r, rec := press(t, factoryd.ActReverify+"/overrule", "the spec names the flag")
 	if rec.Code != http.StatusSeeOther {
@@ -747,16 +736,23 @@ func TestAFacePressAnswersAsItsAnswer(t *testing.T) {
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Your reason is empty") || len(r.acted) != 0 {
 		t.Fatalf("an overrule with no note = %d %q with %d Act calls; want 400 naming the field, none", rec.Code, rec.Body, len(r.acted))
 	}
+	r, rec = press(t, factoryd.ActReverify+"/overrule", strings.Repeat("x", factoryd.MaxAnswer+1))
+	if rec.Code != http.StatusBadRequest || len(r.acted) != 0 || len(r.fg.comments) != 0 {
+		t.Fatalf("an overrule with a note past the answer's bound = %d with %d Act calls and %d comments; want 400, none, none", rec.Code, len(r.acted), len(r.fg.comments))
+	}
+	ck, _ := r.loggedIn(t)
+	if ask := escalationOf(t, r, ck, "t-e"); !strings.Contains(ask, `name="`+factoryd.ActReverify+`/overrule.note" rows="2" maxlength="4000"`) {
+		t.Errorf("the overrule's reason is not bounded at the answer's 4000 bytes:\n%s", ask)
+	}
 	r, rec = press(t, "no_such_answer", "")
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Press one of the card's answers.") || strings.Contains(rec.Body.String(), "no_such_answer") || len(r.acted) != 0 {
 		t.Fatalf("an unknown answer = %d %q with %d Act calls; want 400 saying what to press, none", rec.Code, rec.Body, len(r.acted))
 	}
 }
 
-// An amount typed in the box beside "Add money" is the fund: an empty
-// amount of the answer's own takes it, two amounts that differ are refused
-// with both named, and an amount that is no number says what to type.
-func TestAFundTypedBesideAddMoneyIsTheFund(t *testing.T) {
+// "Add money" funds the amount of its own field, and an amount that is no
+// number says what to type.
+func TestAddMoneyFundsItsAmount(t *testing.T) {
 	press := func(values url.Values) (*rig, *httptest.ResponseRecorder) {
 		r := newRig(t)
 		ck, s := r.loggedIn(t)
@@ -767,16 +763,12 @@ func TestAFundTypedBesideAddMoneyIsTheFund(t *testing.T) {
 		values.Set("action", factoryd.ActFund)
 		return r, r.do(post("/tasks/t-e/resolve", values), ck)
 	}
-	r, rec := press(url.Values{"fund_eur": {"1.50"}})
+	r, rec := press(url.Values{"fund.eur": {"1.50"}})
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("the fund = %d: %s", rec.Code, rec.Body)
 	}
 	if got, _ := actedOnce(t, r); got.Res.Action != factoryd.ActFund || got.Res.Args["eur"] != 1.5 || got.Res.Fund != nil {
-		t.Fatalf("Act took %+v, want a fund of the 1.50 EUR typed beside it", got.Res)
-	}
-	r, rec = press(url.Values{"fund_eur": {"1.50"}, "fund.eur": {"2.00"}})
-	if body := rec.Body.String(); rec.Code != http.StatusBadRequest || !strings.Contains(body, "2.00 EUR") || !strings.Contains(body, "1.50 EUR") || len(r.acted) != 0 {
-		t.Fatalf("two amounts = %d %q with %d Act calls; want 400 naming both, none", rec.Code, body, len(r.acted))
+		t.Fatalf("Act took %+v, want a fund of the 1.50 EUR typed", got.Res)
 	}
 	r, rec = press(url.Values{"fund.eur": {"two"}})
 	if body := rec.Body.String(); rec.Code != http.StatusBadRequest || !strings.Contains(body, "EUR to add takes an amount in EUR, such as 2.50") || len(r.acted) != 0 {
@@ -799,7 +791,7 @@ func TestTheBoardSendsEveryTickedFinding(t *testing.T) {
 		}
 	}))
 	rec := r.do(post("/tasks/t-e/resolve", url.Values{"csrf": {s.csrf}, "case_id": {"1"}, "action": {factoryd.ActConfirmAudit},
-		"confirm_audit.findings": two, "note": {"The rig's fakes."}}), ck)
+		"confirm_audit.findings": two, "confirm_audit.note": {"The rig's fakes."}}), ck)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("the clearing = %d: %s", rec.Code, rec.Body)
 	}
@@ -847,7 +839,7 @@ func TestThePlansWaitAnswersOnItsOwnFace(t *testing.T) {
 	if got := press(t, url.Values{"action": {factoryd.ActRetry}}); got.Res.Action != factoryd.ActRetry {
 		t.Fatalf("the face's retry took %+v, want the failed card's retry", got.Res)
 	}
-	if got := press(t, url.Values{"action": {factoryd.ActClose + "/plan_wait"}, "note": {"not wanted"}}); got.Res.Action != factoryd.ActClose ||
+	if got := press(t, url.Values{"action": {factoryd.ActClose + "/plan_wait"}, factoryd.ActClose + "/plan_wait.note": {"not wanted"}}); got.Res.Action != factoryd.ActClose ||
 		got.Res.Note != "not wanted" {
 		t.Fatalf("the face's close took %+v, want the failed card's close with the note", got.Res)
 	}

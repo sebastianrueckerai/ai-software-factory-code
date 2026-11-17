@@ -1,59 +1,13 @@
 <div class="drawer-content" data-drawer="{{.Card.ID}}">
 <div class="drawer-head">
 <button type="button" id="drawer-close" class="drawer-close" aria-label="Close the drawer">✕</button>
-<div class="dr-title">{{with .Card}}{{if .IssueURL}}<a class="dr-ref" href="{{.IssueURL}}" target="_blank" rel="noopener" data-tip="the issue">#{{.IssueNumber}}</a>{{else}}<span class="dr-ref">{{.ID}}</span>{{end}} - <h2 tabindex="-1">{{.Title}}</h2>{{end}}</div>
-<p class="drawer-facts"><span class="pill {{.Card.StatusClass}}">{{.Word}}</span>{{with .Age}} <span class="sep"></span><span>{{.}}</span>{{end}}{{with .Card.Checks}} <span class="sep"></span><span>{{.}} checks</span>{{end}}{{if gt .Card.BudgetEUR 0.0}} <span class="sep"></span><span class="spend{{if .Card.NearBudget}} near{{end}}">{{eur2 .Card.EnforcedSpent}} / {{eur2 .Card.BudgetEUR}}{{if .Card.NearBudget}} ⚠ near its budget{{end}}</span>{{end}}{{if eq .Card.Track "plan"}} <span class="chip plan">plan</span>{{end}}{{range .Card.Fine}} <span class="pill fine {{.Class}}">{{.Words}}</span>{{end}}{{with .Card.ModelAlias}} <span class="chip model">{{.}}</span>{{end}}{{if .Card.PRURL}} <a href="{{.Card.PRURL}}" target="_blank" rel="noopener">PR #{{.Card.PRNumber}}</a>{{end}}</p>
 <nav class="tabs" role="tablist" aria-label="The card's tabs">{{range .Tabs}}<button type="button" role="tab" aria-selected="{{eq .Name $.Tab}}" aria-controls="drawer-panel" hx-get="/cards/{{$.Card.ID}}/drawer?tab={{.Name}}" hx-target="#drawer" hx-swap="innerHTML">{{.Title}}</button>{{end}}</nav>
 </div>
 <div id="drawer-panel" class="drawer-body" role="tabpanel">
 {{with .Problem}}<p class="problem" role="alert">{{.}}</p>
-{{end}}{{if eq .Tab "overview"}}<dl class="top-block">
-<dt>Task</dt><dd>{{.Headline}}</dd>
-<dt>Status</dt><dd>{{.Word}}{{with .Age}}, {{.}}{{end}}</dd>
-<dt>Budget</dt><dd class="{{if .Card.NearBudget}}warn{{else}}muted{{end}}">{{if gt .Card.BudgetEUR 0.0}}<span class="mono">{{eur2 .Card.EnforcedSpent}} of {{eur2 .Card.BudgetEUR}}, {{pct .Card.EnforcedSpent .Card.BudgetEUR}} percent</span>{{if .Card.NearBudget}} ⚠{{end}}{{with .Card.CallsText}} <span class="mono" title="the task's model calls to date: the tokens its providers reported and the modeled pay-as-you-go cost of them, never money billed">· {{.}}</span>{{end}}{{else}}<span class="mono">no budget</span>{{end}}</dd>
-<dt>Agent</dt><dd class="muted"><span class="mono">{{with .Card.ModelAlias}}{{.}}{{else}}—{{end}}</span></dd>
-{{if or .Card.PlanIssue .Card.PlanKey}}<dt>Plan</dt><dd>{{if .Card.PlanIssue}}{{if .Card.PlanURL}}<a class="ref" href="{{.Card.PlanURL}}" target="_blank" rel="noopener">#{{.Card.PlanIssue}}</a>{{else}}#{{.Card.PlanIssue}}{{end}}{{with .Card.PlanName}} · {{.}}{{end}}{{with .Card.PlanKey}} · <span class="mono">{{.}}</span>{{end}}{{else}}{{with .Card.PlanName}}{{.}}{{with $.Card.PlanKey}} · <span class="mono">{{.}}</span>{{end}}{{else}}<span class="mono">{{.Card.PlanKey}}</span>{{end}}{{end}}</dd>
-{{end}}{{with .Card.GitHubPRState}}<dt>GitHub</dt><dd>{{if $.Card.GitHubPRURL}}<a href="{{$.Card.GitHubPRURL}}" target="_blank" rel="noopener">PR #{{$.Card.GitHubPR}}</a> {{end}}{{.}}</dd>{{end}}
-</dl>
-{{with .RoutineLine}}<p class="provenance">filed by the factory · routine {{if .Title}}<button type="button" class="linkbtn" data-open-routine="{{.Project}}/{{.Name}}">{{.Title}}</button>{{else}}{{.Name}}{{end}} · run {{.Run}}{{with .LastWords}} · last run {{.}}{{end}}</p>
-{{end}}{{if or .Need .Merge .PlanApproval .Approval (and (eq .Card.Status "failed") (or .Card.Activity .Card.Retry)) .Card.Stale .Card.Provider}}<div class="open-need"><h3>Open</h3>
-{{with .Need}}<article class="need" id="need-{{.Card.ID}}{{.Suffix}}">{{with .Case}}{{if or .Plan .Decides}}{{template "face-parts" .Face}}{{end}}{{end}}{{with .PlanDecide}}{{template "case-decide" .}}{{else}}{{template "escalation-actions" .}}{{end}}</article>
-{{else}}{{with .Merge}}{{template "approval" .}}
-{{else}}{{with .PlanApproval}}{{template "approval" .}}
-{{else}}{{with .Approval}}{{template "approval" .}}
-{{else}}{{if eq .Card.Status "failed"}}<div class="open-bad">{{.Card.Activity}}{{with .Card.Retry}}<div class="acts"><form method="post" action="/tasks/{{$.Card.ID}}/retry" hx-post="/tasks/{{$.Card.ID}}/retry" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}<button type="submit" aria-label="Retry #{{$.Card.IssueNumber}}">Retry</button></form></div>{{end}}</div>
-{{else}}<p class="open-bad">{{.Card.Activity}}{{with .Card.StaleText}} · {{.}}{{end}}</p>
-{{end}}{{end}}{{end}}{{end}}{{end}}</div>
-{{end}}<details class="sec" data-sec="time"><summary>Time<span class="hint">{{.Life}}</span></summary><div class="sec-body"><div class="life">{{range .Runs}}<span class="mono">{{.At}}</span><span class="k {{.Class}}">{{.Kind}}</span><span class="mono num">{{.Duration}}</span><span class="mono num">{{if .Costs}}{{eur2 .EUR}}{{end}}</span><span class="tnote">{{.Note}}</span>{{end}}</div></div></details>
-<details class="sec" data-sec="life" hx-get="/tasks/{{.Card.ID}}/digest" hx-trigger="toggle once" hx-target="find .sec-body"><summary>The card's life</summary><div class="sec-body"><p class="meta">Loading…</p></div></details>
-{{with .Thread}}<p class="thread-link">{{if not .Own}}From {{.Who}}'s chat thread {{.Number}}{{else if .Title}}From your chat thread <button type="button" class="linkbtn" data-open-thread="{{.Number}}">{{.Title}}</button>{{else}}From your chat thread {{.Number}}, since deleted{{end}}</p>
-{{end}}{{if .Door}}<p class="thread-door"><button type="button" class="linkbtn" data-card-thread="{{.Card.ID}}">Talk about this card</button></p>
-{{end}}{{if or .Body .Provenance}}<details class="sec" data-sec="objective"><summary>Objective</summary><div class="sec-body">{{with .Body}}<p class="objective-body">{{.}}</p>{{end}}{{with .Provenance}}<p class="provenance">{{.}}</p>{{end}}</div></details>
-{{else}}<div class="sec empty"><p class="summary" aria-disabled="true">Objective<span class="hint">one line, above</span></p></div>
-{{end}}
-{{with .Card.AgentSummary}}<details class="sec" data-sec="summary"><summary>The agent's summary</summary><div class="sec-body"><p class="agent-summary">{{.}}</p></div></details>
-{{else}}<div class="sec empty"><p class="summary" aria-disabled="true">The agent's summary<span class="hint">—</span></p></div>
-{{end}}{{if or .PlanRows .Card.Plan}}<details class="sec" data-sec="plan"><summary>The plan<span class="hint">{{if .PlanRows}}{{len .PlanRows}} cards{{else}}{{len .Card.Plan}} cards{{end}}</span></summary><div class="sec-body">{{with .PlanSummary}}<p>{{.}}</p>{{end}}{{with .PlanRounds}}<ol aria-label="The plan's rounds">{{range .}}<li{{if .Current}} aria-current="step"{{end}}>{{.Text}}</li>{{end}}</ol>{{end}}{{with .PlanStill}}<p>Still to plan: {{join . ", "}}.</p>{{end}}
-{{if .PlanRows}}<table class="plan-cards"><caption>The plan's cards, in filing order</caption>
-<thead><tr><th scope="col">key</th><th scope="col">role</th><th scope="col">title</th><th scope="col">size</th><th scope="col">depends on</th></tr></thead>
-<tbody>{{range .PlanRows}}<tr><td>{{.Key}}</td><td>{{.Role}}</td><td>{{.Title}}</td><td>{{.Size}}</td><td>{{join .DependsOn ", "}}</td></tr>{{end}}</tbody>
-</table>{{end}}{{with .TakeOffMain}}<p>Takes off main: {{join . "; "}}</p>{{end}}{{with .Card.Plan}}<ul class="children" aria-label="The plan's cards">{{range .}}<li>{{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">#{{.IssueNumber}}</a>{{else}}{{.ID}}{{end}} {{.Status}}</li>{{end}}</ul>{{end}}</div></details>
-{{else if not (or .Card.PlanIssue .Card.PlanKey)}}<div class="sec empty"><p class="summary" aria-disabled="true">The plan<span class="hint">—</span></p></div>
-{{end}}{{with .Card.Replan}}<details class="sec" data-sec="replan"><summary>Replan</summary><div class="sec-body"><form method="post" action="/tasks/{{$.Card.ID}}/replan" hx-post="/tasks/{{$.Card.ID}}/replan"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}<label for="replan-{{$.Card.ID}}">Why it goes back to the planner, posted on the issue as you</label><textarea id="replan-{{$.Card.ID}}" name="note" rows="2" maxlength="{{maxReplan}}" required></textarea>{{if .Group}}<label><input type="checkbox" name="off_main" value="on"> Take the plan's merged cards off main first</label>{{end}}<button type="submit" aria-label="Replan #{{$.Card.IssueNumber}}">Replan</button></form></div></details>
-{{end}}{{if and (not .Need) .Card.Extend}}<details class="sec" data-sec="extend"><summary>Extend</summary><div class="sec-body">{{template "extend-form" $}}</div></details>
-{{end}}{{with .Merge}}<details class="sec" data-sec="reviews"><summary>Reviews and audit<span class="hint">PR #{{.PRNumber}}</span></summary><div class="sec-body"><h4>Reviews and audit of <a href="{{.PRURL}}" target="_blank" rel="noopener">PR #{{.PRNumber}}</a></h4>
-{{template "merge-facts" .}}</div></details>
-{{else}}<div class="sec empty"><p class="summary" aria-disabled="true">Reviews and audit<span class="hint">—</span></p></div>
-{{end}}{{if .Related}}<details class="sec" data-sec="related"><summary>Related cards<span class="hint">{{len .Related}}</span></summary><div class="sec-body">
-<ul class="related">{{range .Related}}<li><span class="why">{{.Why}}</span> <span class="pill {{.Card.StatusClass}}">{{.Card.Status}}</span> <a href="#card={{.Card.ID}}" hx-get="/cards/{{.Card.ID}}/drawer" hx-target="#drawer" hx-swap="innerHTML">{{if .Card.IssueNumber}}#{{.Card.IssueNumber}} {{end}}{{.Card.Title}}</a></li>
-{{end}}</ul></div></details>
-{{else}}<div class="sec empty"><p class="summary" aria-disabled="true">Related cards<span class="hint">—</span></p></div>
-{{end}}{{if .Card.MayWriteSummary}}<details class="sec" data-sec="edit"><summary>Edit</summary><div class="sec-body">
-<form method="post" action="/tasks/{{.Card.ID}}/brief" hx-post="/tasks/{{.Card.ID}}/brief" class="edit-form brief-edit" aria-label="Edit the brief"><input type="hidden" name="csrf" value="{{.Card.CSRF}}">{{template "filter" .Card.Filter}}<label for="title-{{.Card.ID}}-d">Title</label><input type="text" id="title-{{.Card.ID}}-d" name="title" value="{{.Card.Title}}"><label for="why-{{.Card.ID}}-d">Why</label><input type="text" id="why-{{.Card.ID}}-d" name="why" value="{{.Card.Why}}"><label for="summary-{{.Card.ID}}-d">Summary</label><textarea id="summary-{{.Card.ID}}-d" name="summary" rows="3">{{.Card.Summary}}</textarea><button type="submit">Save the brief</button></form>
-<form method="post" action="/tasks/{{.Card.ID}}/accent" hx-post="/tasks/{{.Card.ID}}/accent" class="edit-form accent-edit auto-submit"><input type="hidden" name="csrf" value="{{.Card.CSRF}}">{{template "filter" .Card.Filter}}<label for="accent-{{.Card.ID}}-d">Accent</label><select id="accent-{{.Card.ID}}-d" name="value"><option value=""{{if not .Card.Accent}} selected{{end}}>none</option>{{range $a := accents}}<option value="{{$a}}"{{if eq $a $.Card.Accent}} selected{{end}}>{{$a}}</option>{{end}}</select></form>
-</div></details>
-{{end}}<details class="sec" data-sec="links"><summary>Links</summary><div class="sec-body"><p class="links">{{if .Card.IssueURL}}<a href="{{.Card.IssueURL}}" target="_blank" rel="noopener">issue #{{.Card.IssueNumber}}</a> · {{end}}{{if .Card.PRURL}}<a href="{{.Card.PRURL}}" target="_blank" rel="noopener">PR #{{.Card.PRNumber}}</a> · <a href="{{.Card.PRURL}}.diff">the diff</a> · {{end}}<a href="/tasks/{{.Card.ID}}/timeline">the full timeline</a> · <span class="ref-plain">{{.Card.ID}}</span></p></div></details>
-{{else if eq .Tab "activity"}}{{if not .Problem}}{{template "gates" .}}
+{{end}}{{if eq .Tab "overview"}}{{with .Opened}}{{template "opened" .}}{{end}}
+{{else}}<h2 class="dr-title" tabindex="-1">{{.Card.Title}}</h2>
+{{end}}{{if eq .Tab "overview"}}{{else if eq .Tab "activity"}}{{if not .Problem}}{{template "gates" .}}
 {{template "steps" .}}
 {{template "chain" .}}
 {{end}}{{else if eq .Tab "chat"}}{{with .Session}}<p class="meta">Session {{.N}} · {{.Model}} · {{.Outcome}}</p>

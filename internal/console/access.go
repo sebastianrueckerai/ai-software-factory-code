@@ -92,7 +92,6 @@ var accessTable = map[string]accessRule{
 	"GET /projects/{name}/metrics":                 rProject,
 	"GET /projects/{name}/events/stream":           rMember, // follows() judges the project's sight
 	"GET /cards/{id}":                              {need: writer, scope: scCard, hide: true},
-	"GET /approvals/{id}/criteria/{at}":            rMember, // criterionFragment judges the project's sight, as the board does
 	"GET /projects/{name}/cards/{id}/cases/{case}": rMember, // caseFragment judges the project's sight, as the board does
 	"GET /cards/{id}/drawer":                       rCard,
 	"GET /tasks/{id}/digest":                       rMember, // cardLife judges the project's sight, as the board does
@@ -115,18 +114,11 @@ var accessTable = map[string]accessRule{
 	"POST /tasks":                               rFactory,
 	"POST /tasks/{id}/answer":                   rCard,
 	"POST /tasks/{id}/resolve":                  rCard,
-	"POST /tasks/{id}/fund":                     {need: approver, scope: scCard, what: "fund a card"},
-	"POST /tasks/{id}/extend":                   {need: approver, scope: scCard, what: "extend a card"},
-	"POST /tasks/{id}/brief":                    rCard,
-	"POST /tasks/{id}/accent":                   rCard,
 	"POST /cards/{id}/thread":                   rCard,
 	"POST /tasks/{id}/plan/answer":              rCard,
 	"POST /tasks/{id}/plan/holdout":             rCard,
 	"POST /tasks/{id}/plan/changes":             rCard,
-	"POST /tasks/{id}/retry":                    {need: approver, scope: scCard, what: "retry a card"},
-	"POST /tasks/{id}/close":                    rCard,
 	"POST /tasks/{id}/steer":                    rCard,
-	"POST /tasks/{id}/replan":                   {need: approver, scope: scCard, what: "replan a card"},
 	"POST /projects/{name}/deploy-now":          {need: approver, scope: scProject, what: "deploy a held production"},
 	"POST /approvals/{id}/approve":              {need: approver, scope: scApproval, what: "authorize spend"},
 	"POST /approvals/{id}/deny":                 {need: writer, scope: scApproval},
