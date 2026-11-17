@@ -664,9 +664,9 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 			return cannotStart(err)
 		}
 		defer done()
-		ref := pullRef(pr)
-		if pr == 0 {
-			ref = branchRef(prBase)
+		ref := ""
+		if pr != 0 {
+			ref = pullRef(pr)
 		}
 		ran, outcomes, err := r.runProofs(ctx, t, repo, ref, commit, "", entries)
 		// a pod that ended early leaves the criteria it did not reach

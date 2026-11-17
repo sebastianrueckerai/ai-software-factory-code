@@ -153,6 +153,41 @@ func TestReproRefusesAMovedHead(t *testing.T) {
 	}
 }
 
+// A run at a commit of a branch names the commit as its ref: once main has
+// moved on, the commit still fetches and its tree is the one run, while
+// main's ref fetches the new head and reads as moved.
+func TestReproFetchesACommitOfABranchThatMovedOn(t *testing.T) {
+	remote, head := reproRemote(t)
+	work := filepath.Join(t.TempDir(), "work")
+	for _, args := range [][]string{
+		{"clone", "-q", remote, work},
+		{"-C", work, "rm", "-q", "check.sh"},
+		{"-C", work, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "main moves on"},
+		{"-C", work, "push", "-q", "origin", "main"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	reproEnvs(t, remote, head, "sh check.sh")
+	t.Setenv("PR_REF", head)
+	ws := t.TempDir()
+	if code := runReproFetch(nolog, ws); code != 0 {
+		t.Fatalf("fetch exit %d", code)
+	}
+	if got := repro(ws); got != (harness.Repro{Exit: 3, Output: "checking\noops\n"}) {
+		t.Fatalf("repro at the commit = %+v, want check.sh's exit 3", got)
+	}
+	t.Setenv("PR_REF", "refs/heads/main")
+	ws = t.TempDir()
+	if code := runReproFetch(nolog, ws); code != 0 {
+		t.Fatalf("fetch exit %d", code)
+	}
+	if got := repro(ws); got.Exit != -1 || !strings.Contains(got.Output, "refs/heads/main is at") {
+		t.Fatalf("repro at main's ref = %+v, want the moved head refused", got)
+	}
+}
+
 // The repro mode needs no token: its environment has none.
 func TestReproModeReadsNoToken(t *testing.T) {
 	remote, head := reproRemote(t)

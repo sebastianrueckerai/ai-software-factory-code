@@ -1390,7 +1390,10 @@ func (r *Runner) proofsPodSpec(t Task, repo Repo, ref, commit, at, bearer string
 // agent-written command or the tree's check holds no token at all.
 // Neither run mounts the project's shared cache, where an agent may have
 // planted a binary or a build result: Go and npm build cold in the pod's
-// own emptyDir, with PATH naming no cache directory.
+// own emptyDir, with PATH naming no cache directory. ref is a pull
+// request's head ref; a run at a commit of a branch has none and fetches
+// commit by itself, which Git's protocol v2 serves though the branch has
+// moved on since its head was read.
 func (r *Runner) runnerPodSpec(t Task, repo Repo, ref, commit, at string, mode []map[string]any) map[string]any {
 	pod := r.sandboxPodSpec(t, r.sandboxImage(t), "", slices.Concat(mode, []map[string]any{
 		{"name": "TASK_ID", "value": t.ID},
@@ -1413,7 +1416,7 @@ func (r *Runner) runnerPodSpec(t Task, repo Repo, ref, commit, at string, mode [
 		{"name": "REPO_URL", "value": r.repoURL(repo)},
 		{"name": "REPO_TOKEN", "valueFrom": map[string]any{
 			"secretKeyRef": map[string]any{"name": "task-git", "key": "REPO_TOKEN"}}},
-		{"name": "PR_REF", "value": ref},
+		{"name": "PR_REF", "value": cmp.Or(ref, commit)},
 		{"name": "REPO_SHA", "value": commit},
 	}
 	if at != "" {

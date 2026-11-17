@@ -688,7 +688,7 @@ func (r *Runner) storeProofs(ctx context.Context, t Task, repo Repo, plan Task) 
 	for i, pp := range filed {
 		entries[i] = storedProof(pp)
 	}
-	runs, runErr, err := r.proofRuns(ctx, t, repo, branchRef(branch), head, t.SHA, entries, budget)
+	runs, runErr, err := r.proofRuns(ctx, t, repo, "", head, t.SHA, entries, budget)
 	if err != nil {
 		return err
 	}

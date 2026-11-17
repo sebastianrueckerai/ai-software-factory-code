@@ -606,8 +606,8 @@ func TestRunReportOfTheProverDryRunsTheFilingOnMain(t *testing.T) {
 		t.Fatalf("pods = %d, want the proofs pod alone", len(kube.podOrder))
 	}
 	fetch := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "fetch"))
-	if fetch["PR_REF"] != "refs/heads/main" || fetch["REPO_SHA"] != "m1" || fetch["CHECKOUT_SHA"] != "m0" {
-		t.Fatalf("fetch env = %v, want main at m1, checked out at m0", fetch)
+	if fetch["PR_REF"] != "m1" || fetch["REPO_SHA"] != "m1" || fetch["CHECKOUT_SHA"] != "m0" {
+		t.Fatalf("fetch env = %v, want main's head m1 fetched by itself, checked out at m0", fetch)
 	}
 	// the test activity has 10 minutes, so the pod gets 9 less the time spent
 	if budget, _ := strconv.Atoi(podEnv(kube.podAt(0))["PROOFS_BUDGET"]); budget > 540 || budget < 500 {

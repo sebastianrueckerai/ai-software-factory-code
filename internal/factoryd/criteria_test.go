@@ -710,7 +710,8 @@ func TestGateCriteriaRunsACarriedTestFromTheTree(t *testing.T) {
 	}
 }
 
-// The gate on main's head, pr 0, fetches main at the head it was given,
+// The gate on main's head, pr 0, fetches the head it was given by its
+// commit, which stands though main moves on,
 // writes its rows on the integration card as on a pull request's head, and
 // comments on no pull request.
 func TestGateCriteriaOnMainFetchesMainAndCommentsOnNoPullRequest(t *testing.T) {
@@ -733,8 +734,8 @@ func TestGateCriteriaOnMainFetchesMainAndCommentsOnNoPullRequest(t *testing.T) {
 		t.Fatalf("result = %+v, pods %d; want one pod and no finding", res, len(kube.podOrder))
 	}
 	fetch := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "fetch"))
-	if fetch["PR_REF"] != "refs/heads/main" || fetch["REPO_SHA"] != "m1" {
-		t.Fatalf("fetch env = %v, want main at m1", fetch)
+	if fetch["PR_REF"] != "m1" || fetch["REPO_SHA"] != "m1" {
+		t.Fatalf("fetch env = %v, want main's head m1 fetched by itself", fetch)
 	}
 	want := []CriterionVerdict{{Criterion: "door_open", Verdict: "met", Evidence: "criterion door_open: TestDoorOpen in ./internal/doors passed",
 		Kind: CriterionTest, Source: CriteriaSourceGate, DecidedBy: FactoryDecider}}
