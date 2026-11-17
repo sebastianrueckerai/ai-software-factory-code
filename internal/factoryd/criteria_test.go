@@ -710,6 +710,42 @@ func TestGateCriteriaRunsACarriedTestFromTheTree(t *testing.T) {
 	}
 }
 
+// The gate on main's head, pr 0, fetches main at the head it was given,
+// writes its rows on the integration card as on a pull request's head, and
+// comments on no pull request.
+func TestGateCriteriaOnMainFetchesMainAndCommentsOnNoPullRequest(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+	proofsWorker(t, r)
+	seedPlan(t, store, map[string]string{"integ": RoleIntegration}, `{"id":"door_open","kind":"test","claim":"a door opens for its key",`+
+		`"inputs":"POST /doors/1/open with key 7","expected":"200","suite":"internal/doors","name":"TestDoorOpen"}`)
+	done := make(chan struct{})
+	var res CriteriaResult
+	go func() {
+		defer close(done)
+		val, err := execActivity(t, r, ActivityGateCriteria, "t1", int64(0), "m1", "")
+		res = getInto[CriteriaResult](t, val, err)
+	}()
+	scriptReproPods(kube, proofLines(harness.ProofRun{ID: "door_open", Started: true, Report: junitGz(t, wrap(`<testcase name="TestDoorOpen"></testcase>`))}))
+	<-done
+	if res.Skipped != "" || res.Escalate != "" || len(res.Findings) != 0 || len(kube.podOrder) != 1 {
+		t.Fatalf("result = %+v, pods %d; want one pod and no finding", res, len(kube.podOrder))
+	}
+	fetch := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "fetch"))
+	if fetch["PR_REF"] != "refs/heads/main" || fetch["REPO_SHA"] != "m1" {
+		t.Fatalf("fetch env = %v, want main at m1", fetch)
+	}
+	want := []CriterionVerdict{{Criterion: "door_open", Verdict: "met", Evidence: "criterion door_open: TestDoorOpen in ./internal/doors passed",
+		Kind: CriterionTest, Source: CriteriaSourceGate, DecidedBy: FactoryDecider}}
+	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); !slices.Equal(rows, want) {
+		t.Fatalf("rows = %+v, want %+v", rows, want)
+	}
+	if len(hub.comments) != 0 {
+		t.Fatalf("comments = %q, want none", hub.comments)
+	}
+}
+
 // A test criterion whose proof the plan's prover has not stored yet asks
 // the human to wait, while the prover is open or still to open: the held
 // rows stand, and the answer runs the gate again. A prover that ended

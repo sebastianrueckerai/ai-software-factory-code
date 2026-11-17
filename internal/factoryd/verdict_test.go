@@ -819,7 +819,8 @@ func TestGrantAgainOnTheSameRevision(t *testing.T) {
 }
 
 // The close tells a judgement that never happened from one that failed:
-// with the cards final, criteria without a row file one criteria_rerun
+// with the cards final and the criteria gate run without a row for them,
+// criteria without a row file one criteria_rerun
 // ask naming the criteria gate for its own and the human for the human
 // ones, whatever the review's note, the unmet ones named beside them;
 // unmet rows alone file today's gap ask. A pending ask of either kind
@@ -855,7 +856,8 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 		// brings a plan without a verdict row to the pass
 		mergeCard(s, "t-int")
 		objs := &fakeObjectStore{}
-		r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}, forgejo: planIssues(t)}
+		r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}, forgejo: planIssues(t),
+			criteriaGate: gateWritesNothing}
 		if c.note != "" || c.name == "mixed" {
 			r.record(ctx, "t-int", "model_review", map[string]any{"pr": 9, "commit": "c1", "note": c.note})
 		}
@@ -864,6 +866,7 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		sweep(ctx, r)
 		r.CriteriaPass(ctx)
 		pending, _ := s.ApprovalRequests(ctx, "pending")
 		if len(pending) != 1 || pending[0].Kind != c.kind || pending[0].TaskID != "t-plan" || pending[0].Reason != c.reason {
@@ -899,6 +902,11 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 			t.Fatalf("mixed: pending %+v, closes %d: want the plan closed and its rerun ask resolved", again, closeRows(s))
 		}
 	}
+}
+
+// gateWritesNothing is a criteria gate that runs and writes no row.
+func gateWritesNothing(context.Context, string, int64, string, string) (CriteriaResult, error) {
+	return CriteriaResult{}, nil
 }
 
 // planIssues is a Forgejo whose issues stand open until a close (prForgejo,
@@ -1561,7 +1569,9 @@ func TestConfirmDeliveredCriteria(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s},
+		criteriaGate: gateWritesNothing}
+	sweep(ctx, r)
 	r.CriteriaPass(ctx)
 	pending, _ := s.ApprovalRequests(ctx, "pending")
 	if len(pending) != 1 || pending[0].TaskID != "t-plan" {
@@ -2131,6 +2141,144 @@ func TestCriteriaGatePassRunsOnlyForADonePlanAtRest(t *testing.T) {
 			t.Errorf("%s: gate calls %d, budget %.2f, pending %+v, want no run, no raise and %d ask", c.name, calls, s.tasks["t-int"].BudgetEUR, pending, c.asks)
 		}
 	}
+}
+
+// mainGatePlan is gatePlanOn over a main whose head is m1, its checks
+// those of statuses, with the integration card set by card; calls lists
+// each gate call as task#pr@commit:checked, and the gate answers each
+// call with answer.
+func mainGatePlan(t *testing.T, statuses []string, card func(*fakeStore), answer func(call int, s *fakeStore, taskID string) (CriteriaResult, error)) (*Runner, *fakeStore, *[]string) {
+	t.Helper()
+	fj := &prForgejo{pulls: map[int64]string{9: `{"number":9,"state":"closed","merged":true,"head":{"sha":"h9"},"base":{"ref_name":"main"}}`},
+		mainHead: "m1", statusesBySHA: map[string][]string{"m1": statuses}}
+	calls := new([]string)
+	r, s := gatePlanOn(t, fj, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(_ context.Context, taskID string, pr int64, commit, checked string) (CriteriaResult, error) {
+			*calls = append(*calls, fmt.Sprintf("%s#%d@%s:%s", taskID, pr, commit, checked))
+			return answer(len(*calls), s, taskID)
+		}
+	})
+	card(s)
+	return r, s, calls
+}
+
+// integrationAs sets t-int's status, pull request and merge commit.
+func integrationAs(status string, pr int64, merge string) func(*fakeStore) {
+	return func(s *fakeStore) {
+		c := s.tasks["t-int"]
+		c.Status, c.PRNumber, c.MergeCommit = status, pr, merge
+		s.tasks["t-int"] = c
+	}
+}
+
+// An integration card whose work reached main through no pull request of
+// its own leaves the gate criteria to the criteria gate on main's head: a
+// card closed with no pull request (it proved and pushed nothing), one
+// closed with its pull request unmerged, a done one with no pull request,
+// and one failed into a successor that is done. The gate runs once on m1
+// with pr 0, its ran record carries pr 0, its rows close the plan, and no
+// ask opens. A done card whose pull request merged keeps the gate on that
+// head, h9; an integration card still running, or failed with no
+// successor, runs no gate.
+func TestPlanCloseRunsTheGateAtMainWhenTheIntegrationCardPushedNothing(t *testing.T) {
+	ctx := context.Background()
+	failedIntoDone := func(s *fakeStore) {
+		integrationAs("failed", 0, "")(s)
+		succ := SuccessorID("t-int")
+		s.tasks[succ] = Task{ID: succ, Repository: "sf/code", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "integration", Status: "done", PRNumber: 12, MergeCommit: "m0"}
+	}
+	for _, c := range []struct {
+		name   string
+		card   func(*fakeStore)
+		calls  []string
+		pr     int64
+		closes int
+		asks   int
+	}{
+		{"closed, no pull request", integrationAs("closed", 0, ""), []string{"t-int#0@m1:"}, 0, 1, 0},
+		{"closed, its pull request unmerged", integrationAs("closed", 2085, ""), []string{"t-int#0@m1:"}, 0, 1, 0},
+		{"done, no pull request", integrationAs("done", 0, ""), []string{"t-int#0@m1:"}, 0, 1, 0},
+		{"failed into a done successor", failedIntoDone, []string{"t-int#0@m1:"}, 0, 1, 0},
+		{"done, its pull request merged", integrationAs("done", 9, "abc"), []string{"t-int#9@h9:"}, 9, 1, 0},
+		{"running", integrationAs("running", 0, ""), nil, 0, 0, 0},
+		{"failed, no successor", integrationAs("failed", 0, ""), nil, 0, 0, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, s, calls := mainGatePlan(t, nil, c.card, func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+				return CriteriaResult{}, gateMet(ctx, s, taskID)
+			})
+			r.CriteriaPass(ctx)
+			r.CriteriaGatePass(ctx)
+			r.CriteriaPass(ctx)
+			if !slices.Equal(*calls, c.calls) {
+				t.Fatalf("gate calls %v, want %v", *calls, c.calls)
+			}
+			pending, _ := s.ApprovalRequests(ctx, "pending")
+			if closeRows(s) != c.closes || len(pending) != c.asks {
+				t.Fatalf("closes %d, pending %+v; want %d closes and %d asks", closeRows(s), pending, c.closes, c.asks)
+			}
+			if c.calls == nil {
+				return
+			}
+			var ran []map[string]any
+			for _, e := range s.events {
+				if e.Kind == EventCriteriaGateRun && e.Detail["outcome"] == gateDone {
+					ran = append(ran, e.Detail)
+				}
+			}
+			head := "m1"
+			if c.pr != 0 {
+				head = "h9"
+			}
+			if len(ran) != 1 || ran[0]["pr"] != c.pr || ran[0]["commit"] != head || ran[0]["task"] != "t-int" {
+				t.Fatalf("ran records %v, want one on t-int with pr %d at %s", ran, c.pr, head)
+			}
+		})
+	}
+}
+
+// The gate on main's head keeps the gate's attempts: checks still running
+// at m1 record pending and spend no attempt, a pass within the bound reads
+// m1's checks alone, and once they conclude the gate runs again on the
+// same attempt and its rows close the plan. A gate that errors is cut
+// twice, and then the criteria_rerun ask opens.
+func TestCriteriaGateAtMainKeepsTheAttempts(t *testing.T) {
+	ctx := context.Background()
+	t.Run("pending", func(t *testing.T) {
+		r, s, calls := mainGatePlan(t, []string{checksRunning, checksGreen}, integrationAs("closed", 0, ""), func(call int, s *fakeStore, taskID string) (CriteriaResult, error) {
+			if call == 1 {
+				return CriteriaResult{Pending: true}, nil
+			}
+			return CriteriaResult{}, gateMet(ctx, s, taskID)
+		})
+		t0 := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+		r.now = func() time.Time { return t0 }
+		sweep(ctx, r)
+		if !slices.Equal(*calls, []string{"t-int#0@m1:"}) || !slices.Equal(gateOutcomes(s), []string{"pending#1"}) {
+			t.Fatalf("first pass: calls %v, outcomes %v; want one run on m1 and one pending record", *calls, gateOutcomes(s))
+		}
+		sweep(ctx, r)
+		if len(*calls) != 1 {
+			t.Fatalf("checks still running: calls %v, want no second run", *calls)
+		}
+		sweep(ctx, r)
+		r.CriteriaPass(ctx)
+		if pending, _ := s.ApprovalRequests(ctx, "pending"); len(*calls) != 2 || !slices.Equal(gateOutcomes(s), []string{"pending#1", "ran#1"}) || closeRows(s) != 1 || len(pending) != 0 {
+			t.Fatalf("checks green: calls %v, outcomes %v, closes %d, pending %+v; want ran on attempt 1 and the plan closed", *calls, gateOutcomes(s), closeRows(s), pending)
+		}
+	})
+	t.Run("errors", func(t *testing.T) {
+		r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 0, ""), func(int, *fakeStore, string) (CriteriaResult, error) {
+			return CriteriaResult{}, errors.New("the sandbox went away")
+		})
+		for range 4 {
+			sweep(ctx, r)
+		}
+		pending, _ := s.ApprovalRequests(ctx, "pending")
+		if len(*calls) != 2 || !slices.Equal(gateOutcomes(s), []string{"cut#1", "cut#2"}) || len(pending) != 1 || pending[0].Kind != ApprovalCriteriaRerun {
+			t.Fatalf("calls %v, outcomes %v, pending %+v; want two cuts and the criteria_rerun ask", *calls, gateOutcomes(s), pending)
+		}
+	})
 }
 
 // A card with no ceiling of its own is held to the policy's card ceiling
@@ -2915,6 +3063,9 @@ func TestPlanCloseWords(t *testing.T) {
 func TestCloseHeldPlanRecordsPlanClosedWithTheWaivers(t *testing.T) {
 	ctx := context.Background()
 	r, s, fj := tenCriteriaPlan(t, "done")
+	r.criteriaGate = gateWritesNothing
+	r.planCloseCheck(ctx, "t-plan")
+	r.CriteriaGatePass(ctx)
 	r.planCloseCheck(ctx, "t-plan")
 	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Kind != ApprovalCriteriaRerun {
 		t.Fatalf("the sweep's ask: %+v, want one pending criteria_rerun", pending)
