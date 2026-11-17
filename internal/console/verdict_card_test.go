@@ -276,10 +276,8 @@ func TestCriteriaGapWaiveAndGrant(t *testing.T) {
 }
 
 // A criteria_rerun ask is the criteria card under its own name: it offers
-// waive, confirm and deny, and no Approve, since nothing here can pay for
-// the review that never judged them; an approve that reaches it refuses
-// naming the answers it has.
-func TestCriteriaNeverJudgedCardOffersWaiveAndConfirm(t *testing.T) {
+// waive, confirm, deny and the Approve that grants one more bounded card.
+func TestCriteriaNeverJudgedCardOffersGrantWaiveAndConfirm(t *testing.T) {
 	r := newRig(t)
 	verdictRig(r)
 	r.approvals.rows[len(r.approvals.rows)-1] = factoryd.ApprovalRequest{ID: 30, Kind: factoryd.ApprovalCriteriaRerun, TaskID: "t-plan",
@@ -294,28 +292,19 @@ func TestCriteriaNeverJudgedCardOffersWaiveAndConfirm(t *testing.T) {
 	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
 	for _, want := range []string{
 		"Criteria never judged",
-		"No review judged these criteria, and no button here runs one: waive a criterion with your reason, or confirm the delivered cards.",
+		"No review judged these criteria. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason, or confirm the delivered cards.",
 		`<legend>c2 (human): open</legend>`,
 		`aria-label="Waive criterion c2 of t-plan"`,
+		`aria-label="Approve the criteria grant 30 of t-plan"`,
 		`aria-label="Deny the criteria never judged 30 of t-plan"`,
 	} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the card lacks %q:\n%s", want, card)
 		}
 	}
-	// the column holds the rig's resource request too: the claims are the
-	// gap's name and an Approve of this request, which it never carries
-	if strings.Contains(card, "Criteria gap") || strings.Contains(card, `action="/approvals/30/approve"`) ||
-		strings.Contains(card, "Every criterion is met or waived") {
-		t.Errorf("the card reads as the gap or offers an Approve:\n%s", card)
+	if strings.Contains(card, "Criteria gap") || strings.Contains(card, "Every criterion is met or waived") {
+		t.Errorf("the card reads as the gap or as settled:\n%s", card)
 	}
-	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}
-	// the approve is a grant_criteria that Act refuses on this kind of request
-	r.actErr = factoryd.ErrActRefused("this plan's ask is criteria never judged: grant_criteria grants no card")
-	if rec := r.do(post("/approvals/30/approve", form), ck); rec.Code != http.StatusConflict || len(r.acted) != 1 || r.acted[0].Res.Action != factoryd.ActGrantCriteria {
-		t.Fatalf("approve = %d %q, Act took %+v, want Act's refusal of one grant_criteria", rec.Code, rec.Body.String(), r.acted)
-	}
-	r.actErr = nil
 	waive := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "criterion": {"c3"}, "verb": {"waived"}, "reason": {"the provider's SLA"}}
 	if rec := r.do(post("/approvals/30/criterion", waive), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("waive = %d %q", rec.Code, rec.Body.String())
@@ -329,6 +318,23 @@ func TestCriteriaNeverJudgedCardOffersWaiveAndConfirm(t *testing.T) {
 	}
 	if want := []string{"t-plan c3 waived"}; fmt.Sprint(calls) != fmt.Sprint(want) {
 		t.Errorf("calls = %q, want %q", calls, want)
+	}
+}
+
+// The Approve of a criteria_rerun card reaches Act as one grant_criteria and
+// approves the request.
+func TestCriteriaNeverJudgedApproveGrantsOneCard(t *testing.T) {
+	r := newRig(t)
+	verdictRig(r)
+	r.approvals.rows[len(r.approvals.rows)-1].Kind = factoryd.ApprovalCriteriaRerun
+	r.c.cfg.GrantCriteria = func(context.Context, string, string, int64) (int, error) { return 2, nil }
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/approvals/30/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	if rec.Code != http.StatusSeeOther || len(r.acted) != 1 || r.acted[0].Res.Action != factoryd.ActGrantCriteria {
+		t.Fatalf("approve = %d %q, Act took %+v, want one grant_criteria", rec.Code, rec.Body.String(), r.acted)
+	}
+	if a := r.approvals.get(30); a.Status != "approved" {
+		t.Errorf("the grant left the request %+v", a)
 	}
 }
 

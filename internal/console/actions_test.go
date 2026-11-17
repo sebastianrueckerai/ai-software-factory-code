@@ -1100,3 +1100,74 @@ func TestThePlansWaitAnswersOnItsOwnFace(t *testing.T) {
 		t.Fatalf("the inbox's Retry took %+v, want the failed card's retry", got.Res)
 	}
 }
+
+// catchStore is the store factoryd.GrantCriteria reads through the rig's plan
+// and records the catch rows it writes.
+type catchStore struct {
+	factoryd.Store
+	t       *fakeTasks
+	catches []string
+}
+
+func (s *catchStore) Task(ctx context.Context, id string) (factoryd.Task, bool, error) {
+	return s.t.Task(ctx, id)
+}
+
+func (s *catchStore) PlanRevision(ctx context.Context, id string, n int) (factoryd.PlanRevision, bool, error) {
+	return s.t.PlanRevision(ctx, id, n)
+}
+
+func (s *catchStore) PlanCards(ctx context.Context, plan string) ([]factoryd.Task, error) {
+	return s.t.PlanCards(ctx, plan)
+}
+
+func (s *catchStore) CriteriaVerdicts(ctx context.Context, id string) ([]factoryd.CriterionVerdict, error) {
+	return s.t.CriteriaVerdicts(ctx, id)
+}
+
+func (s *catchStore) PutPlanCatches(_ context.Context, _ string, _ int, kind, finder string, details []string) (bool, error) {
+	for _, d := range details {
+		s.catches = append(s.catches, kind+" "+finder+" "+d)
+	}
+	return true, nil
+}
+
+// A plan whose criteria no review ever judged takes the grant on its
+// criteria_rerun ask: one delta due per criterion, the request approved.
+func TestGrantOnANeverJudgedPlanDraftsOneCard(t *testing.T) {
+	r, _, g := newChatRig(t)
+	verdictRig(r)
+	plan, _ := json.Marshal(factoryd.Plan{Summary: "The shortener", Criteria: []factoryd.PlanCriterion{
+		{ID: "c1", Kind: factoryd.CriterionTest, Claim: "a link is stored", Inputs: "POST /api/links with a url", Expected: "201"},
+		{ID: "c2", Kind: factoryd.CriterionHuman, Claim: "the pages read well"},
+	}, Cards: []factoryd.PlanCard{
+		{Key: "foundation", Role: "foundation", Title: "Foundation"},
+		{Key: "integration", Role: "integration", Title: "Integration"},
+	}})
+	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan, SHA256: "sha-1"}}}
+	r.tasks.criteria = nil
+	r.approvals.rows[len(r.approvals.rows)-1].Kind = factoryd.ApprovalCriteriaRerun
+	st := &catchStore{t: r.tasks}
+	r.c.cfg.GrantCriteria = func(ctx context.Context, id, by string, approval int64) (int, error) {
+		return factoryd.GrantCriteria(ctx, st, id, by, approval)
+	}
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "answer_criteria", `{"task_id":"t-plan","action":"grant"}`)}, {say("Granted.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"grant the plan one more card"}})
+	note := "Granted one more bounded card for 2 criteria; the planner drafts it and the board shows it."
+	equal(t, "stream", events, []string{
+		`tool {"arguments":{"task_id":"t-plan","action":"grant"},"duration_ms":0,"name":"answer_criteria","result":"` + note + `"}`,
+		`applied {"result":"` + note + `","tool":"answer_criteria"}`,
+		`text {"text":"Granted."}`, `done {}`})
+	if len(r.acted) != 1 || r.acted[0].Res.Action != factoryd.ActGrantCriteria {
+		t.Fatalf("Act took %+v, want one grant_criteria", r.acted)
+	}
+	if a := r.approvals.get(30); a.Status != "approved" {
+		t.Errorf("the grant left the request %+v", a)
+	}
+	want := []string{"delta " + factoryd.FinderApprover + " c1 grant 30", "delta " + factoryd.FinderApprover + " c2 grant 30"}
+	if !slices.Equal(st.catches, want) {
+		t.Errorf("catches = %q, want %q", st.catches, want)
+	}
+}
