@@ -791,13 +791,13 @@ func (s *fakeTasks) FinishedTasks(_ context.Context, q factoryd.FinishedQuery) (
 }
 
 // setHold puts hold h on card id, as the store takes one, on a card that
-// has not started; nil ends its hold. False: the card took none, or held
-// none to end.
+// has not started; nil ends the hold that holds it. False: the card took
+// none, or no hold held it.
 func (s *fakeTasks) setHold(id string, h *factoryd.CardHold) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	i := slices.IndexFunc(s.tasks, func(t factoryd.BoardTask) bool { return t.ID == id })
-	if i < 0 || h != nil && !s.tasks[i].Holdable() || h == nil && s.tasks[i].Hold == nil {
+	if i < 0 || h != nil && !s.tasks[i].Holdable() || h == nil && !s.tasks[i].Held() {
 		return false
 	}
 	s.tasks[i].Hold = h

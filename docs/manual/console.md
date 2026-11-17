@@ -383,11 +383,12 @@ decimals: a task's model calls cost fractions of a cent.
   one, and the refusal of an edge across two names the fitting action: a
   hold with the other card as its release card. `hold_card` holds a card
   that has not started, with a reason and an optional release card of any
-  plan of the project, and `release_hold` ends a hold; both run only on a
+  plan of the project, not a plan itself and not one that waits on the
+  held card, and `release_hold` ends a hold; both run only on a
   line the human typed in that turn, or on their press, and the drawer's
   Hold and Release do the same. A held card's face carries its hold in
   the waiting chip, or in the blocked chip once its release card ended
-  failed or closed. `set_pool` sets the money
+  failed or closed or became a plan. `set_pool` sets the money
   of the project's escalation pool, or tops up the money its project file
   already sets, as `escalation.pool.eur` written through a pull request on
   that file. The OK is asked for it at every autonomy level. The

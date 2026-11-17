@@ -2381,8 +2381,12 @@ func (c *Console) doReplan(ctx context.Context, a actor, id, note string, offMai
 	if err != nil {
 		return "", err
 	}
-	if err := c.agentOnHeld(ctx, a, t, "replan"); err != nil {
-		return "", err
+	// a direct card's replan sends the card itself to its planner; a plan's
+	// revision keeps the key of a held card unless the human asked for it
+	if !factoryd.InPlan(t) {
+		if err := c.agentOnHeld(ctx, a, t, "replan"); err != nil {
+			return "", err
+		}
 	}
 	poster, err := c.posterOf(ctx, a, t.Repository)
 	if err != nil {
@@ -2575,7 +2579,7 @@ func (c *Console) setDependency(ctx context.Context, a actor, id, dependsOn stri
 			return "", refuse(http.StatusInternalServerError, "cannot read the card's dependencies")
 		}
 		if cycle {
-			return "", refuse(http.StatusConflict, fmt.Sprintf("#%d already depends on #%d, so #%d cannot depend on #%d.",
+			return "", refuse(http.StatusConflict, fmt.Sprintf("#%d already waits on #%d, through its dependencies or a hold, so #%d cannot depend on #%d.",
 				d.IssueNumber, t.IssueNumber, t.IssueNumber, d.IssueNumber))
 		}
 	}
@@ -2643,8 +2647,8 @@ const maxHoldReason = 300
 // replaced.
 func (c *Console) doHoldCard(ctx context.Context, a actor, id, release, reason string) (string, error) {
 	reason = strings.Join(strings.Fields(reason), " ")
-	if reason == "" || len(reason) > maxHoldReason {
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("a reason of up to %d bytes is required: the board shows it on the held card", maxHoldReason))
+	if reason == "" || utf8.RuneCountInString(reason) > maxHoldReason {
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("a reason of up to %d characters is required: the board shows it on the held card", maxHoldReason))
 	}
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
@@ -2730,6 +2734,9 @@ func (c *Console) releaseCard(ctx context.Context, a actor, t factoryd.Task, nam
 	switch {
 	case rel.ID == t.ID:
 		return rel, refuse(http.StatusBadRequest, fmt.Sprintf("#%d cannot release its own hold: name another card, or hold it with none.", t.IssueNumber))
+	case rel.Track == policy.TrackPlan:
+		return rel, refuse(http.StatusConflict, fmt.Sprintf("#%d is a plan, which is done once it files its cards, before their work lands, so it would release the hold too early: name the plan's last card, the one whose merge lands its work.",
+			rel.IssueNumber))
 	case rel.Status == "merged" || rel.Status == "done":
 		return rel, refuse(http.StatusConflict, fmt.Sprintf("#%d is %s already, so it would release the hold at once: hold #%d with no release card, or name a card that has not ended.",
 			rel.IssueNumber, rel.Status, t.IssueNumber))
@@ -2743,6 +2750,15 @@ func (c *Console) releaseCard(ctx context.Context, a actor, t factoryd.Task, nam
 		return rel, refuse(http.StatusConflict, fmt.Sprintf("#%d ended %s, so it would never release the hold: %s, or hold #%d with none.",
 			rel.IssueNumber, rel.Status, fit, t.IssueNumber))
 	}
+	loop, err := c.reaches(ctx, rel.ID, t.ID)
+	if err != nil {
+		log.Printf("console: what %s waits on: %v", rel.ID, err)
+		return rel, refuse(http.StatusInternalServerError, "cannot read what the release card waits on")
+	}
+	if loop {
+		return rel, refuse(http.StatusConflict, fmt.Sprintf("#%d waits on #%d, through its dependencies or a hold, so a hold of #%d until #%d lands would keep both from starting: name another card, or hold #%d with none.",
+			rel.IssueNumber, t.IssueNumber, t.IssueNumber, rel.IssueNumber, t.IssueNumber))
+	}
 	return rel, nil
 }
 
@@ -2753,7 +2769,7 @@ func (c *Console) doReleaseHold(ctx context.Context, a actor, id string) (string
 	if err != nil {
 		return "", err
 	}
-	if t.Hold == nil {
+	if !t.Held() {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is not on hold, so there is nothing to release: hold_card, or Hold on its drawer, puts a card that has not started on hold.", t.IssueNumber))
 	}
 	ok, err := c.cfg.ReleaseCardHold(ctx, t.ID)
@@ -2787,7 +2803,8 @@ func (c *Console) agentOnHeld(ctx context.Context, a actor, t factoryd.Task, act
 		t.IssueNumber, line, action, action))
 }
 
-// reaches: card from depends on card to, through dependencies not done.
+// reaches: card from waits on card to, through dependencies not done and
+// the release cards of holds.
 func (c *Console) reaches(ctx context.Context, from, to string) (bool, error) {
 	seen := map[string]bool{from: true}
 	for next := []string{from}; len(next) > 0; next = next[1:] {
@@ -2795,13 +2812,26 @@ func (c *Console) reaches(ctx context.Context, from, to string) (bool, error) {
 		if err != nil {
 			return false, err
 		}
+		var waits []string
 		for _, x := range deps {
-			if x.TaskID == to && x.Status != "done" {
+			if x.Status != "done" {
+				waits = append(waits, x.TaskID)
+			}
+		}
+		k, _, err := c.cfg.Tasks.Task(ctx, next[0])
+		if err != nil {
+			return false, err
+		}
+		if k.Held() && k.Hold.Release != "" {
+			waits = append(waits, k.Hold.Release)
+		}
+		for _, id := range waits {
+			if id == to {
 				return true, nil
 			}
-			if x.Status != "done" && !seen[x.TaskID] {
-				seen[x.TaskID] = true
-				next = append(next, x.TaskID)
+			if !seen[id] {
+				seen[id] = true
+				next = append(next, id)
 			}
 		}
 	}

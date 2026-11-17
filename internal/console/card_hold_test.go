@@ -117,6 +117,9 @@ func TestHoldButtonsAndTheirRefusals(t *testing.T) {
 	equal(t, "the hold", *holdOf(r, "t-k1"), factoryd.CardHold{Reason: "needs the lone card", Release: "t-d", By: "sebastian"})
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardHeld, repo: "sf/code", taskID: "t-k1", detail: map[string]any{"reason": "needs the lone card", "release": int64(33)}})
 
+	if err := r.tasks.AddTaskDeps(t.Context(), "t-d2", []string{"t-k2"}); err != nil {
+		t.Fatal(err)
+	}
 	a := actor{s: s, via: factoryd.ViaButton}
 	for _, tc := range []struct {
 		id, release, reason string
@@ -126,7 +129,14 @@ func TestHoldButtonsAndTheirRefusals(t *testing.T) {
 		{"t-r", "", "x", http.StatusConflict,
 			"Card #11 runs an agent session, not a card that has not started: steer sends its session a message; its pull request comes when the session ends."},
 		{"t-adm", "", "x", http.StatusConflict, "Card #35 took a work slot and starts now, not a card that has not started: close it, or steer it once it runs."},
-		{"t-k2", "", "  ", http.StatusBadRequest, "a reason of up to 300 bytes is required: the board shows it on the held card"},
+		{"t-k2", "", "  ", http.StatusBadRequest, "a reason of up to 300 characters is required: the board shows it on the held card"},
+		{"t-k2", "", strings.Repeat("ü", 301), http.StatusBadRequest, "a reason of up to 300 characters is required: the board shows it on the held card"},
+		{"t-k2", "30", "x", http.StatusConflict,
+			"#30 is a plan, which is done once it files its cards, before their work lands, so it would release the hold too early: name the plan's last card, the one whose merge lands its work."},
+		{"t-d", "t-k1", "x", http.StatusConflict,
+			"#31 waits on #33, through its dependencies or a hold, so a hold of #33 until #31 lands would keep both from starting: name another card, or hold #33 with none."},
+		{"t-k2", "34", "x", http.StatusConflict,
+			"#34 waits on #32, through its dependencies or a hold, so a hold of #32 until #34 lands would keep both from starting: name another card, or hold #32 with none."},
 		{"t-k2", "t-k2", "x", http.StatusBadRequest, "#32 cannot release its own hold: name another card, or hold it with none."},
 		{"t-k2", "7", "x", http.StatusConflict, "#7 is done already, so it would release the hold at once: hold #32 with no release card, or name a card that has not ended."},
 		{"t-k2", "t-f", "x", http.StatusConflict, "#31 ended failed, so it would never release the hold: name a card that has not ended, or hold #32 with none."},
@@ -155,6 +165,24 @@ func TestHoldButtonsAndTheirRefusals(t *testing.T) {
 	}
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardHeld, repo: "sf/code", taskID: "t-k1"},
 		wantRow{kind: factoryd.EventCardHoldEnded, repo: "sf/code", taskID: "t-k1", detail: map[string]any{"reason": "needs the lone card"}})
+
+	// a closing card's hold holds nothing, so Release refuses it
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-d2" {
+			r.tasks.tasks[i].Status, r.tasks.tasks[i].Hold = "closing", &factoryd.CardHold{Reason: "after the review", By: "sebastian"}
+		}
+	}
+	r.tasks.mu.Unlock()
+	if _, err := r.c.doReleaseHold(t.Context(), a, "t-d2"); !errors.As(err, &no) ||
+		no.msg != "Card #34 is not on hold, so there is nothing to release: hold_card, or Hold on its drawer, puts a card that has not started on hold." {
+		t.Errorf("the release of a closing card = %v, want the refusal", err)
+	}
+	// the reason counts characters, as the form's maxlength does
+	long := strings.Repeat("ü", 300)
+	if _, err := r.c.doHoldCard(t.Context(), a, "t-k2", "", long); err != nil || holdOf(r, "t-k2") == nil || holdOf(r, "t-k2").Reason != long {
+		t.Fatalf("a hold with 300 characters, 600 bytes = %v, hold %+v; want it taken", err, holdOf(r, "t-k2"))
+	}
 }
 
 // The board's face shows a hold in the waiting chip, and a release card
@@ -198,4 +226,31 @@ func TestBoardShowsTheHoldAndTheDrawerOffersIt(t *testing.T) {
 	if drawer = r.do(httptest.NewRequest(http.MethodGet, "/cards/t-r/drawer", nil), ck).Body.String(); strings.Contains(drawer, `action="/tasks/t-r/hold"`) || strings.Contains(drawer, "release-hold") {
 		t.Error("a running card's drawer offers a hold")
 	}
+}
+
+// The agent's own replan of a held card of no plan would send the card
+// itself to its planner, so it is refused naming the hold. Its replan of a
+// held plan card replans the plan, whose revision keeps the card's key, so
+// it reaches factoryd's Replan.
+func TestTheAgentsReplanOfAHeldCard(t *testing.T) {
+	r, _ := newWritesRig(t)
+	withPlan(r)
+	_, s := r.loggedIn(t)
+	var asked []string
+	r.c.cfg.Replan = func(_ context.Context, id, by, _ string, _ bool) (string, error) {
+		asked = append(asked, id+" by "+by)
+		return "Plan #30 goes back to its planner.", nil
+	}
+	r.tasks.setHold("t-d", &factoryd.CardHold{Reason: "after the review", By: "sebastian"})
+	r.tasks.setHold("t-k1", &factoryd.CardHold{Reason: "after the review", By: "sebastian"})
+	agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyAutonomous}
+	_, err := r.c.doReplan(t.Context(), agent, "t-d", "too wide", false)
+	var no *refusal
+	if want := "Card #33 is on hold: after the review. Only the human releases, starts or closes a held card, and this turn runs on no line the human typed, so it takes no replan: ask the human with ask, or let them replan it on its card."; !errors.As(err, &no) || no.msg != want {
+		t.Errorf("the agent's replan of held #33 = %v, want %q", err, want)
+	}
+	if said, err := r.c.doReplan(t.Context(), agent, "t-k1", "too wide", false); err != nil || said == "" {
+		t.Fatalf("the agent's replan of held plan card #31 = %q, %v; want it asked", said, err)
+	}
+	equal(t, "the replans asked", asked, []string{"t-k1 by " + factoryd.ChatUser})
 }
