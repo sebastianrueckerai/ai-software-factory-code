@@ -1612,8 +1612,8 @@ func TestConfirmDeliveredCriteria(t *testing.T) {
 	// a child not done or merged refuses, its name and state in the error
 	s2 := seedVerdictPlan(t, "t-open", "t-open-int", "queued")
 	_, err = ConfirmDeliveredCriteria(ctx, s2, "t-open", "sebastian", "they are done")
-	if !errors.Is(err, ErrChildOpen) || !strings.Contains(err.Error(), "t-open-int") || !strings.Contains(err.Error(), "queued") {
-		t.Fatalf("confirm with an open child = %v, want ErrChildOpen naming the child", err)
+	if !errors.Is(err, ErrChildOpen) || err.Error() != "t-open-int is queued: a card of the plan is still open or failed: wait for it to end, then confirm again" {
+		t.Fatalf("confirm with an open child = %v, want ErrChildOpen naming the child and the wait", err)
 	}
 	if rows, _ := s2.CriteriaVerdicts(ctx, "t-open-int"); len(rows) != 0 {
 		t.Errorf("a refused confirm wrote rows: %+v", rows)
@@ -1654,8 +1654,8 @@ func TestConfirmDeliveredCriteria(t *testing.T) {
 	failed := Task{ID: "t-failed-card", Repository: "sf/code", Parent: "t-failed", Source: SourcePlan, PlanKey: "cut", Status: "failed"}
 	s5.tasks[failed.ID] = failed
 	_, err = ConfirmDeliveredCriteria(ctx, s5, "t-failed", "sebastian", "they are done")
-	if !errors.Is(err, ErrChildOpen) || !strings.Contains(err.Error(), failed.ID) || !strings.Contains(err.Error(), "failed") {
-		t.Fatalf("confirm with a failed card = %v, want ErrChildOpen naming it", err)
+	if !errors.Is(err, ErrChildOpen) || err.Error() != "t-failed-card is failed: a card of the plan is still open or failed: retry or close it, then confirm again" {
+		t.Fatalf("confirm with a failed card = %v, want ErrChildOpen naming it, Retry and Close", err)
 	}
 }
 

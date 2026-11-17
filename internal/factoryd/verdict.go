@@ -682,7 +682,11 @@ func ConfirmDeliveredCriteria(ctx context.Context, store Store, id, by, line str
 		return 0, nil
 	}
 	if offender, ok := firstUndelivered(g.cards); ok {
-		return 0, fmt.Errorf("%s is %s: %w", offender.ID, offender.Status, ErrChildOpen)
+		act := "wait for it to end, then confirm again"
+		if offender.Status == "failed" {
+			act = "retry or close it, then confirm again"
+		}
+		return 0, fmt.Errorf("%s is %s: %w: %s", offender.ID, offender.Status, ErrChildOpen, act)
 	}
 	if i := slices.IndexFunc(g.cards, func(c Task) bool { return c.Status == "closed" }); i >= 0 && line == "" {
 		return 0, fmt.Errorf("%s is closed: %w", g.cards[i].ID, ErrNoEvidence)
