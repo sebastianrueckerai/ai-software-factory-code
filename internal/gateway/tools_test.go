@@ -358,7 +358,7 @@ func TestEscalateSchemaOffersChoices(t *testing.T) {
 	}
 	choices := schema.Properties["choices"]
 	if fmt.Sprint(choices.Type) != "array" || fmt.Sprint(choices.Items.Type) != "string" ||
-		choices.Description != "offer 2 to 5 short answers the human can pick with one click; always leave free text possible" {
+		choices.Description != "offer 2 to 5 short answers the human can pick with one click, each at most 60 characters in plain words; always leave free text possible" {
 		t.Fatalf("choices = %+v in %s", choices, b)
 	}
 	if !slices.Equal(schema.Required, []string{"question", "reason", "recommendation"}) {
@@ -776,21 +776,22 @@ func TestEscalateToHuman(t *testing.T) {
 
 // A choice list of more than 5 entries or over 1 KiB is dropped before
 // factoryd, whose body cap would refuse the question with it: the question
-// is delivered without choices, never refused. 1024 bytes pass.
+// is delivered without choices. 1024 bytes pass.
 func TestEscalateDropsAnOversizedChoiceList(t *testing.T) {
 	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
 	many := make([]string, 300)
 	for i := range many {
-		many[i] = strings.Repeat("x", 230)
+		many[i] = "x"
 	}
+	wide := strings.Repeat("😀", 60) // 240 bytes
 	for _, tc := range []struct {
 		name    string
 		choices []string
 		want    []string
 	}{
 		{"300 choices", many, nil},
-		{"1025 bytes", []string{strings.Repeat("a", 600), strings.Repeat("b", 425)}, nil},
-		{"1024 bytes", []string{strings.Repeat("a", 600), strings.Repeat("b", 424)}, []string{strings.Repeat("a", 600), strings.Repeat("b", 424)}},
+		{"1200 bytes", []string{wide, wide, wide, wide, wide}, nil},
+		{"960 bytes", []string{wide, wide, wide, wide}, []string{wide, wide, wide, wide}},
 	} {
 		before := len(e.escalator.calls)
 		text, isErr := e.call(t, policy.ToolEscalate, map[string]any{"question": "Which license?", "reason": "none named", "recommendation": "MIT", "choices": tc.choices})
@@ -798,6 +799,27 @@ func TestEscalateDropsAnOversizedChoiceList(t *testing.T) {
 			e.escalator.calls[before] != "42|escalation|Which license?|none named|MIT||" || !slices.Equal(e.escalator.choices[before], tc.want) {
 			t.Errorf("%s: %q, delivered %q with choices %q; want the question with %d", tc.name, text, e.escalator.calls[before:], e.escalator.choices[before:], len(tc.want))
 		}
+	}
+}
+
+// A choice is a button a human reads: one past 60 characters, empty, or
+// with a fault of the guide is refused, naming the fault, so the agent
+// writes it again; a refused call reaches no factoryd.
+func TestEscalateRefusesAChoiceTheGuideFaults(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	for choice, want := range map[string]string{
+		strings.Repeat("a", 61):          "The answer has 61 characters, at most 60.",
+		" ":                              "The answer is empty.",
+		"Use MIT; it matches the others": "The text holds a semicolon.",
+	} {
+		text, isErr := e.call(t, policy.ToolEscalate, map[string]any{"question": "Which license?", "reason": "none named", "recommendation": "MIT",
+			"choices": []string{"MIT", choice}})
+		if !isErr || !strings.Contains(text, "refused_arguments") || !strings.Contains(text, want) {
+			t.Errorf("choice %q: %q, want a refusal naming %q", choice, text, want)
+		}
+	}
+	if len(e.escalator.calls) != 0 {
+		t.Fatalf("refused choices reached factoryd: %v", e.escalator.calls)
 	}
 }
 

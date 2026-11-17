@@ -15,6 +15,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // EscalationStore is what the escalation endpoint reads and records.
@@ -287,12 +288,9 @@ const (
 	maxRecommendation = 2000
 )
 
-// MaxChoices bounds the answers an agent may offer, MaxChoice the
-// characters of one.
-const (
-	MaxChoices = 5
-	MaxChoice  = 60
-)
+// MaxChoices bounds the answers an agent may offer; writingguide.MaxChoice
+// bounds the characters of one.
+const MaxChoices = 5
 
 // offeredChoices are the agent's choices as a card offers them, each
 // trimmed: 2 to 5, none empty or over 60 characters. Any other list is
@@ -305,9 +303,9 @@ func offeredChoices(taskID string, choices []string) []string {
 	for i, c := range choices {
 		out[i] = strings.TrimSpace(c)
 	}
-	if len(out) < 2 || len(out) > MaxChoices || slices.ContainsFunc(out, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > MaxChoice }) {
+	if len(out) < 2 || len(out) > MaxChoices || slices.ContainsFunc(out, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > writingguide.MaxChoice }) {
 		log.Printf("task %s: the agent's %d choices are dropped, the card offers 2 to %d of 1 to %d characters: %s",
-			taskID, len(choices), MaxChoices, MaxChoice, textutil.Truncate(fmt.Sprintf("%q", choices), 400))
+			taskID, len(choices), MaxChoices, writingguide.MaxChoice, textutil.Truncate(fmt.Sprintf("%q", choices), 400))
 		return nil
 	}
 	return out

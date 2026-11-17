@@ -167,7 +167,9 @@ func TestChatEscalate(t *testing.T) {
 		{"no choices", "Which?", "why", "info", "rec", nil, "choices: 2 to 5 answers of 1 to 60 characters"},
 		{"one choice", "Which?", "why", "info", "rec", []string{"one"}, "choices: 2 to 5 answers of 1 to 60 characters"},
 		{"six choices", "Which?", "why", "info", "rec", []string{"a", "b", "c", "d", "e", "f"}, "choices: 2 to 5 answers of 1 to 60 characters"},
-		{"empty choice", "Which?", "why", "info", "rec", []string{"a", ""}, "choices: 2 to 5 answers of 1 to 60 characters"},
+		{"empty choice", "Which?", "why", "info", "rec", []string{"a", ""}, `choices: "": The answer is empty.`},
+		{"61 characters", "Which?", "why", "info", "rec", []string{"a", strings.Repeat("b", 61)}, `choices: "` + strings.Repeat("b", 61) + `": The answer has 61 characters, at most 60.`},
+		{"a fault of the guide", "Which?", "why", "info", "rec", []string{"a", "Use MIT; it fits"}, `choices: "Use MIT; it fits": The text holds a semicolon. Write two sentences.`},
 		{"twice", "Which?", "why", "info", "rec", []string{"a", " a"}, "choices: each answer once"},
 		{"twice by case and end punctuation", "Which?", "why", "info", "rec", []string{"Close it", "close IT."}, "choices: each answer once"},
 	} {

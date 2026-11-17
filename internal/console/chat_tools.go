@@ -1948,7 +1948,7 @@ var tools = []chatTool{
 			"why":            str(writingguide.WhyLine),
 			"info":           str("the facts a reader needs, with what would change your mind"),
 			"recommendation": str("the answer you would pick and where you read it"),
-			"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": factoryd.MaxChoice},
+			"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": writingguide.MaxChoice},
 				"description": "answers the humans may press, each once"}},
 		required: []string{"ask", "why", "info", "recommendation", "choices"},
 		about:    "Ask the humans for a decision, its why and its info with it.",
@@ -2056,7 +2056,7 @@ var tools = []chatTool{
 func init() {
 	tools = append(tools, chatTool{name: "ask", title: "Ask the human",
 		params: map[string]any{"ask": str("the question, with its state and its numbers"),
-			"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": factoryd.MaxChoice},
+			"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": writingguide.MaxChoice},
 				"description": "the answers the human may press"},
 			"tool":   str("the write tool the bound press runs, none for a plain ask"),
 			"args":   map[string]any{"type": "object", "description": "the bound tool's arguments as it reads them"},

@@ -419,9 +419,9 @@ type EscalateIn struct {
 	Question       string `json:"question" jsonschema:"what the human must answer or decide"`
 	Reason         string `json:"reason"`
 	Recommendation string `json:"recommendation" jsonschema:"what you would do and why, at most 2000 bytes"`
-	// factoryd checks the choices where it stores them: a list it cannot
-	// offer is dropped, never refused
-	Choices []string `json:"choices,omitempty" jsonschema:"offer 2 to 5 short answers the human can pick with one click; always leave free text possible"`
+	// a choice the guide faults is refused; a list factoryd cannot offer is
+	// dropped there
+	Choices []string `json:"choices,omitempty" jsonschema:"offer 2 to 5 short answers the human can pick with one click, each at most 60 characters in plain words; always leave free text possible"`
 }
 
 type RequestInfoIn struct {
@@ -1143,6 +1143,11 @@ func (s *Server) escalate(ctx context.Context, c *toolCaller, in EscalateIn) *mc
 	choices, size := in.Choices, 0
 	for _, ch := range choices {
 		size += len(ch)
+		// a choice is a button a human reads: the agent writes it again
+		if faults := writingguide.ChoiceFaults(ch); len(faults) > 0 {
+			return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf(
+				"choice %q: %s Each choice is a short answer in plain words, at most %d characters.", ch, strings.Join(faults, " "), writingguide.MaxChoice))
+		}
 	}
 	if len(choices) > maxChoices || size > maxChoicesBytes {
 		// factoryd's body cap would refuse the question with them

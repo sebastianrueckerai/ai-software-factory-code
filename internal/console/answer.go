@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // chatAnswer answers POST /projects/{name}/chat/answer: a choice of an
@@ -273,8 +274,8 @@ func (t *turn) askMember(in toolInput) (string, error) {
 	case question == "" || len(question) > 2000:
 		return "", refuse(http.StatusBadRequest, "question: the question of 1 to 2000 characters")
 	case len(choices) < 2 || len(choices) > factoryd.MaxChoices ||
-		slices.ContainsFunc(choices, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > factoryd.MaxChoice }):
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters", factoryd.MaxChoices, factoryd.MaxChoice))
+		slices.ContainsFunc(choices, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > writingguide.MaxChoice }):
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters", factoryd.MaxChoices, writingguide.MaxChoice))
 	}
 	token, desc, err := t.askBinding(in.Tool, in.Args, in.Choice, choices)
 	if err != nil {
@@ -370,11 +371,15 @@ func (t *turn) escalate(ask, why, info, recommendation string, choices []string)
 		return "", refuse(http.StatusBadRequest, "info: what a human should know to answer well, 1 to 2000 characters")
 	case recommendation == "" || len(recommendation) > 2000:
 		return "", refuse(http.StatusBadRequest, "recommendation: the answer you would pick and where you read it, 1 to 2000 characters")
-	case len(choices) < 2 || len(choices) > factoryd.MaxChoices ||
-		slices.ContainsFunc(choices, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > factoryd.MaxChoice }):
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters", factoryd.MaxChoices, factoryd.MaxChoice))
+	case len(choices) < 2 || len(choices) > factoryd.MaxChoices:
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters", factoryd.MaxChoices, writingguide.MaxChoice))
 	case repeats(choices):
 		return "", refuse(http.StatusBadRequest, "choices: each answer once")
+	}
+	for _, c := range choices {
+		if faults := writingguide.ChoiceFaults(c); len(faults) > 0 {
+			return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: %q: %s", c, strings.Join(faults, " ")))
+		}
 	}
 	q := factoryd.HumanQuestion{Ask: ask, Why: why, Info: info, Recommendation: recommendation, Source: "the project agent"}
 	for _, c := range choices {

@@ -138,3 +138,19 @@ func enDashPunctuation(text string) bool {
 	}
 	return false
 }
+
+// MaxChoice bounds an answer an agent offers a human, in runes: a button's
+// label.
+const MaxChoice = 60
+
+// ChoiceFaults are the faults of choice, an answer an agent offers a human
+// as a button: none when it is 1 to MaxChoice runes that Lint passes.
+func ChoiceFaults(choice string) []string {
+	switch n := len([]rune(strings.TrimSpace(choice))); {
+	case n == 0:
+		return []string{"The answer is empty."}
+	case n > MaxChoice:
+		return []string{fmt.Sprintf("The answer has %d characters, at most %d.", n, MaxChoice)}
+	}
+	return Lint(choice)
+}

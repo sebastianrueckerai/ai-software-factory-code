@@ -589,8 +589,8 @@ func questionFindings(qs []PlanQuestion) []string {
 			switch n := utf8.RuneCountInString(c); {
 			case n == 0:
 				add("choice %d is empty", j+1)
-			case n > MaxChoice:
-				add("choice %d is over %d characters", j+1, MaxChoice)
+			case n > writingguide.MaxChoice:
+				add("choice %d is over %d characters", j+1, writingguide.MaxChoice)
 			case seen[c] == 2:
 				add("choice %q is offered twice", c)
 			}
