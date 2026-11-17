@@ -1196,7 +1196,7 @@ var replayCoverage = map[string]string{
 	"S34": "open: the planner's read set is a hand step on the infra tree",
 	"S35": "TestWorkflowReplaysDevServerHistories",
 	"S36": "TestFileChildrenCarriesTheRaisesOfTheCardItContinues",
-	"S37": "TestSizeGateBudgetMoveRecordsAFund",
+	"S37": "internal/factoryd/pg TestSizeGateBudgetMoveRecordsAFund",
 	"S38": "TestReplanChildRefusalOfAFailedCardSaysRetryOrClose",
 	"S39": "open: dormant under the shipped process",
 }

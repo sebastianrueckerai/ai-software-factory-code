@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -69,17 +70,17 @@ func newHealAskRig(t *testing.T, db string) healAskRig {
 	cfg.Workflows = wf
 	forge := &healAskForgejo{}
 	objects := &fakeObjectStore{}
-	r := &Runner{store: s, objects: objects, cfg: cfg, timeline: &Timeline{Objects: objects, Events: s, Store: s},
-		forgejo: &Forgejo{BaseURL: forge.serve(t).URL, BotUser: "factory-agent", BotPassword: "pw"}}
+	r := factoryd.PgRigRunner(s, objects, cfg, &Timeline{Objects: objects, Events: s, Store: s},
+		&Forgejo{BaseURL: forge.serve(t).URL, BotUser: "factory-agent", BotPassword: "pw"})
 	return healAskRig{s: s, r: r, forge: forge}
 }
 
 // pass runs one heal pass over the rig's cards.
 func (g healAskRig) pass(t *testing.T) {
 	t.Helper()
-	tree := g.r.cfg.Policy().Tree
-	HealPass(context.Background(), g.s, g.r.cfg.Workflows, &Intake{Store: g.s, Forgejo: g.r.forgejo,
-		Workflows: g.r.cfg.Workflows, BotUser: "factory-agent", Policy: func() policy.Tree { return tree }}, nil, noneCompleted, g.r)
+	tree := g.r.PgCfg().Policy().Tree
+	HealPass(context.Background(), g.s, g.r.PgCfg().Workflows, &Intake{Store: g.s, Forgejo: g.r.PgForgejo(),
+		Workflows: g.r.PgCfg().Workflows, BotUser: "factory-agent", Policy: func() policy.Tree { return tree }}, nil, noneCompleted, g.r)
 }
 
 // comments is what the face posted on the cards' issues, oldest first.
@@ -102,7 +103,7 @@ func park(t *testing.T, s *PGStore, resolvedAgo time.Duration) Case {
 		t.Fatalf("the cap case = %+v; want it resolved by the answer", got)
 	}
 	if resolvedAgo > 0 {
-		if _, err := s.db.ExecContext(context.Background(),
+		if _, err := s.DB().ExecContext(context.Background(),
 			`UPDATE cases SET resolved_at = now() - $1::interval WHERE id = $2`,
 			fmt.Sprintf("%d seconds", int(resolvedAgo.Seconds())), c.ID); err != nil {
 			t.Fatalf("age the case: %v", err)

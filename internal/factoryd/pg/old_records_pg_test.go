@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -20,10 +20,10 @@ func TestATripWritesNoEscalationRowAndNoAlert(t *testing.T) {
 	}
 	var rows, alerts int
 	ctx := context.Background()
-	if err := g.s.db.QueryRowContext(ctx, `SELECT count(*) FROM intake_events WHERE task_id = 't1' AND kind IN ('escalation', 'escalation_withdrawn')`).Scan(&rows); err != nil {
+	if err := g.s.DB().QueryRowContext(ctx, `SELECT count(*) FROM intake_events WHERE task_id = 't1' AND kind IN ('escalation', 'escalation_withdrawn')`).Scan(&rows); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.s.db.QueryRowContext(ctx, `SELECT count(*) FROM alerts WHERE task_id = 't1' AND kind = 'escalation'`).Scan(&alerts); err != nil {
+	if err := g.s.DB().QueryRowContext(ctx, `SELECT count(*) FROM alerts WHERE task_id = 't1' AND kind = 'escalation'`).Scan(&alerts); err != nil {
 		t.Fatal(err)
 	}
 	if rows != 0 || alerts != 0 || len(g.asks(t)) != 1 {
