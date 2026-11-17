@@ -658,6 +658,7 @@ func TestResolveCaseNamesTheFitOfAnOverdrawnPool(t *testing.T) {
 		}
 	}
 	draw := CaseDraw{Rung: 2, Extend: policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, Pool: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60},
+		Need:  policy.Draw{AgentTime: time.Minute},
 		Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: ChatUser, Via: ViaChat, Detail: map[string]any{"pool": true, "rung": 2}}}
 	res := CaseResolution{By: ChatUser, Rung: 2, Action: ActExtend}
 	const want = "the escalation pool leaves 0 sessions, 924 minutes of agent time and 0.00 EUR this month: only the human draws more. " +
@@ -673,6 +674,28 @@ func TestResolveCaseNamesTheFitOfAnOverdrawnPool(t *testing.T) {
 	draw.Extend = policy.Draw{AgentTime: 30 * time.Minute}
 	if err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, &CaseStep{Rung: 2, Actor: ChatUser}, nil); err != nil || g.card(t).Usage.RaisedTime != 30*time.Minute {
 		t.Fatalf("rung 2's 30 minutes alone = %v, raised %v; want them drawn", err, g.card(t).Usage.RaisedTime)
+	}
+}
+
+// The store names a fit by the answer's need as drawWithin does: with the
+// pool's 30 hours drawn, rung 2's session and 30 minutes at an agent time
+// cap, whose extend needs a minute, fits nothing, not the session alone.
+func TestResolveCaseNamesNoFitWithoutTheNeed(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: EventCardExtended, Actor: "sebastian", Via: ViaConsole,
+		Detail: map[string]any{"pool": true, "rung": 3, "sessions": 10, "agent_time_s": 108000}}); err != nil {
+		t.Fatal(err)
+	}
+	draw := CaseDraw{Rung: 2, Extend: policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, Pool: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60},
+		Need:  policy.Draw{AgentTime: time.Minute},
+		Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: ChatUser, Via: ViaChat, Detail: map[string]any{"pool": true, "rung": 2}}}
+	const want = "the escalation pool leaves 20 sessions, 0 seconds of agent time and 60.00 EUR this month: only the human draws more. " +
+		"This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: hand_up with it as the recommendation"
+	err := g.s.ResolveCase(ctx, g.c.ID, CaseResolution{By: ChatUser, Rung: 2, Action: ActExtend}, &draw, &CaseStep{Rung: 2, Actor: ChatUser}, nil)
+	var spent *DrawBoundError
+	if !errors.As(err, &spent) || err.Error() != want {
+		t.Fatalf("rung 2's session and 30 minutes = %v, want\n%s", err, want)
 	}
 }
 
@@ -937,10 +960,9 @@ func TestActRefusesAnExtendOnAnEndedCard(t *testing.T) {
 	}
 }
 
-// A draw of nothing is not weighed: an extend of lines or of a check-in
-// share on rung 2 goes through on a pool the month has overdrawn in
-// sessions, where a session is refused.
-func TestActWeighsNoDrawOfNothing(t *testing.T) {
+// A lines extend on rung 2 lands on a pool the month has overdrawn in a
+// part it does not draw: in sessions, where a session is refused.
+func TestActLandsALinesExtendOnAPoolOverdrawnInAnotherPart(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
 	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t0", Kind: EventCardExtended, Actor: "sebastian", Via: ViaConsole,

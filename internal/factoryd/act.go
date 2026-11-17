@@ -1116,8 +1116,9 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 	}
 	beside(detail, in.Detail)
 	esc := v.EscalationOf(t.Repository)
+	a, _ := ActionByName(in.Res.Action)
 	draw := &CaseDraw{Rung: in.Rung, Extend: policy.Draw{Sessions: d.Sessions, AgentTime: d.AgentTime}, FundEUR: budget,
-		PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size), Pool: esc.Pool,
+		PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size), Pool: esc.Pool, Need: a.need(f),
 		Event: Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Actor: in.By, Via: via, Detail: detail}}
 	switch in.Res.Action {
 	case ActRaiseCeiling:

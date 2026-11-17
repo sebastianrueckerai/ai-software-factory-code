@@ -350,13 +350,12 @@ func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (wr
 			s.tasks[taskID], s.events = before, s.events[:rows]
 		}
 	}()
-	// a draw of nothing is weighed against no bound, nor one whose identity
-	// key a row holds already, as PGStore's drawFits
-	weighed := !d.amount().IsZero() && (d.Event.IdentityKey == "" || !slices.ContainsFunc(s.events, func(e Event) bool { return e.IdentityKey == d.Event.IdentityKey }))
-	if weighed {
+	// a draw whose identity key a row holds already is weighed against no
+	// bound, as PGStore's drawFits
+	if d.Event.IdentityKey == "" || !slices.ContainsFunc(s.events, func(e Event) bool { return e.IdentityKey == d.Event.IdentityKey }) {
 		cardDrawn, _ := s.CardDrawn(ctx, taskID)
 		poolDrawn, _ := s.PoolDrawn(ctx, d.Event.Repository, time.Now())
-		if e := newDrawBound(d.Rung, d.amount(), d.Lines, d.CardBound.Minus(cardDrawn), d.Pool.Minus(poolDrawn)); e != nil {
+		if e := newDrawBound(d.Rung, d.amount(), d.Need, d.Lines, d.CardBound.Minus(cardDrawn), d.Pool.Minus(poolDrawn)); e != nil {
 			return false, e
 		}
 	}

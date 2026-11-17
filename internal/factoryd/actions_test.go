@@ -239,53 +239,58 @@ func TestExtendRefusesWhenTheLastDrawBoughtNothing(t *testing.T) {
 func TestDrawWithinByRung(t *testing.T) {
 	f := CaseFacts{PoolLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 60 - 59.7}, BudgetEUR: 5, CeilingEUR: 8}
 	one := policy.Draw{Sessions: 1}
-	if got, want := drawWithin(f, 1, one, 0, false), "the card's draw bound leaves 0 sessions, 0 seconds of agent time and 0.00 EUR: rung 2 or the human may draw more. "+
+	if got, want := drawWithin(f, 1, one, policy.Draw{}, 0, false), "the card's draw bound leaves 0 sessions, 0 seconds of agent time and 0.00 EUR: rung 2 or the human may draw more. "+
 		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand_up with it as the recommendation"; got != want {
 		t.Errorf("rung 1 = %q, want %q", got, want)
 	}
-	if got := drawWithin(f, 2, one, 0, false); got != "" {
+	if got := drawWithin(f, 2, one, policy.Draw{}, 0, false); got != "" {
 		t.Errorf("rung 2 within the pool = %q, want none", got)
 	}
 	past := policy.Draw{Sessions: 3}
-	if got, want := drawWithin(f, 2, past, 0, false), "the escalation pool leaves 2 sessions, 60 minutes of agent time and 0.30 EUR this month: only the human draws more. "+
+	if got, want := drawWithin(f, 2, past, policy.Draw{}, 0, false), "the escalation pool leaves 2 sessions, 60 minutes of agent time and 0.30 EUR this month: only the human draws more. "+
 		"This draw does not fit in sessions (asked 3, left 2). The largest draw that fits is 2 sessions, 0 seconds of agent time and 0.00 EUR: ask for that"; got != want {
 		t.Errorf("rung 2 past the pool = %q, want %q", got, want)
 	}
-	if got := drawWithin(f, 3, past, 0, false); got != "" {
+	if got := drawWithin(f, 3, past, policy.Draw{}, 0, false); got != "" {
 		t.Errorf("rung 3 past the pool = %q, want none", got)
 	}
 	// 60 - 59.7 is 0.29999999999999716 in floats: 30 cents, which 0.30 EUR fits
-	if got := drawWithin(f, 2, policy.Draw{EUR: 0.3}, 0, true); got != "" {
+	if got := drawWithin(f, 2, policy.Draw{EUR: 0.3}, policy.Draw{}, 0, true); got != "" {
 		t.Errorf("rung 2 drawing the pool's last 30 cents = %q, want none", got)
 	}
-	if got, want := drawWithin(f, 3, policy.Draw{EUR: 4}, 0, true), "4.00 EUR more takes the budget of 5.00 EUR past the card's ceiling of 8.00 EUR: raise the ceiling first"; got != want {
+	if got, want := drawWithin(f, 3, policy.Draw{EUR: 4}, policy.Draw{}, 0, true), "4.00 EUR more takes the budget of 5.00 EUR past the card's ceiling of 8.00 EUR: raise the ceiling first"; got != want {
 		t.Errorf("rung 3 past the ceiling = %q, want %q", got, want)
 	}
-	if got := drawWithin(f, 3, policy.Draw{EUR: 3}, 0, true); got != "" {
+	if got := drawWithin(f, 3, policy.Draw{EUR: 3}, policy.Draw{}, 0, true); got != "" {
 		t.Errorf("rung 3 up to the ceiling = %q, want none", got)
 	}
-	if got, want := drawWithin(f, 4, one, 0, false), "there is no rung 4"; got != want {
+	if got, want := drawWithin(f, 4, one, policy.Draw{}, 0, false), "there is no rung 4"; got != want {
 		t.Errorf("rung 4 = %q, want %q", got, want)
 	}
 }
 
-// A refused draw names the part past the bound, with what it asked and what
-// the bound left, and the largest draw that fits every bound of the rung:
-// on rungs 0 and 1 the card's draw and the pool together. At a cap, a fit
-// without the part the cap names fits nothing; lines ride beside the fit.
+// A refused extend names the part past the bound, with what it asked and
+// what the bound left, and the largest draw that fits every bound of the
+// rung: on rungs 0 and 1 the card's draw and the pool together. A fit is
+// named only while the extend's smallest answer at the case (its probe: a
+// minute at an agent time cap, else a session) fits too, so the extend
+// stays on offer; else nothing fits. Lines ride beside the fit, or alone.
 // The facts are case 6354's at an agent time cap: the card's draw holds 3
 // sessions, 90 minutes and 6 EUR, the pool 924 minutes alone.
 func TestDrawBoundNamesThePartAndTheFit(t *testing.T) {
 	const pool924 = "the escalation pool leaves 0 sessions, 924 minutes of agent time and 0.00 EUR this month: only the human draws more. "
+	const pool5 = "the escalation pool leaves 5 sessions, 0 seconds of agent time and 10.00 EUR this month: only the human draws more. "
 	timeCap := CaseFacts{Kind: CaseAgentTimeCap, CardDrawLeft: policy.Draw{Sessions: 3, AgentTime: 90 * time.Minute, EUR: 6},
 		PoolLeft: policy.Draw{AgentTime: 924*time.Minute + 6*time.Second}}
-	empty, sessionsOnly, gate, odd := timeCap, timeCap, timeCap, timeCap
+	empty, sessionsOnly, gate, odd, sessionCap := timeCap, timeCap, timeCap, timeCap, timeCap
 	empty.PoolLeft = policy.Draw{}
 	sessionsOnly.PoolLeft = policy.Draw{Sessions: 5, EUR: 10}
 	gate.Kind = CaseGateStop
-	noCase := sessionsOnly
-	noCase.Kind = ""
+	sessionCap.Kind = CaseSessionCap
+	gateSessions, noCase := sessionsOnly, sessionsOnly
+	gateSessions.Kind, noCase.Kind = CaseGateStop, ""
 	odd.PoolLeft.AgentTime = 924*time.Minute + 40*time.Second
+	extend, _ := ActionByName(ActExtend)
 	for _, c := range []struct {
 		name  string
 		f     CaseFacts
@@ -306,20 +311,27 @@ func TestDrawBoundNamesThePartAndTheFit(t *testing.T) {
 			"the escalation pool leaves 0 sessions, 0 seconds of agent time and 0.00 EUR this month: only the human draws more. " +
 				"This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: hand_up with it as the recommendation"},
 		{"a session without minutes at the agent time cap", sessionsOnly, 2, policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, 200,
-			"the escalation pool leaves 5 sessions, 0 seconds of agent time and 10.00 EUR this month: only the human draws more. " +
-				"This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: hand_up with it as the recommendation"},
+			pool5 + "This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: hand_up with it as the recommendation"},
+		// a gate stop's extend is probed with a session, which the pool lacks
 		{"lines beside a session at a gate stop", gate, 2, policy.Draw{Sessions: 1}, 200,
-			pool924 + "This draw does not fit in sessions (asked 1, left 0). The largest draw that fits is 0 sessions, 0 seconds of agent time and 0.00 EUR with 200 lines beside it, as lines ride free: ask for that"},
+			pool924 + "This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand_up with it as the recommendation"},
+		{"a session at the session cap", sessionCap, 2, policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, 0,
+			pool924 + "This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand_up with it as the recommendation"},
+		{"lines beside a session and minutes at a gate stop", gateSessions, 2, policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, 200,
+			pool5 + "This draw does not fit in agent time (asked 30 minutes, left 0 seconds). The largest draw that fits is 1 session, 0 seconds of agent time and 0.00 EUR with 200 lines beside it, as lines ride free: ask for that"},
+		{"lines beside minutes at a gate stop", gateSessions, 2, policy.Draw{AgentTime: 30 * time.Minute}, 200,
+			pool5 + "This draw does not fit in agent time (asked 30 minutes, left 0 seconds). An extend of the 200 lines alone fits, as lines ride free: ask for that"},
+		{"minutes at a gate stop", gateSessions, 2, policy.Draw{AgentTime: 30 * time.Minute}, 0,
+			pool5 + "This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits, but 1 session, 0 seconds of agent time and 0.00 EUR does: ask for that"},
 		// 924m40s reads as 925 minutes left, and the fit is cut to 924 whole
 		// minutes, which the pool holds
 		{"a fit cut to the minute", odd, 2, policy.Draw{AgentTime: 1000 * time.Minute}, 0,
 			"the escalation pool leaves 0 sessions, 925 minutes of agent time and 0.00 EUR this month: only the human draws more. " +
 				"This draw does not fit in agent time (asked 1000 minutes, left 925 minutes). The largest draw that fits is 0 sessions, 924 minutes of agent time and 0.00 EUR: ask for that"},
 		{"two parts past the pool", noCase, 2, policy.Draw{Sessions: 6, EUR: 12}, 0,
-			"the escalation pool leaves 5 sessions, 0 seconds of agent time and 10.00 EUR this month: only the human draws more. " +
-				"This draw does not fit in sessions (asked 6, left 5) and EUR (asked 12.00, left 10.00). The largest draw that fits is 5 sessions, 0 seconds of agent time and 10.00 EUR: ask for that"},
+			pool5 + "This draw does not fit in sessions (asked 6, left 5) and EUR (asked 12.00, left 10.00). The largest draw that fits is 5 sessions, 0 seconds of agent time and 10.00 EUR: ask for that"},
 	} {
-		if got := drawWithin(c.f, c.rung, c.d, c.lines, false); got != c.want {
+		if got := drawWithin(c.f, c.rung, c.d, extend.need(c.f), c.lines, false); got != c.want {
 			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
 		}
 	}
@@ -338,22 +350,64 @@ func TestExtendAtATimeCapNamesTheMinutesThatFit(t *testing.T) {
 	}
 }
 
-// A rung's refused extend at case 6354's agent time cap stays on offer while
-// a smaller extend fits, so the refusal names the fit and the extend beside
-// it; with the pool's minutes gone neither the fit nor the extend is named.
+// A rung's refused extend names a fit, "ask for that", exactly while the
+// extend stays on offer to it, and sends it up with hand_up only while it
+// does not: at case 6354's agent time cap and at a gate stop, whose extend
+// is probed with a session.
 func TestARefusedExtendIsOfferedOnlyWhileAFitRemains(t *testing.T) {
-	f := CaseFacts{Kind: CaseAgentTimeCap, Attempts: 1, SessionCap: 3, AgentTimeS: 7220, AgentTimeCapS: 10800,
+	timeCap := CaseFacts{Kind: CaseAgentTimeCap, Attempts: 1, SessionCap: 3, AgentTimeS: 7220, AgentTimeCapS: 10800,
 		CardDrawLeft: policy.Draw{Sessions: 3, AgentTime: 90 * time.Minute, EUR: 6}, PoolLeft: policy.Draw{AgentTime: 924*time.Minute + 6*time.Second}}
-	in := ActInput{CaseID: 6354, Rung: 2, Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1, "agent_time_s": 1800}}}
-	got := actRefusal(f, in, "#2109")
-	if !strings.Contains(got, "The largest draw that fits is 0 sessions, 30 minutes of agent time and 0.00 EUR: ask for that, and rung 2 may take extend") {
-		t.Errorf("the refusal with a fit = %q, want the fit and the extend on offer", got)
+	emptyPool, gate := timeCap, timeCap
+	emptyPool.PoolLeft = policy.Draw{}
+	gate.Kind = CaseGateStop
+	gateSessions := gate
+	gateSessions.PoolLeft = policy.Draw{Sessions: 5, EUR: 10}
+	for _, c := range []struct {
+		name string
+		f    CaseFacts
+		args map[string]any
+		fit  bool
+	}{
+		{"6354's session and 30 minutes", timeCap, map[string]any{"sessions": 1, "agent_time_s": 1800}, true},
+		{"30 minutes on an empty pool", emptyPool, map[string]any{"agent_time_s": 1800}, false},
+		{"a session and lines at a gate stop, the pool's sessions gone", gate, map[string]any{"sessions": 1, "lines": 200}, false},
+		{"minutes at a gate stop, the pool's minutes gone", gateSessions, map[string]any{"agent_time_s": 1800}, true},
+		{"minutes and lines at a gate stop, the pool's minutes gone", gateSessions, map[string]any{"agent_time_s": 1800, "lines": 200}, true},
+	} {
+		got := actRefusal(c.f, ActInput{CaseID: 6354, Rung: 2, Res: Resolution{Action: ActExtend, Args: c.args}}, "#2109")
+		_, list, _ := strings.Cut(got, ", and rung 2 may take ")
+		offered := slices.Contains(strings.Split(strings.ReplaceAll(list, " and ", ", "), ", "), ActExtend)
+		if strings.Contains(got, ": ask for that") != c.fit || strings.Contains(got, "hand_up") == c.fit || offered != c.fit {
+			t.Errorf("%s: %q; want a fit and the extend on offer %v", c.name, got, c.fit)
+		}
 	}
-	f.PoolLeft = policy.Draw{}
-	got = actRefusal(f, in, "#2109")
-	_, offered, _ := strings.Cut(got, "rung 2 may take ")
-	if !strings.Contains(got, "nothing of it fits: hand_up with it as the recommendation") || slices.Contains(strings.Split(strings.ReplaceAll(offered, " and ", ", "), ", "), ActExtend) {
-		t.Errorf("the refusal with no fit = %q, want nothing to fit and no extend on offer", got)
+	got := actRefusal(timeCap, ActInput{CaseID: 6354, Rung: 2, Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1, "agent_time_s": 1800}}}, "#2109")
+	if !strings.Contains(got, "The largest draw that fits is 0 sessions, 30 minutes of agent time and 0.00 EUR: ask for that, and rung 2 may take extend") {
+		t.Errorf("6354's refusal = %q, want the fit and the extend on offer", got)
+	}
+}
+
+// An answer's draw carries the smallest draw its action takes on the case,
+// the extend's probe, so the store's own refusal names a fit by it as
+// drawWithin does: a minute at an agent time cap, a session at a gate stop,
+// a cent for a fund.
+func TestCaseDrawCarriesTheActionsNeed(t *testing.T) {
+	g := newFactsRig(t)
+	card := g.store.tasks["t1"]
+	extend := Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1, "agent_time_s": 1800}}
+	for _, c := range []struct {
+		kind CaseKind
+		res  Resolution
+		want policy.Draw
+	}{
+		{CaseAgentTimeCap, extend, policy.Draw{AgentTime: time.Minute}},
+		{CaseGateStop, extend, policy.Draw{Sessions: 1}},
+		{CaseBudgetFloor, Resolution{Action: ActFund, Args: map[string]any{"eur": 2.0}}, policy.Draw{EUR: 0.01}},
+	} {
+		d := g.r.caseDraw(card, CaseFacts{Kind: c.kind}, Case{ID: 7, Kind: c.kind}, ActInput{Rung: 2, Res: c.res}, ViaChat)
+		if d == nil || d.Need != c.want {
+			t.Errorf("%s's %s draw = %+v, want the need %+v", c.kind, c.res.Action, d, c.want)
+		}
 	}
 }
 

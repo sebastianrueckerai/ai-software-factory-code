@@ -529,6 +529,14 @@ func probe(a Action, f CaseFacts) Resolution {
 	return p
 }
 
+// need is the smallest draw an answer by a takes on f, its probe's: an
+// extend's session, or its minute at an agent time cap, and a fund's or a
+// raise's cent. Zero for an action that draws nothing of its own.
+func (a Action) need(f CaseFacts) policy.Draw {
+	d, _ := Resolution{Action: a.Name, Args: probe(a, f).Args}.draw()
+	return d
+}
+
 // fittingActions is the action a stop's own kind asks for, which leads
 // every listing of the actions on a case of that kind.
 var fittingActions = map[CaseKind]string{CaseAgentTimeCap: ActExtend, CaseSessionCap: ActExtend, CaseBudgetFloor: ActFund}
@@ -652,14 +660,14 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	case buys && boughtNothing(f):
 		return boughtNothingText(f)
 	}
-	if why := drawWithin(f, rung, d, r.lines(), false); why != "" || budget == 0 {
+	if why := drawWithin(f, rung, d, a.need(f), r.lines(), false); why != "" || budget == 0 {
 		return why
 	}
 	if r.Action == ActRaiseCeiling {
 		raise, _ := r.Args["eur"].(float64)
 		f.CeilingEUR += raise
 	}
-	return drawWithin(f, rung, policy.Draw{EUR: budget}, 0, true)
+	return drawWithin(f, rung, policy.Draw{EUR: budget}, policy.Draw{}, 0, true)
 }
 
 // draw is everything r draws from the pool: an extend's sessions and
@@ -845,16 +853,13 @@ func boughtNothingText(f CaseFacts) string {
 
 // drawWithin reports why draw d, lines beside it, does not fit rung's
 // bounds on f: the pool for rungs 0 to 2, the card bound for rungs 0 and 1,
-// the ceiling for fund. At a cap a fit without the part the cap names
-// buys no session, so none fits.
-func drawWithin(f CaseFacts, rung int, d policy.Draw, lines int, toBudget bool) string {
+// the ceiling for fund. need is the smallest draw the answer's action
+// takes (Action.need).
+func drawWithin(f CaseFacts, rung int, d, need policy.Draw, lines int, toBudget bool) string {
 	if rung < 0 || rung > 3 {
 		return fmt.Sprintf("there is no rung %d", rung)
 	}
-	if e := newDrawBound(rung, d, lines, f.CardDrawLeft, f.PoolLeft); e != nil {
-		if f.Kind == CaseAgentTimeCap && d.AgentTime > 0 && e.Fit.AgentTime == 0 || f.Kind == CaseSessionCap && d.Sessions > 0 && e.Fit.Sessions == 0 {
-			e.Fit, e.Lines = policy.Draw{}, 0
-		}
+	if e := newDrawBound(rung, d, need, lines, f.CardDrawLeft, f.PoolLeft); e != nil {
 		return e.Error()
 	}
 	switch {
