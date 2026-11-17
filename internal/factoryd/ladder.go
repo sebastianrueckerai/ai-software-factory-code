@@ -1460,15 +1460,18 @@ func FaceRow(c Case, t Task, f CaseFacts, note string, up *HandUp, fence, scrub 
 }
 
 // InfoRequestRow is the ask row of the agent's request for information
-// reason on card t, asked by comment, with the register's face of its
-// case on facts f: the row opens the agent_request_info case at the
+// reason on card t, asked by comment at asked, with the register's face of
+// its case on facts f: the row opens the agent_request_info case at the
 // human (askCase). fence fences agent text, scrub masks secrets.
-func InfoRequestRow(t Task, f CaseFacts, reason string, comment int64, fence, scrub func(string) string) map[string]any {
-	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: CaseAgentRequestInfo, Status: CaseAtHuman, Facts: map[string]any{"reason": reason}}
+func InfoRequestRow(t Task, f CaseFacts, reason string, comment int64, asked time.Time, fence, scrub func(string) string) map[string]any {
+	at := asked.UTC().Format(time.RFC3339)
+	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: CaseAgentRequestInfo, Status: CaseAtHuman, Facts: map[string]any{"reason": reason, "asked_at": at}}
 	f.atCase(c)
 	face := FaceRow(c, t, f, "", nil, fence, scrub)
 	ask, _ := face["ask"].(string)
-	return AskRow(c, t, reason, ask, comment, face, nil, nil, scrub)
+	row := AskRow(c, t, reason, ask, comment, face, nil, nil, scrub)
+	row["asked_at"] = at
+	return row
 }
 
 // fencedChoices is case c with the agent's choices as a face shows them:

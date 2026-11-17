@@ -643,3 +643,16 @@ func TestTheAgentsViewShowsBesideARungsRecommendation(t *testing.T) {
 		t.Errorf("suggested %q, view %q; want the rung's close and the agent's view", face.Suggested, face.Story.View)
 	}
 }
+
+// An information request's "Not now" names the day its wait ends: 14 days
+// after the request, the issue closes as not reproducible.
+func TestARequestsNotNowNamesTheDayItsWaitEnds(t *testing.T) {
+	x := fixture(t, "case", string(factoryd.CaseAgentRequestInfo))
+	face := factoryd.FaceOf(x.c, x.facts)
+	i := slices.IndexFunc(face.Answers, func(a factoryd.Answer) bool { return a.Action == factoryd.ActNote })
+	want := "The card keeps waiting for the author's answer until " + x.c.OpenedAt.Add(14*24*time.Hour).UTC().Format("2 January at 15:04 UTC") +
+		", then its issue closes as not reproducible."
+	if i < 0 || face.Answers[i].Effect != want {
+		t.Errorf("answers %+v, want Not now with %q", face.Answers, want)
+	}
+}

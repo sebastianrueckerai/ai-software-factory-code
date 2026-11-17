@@ -188,10 +188,9 @@ func boardEntries(all []facefixtures.Fixture) []galleryEntry {
 			r.seedScene(s)
 			return behind.ID
 		}},
-		{galleryBoard, "author wait", plain(factoryd.Task{ID: facefixtures.TaskID(2401), Kind: "agent", Status: "waiting-poster", Track: policy.TrackDirect,
-			Process: "spec", Repository: facefixtures.Repository, IssueNumber: 2401, Source: factoryd.SourceWebhook, Author: "alice", CreatedAt: now.Add(-6 * time.Hour),
-			Gate: factoryd.GateIntake, GateSince: new(now.Add(-5 * time.Hour)), BudgetEUR: 2,
-			Objective: "The export drops archived cards\n\nAn export of a project with archived cards lists none of them. Expected: every card, archived ones marked."})},
+		{galleryBoard, "author wait", func(r *rig) string {
+			return r.seedScene(fixtureScene(fixture(facefixtures.GroupCase, string(factoryd.CaseAgentRequestInfo)), all))
+		}},
 		{galleryBoard, "long words", plain(factoryd.Task{ID: facefixtures.TaskID(2402), Kind: "agent", Status: "queued", Track: policy.TrackDirect,
 			Repository: facefixtures.Repository, IssueNumber: 2402, Source: factoryd.SourceAPI, Author: "factory-chat", ChatFiled: true, CreatedAt: now.Add(-2 * time.Hour),
 			Objective: "Fix TestWallClockStopShipsTheWorkAcrossEveryRetryAndHandover\n\nThe test fails on a retry.",
@@ -458,6 +457,9 @@ func TestGalleryHoldsEveryKind(t *testing.T) {
 			}
 			if action, ok := strings.CutPrefix(e.Kind, "status: "); ok && !strings.Contains(string(f.Open), ">"+action+"</button>") {
 				t.Errorf("the status panel offers no %s:\n%s", action, f.Open)
+			}
+			if e.Kind == "author wait" && !strings.Contains(string(f.Open), ">Answer in my words</button>") {
+				t.Errorf("the card that waits on its author offers no answer:\n%s", f.Open)
 			}
 			if _, col, ok := strings.Cut(e.Kind, "/"); ok && e.Group == facefixtures.GroupSource {
 				small := string(f.Small)

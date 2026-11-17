@@ -956,7 +956,7 @@ func (b *builder) infoRequest(group, name string, over func(*factoryd.Task, *fac
 	f.Attempts = t.Usage.Attempts
 	reason := factoryd.InfoRequestReason("Which Hetzner location does the load test's server use, fsn1 or nbg1?",
 		"the load test's README and the project's environment file, which name no location", "the location the server should run in")
-	e := factoryd.Event{TaskID: t.ID, Kind: factoryd.EventQuestionAsked, Detail: roundTrip(factoryd.InfoRequestRow(t, f, reason, 40000+n*3, same, same))}
+	e := factoryd.Event{TaskID: t.ID, Kind: factoryd.EventQuestionAsked, Detail: roundTrip(factoryd.InfoRequestRow(t, f, reason, 40000+n*3, b.now.Add(-45*time.Minute), same, same))}
 	opened, err := factoryd.CaseFromAsk(t, e, "")
 	if err != nil {
 		panic(err)

@@ -1717,12 +1717,20 @@ func (r *Runner) RequestInfo(ctx context.Context, taskID, reason string) (int64,
 	if err != nil {
 		return 0, err
 	}
-	if t.Status != "waiting-poster" {
+	if t.Status == "waiting-poster" {
+		// a retry: a request whose anchor stands is not posted again
+		if a, err := r.newestInfoRequest(ctx, taskID); err != nil {
+			return 0, err
+		} else if a != nil && a.Body == reason {
+			return a.CommentID, r.askRequest(ctx, t, *a)
+		}
+	} else {
 		if err := r.store.TransitionTask(ctx, taskID, []string{"running", "in-review"}, "waiting-poster"); err != nil {
 			return 0, terminalError("task %s is %s, cannot wait for the issue's author: %v", taskID, t.Status, err)
 		}
 		mirrorTaskState(ctx, r.forgejo, t, "waiting-poster")
 		pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
+		t.Status = "waiting-poster"
 	}
 	notify := r.cfg.Policy().ApproversOf(t.Repository)
 	if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil {
@@ -1735,26 +1743,52 @@ func (r *Runner) RequestInfo(ctx context.Context, taskID, reason string) (int64,
 		return 0, err
 	}
 	r.record(ctx, taskID, "info_requested", map[string]any{"reason": reason, "comment": id, "notify": notify})
-	// the board's ask: the request's case at the human, whose answer posts
-	// the human's words on the issue, where the wait reads them
-	t.Status = "waiting-poster"
-	f, err := r.tripFacts(ctx, t, "", "")
-	if err != nil {
-		return 0, err
-	}
-	if err := r.timeline.WriteRow(ctx, taskID, EventQuestionAsked, FactoryDecider, ViaFactoryd,
-		InfoRequestRow(t, f, reason, id, func(s string) string { return r.untrusted(t, s) }, r.scrub)); err != nil {
-		log.Printf("task %s: the ask of information request comment %d: %v", taskID, id, err)
-	}
-	// the durable anchor Reconcile rebuilds the wait from
-	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeInfoRequest, Author: "factoryd", Body: reason, CommentID: id}); err != nil {
-		log.Printf("task %s: record information request comment %d: %v", taskID, id, err)
+	// the durable anchor Reconcile rebuilds the wait from and the board's
+	// ask is written from
+	a := IntakeEvent{TaskID: taskID, Kind: IntakeInfoRequest, Author: "factoryd", Body: reason, CommentID: id, CreatedAt: time.Now()}
+	if _, err := r.store.InsertIntakeEvent(ctx, a); err != nil {
+		return 0, fmt.Errorf("record information request comment %d: %w", id, err)
 	}
 	if _, err := r.store.InsertAlert(ctx, Alert{Kind: AlertInfoRequest, Source: "agent", TaskID: taskID,
 		Detail: map[string]any{"comment": id, "reason": textutil.Truncate(reason, 2000), "notify": notify}}); err != nil {
 		log.Printf("task %s: record the info_request alert: %v", taskID, err)
 	}
-	return id, nil
+	return id, r.askRequest(ctx, t, a)
+}
+
+// newestInfoRequest is the anchor of task taskID's newest information
+// request, nil for none.
+func (r *Runner) newestInfoRequest(ctx context.Context, taskID string) (*IntakeEvent, error) {
+	events, err := r.store.IntakeEvents(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind == IntakeInfoRequest {
+			return &events[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// askRequest asks information request a of card t on the board once: its
+// ask row opens the agent_request_info case at the human, whose answer
+// posts the human's words on the issue, where the wait reads them. A case
+// whose face is a's comment asked it already.
+func (r *Runner) askRequest(ctx context.Context, t Task, a IntakeEvent) error {
+	cases, err := r.store.CasesOf(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	if slices.ContainsFunc(cases, func(c Case) bool { return c.CommentID == a.CommentID }) {
+		return nil
+	}
+	f, err := r.tripFacts(ctx, t, "", "")
+	if err != nil {
+		return err
+	}
+	return r.timeline.WriteRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd,
+		InfoRequestRow(t, f, a.Body, a.CommentID, a.CreatedAt, func(s string) string { return r.untrusted(t, s) }, r.scrub))
 }
 
 // infoRequestComment is the information request on the issue: its author

@@ -339,6 +339,10 @@ func waitEffect(f Facts) string {
 	if f.Kind == CaseMonitorFlag {
 		return "The notice stays on the card. Nothing else changes."
 	}
+	if asked, err := time.Parse(time.RFC3339, factString(f.Case, "asked_at")); err == nil && f.Case.Kind == CaseAgentRequestInfo {
+		return "The card keeps waiting for the author's answer until " + asked.Add(infoWait).UTC().Format("2 January at 15:04 UTC") +
+			", then its issue closes as not reproducible."
+	}
 	return ""
 }
 

@@ -2414,7 +2414,9 @@ func TestTrustedOnAProjectUsesItsOwnToken(t *testing.T) {
 
 // The resume rule: the issue author's comment is signalled as
 // information whatever their access (poster_comment), a stranger's is
-// only recorded, a writer's stays a human comment; the heal pass does not
+// only recorded, a writer's stays a human comment, the project agent's
+// too: the chat's answer to the request posts as factory-chat, which
+// writes the repository, and wakes the wait; the heal pass does not
 // record the author's comment a second time.
 func TestIntakePosterCommentIsSignalledAsInformation(t *testing.T) {
 	in, store, _ := newTestIntake(t)
@@ -2434,7 +2436,8 @@ func TestIntakePosterCommentIsSignalledAsInformation(t *testing.T) {
 	comment("stranger", 1)
 	comment("visitor", 2)
 	comment("sebastian", 3)
-	want := []string{"t-p poster_comment visitor #0 c2: Firefox 131", "t-p human_comment sebastian #0 c3: Firefox 131"}
+	comment(ChatUser, 4)
+	want := []string{"t-p poster_comment visitor #0 c2: Firefox 131", "t-p human_comment sebastian #0 c3: Firefox 131", "t-p human_comment factory-chat #0 c4: Firefox 131"}
 	if got := workflowsOf(in).signals; !slices.Equal(got, want) {
 		t.Fatalf("signals = %q, want %q", got, want)
 	}
@@ -2442,12 +2445,13 @@ func TestIntakePosterCommentIsSignalledAsInformation(t *testing.T) {
 	for _, e := range store.intakeEvents {
 		kinds = append(kinds, fmt.Sprintf("%s %s trusted=%v", e.Kind, e.Author, e.Trusted))
 	}
-	if wantKinds := []string{"issue_comment stranger trusted=false", "poster_comment visitor trusted=false", "issue_comment sebastian trusted=true"}; !slices.Equal(kinds, wantKinds) {
+	if wantKinds := []string{"issue_comment stranger trusted=false", "poster_comment visitor trusted=false", "issue_comment sebastian trusted=true", "issue_comment factory-chat trusted=true"}; !slices.Equal(kinds, wantKinds) {
 		t.Fatalf("events = %q, want %q", kinds, wantKinds)
 	}
 	// the author's comment never counts as an ask's answer
-	if answers, _, _ := AnswersFrom(store.intakeEvents, []AskAnchor{{Comment: 1}}, nil); len(answers) != 1 || !strings.Contains(answers[0], "sebastian") {
-		t.Fatalf("answers = %q, want only the writer's", answers)
+	if answers, _, _ := AnswersFrom(store.intakeEvents, []AskAnchor{{Comment: 1}}, nil); len(answers) != 2 || !strings.HasPrefix(answers[0], "sebastian ") ||
+		!strings.HasPrefix(answers[1], "the project agent factory-chat ") {
+		t.Fatalf("answers = %q, want only the writers'", answers)
 	}
 }
 

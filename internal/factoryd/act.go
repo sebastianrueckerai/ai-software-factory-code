@@ -398,18 +398,34 @@ func CaseLeftToAct(ctx context.Context) bool { left, _ := ctx.Value(caseLeftKey{
 
 // StoreMissedOffers stores, once, the face of each case at the human whose
 // ask holds none: one that reached the human before the register wrote
-// its faces. It also stores again an agent's question whose stored face no
-// longer fits its caps: a cap that binds after the ask, lifts at its reset
-// or by a raise, or gives way to another, within a pass, once the facts
-// are read whole (readWhole). A background pass reads the live facts of
-// each.
+// its faces. It asks on the board, once, the information request a card
+// waits on without its case: one asked before the board asked them, or
+// whose ask failed to write. It also stores again an agent's question whose
+// stored face no longer fits its caps: a cap that binds after the ask,
+// lifts at its reset or by a raise, or gives way to another, within a
+// pass, once the facts are read whole (readWhole). A background pass reads
+// the live facts of each.
 func (r *Runner) StoreMissedOffers(ctx context.Context) {
-	tasks, err := r.store.ListTasksByStatus(ctx, "waiting-human")
+	waiting, err := r.store.ListTasksByStatus(ctx, "waiting-human")
 	if err != nil {
 		log.Printf("offers pass: %v", err)
 		return
 	}
-	for _, t := range tasks {
+	posters, err := r.store.ListTasksByStatus(ctx, "waiting-poster")
+	if err != nil {
+		log.Printf("offers pass: %v", err)
+		return
+	}
+	for _, t := range posters {
+		a, err := r.newestInfoRequest(ctx, t.ID)
+		if err == nil && a != nil {
+			err = r.askRequest(ctx, t, *a)
+		}
+		if err != nil {
+			log.Printf("offers pass: task %s: the information request's ask: %v", t.ID, err)
+		}
+	}
+	for _, t := range slices.Concat(waiting, posters) {
 		cases, err := r.store.OpenCasesOf(ctx, t.ID)
 		if err != nil {
 			log.Printf("offers pass: task %s: %v", t.ID, err)

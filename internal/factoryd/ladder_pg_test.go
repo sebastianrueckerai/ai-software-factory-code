@@ -1148,3 +1148,78 @@ func TestAnInformationRequestAsksTheHuman(t *testing.T) {
 		t.Fatalf("after the author's comment the request's case is %s, want it resolved", got)
 	}
 }
+
+// A card that waits on its issue's author without the request's case, one
+// that asked before the board did or whose ask failed to write, gets the
+// case from the request's anchor at the minute pass, once; a retry of the
+// request posts nothing again and asks no second time.
+func TestAWaitOnTheAuthorWithoutItsCaseGetsItAtTheMinutePass(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	question := "Which Hetzner location does the load test's server use, fsn1 or nbg1?"
+	reason := AgentAsk{Kind: AskInfo, Question: question, Tried: "both regions' price lists", Needs: "the location the server runs in"}.reason()
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'waiting-poster' WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: IntakeInfoRequest, Author: "factoryd", Body: reason, CommentID: 41}); err != nil {
+		t.Fatal(err)
+	}
+	asked := func(when string) {
+		t.Helper()
+		cs, err := g.s.CasesOf(ctx, "t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cs) != 1 || cs[0].Kind != CaseAgentRequestInfo || cs[0].Status != CaseAtHuman || cs[0].CommentID != 41 {
+			t.Fatalf("%s: cases %+v, want the request's one case at the human by comment 41", when, cs)
+		}
+		steps, err := g.s.CaseSteps(ctx, cs[0].ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ask, _ := g.r.CaseAsk(ctx, cs[0])
+		if face := CaseFace(cs[0], Task{ID: "t1", Kind: "agent"}, ask); len(steps) != 1 || face.Ask != question {
+			t.Fatalf("%s: %d steps asking %q, want the one ask of %q", when, len(steps), face.Ask, question)
+		}
+	}
+	g.r.StoreMissedOffers(ctx)
+	asked("after one pass")
+	g.r.StoreMissedOffers(ctx)
+	asked("after another pass")
+	id, err := g.r.RequestInfo(ctx, "t1", reason)
+	if err != nil || id != 41 || len(g.forge.comments) != 0 {
+		t.Fatalf("the retry = %d, %v and posted %d comments; want comment 41 and nothing posted", id, err, len(g.forge.comments))
+	}
+	asked("after the retry")
+}
+
+// The project agent answers the request in the chat: its press posts the
+// words on the issue once, as factory-chat, whose comment the wait hears as
+// a writer's; the press ends the case and tells the run the answer is whole.
+func TestTheChatAnswersAnInformationRequest(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	reason := AgentAsk{Kind: AskInfo, Question: "Which Hetzner location does the load test's server use, fsn1 or nbg1?",
+		Tried: "both regions' price lists", Needs: "the location the server runs in"}.reason()
+	comment, err := g.r.RequestInfo(ctx, "t1", reason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, err := g.s.OpenCasesOf(ctx, "t1")
+	if err != nil || len(cs) != 1 {
+		t.Fatalf("cases %+v, %v; want the request's one case", cs, err)
+	}
+	posted := 0
+	out, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: cs[0].ID, By: ChatUser, Via: ViaChat, Rung: 2,
+		Res: Resolution{Action: ActContinue, Note: "fsn1"}, Post: func(context.Context) (int64, error) { posted++; return comment + 1, nil }})
+	if err != nil || posted != 1 || out.Comment != comment+1 || caseByID(t, g.s, cs[0].ID).Status != CaseResolved {
+		t.Fatalf("the chat's press = %v, posted %d times as comment %d, case %s; want one post as comment %d and the case resolved",
+			err, posted, out.Comment, caseByID(t, g.s, cs[0].ID).Status, comment+1)
+	}
+	whole := slices.ContainsFunc(g.signals.got, func(c reopenCall) bool {
+		return c.signal == SignalAnswerWhole && c.sig.Comment == comment+1 && c.sig.Author == ChatUser
+	})
+	if !whole {
+		t.Fatalf("signals %+v, want the answer whole by %s at comment %d", g.signals.got, ChatUser, comment+1)
+	}
+}
