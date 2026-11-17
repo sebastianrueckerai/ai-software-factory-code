@@ -216,10 +216,13 @@ func FaceOf(c Case, f Facts) AskFace {
 		i := slices.IndexFunc(answers, func(o Answer) bool { return o.Key() == key || o.Value == key })
 		if i < 0 {
 			a, ok := answerFor(key, f)
-			if !ok || !answerHolds(a, f) {
+			if !ok {
 				return false
 			}
 			if i = slices.IndexFunc(answers, func(o Answer) bool { return o.Label == a.Label }); i < 0 {
+				if !answerHolds(a, f) {
+					return false
+				}
 				answers, i = append(answers, a), len(answers)
 			}
 		}
@@ -247,7 +250,7 @@ func FaceOf(c Case, f Facts) AskFace {
 	face.Answers = answers
 	for _, a := range moreActions(f) {
 		if !slices.ContainsFunc(slices.Concat(answers, face.More), func(o Answer) bool {
-			return o.Key() == a.Key() || o.Action == a.Action && o.Effect == a.Effect
+			return o.Key() == a.Key() || o.Label == a.Label || o.Action == a.Action && o.Effect == a.Effect
 		}) {
 			face.More = append(face.More, a)
 		}
@@ -284,11 +287,14 @@ func answerFor(key string, f Facts) (Answer, bool) {
 // answerHolds reports whether answer a can happen on facts f: the human's
 // press of a table action with its defaults, each required field written,
 // is one the table takes. Any other answer is the card's own, and its own
-// door decides it.
+// door decides it. A human card takes its own choices and its end alone.
 func answerHolds(a Answer, f Facts) bool {
 	act, ok := ActionByName(a.Action)
-	if !ok || a.Value != "" {
+	switch {
+	case !ok || a.Value != "":
 		return true
+	case ChoiceCase(f.Case, f.Card.Kind) && a.Action != ActClose:
+		return false
 	}
 	written := map[string]string{}
 	for _, field := range a.Fields {

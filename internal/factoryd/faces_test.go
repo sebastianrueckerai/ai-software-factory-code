@@ -170,12 +170,17 @@ func TestFaceContract(t *testing.T) {
 				t.Errorf("%s: %q has no effect line", name, a.Label)
 			}
 		}
-		keys := map[string]bool{}
+		keys, shown := map[string]bool{}, map[string]bool{}
 		for _, a := range slices.Concat(face.Answers, face.More) {
-			if keys[a.Key()] {
-				t.Errorf("%s: %s shows twice among the answers %v and More %v", name, a.Key(), labels(face.Answers), labels(face.More))
+			if keys[a.Key()] || shown[a.Label] {
+				t.Errorf("%s: %s %q shows twice among the answers %v and More %v", name, a.Key(), a.Label, labels(face.Answers), labels(face.More))
 			}
-			keys[a.Key()] = true
+			keys[a.Key()], shown[a.Label] = true, true
+		}
+		for _, a := range face.More {
+			if why := actRefusal(x, a); why != "" {
+				t.Errorf("%s: More offers %q, which Act refuses: %s", name, a.Label, why)
+			}
 		}
 		for _, s := range []string{face.Story.Planned, face.Story.Happened, face.Story.Left} {
 			if n := utf8.RuneCountInString(s); n > 240 {
@@ -183,7 +188,7 @@ func TestFaceContract(t *testing.T) {
 			}
 		}
 		texts := []string{face.Ask, face.Why, face.Story.Planned, face.Story.Happened, face.Story.Left}
-		for _, a := range face.Answers {
+		for _, a := range slices.Concat(face.Answers, face.More) {
 			texts = append(texts, a.Label, a.Effect)
 		}
 		for _, s := range texts {
@@ -197,6 +202,24 @@ func TestFaceContract(t *testing.T) {
 			}
 		}
 	}
+}
+
+// actRefusal is why Act refuses the human's press of answer a on the
+// fixture's case, "" when it takes it: a human card takes its own choices
+// and its end alone; a table action, its press with its defaults.
+func actRefusal(x faced, a factoryd.Answer) string {
+	_, table := factoryd.ActionByName(a.Action)
+	switch {
+	case a.Value != "", !table:
+		return ""
+	case factoryd.ChoiceCase(x.c, x.fx.Task.Kind) && a.Action != factoryd.ActClose:
+		return "a human card takes one of its choices"
+	}
+	res, err := a.Press(x.facts, written(a), "")
+	if err != nil {
+		return err.Error()
+	}
+	return factoryd.PressRefusal(x.facts, res)
 }
 
 func labels(as []factoryd.Answer) []string {
@@ -319,14 +342,20 @@ func fixture(t *testing.T, group, kind string) faced {
 }
 
 // A face with one answer of its own gets "Not now" and "End the card" only
-// where no answer of their action stands: "I did it" ends the card, so no
-// second end joins it.
+// where no answer of their action stands, and only what a human card takes:
+// its "Not now" keeps it, so "End the card" joins; "I did it" ends it, so
+// no second end joins, and a human card takes no bare "Not now".
 func TestAOneAnswerFaceAddsNoSecondEnd(t *testing.T) {
-	c := factoryd.Case{Kind: factoryd.CaseHumanCard, Facts: map[string]any{"ask": "Is the bot token rotated?",
-		"offers": []any{map[string]any{"value": factoryd.ActClose, "label": "I did it"}}}}
-	face := factoryd.FaceOf(c, factoryd.Facts{Card: factoryd.Task{ID: "t1", Kind: "human", IssueNumber: 7, Source: factoryd.SourceWebhook}})
-	if got, want := labels(face.Answers), []string{"I did it", "Not now"}; !slices.Equal(got, want) {
-		t.Errorf("answers %v, want %v", got, want)
+	face := func(value, label string) []string {
+		c := factoryd.Case{Kind: factoryd.CaseHumanCard, Facts: map[string]any{"ask": "Is the bot token rotated?",
+			"offers": []any{map[string]any{"value": value, "label": label}}}}
+		return labels(factoryd.FaceOf(c, factoryd.Facts{Card: factoryd.Task{ID: "t1", Kind: "human", IssueNumber: 7, Source: factoryd.SourceWebhook}}).Answers)
+	}
+	if got, want := face(factoryd.AnswerPark, "Not now"), []string{"Not now", "End the card"}; !slices.Equal(got, want) {
+		t.Errorf("a card that keeps waiting: answers %v, want %v", got, want)
+	}
+	if got, want := face(factoryd.ActClose, "I did it"), []string{"I did it"}; !slices.Equal(got, want) {
+		t.Errorf("a card that ends: answers %v, want %v", got, want)
 	}
 }
 
