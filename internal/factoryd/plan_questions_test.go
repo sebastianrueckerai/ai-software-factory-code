@@ -112,6 +112,17 @@ func TestQuestionBoundsRefuseATextOverTheBound(t *testing.T) {
 	}
 }
 
+// A plan question's choice is a button a human presses: file_plan holds it
+// to the guide's check of an offered answer.
+func TestQuestionBoundsHoldEachChoiceToTheGuide(t *testing.T) {
+	qs := []PlanQuestion{{Text: "t", Choices: []string{"Keep 7 days", "I keep 30 days; it is safer"}, Recommended: "Keep 7 days", Grounds: "g"}}
+	want := []string{`plan: question 1: choice "I keep 30 days; it is safer": The text holds a semicolon. Write two sentences. ` +
+		`The answer says "I", but the human presses it. Name what happens, for example "Send the new pins to the agent".`}
+	if got := questionBounds(qs); !slices.Equal(got, want) {
+		t.Errorf("findings %q, want %q", got, want)
+	}
+}
+
 // file_plan, where the planner writes, holds the question bound: a
 // question of 301 characters is refused with the finding and nothing is
 // stored, and the same plan at 300 (of ü, 600 bytes) files as revision 1.

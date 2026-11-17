@@ -277,6 +277,11 @@ func (t *turn) askMember(in toolInput) (string, error) {
 		slices.ContainsFunc(choices, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > writingguide.MaxChoice }):
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters", factoryd.MaxChoices, writingguide.MaxChoice))
 	}
+	for _, c := range choices {
+		if faults := writingguide.ChoiceFaults(c); len(faults) > 0 {
+			return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: %q: %s", c, strings.Join(faults, " ")))
+		}
+	}
 	token, desc, err := t.askBinding(in.Tool, in.Args, in.Choice, choices)
 	if err != nil {
 		return "", err

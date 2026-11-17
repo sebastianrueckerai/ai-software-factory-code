@@ -3181,6 +3181,26 @@ func TestChatAskBounds(t *testing.T) {
 	}
 }
 
+// An ask's choice is a button the human presses: the guide's check of an
+// offered answer refuses one in the agent's own voice, and the ask stores
+// nothing.
+func TestChatAskRefusesAChoiceTheGuideFaults(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	args := `{"ask":"Which store?","choices":["Postgres","I keep SQLite"]}`
+	g.replies = [][]string{{call(1, "ask", args)}, {say("I will ask again.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"go when ready"}})
+	equal(t, "the refused ask", events, []string{
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Refused: choices: \"I keep SQLite\": The answer says \"I\", but the human presses it. Name what happens, for example \"Send the new pins to the agent\"."}`,
+		`text {"text":"I will ask again."}`, `done {}`})
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 10)
+	for _, m := range rows {
+		if m.Kind == "ask" {
+			t.Fatalf("a refused ask stored a row: %+v", m)
+		}
+	}
+}
+
 // png1x1 is a real 1×1 PNG: an image body small enough to ride every
 // upload test.
 // The ask tool binds one of its choices to a tool call: the binding is a

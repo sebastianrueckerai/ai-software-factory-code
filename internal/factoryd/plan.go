@@ -601,8 +601,8 @@ func questionFindings(qs []PlanQuestion) []string {
 
 // questionBounds are the findings on a plan's questions that only the
 // planner's filing judges: the length of the text and the grounds, at most
-// MaxQuestion runes each, and a recommended answer that is one of the
-// choices with its grounds. file_plan alone judges them, where the planner
+// MaxQuestion runes each, each choice as the guide checks a button, and a
+// recommended answer that is one of the choices with its grounds. file_plan alone judges them, where the planner
 // writes, so a revision stored before the bound or the recommendation
 // still files its round and its delta cards.
 func questionBounds(qs []PlanQuestion) []string {
@@ -613,6 +613,14 @@ func questionBounds(qs []PlanQuestion) []string {
 		}
 		if utf8.RuneCountInString(q.Text) > MaxQuestion {
 			add("text is over %d characters", MaxQuestion)
+		}
+		for _, c := range q.Choices {
+			if n := utf8.RuneCountInString(c); n == 0 || n > writingguide.MaxChoice {
+				continue // questionFindings names it
+			}
+			if faults := writingguide.ChoiceFaults(c); len(faults) > 0 {
+				add("choice %q: %s", c, strings.Join(faults, " "))
+			}
 		}
 		switch {
 		case q.Recommended == "":
