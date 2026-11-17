@@ -424,11 +424,7 @@ func init() {
 			Story:   agentStory,
 			Answers: func(f Facts) []string { return append(sayKeys(f), ActNote, ActClose) },
 			Suggest: func(f Facts) (string, string, string) {
-				rec := agentLine(f, "Recommendation")
-				if key := namedAnswer(rec, f, sayKeys(f)); key != "" {
-					return key, "the agent", rec
-				}
-				return "", "", ""
+				return "", "the agent", agentLine(f, "Recommendation")
 			}}),
 		CaseAgentRequestInfo: work(FaceSpec{Ask: agentAsk("The agent needs an answer to go on. What should it know?"),
 			Why: fixed("The agent cannot go on without this answer."), Story: agentStory,
@@ -880,25 +876,6 @@ func agentLine(f Facts, key string) string {
 	return ""
 }
 
-// namedAnswer is the key among keys of the answer whose label rec opens
-// with as words of their own, the longest such label; "" for none.
-func namedAnswer(rec string, f Facts, keys []string) string {
-	rec = strings.ToLower(strings.TrimSpace(rec))
-	best, most := "", 0
-	for _, key := range keys {
-		a, ok := answerFor(key, f)
-		label := strings.ToLower(strings.TrimSpace(a.Label))
-		if !ok || label == "" || len(label) <= most || !strings.HasPrefix(rec, label) {
-			continue
-		}
-		if next, _ := utf8.DecodeRuneInString(rec[len(label):]); unicode.IsLetter(next) || unicode.IsDigit(next) {
-			continue
-		}
-		best, most = key, len(label)
-	}
-	return best
-}
-
 func factStrings(c Case, key string) []string {
 	var out []string
 	switch raw := c.Facts[key].(type) {
@@ -1083,13 +1060,6 @@ var humanFace = FaceSpec{
 		return Story{Planned: line(title(f)), Happened: whyOf(factString(f.Case, "why"))}
 	},
 	Answers: humanAnswers,
-	Suggest: func(f Facts) (string, string, string) {
-		rec := factString(f.Case, "recommendation")
-		if key := namedAnswer(rec, f, humanAnswers(f)); key != "" {
-			return key, cmp.Or(factString(f.Case, "recommended_by"), "the factory"), rec
-		}
-		return "", "", ""
-	},
 }
 
 // humanAnswers are the keys of the choices a human card's ask stores.

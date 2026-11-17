@@ -74,7 +74,7 @@ const storyMax = 240
 // FaceSpec is the face of one kind: its ask, why line and story from the
 // facts, the answers to its question by key, and the answer it suggests
 // with who suggests it and why. A suggestion without grounds, or a nil
-// Suggest, suggests nothing.
+// Suggest, suggests nothing; grounds without an answer show as words.
 type FaceSpec struct {
 	Ask     func(Facts) string
 	Why     func(Facts) string
@@ -99,7 +99,8 @@ type Recommendation struct{ Action, By, Grounds string }
 
 // AskFace is a face as a human reads it: one question, why it came up, the
 // story, at most four answers with the suggested one first, and every
-// other answer that holds in More.
+// other answer that holds in More. Grounds are the recommendation's words
+// and SuggestedBy its writer, shown with no answer suggested too.
 type AskFace struct {
 	Ask, Why                        string
 	Story                           Story
@@ -109,18 +110,18 @@ type AskFace struct {
 }
 
 // RecommendationOf is the recommendation an ask row stores: the action it
-// preselects, who recommends it and the grounds; none when it preselects
-// nothing. The words never name the action.
+// preselects, who recommends it and the grounds; words alone only with
+// their writer, and none otherwise. The words never name the action.
 func RecommendationOf(detail map[string]any) Recommendation {
 	var r Recommendation
 	if p, ok := detail["preselected"].(map[string]any); ok {
 		r.Action, _ = p["action"].(string)
 	}
 	r.Grounds, _ = detail["recommendation"].(string)
-	if r.Action == "" {
+	by, _ := detail["recommended_by"].(string)
+	if r.Action == "" && (r.Grounds == "" || by == "") {
 		return Recommendation{}
 	}
-	by, _ := detail["recommended_by"].(string)
 	r.By = cmp.Or(by, "the factory")
 	return r
 }
@@ -234,9 +235,17 @@ func FaceOf(c Case, f Facts) AskFace {
 		face.Suggested, face.SuggestedBy, face.Grounds = a.Key(), by, grounds
 		return true
 	}
-	if !lead(f.Recommend.Action, f.Recommend.By, f.Recommend.Grounds) && spec.Suggest != nil {
-		if key, by, grounds := spec.Suggest(f); grounds != "" {
-			lead(key, by, grounds)
+	said := func(r Recommendation) {
+		if face.Grounds == "" && r.Action == "" {
+			face.SuggestedBy, face.Grounds = r.By, r.Grounds
+		}
+	}
+	if !lead(f.Recommend.Action, f.Recommend.By, f.Recommend.Grounds) {
+		said(f.Recommend)
+		if spec.Suggest != nil {
+			if key, by, grounds := spec.Suggest(f); grounds != "" && !lead(key, by, grounds) {
+				said(Recommendation{key, by, grounds})
+			}
 		}
 	}
 	if len(answers) > mostAnswers {

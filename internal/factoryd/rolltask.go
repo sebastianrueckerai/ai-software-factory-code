@@ -965,6 +965,7 @@ func RollFailedQuestion(failed []RollFailure) HumanQuestion {
 		Info: "The roll tasks that carry main's images into k8s/ keep failing, so the repository pins the last images that went live and every card merged since waits on a green chain." +
 			fmt.Sprintf("\n\nThe failed attempts, oldest first:\n%s\n\nTry the roll again starts one roll task of main's newest green images. Not now leaves this card waiting. End the card ends it, and the images stay pinned as they are until a new roll merges.", strings.Join(facts, "\n")),
 		Recommendation: "Try the roll again, after reading the newest failed card's reason",
+		Recommended:    AnswerRetryRoll,
 		Source:         "the roller",
 		Choices:        choices(ActRetry+"/"+variantRoll, ActNote+"/"+variantPark, ActClose),
 	}

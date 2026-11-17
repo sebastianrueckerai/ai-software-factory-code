@@ -361,9 +361,9 @@ func (t *turn) askBinding(name string, args json.RawMessage, choice string, choi
 // title and why its why line, which the filing door checks on the turn's
 // try. Each choice sits in the "say:" value namespace, so no label the
 // agent writes equals a factory control value.
-func (t *turn) escalate(ask, why, info, recommendation string, choices []string) (string, error) {
+func (t *turn) escalate(ask, why, info, recommendation, choice string, choices []string) (string, error) {
 	ask, why, info = strings.TrimSpace(ask), strings.TrimSpace(why), strings.TrimSpace(info)
-	recommendation = strings.TrimSpace(recommendation)
+	recommendation, choice = strings.TrimSpace(recommendation), strings.TrimSpace(choice)
 	for i := range choices {
 		choices[i] = strings.TrimSpace(choices[i])
 	}
@@ -380,6 +380,8 @@ func (t *turn) escalate(ask, why, info, recommendation string, choices []string)
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters", factoryd.MaxChoices, writingguide.MaxChoice))
 	case repeats(choices):
 		return "", refuse(http.StatusBadRequest, "choices: each answer once")
+	case choice != "" && !slices.Contains(choices, choice):
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choice: the one of choices you would pick, as written there; %q is none of them", choice))
 	}
 	for _, c := range choices {
 		if faults := writingguide.ChoiceFaults(c); len(faults) > 0 {
@@ -389,6 +391,9 @@ func (t *turn) escalate(ask, why, info, recommendation string, choices []string)
 	q := factoryd.HumanQuestion{Ask: ask, Why: why, Info: info, Recommendation: recommendation, Source: "the project agent"}
 	for _, c := range choices {
 		q.Choices = append(q.Choices, factoryd.QuestionChoice{Value: "say:" + c, Label: c})
+	}
+	if choice != "" {
+		q.Recommended = "say:" + choice
 	}
 	n, err := t.c.cfg.Escalate(factoryd.WithBriefTry(t.r.Context(), t.briefTry("escalate")), t.p.Repository, q, t.a.s.user)
 	var no *factoryd.BriefRefusal

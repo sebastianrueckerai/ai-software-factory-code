@@ -135,7 +135,7 @@ func TestChatEscalate(t *testing.T) {
 	_, s := r.loggedIn(t)
 	var events []string
 	trn := r.chatTurnOf(t, s, &events)
-	_, err := trn.escalate("Which store?", "", "", "", nil)
+	_, err := trn.escalate("Which store?", "", "", "", "", nil)
 	equal(t, "without the factory's escalation", err.Error(), "this factory files no escalation from the chat")
 	var filed []factoryd.HumanQuestion
 	var repo string
@@ -144,36 +144,38 @@ func TestChatEscalate(t *testing.T) {
 		filed = append(filed, q)
 		return 42, nil
 	}
-	got, err := trn.escalate(" Which store? ", " Postgres runs out of connections at the measured peak. ", " The counts and the plan section both say so. ", " Postgres, plan section 3 ", []string{" Postgres ", "SQLite"})
+	got, err := trn.escalate(" Which store? ", " Postgres runs out of connections at the measured peak. ", " The counts and the plan section both say so. ", " Postgres, plan section 3 ", " Postgres ", []string{" Postgres ", "SQLite"})
 	equal(t, "the tool's answer", []any{got, err}, []any{"Filed the escalation as #42 in Needs you; the inbox carries it to the project's humans with its choices.", error(nil)})
 	equal(t, "what it filed", []any{repo, filed}, []any{"sf/code", []factoryd.HumanQuestion{{
 		Ask:            "Which store?",
 		Why:            "Postgres runs out of connections at the measured peak.",
 		Info:           "The counts and the plan section both say so.",
 		Recommendation: "Postgres, plan section 3",
+		Recommended:    "say:Postgres",
 		Source:         "the project agent",
 		Choices:        []factoryd.QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}},
 	}}})
 	two := []string{"a", "b"}
 	for _, in := range []struct {
-		name, ask, why, info, recommendation string
-		choices                              []string
-		want                                 string
+		name, ask, why, info, recommendation, choice string
+		choices                                      []string
+		want                                         string
 	}{
-		{"no ask", "", "why", "info", "rec", two, "ask: 1 to 255 characters, as the card's title"},
-		{"256 characters", strings.Repeat("x", 256), "why", "info", "rec", two, "ask: 1 to 255 characters, as the card's title"},
-		{"no info", "Which?", "why", "", "rec", two, "info: what a human should know to answer well, 1 to 2000 characters"},
-		{"no recommendation", "Which?", "why", "info", "", two, "recommendation: the answer you would pick and where you read it, 1 to 2000 characters"},
-		{"no choices", "Which?", "why", "info", "rec", nil, "choices: 2 to 5 answers of 1 to 60 characters"},
-		{"one choice", "Which?", "why", "info", "rec", []string{"one"}, "choices: 2 to 5 answers of 1 to 60 characters"},
-		{"six choices", "Which?", "why", "info", "rec", []string{"a", "b", "c", "d", "e", "f"}, "choices: 2 to 5 answers of 1 to 60 characters"},
-		{"empty choice", "Which?", "why", "info", "rec", []string{"a", ""}, `choices: "": The answer is empty.`},
-		{"61 characters", "Which?", "why", "info", "rec", []string{"a", strings.Repeat("b", 61)}, `choices: "` + strings.Repeat("b", 61) + `": The answer has 61 characters, at most 60.`},
-		{"a fault of the guide", "Which?", "why", "info", "rec", []string{"a", "Use MIT; it fits"}, `choices: "Use MIT; it fits": The text holds a semicolon. Write two sentences.`},
-		{"twice", "Which?", "why", "info", "rec", []string{"a", " a"}, "choices: each answer once"},
-		{"twice by case and end punctuation", "Which?", "why", "info", "rec", []string{"Close it", "close IT."}, "choices: each answer once"},
+		{"no ask", "", "why", "info", "rec", "", two, "ask: 1 to 255 characters, as the card's title"},
+		{"256 characters", strings.Repeat("x", 256), "why", "info", "rec", "", two, "ask: 1 to 255 characters, as the card's title"},
+		{"no info", "Which?", "why", "", "rec", "", two, "info: what a human should know to answer well, 1 to 2000 characters"},
+		{"no recommendation", "Which?", "why", "info", "", "", two, "recommendation: the answer you would pick and where you read it, 1 to 2000 characters"},
+		{"no choices", "Which?", "why", "info", "rec", "", nil, "choices: 2 to 5 answers of 1 to 60 characters"},
+		{"one choice", "Which?", "why", "info", "rec", "", []string{"one"}, "choices: 2 to 5 answers of 1 to 60 characters"},
+		{"six choices", "Which?", "why", "info", "rec", "", []string{"a", "b", "c", "d", "e", "f"}, "choices: 2 to 5 answers of 1 to 60 characters"},
+		{"empty choice", "Which?", "why", "info", "rec", "", []string{"a", ""}, `choices: "": The answer is empty.`},
+		{"61 characters", "Which?", "why", "info", "rec", "", []string{"a", strings.Repeat("b", 61)}, `choices: "` + strings.Repeat("b", 61) + `": The answer has 61 characters, at most 60.`},
+		{"a fault of the guide", "Which?", "why", "info", "rec", "", []string{"a", "Use MIT; it fits"}, `choices: "Use MIT; it fits": The text holds a semicolon. Write two sentences.`},
+		{"twice", "Which?", "why", "info", "rec", "", []string{"a", " a"}, "choices: each answer once"},
+		{"twice by case and end punctuation", "Which?", "why", "info", "rec", "", []string{"Close it", "close IT."}, "choices: each answer once"},
+		{"a choice of none of them", "Which?", "why", "info", "rec", "c", two, `choice: the one of choices you would pick, as written there; "c" is none of them`},
 	} {
-		if _, err := trn.escalate(in.ask, in.why, in.info, in.recommendation, in.choices); err == nil || err.Error() != in.want {
+		if _, err := trn.escalate(in.ask, in.why, in.info, in.recommendation, in.choice, in.choices); err == nil || err.Error() != in.want {
 			t.Errorf("%s: escalate = %v, want %q", in.name, err, in.want)
 		}
 	}
@@ -190,7 +192,7 @@ func TestChatEscalateRefusalNamesTheError(t *testing.T) {
 	}
 	var events []string
 	trn := r.chatTurnOf(t, s, &events)
-	_, err := trn.escalate("Which store?", "the ledger is short", "the pool is dry", "Postgres", []string{"Postgres", "SQLite"})
+	_, err := trn.escalate("Which store?", "the ledger is short", "the pool is dry", "Postgres", "Postgres", []string{"Postgres", "SQLite"})
 	refusedAs(t, err, http.StatusBadGateway, "The escalation could not be filed: forgejo rejected the card: Needs you is closed for sf/code. "+
 		"Try again, or post the question on the card's issue.")
 }

@@ -507,3 +507,31 @@ func TestAnAgentsQuestionShowsWholeOnItsFace(t *testing.T) {
 		t.Errorf("the story's line %q, want %q", x.face.Story.Happened, want)
 	}
 }
+
+// A suggestion is the answer a writer stored, never one matched from its
+// words: a human card's recommendation that names a label in words
+// preselects nothing and still shows with its writer, and the roller's
+// stored pick leads its card.
+func TestASuggestionIsTheStoredPickAlone(t *testing.T) {
+	q := factoryd.HumanQuestion{Ask: "Is the bot token rotated?", Recommendation: "Rotate it now, the old one expires Friday", Source: "the project agent",
+		Choices: []factoryd.QuestionChoice{{Value: "say:Rotate it now", Label: "Rotate it now"}, {Value: "say:Wait a week", Label: "Wait a week"}}}
+	card := factoryd.Task{ID: "t1", Kind: "human", IssueNumber: 7, Source: factoryd.SourceChat}
+	face := func(q factoryd.HumanQuestion) factoryd.AskFace {
+		detail := factoryd.HumanAsk{Q: q, By: "sebastian", Asker: "agent", Via: factoryd.ViaChat}.Event(card).Detail
+		return factoryd.FaceOf(factoryd.Case{Kind: factoryd.CaseHumanCard, Facts: detail}, factoryd.Facts{Card: card, Recommend: factoryd.RecommendationOf(detail)})
+	}
+	if got := face(q); got.Suggested != "" || got.Grounds != q.Recommendation || got.SuggestedBy != "the project agent" {
+		t.Errorf("words alone suggest %q, by %q on %q; want no suggestion and the words by their writer", got.Suggested, got.SuggestedBy, got.Grounds)
+	}
+	q.Recommended = "say:Wait a week"
+	if got := face(q); got.Suggested != "choice:say:Wait a week" || got.Answers[0].Label != "Wait a week" || got.Grounds != q.Recommendation {
+		t.Errorf("the stored pick suggests %q first among %v on %q; want Wait a week", got.Suggested, labels(got.Answers), got.Grounds)
+	}
+	q.Recommended = "say:Rotate it later"
+	if got := face(q); got.Suggested != "" {
+		t.Errorf("a pick that is none of the choices suggests %q", got.Suggested)
+	}
+	if x := fixture(t, "source", factoryd.SourceRollFailed+"/"+facefixtures.Columns[0].Name); x.face.Suggested != "choice:"+factoryd.AnswerRetryRoll || x.face.SuggestedBy != "the roller" {
+		t.Errorf("the roll card suggests %q by %q, want the roll again by the roller", x.face.Suggested, x.face.SuggestedBy)
+	}
+}

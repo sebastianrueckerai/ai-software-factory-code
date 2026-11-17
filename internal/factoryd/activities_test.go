@@ -2500,7 +2500,7 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 		return out
 	}
 	// the agent's ask: its question, its choices sanitised as answers in its
-	// words, and its recommendation suggesting the choice it names
+	// words, and its recommendation's words, which preselect no choice
 	agent := rows.rows[0].Detail
 	if agent["question"] != "Which file?" || agent["ask"] != "Which file?" || agent["why"] != "Open." || agent["source"] != "agent" ||
 		agent["case_id"] != int64(1) || agent["comment"] != int64(701) || !reflect.DeepEqual(agent["choices"], sane) {
@@ -2509,8 +2509,7 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 	if got, want := keys(agent), []string{"say:a.txt", "say:b.txt", "say:ask ＠mallory", ActNote}; !slices.Equal(got, want) {
 		t.Errorf("the agent's ask offers %v, want %v", got, want)
 	}
-	if agent["recommended_by"] != "the agent" || agent["recommendation"] != "a.txt, it is first" ||
-		!reflect.DeepEqual(agent["preselected"], map[string]any{"action": "say:a.txt"}) {
+	if agent["recommended_by"] != "the agent" || agent["recommendation"] != "a.txt, it is first" || agent["preselected"] != nil {
 		t.Errorf("the agent's suggestion: by %v, %v, %v", agent["recommended_by"], agent["recommendation"], agent["preselected"])
 	}
 	// the healed re-ask names the question it asks again and carries the face

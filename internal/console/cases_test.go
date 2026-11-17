@@ -407,8 +407,9 @@ func TestACaseRowShowsOneWaitingTime(t *testing.T) {
 	}
 }
 
-// The agent's question is scrubbed on the face, and a recommendation shows with its writer when it preselects an answer: words
-// that preselect none do not show, whatever action they open with.
+// The agent's question is scrubbed on the face, and a recommendation shows
+// with its writer: words no one signs do not show, whatever action they
+// open with.
 func TestCaseFaceScrubsTheQuestionAndNamesTheRecommendationsWriter(t *testing.T) {
 	r := newRig(t)
 	seatCases(r)

@@ -105,7 +105,8 @@ type toolInput struct {
 	Recommendation string   `json:"recommendation,omitempty"`
 	Choices        []string `json:"choices,omitempty"`
 	// Choice is the ask's bound choice, Args the bound tool call's
-	// arguments, as the ask tool binds them.
+	// arguments, as the ask tool binds them; for escalate, the choice it
+	// would pick.
 	Choice string          `json:"choice,omitempty"`
 	Args   json.RawMessage `json:"args,omitempty"`
 	// Tool, Need and Image are request_image's ask: the tool, what for
@@ -1948,12 +1949,13 @@ var tools = []chatTool{
 			"why":            str(writingguide.WhyLine),
 			"info":           str("the facts a reader needs, with what would change your mind"),
 			"recommendation": str("the answer you would pick and where you read it"),
+			"choice":         str("the one of choices you would pick, as written"),
 			"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": writingguide.MaxChoice},
 				"description": "answers the humans may press, each once"}},
 		required: []string{"ask", "why", "info", "recommendation", "choices"},
 		about:    "Ask the humans for a decision, its why and its info with it.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			s, err := t.escalate(in.Ask, in.Why, in.Info, in.Recommendation, in.Choices)
+			s, err := t.escalate(in.Ask, in.Why, in.Info, in.Recommendation, in.Choice, in.Choices)
 			return s, nil, err
 		}},
 	{name: "attach_analysis", title: "Attach an analysis to an ask", write: true,

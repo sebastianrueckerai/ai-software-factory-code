@@ -368,8 +368,9 @@ func TestRestartPlanClosesThePlanAndSaysWhenTheNewOneCannotBeFiled(t *testing.T)
 }
 
 // The case of an agent's ask leads with the agent's own answers as its
-// buttons, the one its recommendation names first as the primary, then
-// Not now and End the card; the ask shows once and the raw reason never.
+// buttons, then Not now and End the card. Its recommendation shows with
+// its writer and preselects none of them: its words name no button. The
+// ask shows once and the raw reason never.
 func TestAnAsksOwnAnswersLeadAndTheRegistersFollow(t *testing.T) {
 	r := newRig(t)
 	reason := "The agent asks: which store?\nWhy: two fit\nRecommendation: SQLite, one file is enough"
@@ -386,10 +387,10 @@ func TestAnAsksOwnAnswersLeadAndTheRegistersFollow(t *testing.T) {
 	for _, m := range regexp.MustCompile(`name="action" value="([^"]+)" class="(\w+)"`).FindAllStringSubmatch(esc, -1) {
 		got = append(got, m[1]+" "+m[2])
 	}
-	if want := []string{"say:SQLite primary", "say:Postgres secondary", "note secondary", "close secondary"}; !slices.Equal(got, want) {
+	if want := []string{"say:Postgres secondary", "say:SQLite secondary", "note secondary", "close secondary"}; !slices.Equal(got, want) {
 		t.Fatalf("buttons = %q, want %q:\n%s", got, want, esc)
 	}
-	if !strings.Contains(esc, "Recommended by the agent") || strings.Contains(esc, `class="reason"`) || strings.Count(esc, "hich store?") != 1 {
+	if !strings.Contains(esc, `<p class="recommendation">Recommendation (the agent): SQLite, one file is enough</p>`) || strings.Contains(esc, `class="reason"`) || strings.Count(esc, "hich store?") != 1 {
 		t.Errorf("the recommendation names no writer, or the ask shows more than once:\n%s", esc)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -107,6 +108,9 @@ func (a HumanAsk) Event(t Task) Event {
 	if a.Q.Recommendation != "" {
 		asked["recommendation"], asked["recommended_by"] = a.Q.Recommendation, cmp.Or(a.Q.Source, "the factory")
 	}
+	if slices.ContainsFunc(a.Q.Choices, func(c QuestionChoice) bool { return c.Value == a.Q.Recommended && c.Value != "" }) {
+		asked["preselected"] = map[string]any{"action": choicePrefix + a.Q.Recommended}
+	}
 	if len(a.Q.Choices) > 0 {
 		asked["choices"], asked["offers"] = a.Q.Labels(), a.Q.Choices
 	}
@@ -161,12 +165,15 @@ const (
 // backs the recommendation: the check-in's judgment, the agent's, or a
 // factoryd rule; empty without one.
 type HumanQuestion struct {
-	Ask            string           `json:"ask"`
-	Why            string           `json:"why"`
-	Info           string           `json:"info"`
-	Recommendation string           `json:"recommendation,omitempty"`
-	Source         string           `json:"source,omitempty"`
-	Choices        []QuestionChoice `json:"choices,omitempty"`
+	Ask            string `json:"ask"`
+	Why            string `json:"why"`
+	Info           string `json:"info"`
+	Recommendation string `json:"recommendation,omitempty"`
+	// Recommended is the value of the choice Recommendation picks, ""
+	// for none: the card preselects it.
+	Recommended string           `json:"recommended,omitempty"`
+	Source      string           `json:"source,omitempty"`
+	Choices     []QuestionChoice `json:"choices,omitempty"`
 }
 
 // The caps an escalation names.
