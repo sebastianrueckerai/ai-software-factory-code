@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -6,90 +6,15 @@ import (
 	"errors"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
-// boardStub is the console's side of a board action: it records its calls
-// and decides the merge request as the console's decision does.
-type boardStub struct {
-	mu       sync.Mutex
-	calls    []ActInput
-	err      error
-	s        *PGStore
-	approval int64
-}
-
-// act answers through Act with the stub's work.
-func (b *boardStub) act(r *Runner, in ActInput) (ActResult, error) {
-	in.Work = func(ctx context.Context) (int64, error) {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		b.calls = append(b.calls, in)
-		if b.err != nil {
-			return 0, b.err
-		}
-		switch in.Res.Action {
-		case ActApproveMerge, ActDenyMerge:
-			status := map[string]string{ActApproveMerge: "approved", ActDenyMerge: "denied"}[in.Res.Action]
-			return 0, b.s.DecideApproval(ctx, b.approval, ApprovalMerge, status, in.By, in.Res.Note)
-		case ActGrantCriteria:
-			return 0, b.s.DecideApproval(LeaveCaseToAct(ctx), b.approval, ApprovalCriteria, "approved", in.By, "one more bounded card")
-		case ActDenyCriteria:
-			return 0, b.s.DecideApproval(ctx, b.approval, ApprovalCriteria, "denied", in.By, in.Res.Note)
-		case ActRestartPlan:
-			return 0, b.s.ClosePlanWithWaivers(LeaveCaseToAct(ctx), in.TaskID, in.By, func(context.Context) (PlanClose, error) {
-				return PlanClose{Home: in.TaskID, Words: "Closed by " + in.By + ": " + in.Res.Note}, nil
-			})
-		}
-		return 0, nil
-	}
-	return r.Act(context.Background(), in)
-}
-
-// mergeRig is the rung rig with a pending merge request on t1's pull request 9
-// at head h2, whose case is at the human.
-func mergeRig(t *testing.T, checks string) (rungRig, *boardStub, int64) {
-	t.Helper()
-	g := newRungRig(t, checks)
-	spec, err := json.Marshal(MergeSpec{RiskClass: "standard", HeadSHA: "h2"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	id, err := g.s.OpenApproval(context.Background(), ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "demo-app/demo-app", PRNumber: 9, Spec: spec})
-	if err != nil {
-		t.Fatal(err)
-	}
-	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalMerge, "pr": int64(9)})
-	stub := &boardStub{s: g.s, approval: id}
-	return g, stub, id
-}
-
-func (g rungRig) record(t *testing.T, kind string, detail map[string]any) {
-	t.Helper()
-	if _, err := g.s.Record(context.Background(), Event{Repository: "demo-app/demo-app", TaskID: "t1", IssueNumber: 12, Kind: kind,
-		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail}); err != nil {
-		t.Fatalf("Record %s: %v", kind, err)
-	}
-}
-
-func (g rungRig) liveCase(t *testing.T, kind CaseKind) Case {
-	t.Helper()
-	open, err := g.s.OpenCasesOf(context.Background(), "t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range open {
-		if c.Kind == kind {
-			return c
-		}
-	}
-	t.Fatalf("t1 holds no live %s case: %+v", kind, open)
-	return Case{}
-}
+// Moved out of factoryd with the board action tests; the boardStub, the
+// merge and criteria rigs and rungRig's record and liveCase helpers it
+// shares with the round tests moved before it into helpers_2e_test.go.
 
 // The human's approve_merge on a merge case whose head h2 has green checks
 // runs the console's work once, and the request's decision ends the case:
@@ -177,30 +102,8 @@ func TestApproveMergeAtAutonomousRung2IsAProposal(t *testing.T) {
 	}
 }
 
-// criteriaRig is the rung rig whose card t1 is a done plan, the only state
-// in which a criteria request opens, with its request's plan_criteria case at
-// the human.
-func criteriaRig(t *testing.T) (rungRig, *boardStub, Case) {
-	t.Helper()
-	g, stub, _ := mergeRig(t, "success")
-	ctx := context.Background()
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done', track = 'plan', finished_at = now() WHERE id = 't1'`); err != nil {
-		t.Fatal(err)
-	}
-	spec, _ := json.Marshal(CriteriaSpec{Task: "t1"})
-	id, err := g.s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t1", Project: "demo-app/demo-app", Spec: spec, Reason: "criteria not met: c1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalCriteria})
-	stub.approval = id
-	c := g.liveCase(t, CasePlanCriteria)
-	if c.Status != CaseAtHuman || c.Problem != "criteria not met: c1" {
-		t.Fatalf("case = %+v, want at the human with the request's reason", c)
-	}
-	return g, stub, c
-}
-
+// criteriaRig is the rung rig helpers_2e_test.go holds for these tests.
+//
 // A done plan's criteria request is answered through Act (the ended-card
 // check lets the criteria's actions and the restart through): a verdict keeps
 // the case at the human; a grant, a confirmation and a denial each resolve it
@@ -342,7 +245,7 @@ func TestOneSendCarriesTheDecisionTheFundAndTheNote(t *testing.T) {
 	g := newRungRig(t, "success")
 	g.atAutonomy(policy.AutonomyManual)
 	ctx := context.Background()
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET ceiling_eur = 10 WHERE id = 't1'`); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET ceiling_eur = 10 WHERE id = 't1'`); err != nil {
 		t.Fatal(err)
 	}
 	out := g.trip(t, tripCap)
@@ -354,7 +257,7 @@ func TestOneSendCarriesTheDecisionTheFundAndTheNote(t *testing.T) {
 	var rows int
 	var eur float64
 	var rung float64
-	if err := g.s.db.QueryRowContext(ctx, `SELECT count(*), COALESCE(max((detail->>'amount_eur')::float), 0), COALESCE(max((detail->>'rung')::float), 0)
+	if err := g.s.PgDB().QueryRowContext(ctx, `SELECT count(*), COALESCE(max((detail->>'amount_eur')::float), 0), COALESCE(max((detail->>'rung')::float), 0)
 		FROM events WHERE task_id = 't1' AND kind = $1 AND detail->>'pool' = 'true'`, EventCardFunded).Scan(&rows, &eur, &rung); err != nil {
 		t.Fatal(err)
 	}
@@ -414,8 +317,8 @@ func TestRung2ApproveOfAMigrationMergeIsRefusedOnThePinnedPolicy(t *testing.T) {
 		t.Fatal("the test policy has no migration class marked migration")
 	}
 	live.Document.Risk.Classes[i].Migration = false
-	g.r.cfg.Policy = func() policy.Version { return live }
-	g.r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == pinned.ID, nil }
+	g.r.PgSetPolicy(func() policy.Version { return live })
+	g.r.PgSetPolicyVersion(func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == pinned.ID, nil })
 	spec, err := json.Marshal(MergeSpec{RiskClass: "migration", HeadSHA: "h2", PolicyVersion: pinned.ID})
 	if err != nil {
 		t.Fatal(err)
@@ -446,12 +349,12 @@ func TestRung2ApproveOfAMigrationMergeIsRefusedOnThePinnedPolicy(t *testing.T) {
 func TestAnUnreadablePinnedPolicyRefusesRung2ApproveAndLeavesTheHumanTheirs(t *testing.T) {
 	g := newRungRig(t, "success")
 	g.r.Scrub = redact.New()
-	g.r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) {
+	g.r.PgSetPolicyVersion(func(_ context.Context, id int64) (policy.Version, bool, error) {
 		if id == 10 {
 			return policy.Version{}, false, errors.New("GET https://user:pass@db.example/v: Authorization: Bearer abcdefghijklmnopqrstuvwx")
 		}
 		return policy.Version{}, false, nil
-	}
+	})
 	stub := &boardStub{s: g.s}
 	open := func(version int64) Case {
 		t.Helper()

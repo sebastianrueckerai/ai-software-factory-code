@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -11,7 +11,8 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-const leaky = "see https://user:pass@host/x with Authorization: Bearer abc123def456"
+// leaky is the copy helpers_3d_test.go holds for this file and the deploy
+// one beside it.
 
 func TestProposesByLevel(t *testing.T) {
 	for _, tc := range []struct {
@@ -42,23 +43,13 @@ func TestProposesByLevel(t *testing.T) {
 	}
 }
 
-// atAutonomy puts the rig's project at state: full auto is autonomous with
-// merge rule auto.
-func (g rungRig) atAutonomy(state string) {
-	v := g.r.cfg.Policy()
-	p := v.Projects["demo-app"]
-	p.Autonomy, p.MergeRule = state, policy.MergeHuman
-	if state == policy.AutonomyFullAuto {
-		p.Autonomy, p.MergeRule = policy.AutonomyAutonomous, policy.MergeAuto
-	}
-	v.Projects = map[string]policy.ProjectConfig{"demo-app": p}
-	g.r.cfg.Policy = func() policy.Version { return v }
-}
+// atAutonomy moved with the helpers (helpers_3d_test.go): the rung files
+// this family left behind hold their own copy beside their rig.
 
 func poolRows(t *testing.T, g rungRig) int {
 	t.Helper()
 	var n int
-	if err := g.s.db.QueryRowContext(context.Background(), `SELECT count(*) FROM events WHERE task_id = 't1' AND `+poolDraws).Scan(&n); err != nil {
+	if err := g.s.PgDB().QueryRowContext(context.Background(), `SELECT count(*) FROM events WHERE task_id = 't1' AND `+poolDraws).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
@@ -287,9 +278,9 @@ func TestSkippedRung1KindsMeetTheSpentJudgmentBudget(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
 			g.forge.checks["h2"] = "pending" // a policy class on a green head routes to its approval at rung 0
-			g.r.store = projectStore{g.s}
+			g.r.PgSetStore(projectStore{g.s})
 			cardForge, _ := newAlertForgejo(t)
-			g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: cardForge, Timeline: g.r.timeline}
+			g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: cardForge, Timeline: g.r.PgTimeline()}
 			ctx := context.Background()
 			if err := g.s.CreateTask(ctx, Task{ID: "dep1", Kind: "agent", Status: "closed", Objective: "x", Repository: "demo-app/demo-app", IssueNumber: 1451, Track: policy.TrackDirect}); err != nil {
 				t.Fatal(err)
@@ -298,7 +289,7 @@ func TestSkippedRung1KindsMeetTheSpentJudgmentBudget(t *testing.T) {
 				t.Fatal(err)
 			}
 			chat := g.spendChat(t)
-			if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = budget_eur WHERE id = $1`, chat.ID); err != nil {
+			if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET spent_eur = budget_eur WHERE id = $1`, chat.ID); err != nil {
 				t.Fatal(err)
 			}
 			out := g.trip(t, reason)
