@@ -157,10 +157,12 @@ func TestHumanOnly(t *testing.T) {
 	}
 }
 
-// Rung 1's human-only check, the rung's statement and the face weigh one
-// amount on a budget floor: the board's ask, the price of a session like
-// the last one past what the card may spend, 2.62 + 0.40 - 0.34 = 2.68 EUR,
-// read from the live facts, whatever the case stored when it opened.
+// Rung 1's human-only check, the rung's statement, the face and the issue
+// comment name one amount on a budget floor: the board's ask, the price of
+// a session like the last one past what the card may spend, 2.62 + 0.40 -
+// 0.34 = 2.68 EUR. The rungs read it from the live facts, whatever the case
+// stored when it opened; the issue comment, written as the case opens,
+// from the money the case stores.
 func TestTheRungsWeighTheBoardsAmount(t *testing.T) {
 	c := Case{Kind: CaseBudgetFloor, Money: &CaseMoney{Kind: "budget", NeedEUR: 0.66}}
 	f := CaseFacts{Kind: CaseBudgetFloor, BudgetEUR: 5.7, SpentEUR: 5.36, LeftEUR: 0.34, ReserveEUR: 0.4, FloorEUR: 0.6, CeilingEUR: 18,
@@ -173,6 +175,10 @@ func TestTheRungsWeighTheBoardsAmount(t *testing.T) {
 	}
 	if ask := FaceOf(c, Facts{CaseFacts: f}).Ask; !strings.Contains(ask, "Add 2.68 EUR") {
 		t.Errorf("the face asks %q, want 2.68 EUR", ask)
+	}
+	opened := Case{Kind: CaseBudgetFloor, Money: tripMoney(CaseBudgetFloor, f)}
+	if next := tripNext(opened, BudgetRefused+": the card spent its budget"); !strings.HasPrefix(next, "Add 2.68 EUR with the Fund form on the board") {
+		t.Errorf("the issue's last line = %q, want it naming 2.68 EUR", next)
 	}
 }
 

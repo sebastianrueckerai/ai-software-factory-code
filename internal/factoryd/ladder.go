@@ -1236,9 +1236,9 @@ func factsOf(c Case) CaseFacts {
 
 // tripNext is the last line of a trip's face for case c: at a cap, where
 // a reply is a continue that asks again, the Extend form or the chat's
-// extend start the next attempt, at a budget floor the Fund form or the
-// chat's fund, for a monitor flag, whose card goes on, the flag in the
-// chat, and elsewhere a reply (replyNext).
+// extend start the next attempt, at a budget floor the Fund form with the
+// board's amount or the chat's fund, for a monitor flag, whose card goes
+// on, the flag in the chat, and elsewhere a reply (replyNext).
 func tripNext(c Case, reason string) string {
 	switch c.Kind {
 	case CaseMonitorFlag:
@@ -1290,7 +1290,12 @@ func tripNext(c Case, reason string) string {
 	case CaseDependencyClosed, CaseDependencyFailed:
 		return "Reply on this issue to start the card anyway with your comment as guidance, or close the issue to end the task."
 	case CaseBudgetFloor:
-		return "Use the Fund form on the board, or ask the project chat to fund the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
+		// the amount the case's money stores as it opens: the board's ask
+		use := "Use the Fund form on the board"
+		if c.Money != nil && c.Money.NeedEUR > 0 {
+			use = fmt.Sprintf("Add %.2f EUR with the Fund form on the board", c.Money.NeedEUR)
+		}
+		return use + ", or ask the project chat to fund the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	}
 	return replyNext(reason)
 }

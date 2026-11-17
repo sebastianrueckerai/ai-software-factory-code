@@ -423,7 +423,7 @@ func init() {
 			Why:     reasonWhy("The factory's rules let only a human approve a change to these files."),
 			Answers: keys(ActContinue, ActReplan, ActClose, ActNote)}),
 		CaseCheckinShare: work(FaceSpec{Ask: fixed("The last session spent more than its share of the card's money. Allow one more session, or end the card?"),
-			Why: reasonWhy("A session may spend only a share of the card's money before a human looks."), Answers: keys(ActExtend, ActClose, ActNote)}),
+			Why: fixed("A session may spend only a share of the card's money before a human looks."), Answers: keys(ActExtend, ActClose, ActNote)}),
 		CaseCheckinFailed: work(FaceSpec{Ask: fixed("The factory's own check of the session failed, not the work. Run one more session?"),
 			Why: fixed("The check that judges each session gave no answer, so the card stopped to be safe."), Answers: keys(ActResume, ActClose, ActNote)}),
 		CaseGateStop: work(FaceSpec{Ask: gateAsk, Why: gateWhy, Story: gateStory, Answers: gateAnswers}),

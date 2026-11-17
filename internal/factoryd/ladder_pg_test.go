@@ -449,7 +449,7 @@ func TestEscalateOpensItsCaseBeforeItsFace(t *testing.T) {
 // A budget floor's case carries the money: 0.30 EUR an opening needs less
 // what a session may spend, the 0.15 left of 3 EUR with 2.85 spent less
 // the 0.40 gate reserve, -0.25, is 0.55 EUR, which buys one session on
-// the card's model.
+// the card's model. The issue comment names that amount, the board's ask.
 func TestOpenTripCarriesTheMoneyFact(t *testing.T) {
 	g := newTripRig(t, "success")
 	rungsOff(g.r)
@@ -462,6 +462,9 @@ func TestOpenTripCarriesTheMoneyFact(t *testing.T) {
 	want := CaseMoney{Kind: "budget", BudgetEUR: 3, SpentEUR: 2.85, NeedEUR: 0.55, Buys: "one session on factory/small"}
 	if c.Kind != CaseBudgetFloor || c.Money == nil || *c.Money != want || out.Comment != 501 {
 		t.Fatalf("case %+v, money %+v; want the budget floor at the human with %+v", c, c.Money, want)
+	}
+	if len(g.forge.comments) != 1 || !strings.Contains(g.forge.comments[0], "Add 0.55 EUR with the Fund form on the board") {
+		t.Fatalf("comments %q, want the face naming the 0.55 EUR to add", g.forge.comments)
 	}
 }
 

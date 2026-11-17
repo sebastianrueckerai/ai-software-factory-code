@@ -178,11 +178,13 @@ func TestAStopOnStartsCountsNoSessions(t *testing.T) {
 }
 
 // The why adds what the story lacks: a dependency's why says what the card
-// cannot do without it, and a content filter's why says why the card waits
-// for a human instead of sending the request again.
+// cannot do without it, a content filter's why says why the card waits for
+// a human instead of sending the request again, and a spend stop's why
+// names the rule, not the spend the money line names.
 func TestTheWhyAddsWhatTheStoryLacks(t *testing.T) {
 	for kind, want := range map[factoryd.CaseKind]string{
 		factoryd.CaseContentFilter:    "The factory does not send a refused request again by itself.",
+		factoryd.CaseCheckinShare:     "A session may spend only a share of the card's money before a human looks.",
 		factoryd.CaseDependencyFailed: "This card needs the work of #2189 and cannot go on without it.",
 		factoryd.CaseDependencyClosed: "This card needs the work of #2188 and cannot go on without it.",
 	} {
