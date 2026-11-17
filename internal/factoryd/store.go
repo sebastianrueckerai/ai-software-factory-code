@@ -2349,11 +2349,12 @@ func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Ta
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1)`, t.ID).Scan(&have); err != nil {
 		return Task{}, false, err
 	}
-	var status *Event
+	var status []Event
 	switch {
 	case have:
 		moved := false
-		if status, moved, err = changeStatusOn(ctx, tx, `kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL, track = NULL, process = NULL`,
+		if status, moved, err = changeStatusOn(ctx, tx, `kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL, track = NULL, process = NULL,
+			hold_at = NULL, hold_by = '', hold_reason = '', hold_release = NULL`,
 			`id = $1 AND kind = 'agent' AND status = 'queued'`, t.ID); err != nil {
 			return Task{}, false, err
 		}
@@ -2389,9 +2390,7 @@ func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Ta
 	if inserted {
 		s.publish(row)
 	}
-	if status != nil {
-		s.recordStatus(ctx, *status)
-	}
+	s.recordStatus(ctx, status)
 	return t, true, nil
 }
 
@@ -2625,43 +2624,49 @@ func (s *PGStore) ListQueuedByRepository(ctx context.Context, repository string)
 // carries it; no row matched answers false. TransitionTask, MarkStarted, SetGate and
 // the heal's lane moves call it; a no-change update records nothing, a failed record never fails it.
 func (s *PGStore) changeStatus(ctx context.Context, set, where string, args ...any) (bool, error) {
-	e, changed, err := changeStatusOn(ctx, s.db, set, where, args...)
-	if e != nil {
-		s.recordStatus(ctx, *e)
-	}
+	events, changed, err := changeStatusOn(ctx, s.db, set, where, args...)
+	s.recordStatus(ctx, events)
 	return changed, err
 }
 
 // changeStatusOn is changeStatus's update on q, a transaction or the
 // pool; alerts.go's escalation close runs it in one. It answers the
-// event to record, nil when the update changed neither status nor gate,
-// and whether where matched a row.
-func changeStatusOn(ctx context.Context, q rowQuerier, set, where string, args ...any) (*Event, bool, error) {
+// events to record, the status move unless the update changed neither
+// status nor gate, and the end of a hold the move took with it, to a
+// final status or to the human lane; and whether where matched a row.
+func changeStatusOn(ctx context.Context, q rowQuerier, set, where string, args ...any) ([]Event, bool, error) {
 	e := Event{Kind: EventTaskStatus, Actor: FactoryDecider, Via: ViaFactoryd}
-	var status, gate, wasStatus, wasGate string
+	var status, gate, wasStatus, wasGate, wasHold string
+	var holdEnded bool
 	err := q.QueryRowContext(ctx, `UPDATE tasks SET `+set+`
-		FROM (SELECT status AS was_status, gate AS was_gate FROM tasks WHERE id = $1 FOR UPDATE) was
-		WHERE `+where+` RETURNING id, repository, issue_number, status, gate, was_status, was_gate`, args...).
-		Scan(&e.TaskID, &e.Repository, &e.IssueNumber, &status, &gate, &wasStatus, &wasGate)
+		FROM (SELECT status AS was_status, gate AS was_gate, hold_at IS NOT NULL AS was_held, hold_reason AS was_hold FROM tasks WHERE id = $1 FOR UPDATE) was
+		WHERE `+where+` RETURNING id, repository, issue_number, status, gate, was_status, was_gate, was_held AND hold_at IS NULL, was_hold`, args...).
+		Scan(&e.TaskID, &e.Repository, &e.IssueNumber, &status, &gate, &wasStatus, &wasGate, &holdEnded, &wasHold)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
-	if status == wasStatus && gate == wasGate {
-		return nil, true, nil
+	var out []Event
+	if status != wasStatus || gate != wasGate {
+		e.Detail = map[string]any{"status": status, "gate": gate}
+		out = append(out, e)
 	}
-	e.Detail = map[string]any{"status": status, "gate": gate}
-	return &e, true, nil
+	if holdEnded {
+		out = append(out, Event{Kind: EventCardHoldEnded, TaskID: e.TaskID, Repository: e.Repository, IssueNumber: e.IssueNumber,
+			Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"reason": wasHold, "card_status": status}})
+	}
+	return out, true, nil
 }
 
-// recordStatus writes changeStatus's event through Record; changeStatus
-// is its sole caller. A failed write is logged, never returned: the
-// status change stands.
-func (s *PGStore) recordStatus(ctx context.Context, e Event) {
-	if _, err := s.Record(ctx, e); err != nil {
-		log.Printf("task %s: event %s: %v", e.TaskID, e.Kind, err)
+// recordStatus writes changeStatusOn's events through Record. A failed
+// write is logged, never returned: the status change stands.
+func (s *PGStore) recordStatus(ctx context.Context, events []Event) {
+	for _, e := range events {
+		if _, err := s.Record(ctx, e); err != nil {
+			log.Printf("task %s: event %s: %v", e.TaskID, e.Kind, err)
+		}
 	}
 }
 

@@ -19,7 +19,8 @@ import (
 // words it with its release card's plan; it follows its release card into
 // a successor and a retry, as an edge does; an end that names the release
 // card it moved from ends nothing, a human's end any hold that holds its
-// card. A card that ends takes its hold with it.
+// card. A card that ends, or moves to the human lane, takes its hold with
+// it and records the hold's end.
 func TestPGStoreCardHold(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_card_hold"))
@@ -152,9 +153,31 @@ func TestPGStoreCardHold(t *testing.T) {
 	if err := s.TransitionTask(ctx, "t-q2", []string{"closing"}, "closed"); err != nil {
 		t.Fatal(err)
 	}
+	// the held t-noissue moves to the human lane, where no hold holds
+	if _, moved, err := s.CreateHumanCard(ctx, Task{ID: "t-noissue", Kind: "human", Status: "waiting-human", Repository: "sf/r", BudgetEUR: 1, Objective: "x"},
+		HumanAsk{Q: HumanQuestion{Ask: "Which?"}, By: "factoryd", Asker: "webhook", Via: ViaFactoryd}); err != nil || !moved {
+		t.Fatalf("the move to the human lane = %v, %v", moved, err)
+	}
 	var left int
-	if err := s.DB().QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE id = 't-q2'
+	if err := s.DB().QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE id IN ('t-q2', 't-noissue')
 		AND (hold_at IS NOT NULL OR hold_by <> '' OR hold_reason <> '' OR hold_release IS NOT NULL)`).Scan(&left); err != nil || left != 0 {
-		t.Fatalf("the closed card's hold columns: %d rows set, %v; want none", left, err)
+		t.Fatalf("the hold columns of the closed and the moved card: %d rows set, %v; want none", left, err)
+	}
+	var ends []string
+	rows, err := s.DB().QueryContext(ctx, `SELECT task_id || ' ' || actor || ' ' || (detail->>'reason') || ' ' || (detail->>'card_status')
+		FROM events WHERE kind = 'card_hold_ended' ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var e string
+		if err := rows.Scan(&e); err != nil {
+			t.Fatal(err)
+		}
+		ends = append(ends, e)
+	}
+	if want := []string{"t-q2 factoryd after #2063 closed", "t-noissue factoryd needs the finished pg split waiting-human"}; !slices.Equal(ends, want) {
+		t.Fatalf("the hold-end rows = %q, want %q", ends, want)
 	}
 }

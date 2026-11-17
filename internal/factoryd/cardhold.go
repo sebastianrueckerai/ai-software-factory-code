@@ -146,15 +146,12 @@ func (r *Runner) ReleaseCardHold(ctx context.Context, id string) (bool, error) {
 }
 
 // heldFindings refuses revision next of the plan st judges when it drops
-// the key of a card a human holds: the revision's restart would close the
-// card, and only a human closes a held card. A replan a human asked for,
-// by their login and not as factoryd, the check-in or the chat on its own
-// word, may drop it. A kept key holds the card, which never started, and
-// gives it the revision's entry for that key.
+// the key of a card a human holds, whoever asked for the replan: the
+// revision's restart would close the card, and only a human closes a held
+// card, on its drawer. A kept key holds the card, which never started, and
+// gives it the revision's entry for that key. Once the human closed it,
+// replanFindings asks for its key to be left out.
 func (r *Runner) heldFindings(ctx context.Context, st replanState, next Plan) ([]string, error) {
-	if st.step.Origin == ReplanPerson && isPerson(st.step.By) {
-		return nil, nil
-	}
 	var found []string
 	for _, k := range st.old {
 		if !k.Held() || k.PlanKey == "" || slices.ContainsFunc(next.Cards, func(c PlanCard) bool { return c.Key == k.PlanKey }) {
@@ -164,7 +161,8 @@ func (r *Runner) heldFindings(ctx context.Context, st replanState, next Plan) ([
 		if err != nil {
 			return nil, err
 		}
-		found = append(found, fmt.Sprintf("card %s (#%d) is %s. Only a human closes a held card, so keep its key: the card takes the entry this revision gives that key",
+		found = append(found, fmt.Sprintf("card %s (#%d) is %s. Only a human closes a held card, so keep its key: the card takes the entry this revision gives that key. "+
+			"If the plan no longer needs the card, keep its key and ask in a question of this revision that the human close it or release its hold on its drawer",
 			k.PlanKey, k.IssueNumber, v.Line))
 	}
 	return found, nil

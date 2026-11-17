@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -228,10 +229,10 @@ func TestBoardShowsTheHoldAndTheDrawerOffersIt(t *testing.T) {
 	}
 }
 
-// The agent's own replan of a held card of no plan would send the card
-// itself to its planner, so it is refused naming the hold. Its replan of a
-// held plan card replans the plan, whose revision keeps the card's key, so
-// it reaches factoryd's Replan.
+// The agent's own replan of a held card is refused naming the hold, on a
+// card of no plan, which would go to its planner itself, and on a plan's
+// card, whose planner could file its work under a new key that no hold
+// holds. Neither reaches factoryd's Replan.
 func TestTheAgentsReplanOfAHeldCard(t *testing.T) {
 	r, _ := newWritesRig(t)
 	withPlan(r)
@@ -244,13 +245,13 @@ func TestTheAgentsReplanOfAHeldCard(t *testing.T) {
 	r.tasks.setHold("t-d", &factoryd.CardHold{Reason: "after the review", By: "sebastian"})
 	r.tasks.setHold("t-k1", &factoryd.CardHold{Reason: "after the review", By: "sebastian"})
 	agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyAutonomous}
-	_, err := r.c.doReplan(t.Context(), agent, "t-d", "too wide", false)
-	var no *refusal
-	if want := "Card #33 is on hold: after the review. Only the human releases, starts or closes a held card, and this turn runs on no line the human typed, so it takes no replan: ask the human with ask, or let them replan it on its card."; !errors.As(err, &no) || no.msg != want {
-		t.Errorf("the agent's replan of held #33 = %v, want %q", err, want)
+	for id, issue := range map[string]int{"t-d": 33, "t-k1": 31} {
+		_, err := r.c.doReplan(t.Context(), agent, id, "too wide", false)
+		var no *refusal
+		want := fmt.Sprintf("Card #%d is on hold: after the review. Only the human releases, starts or closes a held card, and this turn runs on no line the human typed, so it takes no replan: ask the human with ask, or let them replan it on its card.", issue)
+		if !errors.As(err, &no) || no.msg != want {
+			t.Errorf("the agent's replan of held #%d = %v, want %q", issue, err, want)
+		}
 	}
-	if said, err := r.c.doReplan(t.Context(), agent, "t-k1", "too wide", false); err != nil || said == "" {
-		t.Fatalf("the agent's replan of held plan card #31 = %q, %v; want it asked", said, err)
-	}
-	equal(t, "the replans asked", asked, []string{"t-k1 by " + factoryd.ChatUser})
+	equal(t, "the replans asked", len(asked), 0)
 }

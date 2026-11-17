@@ -57,8 +57,10 @@ const (
 	// detail {"reason", and "release", the release card's issue, when it
 	// names one}.
 	EventCardHeld = "card_held"
-	// EventCardHoldEnded is a card's hold ended: by a human, or as
-	// factoryd's row by its release card, detail {"release", "status"}.
+	// EventCardHoldEnded is a card's hold ended: by a human's release,
+	// detail {"reason"}; as factoryd's row by its release card, detail
+	// {"release", "status"}; or by the card's own move to a final status
+	// or the human lane, detail {"reason", "card_status"}.
 	EventCardHoldEnded = "card_hold_ended"
 	// EventCardExtended is an approver's raise of a card's caps — its
 	// session cap, line bound and budget — the console's Extend the card:

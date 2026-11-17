@@ -2381,12 +2381,8 @@ func (c *Console) doReplan(ctx context.Context, a actor, id, note string, offMai
 	if err != nil {
 		return "", err
 	}
-	// a direct card's replan sends the card itself to its planner; a plan's
-	// revision keeps the key of a held card unless the human asked for it
-	if !factoryd.InPlan(t) {
-		if err := c.agentOnHeld(ctx, a, t, "replan"); err != nil {
-			return "", err
-		}
+	if err := c.agentOnHeld(ctx, a, t, "replan"); err != nil {
+		return "", err
 	}
 	poster, err := c.posterOf(ctx, a, t.Repository)
 	if err != nil {

@@ -1110,6 +1110,10 @@ func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string
 		t.FinishedAt = &now
 		if Final(to) {
 			s.finished[id] = now
+			if t.Hold != nil {
+				s.events = append(s.events, Event{Kind: EventCardHoldEnded, TaskID: id, Repository: t.Repository, IssueNumber: t.IssueNumber,
+					Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"reason": t.Hold.Reason, "card_status": to}})
+			}
 			t.Gate, t.GateSince, t.Hold = "", nil, nil
 		}
 	} else {
@@ -1299,7 +1303,7 @@ func (s *fakeStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (
 			return have, false, nil
 		}
 		moved := have
-		moved.Kind, moved.Status, moved.Gate, moved.GateSince, moved.Track, moved.Process = "human", "waiting-human", "", nil, "", ""
+		moved.Kind, moved.Status, moved.Gate, moved.GateSince, moved.Track, moved.Process, moved.Hold = "human", "waiting-human", "", nil, "", "", nil
 		s.tasks[t.ID] = moved
 		if _, err := s.Record(ctx, ask.Event(t)); err != nil {
 			s.tasks[t.ID] = have

@@ -97,15 +97,27 @@ func (e ErrActRefused) Error() string { return string(e) }
 // case ends.
 var outsideActions = []string{ActRetry, ActReplan, ActClose, ActDeployNow, ActSalvage}
 
-// holdStops reports whether answer res would start or close card t,
-// which rungs 0 to 2 never do to a card a human holds. A replan of a
-// direct card sends the card itself to its planner; one of a plan's card,
-// or of a failed dependency's work, leaves the card held.
-func holdStops(t Task, res Resolution) bool {
-	if dep, _ := res.Args["task_id"].(string); res.Action == ActReplan {
-		return dep == "" && !InPlan(t)
+// heldStop is the held card that answer res on card t would start or
+// close, which rungs 0 to 2 never do to a card a human holds: t itself for
+// a resume, continue, handover, successor, close or a replan of t, which
+// sends its work back to the planner to be filed again, and any held card
+// of t's plan for a restart_plan, which closes the plan and files its work
+// anew. A replan of a failed dependency's work leaves t held.
+func (r *Runner) heldStop(ctx context.Context, t Task, res Resolution) (Task, bool, error) {
+	if res.Action == ActRestartPlan {
+		cards, err := r.store.PlanCards(ctx, GroupOf(t))
+		if err != nil {
+			return Task{}, false, err
+		}
+		if i := slices.IndexFunc(cards, Task.Held); i >= 0 {
+			return cards[i], true, nil
+		}
+		return Task{}, false, nil
 	}
-	return slices.Contains([]string{ActResume, ActContinue, ActHandover, ActSuccessor, ActClose}, res.Action)
+	if dep, _ := res.Args["task_id"].(string); res.Action == ActReplan {
+		return t, t.Held() && dep == "", nil
+	}
+	return t, t.Held() && slices.Contains([]string{ActResume, ActContinue, ActHandover, ActSuccessor, ActClose}, res.Action), nil
 }
 
 // endedCardActions are the actions a case of an ended card still takes: they
@@ -193,17 +205,26 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	if err != nil {
 		return ActResult{Case: c}, err
 	}
-	if t.Held() && in.Rung < 3 && holdStops(t, in.Res) {
-		v, err := holdView(ctx, r.store, t)
+	if in.Rung < 3 {
+		k, stops, err := r.heldStop(ctx, t, in.Res)
 		if err != nil {
 			return ActResult{Case: c}, err
 		}
-		fit := "ask the human, who may " + in.Res.Action + " it"
-		if c.ID != 0 {
-			fit = "note the case, settle it, or hand it up to the human"
+		if stops {
+			v, err := holdView(ctx, r.store, k)
+			if err != nil {
+				return ActResult{Case: c}, err
+			}
+			on, fit := "it", "ask the human instead"
+			if in.Res.Action == ActRestartPlan {
+				on = "its plan"
+			}
+			if c.ID != 0 {
+				fit = "note the case, settle it, or hand it up to the human"
+			}
+			return ActResult{Case: c}, ErrActRefused(fmt.Sprintf("card %s is %s. Only a human releases a held card, starts it or closes it, so %s takes no %s on %s: %s",
+				cardName(k), v.Line, who(in.Rung), in.Res.Action, on, fit))
 		}
-		return ActResult{Case: c}, ErrActRefused(fmt.Sprintf("card %s is %s. Only a human releases a held card, starts it or closes it, so %s takes no %s on it: %s",
-			cardName(t), v.Line, who(in.Rung), in.Res.Action, fit))
 	}
 	if c.ID != 0 && Final(t.Status) && !(PlanWaitCase(c, t) && in.Res.Action == ActRetry) && !slices.Contains(endedCardActions, in.Res.Action) {
 		if _, known := ActionByName(in.Res.Action); !known {

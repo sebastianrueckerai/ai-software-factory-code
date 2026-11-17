@@ -451,6 +451,9 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 			if n := number("release"); n > 0 {
 				s.Outcome = fmt.Sprintf("#%d %s", n, word("status"))
 			}
+			if moved := word("card_status"); moved != "" {
+				s.Outcome = "the card moved to " + moved
+			}
 		case EventDependencySet:
 			s.Kind, s.Outcome = "dependency", "depends on "+issueOf(word("depends_on"))
 			if removed, _ := e.Detail["removed"].(bool); removed {

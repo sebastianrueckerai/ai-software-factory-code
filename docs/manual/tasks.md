@@ -94,22 +94,28 @@ follows the release card's work into a retry or a successor, as a
 dependency edge does. A release card that ends `failed` or `closed`, or
 that a cut turns into a plan, releases nothing: the card stays held and
 its chip turns to the warning that names the release card, its plan and
-how it ended. A card that ends takes its hold with it, and Release
+how it ended. A card that ends, or moves to the human lane, takes its
+hold with it, and its `card_hold_ended` row names the move. Release
 refuses a card that no hold holds.
 
-A plan's revision keeps the key of a held card, which then takes the
-entry the revision gives that key. A revision that drops the key is
-refused at its filing, naming the hold, unless the human asked for the
-replan with their press or their word in the chat: then the revision
-closes the card, and its hold ends with it. The planner's record of the
-plan's cards shows each held card's hold.
+Every revision of a plan keeps the key of a held card, whoever asked for
+the replan, and the card takes the entry the revision gives that key. A
+revision that drops the key is refused at its filing, naming the hold
+and what fits: keep the key, and when the plan no longer needs the card,
+ask in a question of the revision that the human close it or release its
+hold on its drawer. Once the human closed it, the replan rules ask for
+its key to be left out. The planner's record of the plan's cards shows
+each held card's hold.
 
 A held card owns no wait, so no queue or dependency flag opens a case on
 it. Rungs 0 to 2 neither start nor close it: Act refuses their resume,
-continue, handover, successor, close and a direct card's replan on it,
-naming the hold. Their other answers, a fund or a note among them, go
-through. The chat sets and ends a hold only on a line the human typed in
-that turn, or on their press.
+continue, handover, successor, close and replan of the card itself, and
+a restart_plan of a plan that holds a held card, naming the hold. Their
+other answers, a fund, a note or the retry of a failed dependency among
+them, go through. Act records a rung 2 answer as the project agent's
+(`factory-chat`), never as the human whose turn woke it. The chat sets
+and ends a hold only on a line the human typed in that turn, or on their
+press.
 
 A card that ends or parks on a person or its image frees its slot,
 and the oldest queued card of its project starts (the pull, in filing
