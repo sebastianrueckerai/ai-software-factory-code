@@ -532,28 +532,27 @@ func TestCardDigestCountsAnAuditFindingOnce(t *testing.T) {
 	}
 }
 
-// Two audit findings at paths that differ in case alone are two findings of
-// the card, each with its own text, each one a human can name; the step's
-// detail lists the same ids. Ids as in TestAuditFindingIDKeepsThePathsCase.
-func TestAuditFindingsAtPathsOfOneCaseAreTwo(t *testing.T) {
+// An audit finding has one id wherever it stands: the audit step, a
+// check-in's verdict on its text and the step's detail all name FindingID
+// of the text, a path's capitals folded like every finding's words. By
+// sha256sum, "policy and workflow files at codeowners" is 86e1569746b6.
+func TestAuditFindingHasTheCheckInsID(t *testing.T) {
 	g := newDigestRig(nil)
-	found := []AuditFinding{{Item: "secrets", File: "A.go", Line: 3, Why: "w"}, {Item: "secrets", File: "a.go", Line: 3, Why: "w"}}
-	g.line(t, 1, "audit", map[string]any{"commit": "f00dfeed1234", "verdict": AuditFindings, "findings": found})
-	steps := g.digest(t).Steps
-	ids := headFindings(steps, "f00dfeed1234")
-	texts, _ := headFindingTexts(steps, "f00dfeed1234", ids)
-	if want := []string{"99f3acc590cc", "b78e8fc0c2a5"}; !slices.Equal(ids, want) ||
-		!maps.Equal(texts, map[string]string{"b78e8fc0c2a5": "secrets at A.go", "99f3acc590cc": "secrets at a.go"}) {
-		t.Fatalf("ids %v, texts %v, want %v, each with its own text", ids, texts, want)
-	}
-	f := CaseFacts{AuditFindings: ids, AuditConfirmable: ids, FindingTexts: texts}
-	if key, n := f.auditFindingNamed("secrets at A.go"); key != "secrets at A.go" || n != 1 {
-		t.Fatalf("\"secrets at A.go\" names %q (%d), want itself alone", key, n)
+	g.line(t, 10, "audit", map[string]any{"commit": "f00dfeed1234", "verdict": AuditFindings,
+		"findings": []AuditFinding{{Item: "policy and workflow files", File: "CODEOWNERS", Line: 1, Why: "w"}}})
+	g.line(t, 12, "checkin", map[string]any{"round": 1, "decision": CheckHandover,
+		"verdicts": map[string]CheckVerdict{"policy and workflow files at CODEOWNERS": {State: CheckConfirmed}},
+		"record":   CheckInRecord{Moment: CheckInGate, Decision: CheckHandover}})
+	want := []string{"86e1569746b6"}
+	for _, s := range g.digest(t).Steps {
+		if (s.Kind == "audit" || s.Kind == "checkin") && !slices.Equal(s.Findings, want) {
+			t.Errorf("%s step names %v, want %v", s.Kind, s.Findings, want)
+		}
 	}
 	var b strings.Builder
-	writeFields(&b, map[string]any{"findings": []any{map[string]any{"item": "secrets", "file": "A.go"}}})
-	if !strings.Contains(b.String(), "- b78e8fc0c2a5 ") {
-		t.Fatalf("detail = %q, want the finding's id b78e8fc0c2a5", b.String())
+	writeFields(&b, map[string]any{"findings": []any{map[string]any{"item": "policy and workflow files", "file": "CODEOWNERS"}}})
+	if !strings.Contains(b.String(), "- 86e1569746b6 ") {
+		t.Fatalf("detail = %q, want the finding's id 86e1569746b6", b.String())
 	}
 }
 

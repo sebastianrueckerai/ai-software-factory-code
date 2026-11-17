@@ -107,10 +107,8 @@ type DigestStep struct {
 	// gate is a gate run's entries
 	gate []gateProof
 	// texts are the finding texts of a checks, proofs, review or audit line,
-	// in the order the gate raised them; ids are theirs where they are not
-	// FindingID's, an audit line's (AuditFinding.ID)
+	// in the order the gate raised them
 	texts []string
-	ids   []string
 	// atFile are the ids of an audit line's findings at a file, the ones a
 	// confirmation covers
 	atFile []string
@@ -681,13 +679,7 @@ func firstLineCut(s string) string { return textutil.Truncate(FirstLine(s), 120)
 // FindingID names a finding by its words alone: the first 12 hex of the
 // sha256 of its text lowercased, runs of white space one space, trimmed.
 // A review's finding and a check-in's verdict on it get the same id.
-func FindingID(text string) string { return findingHash(foldWords(text)) }
-
-// foldWords is text lowercased, runs of white space one space, trimmed.
-func foldWords(text string) string { return strings.Join(strings.Fields(strings.ToLower(text)), " ") }
-
-// findingHash is the first 12 hex of the sha256 of key.
-func findingHash(key string) string {
-	sum := sha256.Sum256([]byte(key))
+func FindingID(text string) string {
+	sum := sha256.Sum256([]byte(strings.Join(strings.Fields(strings.ToLower(text)), " ")))
 	return hex.EncodeToString(sum[:])[:12]
 }

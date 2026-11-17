@@ -153,25 +153,6 @@ func TestAuditFindingTextHasNoLine(t *testing.T) {
 	}
 }
 
-// A finding's id folds its item's words and keeps its path as written. By
-// sha256sum: "secrets at A.go" b78e8fc0c2a5, "secrets at a.go" 99f3acc590cc,
-// "rbac and serviceaccounts at x.go" 05e61f6763d2.
-func TestAuditFindingIDKeepsThePathsCase(t *testing.T) {
-	for _, tc := range []struct {
-		f    AuditFinding
-		want string
-	}{
-		{AuditFinding{Item: "secrets", File: "A.go", Line: 3}, "b78e8fc0c2a5"},
-		{AuditFinding{Item: "secrets", File: "a.go", Line: 4}, "99f3acc590cc"},
-		{AuditFinding{Item: "RBAC and ServiceAccounts", File: "x.go"}, "05e61f6763d2"},
-		{AuditFinding{Item: auditNoVerdict, Why: "w"}, FindingID(auditNoVerdict)},
-	} {
-		if got := tc.f.ID(); got != tc.want {
-			t.Errorf("%+v.ID() = %q, want %q", tc.f, got, tc.want)
-		}
-	}
-}
-
 // The card's own case: a confirmation of the secrets in image_look_test.go
 // covers them at the line the next run cites, and covers no other file,
 // not even one whose path its file starts.

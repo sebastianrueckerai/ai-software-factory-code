@@ -454,7 +454,7 @@ func writeFields(b *strings.Builder, m map[string]any) {
 				var audit AuditFinding
 				audit.Item, _ = item["item"].(string)
 				audit.File, _ = item["file"].(string)
-				id, shown = audit.ID(), valueText(f)
+				id, shown = FindingID(audit.Text()), valueText(f)
 			}
 			fmt.Fprintf(b, "- %s %s\n", id, shown)
 		}

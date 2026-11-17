@@ -63,17 +63,6 @@ func (f AuditFinding) Text() string {
 	return f.Item + " at " + f.File
 }
 
-// ID is the finding's id on the card: FindingID's hash of its item's words
-// at its file as written, as a path's case names another file. Items are
-// the checklist's names and the gate's own, none two of which differ in
-// case alone, so two findings share an id exactly when they share a text.
-func (f AuditFinding) ID() string {
-	if f.File == "" {
-		return findingHash(foldWords(f.Item))
-	}
-	return findingHash(foldWords(f.Item) + " at " + f.File)
-}
-
 const (
 	auditNoVerdict     = "the audit gave no verdict"
 	auditNotSwitchedOn = "the project does not switch the audit on"

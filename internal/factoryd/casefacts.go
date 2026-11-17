@@ -599,12 +599,8 @@ func headFindingTexts(steps []DigestStep, head string, ids []string) (map[string
 	}
 	texts, order := map[string]string{}, []string{}
 	for _, s := range slices.Backward(newest) {
-		for k, text := range s.texts {
-			id := FindingID(text)
-			if s.ids != nil {
-				id = s.ids[k]
-			}
-			if slices.Contains(ids, id) && texts[id] == "" {
+		for _, text := range s.texts {
+			if id := FindingID(text); slices.Contains(ids, id) && texts[id] == "" {
 				texts[id] = text
 				order = append(order, id)
 			}
