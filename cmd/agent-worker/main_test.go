@@ -2284,7 +2284,9 @@ func TestCheckpointCarriesTheCardDiffAcrossSessions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			os.WriteFile(filepath.Join(ck.store, ".git", "refs", "heads", "x"), []byte(strings.Repeat("1", 40)+"\n"), 0o644)
+			if err := os.WriteFile(filepath.Join(ck.store, ".git", "refs", "heads", "x"), []byte(strings.Repeat("1", 40)+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 			if tc.merge {
 				run("-C", dir, "merge", "-q", "--no-edit", "origin/main")
 			}
