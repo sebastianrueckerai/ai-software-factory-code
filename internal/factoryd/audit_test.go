@@ -580,6 +580,75 @@ func TestGateAuditKeepsThePreChecksPath(t *testing.T) {
 	}
 }
 
+// lookHunk is the hunk of image_look_test.go a rename card changed, at
+// lines 151 to 157, its one pair kube to Kube; more adds lines after it.
+func lookHunk(more ...string) (diff, head string) {
+	const path = "internal/factoryd/image_look_test.go"
+	ctx := []string{"\tcoder.VisionModel = \"vision\"", "\tpv.Document.Classes[\"coder\"] = coder", "\tcfg.Policy = func() policy.Version { return pv }"}
+	line := "\te.runner = &Runner{cfg: cfg, store: e.store, %s: kube, forgejo: &Forgejo{BaseURL: fj.URL, BotUser: \"factory-agent\", BotPassword: \"bot-pw\"}}"
+	diff = fmt.Sprintf("diff --git a/%s b/%s\nindex a892a1edc..22741d60b 100644\n--- a/%s\n+++ b/%s\n@@ -151,7 +151,%d @@ func newLookEnv(t *testing.T) *lookEnv {\n",
+		path, path, path, path, 7+len(more))
+	diff += " " + strings.Join(ctx, "\n ") + "\n-" + fmt.Sprintf(line, "kube") + "\n+" + fmt.Sprintf(line, "Kube") + "\n \te.runner.workerPort, _ = strconv.Atoi(port)\n"
+	for _, l := range more {
+		diff += "+" + l + "\n"
+	}
+	diff += " \treturn e\n }\n"
+	head = strings.Repeat("\n", 150) + strings.Join(append(append(ctx, fmt.Sprintf(line, "Kube"), "\te.runner.workerPort, _ = strconv.Atoi(port)"), more...), "\n") + "\n\treturn e\n}\n"
+	return diff, head
+}
+
+// auditDiff is the diff the audit call chat read.
+func auditDiff(t *testing.T, chat map[string]any) string {
+	t.Helper()
+	var in auditInput
+	if err := json.Unmarshal([]byte(userMessage(chat)), &in); err != nil {
+		t.Fatal(err)
+	}
+	return in.Diff
+}
+
+// The audit model reads a case rename as the context line that holds the
+// new line, beside the hunk's real change, from the file read at the
+// audited head.
+func TestGateAuditSendsNoRenameLines(t *testing.T) {
+	diff, head := lookHunk("\te.look = true")
+	fj := &gateForgejo{diff: diff, raw: map[string]string{"sf/repo/raw/internal/factoryd/image_look_test.go": head}}
+	ll := &fakeLiteLLM{content: `{"verdict":"clear"}`}
+	r, _ := newAuditRunner(t, fj, ll, true)
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	if res := getInto[AuditResult](t, val, err); res.Verdict != AuditClear || len(ll.chats) != 1 {
+		t.Fatalf("audit = %+v after %d calls", res, len(ll.chats))
+	}
+	got := auditDiff(t, ll.chats[0])
+	if !strings.Contains(got, "\n \te.runner = &Runner{cfg: cfg, store: e.store, Kube: kube,") || strings.Contains(got, "kube: kube") ||
+		!strings.Contains(got, "\n+\te.look = true\n") {
+		t.Fatalf("the audit read %q, want the rename as context and the added line", got)
+	}
+	if !slices.Equal(fj.rawRefs, []string{"c1"}) {
+		t.Fatalf("raw reads at %q, want the one at the audited head", fj.rawRefs)
+	}
+}
+
+// A card of case renames alone, a credential-shaped literal behind one of
+// them that stood in the base, is clear: the model reads an empty diff,
+// and the pre-check raises nothing.
+func TestGateAuditClearsARenameOnlyCard(t *testing.T) {
+	diff, head := lookHunk()
+	diff += "diff --git a/internal/x/x_test.go b/internal/x/x_test.go\n--- a/internal/x/x_test.go\n+++ b/internal/x/x_test.go\n@@ -4 +4 @@\n" +
+		"-\tpassword = \"hunter2hunter2\"\n+\tPassword = \"hunter2hunter2\"\n"
+	fj := &gateForgejo{diff: diff, raw: map[string]string{"sf/repo/raw/internal/factoryd/image_look_test.go": head,
+		"sf/repo/raw/internal/x/x_test.go": "package x\n\nvar (\n\tPassword = \"hunter2hunter2\"\n)\n"}}
+	ll := &fakeLiteLLM{content: `{"verdict":"clear"}`}
+	r, _ := newAuditRunner(t, fj, ll, true)
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	if res := getInto[AuditResult](t, val, err); res.Verdict != AuditClear || len(res.Findings) != 0 || len(ll.chats) != 1 {
+		t.Fatalf("audit = %+v after %d calls, want clear after one call", res, len(ll.chats))
+	}
+	if got := auditDiff(t, ll.chats[0]); got != "" {
+		t.Fatalf("the audit read %q, want an empty diff", got)
+	}
+}
+
 // Every audit attempt is a gate_audit row beside its timeline line, keyed
 // by the card, the head and the stages' round: a clear audit ran, a
 // second attempt of one round on one head writes no second row, a second

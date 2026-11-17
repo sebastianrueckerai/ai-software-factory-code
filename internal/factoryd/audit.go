@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -188,8 +189,9 @@ func (r *Runner) auditConfirmations(ctx context.Context, taskID string) (map[str
 }
 
 // GateAudit is the audit stage on the pull request's head,
-// for a project that switches it on under the task's pinned version: a
-// deterministic scan of the added lines for secret shapes, then the audit
+// for a project that switches it on under the task's pinned version: the
+// diff with its case renames as context (quietRenames), a deterministic
+// scan of its added lines for secret shapes, then the audit
 // model the policy names for the task's class, through the gateway on the
 // task's account, one call for each part of the diff (callAll runs them in
 // parallel), a file larger than a part cut by hunks, the first with the
@@ -247,10 +249,24 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	if err != nil {
 		return AuditResult{}, err
 	}
+	modelFiles := quietRenames(prFiles, func(p string) []byte {
+		segments := strings.Split(p, "/")
+		for i, s := range segments {
+			segments[i] = url.PathEscape(s)
+		}
+		b, err := r.forgejo.FileAt(ctx, repo.Owner, repo.Name, commit, strings.Join(segments, "/"))
+		if err != nil {
+			return nil
+		}
+		return b
+	})
 	var secrets []string
 	var hits []redact.Hit
 	for _, f := range prFiles {
-		secrets, hits = append(secrets, redact.DiffSecrets(f.Text)...), append(hits, redact.ScanDiff(f.Text)...)
+		secrets = append(secrets, redact.DiffSecrets(f.Text)...)
+	}
+	for _, f := range modelFiles {
+		hits = append(hits, redact.ScanDiff(f.Text)...)
 	}
 	scrub := redact.New(secrets...)
 	for i, h := range hits {
@@ -262,10 +278,10 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		res.Findings = append(res.Findings, AuditFinding{Item: "secret in the diff: " + h.Kind, File: h.File, Line: h.Line,
 			Why: "an added line has the shape of a " + h.Kind + " (pre-check)"})
 	}
-	parts := diffParts(prFiles, reviewDiffMax)
-	first := auditInput{Repository: t.Repository, PR: pr.Number, Commit: commit, Concurrency: concurrencyBlock(concurrencySites(prFiles))}
+	parts := diffParts(modelFiles, reviewDiffMax)
+	first := auditInput{Repository: t.Repository, PR: pr.Number, Commit: commit, Concurrency: concurrencyBlock(concurrencySites(modelFiles))}
 	if len(parts) > 1 {
-		first.Part = partLabel(parts, 0, len(prFiles))
+		first.Part = partLabel(parts, 0, len(modelFiles))
 	}
 	calls := make([]reviewCall, len(parts))
 	for i, part := range parts {
@@ -276,7 +292,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		}}
 		if i > 0 {
 			calls[i].Prompt, calls[i].Input = auditPartPrompt, func() any {
-				return auditPartInput{Diff: joinFiles(part), Part: partLabel(parts, i, len(prFiles))}
+				return auditPartInput{Diff: joinFiles(part), Part: partLabel(parts, i, len(modelFiles))}
 			}
 		}
 	}

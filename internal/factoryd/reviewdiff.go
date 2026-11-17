@@ -3,6 +3,9 @@ package factoryd
 import (
 	"cmp"
 	"fmt"
+	"go/scanner"
+	"go/token"
+	"go/types"
 	"path"
 	"regexp"
 	"slices"
@@ -152,6 +155,246 @@ func diffParts(files []fileDiff, limit int) [][]fileDiff {
 		return parts
 	}
 	return [][]fileDiff{nil}
+}
+
+// quietRenames is files with each case rename of a .go file turned into one
+// context line that holds the added line, so the audit reads no case
+// rename as a change. A changed block, a run of removed lines and a run of
+// added lines of one length, pairs its lines in order; a pair is a case
+// rename when caseRenames finds one, the added line stands at its line of
+// head(path), the file at the head (nil: unread), outside every literal
+// and comment of more than one line, which one diff line cannot show, and
+// no other added line of a .go file names a new spelling it brings. A hunk
+// left with no change is dropped, and a file left with no hunk unless its
+// header holds more than its paths. A rename to a name that already stands
+// in the base, a second symbol, is not seen here: the review reads it.
+func quietRenames(files []fileDiff, head func(path string) []byte) []fileDiff {
+	type block struct {
+		at, n, newLine int // the first removed line's index, the run's length, the first added line's line in the new file
+		renames        [][]string
+	}
+	blocks := make([][]block, len(files))
+	named := map[string]bool{}
+	name := func(l string) {
+		ids := identsAt(lineBody(l))
+		if ids == nil {
+			for _, w := range goWord.FindAllString(l, -1) {
+				named[w] = true
+			}
+		}
+		for _, id := range ids {
+			named[id] = true
+		}
+	}
+	for i, f := range files {
+		if !strings.HasSuffix(f.Path, ".go") {
+			continue
+		}
+		renames := f.OldPath == "" || strings.HasSuffix(f.OldPath, ".go")
+		lines := strings.SplitAfter(f.Text, "\n")
+		newLine := -1
+		for k := 0; k < len(lines); k++ {
+			l := lines[k]
+			switch {
+			case strings.HasPrefix(l, "@@ "):
+				newLine = -1
+				if m := hunkHeader.FindStringSubmatch(l); m != nil {
+					newLine, _ = strconv.Atoi(m[3])
+				}
+				continue
+			case newLine < 0:
+				continue
+			case strings.HasPrefix(l, "+"):
+				name(l)
+				fallthrough
+			case strings.HasPrefix(l, " "):
+				newLine++
+				continue
+			case !strings.HasPrefix(l, "-"):
+				continue
+			}
+			n := runOf(lines[k:], "-")
+			m := runOf(lines[k+n:], "+")
+			b, found := block{at: k, n: n, newLine: newLine}, false
+			for j := range m {
+				var r []string
+				if renames && n == m {
+					r = caseRenames(lineBody(lines[k+j]), lineBody(lines[k+n+j]))
+				}
+				if r == nil {
+					name(lines[k+n+j])
+				}
+				b.renames, found = append(b.renames, r), found || r != nil
+			}
+			if found {
+				blocks[i] = append(blocks[i], b)
+			}
+			newLine += m
+			k += n + m - 1
+		}
+	}
+	var out []fileDiff
+	for i, f := range files {
+		if len(blocks[i]) == 0 {
+			out = append(out, f)
+			continue
+		}
+		src := head(f.Path)
+		multi, read := multiLine(src)
+		if src == nil || !read {
+			out = append(out, f)
+			continue
+		}
+		at := strings.Split(string(src), "\n")
+		lines := strings.SplitAfter(f.Text, "\n")
+		var kept []string
+		k := 0
+		for _, b := range blocks[i] {
+			kept = append(kept, lines[k:b.at]...)
+			removed, added := lines[b.at:b.at+b.n], lines[b.at+b.n:b.at+2*b.n]
+			quiet := func(j int) bool {
+				line := b.newLine + j
+				return b.renames[j] != nil && line >= 1 && line <= len(at) && at[line-1] == lineBody(added[j]) && !multi[line] &&
+					!slices.ContainsFunc(b.renames[j], func(s string) bool { return named[s] })
+			}
+			for j := 0; j < b.n; {
+				if quiet(j) {
+					kept = append(kept, " "+added[j][1:])
+					j++
+					continue
+				}
+				e := j + 1
+				for e < b.n && !quiet(e) {
+					e++
+				}
+				kept = append(append(kept, removed[j:e]...), added[j:e]...)
+				j = e
+			}
+			k = b.at + 2*b.n
+		}
+		if text := withChanges(append(kept, lines[k:]...)); text != "" {
+			out = append(out, parseFileDiff(text))
+		}
+	}
+	return out
+}
+
+var goWord = regexp.MustCompile(`[\p{L}_][\p{L}\p{N}_]*`)
+
+// runOf is how many of lines, from the first, start with prefix.
+func runOf(lines []string, prefix string) int {
+	n := 0
+	for n < len(lines) && strings.HasPrefix(lines[n], prefix) {
+		n++
+	}
+	return n
+}
+
+// lineBody is a diff line without its marker and its newline.
+func lineBody(l string) string {
+	return strings.TrimSuffix(l[min(1, len(l)):], "\n")
+}
+
+// caseRenames are the identifiers of added whose first letter removed
+// spells in the other case, when that is all the two lines differ in: nil
+// when they differ in anything else or in nothing, in a byte that starts
+// no identifier of both, in a letter outside ASCII or in a predeclared name
+// (true, nil, len), or go/scanner cannot read a line whole.
+func caseRenames(removed, added string) []string {
+	if len(removed) != len(added) || removed == added {
+		return nil
+	}
+	was, is := identsAt(removed), identsAt(added)
+	if was == nil || is == nil {
+		return nil
+	}
+	var out []string
+	for i := range len(removed) {
+		if removed[i] == added[i] {
+			continue
+		}
+		a, b, lower := was[i], is[i], removed[i]|0x20
+		if a == "" || b == "" || removed[i]^added[i] != 0x20 || lower < 'a' || lower > 'z' || types.Universe.Lookup(a) != nil || types.Universe.Lookup(b) != nil {
+			return nil
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+// identsAt maps the offset of each identifier of line to the identifier;
+// nil when go/scanner cannot read line whole.
+func identsAt(line string) map[int]string {
+	out := map[int]string{}
+	if !goTokens([]byte(line), func(off, _ int, tok token.Token, lit string) {
+		if tok == token.IDENT {
+			out[off] = lit
+		}
+	}) {
+		return nil
+	}
+	return out
+}
+
+// multiLine are the lines, from 1, of src that a literal or a comment of
+// more than one line covers; read is false when go/scanner cannot read src
+// whole.
+func multiLine(src []byte) (lines map[int]bool, read bool) {
+	lines = map[int]bool{}
+	read = goTokens(src, func(_, line int, tok token.Token, lit string) {
+		if n := strings.Count(lit, "\n"); n > 0 && (tok == token.STRING || tok == token.COMMENT) {
+			for l := line; l <= line+n; l++ {
+				lines[l] = true
+			}
+		}
+	})
+	return lines, read
+}
+
+// goTokens calls each with every token of src, comments too, its offset
+// and its line as written (no //line directive moves it); false when
+// go/scanner reports an error, such as a literal or comment src does not
+// close or a character Go does not know.
+func goTokens(src []byte, each func(off, line int, tok token.Token, lit string)) bool {
+	file := token.NewFileSet().AddFile("", -1, len(src))
+	failed := false
+	var s scanner.Scanner
+	s.Init(file, src, func(token.Position, string) { failed = true }, scanner.ScanComments)
+	for {
+		pos, tok, lit := s.Scan()
+		if tok == token.EOF {
+			return !failed
+		}
+		each(file.Offset(pos), file.PositionFor(pos, false).Line, tok, lit)
+	}
+}
+
+// withChanges joins lines, one file's diff, leaving out each hunk that
+// changes no line: "" when no hunk is left and the header holds nothing
+// but the paths.
+func withChanges(lines []string) string {
+	first := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, "@@ ") })
+	if first < 0 {
+		return strings.Join(lines, "")
+	}
+	var hunks strings.Builder
+	for k := first; k < len(lines); {
+		e := k + 1
+		for e < len(lines) && !strings.HasPrefix(lines[e], "@@ ") {
+			e++
+		}
+		if slices.ContainsFunc(lines[k+1:e], func(l string) bool { return strings.HasPrefix(l, "+") || strings.HasPrefix(l, "-") }) {
+			hunks.WriteString(strings.Join(lines[k:e], ""))
+		}
+		k = e
+	}
+	header := lines[:first]
+	if hunks.Len() == 0 && !slices.ContainsFunc(header, func(l string) bool {
+		return !strings.HasPrefix(l, "diff --git ") && !strings.HasPrefix(l, "index ") && !strings.HasPrefix(l, "--- ") && !strings.HasPrefix(l, "+++ ")
+	}) {
+		return ""
+	}
+	return strings.Join(header, "") + hunks.String()
 }
 
 // subHeaderRoom is the room a recomputed hunk header needs.
