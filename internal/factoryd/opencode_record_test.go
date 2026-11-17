@@ -282,7 +282,7 @@ func TestRecordOpencodeServeFixture(t *testing.T) {
 	}
 
 	var events []harness.Event
-	res := oc.Run(context.Background(), harness.TaskBrief{Objective: "Write one.txt and two.txt."}, func(ev harness.Event) { events = append(events, ev) })
+	res := oc.Run(context.Background(), oc.Text(harness.TaskBrief{Objective: "Write one.txt and two.txt."}), func(ev harness.Event) { events = append(events, ev) })
 	if !res.Success {
 		t.Fatalf("Run = %+v", res)
 	}

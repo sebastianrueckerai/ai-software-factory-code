@@ -527,7 +527,7 @@ func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agen
 	brief := agentDocLoopBrief(id, v)
 	restoreTag := randomTag
 	randomTag = func() string { return agentDocLoopTag }
-	res := model.oc.Run(ctx, brief, func(harness.Event) {})
+	res := model.oc.Run(ctx, model.oc.Text(brief), func(harness.Event) {})
 	randomTag = restoreTag
 	if !res.Success {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: the session did not end well: %s", id, res.Summary)

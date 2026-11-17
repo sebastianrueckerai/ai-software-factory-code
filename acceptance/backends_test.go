@@ -1544,6 +1544,11 @@ func (s *acceptanceStore) CardBrief(ctx context.Context, taskID string) (factory
 	return factoryd.ReadCardBrief(ctx, s, taskID)
 }
 
+// SessionBriefs: the acceptance flows run no session pod.
+func (s *acceptanceStore) SessionBriefs(context.Context, string) ([]factoryd.SessionBrief, error) {
+	return nil, nil
+}
+
 // The cases: nothing here opens one.
 func (s *acceptanceStore) OpenCase(context.Context, factoryd.Case) (factoryd.Case, bool, error) {
 	return factoryd.Case{}, false, nil

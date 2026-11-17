@@ -127,15 +127,20 @@ func (o *Opencode) Prepare(ctx context.Context, env harness.SandboxEnv, brief ha
 	return os.WriteFile(filepath.Join(o.WorkDir, "brief.json"), briefJSON, 0o600)
 }
 
+// Text is the session's first message (objectiveText): each call draws
+// its own markers' tag, so the text a session stores and prompts is one
+// call's.
+func (o *Opencode) Text(brief harness.TaskBrief) string { return objectiveText(brief) }
+
 // Run drives the pinned opencode's server, `opencode serve` on 127.0.0.1,
 // the way `opencode run --format json --auto` drives its in-process one
 // (packages/opencode/src/cli/cmd/run.ts:697-906 at v1.18.32): it subscribes
-// to /event, creates the session with run's deny rules, prompts the brief,
+// to /event, creates the session with run's deny rules, prompts text,
 // answers every permission ask "once", and hands each event to the parser
 // as the JSON line run would print, until the session goes idle. Message
 // queues text for the running session's next turn. The returned Result is
 // the adapter's verdict; the final finished event is synthesized here.
-func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(harness.Event)) harness.Result {
+func (o *Opencode) Run(ctx context.Context, text string, emit func(harness.Event)) harness.Result {
 	outputLimit, err := o.Budget.OutputLimit()
 	if err != nil {
 		return o.finish(emit, false, err.Error())
@@ -227,7 +232,7 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 	var serveErr error
 	select {
 	case base := <-listening:
-		serveErr = o.serve(ctx, base, objectiveText(brief), p, emit, exited)
+		serveErr = o.serve(ctx, base, text, p, emit, exited)
 	case <-exited:
 		serveErr = fmt.Errorf("exited before it listened: %v", waitErr)
 	case <-time.After(serveStartTimeout):
@@ -960,7 +965,7 @@ const mcpTimeoutMS = 150000
 // window of 0 means the gateway prices the alias but no deployment
 // reports one.
 func (o *Opencode) servedWindow(ctx context.Context, alias string) (int, error) {
-	body, err := o.gatewayGet(ctx, "/v1/window/"+url.PathEscape(alias))
+	body, err := o.gatewayCall(ctx, http.MethodGet, "/v1/window/"+url.PathEscape(alias), "")
 	if err != nil {
 		return 0, fmt.Errorf("window %s: %w", alias, err)
 	}
@@ -977,7 +982,7 @@ func (o *Opencode) servedWindow(ctx context.Context, alias string) (int, error) 
 // /worker/brief: its CardBrief.AgentText, which the session's own parts
 // stand around.
 func (o *Opencode) CardText(ctx context.Context) (string, error) {
-	body, err := o.gatewayGet(ctx, "/worker/brief")
+	body, err := o.gatewayCall(ctx, http.MethodGet, "/worker/brief", "")
 	if err != nil {
 		return "", fmt.Errorf("the card's brief: %w", err)
 	}
@@ -990,19 +995,33 @@ func (o *Opencode) CardText(ctx context.Context) (string, error) {
 	return brief.Text, nil
 }
 
-// gatewayGet reads path of the gateway on the session's sandbox identity:
-// the same token the identity proxy attaches, read fresh in case the
-// credential rotated.
-func (o *Opencode) gatewayGet(ctx context.Context, path string) ([]byte, error) {
+// StoreText stores text, the session's first message (Text), as the
+// record of what the session read: the gateway's POST
+// /worker/session-brief, which keeps it for the task and the session the
+// sandbox identity names.
+func (o *Opencode) StoreText(ctx context.Context, text string) error {
+	if _, err := o.gatewayCall(ctx, http.MethodPost, "/worker/session-brief", text); err != nil {
+		return fmt.Errorf("the session's brief: %w", err)
+	}
+	return nil
+}
+
+// gatewayCall calls path of the gateway on the session's sandbox identity,
+// a POST with body as its text: the same token the identity proxy
+// attaches, read fresh in case the credential rotated.
+func (o *Opencode) gatewayCall(ctx context.Context, method, path, body string) ([]byte, error) {
 	token, err := readToken(o.TokenFile)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.GatewayURL+path, nil) // #nosec G107 -- the host is the configured GatewayURL, a variable only in tests
+	req, err := http.NewRequestWithContext(ctx, method, o.GatewayURL+path, strings.NewReader(body)) // #nosec G107 -- the host is the configured GatewayURL, a variable only in tests
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "text/plain; charset=utf-8")
+	}
 	client := http.Client{}
 	if o.HTTP != nil {
 		client = *o.HTTP
@@ -1012,14 +1031,14 @@ func (o *Opencode) gatewayGet(ctx context.Context, path string) ([]byte, error) 
 		return nil, err
 	}
 	defer res.Body.Close() // #nosec G104 -- the body is read whole below
-	body, err := io.ReadAll(res.Body)
+	out, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, err
 	}
-	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d: %s", res.StatusCode, textutil.Truncate(string(body), 300))
+	if res.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("status %d: %s", res.StatusCode, textutil.Truncate(string(out), 300))
 	}
-	return body, nil
+	return out, nil
 }
 
 // buildOpencodeConfig produces the pinned v1.18.32 config for the identity

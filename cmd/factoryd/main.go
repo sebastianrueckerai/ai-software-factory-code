@@ -543,6 +543,9 @@ func main() {
 	// the gateway's read of a session's card brief, which the worker's
 	// GET /worker/brief answers
 	mux.Handle("POST /internal/brief", requireBearer(gatewayToken, factoryd.CardBriefHandler(store)))
+	// the gateway's hand-over of the text a session's first model call got,
+	// which the worker's POST /worker/session-brief stores
+	mux.Handle("POST /internal/session-brief", requireBearer(gatewayToken, factoryd.SessionBriefHandler(store)))
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
 		if err != nil {

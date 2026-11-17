@@ -538,6 +538,9 @@ func (s *accBatchStore) CreateTask(ctx context.Context, t factoryd.Task) error {
 func (s *accBatchStore) CardBrief(context.Context, string) (factoryd.CardBrief, error) {
 	panic("unused")
 }
+func (s *accBatchStore) SessionBriefs(context.Context, string) ([]factoryd.SessionBrief, error) {
+	panic("unused")
+}
 func (s *accBatchStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
 	panic("unused")
 }

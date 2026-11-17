@@ -331,7 +331,7 @@ func TestOpencodePrepareWritesBriefAndRunDrivesServe(t *testing.T) {
 	}
 
 	var events []harness.Event
-	res := oc.Run(ctx, brief, func(ev harness.Event) { events = append(events, ev) })
+	res := oc.Run(ctx, oc.Text(brief), func(ev harness.Event) { events = append(events, ev) })
 	if !res.Success || res.Summary != "Wrote one.txt and two.txt after the nudge." {
 		t.Fatalf("Run result = %+v", res)
 	}
@@ -384,7 +384,7 @@ func TestRunDerivesTheLimitsFromTheServedWindows(t *testing.T) {
 	}))
 	defer gw.Close()
 	oc.GatewayURL = gw.URL
-	if res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(harness.Event) {}); !res.Success {
+	if res := oc.Run(context.Background(), "x", func(harness.Event) {}); !res.Success {
 		t.Fatalf("Run = %+v", res)
 	}
 	if auth != "Bearer jwt" {
@@ -405,7 +405,7 @@ func TestOpencodeMessageReachesTheRunningSession(t *testing.T) {
 	}
 	done := make(chan harness.Result)
 	go func() {
-		done <- oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(harness.Event) {})
+		done <- oc.Run(context.Background(), "x", func(harness.Event) {})
 	}()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -438,7 +438,7 @@ func TestOpencodeMessageReachesTheRunningSession(t *testing.T) {
 func TestOpencodeRunFailsWhenTheServerDies(t *testing.T) {
 	oc, _ := fakeServeOpencode(t, "crash")
 	var events []harness.Event
-	res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(ev harness.Event) { events = append(events, ev) })
+	res := oc.Run(context.Background(), "x", func(ev harness.Event) { events = append(events, ev) })
 	if res.Success {
 		t.Fatalf("result = %+v, want failure", res)
 	}
@@ -456,7 +456,7 @@ func TestOpencodeRunEndsOnCancel(t *testing.T) {
 	oc, _ := fakeServeOpencode(t, "wait")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan harness.Result)
-	go func() { done <- oc.Run(ctx, harness.TaskBrief{Objective: "x"}, func(harness.Event) {}) }()
+	go func() { done <- oc.Run(ctx, "x", func(harness.Event) {}) }()
 	for oc.Message(context.Background(), "") == harness.ErrNotRunning {
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -477,7 +477,7 @@ func TestOpencodeRunNamesTheCancelWhileAPermissionReplyIsHeld(t *testing.T) {
 	oc, dir := fakeServeOpencode(t, "permission")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan harness.Result)
-	go func() { done <- oc.Run(ctx, harness.TaskBrief{Objective: "x"}, func(harness.Event) {}) }()
+	go func() { done <- oc.Run(ctx, "x", func(harness.Event) {}) }()
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "reply-held")); err == nil {
@@ -523,7 +523,7 @@ func running(pid int) bool {
 func TestOpencodeRunKillsLeftoverProcesses(t *testing.T) {
 	oc, dir := fakeServeOpencode(t, "hold")
 	start := time.Now()
-	res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(harness.Event) {})
+	res := oc.Run(context.Background(), "x", func(harness.Event) {})
 	if !res.Success {
 		t.Fatalf("result = %+v: a leftover process must not fail the run", res)
 	}
@@ -603,7 +603,7 @@ func TestSkippedLineNote(t *testing.T) {
 func TestOpencodeRunSurvivesAnOversizeLine(t *testing.T) {
 	oc, _ := fakeServeOpencode(t, "oversize")
 	var events []harness.Event
-	res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(ev harness.Event) { events = append(events, ev) })
+	res := oc.Run(context.Background(), "x", func(ev harness.Event) { events = append(events, ev) })
 	if !res.Success {
 		t.Fatalf("result = %+v (%s): a dropped line must not fail the session", res, res.Summary)
 	}

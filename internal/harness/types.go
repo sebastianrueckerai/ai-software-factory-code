@@ -197,7 +197,10 @@ type SandboxEnv struct {
 // (architecture 6.2).
 type Harness interface {
 	Prepare(ctx context.Context, env SandboxEnv, brief TaskBrief) error
-	Run(ctx context.Context, brief TaskBrief, emit func(Event)) Result
+	// Text is the session's first message, built from brief once: the
+	// worker stores it as what the session read, and Run prompts it.
+	Text(brief TaskBrief) string
+	Run(ctx context.Context, text string, emit func(Event)) Result
 	// Message puts text into the running session as the next user turn:
 	// ErrNotSupported from a harness without such a mode (factoryd then
 	// redirects to a fresh session with the text), ErrNotRunning when no

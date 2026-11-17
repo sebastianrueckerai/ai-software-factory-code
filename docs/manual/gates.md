@@ -534,6 +534,11 @@ factoryd's note on each, which the brief says in factoryd's own words
 ahead of its sections, outside every quoted block. The card's brief
 (`CardBrief.AgentText`) reaches the worker from the gateway's
 `GET /worker/brief` and is cut at the same 128 KiB, with its note.
+Before its run the worker stores the session's whole first message, the
+card's brief with the session's own parts around it, through the
+gateway's `POST /worker/session-brief` on the session's own token, as the
+session's number among the card's sessions (`Store.SessionBriefs`); a
+text the gateway cannot keep fails the start at step `brief`, transient.
 Escalate records its
 comment as an `escalation` intake event, and `Reconcile` rebuilds the
 answers from the intake events (every trusted issue comment newer than an

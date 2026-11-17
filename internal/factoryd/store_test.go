@@ -829,6 +829,11 @@ func (s *fakeStore) CardBrief(ctx context.Context, taskID string) (CardBrief, er
 	return ReadCardBrief(ctx, s, taskID)
 }
 
+// SessionBriefs: a fake card's sessions stored no text.
+func (s *fakeStore) SessionBriefs(context.Context, string) ([]SessionBrief, error) {
+	return nil, nil
+}
+
 func (s *fakeStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	t, ok := s.tasks[id]
 	return t, ok, nil

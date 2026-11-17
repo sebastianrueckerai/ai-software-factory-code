@@ -92,12 +92,15 @@ type session struct {
 	repoDir        string
 	base, mainHead string
 	brief          harness.TaskBrief
-	oc             *factoryd.Opencode
-	gate           *pushGate
-	wip            *wipServe
-	ck             *checkpointer // nil for a report session
-	tel            *sessionTelemetry
-	outcome        string // for the session's duration metric
+	// text is the session's first message, built from brief and stored
+	// before the run prompts it
+	text    string
+	oc      *factoryd.Opencode
+	gate    *pushGate
+	wip     *wipServe
+	ck      *checkpointer // nil for a report session
+	tel     *sessionTelemetry
+	outcome string // for the session's duration metric
 	// commit and pushErr are the end push's, for the outcome
 	commit  string
 	pushErr error
@@ -142,7 +145,7 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 	}()
 	endRun := s.tel.phase("run")
 	guard := newWorkflowDirGuard(s.repoDir, s.oc.Message, log)
-	res := s.oc.Run(runCtx, s.brief, guard.wrap(s.emitter(stdout)))
+	res := s.oc.Run(runCtx, s.text, guard.wrap(s.emitter(stdout)))
 	stopped := runCtx.Err() != nil
 	stopCheckpoints()
 	<-ckDone
@@ -355,12 +358,22 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 			return s, startError{"checkpoint store", err}
 		}
 	}
+	// the start's last step: the text is the record of what the session
+	// reads, and no session runs on one the gateway did not keep
+	s.text = s.oc.Text(s.brief)
+	storeCtx, cancel := context.WithTimeout(ctx, briefWait)
+	err = s.oc.StoreText(storeCtx, s.text)
+	cancel()
+	if err != nil {
+		return s, startError{"brief", transient{err}}
+	}
 	return s, nil
 }
 
-// briefWait bounds the read of the card's brief: past the 150 s the
-// gateway's call to factoryd may take, so a gateway that holds the read
-// fails the start as a service that may answer later does.
+// briefWait bounds the read of the card's brief and the store of the
+// session's text, each: past the 150 s the gateway's call to factoryd may
+// take, so a gateway that holds either fails the start as a service that
+// may answer later does.
 var briefWait = 160 * time.Second
 
 // maxCard bounds the card's brief in the session's text, as an
@@ -386,7 +399,7 @@ func runReport(ctx context.Context, s *session, stdout io.Writer, log func(strin
 	runCtx, stopRun := signal.NotifyContext(ctx, syscall.SIGTERM)
 	defer stopRun()
 	endRun := s.tel.phase("run")
-	res := s.oc.Run(runCtx, s.brief, emit)
+	res := s.oc.Run(runCtx, s.text, emit)
 	if err := killOthers(); err != nil {
 		res = harness.Result{Success: false, Summary: "stop agent processes: " + err.Error()}
 	}

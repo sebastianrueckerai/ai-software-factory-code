@@ -66,10 +66,14 @@ func (s *Server) cheaperThan(ctx context.Context, alias, session string) bool {
 	return a.In <= b.In && a.Out <= b.Out && a.CacheRead <= b.CacheRead && (a.In < b.In || a.Out < b.Out)
 }
 
-// maxBodyBytes caps the proxied request body at the trust boundary. Large
-// enough for 1M-token contexts (about 4 MB of text), var so tests can lower
-// it.
-var maxBodyBytes int64 = 16 << 20
+// MaxModelBody caps a model call's body at the trust boundary. Large
+// enough for 1M-token contexts (about 4 MB of text). A session's first
+// message travels in one, so a session's stored text has the same bound:
+// a longer one reached no model.
+const MaxModelBody = 16 << 20
+
+// maxBodyBytes is MaxModelBody, a var so tests can lower it.
+var maxBodyBytes int64 = MaxModelBody
 
 type ServerOptions struct {
 	Auth       Authenticator
@@ -95,7 +99,8 @@ type ServerOptions struct {
 	Digester Digester
 	// Delegator is the delegate tool's hand-over to factoryd.
 	Delegator Delegator
-	// Briefs is a session's read of its card's brief at factoryd.
+	// Briefs is a session's read of its card's brief at factoryd, and the
+	// store of the text the session's first model call got.
 	Briefs Briefer
 	// Cloud is the commissioning connector (the agent Hetzner project).
 	Cloud *Cloud
@@ -327,6 +332,7 @@ func (s *Server) Routes(version string) http.Handler {
 	mux.Handle("POST /v1/chat/completions", http.HandlerFunc(s.handleChat))
 	mux.Handle("GET /v1/window/{alias}", http.HandlerFunc(s.handleWindow))
 	mux.Handle("GET /worker/brief", http.HandlerFunc(s.handleWorkerBrief))
+	mux.Handle("POST /worker/session-brief", http.HandlerFunc(s.handleWorkerSessionBrief))
 	mux.Handle("POST /v1/tools/{tool}", http.HandlerFunc(s.handleChatTool))
 	mux.Handle("/mcp", s.mcpHandler())
 	mux.Handle("/healthz", health.Handler("factory-gateway", version))
@@ -568,6 +574,38 @@ func (s *Server) handleWorkerBrief(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(struct { // #nosec G104 -- best-effort response write
 		Text string `json:"text"`
 	}{text})
+}
+
+// handleWorkerSessionBrief stores at factoryd the text a session's worker
+// gives its first model call, the request's body: as the task and the
+// session its ServiceAccount token names, and no other. A token bound to
+// no session's pod stores none, and a text past a model call's bound is
+// refused whole.
+func (s *Server) handleWorkerSessionBrief(w http.ResponseWriter, r *http.Request) {
+	id, err := s.opts.Auth.Authenticate(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	if id.Session == "" {
+		http.Error(w, "only a session's worker pod stores the text its session got: this token is bound to none", http.StatusForbidden)
+		return
+	}
+	text, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooLarge):
+		http.Error(w, fmt.Sprintf("the session's text is over %d bytes, the bound of a model call's body, so no model read it", maxBodyBytes), http.StatusRequestEntityTooLarge)
+		return
+	case err != nil || len(text) == 0:
+		http.Error(w, "the body holds no text", http.StatusBadRequest)
+		return
+	}
+	if err := s.opts.Briefs.StoreSessionBrief(r.Context(), id.TaskID, id.Session, string(text)); err != nil {
+		http.Error(w, "the session's brief of "+id.TaskID+": "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // price is alias's LiteLLM price under the version's output limit; a

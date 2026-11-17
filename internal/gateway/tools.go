@@ -117,10 +117,12 @@ type Digester interface {
 	Digest(ctx context.Context, taskID string, in DigestIn) (string, error)
 }
 
-// Briefer reads a session's card brief at factoryd (GET /worker/brief).
-// Implemented by Factoryd; tests substitute a fake.
+// Briefer reads a session's card brief at factoryd (GET /worker/brief)
+// and stores there the text session session's first model call got (POST
+// /worker/session-brief). Implemented by Factoryd; tests substitute a fake.
 type Briefer interface {
 	Brief(ctx context.Context, taskID string) (string, error)
+	StoreSessionBrief(ctx context.Context, taskID, session, text string) error
 }
 
 // Escalation is what an agent asks: a human (escalate: the
@@ -302,20 +304,24 @@ func (f *Factoryd) Brief(ctx context.Context, taskID string) (string, error) {
 	return factorydText(b, err)
 }
 
+// StoreSessionBrief stores at factoryd text, the first message of task
+// taskID's session session, which its worker built.
+func (f *Factoryd) StoreSessionBrief(ctx context.Context, taskID, session, text string) error {
+	_, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/session-brief",
+		http.Header{"Authorization": {"Bearer " + f.Token}},
+		struct {
+			TaskID  string `json:"task_id"`
+			Session string `json:"session"`
+			Text    string `json:"text"`
+		}{taskID, session, text})
+	return factorydErr(err)
+}
+
 // factorydText is the text of factoryd's {"text"} answer b; a refusal is
-// factoryd's one sentence as the error.
+// factoryd's one sentence as the error (factorydErr).
 func factorydText(b []byte, err error) (string, error) {
-	var pe *providerError
-	if errors.As(err, &pe) {
-		// a refusal and factoryd's 502 (what it asked did not answer) are its
-		// sentences; another 5xx says nothing an agent can act on
-		if sentence := strings.TrimSpace(pe.body); sentence != "" && (pe.status < 500 || pe.status == http.StatusBadGateway) {
-			return "", errors.New(sentence)
-		}
-		return "", fmt.Errorf("factoryd answered %d", pe.status)
-	}
 	if err != nil {
-		return "", err
+		return "", factorydErr(err)
 	}
 	var res struct {
 		Text string `json:"text"`
@@ -324,6 +330,20 @@ func factorydText(b []byte, err error) (string, error) {
 		return "", err
 	}
 	return res.Text, nil
+}
+
+// factorydErr is err of a call to factoryd: a refusal and factoryd's 502
+// (what it asked did not answer) are its one sentence; another 5xx says
+// nothing an agent can act on.
+func factorydErr(err error) error {
+	var pe *providerError
+	if !errors.As(err, &pe) {
+		return err
+	}
+	if sentence := strings.TrimSpace(pe.body); sentence != "" && (pe.status < 500 || pe.status == http.StatusBadGateway) {
+		return errors.New(sentence)
+	}
+	return fmt.Errorf("factoryd answered %d", pe.status)
 }
 
 // toolCaller is who an MCP request is for: the task, read per request,

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -2155,15 +2156,98 @@ func (b bearerAuth) Authenticate(r *http.Request) (Identity, error) {
 	return Identity{}, errors.New("not a JWT")
 }
 
-// fakeBriefer answers a card's brief and records whose it read.
+// fakeBriefer answers a card's brief and records whose it read, and
+// records each session's text it stored.
 type fakeBriefer struct {
-	read []string
-	err  error
+	read   []string
+	stored []string
+	err    error
 }
 
 func (f *fakeBriefer) Brief(_ context.Context, taskID string) (string, error) {
 	f.read = append(f.read, taskID)
 	return "the brief of " + taskID, f.err
+}
+
+func (f *fakeBriefer) StoreSessionBrief(_ context.Context, taskID, session, text string) error {
+	f.stored = append(f.stored, taskID+"/"+session+": "+text)
+	return f.err
+}
+
+func TestFactorydSessionBriefClient(t *testing.T) {
+	var method, path, auth, body string
+	status, reply := http.StatusNoContent, ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		method, path, auth, body = r.Method, r.URL.Path, r.Header.Get("Authorization"), string(b)
+		w.WriteHeader(status)
+		io.WriteString(w, reply)
+	}))
+	defer srv.Close()
+	f := &Factoryd{BaseURL: srv.URL, Token: "shared", HTTP: srv.Client()}
+	if err := f.StoreSessionBrief(context.Background(), "t-1", "s-1", "Repository: sf/r\n<<<ISSUE-ab"); err != nil {
+		t.Fatal(err)
+	}
+	var sent map[string]string
+	if err := json.Unmarshal([]byte(body), &sent); err != nil || method != http.MethodPost || path != "/internal/session-brief" || auth != "Bearer shared" ||
+		!maps.Equal(sent, map[string]string{"task_id": "t-1", "session": "s-1", "text": "Repository: sf/r\n<<<ISSUE-ab"}) {
+		t.Fatalf("%s %s auth %q body %s", method, path, auth, body)
+	}
+	status, reply = http.StatusConflict, "session 2 of t-1 stored the text it got already\n"
+	if err := f.StoreSessionBrief(context.Background(), "t-1", "s-1", "x"); err == nil || err.Error() != "session 2 of t-1 stored the text it got already" {
+		t.Fatalf("409: err = %v", err)
+	}
+}
+
+// A session's worker stores the text it gave its first model call on its
+// ServiceAccount token: as the task and the session the token names,
+// whatever the request's headers say. A token of no session's pod,
+// factoryd's shared bearer and an unidentified call store none; a text
+// past the model call's bound is refused whole, and one factoryd refuses
+// answers 502 with its reason.
+func TestWorkerSessionBriefIsTheSessionsOwn(t *testing.T) {
+	old := maxBodyBytes
+	maxBodyBytes = 16
+	t.Cleanup(func() { maxBodyBytes = old })
+	for name, tc := range map[string]struct {
+		token, header, text string
+		err                 error
+		status              int
+		body                string
+		stored              []string
+	}{
+		"the session's token":           {token: "jwt-s1", text: "the text", status: 204, stored: []string{"t1/s1: the text"}},
+		"a header naming another card":  {token: "jwt-s1", header: "t2", text: "the text", status: 204, stored: []string{"t1/s1: the text"}},
+		"a token of no session's pod":   {token: "jwt-t1", text: "the text", status: 403, body: "a session's worker pod"},
+		"factoryd's bearer":             {token: testFactorydToken, header: "t2", text: "the text", status: 401, body: "not a JWT"},
+		"no token":                      {text: "the text", status: 401, body: "not a JWT"},
+		"no text":                       {token: "jwt-s1", status: 400, body: "no text"},
+		"a text past the bound":         {token: "jwt-s1", text: "seventeen bytes!!", status: 413, body: "over 16 bytes"},
+		"a text factoryd cannot store":  {token: "jwt-s1", text: "the text", err: errors.New("session 2 of t1 stored the text it got already"), status: 502, body: "the session's brief of t1: session 2 of t1 stored the text it got already", stored: []string{"t1/s1: the text"}},
+		"a text at the bound, verbatim": {token: "jwt-s1", text: "sixteen bytes!!!", status: 204, stored: []string{"t1/s1: sixteen bytes!!!"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			briefs := &fakeBriefer{err: tc.err}
+			s := NewServer(ServerOptions{Auth: bearerAuth{"jwt-t1": {TaskID: "t1"}, "jwt-s1": {TaskID: "t1", Session: "s1"}}, Store: newMemStore(), Minter: &fakeMinter{},
+				LiteLLMURL: "http://127.0.0.1:1", Briefs: briefs, FactorydToken: testFactorydToken})
+			r := httptest.NewRequest(http.MethodPost, "/worker/session-brief", strings.NewReader(tc.text))
+			if tc.token != "" {
+				r.Header.Set("Authorization", "Bearer "+tc.token)
+			}
+			if tc.header != "" {
+				r.Header.Set(HeaderFactoryTask, tc.header)
+				r.Header.Set(HeaderFactoryPurpose, policy.PurposeOperator)
+			}
+			rr := httptest.NewRecorder()
+			s.Routes("test").ServeHTTP(rr, r)
+			if rr.Code != tc.status || !strings.Contains(rr.Body.String(), tc.body) {
+				t.Fatalf("status %d body %q, want %d with %q", rr.Code, rr.Body.String(), tc.status, tc.body)
+			}
+			if !slices.Equal(briefs.stored, tc.stored) {
+				t.Fatalf("stored %q, want %q", briefs.stored, tc.stored)
+			}
+		})
+	}
 }
 
 // A session's worker reads its card's brief on its ServiceAccount token:

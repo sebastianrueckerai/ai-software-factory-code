@@ -340,6 +340,8 @@ type Store interface {
 	// CardBrief is card taskID's brief, as its agent and its face read it
 	// (ReadCardBrief).
 	CardBrief(ctx context.Context, taskID string) (CardBrief, error)
+	// SessionBriefs are the texts card taskID's sessions got, oldest first.
+	SessionBriefs(ctx context.Context, taskID string) ([]SessionBrief, error)
 	// TransitionTask moves a task to status `to` only from one of the
 	// statuses in from; any other current status is an error. Entering done
 	// or failed stamps the finish time and leaves the gate; entering a
