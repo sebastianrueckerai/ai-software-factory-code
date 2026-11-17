@@ -313,6 +313,52 @@ func TestACapAskLeadsWithTheFindingsStandingOnTheHead(t *testing.T) {
 	}
 }
 
+// Card #2110's shape: an agent-time cap on an open pull request whose head
+// h2 is green and approved, after Forgejo refused to merge main into h2 at
+// the merge queue's turn. Rung 0 routes nothing to the approval: its step
+// finds no resolver, and the case reaches the human with its facts holding
+// the conflict and its problem and ask led by it. On those facts rung 1 is
+// offered extend, and neither route_approval nor reverify.
+func TestOpenTripAtAMergeConflictRoutesNothingToTheApproval(t *testing.T) {
+	ctx := context.Background()
+	g := newTripRig(t, "success")
+	rungsOff(g.r)
+	g.atHead(t, true)
+	refusal := "the branch conflicts with its base: status 409: merge failed because of conflict"
+	if err := g.r.timeline.Append(ctx, "t1", "merge_conflict", map[string]any{"pr": 9, "commit": "h2", "refusal": refusal}); err != nil {
+		t.Fatal(err)
+	}
+	out := g.trip(t, timeCapReachedLadder+"\nlast: the pull request no longer merges into main")
+	if out.Resolution != nil || out.Comment != 501 || out.Rung != 3 {
+		t.Fatalf("outcome = %+v, want the case at the human on comment 501", out)
+	}
+	c := caseByID(t, g.s, out.CaseID)
+	lead := "The pull request no longer merges into main: Forgejo refused to merge main into head h2. " +
+		"Only a session that merges main into the branch clears it, and no gate rerun does."
+	if c.Kind != CaseAgentTimeCap || c.Facts["merge_conflict"] != refusal || !strings.HasPrefix(c.Problem, lead+" ") {
+		t.Fatalf("case %s, conflict %v, problem %q; want the agent-time cap holding the conflict, led by %q", c.Kind, c.Facts["merge_conflict"], c.Problem, lead)
+	}
+	if steps := caseStepsOf(t, g.s, c.ID); len(steps) != 2 || steps[0].Rung != 0 || steps[0].Found != "no resolver fits" {
+		t.Fatalf("steps = %+v, want rung 0 finding no resolver, then the human's", steps)
+	}
+	asks := g.asks(t)
+	if len(asks) != 1 {
+		t.Fatalf("asks = %d, want one", len(asks))
+	}
+	if ask, _ := asks[0].Detail["ask"].(string); !strings.HasPrefix(ask, lead+" ") {
+		t.Fatalf("ask = %q, want it led by %q", ask, lead)
+	}
+	card, _, _ := g.s.Task(ctx, "t1")
+	f, err := g.r.FactsAtCase(ctx, card, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offered := offeredNames(f, 1)
+	if slices.Contains(offered, ActRouteApproval) || slices.Contains(offered, ActReverify) || !slices.Contains(offered, ActExtend) {
+		t.Fatalf("rung 1 is offered %v, want extend and no gate rerun", offered)
+	}
+}
+
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). A check-in
 // stop's trip carries its mark into its case's facts, and the card's cases
 // give it back to a new run: the newest one kept, past a later stop of

@@ -1722,7 +1722,7 @@ func (in *Intake) withdrawMovedHead(ctx context.Context, p *pullRequestPayload) 
 	if err := in.Store.ResolveApprovals(ctx, taskID, ApprovalMerge, "denied", FactoryDecider, note); err != nil {
 		log.Printf("task %s: withdraw the merge approval on a moved head: %v", taskID, err)
 	}
-	in.Timeline.recordEvent(ctx, taskID, "merge_moved_head", map[string]any{"pr": p.PullRequest.Index, "head": p.PullRequest.Head.SHA, "note": note})
+	in.Timeline.recordEvent(ctx, taskID, stepMergeMovedHead, map[string]any{"pr": p.PullRequest.Index, "head": p.PullRequest.Head.SHA, "note": note})
 }
 
 // humanMerged records the event pull_request_merged of task taskID's pull

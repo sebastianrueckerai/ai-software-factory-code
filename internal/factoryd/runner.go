@@ -1468,6 +1468,13 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		bound := EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage)
 		ask.Pace = r.pace(ctx, t, s, lines, bound, time.Now(), deadline)
 		ask.CostState = r.costState(ctx, t, limits.GateReserve())
+		if t.PRNumber > 0 {
+			tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
+			if err != nil {
+				log.Printf("task %s: the check-in's merge conflict: %s", t.ID, r.scrub(err.Error()))
+			}
+			ask.Conflict = standingConflict(tl, s.startRef)
+		}
 		var parent []byte
 		if s.parent != "" {
 			if rec, err := parentRecord(); err == nil {

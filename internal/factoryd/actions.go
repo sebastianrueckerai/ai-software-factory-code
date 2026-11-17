@@ -121,6 +121,8 @@ var Actions = []Action{
 	}},
 	{Name: ActRouteApproval, Rungs: rungs(0, 1, 2), InRun: true, Applies: func(f CaseFacts, _ Resolution) string {
 		switch {
+		case f.MergeConflict != "":
+			return conflictRefusal(f, ActRouteApproval)
 		case f.Kind == CaseGateStop && f.Gate == ActivityWaitChecks:
 			return "a checks wait's stop goes on with wait_checks, not route_approval"
 		case !f.PROpen:
@@ -134,6 +136,8 @@ var Actions = []Action{
 	}},
 	{Name: ActReverify, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, _ Resolution) string {
 		switch {
+		case f.MergeConflict != "":
+			return conflictRefusal(f, ActReverify)
 		case !f.PROpen:
 			return "no pull request is open"
 		case f.Head == "":
@@ -167,6 +171,8 @@ var Actions = []Action{
 	// the human decides whether a finding is a fixture.
 	{Name: ActConfirmAudit, Rungs: rungs(3), Applies: func(f CaseFacts, r Resolution) string {
 		switch {
+		case f.MergeConflict != "":
+			return conflictRefusal(f, ActConfirmAudit)
 		case len(f.AuditFindings) == 0:
 			return "the head's newest audit holds no finding a person could confirm"
 		case strings.TrimSpace(r.Note) == "":
@@ -407,6 +413,30 @@ var Actions = []Action{
 		}
 		return ""
 	}},
+}
+
+// conflictRefusal refuses action, which runs the gates again, on a head
+// that no longer merges into main: the merge queue's turn meets the same
+// refusal, and only a session that merges main clears it (conflictFit).
+func conflictRefusal(f CaseFacts, action string) string {
+	return fmt.Sprintf("the pull request no longer merges into main (Forgejo refused to merge main into %s), so %s only runs the gates into the same refusal at the merge queue: "+
+		"%s, or the card closes as superseded when main already carries its work", short(f.Head), action, conflictFit(f))
+}
+
+// conflictFit is the answer, by the stop's kind, that starts the session a
+// merge conflict needs: an extend where the stop asks for a session, a
+// fund at the budget floor, the cap's own turn at a cap wait, else a
+// continue with a note.
+func conflictFit(f CaseFacts) string {
+	switch {
+	case slices.Contains(extendKinds, f.Kind):
+		return "extend the card for a session that merges main into the branch"
+	case f.Kind == CaseBudgetFloor:
+		return "fund the card for a session that merges main into the branch"
+	case f.Kind == CaseDayCap || f.Kind == CaseMonthCap || f.Kind == CaseProjectCap:
+		return "the card's next session, once the cap turns, merges main into the branch"
+	}
+	return "continue the card with a note for a session that merges main into the branch"
 }
 
 // monitorActions are the actions a monitor flag's case takes: those Act carries

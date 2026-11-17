@@ -5098,6 +5098,50 @@ func TestRunSessionCheckinHandoverRunsTheConversation(t *testing.T) {
 	}
 }
 
+// The #2110 shape at the next session's start: an answer's change request
+// sent the conflict finding to the gate's check-in. The session starts on
+// the branch's head c9, on which the timeline holds Forgejo's refusal to
+// merge main, so neither the check-in's answer tool nor its persona offers
+// a reverify, and its statement says the conflict; its handover runs the
+// session.
+func TestRunSessionGateCheckinOffersNoReverifyOnAMergeConflict(t *testing.T) {
+	finding := "the pull request no longer merges into main: main moved under it"
+	runner, hub, _, _, chat, store, objects := checkinRig(t,
+		`{"findings":[{"text":"`+finding+`","verdict":"confirmed"}],"decision":"handover","handover":"merge main into the branch first"}`)
+	hub.branchHead = "c9"
+	card := store.tasks["t2"]
+	card.PRNumber = 9
+	store.tasks["t2"] = card
+	refusal := "the branch conflicts with its base: status 409"
+	if err := objects.Put(t.Context(), "sessions/t2/timeline.jsonl", []byte(`{"step":"merge_conflict","pr":9,"commit":"c9","refusal":"`+refusal+`"}`+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
+		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: finding, Source: "review"}}}}, nil,
+		pushedLine("c10")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.CheckIn == nil || res.CheckIn.Decision != CheckHandover {
+		t.Fatalf("result = (%+v, %v), want the check-in's handover", res, err)
+	}
+	if len(chat.gots) == 0 {
+		t.Fatal("no check-in call")
+	}
+	req := chat.gots[0]
+	i := slices.IndexFunc(req.Tools, func(tool CheckinTool) bool { return tool.Name == CheckinAnswerTool })
+	if i < 0 {
+		t.Fatalf("tools = %+v, want the answer tool", req.Tools)
+	}
+	props := req.Tools[i].Parameters.(map[string]any)["properties"].(map[string]any)
+	if got := props["decision"].(map[string]any)["enum"].([]string); !slices.Equal(got, []string{CheckHandover, RungHandUp}) {
+		t.Fatalf("the answer tool's decisions = %v, want handover and hand_up alone", got)
+	}
+	if !strings.Contains(req.Input, "The pull request does not merge into main: "+refusal+".") {
+		t.Fatalf("statement lacks the conflict:\n%s", req.Input)
+	}
+	if strings.Contains(req.System, "reverify") {
+		t.Fatalf("persona names a reverify:\n%s", req.System)
+	}
+}
+
 // A check-in that drops every finding against evidence stops the session
 // the way a human ask does. A mixed set answered dropped_all is the
 // guards' handover: the conversation runs.

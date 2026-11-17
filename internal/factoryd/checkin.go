@@ -168,6 +168,10 @@ type CheckInAsk struct {
 	PR        *CheckInPRFacts `json:",omitempty"`
 	Pace      *Pace           `json:"-"`
 	CostState *CostState      `json:"-"`
+	// Conflict is Forgejo's refusal to merge main into the head the
+	// session starts on (standingConflict): while it stands no reverify is
+	// offered, which would take the head into the same refusal.
+	Conflict string `json:"-"`
 }
 
 // Pace is how far the card has come against what it has: its changed lines
@@ -340,6 +344,9 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 		b.WriteString("- remark: an opinion: say it, block nothing.\n")
 		b.WriteString("- if only a human can act — a goal conflict, spend above policy, a policy class, access the factory lacks — stop and say which, with why.\n")
 		fmt.Fprintf(&b, "The handover note to the next session is at most %d characters.\n\n", handoverCap)
+		if ask.Conflict != "" {
+			fmt.Fprintf(&b, "The pull request does not merge into main: %s.\n\n", ask.Conflict)
+		}
 
 		b.WriteString("Findings:\n")
 		for i, f := range ask.Findings {
@@ -509,27 +516,27 @@ type CheckinResponse struct {
 // CheckinTool is one tool the check-in may call, in the OpenAI form.
 type CheckinTool = OperatorTool
 
-// checkinSystem is the check-in's persona. It carries the answer's shape —
-// the one thing no guard in code can carry — and no rule the guards do.
-// Findings are named by the id the statement listed them under, so a
-// verdict never turns on the wording of the finding it judges.
-const checkinSystem = `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"id":"f1","verdict":"confirmed|dropped|remark","evidence":"...","repeats":"<id>"}],"decision":"handover|reverify|hand_up","reason_kind":"...","reason":"...","handover":"..."}. "reverify" drops every finding and verifies the head again. Each finding is named by the id the findings list gave it, f1 on down, not by its text. repeats is optional: when the statement lists earlier findings and a finding repeats one in other words, name that earlier finding's id. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
-
-// checkinSystemFor is the moment's persona: the gate's, or the one that
-// fits what the moment decides. Inside a session, replan offers the
-// decision replan; every other moment ignores it.
-func checkinSystemFor(moment string, replan bool) string {
-	switch moment {
+// checkinSystemFor is the persona of ask's moment, its answer's shape
+// naming the decisions the ask offers (askDecisions): the gate's, which
+// says what a reverify does while one is offered, or the one that fits
+// what the moment decides. A persona carries the answer's shape — the one
+// thing no guard in code can carry — and no rule the guards do. Findings
+// are named by the id the statement listed them under, so a verdict never
+// turns on the wording of the finding it judges.
+func checkinSystemFor(ask *CheckInAsk) string {
+	offered := askDecisions(ask)
+	decisions := strings.Join(offered, "|")
+	switch ask.Moment {
 	case CheckInSession:
-		decisions := ActContinue + "|" + CheckHandover + "|" + RungHandUp
-		if replan {
-			decisions = ActContinue + "|" + CheckHandover + "|" + CheckReplan + "|" + RungHandUp
-		}
 		return `You are the factory's check-in inside a running session: its detectors tripped and you decide what happens next, on evidence you gather yourself from the live workspace and the session's record. You never edit anything. Your final answer is one JSON object and nothing else: {"decision":"` + decisions + `","guidance":"...","reason_kind":"...","reason":"...","handover":"..."}. A continue may carry guidance: the exact instruction the agent should take next. Keep the guidance inside what the agent's shell tool can run: no timeout past its 600000 ms maximum, and where nothing in the workspace changed, name bash check static, not bash check changed. "handover" stops the session: write the note the next session starts from. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 	case CheckInDead:
-		return `You are the factory's check-in before a fresh session: the session before you ended without a result, and you write the handover it starts from. Read its record and the workspace as they are; you never edit anything. Your final answer is one JSON object and nothing else: {"decision":"handover|hand_up","reason_kind":"...","reason":"...","handover":"..."}. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
+		return `You are the factory's check-in before a fresh session: the session before you ended without a result, and you write the handover it starts from. Read its record and the workspace as they are; you never edit anything. Your final answer is one JSON object and nothing else: {"decision":"` + decisions + `","reason_kind":"...","reason":"...","handover":"..."}. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 	}
-	return checkinSystem
+	reverify := ""
+	if slices.Contains(offered, ActReverify) {
+		reverify = ` "reverify" drops every finding and verifies the head again.`
+	}
+	return `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"id":"f1","verdict":"confirmed|dropped|remark","evidence":"...","repeats":"<id>"}],"decision":"` + decisions + `","reason_kind":"...","reason":"...","handover":"..."}.` + reverify + ` Each finding is named by the id the findings list gave it, f1 on down, not by its text. repeats is optional: when the statement lists earlier findings and a finding repeats one in other words, name that earlier finding's id. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 }
 
 // checkinToolsLine is the statement's tool line: the evidence tools the
@@ -556,6 +563,17 @@ func momentDecisions(moment string, replan bool) []string {
 		offered = []string{CheckHandover, ActReverify}
 	}
 	return append(offered, RungHandUp)
+}
+
+// askDecisions are the decisions ask offers: its moment's, without the
+// reverify while a merge conflict stands on the head, as the action table
+// refuses it (conflictRefusal).
+func askDecisions(ask *CheckInAsk) []string {
+	out := momentDecisions(ask.Moment, ask.Replan)
+	if ask.Conflict != "" {
+		out = slices.DeleteFunc(out, func(d string) bool { return d == ActReverify })
+	}
+	return out
 }
 
 // checkReasonKinds are the moments' closed reason-kind vocabulary: the
@@ -594,7 +612,7 @@ func ForcedToolChoice(name string) map[string]any {
 // are judged, the note, the reason and the guidance as text.
 func momentAnswerSchema(ask *CheckInAsk) map[string]any {
 	props := map[string]any{
-		"decision":    map[string]any{"type": "string", "enum": momentDecisions(ask.Moment, ask.Replan)},
+		"decision":    map[string]any{"type": "string", "enum": askDecisions(ask)},
 		"reason_kind": map[string]any{"type": "string", "enum": slices.Clone(checkReasonKinds)},
 		"reason":      map[string]any{"type": "string"},
 		"handover":    map[string]any{"type": "string"},
@@ -754,7 +772,7 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 	if err := json.Unmarshal([]byte(text), &a); err != nil {
 		return a, fmt.Errorf("not one JSON object: %v", err)
 	}
-	if err := enumCheck("decision", a.Decision, momentDecisions(ask.Moment, ask.Replan)); err != nil {
+	if err := enumCheck("decision", a.Decision, askDecisions(ask)); err != nil {
 		return a, err
 	}
 	if err := enumCheck("reason_kind", a.ReasonKind, checkReasonKinds); err != nil {
@@ -881,7 +899,7 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	defer func() { rec.Duration = time.Since(start) }()
 	var parsed checkinAnswer
 	end := converse(ctx, chat, tools, taskID, alias, conversation{
-		System:    checkinSystemFor(ask.Moment, ask.Replan),
+		System:    checkinSystemFor(ask),
 		Statement: checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap),
 		Evidence:  checkinTools,
 		Answer:    momentAnswerTool(ask),
