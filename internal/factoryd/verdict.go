@@ -608,8 +608,8 @@ func (r *Runner) CheckClosePlan(ctx context.Context, id, note string, approver b
 }
 
 // CloseHeldPlan is a person's close of plan id at rest: it waives every
-// open criterion with note as the reason (an approver's act, and a note is
-// required), ends the plan's criteria asks and, once every card of the
+// open criterion with note as the reason (an approver's act, a person's
+// alone, and a note is required), ends the plan's criteria asks and, once every card of the
 // plan is final (a plan that filed none records none), records plan_closed,
 // in one transaction, so the close check never finds waivers without the
 // close. While a card still runs the sweep records plan_closed when the
@@ -619,6 +619,7 @@ func (r *Runner) CheckClosePlan(ctx context.Context, id, note string, approver b
 // plan's issue and whether the plan holds a merge. The caller closes the
 // issue afterwards.
 func (r *Runner) CloseHeldPlan(ctx context.Context, id, by, note string, approver bool) (waived int, words string, merged bool, err error) {
+	approver = approver && isPerson(by)
 	note = strings.TrimSpace(note)
 	t, endFailed, err := r.closeGate(ctx, id, note, approver)
 	if err != nil {

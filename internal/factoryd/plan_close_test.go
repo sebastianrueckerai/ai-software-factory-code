@@ -252,12 +252,17 @@ func TestCloseHeldPlanWaitsForRunningCards(t *testing.T) {
 
 // In its last round a plan with criteria and no integration card keeps its
 // rows on the plan card, and every criterion without one is open: a
-// non-approver's Close is refused, an approver's waives them there.
+// non-approver's Close is refused, and so is the project agent's, which
+// its caller calls an approver's, since a waiver is a person's; an
+// approver's waives them there.
 func TestCloseHeldPlanInTheLastRoundWithoutAnIntegrationCard(t *testing.T) {
 	ctx := context.Background()
 	r, s, _ := plannedCards(t, nil, "done")
 	if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "why", false); !errors.Is(err, ErrNotApprover) {
 		t.Fatalf("a writer's close: %v, want ErrNotApprover", err)
+	}
+	if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", ChatUser, "why", true); !errors.Is(err, ErrNotApprover) {
+		t.Fatalf("the project agent's close: %v, want ErrNotApprover", err)
 	}
 	if closeRows(s) != 0 {
 		t.Fatalf("a refused close recorded plan_closed")
