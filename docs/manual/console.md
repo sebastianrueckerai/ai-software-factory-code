@@ -333,10 +333,12 @@ decimals: a task's model calls cost fractions of a cent.
   posted from the console's `card_filed` row; an issue with none is no
   card) and the cards of a plan it files. What it hands factoryd as its
   own act, a rung 2 answer through Act, a steer, a retry, a close, a
-  criteria verdict or a plan's close among them, names `factory-chat`,
-  never the woken human, so no record reads as the human's. Rung 2
-  restarts no plan with open criteria: the restart's close would waive
-  them, so it hands the restart up instead. A filing whose `card_filed`
+  criteria verdict, a plan's close, a routine's skip or an analysis among
+  them, names `factory-chat`, never the woken human, so no record reads as
+  the human's, and a card's digest names `factory-chat` on a row the
+  console wrote with `decider: agent`. Rung 2 restarts no plan with open
+  criteria: the restart's close would waive them, so it hands the restart
+  up instead. A filing whose `card_filed`
   row cannot be written is closed with a comment and refused, naming the
   issue. Its comments, and so its answers to escalations, are
   `factory-chat`'s: the agent reads such an answer as the project agent's,

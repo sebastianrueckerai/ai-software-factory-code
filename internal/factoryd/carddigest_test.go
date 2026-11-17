@@ -1597,3 +1597,19 @@ func TestAHeldPlanCardRaisesNoFlag(t *testing.T) {
 		t.Fatalf("Flags = %v, MergeQueue = %+v, want none and nil for a card with no queue row", d.Flags, d.Head.MergeQueue)
 	}
 }
+
+// A row the console wrote for the project agent's own decision names the
+// woken human with decider agent: the digest names factory-chat, as
+// factoryd's rows for the same acts do, and a human's row names the human.
+func TestTheDigestNamesTheProjectAgentsRowsAsTheChats(t *testing.T) {
+	g := newDigestRig(nil)
+	g.event(60, EventCardRetried, "sebastian", map[string]any{"replacement": 9, "decider": "agent", "autonomy": "autonomous"})
+	g.event(61, EventCardRetried, "sebastian", map[string]any{"replacement": 10, "decider": "member", "autonomy": "autonomous"})
+	g.at(120)
+	r := g.digest(t).Render()
+	for _, want := range []string{"retried by factory-chat → as #9\n", "retried by sebastian   → as #10\n"} {
+		if !strings.Contains(r, want) {
+			t.Errorf("the steps =\n%s\nwant the line %q", r, want)
+		}
+	}
+}

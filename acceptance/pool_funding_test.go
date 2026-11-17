@@ -283,8 +283,8 @@ func TestPoolEscalationFallback(t *testing.T) {
 			notes = append(notes, e)
 		}
 	}
-	if len(notes) != 1 || notes[0].TaskID != "t-e" || notes[0].Actor != "anna" || notes[0].Via != factoryd.ViaChat {
-		t.Fatalf("the analysis rows = %+v, want anna's chat row on t-e", notes)
+	if len(notes) != 1 || notes[0].TaskID != "t-e" || notes[0].Actor != factoryd.ChatUser || notes[0].Via != factoryd.ViaChat {
+		t.Fatalf("the analysis rows = %+v, want the project agent's chat row on t-e", notes)
 	}
 	equal(t, "the analysis row's detail", notes[0].Detail,
 		map[string]any{"found": found, "recommendation": "Grant one sizing exception", "source": "agent"})

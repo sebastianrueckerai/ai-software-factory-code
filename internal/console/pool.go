@@ -201,7 +201,7 @@ func (c *Console) doSetPool(ctx context.Context, name string, ch poolChange, a a
 	detail := map[string]any{"action": ch.action, "from_eur": res.from, "confirmed_eur": res.confirmed, "to_eur": res.to,
 		"reason": ch.reason, "pr": c.cfg.InfraRepo.String() + "#" + strconv.FormatInt(pr, 10)}
 	if _, err := c.cfg.Events.Record(context.WithoutCancel(ctx), factoryd.Event{Repository: repo, Kind: factoryd.EventPoolChanged,
-		Actor: a.s.user, Via: cmp.Or(a.via, factoryd.ViaChat), Detail: detail}); err != nil {
+		Actor: a.approver(), Via: cmp.Or(a.via, factoryd.ViaChat), Detail: detail}); err != nil {
 		return res, refuse(http.StatusInternalServerError, fmt.Sprintf(
 			"The pool change is merged as %s#%d, but its pool_changed row could not be written: %v. The change stands: write the missing row (action %s, from_eur %.2f, confirmed_eur %.2f, to_eur %.2f, reason %q) and do not repeat the change.",
 			c.cfg.InfraRepo, pr, err, ch.action, res.from, res.confirmed, res.to, ch.reason))

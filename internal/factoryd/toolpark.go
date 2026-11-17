@@ -186,7 +186,8 @@ type ImageAsk struct {
 // elsewhere is the fitting action of an ask refused for its project.
 const elsewhere = " Ask for the tool in the chat of the project whose cards need it."
 
-// RequestImage puts the ask of member by in the project chat of
+// RequestImage puts the ask of by, a human or the project agent, in the
+// project chat of
 // repository for tool, for need, on the tool card of image image, else of
 // one named after the tool (toolImage), as a session's ask goes on it
 // (ParkForTool) with no card that waits: it joins the open card of the
@@ -267,7 +268,8 @@ func (r *Runner) toolCardOf(ctx context.Context, repository, target, self string
 }
 
 // toolAsker is who asks a tool card for a tool on repository: card, which
-// parks on the image, or, card nil, member by in the project chat.
+// parks on the image, or, card nil, by in the project chat: a human's
+// login or ChatUser, the project agent.
 type toolAsker struct {
 	repository string
 	card       *Task
@@ -280,7 +282,7 @@ func cardAsker(t Task) toolAsker { return toolAsker{repository: t.Repository, ca
 // askLine opens the tool card of a's ask p: who needs which tool and why.
 func (a toolAsker) askLine(p ImagePark) string {
 	if a.card == nil {
-		return fmt.Sprintf("Requested in the project chat by %s: %s, %s.", a.by, p.Tool, strings.TrimSuffix(p.Need, "."))
+		return fmt.Sprintf("Requested in the project chat by %s: %s, %s.", answerer(a.by), p.Tool, strings.TrimSuffix(p.Need, "."))
 	}
 	return fmt.Sprintf("Card #%d (%s) needs %s, which its sandbox lacks: %s", a.card.IssueNumber, a.card.ID, p.Tool, p.Need)
 }
@@ -288,7 +290,7 @@ func (a toolAsker) askLine(p ImagePark) string {
 // joinLine is a's ask p on the open tool card it joins.
 func (a toolAsker) joinLine(p ImagePark) string {
 	if a.card == nil {
-		return fmt.Sprintf("Requested in the project chat by %s: %s in image %s too: %s.", a.by, p.Tool, p.Target, strings.TrimSuffix(p.Need, "."))
+		return fmt.Sprintf("Requested in the project chat by %s: %s in image %s too: %s.", answerer(a.by), p.Tool, p.Target, strings.TrimSuffix(p.Need, "."))
 	}
 	return fmt.Sprintf("Card #%d (%s) needs %s in image %s too: %s", a.card.IssueNumber, a.card.ID, p.Tool, p.Target, p.Need)
 }

@@ -615,7 +615,17 @@ func (r *Runner) personAnswered(ctx context.Context, id string) bool {
 		return false
 	}
 	i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventQuestionAnswered || e.Kind == EventSessionGranted })
-	return i >= 0 && events[i].Detail["decider"] != "agent" && isPerson(events[i].Actor)
+	return i >= 0 && isPerson(eventActor(events[i]))
+}
+
+// eventActor is who acted in row e: the console writes the project
+// agent's own decision in a human's turn or a wake under that human's
+// login with decider agent, and that row's actor is the chat user.
+func eventActor(e Event) string {
+	if e.Detail["decider"] == "agent" {
+		return ChatUser
+	}
+	return e.Actor
 }
 
 // capRefusals open the card of a task whose attempt the day's, the

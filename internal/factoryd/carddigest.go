@@ -386,7 +386,7 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 		word := func(k string) string { s, _ := e.Detail[k].(string); return s }
 		number := func(k string) int { n, _ := toInt(e.Detail[k]); return n }
 		amount, _ := e.Detail["amount_eur"].(float64)
-		s := DigestStep{At: e.At, Actor: e.Actor, Ref: DigestRef{Event: strconv.FormatInt(e.ID, 10)}}
+		s := DigestStep{At: e.At, Actor: eventActor(e), Ref: DigestRef{Event: strconv.FormatInt(e.ID, 10)}}
 		comment := number("comment")
 		if comment > 0 {
 			s.Ref.Comment = strconv.Itoa(comment)

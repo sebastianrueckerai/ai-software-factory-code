@@ -441,7 +441,7 @@ func (c *Console) doReleaseResource(ctx context.Context, a actor, id int64) (str
 // resourceChange runs the change on commission id, with its log line and
 // its event row; the access table has judged who may.
 func (c *Console) resourceChange(ctx context.Context, a actor, what string, id int64, change func(ctx context.Context, id int64, by string) error) error {
-	if err := change(ctx, id, a.s.user); err != nil {
+	if err := change(ctx, id, a.approver()); err != nil {
 		log.Printf("console: %s %s resource %d: %v", a.s.user, what, id, err)
 		switch {
 		case errors.Is(err, cloudres.ErrLeaseEnded):
