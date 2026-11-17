@@ -1135,8 +1135,10 @@ func TestRouteApprovalAtAPolicyClassNeedsNoApprovingReview(t *testing.T) {
 
 // A pull request that no longer merges into main refuses the answers that
 // only run the gates again into the same refusal, each naming the conflict
-// and the answers that clear it. With no conflict each applies as before,
-// and an extend at the cap applies with the conflict too.
+// and the answer that fits the stop's kind: an extend at a cap, a fund at
+// the budget floor, the cap's turn at a cap wait, else a continue. With no
+// conflict each applies as before, and an extend at the cap applies with
+// the conflict too.
 func TestAMergeConflictRefusesTheAnswersThatRerunTheGates(t *testing.T) {
 	ready := CaseFacts{Kind: CaseSessionCap, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true,
 		Attempts: 3, SessionCap: 3, AuditFindings: []string{idA}, FindingTexts: map[string]string{idA: "the migration runs outside its transaction"}}
@@ -1148,10 +1150,24 @@ func TestAMergeConflictRefusesTheAnswersThatRerunTheGates(t *testing.T) {
 			t.Errorf("no conflict: %s applies = %q, want it to apply", name, got)
 		}
 		want := "the pull request no longer merges into main (Forgejo refused to merge main into abcdef1), so " + name +
-			" only runs the gates into the same refusal at the merge queue: a session that merges main into the branch clears it" +
-			" (extend, continue or handover), or close the card as superseded when main already carries its work"
+			" only runs the gates into the same refusal at the merge queue: extend the card for a session that merges main into the branch," +
+			" or close the card as superseded when main already carries its work"
 		if got := applies(t, name, conflict, note); got != want {
 			t.Errorf("conflict: %s applies = %q, want %q", name, got, want)
+		}
+	}
+	for kind, fit := range map[CaseKind]string{
+		CaseAgentTimeCap:  "extend the card for a session that merges main into the branch",
+		CaseBudgetFloor:   "fund the card for a session that merges main into the branch",
+		CaseMonthCap:      "the card's next session, once the cap turns, merges main into the branch",
+		CaseAgentEscalate: "continue the card with a note for a session that merges main into the branch",
+	} {
+		f := conflict
+		f.Kind = kind
+		want := "the pull request no longer merges into main (Forgejo refused to merge main into abcdef1), so reverify" +
+			" only runs the gates into the same refusal at the merge queue: " + fit + ", or close the card as superseded when main already carries its work"
+		if got := applies(t, ActReverify, f, note); got != want {
+			t.Errorf("conflict at %s: reverify applies = %q, want %q", kind, got, want)
 		}
 	}
 	if got := applies(t, ActExtend, conflict, Resolution{Args: map[string]any{"sessions": 1}}); got != "" {

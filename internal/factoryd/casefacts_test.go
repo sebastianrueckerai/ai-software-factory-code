@@ -240,10 +240,17 @@ func TestTripFactsReadsTheGatesUnmetCriteria(t *testing.T) {
 
 // A merge conflict stands on the head the newest merge_conflict line
 // names, with that line's refusal: none on a head no line names, none on
-// no head, none on an empty timeline.
+// no head, none on an empty timeline, and none once the pull request's
+// head moved outside the run to another head after it, by the merge
+// gate's line or the synchronize webhook's event.
 func TestStandingConflictIsTheNewestRefusalOnTheHead(t *testing.T) {
-	one := []byte(`{"step":"merge_conflict","commit":"aaa","refusal":"X"}` + "\n" + `{"step":"pushed","commit":"bbb"}` + "\n")
+	const conflict = `{"step":"merge_conflict","commit":"aaa","refusal":"X"}` + "\n"
+	one := []byte(conflict + `{"step":"pushed","commit":"bbb"}` + "\n")
 	two := []byte(`{"step":"merge_conflict","commit":"aaa","refusal":"X1"}` + "\n" + `{"step":"merge_conflict","commit":"aaa","refusal":"X2"}` + "\n")
+	webhook := []byte(conflict + `{"step":"event","event":"merge_moved_head","pr":9,"head":"ccc"}` + "\n")
+	gate := []byte(conflict + `{"step":"merge_moved_head","pr":9,"commit":"aaa","head":"ccc","approver":"sebastian"}` + "\n")
+	before := []byte(`{"step":"event","event":"merge_moved_head","pr":9,"head":"ccc"}` + "\n" + conflict)
+	same := []byte(conflict + `{"step":"event","event":"merge_moved_head","pr":9,"head":"aaa"}` + "\n")
 	for _, c := range []struct {
 		name string
 		tl   []byte
@@ -255,6 +262,11 @@ func TestStandingConflictIsTheNewestRefusalOnTheHead(t *testing.T) {
 		{"no head", one, "", ""},
 		{"two lines on the head", two, "aaa", "X2"},
 		{"no lines", nil, "aaa", ""},
+		{"moved by the webhook", webhook, "aaa", ""},
+		{"the webhook's moved head", webhook, "ccc", ""},
+		{"moved at the merge gate", gate, "aaa", ""},
+		{"moved before the conflict", before, "aaa", "X"},
+		{"moved onto the conflict's head", same, "aaa", "X"},
 	} {
 		if got := standingConflict(c.tl, c.head); got != c.want {
 			t.Errorf("%s: standingConflict = %q, want %q", c.name, got, c.want)

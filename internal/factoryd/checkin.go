@@ -168,6 +168,10 @@ type CheckInAsk struct {
 	PR        *CheckInPRFacts `json:",omitempty"`
 	Pace      *Pace           `json:"-"`
 	CostState *CostState      `json:"-"`
+	// Conflict is Forgejo's refusal to merge main into the head the
+	// session starts on (standingConflict): while it stands no reverify is
+	// offered, which would take the head into the same refusal.
+	Conflict string `json:"-"`
 }
 
 // Pace is how far the card has come against what it has: its changed lines
@@ -340,6 +344,9 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 		b.WriteString("- remark: an opinion: say it, block nothing.\n")
 		b.WriteString("- if only a human can act — a goal conflict, spend above policy, a policy class, access the factory lacks — stop and say which, with why.\n")
 		fmt.Fprintf(&b, "The handover note to the next session is at most %d characters.\n\n", handoverCap)
+		if ask.Conflict != "" {
+			fmt.Fprintf(&b, "The pull request does not merge into main: %s. No reverify is offered while it stands, since the gates would meet the same refusal: only a session that merges main into the branch clears it.\n\n", ask.Conflict)
+		}
 
 		b.WriteString("Findings:\n")
 		for i, f := range ask.Findings {
@@ -558,6 +565,17 @@ func momentDecisions(moment string, replan bool) []string {
 	return append(offered, RungHandUp)
 }
 
+// askDecisions are the decisions ask offers: its moment's, without the
+// reverify while a merge conflict stands on the head, as the action table
+// refuses it (conflictRefusal).
+func askDecisions(ask *CheckInAsk) []string {
+	out := momentDecisions(ask.Moment, ask.Replan)
+	if ask.Conflict != "" {
+		out = slices.DeleteFunc(out, func(d string) bool { return d == ActReverify })
+	}
+	return out
+}
+
 // checkReasonKinds are the moments' closed reason-kind vocabulary: the
 // shapes of a stop only a human can act on. An answer that names no
 // reason kind answers "", which the enum holds.
@@ -594,7 +612,7 @@ func ForcedToolChoice(name string) map[string]any {
 // are judged, the note, the reason and the guidance as text.
 func momentAnswerSchema(ask *CheckInAsk) map[string]any {
 	props := map[string]any{
-		"decision":    map[string]any{"type": "string", "enum": momentDecisions(ask.Moment, ask.Replan)},
+		"decision":    map[string]any{"type": "string", "enum": askDecisions(ask)},
 		"reason_kind": map[string]any{"type": "string", "enum": slices.Clone(checkReasonKinds)},
 		"reason":      map[string]any{"type": "string"},
 		"handover":    map[string]any{"type": "string"},
@@ -754,7 +772,7 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 	if err := json.Unmarshal([]byte(text), &a); err != nil {
 		return a, fmt.Errorf("not one JSON object: %v", err)
 	}
-	if err := enumCheck("decision", a.Decision, momentDecisions(ask.Moment, ask.Replan)); err != nil {
+	if err := enumCheck("decision", a.Decision, askDecisions(ask)); err != nil {
 		return a, err
 	}
 	if err := enumCheck("reason_kind", a.ReasonKind, checkReasonKinds); err != nil {

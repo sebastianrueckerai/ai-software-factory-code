@@ -691,19 +691,33 @@ func rerunHeads(tl []byte) []string {
 }
 
 // stepMergeConflict is the timeline's line of Forgejo's refusal to merge
-// main into a head (commit) of the pull request (pr).
-const stepMergeConflict = "merge_conflict"
+// main into a head (commit) of the pull request (pr); stepMergeMovedHead
+// is the line, the merge gate's own or the synchronize webhook's event,
+// of the pull request's head moving to head outside the run.
+const (
+	stepMergeConflict  = "merge_conflict"
+	stepMergeMovedHead = "merge_moved_head"
+)
 
 // standingConflict is the refusal of timeline tl's newest merge conflict
-// on head, "" for none. A push or a sync of main moves the head, so none
-// stands on the new one.
+// on head, "" for none. A push or a sync of main moves the run's head, so
+// none stands on the new one; a head moved outside the run leaves the run
+// on head, and the conflict stands no more: a reverify takes the moved
+// head through the gates.
 func standingConflict(tl []byte, head string) string {
 	if head == "" {
 		return ""
 	}
 	for _, raw := range slices.Backward(bytes.Split(tl, []byte("\n"))) {
-		var l struct{ Step, Commit, Refusal string }
-		if json.Unmarshal(raw, &l) == nil && l.Step == stepMergeConflict && l.Commit == head {
+		var l struct{ Step, Event, Commit, Head, Refusal string }
+		if json.Unmarshal(raw, &l) != nil {
+			continue
+		}
+		moved := l.Step == stepMergeMovedHead || l.Step == StepEvent && l.Event == stepMergeMovedHead
+		switch {
+		case moved && l.Head != "" && l.Head != head:
+			return ""
+		case l.Step == stepMergeConflict && l.Commit == head:
 			return l.Refusal
 		}
 	}

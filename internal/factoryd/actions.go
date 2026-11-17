@@ -417,10 +417,26 @@ var Actions = []Action{
 
 // conflictRefusal refuses action, which runs the gates again, on a head
 // that no longer merges into main: the merge queue's turn meets the same
-// refusal, and only a session that merges main clears it.
+// refusal, and only a session that merges main clears it (conflictFit).
 func conflictRefusal(f CaseFacts, action string) string {
 	return fmt.Sprintf("the pull request no longer merges into main (Forgejo refused to merge main into %s), so %s only runs the gates into the same refusal at the merge queue: "+
-		"a session that merges main into the branch clears it (extend, continue or handover), or close the card as superseded when main already carries its work", short(f.Head), action)
+		"%s, or close the card as superseded when main already carries its work", short(f.Head), action, conflictFit(f))
+}
+
+// conflictFit is the answer, by the stop's kind, that starts the session a
+// merge conflict needs: an extend where the stop asks for a session, a
+// fund at the budget floor, the cap's own turn at a cap wait, else a
+// continue with a note.
+func conflictFit(f CaseFacts) string {
+	switch {
+	case slices.Contains(extendKinds, f.Kind):
+		return "extend the card for a session that merges main into the branch"
+	case f.Kind == CaseBudgetFloor:
+		return "fund the card for a session that merges main into the branch"
+	case f.Kind == CaseDayCap || f.Kind == CaseMonthCap || f.Kind == CaseProjectCap:
+		return "the card's next session, once the cap turns, merges main into the branch"
+	}
+	return "continue the card with a note for a session that merges main into the branch"
 }
 
 // monitorActions are the actions a monitor flag's case takes: those Act carries

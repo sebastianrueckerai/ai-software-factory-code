@@ -1170,6 +1170,32 @@ func TestParseCheckinAnswerRefusesOutsideItsEnums(t *testing.T) {
 	}
 }
 
+// While a merge conflict stands on the head the session starts on, the
+// gate's check-in is offered no reverify: its decision enum holds handover
+// and hand_up alone, a reverify that drops every finding is refused naming
+// them, which the same ask with no conflict takes, and the statement says
+// the conflict and why.
+func TestGateCheckinOffersNoReverifyOnAMergeConflict(t *testing.T) {
+	ask := &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "f", Source: "review"}}}
+	dropped := `{"findings":[{"text":"f","verdict":"dropped","evidence":"internal/factoryd/store.go:672 at main: func (s *PGStore) TasksByPR"}],"decision":"reverify"}`
+	if _, err := parseCheckinAnswer(dropped, ask); err != nil {
+		t.Fatalf("no conflict: the reverify = %v, want it taken", err)
+	}
+	ask.Conflict = "the branch conflicts with its base: status 409"
+	props := momentAnswerSchema(ask)["properties"].(map[string]any)
+	if got := props["decision"].(map[string]any)["enum"].([]string); !slices.Equal(got, []string{CheckHandover, RungHandUp}) {
+		t.Fatalf("the decision enum = %v, want handover and hand_up alone", got)
+	}
+	if _, err := parseCheckinAnswer(dropped, ask); err == nil || err.Error() != `unknown decision "reverify"; allowed: handover, hand_up` {
+		t.Fatalf("conflict: the reverify = %v, want it refused naming handover and hand_up", err)
+	}
+	said := "The pull request does not merge into main: the branch conflicts with its base: status 409. No reverify is offered while it stands," +
+		" since the gates would meet the same refusal: only a session that merges main into the branch clears it.\n"
+	if got := checkinStatement(ask, nil, 3, 1, 500); !strings.Contains(got, said) {
+		t.Fatalf("statement lacks %q:\n%s", said, got)
+	}
+}
+
 // A replan on a card holding the gate-trigger PR is refused unless its
 // reason names the pull request and the gate consequence; a compliant
 // reason passes; continue, handover and hand_up pass the guard unchanged;

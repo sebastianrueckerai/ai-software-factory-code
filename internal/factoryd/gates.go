@@ -2794,7 +2794,7 @@ func (r *Runner) movedHead(ctx context.Context, t Task, repo Repo, pr int64, com
 	if err := r.store.ResolveApprovals(ctx, t.ID, ApprovalMerge, "denied", FactoryDecider, note); err != nil {
 		log.Printf("task %s: void the approval request: %v", t.ID, err)
 	}
-	r.record(ctx, t.ID, "merge_moved_head", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "head": head, "approver": approver}))
+	r.record(ctx, t.ID, stepMergeMovedHead, gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "head": head, "approver": approver}))
 	return res
 }
 
