@@ -874,7 +874,8 @@ func boardWords(d boardData) string {
 	}
 	fmt.Fprintf(&b, "Approval requests waiting (%d):", len(d.Approvals))
 	requests := make([]string, len(d.Approvals))
-	for i, a := range d.Approvals {
+	for i, n := range d.Approvals {
+		a := n.Approval
 		requests[i] = fmt.Sprintf("%s request %d of %s", a.Kind, a.ID, a.TaskID)
 		if a.Issue > 0 {
 			requests[i] += fmt.Sprintf(" (#%d)", a.Issue)

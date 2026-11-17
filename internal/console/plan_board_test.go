@@ -102,8 +102,9 @@ func TestWideViewHasNoLaneColumn(t *testing.T) {
 	}
 	code := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
 	for title, want := range map[string][]string{
-		"Queued":       {`title="card 2"`, `title="card 3"`, `title="card 4"`, `<span class="chip waiting">waiting on #3, #5</span>`, "Another spec"},
-		"Done":         {"Link shortener", `title="card 5"`},
+		"Queued": {`<strong class="title">card 2</strong>`, `<strong class="title">card 3</strong>`, `<strong class="title">card 4</strong>`,
+			`<span class="it waits">waits for <a class="ref-link" href="#card=t-c3">#3</a> <span class="ref-of">(card 3, queued)</span>`, "Another spec"},
+		"Done":         {"Link shortener", `<strong class="title">card 5</strong>`},
 		"code Queued":  {"an improvement"},
 		"code Running": {"fix the cache"},
 	} {
@@ -118,10 +119,10 @@ func TestWideViewHasNoLaneColumn(t *testing.T) {
 			}
 		}
 	}
-	// the plan's three cards still in play wear the plan chip;
-	// its done card's row has none, and its drawer names the plan
-	if got := strings.Count(body, `<span class="chip plan">from plan #1 · Link shortener</span>`); got != 3 {
-		t.Errorf("%d cards read from plan #1, want its 3 cards in play", got)
+	// the plan's four cards name it as their place, and the done card's
+	// drawer names the plan
+	if got := strings.Count(body, `<span class="it place"><a class="ref-link" href="#card=t-plan">Link shortener</a>`); got != 4 {
+		t.Errorf("%d cards name plan #1 as their place, want its 4 cards", got)
 	}
 	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c5/drawer?project=linkshort", nil), ck).Body.String(); !strings.Contains(d, `<dt>Plan</dt><dd><a class="ref" href="https://git.example/linkshort/linkshort/issues/1" target="_blank" rel="noopener">#1</a> · Link shortener · <span class="mono">k5</span></dd>`) {
 		t.Errorf("the done card's drawer lacks its Plan row with the plan's title and the key:\n%s", d)
@@ -139,9 +140,9 @@ func TestWideViewHasNoLaneColumn(t *testing.T) {
 
 // A plan's card can name a plan the board's own read does not list: one
 // of another project, open (before roadmap 269 the board read it among
-// every project's cards), or a finished one. The card's chip still names
-// the plan's issue — planIssue reads the parent itself — while the board
-// shows none of the other project's cards.
+// every project's cards), or a finished one. The card's place still names
+// the plan — planIssue reads the parent itself — while the board shows
+// none of the other project's cards.
 func TestBoardPlanParentOutsideItsCards(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
@@ -153,8 +154,8 @@ func TestBoardPlanParentOutsideItsCards(t *testing.T) {
 			Repository: "linkshort/linkshort", IssueNumber: 2, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k2"}},
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if !strings.Contains(body, `<span class="chip plan">from plan #1 · fix prod latency</span>`) {
-		t.Errorf("the card's chip does not name its plan, a card of another project:\n%s", body)
+	if !strings.Contains(faceOf(t, body, "t-c"), `<span class="it place"><a class="ref-link" href="#card=t-plan">fix prod latency</a>`) {
+		t.Errorf("the card's place does not name its plan, a card of another project:\n%s", body)
 	}
 	if strings.Contains(body, "Link shortener") {
 		t.Errorf("the board shows the other project's plan card:\n%s", body)
@@ -197,12 +198,17 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 	board := func(ck *http.Cookie, view string) string {
 		return r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort"+view, nil), ck).Body.String()
 	}
+	opened := func() string { return planDrawer(t, r, ck) }
 	card := col(t, board(ck, ""), "Needs you")
-	if !strings.Contains(card, `rel="noopener">#1</a> · Link shortener, revision 2`) {
-		t.Errorf("an unnamed plan's header lacks its title:\n%s", card)
+	if !strings.Contains(card, `<strong class="title">How long are the results kept?</strong>`) ||
+		!strings.Contains(card, `<span class="place">plan Link shortener, 3 cards</span>`) {
+		t.Errorf("an unnamed plan's small card lacks its question, or its title in its place:\n%s", card)
 	}
 	r.tasks.tasks[0].PlanName = "fix prod latency"
 	card = col(t, board(ck, ""), "Needs you")
+	if !strings.Contains(card, `<span class="place">plan fix prod latency, 3 cards</span>`) {
+		t.Errorf("a named plan's small card lacks its name in its place:\n%s", card)
+	}
 	for _, want := range []string{
 		`<article class="card approval plan" data-card="t-plan"`,
 		`<a href="#card=t-plan" class="open">Plan</a> <a class="ref" href="https://git.example/linkshort/linkshort/issues/1" target="_blank" rel="noopener">#1</a> · fix prod latency, revision 2`,
@@ -210,18 +216,23 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 		`<p class="meta">1 question open. The answers go to the planner; its next revision with no open question files the cards.</p>`,
 		`hx-post="/tasks/t-plan/plan/changes"`,
 	} {
-		if !strings.Contains(card, want) {
-			t.Errorf("plan card lacks %q:\n%s", want, card)
+		if !strings.Contains(opened(), want) {
+			t.Errorf("the opened plan card lacks %q:\n%s", want, opened())
 		}
 	}
 	r.tasks.tasks[0].IssueNumber = 0
-	if card = col(t, board(ck, ""), "Needs you"); !strings.Contains(card, `>Plan</a> fix prod latency, revision 2</h4>`) {
-		t.Errorf("a named plan without an issue number lacks the bare name in its header:\n%s", card)
+	if o := opened(); !strings.Contains(o, `>Plan</a> fix prod latency, revision 2</h4>`) {
+		t.Errorf("a named plan without an issue number lacks the bare name in its header:\n%s", o)
 	}
 	r.tasks.tasks[0].IssueNumber = 1
-	for _, gone := range []string{"/plan/accept", "/plan/reject", "Accept plan", ">Reject<", "may accept a plan", "sha256", "Foundation first, then the API, then the acceptance tests."} {
-		if strings.Contains(card, gone) {
-			t.Errorf("the plan card offers %q:\n%s", gone, card)
+	for _, gone := range []string{"/plan/accept", "/plan/reject", "Accept plan", ">Reject<", "may accept a plan"} {
+		if o := opened(); strings.Contains(card, gone) || strings.Contains(o, gone) {
+			t.Errorf("the plan card offers %q:\n%s", gone, o)
+		}
+	}
+	for _, raw := range []string{"<form", "sha256", "Foundation first, then the API, then the acceptance tests."} {
+		if strings.Contains(card, raw) {
+			t.Errorf("the small plan card holds %q:\n%s", raw, card)
 		}
 	}
 	// a plan at the session cap shows as its case's row, which holds the
@@ -232,16 +243,22 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = "limit reached: 3 sessions", requested.Add(time.Minute)
 	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 5, TaskID: "t-plan", Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman, Problem: "The plan hit its session cap."}}}
 	wide := board(ck, "&view=wide")
-	if !strings.Contains(col(t, wide, "Escalations"), `<p class="ask">The planner has a question about this plan. How should it go?</p>`) || strings.Contains(wide, "limit reached: 3 sessions") ||
+	if !strings.Contains(col(t, wide, "Escalations"), `<strong class="title">The planner has a question about this plan. How should it go?</strong>`) || strings.Contains(wide, "limit reached: 3 sessions") ||
 		!strings.Contains(wide, `Escalations <span class="count">1</span>`) || !strings.Contains(wide, `Approvals <span class="count">0</span>`) {
 		t.Errorf("the plan's escalation is not its case's row alone:\n%s", wide)
 	}
-	// a plan case with no slot is answered by the approval card's own ask:
-	// the one decide form, Request changes and the card's own Close keep
-	// the filter
-	if filtered := col(t, wide, "Escalations"); strings.Count(filtered,
-		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) != 3 {
-		t.Errorf("the plan row's three forms do not keep the filter:\n%s", filtered)
+	// a plan case with no slot is answered by the approval card's own ask
+	// on the opened card: the one decide form and Request changes keep the
+	// filter
+	filtered := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort&view=wide", nil), ck).Body.String()
+	for _, action := range []string{`action="/tasks/t-plan/plan/answer"`, `action="/tasks/t-plan/plan/changes"`} {
+		at := strings.Index(filtered, action)
+		if at < 0 {
+			t.Fatalf("the opened plan card lacks its %s form:\n%s", action, filtered)
+		}
+		if form, _, _ := strings.Cut(filtered[at:], "</form>"); !strings.Contains(form, `<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) {
+			t.Errorf("the plan's %s form does not keep the filter:\n%s", action, form)
+		}
 	}
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = "", time.Time{}
 	r.openCases = nil
@@ -249,7 +266,7 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 	r.repoWriters["linkshort/linkshort"] = append(r.repoWriters["linkshort/linkshort"], "alice")
 	r.forgetWriters()
 	ak, as := r.as(t, "alice")
-	if alice := col(t, board(ak, ""), "Needs you"); strings.Contains(alice, "/plan/accept") || strings.Contains(alice, "/plan/reject") ||
+	if alice := planDrawer(t, r, ak); strings.Contains(alice, "/plan/accept") || strings.Contains(alice, "/plan/reject") ||
 		!strings.Contains(alice, "/plan/changes") {
 		t.Errorf("alice's plan card: want Request changes alone:\n%s", alice)
 	}
@@ -275,8 +292,8 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 	}
 }
 
-// A plan's face holds no raw text: a long escalation on its task reaches
-// neither the case's row nor its nested plan card.
+// A plan's small card holds no raw text: a long escalation on its task
+// does not reach it.
 func TestPlanFaceHoldsNoRawEscalation(t *testing.T) {
 	r := newRig(t)
 	planRig(r)
@@ -286,14 +303,14 @@ func TestPlanFaceHoldsNoRawEscalation(t *testing.T) {
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = strings.Repeat("a", 3000), requested.Add(time.Minute)
 	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 5, TaskID: "t-plan", Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman, Problem: "The plan hit its session cap."}}}
 	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
-	if !strings.Contains(card, `<p class="ask">The planner has a question about this plan. How should it go?</p>`) || strings.Contains(card, strings.Repeat("a", 100)) {
+	if !strings.Contains(card, `<strong class="title">The planner has a question about this plan. How should it go?</strong>`) || strings.Contains(card, strings.Repeat("a", 100)) {
 		t.Errorf("the plan's row is missing or holds its raw escalation:\n%s", card)
 	}
 }
 
 // A plan card with no case at the human, which stands alone, cuts its
-// escalation at the bound a task card's reason has, so a long one does not
-// fill the column, and shows it.
+// escalation on its opened card at the bound a task card's reason has, so
+// a long one does not fill it, and shows it.
 func TestPlanCardEscalationIsBounded(t *testing.T) {
 	r := newRig(t)
 	planRig(r)
@@ -302,24 +319,23 @@ func TestPlanCardEscalationIsBounded(t *testing.T) {
 	requested := time.Now().Add(-time.Hour)
 	r.approvals.rows[len(r.approvals.rows)-1].CreatedAt = requested
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = strings.Repeat("a", 3000), requested.Add(time.Minute)
-	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
+	card := planDrawer(t, r, ck)
 	want := `<p class="reason">` + strings.Repeat("a", maxCardReason) + "…\n- the rest is on the issue</p>"
 	if !strings.Contains(card, want) || strings.Contains(card, strings.Repeat("a", maxCardReason+1)) || strings.Contains(card, `class="card case"`) {
 		t.Errorf("the plan card's escalation is not cut at %d bytes with the rest pointer:\n%s", maxCardReason, card)
 	}
 }
 
-// Roadmap 225: a done plan stays in Done with its children's rollup, its
-// queued children counted, and lists them by issue and state in its
-// drawer; it offers no Start plan.
+// Roadmap 225: a done plan stays in Done, a plan in its place, and lists
+// its children by issue and state in its drawer; it offers no Start plan.
 func TestDonePlanRollsUpItsChildren(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
 	r.tasks.tasks = planTasks()
 	ck, _ := r.loggedIn(t)
 	done := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Done")
-	if !strings.Contains(done, "<span class=\"chip rollup\">1\u00a0done · 1\u00a0waiting · 2\u00a0queued</span>") || strings.Contains(done, "Start plan") || strings.Contains(done, "start-plan") {
-		t.Errorf("the plan in Done: want its rollup and no Start plan:\n%s", done)
+	if face := faceOf(t, done, "t-plan"); !strings.Contains(face, `<span class="it place">plan</span>`) || strings.Contains(done, "Start plan") || strings.Contains(done, "start-plan") {
+		t.Errorf("the plan in Done: want its place and no Start plan:\n%s", done)
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort", nil), ck).Body.String()
 	for _, want := range []string{
@@ -333,9 +349,9 @@ func TestDonePlanRollsUpItsChildren(t *testing.T) {
 	}
 }
 
-// A done plan in its second round shows that round and what is still to
-// plan in place of its rollup, and its drawer lists the rounds, the
-// current one marked, then the parts still to plan.
+// A done plan in its second round counts its revision's cards in its
+// place, and its drawer lists the rounds, the current one marked, then the
+// parts still to plan.
 func TestDonePlanShowsItsRound(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
@@ -351,7 +367,7 @@ func TestDonePlanShowsItsRound(t *testing.T) {
 	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan, SHA256: "sha-1"}}}
 	ck, _ := r.loggedIn(t)
 	done := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Done")
-	if want := `<span class="chip rollup">round 2: 4 cards, 1 done. Still to plan: the console, the scheduler.</span>`; !strings.Contains(done, want) {
+	if want := `<span class="it place">plan, 5 cards</span>`; !strings.Contains(faceOf(t, done, "t-plan"), want) {
 		t.Errorf("the plan in Done lacks %q:\n%s", want, done)
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort", nil), ck).Body.String()
@@ -361,8 +377,8 @@ func TestDonePlanShowsItsRound(t *testing.T) {
 	}
 }
 
-// A done plan whose revision cannot be read keeps its rollup, and the
-// board says so once.
+// A done plan whose revision cannot be read keeps its place without a
+// count, and the board says so once.
 func TestDonePlanWithAnUnreadableRevisionKeepsItsRollup(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
@@ -370,8 +386,8 @@ func TestDonePlanWithAnUnreadableRevisionKeepsItsRollup(t *testing.T) {
 	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: json.RawMessage(`{"round": "two"}`)}}}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if !strings.Contains(col(t, body, "Done"), "<span class=\"chip rollup\">1 done · 1 waiting · 2 queued</span>") {
-		t.Errorf("the plan in Done: want its rollup:\n%s", col(t, body, "Done"))
+	if face := faceOf(t, col(t, body, "Done"), "t-plan"); !strings.Contains(face, `<span class="it place">plan</span>`) {
+		t.Errorf("the plan in Done: want its place without a count:\n%s", face)
 	}
 	if n := strings.Count(body, `<p class="problem" role="alert">the plan of t-plan could not be read</p>`); n != 1 {
 		t.Errorf("the board says the plan could not be read %d times, want once:\n%s", n, body)
@@ -398,11 +414,11 @@ func TestACardCutIntoASuccessorShowsNoRetry(t *testing.T) {
 	}
 }
 
-// Item 119: a failed card of a plan that holds its key shows Retry to an
-// approver, and so does one whose retry stopped before its replacement
-// got an issue; a done card, a failed card retried (its replacement on an
-// issue) and a failed task of no plan show none, nor does any card to a
-// writer who is no approver.
+// Item 119: a failed card of a plan that holds its key shows Retry on its
+// opened card to an approver, and so does one whose retry stopped before
+// its replacement got an issue; a done card, a failed card retried (its
+// replacement on an issue) and a failed task of no plan show none, nor
+// does any card to a writer who is no approver, nor any small card.
 func TestFailedPlanCardShowsRetry(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
@@ -417,22 +433,28 @@ func TestFailedPlanCardShowsRetry(t *testing.T) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-fix", Kind: "agent",
 			Status: "failed", Track: "direct", Process: "maintenance", Objective: "a fix", Repository: "sf/code", IssueNumber: 13}})
 	ck, s := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String() +
-		r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
-	failed := col(t, body, "Done")
+	opened := func(ck *http.Cookie, id string) string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+"/drawer?project=linkshort", nil), ck).Body.String()
+	}
 	form := `<form method="post" action="/tasks/t-c7/retry" hx-post="/tasks/t-c7/retry" class="inline">` +
 		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort">` +
 		`<button type="submit" aria-label="Retry #7">Retry</button></form>`
-	if !strings.Contains(failed, form) || !strings.Contains(failed, `action="/tasks/t-c9/retry"`) {
-		t.Errorf("the failed card, or the one whose retry stopped, lacks Retry:\n%s", failed)
+	if !strings.Contains(opened(ck, "t-c7"), form) || !strings.Contains(opened(ck, "t-c9"), `action="/tasks/t-c9/retry"`) {
+		t.Errorf("the failed card, or the one whose retry stopped, lacks Retry:\n%s", opened(ck, "t-c7"))
 	}
 	for _, id := range []string{"t-c5", "t-c8", "t-fix"} {
-		if strings.Contains(body, "/tasks/"+id+"/retry") {
+		if strings.Contains(opened(ck, id), "/tasks/"+id+"/retry") {
 			t.Errorf("%s shows Retry", id)
 		}
 	}
+	// the small cards offer no Retry: it is the opened card's
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String() +
+		r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
+	if strings.Contains(body, "/retry") {
+		t.Error("a small card offers Retry")
+	}
 	ak, _ := r.as(t, "alice")
-	if strings.Contains(r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ak).Body.String(), "/retry") {
+	if strings.Contains(opened(ak, "t-c7"), "/retry") {
 		t.Error("alice, no approver, sees Retry")
 	}
 }
@@ -553,7 +575,7 @@ func TestPlanViewsShowTakeOffMain(t *testing.T) {
 	}
 	ck, _ := r.loggedIn(t)
 	want := "<button type=\"submit\" name=\"decision\" value=\"confirm\" class=\"primary\" formnovalidate>Confirm reverts #2, #4 and #5 from main</button>"
-	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
+	card := approvalFaceOf(t, planDrawer(t, r, ck), "t-plan")
 	if !strings.Contains(card, want) {
 		t.Errorf("the plan card lacks %q:\n%s", want, card)
 	}
@@ -668,7 +690,8 @@ func TestADonePlanThatWaitsOnItsFailedCardNeedsYou(t *testing.T) {
 	if !strings.Contains(needs, `data-card="t-plan"`) || strings.Contains(done, `data-card="t-plan"`) {
 		t.Errorf("the plan waits outside Needs you:\n%s\n%s", needs, done)
 	}
-	if !strings.Contains(needs, `class="card case"`) || !strings.Contains(needs, `<p class="ask">A card of this plan failed. Try it again, or end it so the plan goes on?</p>`) {
-		t.Errorf("the plan's row carries no case:\n%s", needs)
+	if face := faceOf(t, needs, "t-plan"); !strings.Contains(face, ` data-case="1"`) || strings.Contains(face, "final") ||
+		!strings.Contains(face, `<strong class="title">A card of this plan failed. Try it again, or end it so the plan goes on?</strong>`) {
+		t.Errorf("the plan's small card carries no case, or reads as finished:\n%s", face)
 	}
 }

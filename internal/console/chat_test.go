@@ -2260,7 +2260,7 @@ func TestBoardWordsBoundsEveryList(t *testing.T) {
 	var cards []card
 	for i := 1; i <= 27; i++ {
 		cards = append(cards, card{Task: factoryd.Task{ID: fmt.Sprintf("t-%d", i), IssueNumber: int64(i), Status: "queued", Objective: "Fix."}})
-		d.Approvals = append(d.Approvals, approvalCard{ApprovalRequest: factoryd.ApprovalRequest{ID: int64(i), Kind: "merge", TaskID: fmt.Sprintf("t-%d", i)}})
+		d.Approvals = append(d.Approvals, need{Approval: &approvalCard{ApprovalRequest: factoryd.ApprovalRequest{ID: int64(i), Kind: "merge", TaskID: fmt.Sprintf("t-%d", i)}}})
 		d.Problems = append(d.Problems, fmt.Sprintf("problem %d", i))
 	}
 	done := []card{
@@ -3681,7 +3681,7 @@ func TestCardAnswerInWordsLandsInAnOwnThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.replies = [][]string{{say("I read the card.")}}
-	note, err := r.c.doAnswerValue(ctx, actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "use your own judgement on the replica", "", "", 0)
+	note, err := r.c.doAnswerValue(ctx, actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "use your own judgement on the replica", "")
 	if err != nil || note != "The words are in the project chat; the agent answers there." {
 		t.Fatalf("the answer in words = %q, %v", note, err)
 	}

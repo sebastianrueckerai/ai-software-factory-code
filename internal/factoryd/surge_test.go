@@ -197,8 +197,8 @@ func TestSetSlotWaitsOrdersResumedBeforeFresh(t *testing.T) {
 	tasks[4].AdmittedAt, tasks[5].AdmittedAt = &at, &at
 	setSlotWaits(tasks)
 	want := map[string]string{"run": "", "dep": "",
-		"res1": "waits for a slot, 0 ahead (1 live)", "res2": "waits for a slot, 1 ahead (1 live)",
-		"fresh1": "waits for a slot, 2 ahead (1 live)", "fresh2": "waits for a slot, 3 ahead (1 live)"}
+		"res1": "waits for its turn to start, 0 ahead (1 running)", "res2": "waits for its turn to start, 1 ahead (1 running)",
+		"fresh1": "waits for its turn to start, 2 ahead (1 running)", "fresh2": "waits for its turn to start, 3 ahead (1 running)"}
 	for _, b := range tasks {
 		if b.SlotWait != want[b.ID] {
 			t.Errorf("%s: %q, want %q", b.ID, b.SlotWait, want[b.ID])

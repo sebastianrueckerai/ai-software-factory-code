@@ -1995,12 +1995,6 @@ func (t *taskRun) lifecycle() (string, error) {
 				startRef = cmp.Or(res.Commit, startRef)
 				continue
 			}
-			if successorChosen(t.answers) {
-				// the successor exit's answer closes the card with its work
-				// carried on, before any branch of the chain could buy a
-				// session the close makes pointless
-				return t.finish(t.closeIntoSuccessor(workStateLines(res.CheckIn.Findings, res.CheckIn.Review)))
-			}
 			spend := checkinSpendKind(res.CheckIn.ReasonKind)
 			stop := checkinStop{spend: spend,
 				callCap: spend && (strings.HasPrefix(res.Reason, checkinCallCapStop) || strings.HasPrefix(res.Reason, checkinTimeCapStop))}
@@ -4674,12 +4668,6 @@ func (t *taskRun) closedWithoutMerge() string {
 // merge base does not fit the card's line bound even after the merge of
 // main.
 const pushOverBoundMark = "push refused: over the card's line bound"
-
-// successorChosen reports whether the answer the run woke on chose the
-// successor exit: the newest answer's body carries its label.
-func successorChosen(answers []string) bool {
-	return len(answers) > 0 && strings.Contains(answers[0], ": "+SuccessorChoice)
-}
 
 // closeIntoSuccessor files the card's successor with the findings so far
 // (a packed block of lines) and is the card's end, failed, the successor

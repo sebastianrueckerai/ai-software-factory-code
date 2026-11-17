@@ -56,7 +56,7 @@ func TestStageAgeFromTheNewestStatusRow(t *testing.T) {
 	}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-run"); !strings.Contains(face, `<span class="pill st-running">building</span> <span class="elapsed">20 min</span>`) {
+	if face := faceOf(t, body, "t-run"); !strings.Contains(face, `<span class="st st-running"><i class="dot" aria-hidden="true"></i>building</span> 20 min</span>`) {
 		t.Errorf("the face lacks the time in its stage:\n%s", face)
 	}
 	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-run/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, "<dd>building, 20 min, 4 h 0 min in all</dd>") {

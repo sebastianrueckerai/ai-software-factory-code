@@ -1,7 +1,7 @@
 package acceptance
 
 // One face every asking kind (plan #1850, criterion
-// one_face_every_asking_kind_suite): each asking face the board holds —
+// one_face_every_asking_kind_suite): each asking card's opened card —
 // a merge request's, a resource request's, an escalation's ask, a plan's
 // question — renders exactly one decide block in the five-part shape,
 // built from the shared case-decide partial with the table's offers as
@@ -109,15 +109,18 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 	r.mu.Unlock()
 
 	ck, csrf := r.Login(t)
-	body := r.request(http.MethodGet, "/", nil, ck).Body.String()
+	// each asking card decides on its opened card: its case's ask, else
+	// the request it waits on
 	faceOf := func(id string) string {
 		t.Helper()
-		at := strings.Index(body, `data-card="`+id+`"`)
-		if at < 0 {
-			t.Fatalf("the board holds no face of %s:\n%s", id, body)
+		opened := r.request(http.MethodGet, "/cards/"+id+"/drawer?tab=overview", nil, ck).Body.String()
+		for _, head := range []string{`<article class="need" id="need-` + id + `-d">`, `<article class="card approval`} {
+			if at := strings.Index(opened, head); at >= 0 {
+				return opened[at : at+strings.Index(opened[at:], "</article>")]
+			}
 		}
-		start := strings.LastIndex(body[:at], "<article")
-		return body[start : start+strings.Index(body[start:], "</article>")]
+		t.Fatalf("the opened card of %s holds no ask:\n%s", id, opened)
+		return ""
 	}
 	// the one decide of each asking face: one send (the form's one
 	// action), one fund control, one note box — the shared partial, never
@@ -169,7 +172,7 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 		t.Errorf("the escalation face lacks its ask, why or offers:\n%s", face)
 	}
 	if face := faceOf("t-bp"); !strings.Contains(face, `<p class="ask">Which cache holds the reads?</p>`) ||
-		!strings.Contains(face, `<p class="why">Plan #531, revision 2: 1 question open;`) ||
+		!strings.Contains(face, `<p class="why">The planner needs your answer before it can finish the plan.</p>`) ||
 		!strings.Contains(face, `name="choice" value="1" checked`) || !strings.Contains(face, `name="choice" value="2"`) ||
 		!strings.Contains(face, `<p class="recommendation">Recommendation (the planner): it already holds the board keys</p>`) {
 		t.Errorf("the plan face lacks its ask, why, choices or the seated recommendation:\n%s", face)

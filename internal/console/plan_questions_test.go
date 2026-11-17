@@ -32,9 +32,10 @@ func questionsRig(r *rig) {
 	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": askedQuestions()}
 }
 
-// The plan card asks the plan's open questions above its
-// Request changes, one button per choice and a text box each, its meta
-// line counting the open ones, and offers no Accept; an answer posts "Answer <n>:
+// The plan card asks the plan's open questions, its small card the first
+// with their count, its opened card above its Request changes one button
+// per choice and a text box each, its meta line counting the open ones,
+// and offers no Accept; an answer posts "Answer <n>:
 // <answer>" on the issue as the member, signals factoryd and shows on the
 // card; a second answer to it, one to a stale revision or to no question,
 // and an empty or long one are refused.
@@ -42,13 +43,17 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 	r := newRig(t)
 	questionsRig(r)
 	ck, s := r.loggedIn(t)
-	board := func() string {
-		return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
+	// the small card asks the first open question of two; the opened card
+	// holds the forms
+	if face := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "t-plan"); !strings.Contains(face, `<strong class="title">How often does the checker probe a site?</strong>`) ||
+		!strings.Contains(face, `<span class="pos" aria-live="polite">1 of 2</span>`) || strings.Contains(face, "<form") {
+		t.Errorf("the small card does not ask the first of two questions, or holds a form:\n%s", face)
 	}
+	board := func() string { return approvalFaceOf(t, planDrawer(t, r, ck), "t-plan") }
 	card := board()
-	for _, want := range []string{`<p class="ask">How often does the checker probe a site?</p>`, `<span class="pos" aria-live="polite">1 of 2</span>`,
+	for _, want := range []string{`<p class="ask">How often does the checker probe a site?</p>`,
 		`<input type="hidden" name="revision" value="2"><input type="hidden" name="index" value="1">`,
-		`<input type="radio" name="choice" value="2">`, `<input type="text" id="own-t-plan-1" name="own" maxlength="1000" hx-preserve>`,
+		`<input type="radio" name="choice" value="2">`, `<input type="text" id="own-t-plan-d-1" name="own" maxlength="1000" hx-preserve>`,
 		`<p class="meta">2 questions open. The answers go to the planner; its next revision with no open question files the cards.</p>`,
 	} {
 		if !strings.Contains(card, want) {
@@ -69,9 +74,14 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 		!slices.Contains(r.fg.calls, "POST "+comments+" Bearer access-1") {
 		t.Fatalf("answer: %d to %q %s; comment %q, calls %v", rec.Code, rec.Header().Get("Location"), rec.Body, r.fg.comments[comments], r.fg.calls)
 	}
-	if card := board(); strings.Contains(card, "How often does the checker probe a site?") || !strings.Contains(card, `<p class="ask">How long are the results kept?</p>`) ||
-		!strings.Contains(card, `<p class="meta">1 question open. The answers go to the planner`) || strings.Count(card, `<input type="radio"`) != 2 || strings.Contains(card, `class="carousel"`) {
+	if card := board(); strings.Contains(card, `<p class="ask">How often does the checker probe a site?</p>`) || !strings.Contains(card, `<p class="ask">How long are the results kept?</p>`) ||
+		!strings.Contains(card, `<p class="answered">How often does the checker probe a site?: 60 seconds (sebastian)</p>`) ||
+		!strings.Contains(card, `<p class="meta">1 question open. The answers go to the planner`) || strings.Count(card, `<input type="radio"`) != 2 {
 		t.Errorf("the card after one answer:\n%s", card)
+	}
+	if face := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "t-plan"); strings.Contains(face, `class="carousel"`) ||
+		!strings.Contains(face, `<strong class="title">How long are the results kept?</strong>`) {
+		t.Errorf("the small card after one answer:\n%s", face)
 	}
 	r.fg.calls = nil
 	for _, tc := range []struct {
@@ -367,9 +377,7 @@ func TestPlanCardDecidesTheConfirmation(t *testing.T) {
 	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": {
 		{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}}
 	ck, s := r.loggedIn(t)
-	board := func() string {
-		return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
-	}
+	board := func() string { return approvalFaceOf(t, planDrawer(t, r, ck), "t-plan") }
 	press := func(kv ...string) *httptest.ResponseRecorder {
 		v := url.Values{"csrf": {s.csrf}, "project": {"linkshort"}}
 		for i := 0; i+1 < len(kv); i += 2 {

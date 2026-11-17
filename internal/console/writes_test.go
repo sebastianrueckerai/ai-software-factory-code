@@ -1320,11 +1320,8 @@ func TestCloseAFailedCardWithAnIssue(t *testing.T) {
 	equal(t, "CloseCard", r.closed, []string(nil))
 }
 
-// A done plan that holds production offers a writer Close behind a
-// confirm. A plan with open criteria offers instead a Close with a
-// required note whose label says the note becomes each open criterion's
-// waiver reason; a plan whose plan_closed row stands and none open offers
-// none. Close hands the note to factoryd, which waives each open
+// A done plan's small card offers no Close. Its close, by the POST or the
+// chat, hands the note to factoryd, which waives each open
 // criterion and records plan_closed; the issue hears the closing words and
 // closes, and the answer says what happened. A close that factoryd
 // refuses closes nothing.
@@ -1409,41 +1406,15 @@ func TestCloseADonePlan(t *testing.T) {
 	}
 	ck, s := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	plain := `<form method="post" action="/tasks/t-br/close" hx-post="/tasks/t-br/close" ` +
-		`hx-confirm="Close #50? Its issue closes as you, and the card ends." class="inline close" data-to="closed">`
-	if face := faceOf(t, body, "t-br"); !strings.Contains(face, plain) {
-		t.Errorf("the plan without open criteria: face =\n%s\nwant it to hold\n%s", face, plain)
-	}
-	if face := faceOf(t, body, "t-cl"); strings.Contains(face, `action="/tasks/t-cl/close"`) {
-		t.Errorf("the plan whose plan_closed row stands, a criterion open again: face =\n%s\nwant no Close", face)
+	// a done plan's small card offers no Close: the close is the chat's
+	// and the POST's, with the note that waives
+	for _, id := range []string{"t-br", "t-cl", "t-fp", "t-cc", "t-lr", "t-one"} {
+		if face := faceOf(t, body, id); strings.Contains(face, "/close") || strings.Contains(face, "<form") {
+			t.Errorf("the finished plan %s's small card offers a Close:\n%s", id, face)
+		}
 	}
 	equal(t, "the action that fits a done plan", fitting(factoryd.Task{Status: "done", Track: policy.TrackPlan}, capFacts{}),
 		"Close with a note ends a plan that still holds production; a new card continues the work")
-	for id, label := range map[string]string{
-		"t-fp":  `aria-label="note: becomes the waiver reason of the open criterion"`,
-		"t-cc":  `aria-label="note: becomes the waiver reason of the open criterion"`,
-		"t-lr":  `aria-label="note: becomes the waiver reason of each of the 2 open criteria"`,
-		"t-one": `aria-label="note: becomes the waiver reason of the open criterion"`,
-	} {
-		face := faceOf(t, body, id)
-		for _, want := range []string{
-			`<form method="post" action="/tasks/` + id + `/close" hx-post="/tasks/` + id + `/close" class="inline close" data-to="closed">`,
-			`<textarea name="note" rows="1" maxlength="2000" required ` + label + `></textarea>`,
-		} {
-			if !strings.Contains(face, want) {
-				t.Errorf("the plan %s with open criteria: face =\n%s\nwant it to hold %s", id, face, want)
-			}
-		}
-		if strings.Contains(face, "hx-confirm") {
-			t.Errorf("the plan %s with open criteria offers a Close without a note:\n%s", id, face)
-		}
-	}
-	if face := faceOf(t, body, "t-lr"); !strings.Contains(face, `aria-label="Close #51 and waive 2 open criteria with this note">Close with note</button>`) {
-		t.Errorf("the plan with two open criteria: face =\n%s\nwant the button to name them", face)
-	}
-	if face := faceOf(t, body, "t-one"); !strings.Contains(face, `aria-label="Close #53 and waive 1 open criterion with this note">Close with note</button>`) {
-		t.Errorf("the plan with one open criterion: face =\n%s\nwant the button to name it", face)
-	}
 	if strings.Contains(body, `role="alert"`) && strings.Contains(body, "the criteria of") {
 		t.Errorf("the board shows a problem for a plan's criteria")
 	}
@@ -1554,33 +1525,23 @@ func TestClosePlanAnswerNamesMergedCardsOnlyWhenThereAreSome(t *testing.T) {
 	}
 }
 
-// The face offers a writer Close on a card waiting on a human, behind a
-// confirm, and on a failed one, and on no queued, running, done or closed card; the answer
+// No small card offers Close, a press the opened card carries; the answer
 // form of a card at its session cap says what the answer does, and its
 // answer is a grant: one session_granted row via button.
 func TestCardFaceCloseAndGrant(t *testing.T) {
 	r, _ := newWritesRig(t)
 	ck, s := r.loggedIn(t)
 	seatAsk(r, "t-cap", factoryd.CaseSessionCap, roomyFacts(nil))
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	closeForm := `<form method="post" action="/tasks/t-plan/close" hx-post="/tasks/t-plan/close" ` +
-		`hx-confirm="Close #40? Its issue closes as you, and the card ends." class="inline close" data-to="closed">` +
-		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">` +
-		`<input type="hidden" name="view" value="wide">` +
-		`<button type="submit" class="deny" aria-label="Close #40">Close</button></form>`
-	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, closeForm) {
-		t.Errorf("the waiting card's face =\n%s\nwant it to hold\n%s", face, closeForm)
-	}
-	for id, closes := range map[string]bool{"t-e": true, "t-cap": true, "t-a": false, "t-r": false, "t-done": false, "t-f": true} {
-		face := faceOf(t, body, id)
-		if got := strings.Contains(face, `action="/tasks/`+id+`/close"`) || strings.Contains(face, `name="action" value="close"`); got != closes {
-			t.Errorf("card %s offers Close: %t, want %t", id, got, closes)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
+	for _, id := range []string{"t-plan", "t-e", "t-cap", "t-a", "t-r", "t-done", "t-f"} {
+		if face := faceOf(t, body, id); strings.Contains(face, "/close") || strings.Contains(face, `value="close"`) {
+			t.Errorf("the small card of %s offers Close:\n%s", id, face)
 		}
 	}
-	if esc := escalationOf(t, body, "t-cap"); !strings.Contains(esc, `name="action" value="extend" class="secondary">Allow more sessions</button>`) {
+	if esc := escalationOf(t, r, ck, "t-cap"); !strings.Contains(esc, `name="action" value="extend" class="secondary">Allow more sessions</button>`) {
 		t.Errorf("the capped card's answer form =\n%s\nwant it to extend", esc)
 	}
-	if esc := escalationOf(t, body, "t-e"); !strings.Contains(esc, `<button type="submit">Answer</button>`) {
+	if esc := escalationOf(t, r, ck, "t-e"); !strings.Contains(esc, `<button type="submit">Answer</button>`) {
 		t.Errorf("the question's answer form =\n%s\nwant Answer", esc)
 	}
 	before := r.events.count()
@@ -1592,8 +1553,8 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 }
 
 // A card without an issue closes through factoryd's CloseCard alone
-// (roadmap 170), by the chat and the face's POST: one card_closed row each,
-// no Forgejo call. The face offers Close on a failed one.
+// (roadmap 170), by the chat and the close POST: one card_closed row each,
+// no Forgejo call.
 func TestCloseACardWithoutAnIssue(t *testing.T) {
 	r, g := newWritesRig(t)
 	r.tasks.mu.Lock()
@@ -1609,10 +1570,6 @@ func TestCloseACardWithoutAnIssue(t *testing.T) {
 		factoryd.Event{Repository: "sf/code", TaskID: "t-n", Kind: factoryd.EventCardClosed, Detail: map[string]any{"note": ""}})
 
 	ck, s := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-nf"); !strings.Contains(face, `hx-confirm="Close t-nf? The card ends."`) || !strings.Contains(face, `aria-label="Close t-nf"`) {
-		t.Errorf("the failed card without an issue's face =\n%s\nwant Close", face)
-	}
 	before = r.events.count()
 	rec := r.do(post("/tasks/t-nf/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the button", rec.Code, http.StatusSeeOther)
@@ -1633,8 +1590,7 @@ func TestAWaitingCardWithoutAnIssueOffersClose(t *testing.T) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-nf", Kind: "agent", Status: "failed", Repository: "sf/code", Objective: "Write it up."}})
 	r.tasks.mu.Unlock()
 	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	if esc := escalationOf(t, body, "t-nw"); strings.Contains(esc, `action="/tasks/t-nw/answer"`) || !strings.Contains(esc, `name="action" value="close"`) {
+	if esc := escalationOf(t, r, ck, "t-nw"); strings.Contains(esc, `action="/tasks/t-nw/answer"`) || !strings.Contains(esc, `name="action" value="close"`) {
 		t.Errorf("the waiting card without an issue =\n%s\nwant Close and no answer form", esc)
 	}
 	ra := newRealRunner(t, policy.AutonomyManual)

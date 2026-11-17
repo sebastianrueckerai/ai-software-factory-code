@@ -126,30 +126,15 @@ func (a HumanAsk) Event(t Task) Event {
 	return Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: a.Via, Detail: asked}
 }
 
-// Question choice values. A click routes exactly as the label's text
-// typed as an answer does today, except park and keep waiting, which
-// record the answer and leave the card waiting on its person: no comment
-// is posted for them, because a posted comment would start the attempt
-// the person declined to start.
+// Question choice values a question's buttons post: close ends the card,
+// go resumes it, and park and keep waiting record the answer and leave the
+// card waiting on its human, no comment posted, because a posted comment
+// would start the attempt the human declined to start.
 const (
-	AnswerGrant       = "grant"
 	AnswerPark        = "park"
-	AnswerFund        = "fund"
 	AnswerClose       = "close"
 	AnswerKeepWaiting = "keep_waiting"
-	// AnswerKeepChecking is the checks-wait stop's Keep waiting: it runs
-	// the wait again, where AnswerKeepWaiting only records.
-	AnswerKeepChecking = "keep_checking"
-	AnswerGo           = "go"
-	AnswerExtend       = "extend"
-	AnswerOverrule     = "overrule"
-	AnswerSuccessor    = "successor"
-	// AnswerRetry is the plan's wait choice: the retry of the failed card
-	// it waits on.
-	AnswerRetry = "retry"
-	// AnswerCloseCard is the plan's wait choice: the close of the failed
-	// card it waits on, whose end lets the plan close.
-	AnswerCloseCard = "close_card"
+	AnswerGo          = "go"
 )
 
 // The marks a stop's reason carries where it names an owner decision:
@@ -159,12 +144,6 @@ const (
 const (
 	DeadlockAskMark    = "No reply can change this"
 	reviewConcernsMark = "review: concerns"
-	// SuccessorChoice is the successor exit's label, the answer that
-	// closes the card into its successor.
-	SuccessorChoice = "Close into a successor"
-	// OverruleChoice is the review overrule exit's label, the answer that
-	// needs the human's reason.
-	OverruleChoice = "Overrule the review"
 )
 
 // HumanQuestion is the question a human card asks. Source names what

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -50,7 +49,7 @@ func TestFundOpensWhereASessionCannotStart(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	cappedCard(r, t)
 	seatAsk(r, "t-e", factoryd.CaseBudgetFloor, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.LeftEUR = 1, 0.2 }))
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body := escalationOf(t, r, ck, "t-e")
 	for _, want := range []string{`action="/tasks/t-e/resolve"`, `name="action" value="fund"`, `name="fund_eur"`, `name="note"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the card's escalation lacks %s", want)
@@ -109,8 +108,8 @@ func TestFundIsTheAnswer(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	cappedCard(r, t)
 	seatAsk(r, "t-e", factoryd.CaseBudgetFloor, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.LeftEUR = 1, 0.2 }))
-	// the note is bounded on the board as the answer box is
-	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, `name="note" rows="2" maxlength="4000" hx-preserve>`) {
+	// the note is bounded on the opened card as the answer box is
+	if body := escalationOf(t, r, ck, "t-e"); !strings.Contains(body, `name="note" rows="2" maxlength="4000" hx-preserve>`) {
 		t.Errorf("the fund note is not bounded at the answer's 4000 bytes:\n%s", body)
 	}
 	rec := r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {"funded; the fix is in store.go"}}), ck)

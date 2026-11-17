@@ -1109,29 +1109,22 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 // doAnswer answers card id with the human's words: continue, or the
 // choice its words name (doAnswerValue).
 func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (string, error) {
-	return c.doAnswerValue(ctx, a, id, text, "", "", 0)
+	return c.doAnswerValue(ctx, a, id, text, "")
 }
 
 // doAnswerValue answers card id with text. value is the clicked choice's
-// value when the answer came from a shaped question's button; a typed
-// answer's value resolves from the card's question when its words are one
-// of the question's labels. A click posts the value alone, no answer
-// field, so an empty text with a value takes the choice's own label as
-// the answer text; the empty-text refusal then applies only when neither
-// text nor value arrived. fund is the EUR the send carried beside the
-// answer, which rides its one resolution. The value maps to its action
-// (answerAction), which Act takes on the card's live case: fund raises the budget by the
-// amount its value carries, else by the shortfall its budget refusal
-// names; close ends the card (doClose); extend names its amounts on the
-// Extend form; words alone continue, and at the session cap grant one
-// session. An overrule of the review carries its reason: instruction, the
-// press's reason field, else words other than the label, else it is
-// refused; "Overrule the review: <reason>" in words is the overrule too.
-// A worded answer on a running agent card steers its session
-// (doSteer) instead of the wrongState wall, so the board form and the
-// answer tool, which both ride here, reach a session too. A human card's
-// answer acts by its choice (doHumanAnswer).
-func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, instruction string, fund float64) (string, error) {
+// value when the answer came from a question's button; typed words that
+// repeat a choice's label take that choice, and a click with no words
+// answers with the choice's label. A human card's choice goes to its work
+// and a running agent card's words steer its session (routeAnswer). On
+// another agent card close ends the card (doClose), go resumes it, park
+// and keep waiting settle the ask, the card waiting on, its choice the
+// settle's park arg; words alone continue, and at a session or agent time
+// cap grant what the cap asks for (grantOf), as continue finds no room.
+// The human's own words from the board go to the human's chat, where the
+// agent reads the card and answers with its own judgement; a console
+// without a chat posts them on the issue.
+func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value string) (string, error) {
 	text = strings.TrimSpace(text)
 	t, said, done, err := c.routeAnswer(ctx, a, id, text, value, nil)
 	if done {
@@ -1141,61 +1134,24 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, i
 	if err != nil {
 		return "", err
 	}
-	if value == "" && bt.Question != nil {
-		value = bt.Question.ChoiceValue(text)
-		// a worded overrule names the choice, then its reason after a colon
-		if label, reason, ok := strings.Cut(text, ":"); value == "" && ok && bt.Question.ChoiceValue(label) == factoryd.AnswerOverrule {
-			value, instruction = factoryd.AnswerOverrule, reason
+	if q := bt.Question; q != nil {
+		if value == "" {
+			value = q.ChoiceValue(text)
+		}
+		if text == "" && value != "" {
+			text = q.ChoiceLabel(value)
 		}
 	}
-	if value == factoryd.AnswerOverrule {
-		// the reason is the press's own field, else words beside the label
-		reason := strings.TrimSpace(instruction)
-		if reason == "" && (bt.Question == nil || bt.Question.ChoiceValue(text) == "") {
-			reason = text
-		}
-		if reason == "" {
-			return "", refuse(http.StatusBadRequest, overruleNeedsReason)
-		}
-		text = reason
-	}
-	if text == "" && value != "" && bt.Question != nil {
-		text = bt.Question.ChoiceLabel(value)
-	}
-	switch value {
-	case factoryd.AnswerGrant:
-		// a grant carries its one-line instruction, or re-offers the newest
-		// denial's note, so the session the press buys is told what the
-		// human wants, not only that they want it
-		text = c.grantText(ctx, t, text, instruction)
-	case factoryd.AnswerClose:
+	if value == factoryd.AnswerClose {
 		// words beside the label are the close's note
 		if bt.Question != nil && bt.Question.ChoiceValue(text) != "" {
 			text = ""
 		}
 		return c.doClose(ctx, a, id, text)
-	case factoryd.AnswerExtend:
-		return "", refuse(http.StatusConflict, "an extend names its amounts: use the Extend form on the card, where you give them")
-	}
-	var eur float64
-	if value == factoryd.AnswerFund || strings.HasPrefix(value, factoryd.AnswerFund+":") {
-		if eur, err = c.fundShortfall(ctx, t, bt, value); err != nil {
-			return "", err
-		}
-		if eur == 0 {
-			value = "" // no budget refusal left: the label answers as words do
-		} else if text == "" {
-			text = fmt.Sprintf("Fund %.2f EUR and go on.", eur)
-		}
 	}
 	if err := answerFits(text); err != nil {
 		return "", err
 	}
-	// the human's own words, matching none of the question's choices, are
-	// not an answer: they go to the human's chat, where the agent reads
-	// the card and answers with its own judgement. The chat tool's own
-	// answers apply as answers; only the card form's words go to the chat.
-	// A console without a chat posts the words on the card's issue instead.
 	if a.via == factoryd.ViaButton && bt.Question != nil && text != "" && value == "" && c.cfg.Chat != nil && c.cfg.Operator != nil {
 		return c.answerInChatTurn(ctx, a, t, text)
 	}
@@ -1203,13 +1159,16 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, i
 	if err != nil {
 		return "", err
 	}
-	if value == "" && (k.Kind == factoryd.CaseSessionCap || k.Kind == factoryd.CaseAgentTimeCap) {
-		value = factoryd.AnswerGrant // continue finds no room at a cap: words grant, as its form's button says
-	}
-	res := answerAction(value, text, eur, k, c.cardTime(ctx, t))
-	// the fund the send carried rides the one answer, beside its choice
-	if fund > 0 && res.Action != factoryd.ActFund {
-		res.Fund = &policy.Draw{EUR: fund}
+	res := factoryd.Resolution{Action: factoryd.ActContinue, Note: text}
+	switch value {
+	case "":
+		if args, ok := grantOf(k, c.cardTime(ctx, t)); ok && k.Kind != factoryd.CaseCheckinShare {
+			res.Action, res.Args = factoryd.ActExtend, args
+		}
+	case factoryd.AnswerGo:
+		res.Action = factoryd.ActResume
+	case factoryd.AnswerPark, factoryd.AnswerKeepWaiting:
+		res.Action, res.Args = factoryd.ActSettle, map[string]any{"park": value}
 	}
 	out, err := c.actOn(ctx, a, t, k.ID, res, c.posting(a, t, res))
 	if err != nil {
@@ -1430,74 +1389,6 @@ func typedAnswer(text, action string, args json.RawMessage, eur float64) (factor
 	return res, nil
 }
 
-// fundShortfall is what a fund choice of card t raises its budget by: the
-// amount value carries ("fund:0.73"), else the raise that lifts the
-// card's session ceiling (what it has left less the gate reserve) to the
-// need its budget refusal names; 0 when the budget refuses nothing any more.
-func (c *Console) fundShortfall(ctx context.Context, t factoryd.Task, bt factoryd.BoardTask, value string) (float64, error) {
-	if eur := fundAmountOf(value); eur > 0 {
-		return eur, nil
-	}
-	why, err := c.unfundedSession(ctx, t)
-	switch {
-	case err != nil:
-		return 0, unreadBudget()
-	case !factoryd.BudgetRefusal(why):
-		return 0, nil
-	}
-	var reserve float64
-	if c.cfg.GateReserve != nil {
-		reserve = c.cfg.GateReserve()
-	}
-	if eur := cmp.Or(factoryd.FundRaise(why, t.Left(), reserve), factoryd.FundRaise(bt.Escalation, t.Left(), reserve)); eur > 0 {
-		return eur, nil
-	}
-	return 0, refuse(http.StatusConflict, "this budget refusal names no amount: use the Fund form on the card, where you name it")
-}
-
-// overruleNeedsReason refuses an overrule of the review that carries no
-// words: its reason becomes the drop's evidence.
-const overruleNeedsReason = "An overrule of the review needs your reason: write why the review is wrong in the reason field beside Overrule the review " +
-	"(the note on a case's form, or the words after \"Overrule the review:\" in the chat), then press it again."
-
-// answerAction maps a choice value of the five-part question on case k to
-// its action, text its note: grant buys what k's stop asks for
-// (grantOf), else goes on, fund and fund:N fund eur, go resumes, close
-// and successor are their own, extend takes the Extend form's amounts,
-// keep checking (and keep waiting on a checks-wait stop) runs the stopped
-// checks wait again, park and keep waiting settle the ask — the case
-// ends and the card goes on waiting, its choice the settle's park arg,
-// overrule re-verifies with the reason as its note and a drop verdict on
-// each finding of the review (overruled), and words alone continue. agentTime is the card draw's agent time, the grant at an agent
-// time cap.
-func answerAction(value, text string, eur float64, k factoryd.Case, agentTime time.Duration) factoryd.Resolution {
-	res := factoryd.Resolution{Action: factoryd.ActContinue, Note: text}
-	switch {
-	case value == factoryd.AnswerGrant:
-		if args, ok := grantOf(k, agentTime); ok {
-			res.Action, res.Args = factoryd.ActExtend, args
-		}
-	case value == factoryd.AnswerFund || strings.HasPrefix(value, factoryd.AnswerFund+":"):
-		res.Action, res.Args = factoryd.ActFund, map[string]any{"eur": eur}
-	case value == factoryd.AnswerGo:
-		res.Action = factoryd.ActResume
-	case value == factoryd.AnswerClose, value == factoryd.AnswerSuccessor, value == factoryd.AnswerExtend:
-		res.Action = value
-	case value == factoryd.AnswerKeepChecking, value == factoryd.AnswerKeepWaiting && k.Kind == factoryd.CaseGateStop && k.Facts["gate"] == factoryd.ActivityWaitChecks:
-		res.Action = factoryd.ActWaitChecks
-	case value == factoryd.AnswerPark, value == factoryd.AnswerKeepWaiting:
-		res.Action, res.Args = factoryd.ActSettle, map[string]any{"park": value}
-	case value == factoryd.AnswerRetry:
-		// the plan's wait: the retry of the failed card its case keys
-		res.Action, res.Args = factoryd.ActRetry, map[string]any{"task_id": k.StateKey}
-	case value == factoryd.AnswerCloseCard:
-		res.Action = factoryd.ActClose
-	case value == factoryd.AnswerOverrule:
-		res.Action, res.Verdicts = factoryd.ActReverify, factoryd.Overruled(factoryd.FactsOf(k), text)
-	}
-	return res
-}
-
 // grantOf is what a grant on case k buys, the extend's args: one session
 // at a session cap or a check-in's spend stop, agentTime at an agent time
 // cap. ok is false on a stop that asked a question, where a grant goes on.
@@ -1519,39 +1410,6 @@ func (c *Console) cardTime(ctx context.Context, t factoryd.Task) time.Duration {
 		return v.EscalationOf(t.Repository).CardDrawOf(t.Size).AgentTime
 	}
 	return policy.DefaultEscalation.CardDrawOf(t.Size).AgentTime
-}
-
-// grantText is a grant press's answer: the instruction its form named, or
-// the newest denial's note when the press named none — the session the
-// press buys hears what the human wants, not only that they want it.
-func (c *Console) grantText(ctx context.Context, t factoryd.Task, label, instruction string) string {
-	head := cmp.Or(label, "Grant one session")
-	if instruction = strings.TrimSpace(instruction); instruction == "" {
-		instruction = c.denialNote(ctx, t)
-	}
-	if instruction == "" {
-		return head
-	}
-	return head + ": " + instruction
-}
-
-// denialNote is the note the newest denied approval of t carries, "" when
-// there is none.
-func (c *Console) denialNote(ctx context.Context, t factoryd.Task) string {
-	if c.cfg.Approvals == nil {
-		return ""
-	}
-	rows, err := c.cfg.Approvals.ApprovalRequests(ctx, "denied")
-	if err != nil {
-		return ""
-	}
-	var newest factoryd.ApprovalRequest
-	for _, r := range rows {
-		if r.TaskID == t.ID && r.DecisionNote != "" && (newest.DecisionNote == "" || r.CreatedAt.After(newest.CreatedAt)) {
-			newest = r
-		}
-	}
-	return newest.DecisionNote
 }
 
 // doExtend raises card id's caps on any live agent card through Act: its
@@ -2056,20 +1914,6 @@ func (c *Console) unfundedSession(ctx context.Context, t factoryd.Task) (string,
 // names the state and the fitting action instead of dying mid-request.
 func unreadBudget() error {
 	return refuse(http.StatusServiceUnavailable, "The card's budget could not be read; the answer was not posted. Try again.")
-}
-
-// fundAmountOf reads the EUR a fund choice's value carries ("fund:0.73");
-// 0 when it carries none.
-func fundAmountOf(value string) float64 {
-	s, ok := strings.CutPrefix(value, factoryd.AnswerFund+":")
-	if !ok {
-		return 0
-	}
-	eur, err := strconv.ParseFloat(s, 64)
-	if err != nil || math.IsNaN(eur) || math.IsInf(eur, 0) || !(eur > 0) {
-		return 0
-	}
-	return eur
 }
 
 // doFund raises card id's budget by eur through Act, a fund on the card's

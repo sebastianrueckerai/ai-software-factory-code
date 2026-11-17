@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +39,20 @@ func slotsNeeds(t *testing.T, r *rig, ck *http.Cookie) string {
 	return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
 }
 
+// slotOf is the plan card's opened ask on slot caseID, 0 its first.
+func slotOf(t *testing.T, r *rig, ck *http.Cookie, caseID int64) string {
+	t.Helper()
+	path := "/cards/t-plan/drawer?project=linkshort"
+	if caseID != 0 {
+		path += "&case=t-plan:" + strconv.FormatInt(caseID, 10)
+	}
+	opened := r.do(httptest.NewRequest(http.MethodGet, path, nil), ck).Body.String()
+	if strings.Contains(opened, `<article class="need" id="need-t-plan-d">`) {
+		return needOf(t, opened, "t-plan")
+	}
+	return approvalFaceOf(t, opened, "t-plan")
+}
+
 // A plan with three questions and its confirmation is one row of Needs you,
 // "1 of 4": slot 1 is question 1 with its five parts, the planner's
 // recommended choice checked and the planner as its source, and no text of
@@ -46,14 +61,16 @@ func TestAPlansQuestionsAreSlotsOfOneRow(t *testing.T) {
 	r := newRig(t)
 	slotsRig(r)
 	ck, _ := r.loggedIn(t)
-	needs := slotsNeeds(t, r, ck)
-	if n := strings.Count(needs, `class="card case"`); n != 1 || !strings.Contains(needs, `<span class="pos" aria-live="polite">1 of 4</span>`) {
-		t.Fatalf("want one row, 1 of 4 (%d rows):\n%s", n, needs)
+	row := slotsNeeds(t, r, ck)
+	if n := strings.Count(row, ` data-case="`); n != 1 || !strings.Contains(row, `<span class="pos" aria-live="polite">1 of 4</span>`) ||
+		!strings.Contains(row, `<strong class="title">How often does the checker probe a site?</strong>`) {
+		t.Fatalf("want one row, 1 of 4, asking question 1 (%d rows):\n%s", n, row)
 	}
+	needs := slotOf(t, r, ck, 0)
 	for _, want := range []string{
 		`<p class="ask">How often does the checker probe a site?</p>`,
 		`<p class="why">Plan #1, revision 2: 3 questions open;`,
-		`<p class="recommendation">Recommendation (the planner): a minute catches an outage before a user does</p>`,
+		`<p class="recommendation">Recommendation (the planner): 60 seconds: a minute catches an outage before a user does</p>`,
 		`<input type="radio" name="choice" value="2" checked> 60 seconds`,
 		`<input type="radio" name="choice" value="1"> 30 seconds`,
 		`<input type="radio" name="choice" value="3"> 5 minutes`,
@@ -64,16 +81,25 @@ func TestAPlansQuestionsAreSlotsOfOneRow(t *testing.T) {
 			t.Errorf("slot 1 lacks %q:\n%s", want, needs)
 		}
 	}
-	if strings.Count(needs, " checked>") != 1 || strings.Contains(needs, "Probe each site, then show the history.") || strings.Contains(needs, "raw text of the revision") ||
-		strings.Contains(needs, "A site owner sees an outage within a minute.") || strings.Contains(needs, "Who may add a site?") {
-		t.Errorf("slot 1 holds a second checked choice, the revision's text or another slot's question:\n%s", needs)
+	if strings.Count(needs, " checked>") != 1 {
+		t.Errorf("slot 1 holds a second checked choice:\n%s", needs)
 	}
-	next := getAs(r, ck, "/projects/linkshort/cards/t-plan/cases/501?project=linkshort", true).Body.String()
-	if !strings.Contains(next, `<p class="ask">How long are the results kept?</p>`) || !strings.Contains(next, `name="choice" value="2" checked>`) || !strings.Contains(next, "2 of 4") {
+	if strings.Contains(row, "Probe each site, then show the history.") || strings.Contains(row, "raw text of the revision") ||
+		strings.Contains(row, "A site owner sees an outage within a minute.") || strings.Contains(row, "Who may add a site?") {
+		t.Errorf("the small card holds the revision's text or another slot's question:\n%s", row)
+	}
+	if next := getAs(r, ck, "/projects/linkshort/cards/t-plan/cases/501?project=linkshort", true).Body.String(); !strings.Contains(next, `<strong class="title">How long are the results kept?</strong>`) ||
+		!strings.Contains(next, "2 of 4") {
+		t.Errorf("slot 2's small card:\n%s", next)
+	}
+	if next := slotOf(t, r, ck, 501); !strings.Contains(next, `<p class="ask">How long are the results kept?</p>`) || !strings.Contains(next, `name="choice" value="2" checked>`) {
 		t.Errorf("slot 2:\n%s", next)
 	}
-	last := getAs(r, ck, "/projects/linkshort/cards/t-plan/cases/503?project=linkshort", true).Body.String()
-	for _, want := range []string{`<p class="ask">Confirm the spec and the criteria, or request changes.</p>`, `name="decision" value="confirm"`, `name="decision" value="revise"`, "4 of 4"} {
+	if last := getAs(r, ck, "/projects/linkshort/cards/t-plan/cases/503?project=linkshort", true).Body.String(); !strings.Contains(last, "4 of 4") {
+		t.Errorf("the confirmation's small card:\n%s", last)
+	}
+	last := slotOf(t, r, ck, 503)
+	for _, want := range []string{`<p class="ask">Confirm the spec and the criteria, or request changes.</p>`, `name="decision" value="confirm"`, `name="decision" value="revise"`} {
 		if !strings.Contains(last, want) {
 			t.Errorf("the confirmation's slot lacks %q:\n%s", want, last)
 		}
@@ -124,7 +150,7 @@ func TestAQuestionWithoutARecommendationChecksNothing(t *testing.T) {
 	q.Recommended, q.Grounds = "", ""
 	delete(r.caseAsks, 500)
 	ck, _ := r.loggedIn(t)
-	needs := slotsNeeds(t, r, ck)
+	needs := slotOf(t, r, ck, 0)
 	if !strings.Contains(needs, `<p class="ask">How often does the checker probe a site?</p>`) || strings.Contains(needs, "Recommendation") || strings.Contains(needs, " checked>") ||
 		strings.Count(needs, `<input type="radio"`) != 3 {
 		t.Errorf("an unrecommended question:\n%s", needs)
@@ -141,18 +167,21 @@ func TestPlanSlotMasksModelText(t *testing.T) {
 	r.tasks.plans["t-plan"][1].Plan = []byte(`{"spec":{"outcome":"See ` + rawURL + ` and ` + bearer + `"}}`)
 	r.tasks.questions["t-plan 2"][0].Choices = []string{"use " + rawURL, bearer}
 	ck, s := r.loggedIn(t)
-	needs := slotsNeeds(t, r, ck)
-	if !strings.Contains(needs, `name="choice" value="1"> use `) {
-		t.Fatalf("the label is missing:\n%s", needs)
+	slot, face := slotOf(t, r, ck, 0), slotsNeeds(t, r, ck)
+	if !strings.Contains(slot, `name="choice" value="1"> use `) {
+		t.Fatalf("the label is missing:\n%s", slot)
 	}
-	for _, leak := range []string{"user:pass", "abc123def456", "See "} {
-		if strings.Contains(needs, leak) {
-			t.Errorf("the face holds %q:\n%s", leak, needs)
+	for _, leak := range []string{"user:pass", "abc123def456"} {
+		if strings.Contains(slot+face, leak) {
+			t.Errorf("the slot or the small card holds %q:\n%s\n%s", leak, slot, face)
 		}
 	}
+	if strings.Contains(face, "See ") {
+		t.Errorf("the small card holds the outcome:\n%s", face)
+	}
 	drawer := planDrawer(t, r, ck)
-	if !strings.Contains(drawer, "See ") || !strings.Contains(drawer, `1. How often does the checker probe a site? (use `) {
-		t.Fatalf("the drawer's masked outcome or the listed choices are missing:\n%s", drawer)
+	if !strings.Contains(drawer, "See ") || !strings.Contains(drawer, `name="choice" value="1"> use `) {
+		t.Fatalf("the drawer's masked outcome or the slot's choices are missing:\n%s", drawer)
 	}
 	for _, leak := range []string{"user:pass", "abc123def456"} {
 		if strings.Contains(drawer, leak) {
@@ -172,7 +201,7 @@ func TestPlanSlotMasksModelText(t *testing.T) {
 	}
 	// the confirmation's take-off reasons
 	r.tasks.plans["t-plan"][1].Plan = []byte(`{"takeOffMain":["k2"],"take_off_main":["k2"],"take_off_reasons":{"k2":"it fetched ` + rawURL + ` with ` + bearer + `"}}`)
-	last := getAs(r, ck, "/projects/linkshort/cards/t-plan/cases/503?project=linkshort", true).Body.String()
+	last := slotOf(t, r, ck, 503)
 	if !strings.Contains(last, "k2: it fetched") || strings.Contains(last, "user:pass") || strings.Contains(last, "abc123def456") {
 		t.Errorf("the confirmation's take-off reason:\n%s", last)
 	}
@@ -184,19 +213,18 @@ func TestSlotInputIDsDifferPerSlot(t *testing.T) {
 	r := newRig(t)
 	slotsRig(r)
 	ck, _ := r.loggedIn(t)
-	one := slotsNeeds(t, r, ck)
-	two := getAs(r, ck, "/projects/linkshort/cards/t-plan/cases/501?project=linkshort", true).Body.String()
-	for _, want := range []string{`id="own-t-plan-1"`, `id="note-t-plan-1"`} {
+	one, two := slotOf(t, r, ck, 0), slotOf(t, r, ck, 501)
+	for _, want := range []string{`id="own-t-plan-d-1"`, `id="note-t-plan-d-1"`} {
 		if !strings.Contains(one, want) {
-			t.Errorf("slot 1 lacks %s", want)
+			t.Errorf("slot 1 lacks %s:\n%s", want, one)
 		}
 	}
-	for _, want := range []string{`id="own-t-plan-2"`, `id="note-t-plan-2"`} {
+	for _, want := range []string{`id="own-t-plan-d-2"`, `id="note-t-plan-d-2"`} {
 		if !strings.Contains(two, want) {
-			t.Errorf("slot 2 lacks %s", want)
+			t.Errorf("slot 2 lacks %s:\n%s", want, two)
 		}
 	}
-	if strings.Contains(two, `id="own-t-plan-1"`) || strings.Contains(two, `id="note-t-plan-1"`) {
+	if strings.Contains(two, `id="own-t-plan-d-1"`) || strings.Contains(two, `id="note-t-plan-d-1"`) {
 		t.Errorf("slot 2 carries slot 1's ids")
 	}
 }
@@ -221,7 +249,7 @@ func TestARecommendedChoiceWithoutGroundsChecksNothing(t *testing.T) {
 	r.tasks.questions["t-plan 2"][0].Grounds = ""
 	delete(r.caseAsks, 500)
 	ck, _ := r.loggedIn(t)
-	needs := slotsNeeds(t, r, ck)
+	needs := slotOf(t, r, ck, 0)
 	if strings.Contains(needs, "Recommendation") || strings.Contains(needs, " checked>") || strings.Count(needs, `<input type="radio"`) != 3 {
 		t.Errorf("a recommendation without grounds:\n%s", needs)
 	}
@@ -232,7 +260,7 @@ func TestTheConfirmationWhyClaimsNoAnsweredQuestions(t *testing.T) {
 	r := newRig(t)
 	slotsRig(r)
 	ck, _ := r.loggedIn(t)
-	last := getAs(r, ck, "/projects/linkshort/cards/t-plan/cases/503?project=linkshort", true).Body.String()
+	last := slotOf(t, r, ck, 503)
 	if strings.Contains(last, "are answered") || !strings.Contains(last, "Confirm fixes the spec and the criteria") {
 		t.Errorf("the confirmation's why:\n%s", last)
 	}
@@ -253,12 +281,12 @@ func TestPlanFacesDecideThroughTheSharedPartial(t *testing.T) {
 	slotsRig(r)
 	ck, s := r.loggedIn(t)
 	// the answer ask, one decide block in the five-part shape
-	answer := slotsNeeds(t, r, ck)
+	answer := slotOf(t, r, ck, 0)
 	for _, want := range []string{
 		`<form method="post" action="/tasks/t-plan/plan/answer" hx-post="/tasks/t-plan/plan/answer" class="decide plan-answer" data-to="running">`,
 		`<p class="ask">How often does the checker probe a site?</p>`,
 		`<p class="why">Plan #1, revision 2: 3 questions open;`,
-		`<p class="recommendation">Recommendation (the planner): a minute catches an outage before a user does</p>`,
+		`<p class="recommendation">Recommendation (the planner): 60 seconds: a minute catches an outage before a user does</p>`,
 		`<fieldset class="choices"><legend>Answer</legend>`,
 		`<button type="submit" class="primary">Send</button>`,
 	} {
@@ -268,7 +296,7 @@ func TestPlanFacesDecideThroughTheSharedPartial(t *testing.T) {
 	}
 	// the confirm/revise ask, rendered alone, never both with the answer ask:
 	// Confirm alone carries formnovalidate, Request changes keeps the words
-	confirm := getAs(r, ck, "/projects/linkshort/cards/t-plan/cases/503?project=linkshort", true).Body.String()
+	confirm := slotOf(t, r, ck, 503)
 	for _, want := range []string{
 		`<form method="post" action="/tasks/t-plan/plan/answer" hx-post="/tasks/t-plan/plan/answer" class="decide plan-confirm" data-to="running">`,
 		`<button type="submit" name="decision" value="confirm" class="primary" formnovalidate>Confirm</button>`,

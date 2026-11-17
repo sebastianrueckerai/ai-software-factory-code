@@ -12,13 +12,13 @@
 <h2 id="human-lane">Human lane</h2>
 <div class="lane">
 <section class="column" aria-labelledby="col-approvals"><h3 id="col-approvals">Approvals <span class="count">{{len .Approvals}}</span></h3>
-<div class="cards">{{range .Approvals}}{{template "approval" .}}{{end}}</div>
+<div class="cards">{{range .Approvals}}{{template "face" .Face}}{{end}}</div>
 </section>
 <section class="column" aria-labelledby="col-escalations"><h3 id="col-escalations">Escalations <span class="count">{{len .Escalations}}</span></h3>
-<div class="cards">{{range .Escalations}}{{if .Case}}{{template "case" .}}{{else}}{{template "escalation" .}}{{end}}{{end}}</div>
+<div class="cards">{{range .Escalations}}{{template "face" .Face}}{{end}}</div>
 </section>
 <section class="column" aria-labelledby="col-human"><h3 id="col-human">Human tasks <span class="count">{{len .HumanTasks}}</span></h3>
-<div class="cards">{{range .HumanTasks}}{{template "card" .}}{{end}}</div>
+<div class="cards">{{range .HumanTasks}}{{template "face" .Face}}{{end}}</div>
 </section>
 </div>
 </section>
@@ -26,7 +26,7 @@
 <h2 id="agent-lane">Agent lane</h2>
 <div class="lane">
 {{range $i, $col := .Columns}}<section class="column" aria-labelledby="col-{{$i}}"{{with $col.Holds}} data-holds="{{.}}"{{end}}{{with $col.Finished}} data-finished="{{.}}"{{end}}><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{template "count" $col}}</span></h3>
-<div class="cards">{{range $col.Cards}}{{template "card" .}}{{end}}{{with $col.More}}{{template "more" .}}{{end}}</div>
+<div class="cards">{{range $col.Cards}}{{template "face" .Face}}{{end}}{{with $col.More}}{{template "more" .}}{{end}}</div>
 </section>
 {{end}}</div>
 </section>
@@ -35,8 +35,8 @@
 {{with $m := $col.Menu}}<details class="col-menu"><summary{{if .State}} class="on"{{end}} aria-label="Order and show, {{$col.Title}}{{with .State}}: {{.}}{{end}}" title="Order and show"></summary>
 <form method="get" action="/" class="menu-pop auto-submit" hx-get="/" hx-select="#board" hx-target="#board" hx-swap="outerHTML">{{range $.Hidden .Name .OnlyName}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<fieldset><legend>Order</legend>{{range .Orders}}<label><input type="radio" name="{{$m.Name}}" value="{{.Value}}"{{if eq .Value $m.Order}} checked{{end}}><span>{{.Label}}</span></label>{{end}}</fieldset><fieldset><legend>Show</legend>{{range .Onlys}}<label><input type="radio" name="{{$m.OnlyName}}" value="{{.Value}}"{{if eq .Value $m.Only}} checked{{end}}><span>{{.Label}}</span></label>{{end}}</fieldset><noscript><button type="submit" class="apply">Apply</button></noscript></form></details>
 {{with .State}}<p class="col-state"><span>{{.}}</span><a class="col-x" href="/{{$m.ClearQuery}}" aria-label="Back to newest first and all" title="Back to newest first and all">×</a></p>{{end}}
-{{end}}<div class="cards">{{if and $col.Total (not $col.Count)}}<p class="none-match">none match</p>{{end}}{{range $col.Needs}}{{if .Case}}{{template "case" .}}{{else if .Approval}}{{template "approval" .Approval}}{{else if .Escalated}}{{template "escalation" .}}{{else}}{{template "card" .Card}}{{end}}{{end}}
-{{range $col.Cards}}{{template "card" .}}{{end}}{{with $col.More}}{{template "more" .}}{{end}}{{range $col.Ghosts}}{{template "ghost" .}}{{end}}{{with $col.GhostsHidden}}<p class="ghosts-hidden"><a href="/{{$.AllRoutines}}">{{.}} {{if eq . 1}}routine{{else}}routines{{end}} hidden</a></p>{{end}}</div>
+{{end}}<div class="cards">{{if and $col.Total (not $col.Count)}}<p class="none-match">none match</p>{{end}}{{range $col.Needs}}{{template "face" .Face}}{{end}}
+{{range $col.Cards}}{{template "face" .Face}}{{end}}{{with $col.More}}{{template "more" .}}{{end}}{{range $col.Ghosts}}{{template "ghost" .}}{{end}}{{with $col.GhostsHidden}}<p class="ghosts-hidden"><a href="/{{$.AllRoutines}}">{{.}} {{if eq . 1}}routine{{else}}routines{{end}} hidden</a></p>{{end}}</div>
 </section>
 {{end}}</div>
 {{end}}</div>{{end}}
@@ -81,11 +81,14 @@
 
 {{define "more"}}<form class="more" method="get" action="/" hx-get="/board/finished" hx-trigger="submit, intersect once" hx-swap="outerHTML">{{template "filter" .Filter}}<input type="hidden" name="col" value="{{.Key}}"><input type="hidden" name="after" value="{{.AfterAt}}"><input type="hidden" name="after-id" value="{{.After.ID}}"><input type="hidden" name="{{.Key}}-shown" value="{{.Shown}}"><button type="submit" id="more-{{.Key}}" aria-label="Load more of {{.Title}}">Load more</button></form>{{end}}
 
-{{define "finished-page"}}{{range .Cards}}{{template "card" .}}{{end}}{{with .More}}{{template "more" .}}{{end}}{{end}}
+{{define "finished-page"}}{{range .Cards}}{{template "face" .Face}}{{end}}{{with .More}}{{template "more" .}}{{end}}{{end}}
 
 {{define "count"}}{{if ne .Total .Count}}<b>{{.Count}}</b> of {{.Total}}{{else}}{{.Count}}{{end}}{{end}}
 
 {{define "filter"}}{{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}{{end}}
+
+
+
 
 {{define "face-parts"}}{{$f := .}}<div class="parts">
 <p class="ask">{{.Ask}}</p>
@@ -95,26 +98,6 @@
 {{end}}{{end}}{{with .Info}}<div class="info">{{markup .}}</div>{{end}}
 {{with .Recommendation}}<p class="recommendation">Recommendation{{with $f.Source}} ({{.}}){{end}}: {{.}}</p>{{end}}
 </div>{{end}}
-
-{{define "escalation"}}<article class="card escalation" id="need-{{.Card.ID}}{{.Suffix}}" data-card="{{.Card.ID}}">
-{{template "card" .Card}}
-{{with .Decide}}{{template "face-parts" .}}{{template "case-decide" .}}{{else}}{{template "escalation-actions" .}}{{end}}</article>{{end}}
-
-{{define "case"}}<article class="card case" id="need-{{.Card.ID}}{{.Suffix}}" data-card="{{.Card.ID}}"{{if .Case.Placed}} data-place="case {{.Card.Place}}"{{end}} data-case="{{.Case.Case.ID}}" aria-label="Case {{.Case.At}} of {{.Case.Of}} on {{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}">
-<div class="case-head">{{if .Card.MayWriteSummary}}<a href="#card={{.Card.ID}}" class="ref open">{{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}</a>{{else}}<span class="ref">{{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}</span>{{end}}{{with .Case.Waiting}}<span class="since" title="waiting for a human">◷ {{.}}</span>{{end}}</div>
-{{if and .Card.Title (ne .Card.Title .Case.Face.Ask)}}<p class="case-title" title="{{.Card.Title}}">{{.Card.Title}}</p>
-{{end}}{{if .Card.BriefUnchecked}}<p class="chips"><span class="chip unchecked">brief not checked</span></p>
-{{end}}{{template "face-parts" .Case.Face}}
-<details class="fold" hx-get="/tasks/{{.Card.ID}}/digest" hx-trigger="toggle once" hx-target="find .sec-body"><summary>The card's life</summary><div class="sec-body"><p class="meta">Loading…</p></div></details>
-{{if .Case.Plan}}{{template "case-decide" .PlanDecide}}{{else if .Case.Approval}}{{template "approval" .Case.Approval}}{{else if .Case.Decides}}{{template "case-decide" .Decide}}{{else if .Case.Answers}}<div class="decide">{{template "escalation-actions" .}}</div>{{end}}
-{{if and .Case.Offers (not .Card.OpenCriteria)}}{{template "transitions-retry" .Card}}{{else}}{{template "transitions" .Card}}{{end}}
-{{if gt .Case.Of 1}}<div class="carousel" role="group" aria-label="The card's cases">
-{{if .Case.PrevID}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" hx-get="/projects/{{.Case.Project}}/cards/{{.Card.ID}}/cases/{{.Case.PrevID}}{{.Case.Query}}" hx-target="closest .card.case" hx-swap="outerHTML">‹</button>{{else}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" disabled>‹</button>{{end}}
-<span class="pos" aria-live="polite">{{.Case.At}} of {{.Case.Of}}</span>
-{{if .Case.NextID}}<button type="button" class="next" id="case-next-{{.Card.ID}}" aria-label="Next case" hx-get="/projects/{{.Case.Project}}/cards/{{.Card.ID}}/cases/{{.Case.NextID}}{{.Case.Query}}" hx-target="closest .card.case" hx-swap="outerHTML">›</button>{{else}}<button type="button" class="next" id="case-next-{{.Card.ID}}" aria-label="Next case" disabled>›</button>{{end}}
-</div>{{end}}
-{{range .Case.Extras}}{{template "approval" .}}
-{{end}}</article>{{end}}
 
 {{define "note-goes"}}{{if .}}posted on the issue as you{{else}}kept on the card{{end}}{{end}}
 
@@ -136,13 +119,11 @@
 <input type="number" step="0.01" min="0" id="fund-eur-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}" name="fund_eur">
 <label for="note-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}">Note, posted on the issue as you</label>
 <textarea id="note-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}" name="note" rows="2" maxlength="1000" hx-preserve></textarea>
-{{else}}{{if .Premade}}<div class="premade" role="group" aria-label="The answers the ask offers, sent as a continue">{{range .Premade}}<button type="submit" name="premade" value="{{.}}" class="primary">{{.}}</button>
-{{end}}</div>
-{{end}}{{range .Offers}}<div class="offer{{if .Recommended}} recommended{{end}}">
+{{else}}{{range .Offers}}<div class="offer{{if .Recommended}} recommended{{end}}">
 {{range .Args}}<label>{{.Label}}{{if .Options}} <select name="{{.Field}}">{{range .Options}}<option value="{{.}}">{{.}}</option>{{end}}</select>{{else if .Check}} <input type="checkbox" name="{{.Field}}" value="yes">{{else if .Number}} <input type="number" min="0" step="{{if .Float}}0.01{{else}}1{{end}}" name="{{.Field}}">{{else}} <input type="text" name="{{.Field}}" maxlength="{{maxAnswer}}">{{end}}</label>
 {{end}}<button type="submit" name="action" value="{{.Name}}" class="{{if .Recommended}}primary{{else}}secondary{{end}}"{{if .Aria}} aria-label="{{.Aria}}"{{else if .Recommended}} aria-label="{{.Label}}, recommended{{with .By}} by {{.}}{{end}}"{{end}}>{{.Label}}</button> <span class="effect">{{.Effect}}</span>{{with .By}} <span class="by">Recommended by {{.}}</span>{{end}}{{if .NoteOnStep}} <span class="by">your note stays on the step</span>{{end}}
 </div>
-{{end}}{{if or .Offers .Premade}}<label for="fund-eur-{{.TaskID}}{{.Suffix}}">Fund, EUR, beside your decision</label>
+{{end}}{{if .Offers}}<label for="fund-eur-{{.TaskID}}{{.Suffix}}">Fund, EUR, beside your decision</label>
 <input type="number" step="0.01" min="0" id="fund-eur-{{.TaskID}}{{.Suffix}}" name="fund_eur">
 <label for="note-{{.TaskID}}{{.Suffix}}">Note, {{template "note-goes" .IssueNumber}}; the actions marked "stays on the step" keep it there</label>
 <textarea id="note-{{.TaskID}}{{.Suffix}}" name="note" rows="2" maxlength="{{maxAnswer}}" hx-preserve></textarea>{{end}}
@@ -152,8 +133,8 @@
 
 {{define "escalation-actions"}}{{$cased := and .Case .Case.Decides}}
 {{if .Card.Question}}{{with .Card.Question}}
-{{if and (ne $.Card.Kind "human") (or (not $.Case) $.Suffix)}}<p class="ask">{{if $.Suffix}}{{.Ask}}{{else}}{{askline .Ask}}{{end}}</p>
-{{end}}{{if $.Suffix}}<div class="why">{{markup .Why}}</div>{{end}}
+{{if and (ne $.Card.Kind "human") (not $cased)}}<p class="ask">{{.Ask}}</p>
+<div class="why">{{markup .Why}}</div>{{end}}
 {{if not $cased}}<div class="choices" role="group" aria-label="Answer with one click">
 {{range .Choices}}{{if and (eq .Value "close") (ne $.Card.Kind "human")}}
 <form method="post" action="/tasks/{{$.Card.ID}}/close" hx-post="/tasks/{{$.Card.ID}}/close" class="inline close" data-to="{{if eq $.Card.Kind "human"}}off{{else}}closed{{end}}">
@@ -163,16 +144,14 @@
 <form method="post" action="/tasks/{{$.Card.ID}}/answer" hx-post="/tasks/{{$.Card.ID}}/answer" class="inline"{{if not $stays}} data-to="{{if $off}}off{{else}}running{{end}}"{{end}}>
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}{{if $.Case}}<input type="hidden" name="case" value="{{$.Case.Case.ID}}">{{end}}
 <input type="hidden" name="value" value="{{.Value}}">
-{{if eq .Value "grant"}}<input type="text" name="instruction" maxlength="{{maxAnswer}}" aria-label="instruction for the granted session, also the card's answer" placeholder="instruction (optional)">
-{{else if eq .Value "overrule"}}<input type="text" name="instruction" maxlength="{{maxAnswer}}" required aria-label="your reason for overruling the review, also the card's answer" placeholder="reason (required)">
-{{end}}<button type="submit"{{if eq .Value "close"}} class="deny"{{end}} aria-label="{{.Label}}{{if $kept}}, kept off the issue: the card stays waiting{{else if eq .Value "retry"}}, resets the failed rolls and closes the card{{else}}, posted on the issue as you{{end}}">{{.Label}}</button></form>
+<button type="submit"{{if eq .Value "close"}} class="deny"{{end}} aria-label="{{.Label}}{{if $kept}}, kept off the issue: the card stays waiting{{else if eq .Value "retry"}}, resets the failed rolls and closes the card{{else}}, posted on the issue as you{{end}}">{{.Label}}</button></form>
 {{end}}{{end}}</div>{{end}}
-{{if $.Suffix}}<details class="fold"><summary>What each answer does</summary>
+{{if not $cased}}<details class="fold"><summary>What each answer does</summary>
 <div class="info">{{markup .Info}}</div>
 {{if .Recommendation}}<p class="recommendation">Recommendation{{with .Source}} ({{.}}){{end}}: {{.Recommendation}}</p>{{end}}
 </details>
 {{if or .Why $.Card.Reason}}<details class="fold"><summary>The raw text, for copying</summary>{{if ne .Why $.Card.Reason}}{{with .Why}}<pre class="reason detail">{{.}}</pre>{{end}}{{end}}{{with $.Card.Reason}}<pre class="reason detail">{{.}}</pre>{{end}}</details>{{end}}
-{{end}}{{end}}{{else}}{{if .Card.Ask}}{{if .Card.Reason}}<p class="reason">{{.Card.Reason}}</p>{{end}}
+{{end}}{{end}}{{else}}{{if .Card.Ask}}{{if and .Card.Reason (not (and .Case .Case.Quotes))}}<p class="reason">{{.Card.Reason}}</p>{{end}}
 {{if and .Card.IssueNumber (not $cased)}}{{with .Card.Choices}}<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">
 {{range .}}<form method="post" action="/tasks/{{$.Card.ID}}/answer" hx-post="/tasks/{{$.Card.ID}}/answer" data-to="running">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}{{if $.Case}}<input type="hidden" name="case" value="{{$.Case.Case.ID}}">{{end}}
@@ -331,8 +310,7 @@
 
 {{with .Problem}}<p class="problem" role="alert">{{.}}</p>{{end}}
 <p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
-{{if .Confirming}}{{if not (or .IDSuffix .Asks)}}<p class="lead">Confirm fixes the spec and the criteria; Request changes sends your words back to the planner.</p>
-{{end}}{{end}}{{if or .IDSuffix .Asks}}{{with .AskDecide}}{{template "face-parts" .}}{{template "case-decide" .}}{{end}}{{end}}{{if and (or .IDSuffix .Confirming) .Holdouts}}<div class="holdouts" id="holdouts-{{.TaskID}}{{.IDSuffix}}">
+{{if or .IDSuffix .Asks}}{{with .AskDecide}}{{template "face-parts" .}}{{template "case-decide" .}}{{end}}{{end}}{{if and (or .IDSuffix .Confirming) .Holdouts}}<div class="holdouts" id="holdouts-{{.TaskID}}{{.IDSuffix}}">
 <p class="meta">A hold-out is a behaviour the plan promises to keep intact, kept out of the plan the agent sees and proved at the gate.</p>
 {{range $h := .Holdouts}}<fieldset class="question"><legend>Hold-out {{$h.Index}}</legend>
 <p class="claim">{{$h.Claim}}</p>
@@ -366,35 +344,14 @@
 </form>
 {{end}}{{end}}
 
-{{define "card"}}{{if .Final}}<article class="card face final d-{{.Status}}{{with .Accent}} edge-{{.}}{{end}}" data-card="{{.ID}}" data-place="{{.Place}}">
-<p class="line1"><span class="ref">{{if .IssueNumber}}#{{.IssueNumber}}{{else}}{{.ID}}{{end}}</span> - <strong class="title" title="{{.Title}}">{{if .MayWriteSummary}}<a href="#card={{.ID}}" class="open">{{.Title}}</a>{{else}}{{.Title}}{{end}}</strong></p>
-<div class="dmeta"><span class="st">{{if .Stage}}{{.Stage}}{{else}}<span class="g" aria-hidden="true">{{.Glyph}}</span>{{.Status}}{{end}}</span>{{if .Stage}}{{with .StageAge}}<span class="elapsed">{{.}}</span>{{end}}{{end}}{{if .Cover}}<span class="elapsed">{{.Cover}}</span>{{else}}{{with .Total}}<span class="elapsed">{{.}} in all</span>{{end}}{{end}}{{with .Children}}<span class="chip rollup">{{.}}</span>{{end}}{{if .Routine}}<span class="chip routine">↻ routine</span>{{end}}{{with .GitHubPRState}}<span class="github">GitHub: {{if $.GitHubPRURL}}<a href="{{$.GitHubPRURL}}" target="_blank" rel="noopener">PR #{{$.GitHubPR}}</a> {{end}}{{.}}</span>{{end}}{{with .Retry}}<form method="post" action="/tasks/{{$.ID}}/retry" hx-post="/tasks/{{$.ID}}/retry" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Filter}}<button type="submit" aria-label="Retry #{{$.IssueNumber}}">Retry</button></form>{{end}}{{if and .Closes .OpenCriteria}}{{template "planclose" .}}{{else if .Closes}}<form method="post" action="/tasks/{{.ID}}/close" hx-post="/tasks/{{.ID}}/close" hx-confirm="{{if .IssueNumber}}Close #{{.IssueNumber}}? Its issue closes as you, and the card ends.{{else}}Close {{.ID}}? The card ends.{{end}}" class="inline close" data-to="{{if eq .Kind "human"}}off{{else}}closed{{end}}"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<button type="submit" class="deny" aria-label="Close {{if .IssueNumber}}#{{.IssueNumber}}{{else}}{{.ID}}{{end}}">Close</button></form>{{end}}</div>
-{{if or .Task.PlanName .BriefUnchecked}}<p class="chips">{{with .Task.PlanName}}<span class="chip plan">{{if $.IssueNumber}}#{{$.IssueNumber}} · {{end}}{{.}}</span>{{end}}{{if .BriefUnchecked}} <span class="chip unchecked">brief not checked</span>{{end}}</p>
-{{end}}</article>{{else}}<article class="card face{{with .Accent}} edge-{{.}}{{end}}{{if .Stale}} stale{{end}}" data-card="{{.ID}}" data-place="{{.Place}}">
-<p class="line1"><span class="ref">{{if .IssueNumber}}#{{.IssueNumber}}{{else}}{{.ID}}{{end}}</span> - <strong class="title" title="{{.Title}}">{{if .MayWriteSummary}}<a href="#card={{.ID}}" class="open">{{.Title}}</a>{{else}}{{.Title}}{{end}}</strong></p>
-<p class="line2"><span class="pill {{.StatusClass}}">{{.Pill}}</span>{{if eq .Status "merged"}} <span class="st {{.ChainHue}}">{{if .RollID}}<a href="#card={{.RollID}}">{{.Stage}}</a>{{else if .StageURL}}<a href="{{.StageURL}}" target="_blank" rel="noopener">{{.Stage}}</a>{{else}}{{.Stage}}{{end}}</span>{{end}}{{if .Stage}}{{with .StageAge}} <span class="elapsed">{{.}}</span>{{end}}{{with .Attempt}} <span class="elapsed">attempt {{.}}</span>{{end}}{{else}}{{with .Total}} <span class="elapsed">{{.}}</span>{{end}}{{end}}{{with .Checks}} <span class="checks">{{.}} checks</span>{{end}}{{if .NearBudget}} <span class="spend near">{{eur2 .EnforcedSpent}} / {{eur2 .BudgetEUR}} ⚠ near its budget</span>{{end}}{{range .Fine}} <span class="pill fine {{.Class}}">{{.Words}}</span>{{end}}{{if and .PRURL (or .RollID .StageURL (eq .Stage "verifying") (eq .Stage "chain running") (eq .Stage "waiting for the chain") (eq .Stage "chain red") (eq .Stage "stalled") (eq .Status "closing"))}} <a href="{{.PRURL}}" target="_blank" rel="noopener" class="pr">PR #{{.PRNumber}}</a>{{end}}</p>
-{{if and .Speaks (or .Activity .StaleText)}}<p class="activity">{{if and .WaitingForActivity .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">answer on the issue</a> — {{end}}{{.Activity}}{{if and .Activity .StaleText}} — {{end}}{{.StaleText}}</p>{{end}}
-{{with .GitHubPRState}}<p class="github">GitHub: {{if $.GitHubPRURL}}<a href="{{$.GitHubPRURL}}" target="_blank" rel="noopener">PR #{{$.GitHubPR}}</a> {{end}}{{.}}</p>{{end}}
-{{if or .Blocked .Children .PlanIssue .PlanKey .Task.PlanName .Routine .WaitingOn .SlotWait .Accent .BriefUnchecked}}<p class="chips">{{if .Blocked}}<span class="chip blocked" title="{{.BlockedOn}}">blocked by {{.Blocked}}</span> {{end}}{{with .Children}}<span class="chip rollup">{{.}}</span> {{end}}{{if or .PlanIssue .PlanKey .Task.PlanName}}<span class="chip plan">{{if .PlanIssue}}from plan #{{.PlanIssue}}{{with .PlanName}} · {{.}}{{end}}{{else if .PlanName}}{{.PlanName}}{{else if .Task.PlanName}}{{if .IssueNumber}}#{{.IssueNumber}} · {{end}}{{.Task.PlanName}}{{else}}{{.PlanKey}}{{end}}</span> {{end}}{{if .Routine}}<span class="chip routine">↻ routine</span> {{end}}{{if .WaitingOn}}<span class="chip waiting">waiting on {{.WaitingOn}}</span> {{end}}{{with .SlotWait}}<span class="chip waiting">{{.}}</span> {{end}}{{with .Accent}}<span class="chip accent-{{.}}">{{.}}</span>{{end}}{{if .BriefUnchecked}} <span class="chip unchecked">brief not checked</span>{{end}}</p>{{end}}
-{{template "transitions" .}}
-</article>{{end}}{{end}}
 
-{{define "transitions-retry"}}{{with .Retry}}<div class="transitions"><form method="post" action="/tasks/{{$.ID}}/retry" hx-post="/tasks/{{$.ID}}/retry" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Filter}}<button type="submit" aria-label="Retry #{{$.IssueNumber}}">Retry</button></form></div>{{end}}{{end}}
-{{define "transitions"}}{{if or .Retry .Closes}}<div class="transitions">{{with .Retry}}<form method="post" action="/tasks/{{$.ID}}/retry" hx-post="/tasks/{{$.ID}}/retry" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Filter}}<button type="submit" aria-label="Retry #{{$.IssueNumber}}">Retry</button></form>{{end}}{{if .Closes}}{{if .OpenCriteria}}{{template "planclose" .}}{{else if .Ask}}<form method="post" action="/tasks/{{.ID}}/close" hx-post="/tasks/{{.ID}}/close" class="inline close" data-to="{{if eq .Kind "human"}}off{{else}}closed{{end}}"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<textarea name="note" rows="1" maxlength="{{maxAnswer}}" required aria-label="note, {{template "note-goes" .IssueNumber}}"></textarea><button type="submit" class="deny" aria-label="Close {{if .IssueNumber}}#{{.IssueNumber}}{{else}}{{.ID}}{{end}} with a note">Close with note</button></form>{{else}}<form method="post" action="/tasks/{{.ID}}/close" hx-post="/tasks/{{.ID}}/close" hx-confirm="{{if .IssueNumber}}Close #{{.IssueNumber}}? Its issue closes as you, and the card ends.{{else}}Close {{.ID}}? The card ends.{{end}}" class="inline close" data-to="{{if eq .Kind "human"}}off{{else}}closed{{end}}"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<button type="submit" class="deny" aria-label="Close {{if .IssueNumber}}#{{.IssueNumber}}{{else}}{{.ID}}{{end}}">Close</button></form>{{end}}{{end}}</div>{{end}}{{end}}
 
 {{define "ghost"}}<article class="card ghost{{if .Held}} held{{end}}" data-ghost="{{.Project}}/{{.Name}}">
-{{if .CSRF}}<button type="button" class="open" data-routine="{{.Project}}/{{.Name}}"><span class="ref">↻</span> <span class="ttl">{{.Title}}</span></button>{{else}}<p class="open"><span class="ref">↻</span> <span class="ttl">{{.Title}}</span></p>{{end}}
-<div class="line2 mono">{{.Words}}</div>
-<div class="line2 mono{{if .Soon}} soon{{end}}">{{.NextWords}}</div>
-{{if .Held}}<div class="line2 mono"><span class="held">{{.HeldWords}}</span></div>
-{{else if .Running}}<div class="line2 mono"><span class="run"><i class="dot" aria-hidden="true"></i>#{{.Open}} running</span></div>
-{{else if .LastWords}}<div class="line2 mono">{{.LastWords}}</div>
-{{end}}{{if .CSRF}}{{template "routine-acts" .}}
-{{end}}</article>{{end}}
+{{if .CSRF}}<button type="button" class="open" data-routine="{{.Project}}/{{.Name}}"><span class="para"><span class="glyph" aria-hidden="true">↻</span> <strong class="title">{{.Title}}</strong></span></button>{{else}}<p class="para open"><span class="glyph" aria-hidden="true">↻</span> <strong class="title">{{.Title}}</strong></p>{{end}}
+<p class="foot"><span class="it">{{.Words}}</span> <span class="it{{if .Soon}} soon{{end}}">{{.NextWords}}</span>{{if .Held}} <span class="it held">{{.HeldWords}}</span>{{else}}{{with .Last}} <span class="it{{if $.Running}} run{{end}}">{{if $.Running}}<i class="dot" aria-hidden="true"></i>{{end}}{{.}}</span>{{end}}{{end}}</p>
+</article>{{end}}
 {{define "routine-acts"}}<div class="acts"><form method="post" action="/routines/{{.Project}}/{{.Name}}/skip" hx-post="/routines/{{.Project}}/{{.Name}}/skip"{{template "routine-act-target" .}}><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "routine-act-from" .}}{{if .Skipped}}<input type="hidden" name="undo" value="1">{{end}}{{template "filter" .Filter}}{{if .Skipped}}<button type="submit" class="xs" aria-label="Undo the skip of {{.Title}}">Undo skip</button>{{else}}<button type="submit" class="xs" aria-label="Skip {{.Title}} once">Skip once</button>{{end}}</form>
 {{if or (eq .Files "human") (eq .Files "agent")}}<form method="post" action="/routines/{{.Project}}/{{.Name}}/needs-me" hx-post="/routines/{{.Project}}/{{.Name}}/needs-me"{{template "routine-act-target" .}}><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "routine-act-from" .}}{{if .Toggled}}<input type="hidden" name="undo" value="1">{{else if eq .Side "human"}}<input type="hidden" name="needs_me" value="0">{{else}}<input type="hidden" name="needs_me" value="1">{{end}}{{template "filter" .Filter}}{{if .Toggled}}<button type="submit" class="xs" aria-label="{{.Title}} follows its config">Follow the config</button>{{else if eq .Side "human"}}<button type="submit" class="xs" aria-label="{{.Title}} runs on its own">Runs on its own</button>{{else}}<button type="submit" class="xs" aria-label="{{.Title}} needs you">Needs me</button>{{end}}</form>
 {{end}}<form method="post" action="/routines/{{.Project}}/{{.Name}}/run" hx-post="/routines/{{.Project}}/{{.Name}}/run"{{template "routine-act-target" .}}><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "routine-act-from" .}}{{template "filter" .Filter}}<button type="submit" class="xs" aria-label="Run {{.Title}} now">Run now</button></form></div>{{end}}
 {{define "routine-act-from"}}{{if .Drawer}}<input type="hidden" name="from" value="drawer"><input type="hidden" name="tab" value="{{.Tab}}">{{end}}{{end}}
 {{define "routine-act-target"}}{{if .Drawer}} hx-target="#drawer" hx-swap="innerHTML"{{end}}{{end}}
-
-{{define "planclose"}}<form method="post" action="/tasks/{{.ID}}/close" hx-post="/tasks/{{.ID}}/close" class="inline close" data-to="closed"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<textarea name="note" rows="1" maxlength="{{maxWaiverNote}}" required aria-label="{{.WaiverNoteLabel}}"></textarea><button type="submit" class="deny" aria-label="Close #{{.IssueNumber}} and waive {{.OpenPhrase}} with this note">Close with note</button></form>{{end}}

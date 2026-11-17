@@ -433,8 +433,7 @@ func TestAMonthCapHumanCardClosesByItsChoice(t *testing.T) {
 		t.Fatalf("the case is %s, want the month cap kept", k.Kind)
 	}
 	ck, s := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	face := escalationOf(t, body, "t-hq")
+	face := escalationOf(t, r, ck, "t-hq")
 	if !strings.Contains(face, `name="value" value="close"`) || strings.Contains(face, `name="premade"`) {
 		t.Fatalf("the month cap card's face =\n%s\nwant its choices as value buttons, no premade continue", face)
 	}

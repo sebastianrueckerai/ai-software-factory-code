@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"html"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
@@ -299,9 +298,8 @@ func TestCaseFormFilesAsWritten(t *testing.T) {
 	fileCard, _ := factoryd.AnswerOf(factoryd.ActFileCard)
 	r.caseAsks = map[int64]factoryd.CaseAsk{1: {At: time.Now(), Detail: map[string]any{"ask": "Go on?", "story": factoryd.Story{},
 		"offers": []factoryd.AskOffer{{Value: factoryd.ActFileCard, Label: fileCard.Label, Effect: fileCard.Effect}}}}}
-	page := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	if !strings.Contains(escalationOf(t, page, "t-g"), `<input type="checkbox" name="file_card.as_written" value="yes">`) {
-		t.Fatalf("the case form offers no file as written:\n%s", escalationOf(t, page, "t-g"))
+	if !strings.Contains(escalationOf(t, r, ck, "t-g"), `<input type="checkbox" name="file_card.as_written" value="yes">`) {
+		t.Fatalf("the case form offers no file as written:\n%s", escalationOf(t, r, ck, "t-g"))
 	}
 	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "case_id": {"1"}, "action": {"file_card"},
 		"file_card.title": {liveBrief.Title}, "file_card.why": {liveBrief.Why}, "file_card.summary": {liveBrief.Summary}, "file_card.body": {"Count the refusals."}}

@@ -1,6 +1,10 @@
 package console
 
-import "github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+import (
+	"cmp"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+)
 
 // decide is the view-model the case-decide partial renders from: the parts
 // of the ask it decides — the ask with its money line, why, the story, the
@@ -11,7 +15,6 @@ import "github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd
 type decide struct {
 	Ask, Money, Why, Info, Recommendation, Source string
 	Story                                         factoryd.Story
-	Premade                                       []string
 	Offers                                        []offer
 	TaskID                                        string
 	CaseID                                        int64
@@ -56,48 +59,27 @@ func (n need) PlanDecide() *decide {
 }
 
 // Decide is the need's decide view-model: the partial case-decide renders
-// from, at the need's own suffix, nil on a need no face of its own decides.
+// from, at the need's own suffix, nil on a need that holds no case.
 func (n need) Decide() *decide {
 	if n.Case == nil {
-		return n.escalationDecide()
+		return nil
 	}
 	f := n.Case.Face
+	if ap := n.Case.Approval; ap != nil && ap.Hosted && ap.Decide != nil {
+		// the case's parts show the approval's own ask with its numbers
+		// and the why of the ask, keeping what the case itself wrote: its
+		// brief as the info, its recommendation with its writer
+		f.Ask, f.Why = ap.Decide.Ask, ap.Decide.Why
+		f.Money, f.Info = cmp.Or(f.Money, ap.Decide.Money), cmp.Or(f.Info, ap.Decide.Info)
+		if f.Recommendation == "" {
+			f.Recommendation, f.Source = ap.Decide.Recommendation, ap.Decide.Source
+		}
+	}
 	d := newDecide(n.Card.ID, n.CSRF, n.Suffix, n.Card.Filter, n.Waiting())
 	d.Ask, d.Money, d.Why, d.Info, d.Recommendation, d.Source = f.Ask, f.Money, f.Why, f.Info, f.Recommendation, f.Source
 	d.Story = f.Story
 	d.Offers = n.Case.Offers
 	d.CaseID = n.Case.Case.ID
 	d.AnswersPending, d.IssueNumber, d.IssueURL = n.Card.AnswersPending, n.Card.IssueNumber, n.Card.IssueURL
-	return d
-}
-
-// escalationDecide is the escalation face's decide view-model: the card's
-// own question in the partial's five parts, its choices the premade
-// answers, and the one form that sends the choice with its fund and note.
-// nil on a face the shared partial cannot answer: a human card's, whose
-// choices keep their own forms, and an ask without premade answers, whose
-// own words alone answer on its old form.
-func (n need) escalationDecide() *decide {
-	k := n.Card
-	if k.Kind == "human" {
-		return nil
-	}
-	d := newDecide(k.ID, n.CSRF, n.Suffix, k.Filter, n.Waiting())
-	d.AnswersPending, d.IssueNumber, d.IssueURL = k.AnswersPending, k.IssueNumber, k.IssueURL
-	if q := k.Question; q != nil {
-		d.Ask, d.Why, d.Info, d.Recommendation, d.Source = q.Ask, q.Why, q.Info, q.Recommendation, q.Source
-		for _, c := range q.Choices {
-			d.Premade = append(d.Premade, c.Label)
-		}
-		if len(d.Premade) == 0 {
-			return nil
-		}
-		return d
-	}
-	if len(k.Choices) == 0 {
-		return nil
-	}
-	d.Ask = k.Reason
-	d.Premade = k.Choices
 	return d
 }

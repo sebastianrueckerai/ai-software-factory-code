@@ -102,9 +102,9 @@ func TestProofRefusalPinsErrorAndAction(t *testing.T) {
 		r, _ := batchAnswerRig(t)
 		ck, _ := r.loggedIn(t)
 		r.c.cfg.Tasks = failingPlans{r.c.cfg.Tasks, errors.New("plan t-p's revision 1 did not answer")}
-		rec := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck)
+		rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-p/drawer?tab=overview", nil), ck)
 		if rec.Code != http.StatusOK {
-			t.Fatalf("the board = %d: %s", rec.Code, rec.Body.String())
+			t.Fatalf("the opened card = %d: %s", rec.Code, rec.Body.String())
 		}
 		want := "The plan could not be read: plan t-p&#39;s revision 1 did not answer. Open the plan&#39;s approval again, or read the plan on its issue."
 		if !strings.Contains(rec.Body.String(), want) {

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,13 +15,11 @@ import (
 )
 
 // The oversized needs-you card, held fixed at the construction point:
-// every part a merge approval's face carries is bounded where the face
-// is assembled, and the stylesheet clamps whatever a board face shows,
-// so no field or card kind can grow the column's copy again. The face
-// decides through the one partial (one-face), so it carries every part
-// of the ask — each at its first line, held under the bound — while the
-// drawer keeps the whole text (the 2026-10-17 card, reconciled to the
-// one-face plan).
+// the small card holds the register's ask and none of the parts' tails,
+// so no field or card kind can grow the column's copy again. The opened
+// card decides through the one partial (one-face), so it carries every
+// part of the ask and the whole text (the
+// 2026-10-17 card, reconciled to the one-face plan).
 func TestMergeFaceWhispers(t *testing.T) {
 	r := newRig(t)
 	pad := func(n int) string {
@@ -42,52 +39,40 @@ func TestMergeFaceWhispers(t *testing.T) {
 			`"recommendation":` + strconv.Quote(reco) + `,"why_human":["a human decides this merge. ` + deep("WHY_TAIL_MARKER") + `"]}`),
 	}}
 	ck, s := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	start := strings.Index(body, `aria-labelledby="approval-4"`)
-	if start < 0 {
-		t.Fatal("no merge approval card on the board")
+	// the small card asks the register's merge and holds no part's tail
+	small := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), "t-m")
+	for _, tail := range []string{"<form", "RECO_TAIL_MARKER", "SUMMARY_TAIL_MARKER", "FINDING_TAIL_MARKER", "WHY_TAIL_MARKER", "F4_TAIL_MARKER", "```", "pad 0"} {
+		if strings.Contains(small, tail) {
+			t.Errorf("the small card carries %s:\n%s", tail, small)
+		}
 	}
-	face := body[start : start+strings.Index(body[start:], "</article>")]
-	// the one-face contract: the face carries every part of the ask, each
-	// at its clamped first line — the ask, the why, what the call needs,
-	// the recommendation, and each offer's one line of effect
+	// the opened card's decide carries every part of the ask from its
+	// first line — the ask, the why, what the call needs, the
+	// recommendation, and each offer's one line of effect
+	face := requestOf(t, r, ck, "t-m", 4)
 	for _, want := range []string{
 		`<p class="ask">Merge PR #9 of t-m? normal risk.</p>`,
 		`<p class="why">a human decides this merge. pad 0`,
 		`<p>Model review: the change is safe. pad 0`,
-		"<p class=\"recommendation\">Recommendation (the model review): `bash check` exits 0 and one `tofu -check` block holds.</p>",
+		"<p class=\"recommendation\">Recommendation (the model review): `bash check` exits 0 and one `tofu -check` block holds.",
 		`<span class="effect">merges PR #9: factoryd merges it</span>`,
 		`<span class="effect">sends the pull request back to its agent with your note</span>`,
 	} {
 		if !strings.Contains(face, want) {
-			t.Errorf("the face decides without the part's first line %q:\n%s", want, face)
-		}
-	}
-	for _, tail := range []string{"RECO_TAIL_MARKER", "SUMMARY_TAIL_MARKER", "FINDING_TAIL_MARKER", "WHY_TAIL_MARKER", "F4_TAIL_MARKER", "```"} {
-		if strings.Contains(face, tail) {
-			t.Errorf("the face carries %s beyond its bound:\n%s", tail, face)
+			t.Errorf("the decide lacks the part's first line %q:\n%s", want, face)
 		}
 	}
 	// the one decide: one form, one send, one fund control, one note box
 	for what, want := range map[string]int{`class="decide resolve"`: 1, `action="/approvals/4/approve"`: 1,
 		`name="fund_eur"`: 1, `<textarea`: 1} {
 		if got := strings.Count(face, what); got != want {
-			t.Errorf("the face carries %s %d times, want %d:\n%s", what, got, want, face)
+			t.Errorf("the decide carries %s %d times, want %d:\n%s", what, got, want, face)
 		}
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
 	for _, whole := range []string{"RECO_TAIL_MARKER", "SUMMARY_TAIL_MARKER", "FINDING_TAIL_MARKER", "WHY_TAIL_MARKER", "F4_TAIL_MARKER"} {
 		if !strings.Contains(drawer, whole) {
 			t.Errorf("the drawer lost the whole text (%s):\n%s", whole, drawer)
-		}
-	}
-	css, err := os.ReadFile("static/console.css")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, clamp := range []string{`.cards .card :is(`, `-webkit-line-clamp`} {
-		if !strings.Contains(string(css), clamp) {
-			t.Errorf("the stylesheet lacks the face clamp %s", clamp)
 		}
 	}
 	// the one send: the answer, the fund and the note ride one POST, and

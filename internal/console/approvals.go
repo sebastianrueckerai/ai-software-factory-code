@@ -102,7 +102,10 @@ type approvalCard struct {
 	Confirming  bool   // the revision's confirmation waits; its Request changes is the card's
 	// Confirm is the waiting confirmation itself, hoisted above the card's
 	// other questions: the lead and the two forms answer it.
-	Confirm    *planQuestion
+	Confirm *planQuestion
+	// Slot is the question its small card shows, which the decide answers
+	// in its place, 0 for none
+	Slot       int
 	Escalation string // the plan task's escalation, such as its session cap
 	Problem    string // why the human's last action on the card was refused
 	// TaskStatus is its task's, where the task's card stands once the
@@ -224,8 +227,9 @@ func (q planQuestion) ChoiceWords() string {
 }
 
 // askDecide is the card's one waiting ask as the shared case-decide
-// partial renders it: the hoisted confirmation while it waits, else the
-// first unanswered question — the same ask the case face's slot decides —
+// partial renders it: the question its small card shows, else the hoisted
+// confirmation while it waits, else the first unanswered question — the
+// same ask the case face's slot decides —
 // with its five parts, one fund control, one note box and the one send
 // that applies all three. The planner's text is masked as the slot masks
 // it. nil while no ask waits.
@@ -233,7 +237,7 @@ func (k approvalCard) AskDecide() *decide {
 	d := newDecide(k.TaskID, k.CSRF, k.IDSuffix, k.Filter, "")
 	d.IssueNumber, d.IssueURL = k.Issue, k.IssueURL
 	plan := fmt.Sprintf("Plan #%d, revision %d", k.Issue, k.PlanSpec.Revision)
-	if k.Confirm != nil {
+	if k.Confirm != nil && (k.Slot == 0 || k.Slot == k.Confirm.Index) {
 		d.Ask = "Confirm the spec and the criteria, or request changes."
 		d.Why = scrubText(plan + ": Confirm fixes the spec and the criteria, Request changes sends your words to the next planner round.")
 		d.Plan = &planSlot{Revision: k.PlanSpec.Revision, Index: k.Confirm.Index, Confirm: true}
@@ -250,7 +254,7 @@ func (k approvalCard) AskDecide() *decide {
 		}
 	}
 	for _, q := range k.Questions {
-		if q.Kind == factoryd.QuestionConfirmation || q.Answered() {
+		if q.Kind == factoryd.QuestionConfirmation || q.Answered() || k.Slot != 0 && q.Index != k.Slot {
 			continue
 		}
 		d.Ask = scrubText(q.Text)
@@ -611,6 +615,10 @@ func (k *approvalCard) scrubLayers(hosts []string) {
 		row.Claim = sanitize.Outbound(scrubText(row.Claim), hosts)
 		row.Suite = sanitize.Outbound(scrubText(row.Suite), hosts)
 		k.Criteria[i] = row
+	}
+	for i := range k.Questions {
+		q := &k.Questions[i]
+		q.Text, q.Answer = sanitize.Outbound(scrubText(q.Text), hosts), sanitize.Outbound(scrubText(q.Answer), hosts)
 	}
 }
 

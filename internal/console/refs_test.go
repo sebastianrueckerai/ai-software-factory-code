@@ -59,7 +59,8 @@ func ref(n int, href string, tab bool, of string) string {
 
 // Each #N names its target: a card on the board opens its drawer, a card
 // the board does not hold too, a pull request and an issue open in
-// Forgejo, and each is followed by its title and its state in words.
+// Forgejo, and each is followed by its title and its state in words, the
+// state alone for a card without a title.
 func TestLinkRefsNamesTheTarget(t *testing.T) {
 	r, ctx, v := refsRig(t)
 	r.tasks.tasks = append(r.tasks.tasks,
@@ -67,7 +68,8 @@ func TestLinkRefsNamesTheTarget(t *testing.T) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-14", Repository: "sf/code", IssueNumber: 14, Status: "waiting-human", Objective: "Change two lines"}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-15", Repository: "sf/code", IssueNumber: 15, Status: "running", Track: policy.TrackPlan, Objective: "Plan the cache"}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-16", Repository: "sf/code", IssueNumber: 16, Status: "in-review", Objective: "Build the cache"}},
-		factoryd.BoardTask{Task: factoryd.Task{ID: "t-17", Repository: "sf/code", IssueNumber: 17, Status: "waiting-deps", Objective: "Wire the cache"}})
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-17", Repository: "sf/code", IssueNumber: 17, Status: "waiting-deps", Objective: "Wire the cache"}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-18", Repository: "sf/code", IssueNumber: 18, Status: "running"}})
 	r.fg.issueReads = map[string]map[string]any{
 		"/api/v1/repos/sf/code/issues/40": {"title": "Try the cache", "state": "closed", "pull_request": map[string]any{"merged": false}},
 		"/api/v1/repos/sf/code/issues/41": {"title": "Land the cache", "state": "closed", "pull_request": map[string]any{"merged": true}},
@@ -82,6 +84,7 @@ func TestLinkRefsNamesTheTarget(t *testing.T) {
 		{"Carries #40.", "Carries " + ref(40, pulls+"40", true, "Try the cache, closed without a merge") + "."},
 		{"#41 and #42", ref(41, pulls+"41", true, "Land the cache, merged") + " and " + ref(42, pulls+"42", true, "Grow the cache, open")},
 		{"See #7", "See " + ref(7, "https://git.example/sf/code/issues/7", true, "Fix the cache, open")},
+		{"After #18", "After " + ref(18, "#card=t-18", false, "building")},
 		{"#950 is gone & so is <b>", `#950 is gone &amp; so is &lt;b&gt;`},
 		{"Run `go test -run #12` and see:\n```\nfailed #12 & more\n```", "Run <code>go test -run #12</code> and see:\n<pre><code>\nfailed #12 &amp; more\n</code></pre>"},
 		{"The x&#12 entity and a/#12 path", `The x&amp;#12 entity and a/#12 path`},

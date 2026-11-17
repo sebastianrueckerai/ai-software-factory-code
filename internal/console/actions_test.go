@@ -2,7 +2,6 @@ package console
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -207,8 +205,8 @@ func rollFailedCard() factoryd.BoardTask {
 		Escalation: q.Ask, Question: q}
 }
 
-// The failed-roll card's three choices act from the board: the face, the
-// lanes view's escalations and the drawer offer them as buttons. "Retry the roll" runs the
+// The failed-roll card's three choices act from the board: the opened card
+// offers them as buttons. "Retry the roll" runs the
 // roller's retry as the answer's work, which closes the card; it posts no
 // comment of the human's. "Park" leaves a
 // note on the card's case and posts nothing; "Close" closes the card off
@@ -227,26 +225,13 @@ func TestRollFailedCardAnswers(t *testing.T) {
 		return r, ev, before, rec.Code, rec.Body.String()
 	}
 
-	// the face and the drawer offer the three as buttons; a press of
-	// park keeps the card where it is, retry and close take it off
+	// the opened card offers the three as buttons; a press of park keeps
+	// the card where it is, retry and close take it off
 	r, _ := newRigWithEvents(t)
 	r.tasks.tasks = []factoryd.BoardTask{rollFailedCard()}
 	ck, _ := r.loggedIn(t)
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-roll/drawer?tab=overview", nil), ck).Body.String()
-	face := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
-	lanes := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String(), "Escalations")
-	// on the face and in the lanes view, the card's own escalation article
-	// (its face's card is an article inside it)
-	need := func(page string) string {
-		at := strings.Index(page, `id="need-t-roll"`)
-		if at < 0 {
-			t.Fatalf("no escalation article of t-roll:\n%s", page)
-		}
-		end := at + strings.Index(page[at:], "</article>") + len("</article>")
-		return page[at : end+strings.Index(page[end:], "</article>")]
-	}
-	face, lanes = need(face), need(lanes)
-	for name, page := range map[string]string{"drawer": drawer, "face": face, "lanes view": lanes} {
+	for name, page := range map[string]string{"drawer": drawer} {
 		// only its choices: the question's Close alone, no free answer
 		if strings.Contains(page, `action="/tasks/t-roll/close"`) || strings.Contains(page, `name="answer"`) {
 			t.Errorf("the %s has a close form of its own or a free answer form; want the choices alone:\n%s", name, page)
@@ -512,7 +497,7 @@ func TestExtendRouteRefusesNonNumeric(t *testing.T) {
 	}
 }
 
-// The Extend form shows beside the answer box where the face offers more
+// The opened card's extend fields show where the face offers more
 // sessions, its fields naming what they raise: a review that keeps raising
 // findings offers more sessions and the overrule.
 func TestExtendFormShowsWhereTheAskOffersIt(t *testing.T) {
@@ -523,7 +508,7 @@ func TestExtendFormShowsWhereTheAskOffersIt(t *testing.T) {
 	facts["reason"] = factoryd.GateStopped + "review (attempt 2) past its bound of 30 min: review: concerns on the head a1b2c3d"
 	seatAsk(r, "t-e", factoryd.CaseGateStop, facts)
 	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body := escalationOf(t, r, ck, "t-e")
 	for _, want := range []string{`action="/tasks/t-e/resolve"`, `name="extend.minutes"`, `name="extend.sessions"`, `name="extend.lines"`, `name="fund_eur"`,
 		`name="action" value="` + factoryd.ActReverify + `/overrule"`} {
 		if !strings.Contains(body, want) {
@@ -541,8 +526,7 @@ func TestExtendFormLeadsWithMinutesAtAPlannerTimeStop(t *testing.T) {
 			Objective: "Plan the API.", BudgetEUR: 2, ModelAlias: "factory/small"})
 	seatAsk(r, "t-e", factoryd.CaseAgentTimeCap, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.AgentTimeS, f.Planner = 1, 7200, true }))
 	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	form := body
+	form := escalationOf(t, r, ck, "t-e")
 	minutes, sessions := strings.Index(form, `name="extend.minutes"`), strings.Index(form, `name="extend.sessions"`)
 	if minutes < 0 || sessions < 0 || minutes > sessions {
 		t.Fatalf("the extend form at the planner's stop leads with %q; want the minutes field before the sessions", form[:min(len(form), 300)])
@@ -646,73 +630,6 @@ func TestExtendFormShowsOnALiveCardToApprovers(t *testing.T) {
 	}
 }
 
-// A grant press carries its one-line instruction into the posted answer,
-// so the session the press buys is told what the human wants (the parked
-// spec's fix 3: grants carry instruction).
-func TestGrantCarriesItsInstruction(t *testing.T) {
-	r := fundRig(t)
-	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return "", nil }
-	_, s := r.loggedIn(t)
-	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.AnswerGrant, "land the smaller merge first", 0); err != nil {
-		t.Fatalf("grant: %v", err)
-	}
-	r.fg.mu.Lock()
-	defer r.fg.mu.Unlock()
-	if posted := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; posted != "Grant one session: land the smaller merge first" {
-		t.Errorf("posted = %q", posted)
-	}
-}
-
-// The Extend exit's bare press answers nothing: an extend names its
-// amounts, and only the form carries them. A bare press would post
-// "Extend the card" as an ordinary answer and buy the one session every
-// answer buys, without raising anything — the card would stop at the
-// same place and ask again.
-func TestExtendPressNamesTheForm(t *testing.T) {
-	r := fundRig(t)
-	r.tasks.mu.Lock()
-	for i := range r.tasks.tasks {
-		if r.tasks.tasks[i].ID == "t-e" {
-			r.tasks.tasks[i].Question = storedExits()
-		}
-	}
-	r.tasks.mu.Unlock()
-	_, s := r.loggedIn(t)
-	_, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.AnswerExtend, "", 0)
-	var no *refusal
-	if !errors.As(err, &no) || no.status != http.StatusConflict || !strings.Contains(err.Error(), "Extend form") {
-		t.Fatalf("a bare extend press = %v, want the refusal that names the form", err)
-	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 || task.Usage != (factoryd.TaskUsage{}) {
-		t.Errorf("a refused extend press moved the card: budget %v, usage %+v", task.BudgetEUR, task.Usage)
-	}
-	r.fg.mu.Lock()
-	defer r.fg.mu.Unlock()
-	if len(r.fg.comments) != 0 {
-		t.Errorf("a refused extend press posted %q", r.fg.comments)
-	}
-}
-
-// A bare grant on a card whose newest denial carries a note re-offers
-// that note as its instruction.
-func TestBareGrantReoffersTheDenialsNote(t *testing.T) {
-	r := fundRig(t)
-	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return "", nil }
-	r.approvals.mu.Lock()
-	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 7, Kind: factoryd.ApprovalMerge, TaskID: "t-e",
-		Status: "denied", DecisionNote: "split the migration first", CreatedAt: time.Now().Add(-time.Hour)})
-	r.approvals.mu.Unlock()
-	_, s := r.loggedIn(t)
-	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.AnswerGrant, "", 0); err != nil {
-		t.Fatalf("bare grant: %v", err)
-	}
-	r.fg.mu.Lock()
-	defer r.fg.mu.Unlock()
-	if posted := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; posted != "Grant one session: split the migration first" {
-		t.Errorf("posted = %q, want the denial's note re-offered", posted)
-	}
-}
-
 // The agent never approves a GitHub sync's pull request: a human approves
 // the GitHub commits it carries. At merge rule auto, in a wake and
 // unconfirmed in a human's turn alike, the agent's approval refuses before
@@ -780,28 +697,11 @@ func TestAgentCannotApproveAFactoryPullRequest(t *testing.T) {
 	})
 }
 
-// storedExits is the deadlock ask's question as an ask stored before the
-// register wrote faces holds it: the exits by their values, which the
-// console's value path still answers.
-func storedExits() *factoryd.HumanQuestion {
-	return &factoryd.HumanQuestion{Ask: "No reply can change this: the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.",
-		Choices: []factoryd.QuestionChoice{{Value: factoryd.AnswerExtend, Label: "Extend the card"}, {Value: factoryd.AnswerOverrule, Label: factoryd.OverruleChoice},
-			{Value: factoryd.AnswerClose, Label: "End the card"}, {Value: factoryd.AnswerSuccessor, Label: factoryd.SuccessorChoice}}}
-}
-
-// overruleCard seats fundRig's t-e at the deadlock ask: its question offers
-// the exits, and its live case 1 holds two review findings and a red
-// check's on head a1b2c3d.
+// overruleCard seats fundRig's t-e at the deadlock ask: its live case 1
+// holds two review findings and a red check's on head a1b2c3d.
 func overruleCard(t *testing.T) *rig {
 	t.Helper()
 	r := fundRig(t)
-	r.tasks.mu.Lock()
-	for i := range r.tasks.tasks {
-		if r.tasks.tasks[i].ID == "t-e" {
-			r.tasks.tasks[i].Question = storedExits()
-		}
-	}
-	r.tasks.mu.Unlock()
 	seatAsk(r, "t-e", factoryd.CaseFindingsRepeated, roomyFacts(func(f *factoryd.CaseFacts) {
 		f.Head, f.PR, f.PROpen, f.Checks = "a1b2c3d", 9, true, "red"
 		f.Findings, f.ReviewFindings = []string{"c1", "r1", "r2"}, []string{"r1", "r2"}
@@ -817,74 +717,6 @@ func overruleOf(reason string) factoryd.Resolution {
 	drop := factoryd.CheckVerdict{State: factoryd.CheckDropped, Evidence: "the human overruled the review: " + reason}
 	return factoryd.Resolution{Action: factoryd.ActReverify, Note: reason,
 		Verdicts: map[string]factoryd.CheckVerdict{"rename the flag": drop, "the flag lacks a test": drop}}
-}
-
-// Overrule the review on the deadlock ask re-verifies the head with a drop
-// verdict on each finding the head's newest review raised, the human's
-// reason its evidence and named as theirs, so the review on the same head
-// stands on the drop record instead of raising them again; the red check's
-// finding is no review's and keeps no verdict. The board's button carries
-// the reason in its own field.
-func TestOverruleTheReviewCarriesDropVerdicts(t *testing.T) {
-	const reason = "the flag's name is the spec's, see spec.md section 2"
-	for name, form := range map[string]url.Values{
-		"the answer's words": {"value": {factoryd.AnswerOverrule}, "answer": {reason}},
-		"the reason field":   {"value": {factoryd.AnswerOverrule}, "instruction": {reason}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			r := overruleCard(t)
-			ck, s := r.loggedIn(t)
-			form.Set("csrf", s.csrf)
-			if rec := r.do(post("/tasks/t-e/answer", form), ck); rec.Code != http.StatusSeeOther {
-				t.Fatalf("overrule = %d: %s", rec.Code, rec.Body)
-			}
-			got, _ := actedOnce(t, r)
-			if want := overruleOf(reason); got.CaseID != 1 || got.Rung != 3 || !reflect.DeepEqual(got.Res, want) {
-				t.Fatalf("Act took %+v, want %+v on case 1 by the human", got, want)
-			}
-		})
-	}
-	// a card whose ask no case decides shows the question's own buttons
-	r := overruleCard(t)
-	r.openCases = map[string][]factoryd.Case{}
-	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-e/drawer?tab=overview", nil), ck).Body.String()
-	if !strings.Contains(body, `<input type="hidden" name="value" value="overrule">
-<input type="text" name="instruction" maxlength="4000" required aria-label="your reason for overruling the review, also the card's answer" placeholder="reason (required)">`) {
-		t.Errorf("the board's overrule button has no required reason field:\n%s", body)
-	}
-}
-
-// An overrule with no words is refused before Act, naming the reason
-// field, on the board, in the inbox and on a case's form; the inbox's
-// press with its reason and the chat's "Overrule the review: <reason>"
-// take the overrule.
-func TestOverruleTheReviewNeedsItsReason(t *testing.T) {
-	const reason = "the spec names the flag"
-	r := overruleCard(t)
-	ck, s := r.loggedIn(t)
-	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerOverrule}}), ck)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "reason field") || len(r.acted) != 0 {
-		t.Fatalf("a wordless overrule = %d %q with %d Act calls; want 400 naming the reason field, none", rec.Code, rec.Body, len(r.acted))
-	}
-	a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat}
-	ask := factoryd.ChatMessage{Kind: factoryd.MessageEscalation, TaskID: "t-e", At: time.Now(), Content: "#13 needs you: No reply can change this"}
-	if _, err := r.c.resolveChoice(t.Context(), a, "t-e", "Overrule the review", "", ask); err == nil || !strings.Contains(err.Error(), "reason field") || len(r.acted) != 0 {
-		t.Fatalf("the inbox's wordless overrule = %v with %d Act calls; want the refusal naming the reason field, none", err, len(r.acted))
-	}
-	if _, err := r.c.resolveChoice(t.Context(), a, "t-e", "Overrule the review", reason, ask); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, overruleOf(reason)) {
-		t.Fatalf("the inbox's overrule took %+v, want %+v", got.Res, overruleOf(reason))
-	}
-	r.acted = nil
-	if _, err := r.c.doAnswer(t.Context(), a, "t-e", "Overrule the review: "+reason); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, overruleOf(reason)) {
-		t.Fatalf("the chat's worded overrule took %+v, want %+v", got.Res, overruleOf(reason))
-	}
 }
 
 // A case's form posts the answer its button names with the note: the
@@ -976,58 +808,18 @@ func TestTheBoardSendsEveryTickedFinding(t *testing.T) {
 	}
 }
 
-// The checks-wait stop's Keep waiting runs the wait again; the quiet
-// stop's park and keep waiting settle the ask, the choice riding as the
-// settle's park arg.
-func TestAnswerActionKeepCheckingRunsTheChecksWaitAgain(t *testing.T) {
-	for value, want := range map[string]string{
-		factoryd.AnswerKeepChecking: factoryd.ActWaitChecks,
-		factoryd.AnswerKeepWaiting:  factoryd.ActSettle,
-		factoryd.AnswerPark:         factoryd.ActSettle,
-	} {
-		res := answerAction(value, "Keep waiting", 0, factoryd.Case{}, time.Hour)
-		if res.Action != want || want == factoryd.ActSettle && res.Args["park"] != value {
-			t.Errorf("%s answers with %+v, want the settle of its park arg", value, res)
-		}
-	}
-}
-
-// A checks-wait stop opened before keep_checking existed still carries
-// keep_waiting on its button: on that stop it runs the wait again too.
-func TestAnswerActionKeepWaitingOnAChecksWaitStopRunsTheWait(t *testing.T) {
-	stop := factoryd.Case{Kind: factoryd.CaseGateStop, Facts: map[string]any{"gate": factoryd.ActivityWaitChecks}}
-	merge := factoryd.Case{Kind: factoryd.CaseGateStop, Facts: map[string]any{"gate": factoryd.ActivityMerge}}
-	for name, c := range map[string]struct {
-		k    factoryd.Case
-		want string
-	}{"checks wait": {stop, factoryd.ActWaitChecks}, "merge": {merge, factoryd.ActSettle}, "no case": {factoryd.Case{}, factoryd.ActSettle}} {
-		if got := answerAction(factoryd.AnswerKeepWaiting, "Keep waiting", 0, c.k, time.Hour).Action; got != c.want {
-			t.Errorf("%s: keep_waiting answers with %q, want %q", name, got, c.want)
-		}
-	}
-}
-
 // planWaitReason is the plan's wait on its failed card #5, as
 // planCardFailedReason writes it.
 const planWaitReason = "A dependency failed: #5 (links-api), card t-a, ended failed with no replacement, " +
 	"and this plan's close and its next round wait on it. Retry the card or close it."
 
 // planWaitCard seats plan t-p's wait on its failed card: the done plan
-// holds its dependency_failed case on t-a at the human, its question the
-// wait's own face.
+// holds its dependency_failed case on t-a at the human.
 func planWaitCard(t *testing.T) *rig {
 	t.Helper()
 	r := newRig(t)
 	r.tasks.set(planWaitReason, factoryd.Task{ID: "t-p", Kind: "agent", Status: "done", Track: policy.TrackPlan,
 		Repository: "sf/code", IssueNumber: 1, Objective: "Link shortener"})
-	r.tasks.mu.Lock()
-	for i := range r.tasks.tasks {
-		if r.tasks.tasks[i].ID == "t-p" {
-			r.tasks.tasks[i].Question = &factoryd.HumanQuestion{Ask: planWaitReason, Choices: []factoryd.QuestionChoice{
-				{Value: factoryd.AnswerRetry, Label: "Retry #5 (links-api)"}, {Value: factoryd.AnswerCloseCard, Label: "Close #5 (links-api)"}}}
-		}
-	}
-	r.tasks.mu.Unlock()
 	r.openCases = map[string][]factoryd.Case{"t-p": {{ID: 1, TaskID: "t-p", Kind: factoryd.CaseDependencyFailed, StateKey: "t-a",
 		Status: factoryd.CaseAtHuman, Facts: roomyFacts(func(f *factoryd.CaseFacts) { f.Final = "done" })}}}
 	return r
@@ -1035,8 +827,7 @@ func planWaitCard(t *testing.T) *rig {
 
 // The plan's wait on its failed card answers on its own face: its retry
 // files the replacement and its "End the failed card" closes the failed
-// card, and the inbox's press of a question stored before the register
-// answers the same on the done plan.
+// card.
 func TestThePlansWaitAnswersOnItsOwnFace(t *testing.T) {
 	press := func(t *testing.T, form url.Values) factoryd.ActInput {
 		t.Helper()
@@ -1061,21 +852,4 @@ func TestThePlansWaitAnswersOnItsOwnFace(t *testing.T) {
 		t.Fatalf("the face's close took %+v, want the failed card's close with the note", got.Res)
 	}
 
-	r := planWaitCard(t)
-	_, s := r.loggedIn(t)
-	if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", TaskID: "t-p",
-		Kind: factoryd.EventQuestionAsked, At: time.Now().Add(-time.Minute),
-		Detail: map[string]any{"question": planWaitReason, "case_id": int64(1), "case_kind": string(factoryd.CaseDependencyFailed)}}); err != nil {
-		t.Fatal(err)
-	}
-	ask := factoryd.ChatMessage{Kind: factoryd.MessageEscalation, BirthKind: factoryd.EventQuestionAsked, TaskID: "t-p",
-		At: time.Now(), Content: "#1 needs you: " + planWaitReason}
-	a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat}
-	if _, err := r.c.resolveChoice(t.Context(), a, "t-p", "Retry #5 (links-api)", "", ask); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := actedOnce(t, r)
-	if got.Res.Action != factoryd.ActRetry || got.Res.Args["task_id"] != "t-a" {
-		t.Fatalf("the inbox's Retry took %+v, want the failed card's retry", got.Res)
-	}
 }

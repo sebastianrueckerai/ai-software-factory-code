@@ -46,6 +46,12 @@ func verdictRig(r *rig) {
 		Spec: json.RawMessage(`{"revision":0,"task":"t-int"}`)})
 }
 
+// criteriaCard is the plan's criteria approval on its opened card.
+func criteriaCard(t *testing.T, r *rig, ck *http.Cookie) string {
+	t.Helper()
+	return approvalFaceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?tab=overview&project=ai-software-factory-code", nil), ck).Body.String(), "t-plan")
+}
+
 // Pieces 7 and 8: the criteria gap card opens on the first criterion
 // still to settle (c2 here) with its waiver form and the grant's
 // Approve, the carousel row beneath it; c1 and c3 page in by its arrows.
@@ -53,7 +59,7 @@ func TestCriteriaGapCardHoldsVerdictsAndForms(t *testing.T) {
 	r := newRig(t)
 	verdictRig(r)
 	ck, _ := r.loggedIn(t)
-	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+	card := criteriaCard(t, r, ck)
 	for _, want := range []string{
 		"Criteria gap",
 		"The plan's cards ran out with a criterion still unmet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason.",
@@ -114,7 +120,7 @@ func TestCriteriaCardShowsOneCriterionAtATime(t *testing.T) {
 	}})
 	r.tasks.plans["t-plan"][0].Plan = plan
 	ck, _ := r.loggedIn(t)
-	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+	card := criteriaCard(t, r, ck)
 	for _, want := range []string{
 		`<p class="meta gate-line">c1 (test): blind: go test ./... exits 0, 214 tests</p>`,
 		`<fieldset class="question"><legend>c2 (human): open</legend>`,
@@ -168,7 +174,7 @@ func TestCriteriaCardShowsTheClaimOrTheSuite(t *testing.T) {
 	}})
 	r.tasks.plans["t-plan"][0].Plan = plan
 	ck, _ := r.loggedIn(t)
-	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+	card := criteriaCard(t, r, ck)
 	// the first criterion's line is its suite; the second's claim pages in
 	if !strings.Contains(card, `<p class="meta">./...</p>`) || strings.Contains(card, `<p class="meta">a slug redirects</p>`) {
 		t.Errorf("the criteria card's first line is not the invariant's suite:\n%s", card)
@@ -186,7 +192,7 @@ func TestCriteriaCardStandsOnTheGatesRowOverTheReviews(t *testing.T) {
 	r.tasks.criteria["t-int"] = append(r.tasks.criteria["t-int"], factoryd.CriterionVerdict{Criterion: "c1", Verdict: "unmet",
 		Evidence: "criterion c1: suite ./... failed: Failed boom", Kind: factoryd.CriterionTest, Source: factoryd.CriteriaSourceGate})
 	ck, _ := r.loggedIn(t)
-	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+	card := criteriaCard(t, r, ck)
 	for _, want := range []string{
 		"<legend>c1 (test): unmet</legend>",
 		`<p class="reason">criterion c1: suite ./... failed: Failed boom</p>`,
@@ -223,7 +229,7 @@ func TestCriteriaGapWaiveAndGrant(t *testing.T) {
 	}
 	ck, s := r.loggedIn(t)
 	board := func() string {
-		return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+		return criteriaCard(t, r, ck)
 	}
 	rec := r.do(post("/approvals/30/criterion", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
 		"criterion": {"c3"}, "verb": {"waived"}, "reason": {"the timeout is the provider's SLA"}}), ck)
@@ -291,7 +297,7 @@ func TestCriteriaNeverJudgedCardOffersWaiveAndConfirm(t *testing.T) {
 		return nil
 	}
 	ck, s := r.loggedIn(t)
-	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+	card := criteriaCard(t, r, ck)
 	for _, want := range []string{
 		"Criteria never judged",
 		"No review judged these criteria, and no button here runs one: waive a criterion with your reason, or confirm the delivered cards.",
@@ -346,7 +352,7 @@ func TestCriteriaGapConfirm(t *testing.T) {
 	}
 	ck, s := r.loggedIn(t)
 	board := func() string {
-		return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+		return criteriaCard(t, r, ck)
 	}
 	if card := board(); !strings.Contains(card, `action="/approvals/30/confirm"`) ||
 		!strings.Contains(card, `aria-label="Confirm the delivered cards of t-plan"`) {
@@ -394,7 +400,7 @@ func TestCriteriaRerunDeliveredFollowsACutCardToItsSuccessor(t *testing.T) {
 	}
 	ck, s := r.loggedIn(t)
 	board := func() string {
-		return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+		return criteriaCard(t, r, ck)
 	}
 	if card := board(); !strings.Contains(card, `action="/approvals/30/confirm"`) ||
 		!strings.Contains(card, `aria-label="Confirm the delivered cards of t-plan"`) {
@@ -421,22 +427,21 @@ func TestCriteriaRerunDeliveredFollowsACutCardToItsSuccessor(t *testing.T) {
 	}
 }
 
-// Fault 9: typed text on the board is draft state — every typed field it
-// renders carries the preserve treatment the find's form already carries,
-// so one criterion's Waive does not erase its siblings' reasons — and the
-// card states its closing rule.
+// Fault 9: typed text on the opened card is draft state — every typed
+// field it renders carries the preserve treatment, so one criterion's
+// Waive does not erase its siblings' reasons — and the card states its
+// closing rule.
 func TestTheBoardKeepsTypedTextAndNamesItsClose(t *testing.T) {
 	r := newRig(t)
 	verdictRig(r)
 	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
-	card := col(t, body, "Needs you")
+	card := criteriaCard(t, r, ck)
 	if !strings.Contains(card, "Every criterion met or waived ends the request on the next sweep; no final press.") {
 		t.Errorf("the card does not state its closing rule:\n%s", card)
 	}
-	typed := regexp.MustCompile(`<input[^>]*type="text"[^>]*>|<textarea[^>]*>`).FindAllString(body, -1)
-	if len(typed) < 4 { // the find field, the deny note and the two waiver reasons
-		t.Fatalf("the board's typed fields = %v", typed)
+	typed := regexp.MustCompile(`<input[^>]*type="text"[^>]*>|<textarea[^>]*>`).FindAllString(card, -1)
+	if len(typed) != 2 { // the waiver reason of the criterion in view and the note
+		t.Fatalf("the opened card's typed fields = %v", typed)
 	}
 	for _, f := range typed {
 		// the find field rides its form's preserve; its own mark would nest
@@ -468,7 +473,7 @@ func TestTheGrantNeedsAnOpenCriterion(t *testing.T) {
 		return 0, nil
 	}
 	ck, s := r.loggedIn(t)
-	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+	card := criteriaCard(t, r, ck)
 	if strings.Contains(card, `action="/approvals/30/approve"`) {
 		t.Errorf("the grant is offered with no criterion open:\n%s", card)
 	}
@@ -841,12 +846,7 @@ func TestTheMergeCardHoldsARowPerCriterion(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	card := func(id int64) string {
 		t.Helper()
-		column := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
-		start := strings.Index(column, fmt.Sprintf(`aria-labelledby="approval-%d"`, id))
-		if start < 0 {
-			t.Fatalf("Needs you holds no approval %d:\n%s", id, column)
-		}
-		return column[start : start+strings.Index(column[start:], "</article>")]
+		return requestOf(t, r, ck, map[int64]string{31: "t-int", 32: "t-sizes"}[id], id)
 	}
 	rows := func(card string) map[string]string {
 		out := map[string]string{}

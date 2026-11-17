@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"slices"
@@ -37,6 +36,8 @@ type caseRow struct {
 	Answers bool
 	// Decides says the case's face is the table's: its stored offers, the ask's own answers and a fund and a note in one form
 	Decides bool
+	// Quotes: the face asks the agent's question, the card's raw reason
+	Quotes bool
 	// Query is the board's filter, which the arrows' reads carry
 	Query string
 	// Placed: the row is the card's place on the board, which a card swap replaces; the wide view
@@ -160,12 +161,10 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 	face := factoryd.CaseFace(shown, bt.Task, cs.desk.Asks[shown.ID])
 	var slot *planSlot
 	if planCase(shown) {
-		slot = c.planSlotOf(ctx, &face, bt, shown, cases)
+		slot = c.planSlotOf(ctx, face, shown)
 	}
 	hosts := v.policy.Document.LinkHosts
-	for _, s := range []*string{&face.Ask, &face.Money, &face.Why, &face.Story.Planned, &face.Story.Happened, &face.Story.Left, &face.Story.View, &face.Info, &face.Recommendation, &face.Source} {
-		*s = sanitize.Outbound(scrubText(*s), hosts)
-	}
+	face = v.scrubbed(face)
 	row := caseRow{Case: shown, Face: face, Since: cmp.Or(cs.faceAt(shown), since), At: at + 1, Of: len(cases), Project: v.filter.Project, Placed: !v.filter.wide(), Query: v.filter.query(),
 		Answers: cs.liveAsk[bt.ID].ID == shown.ID && shown.CommentID == bt.QuestionComment}
 	if at > 0 {
@@ -185,6 +184,7 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 	}
 	if row.Decides = row.Answers && factoryd.AnswersByOffers(shown, bt.Kind); row.Decides {
 		row.Offers = offersOf(face, shown.Kind == factoryd.CaseAgentTimeCap || factoryd.FactsOf(shown).Planner)
+		row.Quotes = strings.HasPrefix(bt.Escalation, factoryd.AgentAsks)
 	}
 	for _, a := range v.pending {
 		if a.TaskID != shown.TaskID {
@@ -203,17 +203,6 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		ap.Asks = slotless
 		if own {
 			ap.Hosted = true // its case's parts div shows the ask
-			if d := ap.Decide; d != nil {
-				// the case's parts div shows the approval's own five
-				// parts — the ask with its numbers, the why of the ask —
-				// keeping what the case itself wrote: its brief as the
-				// info, its recommendation with its writer
-				row.Face.Ask, row.Face.Why = d.Ask, d.Why
-				row.Face.Money, row.Face.Info = cmp.Or(row.Face.Money, d.Money), cmp.Or(row.Face.Info, d.Info)
-				if row.Face.Recommendation == "" {
-					row.Face.Recommendation, row.Face.Source = d.Recommendation, d.Source
-				}
-			}
 			row.Approval = &ap
 		} else {
 			row.Extras = append(row.Extras, ap)
@@ -222,30 +211,16 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 	return need{Since: since, Card: k, Escalated: true, CSRF: v.csrf, Case: &row}
 }
 
-// planSlotOf is the slot of plan case k of card bt: its face's ask and why
-// are the plan's one line, never the revision's text, and its choices are
-// the question's, the one the face recommends checked.
-// A case that names no revision and no index has no slot.
-func (c *Console) planSlotOf(ctx context.Context, face *factoryd.Face, bt factoryd.BoardTask, k factoryd.Case, cases []factoryd.Case) *planSlot {
+// planSlotOf is the form of plan case k, whose face is face: the
+// question's choices, the one the face recommends checked, or the
+// confirmation with the cards it takes off main. A case that names no
+// revision and no index has none.
+func (c *Console) planSlotOf(ctx context.Context, face factoryd.Face, k factoryd.Case) *planSlot {
 	revision, index := factInt(k, "revision"), factInt(k, "index")
 	if revision == 0 || index == 0 {
 		return nil
 	}
 	confirm := k.Kind == factoryd.CasePlanConfirmation
-	plan := fmt.Sprintf("Plan #%d, revision %d", bt.IssueNumber, revision)
-	open := 0
-	for _, o := range cases {
-		if o.Kind == factoryd.CasePlanQuestion && factInt(o, "revision") == revision {
-			open++
-		}
-	}
-	switch {
-	case confirm:
-		face.Ask = "Confirm the spec and the criteria, or request changes."
-		face.Why = plan + ": Confirm fixes the spec and the criteria, Request changes sends your words to the next planner round."
-	default:
-		face.Why = fmt.Sprintf("%s: %d %s open; the planner asks all of them in one turn, and the next revision starts once each is answered.", plan, open, plural(open, "question"))
-	}
 	slot := &planSlot{Revision: revision, Index: index, Confirm: confirm}
 	_, p, ok, err := c.planTable(ctx, k.TaskID, revision)
 	if err != nil {
@@ -352,10 +327,10 @@ func (c *Console) caseFragment(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	v.byID[bt.ID] = bt.Task
+	v.byID[bt.ID], v.cases = bt.Task, cs
 	k := c.boardCard(ctx, v, bt)
 	c.finishCards(ctx, v, func(fn func(*card)) { fn(&k) })
-	c.render(w, "case", c.caseNeed(ctx, v, button(r), bt, k, cs, caseID))
+	c.render(w, "face", c.faceOf(ctx, v, c.caseNeed(ctx, v, button(r), bt, k, cs, caseID), true))
 }
 
 // offer is one button of a case's face: an action with its effect in a

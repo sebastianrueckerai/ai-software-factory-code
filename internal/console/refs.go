@@ -124,8 +124,12 @@ func (c *Console) issueLink(i resolvedIssue, ref, repo string, n int) string {
 	default:
 		href, tab = fmt.Sprintf("%s/issues/%d", base, n), ` target="_blank" rel="noopener"`
 	}
-	return `<a class="ref-link" href="` + template.HTMLEscapeString(href) + `"` + tab + `>` + template.HTMLEscapeString(ref) + `</a> <span class="ref-of">(` +
-		template.HTMLEscapeString(i.title) + ", " + template.HTMLEscapeString(state) + ")</span>"
+	link := `<a class="ref-link" href="` + template.HTMLEscapeString(href) + `"` + tab + `>` + template.HTMLEscapeString(ref) + `</a>`
+	of := strings.Join(slices.DeleteFunc([]string{i.title, state}, func(s string) bool { return s == "" }), ", ")
+	if of == "" {
+		return link
+	}
+	return link + ` <span class="ref-of">(` + template.HTMLEscapeString(of) + ")</span>"
 }
 
 // issue is #n of r's repository: a card the board of v holds first, as

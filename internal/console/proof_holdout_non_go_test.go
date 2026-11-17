@@ -15,13 +15,14 @@ import (
 func TestProofNonGoSentencesInForm(t *testing.T) {
 	t.Run("board head checks", func(t *testing.T) {
 		r := newRig(t)
+		withRequestCards(r)
 		ck, _ := r.loggedIn(t)
 		r.approvals.rows[1].Spec = specRedChecks()
 		r.c.cfg.HTTP = &http.Client{Transport: failPath{http.DefaultTransport,
 			"commits/abc123/status", "the checks of abc123 did not answer"}}
-		rec := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck)
+		rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck)
 		if rec.Code != http.StatusOK {
-			t.Fatalf("the board = %d: %s", rec.Code, rec.Body.String())
+			t.Fatalf("the opened card = %d: %s", rec.Code, rec.Body.String())
 		}
 		body := rec.Body.String()
 		if strings.Contains(strings.ToLower(body), "factoryd log") {

@@ -1958,10 +1958,12 @@ func TestBusySceneCheckinAndChildTitles(t *testing.T) {
 			t.Errorf("child #%d's title %q, want its headline %q", tc.issue, got, tc.title)
 		}
 	}
-	// the three children in play (#606, #617, #533) wear the plan's name on the
-	// plan chip; the finished children's rows have none
-	if got := strings.Count(body, `<span class="chip plan">from plan #531 · card chips</span>`); got != 3 {
-		t.Errorf("%d chips read from plan #531 · card chips, want the 3 children in play", got)
+	// the three children in play (#606, #617, #533) name the plan as their
+	// place, a link that opens the plan's card
+	for _, issue := range []int64{606, 617, 533} {
+		if face := faceOf(t, body, labID(issue)); !strings.Contains(face, `<span class="it place"><a class="ref-link" href="#card=`+labID(531)+`">card chips</a>`) {
+			t.Errorf("child #%d does not name plan #531 as its place:\n%s", issue, face)
+		}
 	}
 	for _, key := range []string{"drawer-files", "drawer-overview", "drawer-chat", "drawer-activity"} {
 		if n := strings.Count(body, ">"+key+"</a>") + strings.Count(body, ">"+key+"</strong>"); n != 0 {

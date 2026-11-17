@@ -71,7 +71,7 @@ func planDrawer(t *testing.T, r *rig, ck *http.Cookie) string {
 	return rec.Body.String()
 }
 
-// The plan's drawer reads as the confirmation's layers: the ask's five
+// The plan's drawer with the confirmation in view reads as its layers: the ask's five
 // parts and its one decide block — Confirm and Request changes in one
 // form, one fund control, one note box, one send — then the hold-outs
 // zone beside the decision and ahead of the other questions whatever the
@@ -95,7 +95,8 @@ func TestPlanCardHoldsTheHoldoutZone(t *testing.T) {
 		Origin: factoryd.ProofOriginHoldout, Claim: "Every lock turn lands in the log", Inputs: "one turn", Expected: "one row",
 		State: factoryd.ProofStored, Path: "proofs/lock_log/lock_log_test.go", Suite: "./proofs/lock_log", Name: "TestLockLog", Code: "func TestLockLog(t *testing.T) {}"})
 	ck, _ := r.loggedIn(t)
-	card := planDrawer(t, r, ck)
+	// the confirmation's case, its second, in view
+	card := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort&case=t-plan:501", nil), ck).Body.String()
 	for _, want := range []string{
 		`<p class="ask">Confirm the spec and the criteria, or request changes.</p>`,
 		`<p class="why">Plan #1, revision 2: Confirm fixes the spec and the criteria, Request changes sends your words to the next planner round.</p>`,
@@ -152,38 +153,36 @@ func TestPlanCardHoldsTheHoldoutZone(t *testing.T) {
 	}
 }
 
-// The board face of a confirming plan holds the decision's layers beside
-// the slot's forms: the lead line, then the hold-outs zone with its clicks
-// — its Confirm waits on them, so the okay and the drop sit beside it, not
-// only in the drawer. The face holds no raw text of the revision: no
-// summary, no spec, no criteria, and the proof's code stays off it.
+// The opened card of a confirming plan holds the decision's layers beside
+// the slot's forms: the confirmation's why, then the hold-outs zone with its clicks
+// — its Confirm waits on them, so the okay and the drop sit beside it. The
+// small card holds no form and no raw text of the revision: no summary,
+// no spec, no criteria, and the proof's code stays off it.
 func TestPlanCardFaceHoldsConfirmingHoldouts(t *testing.T) {
 	r := newRig(t)
 	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation})
 	ck, _ := r.loggedIn(t)
-	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
+	card := planDrawer(t, r, ck)
 	for _, want := range []string{
-		`<p class="lead">Confirm fixes the spec and the criteria; Request changes sends your words back to the planner.</p>`,
-		`<div class="holdouts" id="holdouts-t-plan">`,
+		"Confirm fixes the spec and the criteria, Request changes sends your words to the next planner round.</p>",
+		`<div class="holdouts" id="holdouts-t-plan-d">`,
 		`<legend>Hold-out 1</legend>`,
 		`<p class="claim">The door stays shut until a key that fits turns the lock</p>`,
 		`<button type="submit" name="verb" value="okay" class="primary">Okay</button>`,
 	} {
 		if !strings.Contains(card, want) {
-			t.Errorf("the face lacks %q:\n%s", want, card)
+			t.Errorf("the opened card lacks %q:\n%s", want, card)
 		}
 	}
 	if n := strings.Count(card, `action="/tasks/t-plan/plan/holdout"`); n != 2 {
-		t.Errorf("want one hold-out form per proposed row on the face:\n%s", card)
+		t.Errorf("want one hold-out form per proposed row on the opened card:\n%s", card)
 	}
-	if n := strings.Count(card, `action="/tasks/t-plan/plan/answer"`); n != 1 {
-		t.Errorf("the face holds the confirmation's one decide form, the slot's, and the card holds none more:\n%s", card)
-	}
-	for _, raw := range []string{"The foundation lands first, with its migrations.", "On it, the links API and the acceptance tests close the round.",
+	face := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
+	for _, raw := range []string{"<form", "The foundation lands first, with its migrations.", "On it, the links API and the acceptance tests close the round.",
 		"A door opens only for a key that fits.", "key: the token that opens a door", "door_open (test)", "Still to plan",
 		"Outcome:", "Glossary:", "The whole plan is in the plan", "TestSecret"} {
-		if strings.Contains(card, raw) {
-			t.Errorf("the face holds the revision's raw %q:\n%s", raw, card)
+		if strings.Contains(face, raw) {
+			t.Errorf("the small card holds the revision's raw %q:\n%s", raw, face)
 		}
 	}
 }
@@ -449,17 +448,14 @@ func TestHoldoutInlineUpdate(t *testing.T) {
 	}
 }
 
-// The hold-outs zone carries its own anchor on every copy that holds it,
-// and the served script moves a refused confirm there: the pressed card's
+// The hold-outs zone carries its own anchor on the opened card, and the
+// served script moves a refused confirm there: the pressed card's
 // zone scrolls into view, a card the page no longer holds loads its drawer
 // first and scrolls the zone it lands on.
 func TestTheHoldoutsZoneAnchorAndItsScript(t *testing.T) {
 	r := newRig(t)
 	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation})
 	ck, _ := r.loggedIn(t)
-	if face := needsOf(t, r, ck, "/?project=linkshort"); !strings.Contains(face, `<div class="holdouts" id="holdouts-t-plan">`) {
-		t.Errorf("the face's zone lacks its anchor:\n%s", face)
-	}
 	if card := planDrawer(t, r, ck); !strings.Contains(card, `<div class="holdouts" id="holdouts-t-plan-d">`) {
 		t.Errorf("the drawer's zone lacks its anchor:\n%s", card)
 	}

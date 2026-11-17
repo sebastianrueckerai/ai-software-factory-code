@@ -1026,17 +1026,21 @@ func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 			rest = rest[i:]
 			face := rest[:strings.Index(rest, "</article>")+len("</article>")]
 			rest = rest[len(face):]
+			if !strings.Contains(face[:strings.Index(face, ">")], " data-place=") {
+				faces-- // a face the swap leaves to the board's: an approval's, or a case row of the wide view
+				continue
+			}
 			id, _, _ := strings.Cut(face[strings.Index(face, `data-card="`)+len(`data-card="`):], `"`)
 			rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+query, nil), ck)
 			if rec.Code != http.StatusOK || rec.Body.String() != face {
 				t.Errorf("board%s: the fragment of %s = %d\n%s\nwant the board's face\n%s", page, id, rec.Code, rec.Body, face)
 			}
 		}
-		// the code project: t-run, t-b, t-blk and the human task t-h; the
-		// escalated t-e is a case row, which is no face, and the wide view
-		// shows its face in its column alone; linkshort: the plan, its cards
-		// 2 to 5 and 7, the second spec and t-q
-		if want := map[string]int{"": 4, "?view=wide": 5, "?project=linkshort": 8, "?project=linkshort&view=wide": 8}[page]; faces != want {
+		// the code project: t-run, t-b, t-blk, the human task t-h and the
+		// escalated t-e's case row, which the wide view shows placed in its
+		// column alone; linkshort: the plan, its cards 2 to 5 and 7, the
+		// second spec and t-q
+		if want := map[string]int{"": 5, "?view=wide": 5, "?project=linkshort": 8, "?project=linkshort&view=wide": 8}[page]; faces != want {
 			t.Errorf("board%s shows %d faces, want %d", page, faces, want)
 		}
 	}
@@ -1795,9 +1799,9 @@ console.log(JSON.stringify(out));
 	}
 }
 
-// The board's activity line: one line of the card's newest event where one
-// exists (a task_status row in words), the escalation's question where it
-// has none but waits on an answer, and nothing at all where it has neither.
+// The small card holds no activity line: its newest event and its status
+// rows are the opened card's, and a card that waits on an answer asks its
+// question as its title in Needs you.
 func TestBoardActivityLine(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	r.projects.rows = append(r.projects.rows, factoryd.Project{Name: "code", Repository: "sf/code", MergeRule: "human",
@@ -1829,40 +1833,15 @@ func TestBoardActivityLine(t *testing.T) {
 	}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	// the escalated card's face is its column's in the wide view; the five columns show it as its case's row
-	wide := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String(), "Waiting on a human")
-	card := func(id string) string {
-		body := body
-		if id == "t-e" {
-			body = wide
-		}
-		i := strings.Index(body, `data-card="`+id+`"`)
-		if i < 0 {
-			i = strings.Index(body, `/tasks/`+id+`/timeline`)
-		}
-		if i < 0 {
-			t.Fatalf("card %s missing from the board", id)
-		}
-		start := strings.LastIndex(body[:i], "<article")
-		end := strings.Index(body[i:], "</article>")
-		return body[start : i+end]
-	}
-	if got := card("t-run"); !strings.Contains(got, `class="activity">card retried by sebastian via button at `+at.UTC().Format("15:04")+`<`) {
-		t.Errorf("the card with an event: %.400s", got)
-	}
-	if got := card("t-e"); !strings.Contains(got, `class="activity">use a replica or a shard?<`) {
-		t.Errorf("the escalated card without an event lacks its question: %.400s", got)
-	}
-	hhmm := at.UTC().Format("15:04")
-	for id, want := range map[string]string{"t-rev": "status in-review, gate checks, at " + hhmm} {
-		if got := card(id); !strings.Contains(got, `class="activity">`+want+`<`) {
-			t.Errorf("the card whose newest event is its status lacks %q: %.400s", want, got)
+	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+	for _, id := range []string{"t-run", "t-e", "t-b", "t-rev", "t-fin"} {
+		for _, page := range []string{body, wide} {
+			if face := faceOf(t, page, id); strings.Contains(face, "activity") || strings.Contains(face, "retried") || strings.Contains(face, "status in-review") {
+				t.Errorf("the small card of %s carries an activity line:\n%s", id, face)
+			}
 		}
 	}
-	if got := card("t-fin"); strings.Contains(got, `activity`) {
-		t.Errorf("a finished card claims an activity line: %.400s", got)
-	}
-	if got := card("t-b"); strings.Contains(got, `activity`) {
-		t.Errorf("a card with neither claims an activity line: %.400s", got)
+	if face := faceOf(t, body, "t-e"); !strings.Contains(face, `<strong class="title">Use a replica or a shard?</strong>`) {
+		t.Errorf("the escalated card does not ask its question in Needs you:\n%s", face)
 	}
 }

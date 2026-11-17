@@ -759,7 +759,9 @@ function showDrawer() {
   }
   var id;
   try { id = decodeURIComponent(m[1]); } catch (err) { closeDrawer(); return; }
-  var url = "/cards/" + encodeURIComponent(id) + "/drawer" + (m[2] ? "?tab=overview" : "");
+  var url = "/cards/" + encodeURIComponent(id) + "/drawer" + (m[2] ? "?tab=overview" : ""),
+    shown = casesInView().filter(function (v) { return v.indexOf(id + ":") === 0; });
+  if (shown.length) url += (m[2] ? "&" : "?") + "case=" + encodeURIComponent(shown[0]);
   // htmx wires the swapped nodes at the settle, after the swap's promise:
   // a fold opened before it fires its toggle to no listener. Only this
   // request's settle counts, not a tab's or an earlier card's.

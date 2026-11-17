@@ -95,6 +95,7 @@ func liveText(n int64) string {
 func All() []Fixture {
 	b := &builder{now: time.Now(), seq: 2200}
 	b.plan1947()
+	b.plan1990()
 	b.sources()
 	b.caseKinds()
 	b.approvals()
@@ -358,6 +359,21 @@ func (b *builder) plan1947() {
 	b.out = append(b.out, Fixture{Group: GroupCard, Kind: "plan card", Task: t, Facts: facts(t, ""), Plan: p})
 }
 
+// plan1990 is plan #1990, whose third card #2004 waits on a human for
+// money, as its face names it.
+func (b *builder) plan1990() {
+	t := b.issue(1990, "done", 3*24*time.Hour, "Fix the price, the ask and the fund guard of the budget floor",
+		"Three fixes of the money faults the floor cases showed, then their acceptance tests.")
+	t.ID, t.Track, t.PlanName, t.Author, t.PRNumber, t.MergeCommit = "t-365470f78d3b", policy.TrackPlan, "price, ask, guard fixes", "controller", 0, ""
+	p := &factoryd.Plan{Summary: "The price fix and the guard fix side by side, then their acceptance tests on the pool funding rigs.",
+		Cards: []factoryd.PlanCard{
+			{Key: "price-fix", Role: factoryd.RoleFoundation, Title: "Price a card's first session without another task's openings", Size: "small"},
+			{Key: "guard-fix", Role: factoryd.RoleFeature, Title: "Never weigh a fund press as a press that bought nothing", Size: "small"},
+			{Key: "floor-acceptance", Role: factoryd.RoleIntegration, Title: "Prove the three money fixes end to end", Size: "medium", DependsOn: []string{"price-fix", "guard-fix"}},
+		}}
+	b.out = append(b.out, Fixture{Group: GroupCard, Kind: "plan card with a card in Needs you", Task: t, Facts: facts(t, ""), Plan: p})
+}
+
 // planChild is card n of plan #1947 under key, in status, as the plan
 // files it: the card's title, then its body (CardBody), and the card's
 // why line and summary.
@@ -437,6 +453,7 @@ func (b *builder) oldCard() factoryd.Task {
 	t := b.issue(2006, "failed", 30*time.Hour, "The heal pass re-asks a card parked with no live ask",
 		"The heal pass skips a card parked with no live ask: re-ask it, so its human sees the question again.")
 	t.PRNumber, t.Size = 2041, "small"
+	t.Why, t.Summary = "A card parked with no live ask never asks its human again.", "The heal pass finds a parked card with no live ask and asks its question again."
 	return t
 }
 
@@ -459,13 +476,15 @@ var agentSources = []agentSource{
 		old := b.oldCard()
 		t := b.card(n, status, factoryd.SourceSuccessor, 3*time.Hour,
 			factoryd.SuccessorObjective(old, "\n- review: the heal pass skips a card whose ask was withdrawn", old.PRNumber, same))
-		t.Parent, t.Size = old.Parent, old.Size
+		t.Parent, t.Size, t.Why, t.Summary = old.Parent, old.Size, old.Why, old.Summary
 		return t
 	}, factoryd.BriefFacts{}},
 	{factoryd.SourceDelegate, func(b *builder, n int64, status string) factoryd.Task {
 		parent := b.parentCard()
-		t := b.card(n, status, factoryd.SourceDelegate, 3*time.Hour, "Extract the snapshot writer into internal/export/snapshot.go\n\n"+
-			factoryd.DelegationBody(parent, "Move writeSnapshot and its two helpers into their own file, unchanged, so the import card can reuse them."))
+		t := b.briefed(n, status, factoryd.SourceDelegate, 3*time.Hour, factoryd.BriefText{Title: "Extract the snapshot writer into internal/export/snapshot.go",
+			Why:     "The import card reuses the snapshot writer, so the writer moves into a file of its own.",
+			Summary: "writeSnapshot and its two helpers move into internal/export/snapshot.go unchanged.",
+			Body:    factoryd.DelegationBody(parent, "Move writeSnapshot and its two helpers into their own file, unchanged, so the import card can reuse them.")})
 		t.Parent = parent.ID
 		return t
 	}, factoryd.BriefFacts{}},
@@ -1299,7 +1318,7 @@ func (b *builder) cards() {
 		return func(n int64) factoryd.Task { return agentSources[i].card(b, n, "queued") }
 	}
 	agent("direct work card", "running", factoryd.SourceWebhook, func(n int64) factoryd.Task {
-		return b.issue(n, "running", 4*time.Hour, "Redo the census fixes on current main: PR #1909 went stale under the face work",
+		return b.issue(n, "running", 4*time.Hour, "Redo the census fixes on current main: PR #1909 went stale",
 			"PR #1909 went stale while the face work landed. Redo its census fixes on current main and open a new pull request.")
 	})
 	// #2100 as the board read it, its objective as captured, filed before
@@ -1317,7 +1336,7 @@ func (b *builder) cards() {
 	agent("retry replacement", "queued", factoryd.SourceWebhook, func(n int64) factoryd.Task {
 		old := b.oldCard()
 		t := b.card(n, "queued", old.Source, 2*time.Hour, factoryd.RetryObjective(old, failedWhy, same))
-		t.ID, t.Parent, t.PlanKey, t.Size = factoryd.RetryID(old.ID), old.Parent, old.PlanKey, old.Size
+		t.ID, t.Parent, t.PlanKey, t.Size, t.Why, t.Summary = factoryd.RetryID(old.ID), old.Parent, old.PlanKey, old.Size, old.Why, old.Summary
 		return t
 	})
 	agent("successor", "queued", factoryd.SourceSuccessor, sourced(factoryd.SourceSuccessor))

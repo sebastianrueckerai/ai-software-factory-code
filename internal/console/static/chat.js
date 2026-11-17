@@ -483,22 +483,16 @@ var chatView = (function () {
   // the inbox takes no words, so only another thread offers them below.
   // A bound ask (its proposal token set) says in words that its buttons
   // alone answer it — a typed message resolves nothing.
-  // needs_reason names the one choice (factoryd's) a press of which needs
-  // the human's reason
   function answerHTML(m, inbox) {
-    var reason = m.needs_reason ?
-      "<input type=\"text\" data-reason maxlength=\"4000\" aria-label=\"your reason for overruling the review\" placeholder=\"reason for " + esc(m.needs_reason) + " (required)\">" : "";
     return "<span class=\"answer-l\">Answer:</span>" + m.choices.map(function (c) {
       return "<button type=\"button\" data-answer=\"" + esc(c) + "\">" + esc(c) + "</button>";
-    }).join("") + reason + (inbox ? "" : m.proposal ?
+    }).join("") + (inbox ? "" : m.proposal ?
       "<span class=\"answer-or\">a bound ask: your words below deliver a message but answer nothing — this ask answers by its buttons alone</span>" :
       "<span class=\"answer-or\">or in your words below</span>");
   }
-  // answerBody is the /answer post of a press of choice on ask row m; the
-  // reason field's words go as the reason of the choice that needs one
-  function answerBody(m, choice, reason, conversation, owner) {
-    return {conversation: conversation, message: m.id, choice: choice,
-      reason: m.needs_reason && choice === m.needs_reason ? reason : "", owner: owner};
+  // answerBody is the /answer post of a press of choice on ask row m
+  function answerBody(m, choice, conversation, owner) {
+    return {conversation: conversation, message: m.id, choice: choice, owner: owner};
   }
   // levelMenuHTML is the level control's menu (C14, C32): its head, then
   // the four states with their words, the current one checked
@@ -1662,8 +1656,8 @@ var chatView = (function () {
       pressAsk(ask.id, pick, log.lastElementChild || answerRow);
       return;
     }
-    var n = open, m = pending, choice = b.dataset.answer, why = answerRow.querySelector("[data-reason]");
-    var body = answerBody(m, choice, why ? why.value : "", n, openOwner);
+    var n = open, m = pending, choice = b.dataset.answer;
+    var body = answerBody(m, choice, n, openOwner);
     sending = true;
     answerRow.querySelectorAll("button").forEach(function (x) { x.disabled = true; });
     // a canceled request lost no answer: send it again once, and only a

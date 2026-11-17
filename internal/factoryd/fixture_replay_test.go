@@ -1170,7 +1170,7 @@ var replayCoverage = map[string]string{
 	"S15": "TestCountAdmittedFreesTheApprovalAndDependencyWaits",
 	"S16": "TestBoundedStartTakesNoSlotFromAFixForwardCard",
 	"S17": "TestAPlanRowWithNoIssueAgesIntoOneQueuedOverBoundCaseThatRung2Closes",
-	"S18": "internal/console TestOverruleTheReviewCarriesDropVerdicts",
+	"S18": "internal/console TestAFacePressAnswersAsItsAnswer",
 	"S19": "TestExtendAnswersACapAlone",
 	"S20": "TestARestartedRunFormsTheDeadlockAskAtTheSecondEqualStop",
 	"S21": "TestRunSessionCheckinJudgmentGateMomentRunsOnTheChatTask",

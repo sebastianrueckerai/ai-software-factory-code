@@ -105,7 +105,8 @@ func (s *labScene) seat(fx facefixtures.Fixture) {
 
 // boardEntries are the board's own items: a card holding three cases at
 // the human, a human card with no question, a card waiting on its author,
-// the routine's card, and the status strip at each of its actions.
+// a card whose title and why line hold words longer than a line, the
+// routine's card, and the status strip at each of its actions.
 func boardEntries(all []facefixtures.Fixture) []galleryEntry {
 	fixture := func(group, kind string) facefixtures.Fixture {
 		i := slices.IndexFunc(all, func(fx facefixtures.Fixture) bool { return fx.Group == group && fx.Kind == kind })
@@ -141,6 +142,10 @@ func boardEntries(all []facefixtures.Fixture) []galleryEntry {
 			Process: "spec", Repository: facefixtures.Repository, IssueNumber: 2401, Source: factoryd.SourceWebhook, Author: "alice", CreatedAt: now.Add(-6 * time.Hour),
 			Gate: factoryd.GateIntake, GateSince: new(now.Add(-5 * time.Hour)), BudgetEUR: 2,
 			Objective: "The export drops archived cards\n\nAn export of a project with archived cards lists none of them. Expected: every card, archived ones marked."})},
+		{galleryBoard, "long words", plain(factoryd.Task{ID: facefixtures.TaskID(2402), Kind: "agent", Status: "queued", Track: policy.TrackDirect,
+			Repository: facefixtures.Repository, IssueNumber: 2402, Source: factoryd.SourceAPI, Author: "factory-chat", ChatFiled: true, CreatedAt: now.Add(-2 * time.Hour),
+			Objective: "Fix TestWallClockStopShipsTheWorkAcrossEveryRetryAndHandover\n\nThe test fails on a retry.",
+			Why:       "The page https://git.example/sf/code/wiki/Wall-clock-stops-on-the-runner-and-its-retries says why the run stops before it ships."})},
 		{galleryBoard, "routine card", func(r *rig) string {
 			s := galleryScene()
 			s.addRoutines(now, false)
@@ -379,7 +384,7 @@ func TestGalleryHoldsEveryKind(t *testing.T) {
 			need(facefixtures.GroupSource, []string{s + "/" + col})
 		}
 	}
-	need(galleryBoard, []string{"three open cases", "human card with no question", "author wait", "routine card", "status: Fund the chat", "status: Deploy now"})
+	need(galleryBoard, []string{"three open cases", "human card with no question", "author wait", "long words", "routine card", "status: Fund the chat", "status: Deploy now"})
 
 	for _, e := range entries {
 		t.Run(e.Group+"/"+e.Kind, func(t *testing.T) {

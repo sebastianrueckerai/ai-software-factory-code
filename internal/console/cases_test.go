@@ -55,24 +55,24 @@ func TestNeedsYouShowsOneRowPerCardAndACarouselForMany(t *testing.T) {
 	seatCases(r)
 	ck, _ := r.loggedIn(t)
 	needs := needsOf(t, r, ck, "/")
-	if n := strings.Count(needs, `class="card case"`); n != 2 {
+	if n := strings.Count(needs, ` data-case="`); n != 2 {
 		t.Fatalf("Needs you holds %d case rows, want one per card (2):\n%s", n, needs)
 	}
 	a, b := strings.Index(needs, `data-card="t-a"`), strings.Index(needs, `data-card="t-b"`)
 	if a < 0 || b < 0 || a > b {
-		t.Errorf("t-a (oldest case 3 h) at %d, t-b (30 min) at %d; want the oldest first", a, b)
+		t.Fatalf("t-a (oldest case 3 h) at %d, t-b (30 min) at %d; want the oldest first", a, b)
 	}
 	rowA := needs[a:b]
-	for _, want := range []string{`<p class="why">Ask three.</p>`, `<span class="pos" aria-live="polite">1 of 3</span>`, `id="case-prev-t-a" aria-label="Previous case" disabled`,
-		`id="case-next-t-a" aria-label="Next case" hx-get="/projects/` + casesProject + `/cards/t-a/cases/2?project=` + casesProject + `"`, ` data-place="case `, ` data-case="3"`} {
+	for _, want := range []string{`<span class="why">Ask three.</span>`, `<span class="pos" aria-live="polite">1 of 3</span>`, `id="ask-prev-t-a" aria-label="The ask before" disabled`,
+		`id="ask-next-t-a" aria-label="The ask after" hx-get="/projects/` + casesProject + `/cards/t-a/cases/2?project=` + casesProject + `"`, ` data-place="case `, ` data-case="3"`} {
 		if !strings.Contains(rowA, want) {
 			t.Errorf("t-a's row lacks %q:\n%s", want, rowA)
 		}
 	}
-	if strings.Count(rowA, `<p class="ask">`) != 1 || strings.Contains(rowA, "Ask one.") {
+	if strings.Count(rowA, `class="title"`) != 1 || strings.Contains(rowA, "Ask one.") {
 		t.Errorf("t-a's row shows more than its one case:\n%s", rowA)
 	}
-	if rowB := needs[b:]; !strings.Contains(rowB, `<p class="why">Ask b.</p>`) || strings.Contains(rowB, `class="carousel"`) || strings.Contains(rowB, `class="pos"`) {
+	if rowB := needs[b:]; !strings.Contains(rowB, `<span class="why">Ask b.</span>`) || strings.Contains(rowB, `class="carousel"`) || strings.Contains(rowB, `class="pos"`) {
 		t.Errorf("t-b's single case shows a count or arrows:\n%s", rowB)
 	}
 
@@ -80,9 +80,9 @@ func TestNeedsYouShowsOneRowPerCardAndACarouselForMany(t *testing.T) {
 	if next.Code != http.StatusOK {
 		t.Fatalf("case 2 = %d %s", next.Code, next.Body)
 	}
-	for _, want := range []string{`<p class="why">Ask two.</p>`, `<span class="pos" aria-live="polite">2 of 3</span>`,
-		`id="case-prev-t-a" aria-label="Previous case" hx-get="/projects/` + casesProject + `/cards/t-a/cases/3?`,
-		`id="case-next-t-a" aria-label="Next case" hx-get="/projects/` + casesProject + `/cards/t-a/cases/1?`} {
+	for _, want := range []string{`<span class="why">Ask two.</span>`, `<span class="pos" aria-live="polite">2 of 3</span>`,
+		`id="ask-prev-t-a" aria-label="The ask before" hx-get="/projects/` + casesProject + `/cards/t-a/cases/3?`,
+		`id="ask-next-t-a" aria-label="The ask after" hx-get="/projects/` + casesProject + `/cards/t-a/cases/1?`} {
 		if !strings.Contains(next.Body.String(), want) {
 			t.Errorf("case 2 lacks %q:\n%s", want, next.Body)
 		}
@@ -115,17 +115,17 @@ func TestBoardReadKeepsTheCaseInView(t *testing.T) {
 	r := newRig(t)
 	seatCases(r)
 	ck, _ := r.loggedIn(t)
-	if needs := needsOf(t, r, ck, "/?case=t-a:2&case=t-b:4"); !strings.Contains(needs, `<p class="why">Ask two.</p>`) || !strings.Contains(needs, `2 of 3`) {
+	if needs := needsOf(t, r, ck, "/?case=t-a:2&case=t-b:4"); !strings.Contains(needs, `<span class="why">Ask two.</span>`) || !strings.Contains(needs, `2 of 3`) {
 		t.Errorf("the board dropped the case in view:\n%s", needs)
 	}
-	if needs := needsOf(t, r, ck, "/?case=t-a:99"); !strings.Contains(needs, `<p class="why">Ask three.</p>`) {
+	if needs := needsOf(t, r, ck, "/?case=t-a:99"); !strings.Contains(needs, `<span class="why">Ask three.</span>`) {
 		t.Errorf("a case no longer at the human kept its place:\n%s", needs)
 	}
 	frag := getAs(r, ck, "/cards/t-a?case=t-a:1", false).Body.String()
-	if !strings.HasPrefix(frag, `<article class="card case"`) || !strings.Contains(frag, `<p class="why">Ask one.</p>`) || !strings.Contains(frag, ` data-place="case `) {
+	if !strings.HasPrefix(frag, `<article class="card face need`) || !strings.Contains(frag, `<span class="why">Ask one.</span>`) || !strings.Contains(frag, ` data-place="case `) {
 		t.Errorf("the card fragment is not the case in view with its place:\n%s", frag)
 	}
-	if wide := getAs(r, ck, "/cards/t-a?view=wide", false).Body.String(); !strings.HasPrefix(wide, `<article class="card face`) {
+	if wide := getAs(r, ck, "/cards/t-a?view=wide", false).Body.String(); !strings.HasPrefix(wide, `<article class="card face`) || strings.HasPrefix(wide, `<article class="card face need`) {
 		t.Errorf("the wide view's card fragment is not the plain face:\n%s", wide)
 	}
 }
@@ -138,25 +138,28 @@ func TestWideViewListsTheCaseRows(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	body := getAs(r, ck, "/?view=wide", false).Body.String()
 	esc := col(t, body, "Escalations")
-	if strings.Count(esc, `class="card case"`) != 2 || !strings.Contains(esc, `<p class="why">Ask three.</p>`) || strings.Contains(esc, ` data-place="`) {
+	if strings.Count(esc, `class="card face need`) != 2 || !strings.Contains(esc, `<span class="why">Ask three.</span>`) || strings.Contains(esc, ` data-place="`) {
 		t.Errorf("the wide view's Escalations are not the case rows:\n%s", esc)
 	}
-	if waiting := col(t, body, "Waiting on a human"); strings.Count(waiting, `<article class="card face`) != 2 {
+	if waiting := col(t, body, "Waiting on a human"); strings.Count(waiting, `<article class="card face`) != 2 || strings.Contains(waiting, `class="card face need`) {
 		t.Errorf("the state column lost the cards' faces:\n%s", waiting)
 	}
 }
 
-// The answer forms sit on the case that is the card's live ask, the newest
-// live case an answer ends, and nowhere else; a live ask still with the
-// ladder leaves every row without forms, and a post that names another
-// case is refused with the case in view.
+// The suggested answer's press sits on the case that is the card's live
+// ask, the newest live case an answer ends, and nowhere else; a live ask
+// still with the ladder leaves every row without one, and a post that
+// names another case is refused with the case in view.
 func TestAnswerFormsSitOnTheLiveAsksCaseOnly(t *testing.T) {
 	r := newRig(t)
 	seatCases(r)
+	suggest := map[string]any{"preselected": map[string]any{"action": factoryd.ActClose}, "recommended_by": "the project agent", "recommendation": "the work is done elsewhere"}
+	r.caseAsks = map[int64]factoryd.CaseAsk{2: {At: time.Now(), Detail: suggest}, 3: {At: time.Now(), Detail: suggest}}
+	r.openCases["t-a"][1].Facts, r.openCases["t-a"][2].Facts = roomyFacts(nil), roomyFacts(nil)
 	r.openCases["t-a"] = append(r.openCases["t-a"], factoryd.Case{ID: 9, TaskID: "t-a", Kind: factoryd.CaseOther, Status: factoryd.CaseOpen, Problem: "still with the ladder"})
 	ck, s := r.loggedIn(t)
 	if needs := needsOf(t, r, ck, "/"); strings.Contains(needs[strings.Index(needs, `data-card="t-a"`):strings.Index(needs, `data-card="t-b"`)], `action="/tasks/t-a/resolve"`) {
-		t.Errorf("a row carries answer forms while the card's live ask is open with the ladder:\n%s", needs)
+		t.Errorf("a row carries the press while the card's live ask is open with the ladder:\n%s", needs)
 	}
 	r.openCases["t-a"] = r.openCases["t-a"][:3]
 	forms := func(path string) bool {
@@ -164,13 +167,13 @@ func TestAnswerFormsSitOnTheLiveAsksCaseOnly(t *testing.T) {
 		return strings.Contains(needs[strings.Index(needs, `data-card="t-a"`):strings.Index(needs, `data-card="t-b"`)], `action="/tasks/t-a/resolve"`)
 	}
 	if !forms("/") {
-		t.Error("the newest case, the card's live ask, carries no answer form")
+		t.Error("the newest case, the card's live ask, carries no press")
 	}
 	if forms("/?case=t-a:2") {
-		t.Error("case 2 carries answer forms though case 3 is the live ask")
+		t.Error("case 2 carries the press though case 3 is the live ask")
 	}
 	if frag := getAs(r, ck, caseURL("t-a", 3), true).Body.String(); !strings.Contains(frag, `<input type="hidden" name="case_id" value="3">`) {
-		t.Errorf("the live ask's forms do not name its case:\n%s", frag)
+		t.Errorf("the live ask's press does not name its case:\n%s", frag)
 	}
 	rec := r.do(post("/tasks/t-a/answer", url.Values{"csrf": {s.csrf}, "project": {casesProject}, "answer": {"x"}, "case": {"2"}}), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Case 2 is not the card's live ask: the card's live ask is case 3") {
@@ -197,7 +200,7 @@ func TestBoardReadMakesOneCaseReadAndNoDigest(t *testing.T) {
 	cfg.CaseDesk = func(ctx context.Context, repo string) (factoryd.CaseDesk, error) { desks++; return desk(ctx, repo) }
 	cfg.CaseSteps = func(ctx context.Context, id int64) ([]factoryd.CaseStep, error) { steps++; return step(ctx, id) }
 	ck, _ := r.loggedIn(t)
-	if n := strings.Count(needsOf(t, r, ck, "/"), `class="card case"`); n != 10 {
+	if n := strings.Count(needsOf(t, r, ck, "/"), ` data-case="`); n != 10 {
 		t.Fatalf("%d rows, want 10", n)
 	}
 	if digests != 0 || desks != 1 || steps != 0 {
@@ -207,7 +210,8 @@ func TestBoardReadMakesOneCaseReadAndNoDigest(t *testing.T) {
 
 // A card is counted once: a merge card with its case reads as many need
 // you as the column holds, and a running card with a case at the human
-// shows in Needs you alone.
+// shows in Needs you alone. The merge approval's form is the opened
+// card's, once.
 func TestACardWithACaseCountsOnceAndShowsOnce(t *testing.T) {
 	r := newRig(t)
 	r.tasks.set("", factoryd.Task{ID: "t-mc", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 8, PRNumber: 10, BudgetEUR: 2},
@@ -228,53 +232,51 @@ func TestACardWithACaseCountsOnceAndShowsOnce(t *testing.T) {
 	if strings.Contains(col(t, body, "In progress"), `data-card="t-run"`) || !strings.Contains(needs, `data-card="t-run"`) {
 		t.Errorf("the running card with a case shows outside Needs you alone")
 	}
-	// the merge approval sits inside its case's slot, once, with the writer's link
-	merge, run := strings.Index(needs, `data-card="t-mc"`), strings.Index(needs, `data-card="t-run"`)
-	at := strings.Index(needs, `action="/approvals/61/approve"`)
-	if strings.Count(needs, `action="/approvals/61/approve"`) != 1 || at < merge || at > run || !strings.Contains(needs, `<a href="#card=t-mc" class="open">Merge</a>`) {
-		t.Errorf("the merge approval is not once in its case's slot, with the writer's link:\n%s", needs)
+	if strings.Count(needs, `data-card="t-mc"`) != 1 || strings.Contains(needs, `action="/approvals/61/approve"`) {
+		t.Errorf("the merge card is not one row, or its small card holds the approval's form:\n%s", needs)
+	}
+	if drawer := getAs(r, ck, "/cards/t-mc/drawer?tab=overview", false).Body.String(); strings.Count(drawer, `action="/approvals/61/approve"`) != 1 {
+		t.Errorf("the opened card does not hold the merge approval's form once:\n%s", drawer)
 	}
 }
 
-// A plan's confirmation case shows its own slot: the plan's one line and
-// Confirm with Request changes; the plan's approval card sits under the
-// carousel once and holds the decision's layers — the lead line and the
-// hold-outs the Confirm waits on, with their clicks — and no other raw
-// text of the revision: not its summary, its spec, its criteria.
+// A plan's confirmation case shows the register's ask on its small card;
+// the plan's approval card is the opened card's, once, and holds the
+// decision's layers: the confirmation's form and the hold-outs the Confirm
+// waits on, with their clicks. The small card holds no other raw text of the
+// revision: not its summary, its spec, its criteria.
 func TestAPlansCaseHoldsItsApprovalOnce(t *testing.T) {
 	r := newRig(t)
 	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation})
 	ck, _ := r.loggedIn(t)
 	needs := needsOf(t, r, ck, "/?project=linkshort")
-	if strings.Count(needs, `class="card case"`) != 1 || strings.Count(needs, `class="card approval plan"`) != 1 {
-		t.Fatalf("want one case row holding one plan card:\n%s", needs)
+	if strings.Count(needs, ` data-case="`) != 1 || strings.Contains(needs, `class="card approval plan"`) {
+		t.Fatalf("want one small card and no plan card in it:\n%s", needs)
 	}
-	if n := strings.Count(needs[strings.Index(needs, `<article class="card approval plan"`):], "</article>"); n != 2 {
-		t.Errorf("the plan card does not sit inside its case's article (%d closings after it, want 2):\n%s", n, needs)
-	}
-	for _, want := range []string{`<p class="ask">Confirm the spec and the criteria, or request changes.</p>`, `<p class="why">Plan #1, revision 2: `,
-		`<p class="lead">Confirm fixes the spec and the criteria; Request changes sends your words back to the planner.</p>`,
-		`<div class="holdouts" id="holdouts-t-plan">`,
-		`<p class="claim">The door stays shut until a key that fits turns the lock</p>`,
-		`action="/tasks/t-plan/plan/holdout"`} {
-		if !strings.Contains(needs, want) {
-			t.Errorf("the plan's case lacks %q:\n%s", want, needs)
-		}
-	}
-	if n := strings.Count(needs, `action="/tasks/t-plan/plan/answer"`); n != 1 {
-		t.Errorf("the slot holds the confirmation's one decide form and the card holds none more (%d):\n%s", n, needs)
+	if want := `<strong class="title">Confirm this plan so its cards can start?</strong> <span class="why">The plan&#39;s cards and promises are fixed only once a human confirms them.</span>`; !strings.Contains(needs, want) {
+		t.Errorf("the plan's small card lacks %s:\n%s", want, needs)
 	}
 	for _, raw := range []string{"The foundation lands first, with its migrations.", "On it, the links API and the acceptance tests close the round.",
 		"A door opens only for a key that fits.", "key: the token that opens a door", "door_open (test)", "Still to plan"} {
 		if strings.Contains(needs, raw) {
-			t.Errorf("the plan's face holds %q:\n%s", raw, needs)
+			t.Errorf("the plan's small card holds %q:\n%s", raw, needs)
+		}
+	}
+	drawer := getAs(r, ck, "/cards/t-plan/drawer?tab=overview", false).Body.String()
+	if strings.Count(drawer, `class="card approval plan"`) != 1 {
+		t.Fatalf("the opened card does not hold the plan card once:\n%s", drawer)
+	}
+	for _, want := range []string{`action="/tasks/t-plan/plan/answer"`, `<p class="claim">The door stays shut until a key that fits turns the lock</p>`,
+		`action="/tasks/t-plan/plan/holdout"`} {
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the opened card lacks %q:\n%s", want, drawer)
 		}
 	}
 }
 
 // Every text the face reads is scrubbed: URL userinfo and a bearer value
 // come out masked in the writer's story, the recommendation the ask
-// carries and the ask's info.
+// carries and the ask's info, which the opened card shows.
 func TestCaseFaceMasksEveryTextItReads(t *testing.T) {
 	const url, bearer = "https://user:pass@git.example/x", "Authorization: Bearer abc123def456ghi789jkl012mno345"
 	r := newRig(t)
@@ -285,34 +287,33 @@ func TestCaseFaceMasksEveryTextItReads(t *testing.T) {
 		"recommendation": "close: the fetch of " + url + " sent " + bearer, "recommended_by": "the factory agent",
 		"preselected": map[string]any{"action": "close"}}}}
 	ck, _ := r.loggedIn(t)
-	needs := needsOf(t, r, ck, "/")
+	drawer := getAs(r, ck, "/cards/t-a/drawer?tab=overview", false).Body.String()
 	for _, want := range []string{"It failed pulling", "close: the fetch of", "The log says"} {
-		if !strings.Contains(needs, want) {
-			t.Fatalf("the face lacks %q:\n%s", want, needs)
+		if !strings.Contains(drawer, want) {
+			t.Fatalf("the opened card lacks %q:\n%s", want, drawer)
 		}
 	}
 	for _, leak := range []string{"user:pass", "abc123def456"} {
-		if strings.Contains(needs, leak) {
-			t.Errorf("the face holds %q:\n%s", leak, needs)
+		if strings.Contains(drawer, leak) || strings.Contains(needsOf(t, r, ck, "/"), leak) {
+			t.Errorf("a face holds %q:\n%s", leak, drawer)
 		}
 	}
 }
 
-// The face's info is the ask's, and the card's life loads on demand behind
-// a fold.
+// The face's info is the ask's, which the opened card shows; the small
+// card shows the row's one waiting time in its band and names no last
+// answer.
 func TestCaseFaceInfoIsTheAsksAndTheLifeLoadsOnDemand(t *testing.T) {
 	r := newRig(t)
 	seatCases(r)
 	r.caseAsks = map[int64]factoryd.CaseAsk{3: {At: time.Now().Add(-time.Hour), Detail: map[string]any{"info": "Postgres is shared."}}}
 	ck, _ := r.loggedIn(t)
 	needs := needsOf(t, r, ck, "/")
-	for _, want := range []string{"Postgres is shared.", `<details class="fold" hx-get="/tasks/t-a/digest" hx-trigger="toggle once"`, "◷ 1 h 0 min"} {
-		if !strings.Contains(needs, want) {
-			t.Errorf("the face lacks %q:\n%s", want, needs)
-		}
+	if !strings.Contains(needs, `<span class="since">1 h 0 min</span>`) || strings.Contains(needs, "Last answer processed") {
+		t.Errorf("the small card's band lacks the wait, or names the last answer:\n%s", needs)
 	}
-	if strings.Contains(needs, "Last answer processed") {
-		t.Errorf("the face names the last answer's time:\n%s", needs)
+	if drawer := getAs(r, ck, "/cards/t-a/drawer?tab=overview", false).Body.String(); !strings.Contains(drawer, "Postgres is shared.") {
+		t.Errorf("the opened card lacks the ask's info:\n%s", drawer)
 	}
 }
 
@@ -349,32 +350,34 @@ func TestCaseRowsHaveTheirOwnPlace(t *testing.T) {
 	}
 	seatCases(r)
 	wide := getAs(r, ck, "/projects/"+casesProject+"/cards/t-a/cases/2?view=wide", true).Body.String()
-	if strings.Contains(wide, ` data-place=`) || !strings.Contains(wide, `<input type="hidden" name="view" value="wide">`) || !strings.Contains(wide, `/cases/3?`) ||
-		!strings.Contains(wide, `view=wide`) {
+	if strings.Contains(wide, ` data-place=`) || !strings.Contains(wide, `/cases/3?`) || !strings.Contains(wide, `view=wide`) {
 		t.Errorf("the wide view's case fragment has a place or loses the view:\n%s", wide)
 	}
 }
 
-// The answer forms need the case's comment to be the card's question's:
-// a case asked on another comment carries none.
+// The press needs the case's comment to be the card's question's: a case
+// asked on another comment carries none.
 func TestAnswerFormsNeedTheQuestionsComment(t *testing.T) {
 	r := newRig(t)
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-a", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Card A"},
-		Escalation: "the agent asks", QuestionComment: 42, Question: &factoryd.HumanQuestion{Ask: "Which?", Choices: []factoryd.QuestionChoice{{Value: "park", Label: "Park it"}}}}}
-	r.openCases = map[string][]factoryd.Case{"t-a": {{ID: 1, TaskID: "t-a", Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman, Problem: "Which?", CommentID: 41}}}
+		Escalation: "the agent asks", QuestionComment: 42, Question: &factoryd.HumanQuestion{Ask: "Which?"}}}
+	r.openCases = map[string][]factoryd.Case{"t-a": {{ID: 1, TaskID: "t-a", Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman, Problem: "Which?", CommentID: 41,
+		Facts: roomyFacts(nil)}}}
+	r.caseAsks = map[int64]factoryd.CaseAsk{1: {At: time.Now(), Detail: map[string]any{"preselected": map[string]any{"action": factoryd.ActClose},
+		"recommended_by": "the project agent", "recommendation": "the work is done elsewhere"}}}
 	ck, _ := r.loggedIn(t)
 	if needs := needsOf(t, r, ck, "/"); strings.Contains(needs, `action="/tasks/t-a/resolve"`) {
-		t.Errorf("a case asked on comment 41 carries the forms of the question on comment 42:\n%s", needs)
+		t.Errorf("a case asked on comment 41 carries the press of the question on comment 42:\n%s", needs)
 	}
 	r.openCases["t-a"][0].CommentID = 42
 	if needs := needsOf(t, r, ck, "/"); !strings.Contains(needs, `action="/tasks/t-a/resolve"`) {
-		t.Errorf("the case asked on the question's comment carries no forms:\n%s", needs)
+		t.Errorf("the case asked on the question's comment carries no press:\n%s", needs)
 	}
 }
 
 // A plan at its session cap has a session cap case and a pending plan
-// approval that case does not answer: the card is one row, the approval
-// inside it under the carousel, counted once.
+// approval that case does not answer: the card is one row, counted once,
+// and the plan's approval card is the opened card's.
 func TestACardsApprovalWithNoCaseOfItsOwnSitsInItsRow(t *testing.T) {
 	r := newRig(t)
 	planRig(r)
@@ -382,19 +385,18 @@ func TestACardsApprovalWithNoCaseOfItsOwnSitsInItsRow(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	body := getAs(r, ck, "/?project=linkshort", false).Body.String()
 	needs := col(t, body, "Needs you")
-	row := needs[strings.Index(needs, `class="card case"`):]
-	if strings.Count(needs, `class="card case"`) != 1 || strings.Count(needs, `class="card approval plan"`) != 1 || strings.Count(row, "</article>") != 2 {
-		t.Fatalf("want one row holding the plan card once:\n%s", needs)
-	}
-	if strings.Index(row, `class="card approval plan"`) < strings.Index(row, `class="carousel"`) && strings.Contains(row, `class="carousel"`) {
-		t.Errorf("the approval sits above the carousel")
+	if strings.Count(needs, ` data-case="`) != 1 || strings.Contains(needs, `class="card approval plan"`) {
+		t.Fatalf("want one row and no plan card in it:\n%s", needs)
 	}
 	if !regexp.MustCompile(`Needs you <span class="count">1</span>`).MatchString(body) || !regexp.MustCompile(`<b class="n">1</b> need you`).MatchString(body) {
 		t.Errorf("the card is not counted once:\n%s", needs)
 	}
+	if drawer := getAs(r, ck, "/cards/t-plan/drawer?tab=overview", false).Body.String(); strings.Count(drawer, `class="card approval plan"`) != 1 {
+		t.Errorf("the opened card does not hold the plan card once:\n%s", drawer)
+	}
 }
 
-// The row's waiting time is the case's, once, in its head.
+// The row's waiting time is the case's, once, in its band.
 func TestACaseRowShowsOneWaitingTime(t *testing.T) {
 	r := newRig(t)
 	seatCases(r)
@@ -402,14 +404,14 @@ func TestACaseRowShowsOneWaitingTime(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	needs := needsOf(t, r, ck, "/")
 	row := needs[strings.Index(needs, `data-card="t-a"`):strings.Index(needs, `data-card="t-b"`)]
-	if strings.Count(row, "◷") != 1 || !strings.Contains(row, "◷ 28 min") {
+	if strings.Count(row, `class="since"`) != 1 || !strings.Contains(row, `<span class="since">28 min</span>`) {
 		t.Errorf("t-a's row does not show the case's one waiting time, 28 min:\n%s", row)
 	}
 }
 
-// The agent's question is scrubbed on the face, and a recommendation shows
-// with its writer: words no one signs do not show, whatever action they
-// open with.
+// The agent's question is scrubbed on the opened card, and the small
+// card's suggestion names its writer: words no one signs show nowhere,
+// whatever action they open with.
 func TestCaseFaceScrubsTheQuestionAndNamesTheRecommendationsWriter(t *testing.T) {
 	r := newRig(t)
 	seatCases(r)
@@ -425,13 +427,23 @@ func TestCaseFaceScrubsTheQuestionAndNamesTheRecommendationsWriter(t *testing.T)
 			t.Errorf("the face holds %q:\n%s", leak, needs)
 		}
 	}
-	if !strings.Contains(needs, `<p class="recommendation">Recommendation (the check-in): wait</p>`) || !strings.Contains(needs, "The agent asks: The pull from") {
-		t.Errorf("the face lacks its recommendation with its writer or the agent's question:\n%s", needs)
+	rowA, rowB := needs[strings.Index(needs, `data-card="t-a"`):strings.Index(needs, `data-card="t-b"`)], needs[strings.Index(needs, `data-card="t-b"`):]
+	if !strings.Contains(rowA, `<span class="by">check-in&#39;s pick</span>`) {
+		t.Errorf("the face lacks its suggestion's writer:\n%s", rowA)
+	}
+	if drawer := getAs(r, ck, "/cards/t-a/drawer?tab=overview", false).Body.String(); !strings.Contains(drawer, "The agent asks: The pull from") || strings.Contains(drawer, "user:pass") {
+		t.Errorf("the opened card lacks the agent's question, or holds it unmasked:\n%s", drawer)
+	}
+	if strings.Contains(rowB, `class="by"`) {
+		t.Errorf("words no one signs suggest an answer:\n%s", rowB)
+	}
+	if drawer := getAs(r, ck, "/cards/t-b/drawer?tab=overview", false).Body.String(); strings.Contains(drawer, "no writer words") {
+		t.Errorf("the opened card shows words no one signs:\n%s", drawer)
 	}
 }
 
-// The face shows the case writer's two lines as its story, masked, and
-// the ask's info beside them.
+// The opened card shows the case writer's two lines as its story, masked,
+// and the ask's info beside them.
 func TestCaseFaceShowsTheBriefMasked(t *testing.T) {
 	const url, bearer = "https://user:pass@git.example/x", "Authorization: Bearer abc123def456ghi789jkl012mno345"
 	r := newRig(t)
@@ -440,15 +452,15 @@ func TestCaseFaceShowsTheBriefMasked(t *testing.T) {
 	r.openCases["t-a"][2].BriefDetail = "Another session fixes both findings."
 	r.caseAsks = map[int64]factoryd.CaseAsk{3: {At: time.Now().Add(-time.Hour), Detail: map[string]any{"info": "the digest's info"}}}
 	ck, _ := r.loggedIn(t)
-	needs := needsOf(t, r, ck, "/")
+	drawer := getAs(r, ck, "/cards/t-a/drawer?tab=overview", false).Body.String()
 	for _, want := range []string{"<li>The fetch of", "<li>Another session fixes both findings.</li>", "<p>the digest's info</p>"} {
-		if !strings.Contains(needs, want) {
-			t.Errorf("the face lacks %q:\n%s", want, needs)
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the opened card lacks %q:\n%s", want, drawer)
 		}
 	}
 	for _, leak := range []string{"user:pass", "abc123def456"} {
-		if strings.Contains(needs, leak) {
-			t.Errorf("the face holds %q:\n%s", leak, needs)
+		if strings.Contains(drawer, leak) {
+			t.Errorf("the opened card holds %q:\n%s", leak, drawer)
 		}
 	}
 }
@@ -462,13 +474,14 @@ func TestAFinalCardsApprovalStillShows(t *testing.T) {
 		PRNumber: 10, Status: "pending", Spec: json.RawMessage(`{"risk_class":"normal"}`)})
 	r.openCases = map[string][]factoryd.Case{"t-done": {{ID: 6, TaskID: "t-done", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman, Problem: "flag"}}}
 	ck, _ := r.loggedIn(t)
-	if needs := needsOf(t, r, ck, "/"); !strings.Contains(needs, `action="/approvals/62/approve"`) || strings.Contains(needs, `class="card case"`) {
+	needs := needsOf(t, r, ck, "/")
+	if face := faceOf(t, needs, "t-done"); strings.Count(needs, `data-card="t-done"`) != 1 || !strings.Contains(face, `<strong class="title">Merge this card&#39;s pull request?</strong>`) || strings.Contains(face, `data-case=`) {
 		t.Errorf("the ended card's pending approval is not on the board alone:\n%s", needs)
 	}
 }
 
-// A case's approval shows in the row only while its own case is in view,
-// not under a sibling case.
+// A card whose cases are a merge approval and a monitor's flag shows the
+// one in view, the flag first, newest, the merge under its own number.
 func TestAnApprovalShowsOnlyUnderItsOwnCase(t *testing.T) {
 	r := newRig(t)
 	r.tasks.set("", factoryd.Task{ID: "t-mc", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 8, PRNumber: 10, BudgetEUR: 2})
@@ -478,11 +491,11 @@ func TestAnApprovalShowsOnlyUnderItsOwnCase(t *testing.T) {
 		{ID: 5, TaskID: "t-mc", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseAtHuman, Problem: "merge?", Facts: map[string]any{"approval": 61.0}},
 		{ID: 6, TaskID: "t-mc", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman, Problem: "flag"}}}
 	ck, _ := r.loggedIn(t)
-	if needs := needsOf(t, r, ck, "/"); strings.Contains(needs, `action="/approvals/61/approve"`) || !strings.Contains(needs, `<p class="ask">The factory flagged something odd on this card. Is that fine?</p>`) {
-		t.Errorf("the merge approval shows under the flag's case:\n%s", needs)
+	if face := faceOf(t, needsOf(t, r, ck, "/"), "t-mc"); strings.Contains(face, "Merge this card") || !strings.Contains(face, `<strong class="title">The factory flagged something odd on this card. Is that fine?</strong>`) {
+		t.Errorf("the merge's ask shows under the flag's case:\n%s", face)
 	}
-	if needs := needsOf(t, r, ck, "/?case=t-mc:5"); !strings.Contains(needs, `action="/approvals/61/approve"`) {
-		t.Errorf("the merge approval does not show under its own case:\n%s", needs)
+	if face := faceOf(t, needsOf(t, r, ck, "/?case=t-mc:5"), "t-mc"); !strings.Contains(face, `<strong class="title">Merge this card&#39;s pull request?</strong>`) {
+		t.Errorf("the merge's ask does not show under its own case:\n%s", face)
 	}
 }
 

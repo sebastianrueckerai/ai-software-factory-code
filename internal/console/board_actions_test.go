@@ -51,28 +51,17 @@ func equalInput(a, b factoryd.ActInput) bool {
 		a.Res.Action == b.Res.Action && a.Res.Note == b.Res.Note
 }
 
-// The escalation face's one send answers the card in one request: the
-// choice its button names settles the card's ask with the choice as the
-// settle's park arg, the fund beside it and the note land in one answer,
-// the single call Act takes for the card.
-func TestEscalationFaceSendLandsChoiceFundNoteInOneAnswer(t *testing.T) {
+// A send names the ask it answers: one with no case is refused with the
+// way back, and Act takes nothing.
+func TestASendWithNoCaseIsRefused(t *testing.T) {
 	r := newRig(t)
 	seatBoardFixture(t, r, "board-agent-escalate.json")
 	ck, s := r.loggedIn(t)
 	rec := r.do(post("/tasks/t-board-escalate/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
-		"premade": {"Park the card"}, "fund_eur": {"1.50"}, "note": {"the schema change is mine to make"}}), ck)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("the send = %d: %s", rec.Code, rec.Body)
-	}
-	got, _ := actedOnce(t, r)
-	want := factoryd.ActInput{TaskID: "t-board-escalate", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActSettle, Args: map[string]any{"park": factoryd.AnswerPark},
-			Note: "the schema change is mine to make", Fund: &policy.Draw{EUR: 1.5}}, Detail: got.Detail}
-	if !equalInput(got, want) {
-		t.Fatalf("Act took %+v, want the choice, its note and the fund in one answer: %+v", got, want)
-	}
-	if got.Res.Fund == nil || got.Res.Fund.EUR != 1.5 {
-		t.Fatalf("the answer draws %+v, want the 1.50 EUR the send carried", got.Res.Fund)
+		"action": {"note"}, "fund_eur": {"1.50"}, "note": {"the schema change is mine to make"}}), ck)
+	if want := "case_id names the ask the answer is for. Reload the board and press the answer again."; rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), want) || len(r.acted) != 0 {
+		t.Fatalf("a send with no case = %d %q, Act took %+v; want 400 %q and nothing acted", rec.Code, rec.Body, r.acted, want)
 	}
 }
 
@@ -249,9 +238,8 @@ var actionButtons = regexp.MustCompile(`name="action" value="(\w+)"`)
 func buttonsOf(t *testing.T, r *rig, id string) []string {
 	t.Helper()
 	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
 	var out []string
-	for _, m := range actionButtons.FindAllStringSubmatch(escalationOf(t, body, id), -1) {
+	for _, m := range actionButtons.FindAllStringSubmatch(escalationOf(t, r, ck, id), -1) {
 		out = append(out, m[1])
 	}
 	return out
@@ -283,9 +271,8 @@ func TestFaceButtonsAreTheRegistersAnswers(t *testing.T) {
 		t.Fatalf("the face's buttons with replan preselected = %v, want %v", got, want)
 	}
 	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	if !strings.Contains(escalationOf(t, body, "t-g"), `aria-label="Send back to the planner, recommended by the factory agent"`) {
-		t.Errorf("the recommended button does not name who recommended it:\n%s", escalationOf(t, body, "t-g"))
+	if !strings.Contains(escalationOf(t, r, ck, "t-g"), `aria-label="Send back to the planner, recommended by the factory agent"`) {
+		t.Errorf("the recommended button does not name who recommended it:\n%s", escalationOf(t, r, ck, "t-g"))
 	}
 }
 
@@ -369,8 +356,9 @@ func TestRestartPlanClosesThePlanAndSaysWhenTheNewOneCannotBeFiled(t *testing.T)
 
 // The case of an agent's ask leads with the agent's own answers as its
 // buttons, then Not now and End the card. Its recommendation's words show
-// as the agent's view in the story and preselect none of them: words name
-// no button. The ask shows once and the raw reason never.
+// as the agent's view in the opened card's story and preselect none of
+// them: words name no button. The small card shows the ask once and the
+// raw reason never.
 func TestAnAsksOwnAnswersLeadAndTheRegistersFollow(t *testing.T) {
 	r := newRig(t)
 	reason := "The agent asks: which store?\nWhy: two fit\nRecommendation: SQLite, one file is enough"
@@ -381,8 +369,7 @@ func TestAnAsksOwnAnswersLeadAndTheRegistersFollow(t *testing.T) {
 	r.openCases = map[string][]factoryd.Case{"t-ch": {{ID: 1, TaskID: "t-ch", Kind: factoryd.CaseAgentEscalate, Status: factoryd.CaseAtHuman, Problem: "which store?",
 		Facts: facts}}}
 	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	esc := escalationOf(t, body, "t-ch")
+	esc := escalationOf(t, r, ck, "t-ch")
 	var got []string
 	for _, m := range regexp.MustCompile(`name="action" value="([^"]+)" class="(\w+)"`).FindAllStringSubmatch(esc, -1) {
 		got = append(got, m[1]+" "+m[2])
@@ -391,7 +378,11 @@ func TestAnAsksOwnAnswersLeadAndTheRegistersFollow(t *testing.T) {
 		t.Fatalf("buttons = %q, want %q:\n%s", got, want, esc)
 	}
 	if !strings.Contains(esc, `<li>The agent&#39;s view: SQLite, one file is enough</li>`) || strings.Contains(esc, `class="recommendation"`) || strings.Contains(esc, `class="reason"`) || strings.Count(esc, "hich store?") != 1 {
-		t.Errorf("the recommendation names no writer, or the ask shows more than once:\n%s", esc)
+		t.Errorf("the opened card lacks the agent's view, or shows the ask more than once:\n%s", esc)
+	}
+	if face := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "t-ch"); strings.Contains(face, "The agent asks") ||
+		strings.Count(face, "hich store?") != 1 || strings.Contains(face, `class="by"`) {
+		t.Errorf("the small card shows the raw reason, the ask other than once, or a pick:\n%s", face)
 	}
 }
 
@@ -531,8 +522,7 @@ func TestACaseWithNoStoredFaceRendersTheRegistersAndNoOldForms(t *testing.T) {
 	r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
 	seatAsk(r, "t-g", factoryd.CaseSessionCap, roomyFacts(nil))
 	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	esc := escalationOf(t, body, "t-g")
+	esc := escalationOf(t, r, ck, "t-g")
 	if strings.Contains(esc, `action="/tasks/t-g/answer"`) || strings.Contains(esc, `action="/tasks/t-g/fund"`) || strings.Contains(esc, `action="/tasks/t-g/extend"`) ||
 		!strings.Contains(esc, `action="/tasks/t-g/resolve"`) || !strings.Contains(esc, `name="fund_eur"`) || !strings.Contains(esc, `name="note"`) {
 		t.Fatalf("the face of a case with no stored face =\n%s\nwant the resolve form alone, with the fund and the note", esc)

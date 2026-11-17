@@ -108,8 +108,8 @@ func TestChatGithubSync(t *testing.T) {
 	equal(t, "syncs", r.synced, []string{"demo-app by sebastian"})
 }
 
-// A card shows its GitHub pull request's state on its face and in the
-// chat's card read, or why it has none.
+// A card shows its GitHub pull request's state on its opened card and in
+// the chat's card read, or why it has none.
 func TestCardGitHubPullRequest(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.tasks.set("", factoryd.Task{ID: "t-x", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 99, PRNumber: 7,
@@ -118,11 +118,11 @@ func TestCardGitHubPullRequest(t *testing.T) {
 			GitHubPRState: "failed: GitHub refused the pull request: GitHub answered 422 Validation Failed"})
 	ck, _ := r.loggedIn(t)
 	for id, want := range map[string]string{
-		"t-x": `<span class="github">GitHub: <a href="https://github.com/acme/app/pull/12" target="_blank" rel="noopener">PR #12</a> merged</span>`,
-		"t-y": `<span class="github">GitHub: failed: GitHub refused the pull request: GitHub answered 422 Validation Failed</span>`,
+		"t-x": `<dt>GitHub</dt><dd><a href="https://github.com/acme/app/pull/12" target="_blank" rel="noopener">PR #12</a> merged</dd>`,
+		"t-y": `<dt>GitHub</dt><dd>failed: GitHub refused the pull request: GitHub answered 422 Validation Failed</dd>`,
 	} {
-		if face := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id, nil), ck).Body.String(); !strings.Contains(face, want) {
-			t.Errorf("%s's face lacks %s:\n%s", id, want, face)
+		if opened := drawer(t, r, ck, id, "overview"); !strings.Contains(opened, want) {
+			t.Errorf("%s's opened card lacks %s:\n%s", id, want, opened)
 		}
 	}
 	text := reads(t, r, g, "card", `{"task_id":"t-x"}`)[0]

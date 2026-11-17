@@ -151,12 +151,12 @@ func TestAMergedCardWearsItsChainState(t *testing.T) {
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	progress := col(t, body, "In progress")
 	for id, word := range map[string]string{
-		"t-red":   `<span class="pill st-merged">merged</span> <span class="st st-failed">chain red</span>`,
-		"t-run":   `<span class="pill st-merged">merged</span> <span class="st st-merged">chain running</span>`,
-		"t-stall": `<span class="pill st-merged">merged</span> <span class="st st-waiting">stalled</span>`,
+		"t-red":   `<span class="st st-failed"><i class="dot" aria-hidden="true"></i>chain red</span>`,
+		"t-run":   `<span class="st st-merged"><i class="dot" aria-hidden="true"></i>chain running</span>`,
+		"t-stall": `<span class="st st-waiting"><i class="dot" aria-hidden="true"></i>stalled</span>`,
 	} {
-		if !strings.Contains(progress, `data-card="`+id+`"`) || !strings.Contains(progress, word) {
-			t.Errorf("In progress lacks %s wearing %s:\n%s", id, word, progress)
+		if face := faceOf(t, progress, id); !strings.Contains(face, word) {
+			t.Errorf("In progress lacks %s wearing %s:\n%s", id, word, face)
 		}
 	}
 }
@@ -178,11 +178,11 @@ func TestAMergedCardNamesItsRoll(t *testing.T) {
 	r.tasks.tasks = []factoryd.BoardTask{card("t-roll", 1162, "failure"), card("t-none", 0, "failure")}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	progress := col(t, body, "In progress")
-	want := `<span class="pill st-merged">merged</span> <span class="st st-merged"><a href="#card=t-r">blocked by roll #1162</a></span>`
+	want := `<span class="st st-merged"><i class="dot" aria-hidden="true"></i><a href="#card=t-r">blocked by roll #1162</a></span>`
 	if !strings.Contains(progress, want) {
 		t.Errorf("In progress lacks %s:\n%s", want, progress)
 	}
-	if strings.Count(progress, "blocked by roll") != 1 || !strings.Contains(progress, `<span class="st st-failed">chain red</span>`) {
+	if strings.Count(progress, "blocked by roll") != 1 || !strings.Contains(faceOf(t, progress, "t-none"), `<span class="st st-failed"><i class="dot" aria-hidden="true"></i>chain red</span>`) {
 		t.Errorf("the card with no roll must read chain red, and only one card names a roll:\n%s", progress)
 	}
 }
@@ -263,7 +263,8 @@ func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	for page, wants := range map[string][]string{
 		"/?project=ai-software-factory-code": {`id="needs-you" data-holds="waiting-human waiting-poster">`,
-			`data-holds="queued waiting-deps waiting-image">`, `data-holds="running closing in-review merged">`, `data-holds="done failed closed"`,
+			`data-holds="queued waiting-deps waiting-image">`, `data-holds="running closing in-review merged">`, `data-holds="done failed closed"`},
+		"/cards/t-card/drawer?tab=overview": {
 			`<form method="post" action="/approvals/31/approve" hx-post="/approvals/31/approve" class="decide resolve" data-to="in-review">`},
 		"/?project=ai-software-factory-code&view=wide": {`data-holds="queued waiting-deps">`, `data-holds="running closing">`, `data-holds="in-review">`, `data-holds="merged">`,
 			`data-holds="failed"`, `data-holds="closed"`},

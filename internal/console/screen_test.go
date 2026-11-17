@@ -22,22 +22,13 @@ import (
 	"golang.org/x/net/html"
 )
 
-// columnItems are what column title holds, in order: "t-x" for a card's
-// face, "approval 3" for an approval request, which shares its task's
-// data-card with the face.
+// columnItems are the cards of the column titled title, in order: each
+// small card's data-card, an approval request's its task's.
 func columnItems(t *testing.T, body, title string) []string {
 	t.Helper()
 	var out []string
-	// an escalation article shares its face's data-card, which the
-	// face's place marks: drop the article's copy before the walk
-	esc := regexp.MustCompile(`(<article class="card escalation" id="need-[^"]+") data-card="[^"]*"`)
-	re := regexp.MustCompile(`<article class="card approval[^"]*" data-card="[^"]*" aria-labelledby="approval-(\d+)"|data-card="([^"]+)"`)
-	for _, m := range re.FindAllStringSubmatch(esc.ReplaceAllString(col(t, body, title), "$1"), -1) {
-		if m[1] != "" {
-			out = append(out, "approval "+m[1])
-		} else {
-			out = append(out, m[2])
-		}
+	for _, m := range regexp.MustCompile(`data-card="([^"]+)"`).FindAllStringSubmatch(col(t, body, title), -1) {
+		out = append(out, m[1])
 	}
 	return out
 }
@@ -85,14 +76,14 @@ func screenRig(t *testing.T) (*rig, *http.Cookie) {
 // states. Every status lands in exactly one column, running, closing and
 // in review together in In progress, waiting on the author in Needs you
 // for every viewer, the author or not (roadmap 225: a person is the next
-// actor); Needs you also holds the human lane (the approval requests, the escalation with its answer form,
-// the human task), oldest waiting first; the headers count the column;
+// actor); Needs you also holds the human lane (the approval requests, the escalation,
+// the human task), oldest waiting first, their forms on their opened cards; the headers count the column;
 // another project's card is on no column.
 func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 	r, ck := screenRig(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	want := map[string][]string{
-		"Needs you":   {"t-other", "approval 4", "t-me", "t-esc", "approval 3", "t-human"},
+		"Needs you":   {"t-other", "t-m", "t-me", "t-esc", "t-res", "t-human"},
 		"Queued":      {"t-queue", "t-deps"},
 		"In progress": {"t-run", "t-close", "t-rev"},
 		"Done":        {"t-done", "t-fail", "t-closed"},
@@ -112,9 +103,9 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 			t.Errorf("the header of %s lacks the count %s, its menu or its body", title, counts[title])
 		}
 		for _, id := range items {
-			// an escalation article shares its face's data-card; the
-			// face alone carries it with a place, which names one column
-			if id[0] == 't' && strings.Count(body, `data-card="`+id+`" data-place="`) != 1 {
+			// a card's face carries a place, which names one column; an
+			// approval request's face, t-m's and t-res's, carries none
+			if id != "t-m" && id != "t-res" && strings.Count(body, `data-card="`+id+`" data-place="`) != 1 {
 				t.Errorf("%s shows %d times, want once", id, strings.Count(body, `data-card="`+id+`" data-place="`))
 			}
 		}
@@ -123,14 +114,16 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 		t.Error("the five columns show another project's card, the human lane or a lane column")
 	}
 	needs := col(t, body, "Needs you")
-	for _, want := range []string{`<section class="column lit" aria-labelledby="col-0" id="needs-you" data-holds="waiting-human waiting-poster">`, `action="/tasks/t-esc/resolve"`,
-		`action="/approvals/4/approve"`} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the board lacks %s", want)
-		}
+	if want := `<section class="column lit" aria-labelledby="col-0" id="needs-you" data-holds="waiting-human waiting-poster">`; !strings.Contains(body, want) {
+		t.Errorf("the board lacks %s", want)
 	}
-	if strings.Count(needs, `/resolve" hx-post=`) != 1 {
-		t.Errorf("Needs you holds %d answer forms, want t-esc's", strings.Count(needs, `/resolve" hx-post=`))
+	// no ask here suggests an answer, so Needs you holds no form: the
+	// answers are the opened cards'
+	if strings.Contains(needs, "<form") {
+		t.Errorf("Needs you holds a form:\n%s", needs)
+	}
+	if !strings.Contains(drawer(t, r, ck, "t-esc", "overview"), `action="/tasks/t-esc/resolve"`) {
+		t.Error("t-esc's opened card lacks its answer form")
 	}
 	// the place names the column, so a card that changes column swaps the
 	// board
@@ -146,7 +139,7 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ak).Body.String()
 	// alice is not t-me's author, and t-me still needs a person
 	for title, items := range map[string][]string{
-		"Needs you": {"t-other", "approval 4", "t-me", "t-esc", "approval 3", "t-human"},
+		"Needs you": {"t-other", "t-m", "t-me", "t-esc", "t-res", "t-human"},
 		"Queued":    {"t-queue", "t-deps"},
 	} {
 		if got := columnItems(t, body, title); !slices.Equal(got, items) {
@@ -386,9 +379,9 @@ func TestBoardShowsOneProjectTheViewerWrites(t *testing.T) {
 		t.Error("alice reading the code project: the select lacks it, or the board lacks its card or offers her its forms")
 	}
 	// her board follows the stream read-only and opens no drawer
-	if !strings.Contains(body, `<div id="board" data-project="ai-software-factory-code" data-query="?project=ai-software-factory-code"`) ||
-		!strings.Contains(body, `<strong class="title" title="fix the cache">fix the cache</strong>`) {
-		t.Error("alice reading the code project does not follow its stream or links its cards to the drawer")
+	if face := faceOf(t, body, "t-run"); !strings.Contains(body, `<div id="board" data-project="ai-software-factory-code" data-query="?project=ai-software-factory-code"`) ||
+		!strings.Contains(face, `<strong class="title">fix the cache</strong>`) || strings.Contains(face, `class="open"`) {
+		t.Errorf("alice reading the code project does not follow its stream, or a card offers her its drawer:\n%s", face)
 	}
 	// bob writes the infra project alone, which agents do not work on
 	r.repoWriters["sf/infra"] = []string{"bob"}
@@ -400,11 +393,12 @@ func TestBoardShowsOneProjectTheViewerWrites(t *testing.T) {
 	}
 }
 
-// The fine state is a chip in the pill's hues: waiting on the author,
+// The fine state is a mark in the need's text: waiting on the author,
 // retrying (the newest session ended for a retry), stale (no event for
-// half an hour); failed and closed are the pill's own words. No card wears a lane badge (roadmap 225). The wide view's
-// columns name the wait on the author, so there a card wears only what
-// the column leaves unsaid.
+// half an hour), in a small card's foot or a Needs-you card's band; failed
+// and closed are the state's own words. The wide view's columns name the
+// wait on the author, so there a card wears only what the column leaves
+// unsaid.
 func TestCardFineChips(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -423,35 +417,28 @@ func TestCardFineChips(t *testing.T) {
 {"step":"session_end","attempt":1,"outcome":"retry_stronger"}
 {"step":"session_start","attempt":2}
 `)
-	// the chips line and the fine pills of the state row, per view
-	lines := func(body, id string) (chips, fine string) {
+	// the fine marks: a small card's foot items, a Needs-you card's band items
+	marks := func(body, id string) string {
 		t.Helper()
-		face := faceOf(t, body, id)
-		if start := strings.Index(face, `<p class="chips">`); start >= 0 {
-			chips = face[start : start+strings.Index(face[start:], "</p>")+len("</p>")]
-		}
-		for _, m := range regexp.MustCompile(`<span class="pill fine [^"]*">[^<]*</span>`).FindAllString(face, -1) {
-			fine += m
-		}
-		return chips, fine
+		return strings.Join(regexp.MustCompile(`<span class="(?:it )?flag">[^<]*</span>`).FindAllString(faceOf(t, body, id), -1), "")
 	}
 	five := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	for id, want := range map[string][4]string{
-		"t-lane":   {"", "", "", ""},
-		"t-other":  {"", "", `<span class="pill fine st-waiting hollow">waiting on the author</span>`, ""},
-		"t-fail":   {"", "", "", ""},
-		"t-closed": {"", "", "", ""},
-		"t-done":   {"", "", "", ""},
-		"t-stale":  {"", "", `<span class="pill fine st-stale">stale</span>`, `<span class="pill fine st-stale">stale</span>`},
-		"t-retry":  {"", "", `<span class="pill fine st-running">retrying</span>`, `<span class="pill fine st-running">retrying</span>`},
-		"t-again":  {"", "", "", ""},
+	for id, want := range map[string][2]string{
+		"t-lane":   {"", ""},
+		"t-other":  {`<span class="flag">waiting on the author</span>`, ""},
+		"t-fail":   {"", ""},
+		"t-closed": {"", ""},
+		"t-done":   {"", ""},
+		"t-stale":  {`<span class="it flag">stale</span>`, `<span class="it flag">stale</span>`},
+		"t-retry":  {`<span class="it flag">retrying</span>`, `<span class="it flag">retrying</span>`},
+		"t-again":  {"", ""},
 	} {
-		if chips, fine := lines(five, id); chips != want[0] || fine != want[2] {
-			t.Errorf("four columns, %s: chips %q, fine %q, want %q and %q", id, chips, fine, want[0], want[2])
+		if got := marks(five, id); got != want[0] {
+			t.Errorf("four columns, %s: marks %q, want %q", id, got, want[0])
 		}
-		if chips, fine := lines(wide, id); chips != want[1] || fine != want[3] {
-			t.Errorf("wide view, %s: chips %q, fine %q, want %q and %q", id, chips, fine, want[1], want[3])
+		if got := marks(wide, id); got != want[1] {
+			t.Errorf("wide view, %s: marks %q, want %q", id, got, want[1])
 		}
 	}
 }
@@ -474,7 +461,7 @@ func TestCardWaitingOnTheProvider(t *testing.T) {
 	for _, want := range []string{`<span class="cell state" data-state="idle"><i class="dot" aria-hidden="true"></i>idle</span>
 <span class="cell"><span><b class="n">0</b> working</span></span>
 <span class="cell warn"><span><b class="n">1</b> waiting on the provider</span></span>
-<a href="#needs-you" class="cell needs"><span><b class="n">0</b> need you</span></a>`, `<span class="pill fine st-waiting">waiting on the provider</span>`} {
+<a href="#needs-you" class="cell needs"><span><b class="n">0</b> need you</span></a>`, `<span class="it flag">waiting on the provider</span>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board lacks %s", want)
 		}
@@ -529,9 +516,9 @@ func TestWideViewKeepsTheStatesAndSurvivesThePoll(t *testing.T) {
 		strings.Contains(poll, `class="lane five"`) {
 		t.Error("the wide view's poll answers the five columns")
 	}
-	if frag := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c7?project=linkshort&view=wide", nil), ck).Body.String(); !strings.Contains(frag,
-		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) {
-		t.Errorf("the card under the wide view's query keeps no view on its forms: %s", frag)
+	if opened := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c7/drawer?project=linkshort&view=wide", nil), ck).Body.String(); !strings.Contains(opened,
+		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide"><button type="submit" aria-label="Retry #7">Retry</button>`) {
+		t.Errorf("the opened card under the wide view's query keeps no view on its forms: %s", opened)
 	}
 	form := url.Values{"csrf": {s.csrf}, "why": {"So links stay short."}, "summary": {"The links"}, "project": {"linkshort"}, "view": {"wide"}}
 	req := post("/tasks/t-c2/brief", form)
@@ -556,8 +543,8 @@ func TestWideViewKeepsTheStatesAndSurvivesThePoll(t *testing.T) {
 	}
 }
 
-// The page holds the drawer, empty and hidden, every card's title opens
-// it by #card=<id>, and the ? list names the keys w, Escape and ?; the
+// The page holds the drawer, empty and hidden, every card's open link
+// opens it by #card=<id>, and the ? list names the keys w, Escape and ?; the
 // script binds them on the board only, never with a modifier, and the
 // head's script restores the remembered view with the card's hash.
 func TestKeysAndDrawerOnThePage(t *testing.T) {
@@ -566,7 +553,7 @@ func TestKeysAndDrawerOnThePage(t *testing.T) {
 	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "Fix the cache.", IssueNumber: 11})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	for _, want := range []string{`<aside id="drawer" class="drawer" aria-label="The card" hidden></aside>`,
-		`<strong class="title" title="Fix the cache."><a href="#card=t-run" class="open">Fix the cache.</a></strong>`,
+		`<a class="open" href="#card=t-run"><span class="visually-hidden">Open #11</span></a>` + "\n" + `<p class="para"><strong class="title">Fix the cache.</strong></p>`,
 		`<button type="button" id="keys-toggle" class="keys-toggle" aria-haspopup="dialog" aria-controls="keys" aria-keyshortcuts="Shift+?" title="Keys" aria-label="Keys">?</button>`,
 		`<div id="keys" class="overlay" role="dialog" aria-modal="true" aria-labelledby="keys-title" hidden>`,
 		`<dt><kbd>w</kbd></dt><dd>the wide view, the board across the full width with the chat hidden, or back</dd>`,
@@ -993,7 +980,7 @@ func TestDrawerRefusals(t *testing.T) {
 // shows no question and no form to /alerts/, on the board and in the drawer.
 func TestEscalatedCardAsksNoVerdict(t *testing.T) {
 	r, ck := screenRig(t)
-	for path, ask := range map[string]string{"/": "Which region?", "/cards/t-esc/drawer": "which region?"} {
+	for path, ask := range map[string]string{"/": "Which region?", "/cards/t-esc/drawer": "Which region?"} {
 		body := r.do(httptest.NewRequest(http.MethodGet, path, nil), ck).Body.String()
 		if !strings.Contains(body, ask) {
 			t.Fatalf("GET %s: the escalation is not on the page", path)
@@ -1034,9 +1021,7 @@ func TestApprovalFormsKeepTheBoard(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks,
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-lm", Kind: "agent", Status: "in-review", Repository: "linkshort/linkshort", IssueNumber: 12}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-res", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 21}})
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	start := strings.Index(body, `aria-labelledby="approval-30"`)
-	card := body[start : start+strings.Index(body[start:], "</article>")]
+	card := approvalFaceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/cards/t-lm/drawer?project=linkshort", nil), ck).Body.String(), "t-lm")
 	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort">`
 	if got := strings.Count(card, filter); got != 1 {
 		t.Errorf("the merge card's one decide form carries the filter %d times, want one:\n%s", got, card)
@@ -1084,21 +1069,26 @@ func TestApprovalFormsKeepTheBoard(t *testing.T) {
 			detail: map[string]any{"pr": int64(9), "action": "request_changes"}})
 }
 
-// The merge item on the four-column board stays small while it decides
-// through the one face: the headline with the risk and migration chips,
-// the five parts of the ask at one bounded line each (the ask, why a
-// human, the model review, the recommendation), and the one decide form
-// whose two offers, fund and note apply together. The facts wall (the
-// migration files, the earlier reviews, the audit) and every part's
-// whole text live in the drawer, which the item's Details link opens
-// (item 4).
+// The merge item on the four-column board is a small card that asks its
+// merge, with no form and no facts. Its opened card holds the headline
+// with the risk and migration chips, the five parts of the ask (the ask,
+// why a human, the model review, the recommendation), the one decide form
+// whose two offers, fund and note apply together, and every part's whole
+// text (item 4).
 func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 9}})
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	start := strings.Index(body, `aria-labelledby="approval-4"`)
-	card := body[start : start+strings.Index(body[start:], "</article>")]
+	face := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), "t-m")
+	if !strings.Contains(face, `<strong class="title">Merge this card&#39;s pull request?</strong>`) {
+		t.Errorf("the merge item does not ask its merge:\n%s", face)
+	}
+	for _, gone := range []string{"<form", `name="action" value="request_changes"`, "0018_x.sql", "Earlier review", "Security audit", "Why a human", "<details", "<dt>", "chip"} {
+		if strings.Contains(face, gone) {
+			t.Errorf("the merge item shows %s, which the opened card holds:\n%s", gone, face)
+		}
+	}
+	card := requestOf(t, r, ck, "t-m", 4)
 	for _, want := range []string{`<span class="chip risk">high risk</span> <span class="chip migration">migration</span>`,
 		`<p class="ask">Merge PR #9 of t-m? high risk. It carries a migration.</p>`,
 		`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`,
@@ -1106,21 +1096,18 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 		`<p class="recommendation">Recommendation (the model review): Adds the column; merge it.</p>`,
 		`action="/approvals/4/approve"`, `<button type="submit" name="action" value="approve"`, `<button type="submit" name="action" value="deny"`,
 		`<span class="effect">merges PR #9: factoryd merges it</span>`,
-		`sends the pull request back to its agent with your note`,
-		`<a href="#card=t-m:reviews" class="details">Details</a>`} {
+		`sends the pull request back to its agent with your note`} {
 		if !strings.Contains(card, want) {
-			t.Errorf("the merge item lacks %s:\n%s", want, card)
+			t.Errorf("the merge decide lacks %s:\n%s", want, card)
 		}
 	}
 	for what, want := range map[string]int{`class="decide resolve"`: 1, `name="fund_eur"`: 1, `<textarea`: 1} {
 		if got := strings.Count(card, what); got != want {
-			t.Errorf("the merge item's decide carries %s %d times, want %d:\n%s", what, got, want, card)
+			t.Errorf("the merge decide carries %s %d times, want %d:\n%s", what, got, want, card)
 		}
 	}
-	for _, gone := range []string{`<form method="post" action="/approvals/4/deny"`, `name="action" value="request_changes"`, "0018_x.sql", "Earlier review", "Security audit", "Why a human", "<details", "<dt>"} {
-		if strings.Contains(card, gone) {
-			t.Errorf("the merge item shows %s, which the drawer holds:\n%s", gone, card)
-		}
+	if strings.Contains(card, `<form method="post" action="/approvals/4/deny"`) || strings.Contains(card, `name="action" value="request_changes"`) {
+		t.Errorf("the merge decide keeps a second form:\n%s", card)
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
 	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="why">risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`} {
@@ -1137,15 +1124,14 @@ func TestNeedsYouCardOpensItsDrawer(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	lane := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String(), "Approvals")
-	for _, want := range []string{`data-card="t-res"`, `<a href="#card=t-res" class="open">Resource request</a>`,
-		`data-card="t-m"`, `<a href="#card=t-m" class="open">Merge</a>`} {
-		if !strings.Contains(lane, want) {
+	for _, id := range []string{"t-res", "t-m"} {
+		if want := `<a class="open" href="#card=` + id + `">`; !strings.Contains(faceOf(t, lane, id), want) {
 			t.Errorf("a writer's approval column lacks %q:\n%s", want, lane)
 		}
 	}
 	ak, _ := r.readerOfCode(t, "alice")
 	lane = col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ak).Body.String(), "Approvals")
-	if strings.Contains(lane, `class="open"`) || !strings.Contains(lane, ">Resource request</h4>") || !strings.Contains(lane, "Merge <a href=") {
+	if strings.Contains(lane, `class="open"`) || strings.Contains(lane, `href="#card=`) || !strings.Contains(lane, `data-card="t-res"`) || !strings.Contains(lane, `data-card="t-m"`) {
 		t.Errorf("a reader's approval column links to a drawer that would refuse:\n%s", lane)
 	}
 }

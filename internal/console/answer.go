@@ -39,7 +39,7 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	id, _ := strconv.ParseInt(r.PostFormValue("message"), 10, 64)
-	choice, reason := r.PostFormValue("choice"), r.PostFormValue("reason")
+	choice := r.PostFormValue("choice")
 	rows, err := c.cfg.Chat.ChatMessages(ctx, t.p.Repository, t.owner, t.conv, chatHistory)
 	if err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
@@ -64,7 +64,7 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	a := button(r)
 	a.repository = t.p.Repository
-	note, err := c.resolveChoice(ctx, a, rows[i].TaskID, choice, reason, rows[i])
+	note, err := c.resolveChoice(ctx, a, rows[i].TaskID, choice, rows[i])
 	if err != nil {
 		note = "The answer did not land: " + t.sentence(err)
 	}
@@ -187,16 +187,12 @@ func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, 
 // resolveChoice decides card id with choice as its state asks: a pending
 // merge approves on Approve, or runs a factory pull request's red checks
 // again on Re-run the checks, each under the role its board button and
-// chat tool need, a waiting
-// question takes the choice as the member's answer (its park, close or
-// fund acting as the board's button does), a choice card (the stall
-// card, the failed roll card) acts on it, another human-lane
-// escalation closes with it, and a plan's wait on its failed card takes
-// the choice on its ended plan; reason is the press's words, an overrule's
-// reason. A card settled since
-// its escalation row m asked, by an answer, the question's withdrawal or
-// the wait guard, says so: the first answer wins.
-func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice, reason string, m factoryd.ChatMessage) (string, error) {
+// chat tool need; a human card's question takes the choice as its
+// answer, and an agent card's ask takes it as the human's words
+// (doAnswerValue). A card settled since its escalation row m asked, by an
+// answer, the question's withdrawal or the wait guard, says so: the first
+// answer wins.
+func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string, m factoryd.ChatMessage) (string, error) {
 	t, ok, err := c.cfg.Tasks.Task(ctx, id)
 	switch {
 	case err != nil:
@@ -239,7 +235,7 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice, reason
 	if t.Status != "waiting-human" && !factoryd.PlanWaitAsk(m, events, t) {
 		return fmt.Sprintf("#%d waits no more: it was answered or moved on elsewhere.", t.IssueNumber), nil
 	}
-	return c.doAnswerValue(ctx, a, id, choice, "", reason, 0)
+	return c.doAnswerValue(ctx, a, id, choice, "")
 }
 
 // inboxAskRefusal answers an ask without choices in the inbox, where no

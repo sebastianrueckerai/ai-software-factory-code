@@ -614,9 +614,6 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, logi
 		}
 	}
 	for i, m := range msgs {
-		if slices.Contains(m.Choices, factoryd.OverruleChoice) {
-			msgs[i].NeedsReason = factoryd.OverruleChoice
-		}
 		if fundRow(m) {
 			msgs[i].Settled, msgs[i].Reason = fundSettle(m, stop)
 			continue

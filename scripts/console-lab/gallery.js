@@ -3,7 +3,9 @@
 // beside its opened card, at 1280 px and at 390 px, into $OUT, by default
 // shots/gallery/<date>/ of the repository. `scripts/console-lab/run.sh
 // gallery [out]` starts the lab and runs it. It fails on a gallery that
-// does not answer 200 and, after its shots, on an entry that did not render.
+// does not answer 200 and, after its shots, on an entry that did not
+// render or whose small card holds an element wider than the card at
+// 390 px.
 const fs = require("fs");
 const path = require("path");
 const { chromium } = require("playwright");
@@ -32,6 +34,14 @@ async function main() {
         if (await problem.count()) problems.add((await e.getAttribute("data-entry")) + ": " + (await problem.textContent()));
         await e.screenshot({ path: path.join(out, (await e.getAttribute("id")) + "-" + width + ".png") });
         n++;
+        if (width === 390) {
+          const wide = await e.locator(".gallery-small article.card").evaluateAll((cards) => cards.flatMap((card) => {
+            const edge = card.getBoundingClientRect().right + 0.5;
+            return [...card.querySelectorAll("*")].filter((el) => el.getBoundingClientRect().right > edge)
+              .map((el) => el.tagName.toLowerCase() + (el.className ? "." + String(el.className).split(" ").join(".") : ""));
+          }));
+          if (wide.length) problems.add((await e.getAttribute("data-entry")) + ": wider than the card at 390 px: " + wide.join(", "));
+        }
       }
       await page.close();
     }

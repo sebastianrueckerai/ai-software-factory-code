@@ -361,55 +361,6 @@ func TestSecondOverBoundEndFilesNoSuccessor(t *testing.T) {
 	}
 }
 
-// The deadlock ask's successor exit runs the same close: the answer files
-// the successor with the work state instead of buying another session, and
-// the card finishes failed naming it.
-func TestDeadlockAnswerCloseIntoASuccessorRunsTheSamePath(t *testing.T) {
-	h := newWorkflowHarness(t)
-	h.taskConfig = askTaskConfig()
-	var steps []string
-	h.onVerify(&steps, []SessionResult{
-		pushed("s1", "c1"),
-		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
-			Reason:   spentStop,
-			Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}},
-			Review:   &Review{Verdict: "concerns", Summary: "two faults block the merge"},
-			Record:   &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
-		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
-			Reason:   spentStop,
-			Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}},
-			Review:   &Review{Verdict: "concerns", Summary: "two faults block the merge"},
-			Record:   &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
-	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
-			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
-		})
-	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
-	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: SuccessorChoice, Comment: 603})
-	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
-
-	if final := h.run(t); final != "failed" {
-		t.Fatalf("final = %q, escalations %q", final, h.escalated)
-	}
-	if len(h.escalated) != 2 {
-		t.Fatalf("escalations = %q, want the stop and its deadlock ask", h.escalated)
-	}
-	if len(h.successions) != 1 || h.successions[0].PR != 9 {
-		t.Fatalf("the successor filings = %+v, want one carrying PR 9", h.successions)
-	}
-	for _, want := range []string{"the migration runs outside its transaction", "review: concerns"} {
-		if !strings.Contains(h.successions[0].Findings, want) {
-			t.Errorf("the successor's findings = %q, want %q", h.successions[0].Findings, want)
-		}
-	}
-	if reason := h.finals[0][1]; !strings.Contains(reason, "successor") {
-		t.Fatalf("the finish reason %q must name the successor", reason)
-	}
-	if n := len(h.sessions); n != 3 {
-		t.Fatalf("sessions = %d, want three: the answer closes the card instead of buying a fourth", n)
-	}
-}
-
 // The successor activity files one card: the stuck card's objective with
 // the findings so far, the carried pull request and its size and budget,
 // queued on the direct track with no base of its own — it starts from

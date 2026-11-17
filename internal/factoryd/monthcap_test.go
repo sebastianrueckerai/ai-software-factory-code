@@ -192,7 +192,7 @@ func TestMonthAlarmZeroCap(t *testing.T) {
 func TestFileHumanTaskRecordsTheAsk(t *testing.T) {
 	ctx := context.Background()
 	q := HumanQuestion{Ask: "Raise the cap?", Why: "the cap is reached", Info: "a raise is a commit",
-		Choices: []QuestionChoice{{Value: AnswerGrant, Label: "Raise it"}, {Value: AnswerPark, Label: "Park"}}}
+		Choices: []QuestionChoice{{Value: "raise", Label: "Raise it"}, {Value: AnswerPark, Label: "Park"}}}
 	for _, adopt := range []bool{false, true} {
 		store, rows := newFakeStore(), &fakeEventRecorder{}
 		alarm, fj := monthAlarm(t, store, 50)

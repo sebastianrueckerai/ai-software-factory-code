@@ -49,7 +49,7 @@ type BoardTask struct {
 	WaitingOn    string
 	Dependencies string
 	QueueAhead   int
-	// SlotWait is the face's "waits for a slot, N ahead (L live)" of a card
+	// SlotWait is the face's "waits for its turn to start, N ahead (L running)" of a card
 	// queued for a work slot, "" for any other: the resumed cards come
 	// first, then the never-started ones by filing.
 	SlotWait string
@@ -245,7 +245,7 @@ func setSlotWaits(tasks []BoardTask) {
 		return cmp.Or(x.CreatedAt.Compare(y.CreatedAt), cmp.Compare(x.IssueNumber, y.IssueNumber), strings.Compare(x.ID, y.ID))
 	})
 	for n, i := range slices.Concat(resumed, fresh) {
-		tasks[i].SlotWait = fmt.Sprintf("waits for a slot, %d ahead (%d live)", n, live)
+		tasks[i].SlotWait = fmt.Sprintf("waits for its turn to start, %d ahead (%d running)", n, live)
 	}
 }
 
