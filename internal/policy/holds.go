@@ -126,10 +126,14 @@ const RefusedProjectCap = "refused_project_cap"
 // headroom cannot fit; the gateway serves the call on Big instead.
 const RefusedPremiumCap = "refused_premium_cap"
 
-// Refusal is a call the headroom or a tool cap cannot fit.
+// Refusal is a call the headroom or a tool cap cannot fit. Until, when
+// set, is the reset a refused_provider_limit refusal names: the moment
+// the provider said the class's limit lifts (the gateway's parse plus one
+// minute, from the refusal body's reset).
 type Refusal struct {
 	Decision string // refused_budget, refused_day_cap, refused_month_cap, refused_project_cap, refused_premium_cap, refused_tool_requests, refused_tool_eur or refused_task_status
 	Reason   string
+	Until    time.Time
 }
 
 // refusal is the headroom refusal decision with reason; the month cap's
