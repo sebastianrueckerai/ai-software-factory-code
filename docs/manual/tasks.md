@@ -84,19 +84,34 @@ stays queued, holding no slot.
 A human holds a card that has not started (queued and never admitted, or
 in `waiting-deps`) with the drawer's Hold or the chat's `hold_card`: a
 reason the board shows, and an optional release card, any card of the
-same repository of any plan. The held card gets no work slot, and its
-dependency wait asks nothing, until the human releases it (Release,
-`release_hold`) or its release card is `merged` or `done`; the hold
+same repository of any plan but not a plan itself, which is `done` once
+it files its cards, before their work lands. A release card that already
+waits on the held card, through its dependencies or another hold, is
+refused: both would wait for ever. The held card gets no work slot, and
+its dependency wait asks nothing, until the human releases it (Release,
+`release_hold`) or its release card is `merged` or `done`. The hold
 follows the release card's work into a retry or a successor, as a
-dependency edge does, and a replan that changes the held card carries
-the hold to the card that takes its work. A release card that ends `failed` or `closed`
-releases nothing: the card stays held and its chip turns to the warning
-that names the release card, its plan and how it ended. A held card owns
-no wait, so no queue or dependency flag opens a case on it, and rungs 0
-to 2 neither release, start nor close it: Act refuses their answer on it
-but a note, a settle, a withdrawal, a dependency edge and a filed card,
-naming the hold. The chat sets and ends a hold only on a line the human
-typed in that turn, or on their press. A card that ends or parks on a person or its image frees its slot,
+dependency edge does. A release card that ends `failed` or `closed`, or
+that a cut turns into a plan, releases nothing: the card stays held and
+its chip turns to the warning that names the release card, its plan and
+how it ended. A card that ends takes its hold with it, and Release
+refuses a card that no hold holds.
+
+A plan's revision keeps the key of a held card, which then takes the
+entry the revision gives that key. A revision that drops the key is
+refused at its filing, naming the hold, unless the human asked for the
+replan with their press or their word in the chat: then the revision
+closes the card, and its hold ends with it. The planner's record of the
+plan's cards shows each held card's hold.
+
+A held card owns no wait, so no queue or dependency flag opens a case on
+it. Rungs 0 to 2 neither start nor close it: Act refuses their resume,
+continue, handover, successor, close and a direct card's replan on it,
+naming the hold. Their other answers, a fund or a note among them, go
+through. The chat sets and ends a hold only on a line the human typed in
+that turn, or on their press.
+
+A card that ends or parks on a person or its image frees its slot,
 and the oldest queued card of its project starts (the pull, in filing
 order); the heal pass re-derives the same admission every minute.
 

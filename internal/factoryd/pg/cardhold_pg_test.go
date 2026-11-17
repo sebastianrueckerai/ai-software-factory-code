@@ -18,7 +18,8 @@ import (
 // ended. The row keeps it whole; the stamp refuses a held card; the board
 // words it with its release card's plan; it follows its release card into
 // a successor and a retry, as an edge does; an end that names the release
-// card it moved from ends nothing, a human's end any hold.
+// card it moved from ends nothing, a human's end any hold that holds its
+// card. A card that ends takes its hold with it.
 func TestPGStoreCardHold(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_card_hold"))
@@ -140,5 +141,20 @@ func TestPGStoreCardHold(t *testing.T) {
 	}
 	if err := s.SetAdmitted(ctx, "t-q"); err != nil || read("t-q").AdmittedAt == nil {
 		t.Fatalf("SetAdmitted once the hold ended = %v, want the stamp", err)
+	}
+
+	if err := s.CloseTask(ctx, "t-q2", []string{"queued"}, "closed", "the human closed it"); err != nil {
+		t.Fatal(err)
+	}
+	if ended, err := s.EndCardHold(ctx, "t-q2", ""); err != nil || ended {
+		t.Fatalf("the release of a closing card = %v, %v; want nothing ended", ended, err)
+	}
+	if err := s.TransitionTask(ctx, "t-q2", []string{"closing"}, "closed"); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := s.DB().QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE id = 't-q2'
+		AND (hold_at IS NOT NULL OR hold_by <> '' OR hold_reason <> '' OR hold_release IS NOT NULL)`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("the closed card's hold columns: %d rows set, %v; want none", left, err)
 	}
 }

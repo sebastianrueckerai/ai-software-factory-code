@@ -97,9 +97,16 @@ func (e ErrActRefused) Error() string { return string(e) }
 // case ends.
 var outsideActions = []string{ActRetry, ActReplan, ActClose, ActDeployNow, ActSalvage}
 
-// holdKeeps are the actions rungs 0 to 2 take on a card a human holds:
-// none releases it, starts it or closes it.
-var holdKeeps = []string{ActNote, ActSettle, ActWithdraw, ActSetDependency, ActRemoveDependency, ActFileCard}
+// holdStops reports whether answer res would start or close card t,
+// which rungs 0 to 2 never do to a card a human holds. A replan of a
+// direct card sends the card itself to its planner; one of a plan's card,
+// or of a failed dependency's work, leaves the card held.
+func holdStops(t Task, res Resolution) bool {
+	if dep, _ := res.Args["task_id"].(string); res.Action == ActReplan {
+		return dep == "" && !InPlan(t)
+	}
+	return slices.Contains([]string{ActResume, ActContinue, ActHandover, ActSuccessor, ActClose}, res.Action)
+}
 
 // endedCardActions are the actions a case of an ended card still takes: they
 // run or draw nothing for the card's work. A plan's criteria are judged and
@@ -179,13 +186,17 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	if err != nil {
 		return ActResult{Case: c}, err
 	}
-	if t.Held() && in.Rung < 3 && !slices.Contains(holdKeeps, in.Res.Action) {
+	if t.Held() && in.Rung < 3 && holdStops(t, in.Res) {
 		v, err := holdView(ctx, r.store, t)
 		if err != nil {
 			return ActResult{Case: c}, err
 		}
-		return ActResult{Case: c}, ErrActRefused(fmt.Sprintf("card %s is %s. Only a human releases a held card, starts it or closes it, so %s takes no %s on it: note the case, settle it, or hand it up to the human",
-			cardName(t), v.Line, who(in.Rung), in.Res.Action))
+		fit := "ask the human, who may " + in.Res.Action + " it"
+		if c.ID != 0 {
+			fit = "note the case, settle it, or hand it up to the human"
+		}
+		return ActResult{Case: c}, ErrActRefused(fmt.Sprintf("card %s is %s. Only a human releases a held card, starts it or closes it, so %s takes no %s on it: %s",
+			cardName(t), v.Line, who(in.Rung), in.Res.Action, fit))
 	}
 	if c.ID != 0 && Final(t.Status) && !(PlanWaitCase(c, t) && in.Res.Action == ActRetry) && !slices.Contains(endedCardActions, in.Res.Action) {
 		if _, known := ActionByName(in.Res.Action); !known {

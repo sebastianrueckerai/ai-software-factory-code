@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -24,7 +25,7 @@ type CardHold struct {
 }
 
 // Held reports whether t's hold holds it: one stands and the card has not
-// started. A hold on a card that ended holds nothing.
+// started.
 func (t Task) Held() bool {
 	return t.Hold != nil && (t.Status == "queued" || t.Status == "waiting-deps")
 }
@@ -43,9 +44,10 @@ var errHeld = errors.New("the card is on hold")
 
 // HoldView is where a card's hold stands, read with its release card:
 // Line words it with the human's reason; Warn marks a release card that
-// ended failed or closed, which releases nothing; Released one that ended
-// done or merged, whose hold the card's next admission or dependency
-// check ends.
+// releases nothing, one that ended failed or closed or one that became a
+// plan (a direct card cut into one), whose done comes before its work
+// lands; Released one that ended done or merged, whose hold the card's
+// next admission or dependency check ends.
 type HoldView struct {
 	Line     string
 	Warn     bool
@@ -76,10 +78,14 @@ func holdView(ctx context.Context, store interface {
 		}
 	}
 	v := HoldView{Line: fmt.Sprintf("on hold until %s is merged or done: %s", name, h.Reason), release: rel}
-	switch rel.Status {
-	case "done", "merged":
+	switch {
+	case rel.Track == policy.TrackPlan:
+		v.Warn = true
+		v.Line = fmt.Sprintf("on hold: its release card %s became a plan, which is done once it files its cards, before their work lands, so a human releases the hold or holds the card on the plan's last card: %s",
+			name, h.Reason)
+	case rel.Status == "done" || rel.Status == "merged":
 		v.Released = true
-	case "failed", "closed":
+	case rel.Status == "failed" || rel.Status == "closed":
 		v.Warn = true
 		v.Line = fmt.Sprintf("on hold: its release card %s ended %s and releases nothing, so a human releases the hold or holds the card on another card: %s",
 			name, rel.Status, h.Reason)
@@ -137,4 +143,29 @@ func (r *Runner) ReleaseCardHold(ctx context.Context, id string) (bool, error) {
 	}
 	pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
 	return true, nil
+}
+
+// heldFindings refuses revision next of the plan st judges when it drops
+// the key of a card a human holds: the revision's restart would close the
+// card, and only a human closes a held card. A replan a human asked for,
+// by their login and not as factoryd, the check-in or the chat on its own
+// word, may drop it. A kept key holds the card, which never started, and
+// gives it the revision's entry for that key.
+func (r *Runner) heldFindings(ctx context.Context, st replanState, next Plan) ([]string, error) {
+	if st.step.Origin == ReplanPerson && isPerson(st.step.By) {
+		return nil, nil
+	}
+	var found []string
+	for _, k := range st.old {
+		if !k.Held() || k.PlanKey == "" || slices.ContainsFunc(next.Cards, func(c PlanCard) bool { return c.Key == k.PlanKey }) {
+			continue
+		}
+		v, err := holdView(ctx, r.store, k)
+		if err != nil {
+			return nil, err
+		}
+		found = append(found, fmt.Sprintf("card %s (#%d) is %s. Only a human closes a held card, so keep its key: the card takes the entry this revision gives that key",
+			k.PlanKey, k.IssueNumber, v.Line))
+	}
+	return found, nil
 }

@@ -1672,6 +1672,13 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 		default:
 			state = "running" + onBranch
 		}
+		if k.Held() {
+			v, err := holdView(ctx, r.store, k)
+			if err != nil {
+				return replanRecord{}, false, err
+			}
+			state += ", " + oneLine(sanitize.Inbound(v.Line))
+		}
 		// the title is planner text drawn from an issue, and a finding is
 		// one line
 		title, _, _ := strings.Cut(sanitize.Inbound(k.Objective), "\n")

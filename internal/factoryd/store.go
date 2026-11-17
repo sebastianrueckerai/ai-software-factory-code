@@ -2441,10 +2441,15 @@ func (s *PGStore) Ping(ctx context.Context) error {
 // task, $2 the status it moves to, $3 the statuses it may move from. A
 // card that moves back from a final status (a reopen) is unfinished and
 // unsettled again, and any move ends a wait to resume: the card is no
-// resumed waiter, and its reason and time go with the wait.
+// resumed waiter, and its reason and time go with the wait. A card that
+// ends takes its hold with it.
 const (
 	transitionSet = `status = $2,
 		 finished_at = CASE WHEN $2 IN ('done', 'failed', 'closed', 'merged') THEN now() ELSE NULL END,
+		 hold_at = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE hold_at END,
+		 hold_by = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN '' ELSE hold_by END,
+		 hold_reason = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN '' ELSE hold_reason END,
+		 hold_release = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE hold_release END,
 		 settled_at = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN settled_at ELSE NULL END,
 		 gate = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN '' ELSE gate END,
 		 gate_since = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE gate_since END,
@@ -2542,11 +2547,12 @@ func (s *PGStore) SetCardHold(ctx context.Context, id string, h CardHold) (bool,
 	return n > 0, err
 }
 
-// EndCardHold ends card id's hold: any hold for release "", else only one
-// whose release card is release. False: no such hold stood.
+// EndCardHold ends card id's hold while it holds the card (Held): any
+// hold for release "", else only one whose release card is release.
+// False: no such hold holds it.
 func (s *PGStore) EndCardHold(ctx context.Context, id, release string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET hold_at = NULL, hold_by = '', hold_reason = '', hold_release = NULL
-		WHERE id = $1 AND hold_at IS NOT NULL AND ($2 = '' OR hold_release = $2)`, id, release)
+		WHERE id = $1 AND hold_at IS NOT NULL AND status IN ('queued', 'waiting-deps') AND ($2 = '' OR hold_release = $2)`, id, release)
 	if err != nil {
 		return false, err
 	}

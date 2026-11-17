@@ -2995,6 +2995,11 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		found = revisionFindings(revisions, p)
 	}
 	found = append(found, takeOffReasonFindings(p)...)
+	held, err := r.heldFindings(ctx, st, p)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	found = append(found, held...)
 	if found = append(found, replanFindings(st, p)...); len(found) > 0 {
 		return refuse(found)
 	}
@@ -3973,13 +3978,6 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		}
 		if len(ids) > 0 {
 			if err := r.store.AddTaskDeps(ctx, card.ID, ids); err != nil {
-				return nil, err
-			}
-		}
-		// a human's hold on the card it changes, which the replan closed,
-		// holds its work here, set before the issue too
-		if old, ok := byRef[c.From]; ok && c.From != "" && old.Hold != nil {
-			if _, err := r.store.SetCardHold(ctx, card.ID, *old.Hold); err != nil {
 				return nil, err
 			}
 		}

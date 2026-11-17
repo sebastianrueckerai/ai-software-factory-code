@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -134,6 +135,28 @@ func TestAReleaseCardThatEndsClosedOrFailedKeepsTheHold(t *testing.T) {
 				t.Fatalf("cases %+v, events %+v; want none", store.cases, store.events)
 			}
 		})
+	}
+}
+
+// A release card that a cut turned into a plan releases nothing when the
+// plan ends done, which it does once it files its cards: the card stays
+// held, and the line warns naming #2063.
+func TestAReleaseCardThatBecameAPlanKeepsTheHold(t *testing.T) {
+	ctx := context.Background()
+	store, rec, bounded := holdFixture(t, "t-cut", Task{ID: "t-cut", Repository: "demo/app", Kind: "agent", Track: policy.TrackPlan, Status: "done", IssueNumber: 2063})
+	pullQueued(ctx, store, bounded, "demo/app")
+	want := "on hold: its release card #2063 became a plan, which is done once it files its cards, before their work lands, " +
+		"so a human releases the hold or holds the card on the plan's last card: needs the finished pg split"
+	if h := store.tasks["t-held"]; len(rec.starts) != 0 || !h.Held() || h.QueueReason != want {
+		t.Fatalf("starts %v, hold %+v, reason %q; want none, the hold, and %q", rec.starts, h.Hold, h.QueueReason, want)
+	}
+	board, err := store.BoardTasks(ctx, "demo/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(board, func(b BoardTask) bool { return b.ID == "t-held" })
+	if v := board[i].HoldView; !v.Warn || v.Released || v.Line != want {
+		t.Fatalf("the board's hold = %+v, want the warning", v)
 	}
 }
 
@@ -374,10 +397,11 @@ func TestAHeldCardOwnsNoWait(t *testing.T) {
 	}
 }
 
-// Rungs 0 to 2 neither start, close nor release a held card: a retry of
-// rung 0, a resume of rung 1 and a close of rung 2 on its case are refused
-// naming the hold and what fits; rung 2's note and the human's retry are
-// not.
+// Rungs 0 to 2 neither start nor close a held card: a resume of rung 0, a
+// handover of rung 1 and a close of rung 2 on its case are refused naming
+// the hold and what fits, and so is rung 2's close with no case. Rung 2's
+// note and fund and rung 0's retry of the failed dependency start and
+// close nothing: they are taken, and the card stays held in waiting-deps.
 func TestARungsAnswerOnAHeldCardIsRefusedNamingTheHold(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, _, _ := newRetryRig(t)
@@ -385,42 +409,50 @@ func TestARungsAnswerOnAHeldCardIsRefusedNamingTheHold(t *testing.T) {
 	store.CreateTask(ctx, Task{ID: "t-rel", Kind: "agent", Status: "running", Track: policy.TrackDirect, Repository: "linkshort/linkshort",
 		IssueNumber: 31, Source: SourcePlan, Parent: "t-pl2"})
 	b := store.tasks["t-b"]
-	b.Hold = &CardHold{Reason: "waits for the pg split", Release: "t-rel", By: "sebastian"}
+	hold := CardHold{Reason: "waits for the pg split", Release: "t-rel", By: "sebastian"}
+	b.Hold = &hold
 	store.tasks["t-b"] = b
 	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseMonitorFlag, Status: CaseOpen}}
 	const held = "card #6 is on hold until #31 (plan #30) is merged or done: waits for the pg split. Only a human releases a held card, starts it or closes it, so "
+	const onCase = ": note the case, settle it, or hand it up to the human"
 	for _, c := range []struct {
 		in   ActInput
 		want string
 	}{
-		{ActInput{By: FactoryDecider, Rung: 0, Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}},
-			held + "rung 0 takes no retry on it: note the case, settle it, or hand it up to the human"},
-		{ActInput{By: CheckinDecider, Rung: 1, Res: Resolution{Action: ActResume}},
-			held + "rung 1 takes no resume on it: note the case, settle it, or hand it up to the human"},
-		{ActInput{By: "factory-chat", Rung: 2, Res: Resolution{Action: ActClose, Note: "the human closed its dependency"}},
-			held + "rung 2 takes no close on it: note the case, settle it, or hand it up to the human"},
+		{ActInput{CaseID: 3, By: FactoryDecider, Rung: 0, Res: Resolution{Action: ActResume}}, held + "rung 0 takes no resume on it" + onCase},
+		{ActInput{CaseID: 3, By: CheckinDecider, Rung: 1, Res: Resolution{Action: ActHandover, Args: map[string]any{"model": "stronger"}}}, held + "rung 1 takes no handover on it" + onCase},
+		{ActInput{CaseID: 3, By: ChatUser, Rung: 2, Res: Resolution{Action: ActClose, Note: "the human closed its dependency"}}, held + "rung 2 takes no close on it" + onCase},
+		{ActInput{By: ChatUser, Rung: 2, Res: Resolution{Action: ActClose, Note: "the human closed its dependency"}}, held + "rung 2 takes no close on it: ask the human, who may close it"},
 	} {
-		c.in.TaskID, c.in.CaseID = "t-b", 3
+		c.in.TaskID = "t-b"
 		var refused ErrActRefused
 		if _, err := r.Act(ctx, c.in); !errors.As(err, &refused) || err.Error() != c.want {
-			t.Errorf("rung %d's %s = %v\nwant %q", c.in.Rung, c.in.Res.Action, err, c.want)
+			t.Errorf("rung %d's %s on case %d = %v\nwant %q", c.in.Rung, c.in.Res.Action, c.in.CaseID, err, c.want)
 		}
 	}
 	if store.cases[0].Status != CaseOpen || store.tasks["t-b"].Status != "waiting-deps" {
 		t.Fatalf("case %+v, card %s; want both as they were", store.cases[0], store.tasks["t-b"].Status)
 	}
-	if _, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "factory-chat", Rung: 2, Res: Resolution{Action: ActNote, Note: "the human holds it"}}); err != nil {
+	if _, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: ChatUser, Rung: 2, Res: Resolution{Action: ActNote, Note: "the human holds it"}}); err != nil {
 		t.Fatalf("rung 2's note = %v, want it taken", err)
 	}
-	if _, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 3, Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}}); err != nil {
-		t.Fatalf("the human's retry = %v, want it taken", err)
+	if _, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: ChatUser, Rung: 2, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 1.0}}}); err != nil {
+		t.Fatalf("rung 2's fund = %v, want it taken", err)
+	}
+	store.cases = append(store.cases, Case{ID: 4, TaskID: "t-b", Kind: CaseMonitorFlag, Status: CaseOpen})
+	if _, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 4, By: FactoryDecider, Rung: 0, Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}}); err != nil {
+		t.Fatalf("rung 0's retry of the dependency = %v, want it taken", err)
+	}
+	if b := store.tasks["t-b"]; b.Status != "waiting-deps" || b.Hold == nil || *b.Hold != hold {
+		t.Fatalf("card #6 is %s with hold %+v after the answers, want waiting-deps with %+v", b.Status, b.Hold, hold)
 	}
 }
 
-// A replan that changes a held card into a new one carries the human's
-// hold to the card that takes its work: revision 2 files redirects-2
-// from the held redirects, and redirects-2 holds the same hold.
-func TestAReplanCarriesTheHoldToTheCardThatTakesItsWork(t *testing.T) {
+// heldPlanRig is fileRig with revision 1 filed, card redirects held, and
+// a replan of plan t-plan asked by by on its sibling links-api, the plan
+// back at its planner.
+func heldPlanRig(t *testing.T, by string) (*Runner, *fakeStore, Task, CardHold) {
+	t.Helper()
 	ctx := context.Background()
 	r, store, _, _, _ := fileRig(t, testPlan())
 	pinned := fixtureVersion(t)
@@ -428,23 +460,121 @@ func TestAReplanCarriesTheHoldToTheCardThatTakesItsWork(t *testing.T) {
 	if ref := requestPlan(t, r); len(ref.Refused) != 0 || len(ref.Filed) != 4 {
 		t.Fatalf("the children: %+v", ref)
 	}
+	cards := cardsByKey(t, store)
 	hold := CardHold{Reason: "after the pg split", By: "sebastian"}
-	if ok, err := store.SetCardHold(ctx, cardsByKey(t, store)["redirects"].ID, hold); err != nil || !ok {
+	if ok, err := store.SetCardHold(ctx, cards["redirects"].ID, hold); err != nil || !ok {
 		t.Fatalf("SetCardHold = %v, %v", ok, err)
 	}
-	p := store.tasks["t-plan"]
-	p.Status = "running"
-	store.tasks["t-plan"] = p
+	setStatus(store, "t-plan", "done")
+	if _, err := r.Replan(ctx, cards["links-api"].ID, ReplanAsk{By: by, Comment: "links-api is too wide"}); err != nil {
+		t.Fatalf("the replan of links-api: %v", err)
+	}
+	setStatus(store, "t-plan", "running")
+	return r, store, store.tasks[cards["redirects"].ID], hold
+}
+
+// The replan rung 2 asks on a held card's sibling files no revision that
+// drops the held card's key: the filing is refused naming the hold, and
+// the card stays queued and held. The planner's record names the hold. A
+// revision that keeps the key files, and the card keeps its hold under the
+// entry the revision gives it.
+func TestARungsReplanKeepsAHeldCardsKey(t *testing.T) {
+	ctx := context.Background()
+	r, store, held, hold := heldPlanRig(t, ChatUser)
+	tl, err := r.timeline.Objects.Get(ctx, "sessions/t-plan/timeline.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, pending, err := r.replanRecord(ctx, store.tasks["t-plan"], tl)
+	if err != nil || !pending {
+		t.Fatalf("replanRecord = %t, %v", pending, err)
+	}
+	line := fmt.Sprintf("#%d Redirects and clicks (feature, key redirects): never started, on hold: after the pg split; spent 0.00 of %.2f EUR in 0 sessions; its record is card-%d.md",
+		held.IssueNumber, held.BudgetEUR, held.IssueNumber)
+	if !slices.Contains(rec.findings, line) {
+		t.Fatalf("the planner's record = %q\nwant the line %q", rec.findings, line)
+	}
+
+	next := testPlan()
+	next.Cards[2].Key, next.Cards[2].From = "redirects-2", "redirects"
+	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, next))
+	want := fmt.Sprintf("card redirects (#%d) is on hold: after the pg split. Only a human closes a held card, so keep its key: the card takes the entry this revision gives that key", held.IssueNumber)
+	if err != nil || res.Revision != 0 || !slices.Equal(res.Findings, []string{want}) {
+		t.Fatalf("a revision that drops redirects: %+v, %v; want refused with %q", res, err, want)
+	}
+	if k := store.tasks[held.ID]; k.Status != "queued" || !k.Held() || *k.Hold != hold {
+		t.Fatalf("redirects is %s with hold %+v, want queued and held with %+v", k.Status, k.Hold, hold)
+	}
+
+	next = testPlan()
+	next.Cards[2].Title = "Redirects after the split"
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, next)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+		t.Fatalf("a revision that keeps redirects: %+v, %v", res, err)
+	}
+	k := store.tasks[held.ID]
+	if title, _, _ := strings.Cut(k.Objective, "\n"); k.Status != "queued" || !k.Held() || *k.Hold != hold || title != "Redirects after the split" {
+		t.Fatalf("redirects is %s with hold %+v and title %q, want queued, held with %+v, under the new title", k.Status, k.Hold, title, hold)
+	}
+}
+
+// The human's own replan may drop a held card: the revision files, its
+// restart closes the card, and the card's end takes the hold with it, so
+// the card that takes its work starts free.
+func TestTheHumansReplanMayDropAHeldCard(t *testing.T) {
+	ctx := context.Background()
+	r, store, held, _ := heldPlanRig(t, "sebastian")
 	next := testPlan()
 	next.Cards[2].Key, next.Cards[2].From = "redirects-2", "redirects"
 	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, next)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("revision 2: %+v, %v", res, err)
 	}
+	if k := store.tasks[held.ID]; k.Status != "closed" || k.Hold != nil {
+		t.Fatalf("redirects is %s with hold %+v, want closed with none", k.Status, k.Hold)
+	}
 	val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 2, int64(7))
 	if ref := getInto[PlanRef](t, val, err); len(ref.Refused) != 0 {
 		t.Fatalf("filing revision 2: %+v", ref)
 	}
-	if got := cardsByKey(t, store)["redirects-2"].Hold; got == nil || *got != hold {
-		t.Fatalf("redirects-2's hold = %+v, want %+v", got, hold)
+	if k := cardsByKey(t, store)["redirects-2"]; k.Status != "queued" || k.Hold != nil {
+		t.Fatalf("redirects-2 is %s with hold %+v, want queued with none", k.Status, k.Hold)
+	}
+}
+
+// A plan whose only open card is held stays open: its close check closes
+// nothing, asks nothing and comments nothing, with criteria or without,
+// and the card stays queued and held, its hold on the board.
+func TestAPlanWhoseOnlyOpenCardIsHeldStaysOpen(t *testing.T) {
+	ctx := context.Background()
+	hold := CardHold{Reason: "after the pg split", By: "sebastian"}
+	for name, rig := range map[string]func(*testing.T, ...string) (*Runner, *fakeStore, *planForgejo){
+		"criteria": tenCriteriaPlan,
+		"no criteria": func(t *testing.T, statuses ...string) (*Runner, *fakeStore, *planForgejo) {
+			r, s, _, fj := planWithoutCriteria(t, statuses...)
+			return r, s, fj
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, s, fj := rig(t, "done", "queued")
+			k := s.tasks["card-2"]
+			k.Kind, k.IssueNumber = "agent", 12
+			s.tasks["card-2"] = k
+			if ok, err := s.SetCardHold(ctx, "card-2", hold); err != nil || !ok {
+				t.Fatalf("SetCardHold = %v, %v", ok, err)
+			}
+			for range 2 {
+				r.planCloseCheck(ctx, "t-plan")
+			}
+			if p := s.tasks["t-plan"]; p.Status != "done" || closeRows(s) != 0 || len(s.approvals) != 0 || len(commentBodies(fj)) != 0 {
+				t.Fatalf("plan %s, plan_closed rows %d, approvals %+v, comments %q; want done with none", p.Status, closeRows(s), s.approvals, commentBodies(fj))
+			}
+			if k := s.tasks["card-2"]; k.Status != "queued" || !k.Held() {
+				t.Fatalf("card-2 is %s with hold %+v, want queued and held", k.Status, k.Hold)
+			}
+			board, err := s.BoardTasks(ctx, "linkshort/linkshort")
+			i := slices.IndexFunc(board, func(b BoardTask) bool { return b.ID == "card-2" })
+			if err != nil || i < 0 || board[i].HoldView.Line != "on hold: after the pg split" {
+				t.Fatalf("the board = %+v, %v; want card-2 with its hold line", board, err)
+			}
+		})
 	}
 }
