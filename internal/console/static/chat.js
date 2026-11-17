@@ -1662,7 +1662,7 @@ var chatView = (function () {
       return;
     }
     var n = open, m = pending, choice = b.dataset.answer;
-    var body = answerBody(m, choice, n, openOwner);
+    var body = chatView.answerBody(m, choice, n, openOwner);
     sending = true;
     answerRow.querySelectorAll("button").forEach(function (x) { x.disabled = true; });
     // a canceled request lost no answer: send it again once, and only a
