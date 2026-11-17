@@ -201,7 +201,8 @@ activities, each with a timeline step and a comment on the pull request:
    main: the plan's newest criteria card (its newest delta card, else its
    integration card) merged its own pull request and no card was delivered
    after it, or a run of the gate on main's head is on record for the
-   plan's cards as they stand. Otherwise only an approver's row settles it.
+   plan's cards as they stand. Otherwise only an approver's row settles it;
+   the production hold and a plan's Close count open criteria the same way.
    Once every card is final and a gate criterion has no row that settles
    it, the close runs the gate on the integration card: at its pull
    request's head when its rows judge main, else at main's head, the commit
