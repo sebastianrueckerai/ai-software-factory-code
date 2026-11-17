@@ -967,7 +967,7 @@ func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, repo Repo, p Pl
 // deltaSystem is the delta round's system prompt: one card under the open
 // plan that closes the named criteria; %s is the card's image field
 // (imageField).
-const deltaSystem = `You are the planner of a software factory. A plan's criteria are not met after its cards ran. You draft one more bounded card — a delta card — under the open plan, which closes the gap the criteria name. Answer with one JSON object and nothing else: {"card": {"title": "...", "brief": "...", "directories": ["..."], "depends_on": ["keys of the plan's existing cards"], "acceptance": [{"criterion": "the criterion id", "text": "what the card's tests prove, with the inputs and the numbers they expect"}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "..."%s}}. directories are the directories the card may change. depends_on names only keys the plan holds. acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers. Keep the card small: it closes the gap, nothing else. refused, when set, holds your earlier answers of this round and the plan rule each broke: answer again with a card that keeps every rule.`
+const deltaSystem = `You are the planner of a software factory. A plan's criteria are not met or were never judged after its cards ran: each criterion carries its state, unmet or never_judged, and the reason the criteria gate gave when it holds one. You draft one more bounded card — a delta card — under the open plan, which closes the gap the criteria name. Answer with one JSON object and nothing else: {"card": {"title": "...", "brief": "...", "directories": ["..."], "depends_on": ["keys of the plan's existing cards"], "acceptance": [{"criterion": "the criterion id", "text": "what the card's tests prove, with the inputs and the numbers they expect"}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "..."%s}}. directories are the directories the card may change. depends_on names only keys the plan holds. acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers. Keep the card small: it closes the gap, nothing else. refused, when set, holds your earlier answers of this round and the plan rule each broke: answer again with a card that keeps every rule.`
 
 // deltaPrompt is the delta round's system prompt for a project pinning
 // pins.
@@ -986,11 +986,20 @@ type deltaInput struct {
 	Refused  []deltaRefusal     `json:"refused,omitempty"`
 }
 
-// deltaCriterion is one open criterion as the delta round reads it.
+// deltaCriterion is one open criterion as the delta round reads it: its
+// state, unmet or never judged, and the reason the criteria gate never
+// judged it, when it gave one.
 type deltaCriterion struct {
 	PlanCriterion
+	State    string `json:"state"`
 	Evidence string `json:"evidence"`
+	Reason   string `json:"reason,omitempty"`
 }
+
+const (
+	deltaUnmet       = "unmet"
+	deltaNeverJudged = "never_judged"
+)
 
 // draftDelta runs one delta round on plan t (up to deltaAttempts planner
 // calls) and files the card it answers: a feature card, which joins the
@@ -1018,9 +1027,24 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 		return
 	}
 	open := openCriteria(p, verdicts)
+	runs, err := r.gateRuns(ctx, t.ID, integration.ID)
+	if err != nil {
+		log.Printf("plan %s: the delta round: %v", t.ID, err)
+		return
+	}
+	var gateReason string
+	if len(runs) > 0 {
+		gateReason, _ = runs[0].Detail["reason"].(string)
+	}
 	var criteria []deltaCriterion
 	for _, c := range open {
-		dc := deltaCriterion{PlanCriterion: c}
+		dc := deltaCriterion{PlanCriterion: c, State: deltaUnmet}
+		if _, ok := StandingRow(verdicts, c); !ok {
+			dc.State = deltaNeverJudged
+			if gateJudged(c.Kind) {
+				dc.Reason = gateReason
+			}
+		}
 		for _, v := range verdicts {
 			if v.Criterion == c.ID && v.Kind == c.Kind && v.Evidence != "" {
 				dc.Evidence = v.Evidence
@@ -1119,8 +1143,13 @@ func deltaKey(plan string, revision int, dues []PlanCatch) string {
 	for _, d := range dues {
 		fmt.Fprintf(h, "\n%s", d.Detail)
 	}
-	return "delta-" + hex.EncodeToString(h.Sum(nil))[:8]
+	return deltaKeyPrefix + hex.EncodeToString(h.Sum(nil))[:8]
 }
+
+const deltaKeyPrefix = "delta-"
+
+// isDeltaKey says whether a card's plan key is one deltaKey made.
+func isDeltaKey(key string) bool { return strings.HasPrefix(key, deltaKeyPrefix) }
 
 // deltaRefusal is an answer of the round the plan rules refused, and why.
 type deltaRefusal struct {
@@ -1322,7 +1351,16 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		return
 	}
 	if len(openCriteria(p, rows)) == 0 {
-		reached := integration.Status == "merged" || integration.Status == "done"
+		planCards, err := r.store.PlanCards(ctx, parent)
+		if err != nil {
+			log.Printf("plan %s: the close check: %v", parent, err)
+			return
+		}
+		delivered := func(c Task) bool { return c.Status == "merged" || c.Status == "done" }
+		// a delta card's gate judges a head that reached main and writes every row anew
+		reached := delivered(integration) || slices.ContainsFunc(planCards, func(c Task) bool {
+			return c.ID != integration.ID && c.Source == SourcePlan && isDeltaKey(c.PlanKey) && delivered(c)
+		})
 		if r.planClosed(ctx, parent) || !reached && !(Final(integration.Status) && judgedByPerson(p, rows)) || !r.planAtRest(ctx, t) {
 			return
 		}
@@ -1818,7 +1856,7 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 	}
 	r.openPlanAsk(ctx, t, repo, ApprovalCriteriaRerun, reason,
 		"factoryd: the plan's cards are done, and criteria were never judged: "+why+".\n\n"+
-			strings.Join(lines, "\n")+"\n\nWaive a criterion with your reason, or confirm the delivered cards meet them.", ids, integration)
+			strings.Join(lines, "\n")+"\n\nGrant one more bounded card, waive a criterion with your reason, or confirm the delivered cards meet them.", ids, integration)
 }
 
 // criteriaLines are cs's ids and one comment line each, tail after it.
