@@ -53,7 +53,7 @@ func poolFace(t *testing.T, r *rig) (pool poolLine, board, html, snap string) {
 	ck, s := r.loggedIn(t)
 	req := httptest.NewRequest(http.MethodGet, "/board?project=ai-software-factory-code", nil)
 	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
-	d, err := r.c.boardOf(req, boardFilter{Project: "ai-software-factory-code", View: viewWide}, actor{})
+	d, err := r.c.boardOf(req, boardFilter{Project: "ai-software-factory-code"}, actor{})
 	if err != nil {
 		t.Fatalf("the board of ai-software-factory-code: %v", err)
 	}

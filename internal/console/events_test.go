@@ -1007,7 +1007,7 @@ func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 		t.Fatal(err)
 	}
 	ck, _ := r.loggedIn(t)
-	for _, page := range []string{"", "?view=wide", "?project=linkshort", "?project=linkshort&view=wide"} {
+	for _, page := range []string{"", "?project=linkshort"} {
 		body := r.do(httptest.NewRequest(http.MethodGet, "/"+page, nil), ck).Body.String()
 		// the script asks for a card under the board's own query, the
 		// project it shows included
@@ -1024,7 +1024,7 @@ func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 			face := rest[:strings.Index(rest, "</article>")+len("</article>")]
 			rest = rest[len(face):]
 			if !strings.Contains(face[:strings.Index(face, ">")], " data-place=") {
-				faces-- // a face the swap leaves to the board's: an approval's, or a case row of the wide view
+				faces-- // a face the swap leaves to the board's: an approval's
 				continue
 			}
 			id, _, _ := strings.Cut(face[strings.Index(face, `data-card="`)+len(`data-card="`):], `"`)
@@ -1034,10 +1034,9 @@ func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 			}
 		}
 		// the code project: t-run, t-b, t-blk, the human task t-h and the
-		// escalated t-e's case row, which the wide view shows placed in its
-		// column alone; linkshort: the plan, its cards 2 to 5 and 7, the
-		// second spec and t-q
-		if want := map[string]int{"": 5, "?view=wide": 5, "?project=linkshort": 8, "?project=linkshort&view=wide": 8}[page]; faces != want {
+		// escalated t-e's case row; linkshort: the plan, its cards 2 to 5
+		// and 7, the second spec and t-q
+		if want := map[string]int{"": 5, "?project=linkshort": 8}[page]; faces != want {
 			t.Errorf("board%s shows %d faces, want %d", page, faces, want)
 		}
 	}
@@ -1744,8 +1743,8 @@ winListeners.popstate.forEach(function (fn) { fn({}); });
 out.popDoc = [box.value, requests.length, byID.board.dataset.query];
 await settle();
 await settle();
-byID.board.dataset.query = "?project=code&q=exp&view=wide";
-Object.assign(sandbox.location, {search: "?project=code&view=wide&q=exp"});
+byID.board.dataset.query = "?project=code&q=exp&queued=oldest";
+Object.assign(sandbox.location, {search: "?project=code&queued=oldest&q=exp"});
 requests = [];
 winListeners.popstate.forEach(function (fn) { fn({}); });
 out.popOrder = [byID.board.dataset.query, requests.length];
@@ -1786,7 +1785,7 @@ console.log(JSON.stringify(out));
 		`"opened":[false,["GET /cards/t-9/drawer"]],"tabBeforeSettle":0,"tab":1,"closed":[true,"",[[null,"/?project=code&doc=docs%2Fa.md"]]],` +
 		`"theme":1,` +
 		`"flatTheme":[0,2],"flatCard":[0,false],"flatTab":1,"noboard":[2,0],"popped":[[],"",["GET /board?project=code"]],"popDoc":["",0,"?project=code"],` +
-		`"popOrder":["?project=code&q=exp&view=wide",0],"backBox":["old",["GET /board?project=code&q=lock","GET /board?project=code&q=old"]],` +
+		`"popOrder":["?project=code&q=exp&queued=oldest",0],"backBox":["old",["GET /board?project=code&q=lock","GET /board?project=code&q=old"]],` +
 		`"twoShots":[0,1],"streams":1}`
 	if strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
@@ -1827,12 +1826,9 @@ func TestBoardActivityLine(t *testing.T) {
 	}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
 	for _, id := range []string{"t-run", "t-e", "t-b", "t-rev", "t-fin"} {
-		for _, page := range []string{body, wide} {
-			if face := faceOf(t, page, id); strings.Contains(face, "activity") || strings.Contains(face, "retried") || strings.Contains(face, "status in-review") {
-				t.Errorf("the small card of %s carries an activity line:\n%s", id, face)
-			}
+		if face := faceOf(t, body, id); strings.Contains(face, "activity") || strings.Contains(face, "retried") || strings.Contains(face, "status in-review") {
+			t.Errorf("the small card of %s carries an activity line:\n%s", id, face)
 		}
 	}
 	if face := faceOf(t, body, "t-e"); !strings.Contains(face, `<strong class="title">Use a replica or a shard?</strong>`) {

@@ -248,8 +248,7 @@ func TestAFiledRollCardIsQueued(t *testing.T) {
 }
 
 // A card's press moves the card at once (C31): every column names the
-// statuses it holds, in the four columns and the wide view, and the
-// approval's answer the status of its task, whose card the decided request
+// statuses it holds, and the approval's answer the status of its task, whose card the decided request
 // leaves standing. The press lands in one row, and it answers with the
 // board's refresh alone when htmx sends it; a browser's form keeps its
 // redirect.
@@ -270,8 +269,6 @@ func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 			`data-holds="queued waiting-deps waiting-image">`, `data-holds="running closing in-review merged">`, `data-holds="done failed closed"`},
 		"/cards/t-card/drawer?tab=overview": {
 			`<form method="post" action="/approvals/31/approve" hx-post="/approvals/31/approve" class="answer" data-answer="approve_merge" data-to="in-review">`},
-		"/?project=ai-software-factory-code&view=wide": {`data-holds="queued waiting-deps">`, `data-holds="running closing">`, `data-holds="in-review">`, `data-holds="merged">`,
-			`data-holds="failed"`, `data-holds="closed"`},
 	} {
 		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()
 		for _, want := range wants {

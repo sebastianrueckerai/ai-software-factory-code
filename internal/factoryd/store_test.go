@@ -2009,12 +2009,16 @@ func (s *fakeStore) CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, er
 }
 
 // BoardTasks are repository's live cards as BoardTasks reads them, by
-// priority and id; a chat task is no card.
+// priority and id; a chat task and a helper task are no card, and each
+// card holds its live helpers.
 func (s *fakeStore) BoardTasks(ctx context.Context, repository string) ([]BoardTask, error) {
-	var out []BoardTask
+	var all, out []BoardTask
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.Kind != KindChat && !factorydFinal(t.Status) {
-			out = append(out, BoardTask{Task: t})
+		all = append(all, BoardTask{Task: t})
+	}
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.Kind != KindChat && !factorydFinal(t.Status) && !Helper(t) {
+			out = append(out, BoardTask{Task: t, Helpers: HelpersOf(all, t.ID)})
 		}
 	}
 	slices.SortFunc(out, func(a, b BoardTask) int {

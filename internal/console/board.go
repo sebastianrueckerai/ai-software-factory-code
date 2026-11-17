@@ -466,13 +466,6 @@ func isState(k card, v string) bool {
 	return false
 }
 
-// stateColumns are the wide view's columns, in board order; waiting-deps
-// counts as queued, closing as running.
-var stateColumns = []struct{ Title, Status string }{
-	{"Queued", "queued"}, {"Running", "running"}, {"Waiting on a human", "waiting-human"}, {"Waiting for image", "waiting-image"}, {"Waiting on the author", "waiting-poster"},
-	{"In review", "in-review"}, {"Merged", "merged"}, {"Done", "done"}, {"Failed", "failed"}, {"Closed", "closed"},
-}
-
 type card struct {
 	factoryd.Task
 	IssueURL string
@@ -565,6 +558,9 @@ type card struct {
 	Failure string
 	// Face is the card's small card (faceOf).
 	Face faceView
+	// Helper is the card's newest helper task that has not ended, nil for
+	// none: the step its state names.
+	Helper *factoryd.Task
 }
 
 // Routine: a routine's run filed the card, which wears the chip (C16).
@@ -573,17 +569,16 @@ func (k card) Routine() bool { return k.Source == factoryd.SourceRoutine }
 // fine is a card's fine state as a chip in the pill's hues.
 type fine struct{ Words, Class string }
 
-// fineStates are what k's column and pill leave unsaid: retrying; in the
-// four columns waiting on the author, which the wide view has a column
-// for; and stale. Failed and closed are the pill's own words.
-func fineStates(k card, wide bool) []fine {
+// fineStates are what k's column and pill leave unsaid: retrying, waiting
+// on the author and stale. Failed and closed are the pill's own words.
+func fineStates(k card) []fine {
 	var out []fine
 	switch {
 	case k.Provider:
 		out = append(out, fine{providerWords, "st-waiting"})
 	case k.Retrying:
 		out = append(out, fine{"retrying", "st-running"})
-	case !wide && k.Status == "waiting-poster":
+	case k.Status == "waiting-poster":
 		out = append(out, fine{"waiting on the author", "st-waiting hollow"})
 	}
 	if k.Stale {
@@ -830,8 +825,8 @@ type column struct {
 	// progress and Done have one, Needs you none.
 	Menu  *colMenu
 	Cards []card
-	// Needs is the five columns' Needs you: what the wide view's human
-	// lane holds and every card that needs the viewer, oldest first.
+	// Needs is Needs you's items: the approvals, the cases at the human
+	// and every card that needs the viewer, oldest first.
 	Needs []need
 	// Finished is a column of finished cards' key, the status it holds
 	// (done for the four columns' Done, which holds all three): the col of
@@ -913,8 +908,7 @@ type colMenu struct {
 	ClearQuery     string
 }
 
-// need is an item of the human lane, or of the Needs you column: an
-// approval request, a card with its case at the human and its answer form
+// need is an item of the Needs you column: an approval request, a card with its case at the human and its answer form
 // (CSRF), or a card that needs the viewer; Since is when it began to wait.
 type need struct {
 	Since    time.Time
@@ -935,14 +929,11 @@ func (n need) Waiting() string {
 	return minutes(time.Since(n.Since))
 }
 
-// viewWide is the board's wide view: a column per task state, as the
-// board was before the four columns.
-const viewWide = "wide"
-
-// boardFilter is what the board was asked to show: the project and the
-// view; every form on it carries it back, so an action keeps the view.
+// boardFilter is what the board was asked to show: the project, the find
+// and the columns' choices; every form on it carries it back, so an action
+// keeps the view.
 type boardFilter struct {
-	Project, View string
+	Project string
 	// Q is the find (C13): words and key:value terms that narrow every
 	// column, kept by every form, the poll, the fragments and the stream.
 	Q string
@@ -983,7 +974,7 @@ func (f boardFilter) Period() string {
 
 // whole: the find or the Done column's show narrows the finished cards,
 // so the board reads them all rather than a page.
-func (f boardFilter) whole() bool { return f.Q != "" || !f.wide() && f.Done.Only != "" }
+func (f boardFilter) whole() bool { return f.Q != "" || f.Done.Only != "" }
 
 // colFilter is a column's order and show from its menu (C13): "" is the
 // default, arrival newest first and every card.
@@ -1051,13 +1042,8 @@ func readCols(f *boardFilter, get func(string) string) {
 			f.Unit = u
 		}
 	}
-	for _, key := range factoryd.FinalStatuses {
-		if n, err := strconv.Atoi(get(key + "-shown")); err == nil && n > 0 {
-			if f.Shown == nil {
-				f.Shown = map[string]int{}
-			}
-			f.Shown[key] = n
-		}
+	if n, err := strconv.Atoi(get("done-shown")); err == nil && n > 0 {
+		f.Shown = map[string]int{"done": n}
 	}
 	for _, m := range colMenus {
 		c := colFilter{Order: get(m.Name), Only: get(m.Name + "-only")}
@@ -1083,7 +1069,7 @@ type hidden struct{ Name, Value string }
 // menu's form its own column's two, the routines control's form
 // routines with its period.
 func (f boardFilter) Hidden(except ...string) []hidden {
-	fields := []hidden{{"project", f.Project}, {"view", f.View}, {"q", f.Q}}
+	fields := []hidden{{"project", f.Project}, {"q", f.Q}}
 	for _, m := range colMenus {
 		c := f.col(m.Name)
 		fields = append(fields, hidden{m.Name, c.Order}, hidden{m.Name + "-only", c.Only})
@@ -1103,7 +1089,7 @@ func (f boardFilter) Hidden(except ...string) []hidden {
 
 // formFilter is the board's filter a form carried back.
 func formFilter(r *http.Request) boardFilter {
-	f := boardFilter{Project: r.PostFormValue("project"), View: r.PostFormValue("view"), Q: strings.TrimSpace(r.PostFormValue("q"))}
+	f := boardFilter{Project: r.PostFormValue("project"), Q: strings.TrimSpace(r.PostFormValue("q"))}
 	readCols(&f, r.PostFormValue)
 	return f
 }
@@ -1111,21 +1097,16 @@ func formFilter(r *http.Request) boardFilter {
 // urlFilter is the board's filter in the URL's query.
 func urlFilter(r *http.Request) boardFilter {
 	q := r.URL.Query()
-	f := boardFilter{Project: q.Get("project"), View: q.Get("view"), Q: strings.TrimSpace(q.Get("q"))}
+	f := boardFilter{Project: q.Get("project"), Q: strings.TrimSpace(q.Get("q"))}
 	readCols(&f, q.Get)
 	return f
 }
-
-func (f boardFilter) wide() bool { return f.View == viewWide }
 
 // query is the filter as a URL query, empty when it names nothing.
 func (f boardFilter) query() string {
 	q := url.Values{}
 	if f.Project != "" {
 		q.Set("project", f.Project)
-	}
-	if f.View != "" {
-		q.Set("view", f.View)
 	}
 	if f.Q != "" {
 		q.Set("q", f.Q)
@@ -1246,25 +1227,21 @@ type boardData struct {
 	User string
 	CSRF string
 	Page string // the layout marks the bar's current destination: the board
-	// Project and View are the board's filter, which every form
-	// on it carries back so an action keeps the view.
+	// boardFilter is the board's filter, which every form on it carries
+	// back so an action keeps the view.
 	boardFilter
-	Query       string   // the filter as a URL query for the poll's hx-get
-	Writes      bool     // the viewer writes the shown project: its drawer and its stream's rows are theirs
-	Chat        bool     // the project agent's panel shows beside the five columns, its input to a writer
-	Messengers  bool     // the layout's notifications link
-	ToggleQuery string   // the filter with the other view
-	ClearQuery  string   // the filter without the find, the ×'s link (C13)
-	whole       []column // the columns before the find narrowed them, the menus'
-	Projects    []string // the projects the viewer writes, and the shown one
-	Status      statusLine
-	Columns     []column
-	HumanTasks  []card
-	Escalations []need
-	Approvals   []need
-	Problems    []string
-	Approver    bool // may authorize the shown project's spend
-	Factory     bool // writes the factory's own code: the layout links the factory-level pages
+	Query      string   // the filter as a URL query for the poll's hx-get
+	Writes     bool     // the viewer writes the shown project: its drawer and its stream's rows are theirs
+	Chat       bool     // the project agent's panel shows beside the four columns, its input to a writer
+	Messengers bool     // the layout's notifications link
+	ClearQuery string   // the filter without the find, the ×'s link (C13)
+	whole      []column // the columns before the find narrowed them, the menus'
+	Projects   []string // the projects the viewer writes, and the shown one
+	Status     statusLine
+	Columns    []column
+	Problems   []string
+	Approver   bool // may authorize the shown project's spend
+	Factory    bool // writes the factory's own code: the layout links the factory-level pages
 	// Autonomy is the shown project's autonomy state, which the chat's
 	// level control shows and an approver changes (roadmap 239, C14), and
 	// Levels the four states with their words; empty: no policy in force.
@@ -1339,13 +1316,9 @@ func (c *Console) runURL(repository string, run int64) string {
 	return fmt.Sprintf("%s/%s/actions/runs/%d", strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/"), repository, run)
 }
 
-// counts are the board's column counts in the page's order, the wide
-// view's human lane first.
+// counts are the board's column counts in the page's order.
 func (c *Console) counts(d boardData) ([]string, error) {
 	var out []string
-	if d.wide() {
-		out = append(out, strconv.Itoa(len(d.Approvals)), strconv.Itoa(len(d.Escalations)), strconv.Itoa(len(d.HumanTasks)))
-	}
 	for _, col := range d.Columns {
 		var b strings.Builder
 		if err := c.tmpl.ExecuteTemplate(&b, "count", col); err != nil {
@@ -1379,12 +1352,6 @@ func (d boardData) faces() string {
 				fmt.Fprintf(&b, "approval %d %s\n", n.Approval.ID, n.Approval.Waiting())
 			}
 		}
-	}
-	for _, k := range d.HumanTasks {
-		add(k)
-	}
-	for _, n := range d.Escalations {
-		add(n.Card)
 	}
 	return b.String()
 }
@@ -1502,10 +1469,6 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 // readBoard is the board under f for a GET, false after it answered the
 // refusal.
 func (c *Console) readBoard(w http.ResponseWriter, r *http.Request, f boardFilter) (boardData, bool) {
-	if f.View != "" && !f.wide() {
-		http.Error(w, "view must be "+viewWide+" or none", http.StatusBadRequest)
-		return boardData{}, false
-	}
 	d, err := c.boardOf(r, f, button(r))
 	switch {
 	case errors.Is(err, errNoProject):
@@ -1534,10 +1497,6 @@ func (c *Console) finishedPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.After.At = at
-	if f.View != "" && !f.wide() {
-		http.Error(w, "view must be "+viewWide+" or none", http.StatusBadRequest)
-		return
-	}
 	col, ok := c.readFinishedColumn(w, r, f)
 	if !ok {
 		return
@@ -1545,22 +1504,13 @@ func (c *Console) finishedPage(w http.ResponseWriter, r *http.Request) {
 	c.render(w, "finished-page", col)
 }
 
-// finishedColumn is the view's column of finished cards key — the four
-// columns' Done, which holds all three final states, or the wide view's
-// column of that state — false when the view has none.
-func finishedColumn(f boardFilter, key string) (column, bool) {
-	if !f.wide() {
-		if key != "done" {
-			return column{}, false
-		}
-		return column{Title: columnTitles[colDone], Finished: key}, true
+// finishedColumn is the board's column of finished cards key, Done, which
+// holds all three final states; false for any other key.
+func finishedColumn(key string) (column, bool) {
+	if key != "done" {
+		return column{}, false
 	}
-	for _, s := range stateColumns {
-		if s.Status == key && factoryd.Final(s.Status) {
-			return column{Title: s.Title, Finished: s.Status}, true
-		}
-	}
-	return column{}, false
+	return column{Title: columnTitles[colDone], Finished: key}, true
 }
 
 // readFinishedColumn is the board's column of finished cards f.Col, f's
@@ -1581,7 +1531,7 @@ func (c *Console) readFinishedColumn(w http.ResponseWriter, r *http.Request, f b
 		http.Error(w, "no project "+f.Project+" takes agent tasks", http.StatusNotFound)
 		return column{}, false
 	}
-	col, ok := finishedColumn(f, f.Col)
+	col, ok := finishedColumn(f.Col)
 	if !ok {
 		http.Error(w, "the board has no column of finished cards "+f.Col, http.StatusBadRequest)
 		return column{}, false
@@ -1753,11 +1703,10 @@ func (v *boardView) approves(repository string) bool {
 	return slices.Contains(v.policy.ApproversOf(repository), v.user)
 }
 
-// boardCard is bt's card as the board shows it, in a column, the human
-// lane or the escalations, and as the card fragment swaps it in; its
-// activity line, checks and forms follow from finishCards. Place is
-// where the board puts it, in either view: the script swaps a card whose
-// place changed with the whole board.
+// boardCard is bt's card as the board shows it, in a column or in Needs
+// you, and as the card fragment swaps it in; its activity line, checks
+// and forms follow from finishCards. Place is where the board puts it:
+// the script swaps a card whose place changed with the whole board.
 func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.BoardTask) card {
 	t := bt.Task
 	k := c.card(t)
@@ -1786,6 +1735,10 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	}
 	// a merged card's row may still name gate merge-queue
 	k.QueueAhead, k.MergeBehind = bt.QueueAhead, bt.MergeBehind
+	if n := len(bt.Helpers); n > 0 {
+		h := bt.Helpers[n-1].Task
+		k.Helper = &h
+	}
 	if v.humanLane(t) {
 		k.Question = bt.Question
 		if bt.Question != nil {
@@ -1953,7 +1906,7 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 	c.faceTimelines(ctx, each)
 	each(setActivity)
 	c.callTotals(ctx, each)
-	each(func(k *card) { k.Fine = fineStates(*k, v.filter.wide()) })
+	each(func(k *card) { k.Fine = fineStates(*k) })
 	setForms := func(k *card) {
 		ok, err := c.writesRepo(ctx, v.user, k.Repository)
 		if err != nil && !v.unchecked {
@@ -2058,9 +2011,7 @@ func (c *Console) shownProject(ctx context.Context, r *http.Request, v *boardVie
 
 // boardOf is the board of one project, f.Project or else the first the
 // viewer writes, the project's cards, as the session's
-// human sees it. The four columns are the default, the human lane folded
-// into Needs you; the wide view puts a column per state under the human
-// lane. act is the actor whose board read this is — the
+// human sees it in the four columns. act is the actor whose board read this is — the
 // button's or the chat's — which its approval cards read the head's
 // checks as (#1013).
 func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData, error) {
@@ -2098,7 +2049,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			d.Docs = v.Document.ChatOf(v.Projects[shown.Name]).DocRepo
 		}
 	}
-	d.Chat = c.cfg.Chat != nil && c.cfg.Operator != nil && shown.Name != "" && !f.wide()
+	d.Chat = c.cfg.Chat != nil && c.cfg.Operator != nil && shown.Name != ""
 	if d.Chat {
 		if row, ok, err := c.cfg.Chat.ChatIntake(ctx, shown.Repository); err != nil {
 			log.Printf("console: the intake of %s: %v", shown.Name, err)
@@ -2107,35 +2058,13 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		}
 	}
 	v.filter, d.boardFilter, d.Query = f, f, f.query()
-	wide := f.wide()
-	other := f
-	if other.View = viewWide; wide {
-		other.View = ""
-	}
-	d.ToggleQuery = other.query()
 	clear := f
 	clear.Q = ""
 	d.ClearQuery = clear.query()
-	byStatus := map[string]int{}
-	if wide {
-		for _, col := range stateColumns {
-			byStatus[col.Status] = len(d.Columns)
-			k := column{Title: col.Title, Holds: col.Status}
-			if factoryd.Final(col.Status) {
-				k.Finished = col.Status
-			}
-			d.Columns = append(d.Columns, k)
-		}
-		byStatus["closing"] = byStatus["running"]
-		d.Columns[byStatus["closing"]].Holds += " closing"
-		byStatus["waiting-deps"] = byStatus["queued"]
-		d.Columns[byStatus["waiting-deps"]].Holds += " waiting-deps"
-	} else {
-		for i, title := range columnTitles {
-			d.Columns = append(d.Columns, column{Title: title, Holds: strings.Join(columnHolds[i], " ")})
-		}
-		d.Columns[colDone].Finished = "done"
+	for i, title := range columnTitles {
+		d.Columns = append(d.Columns, column{Title: title, Holds: strings.Join(columnHolds[i], " ")})
 	}
+	d.Columns[colDone].Finished = "done"
 
 	tasks, err := c.cfg.Tasks.BoardTasks(ctx, shown.Repository)
 	if err != nil {
@@ -2154,9 +2083,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			v.byID[bt.ID] = bt.Task
 		}
 	}
-	escalations := map[string]factoryd.BoardTask{}
 	var needs []need
-	cs, err := c.caseSetOf(ctx, shown.Repository)
+	cs, err := c.caseSetOf(ctx, shown.Repository, tasks...)
 	if err != nil {
 		log.Printf("console: the cases of %s: %v", shown.Name, err)
 		v.problems = append(v.problems, "the cases waiting on you could not be read")
@@ -2191,9 +2119,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		case col == colNeedsYou && !v.planned[t.ID]:
 			d.Status.NeedYou++
 		}
-		if t.Status == "waiting-human" && v.planned[t.ID] {
-			escalations[t.ID] = bt
-		}
 		k := c.boardCard(ctx, v, bt)
 		// a card that holds a case at the human is one row of Needs you, its
 		// case in view, and yields its column to it as a merge card does
@@ -2207,26 +2132,10 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 				break
 			}
 			if holds {
-				if wide {
-					d.HumanTasks = append(d.HumanTasks, k)
-					d.Escalations = append(d.Escalations, row)
-				} else {
-					needs = append(needs, row)
-				}
+				needs = append(needs, row)
 				break
 			}
-			if !wide {
-				needs = append(needs, need{Since: t.CreatedAt, Card: k})
-				break
-			}
-			d.HumanTasks = append(d.HumanTasks, k)
-		case wide:
-			if i, ok := byStatus[t.Status]; ok {
-				d.Columns[i].Cards = append(d.Columns[i].Cards, k)
-			}
-			if holds {
-				d.Escalations = append(d.Escalations, row)
-			}
+			needs = append(needs, need{Since: t.CreatedAt, Card: k})
 		case holds:
 			needs = append(needs, row)
 		case col == colNeedsYou:
@@ -2255,16 +2164,10 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver, true)
 		k.Filter, k.Writer = f, d.Writes
 		d.Status.NeedYou++
-		if wide {
-			d.Approvals = append(d.Approvals, need{Since: a.CreatedAt, Approval: &k})
-		} else {
-			needs = append(needs, need{Since: a.CreatedAt, Approval: &k})
-		}
+		needs = append(needs, need{Since: a.CreatedAt, Approval: &k})
 	}
-	if !wide {
-		slices.SortStableFunc(needs, func(a, b need) int { return a.Since.Compare(b.Since) })
-		d.Columns[colNeedsYou].Needs = needs
-	}
+	slices.SortStableFunc(needs, func(a, b need) int { return a.Since.Compare(b.Since) })
+	d.Columns[colNeedsYou].Needs = needs
 	c.finishCards(ctx, v, func(fn func(*card)) {
 		for i := range d.Columns {
 			for j := range d.Columns[i].Cards {
@@ -2276,19 +2179,11 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 				}
 			}
 		}
-		for i := range d.HumanTasks {
-			fn(&d.HumanTasks[i])
-		}
-		for i := range d.Escalations {
-			fn(&d.Escalations[i].Card)
-		}
 	})
 	c.setFaces(ctx, v, &d)
 	d.whole = d.Columns
 	d.Columns = find(d.Columns, f.Q)
-	if !wide {
-		arrange(&d, f)
-	}
+	arrange(&d, f)
 	if shown.Name != "" {
 		c.statusLine(ctx, v, f, shown, &d)
 		if c.cfg.Routines != nil {
@@ -2305,9 +2200,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 // for GET /board/finished f.Col's page after f.After, and the column
 // gets its whole count and the form of its next page.
 func (c *Console) readFinished(ctx context.Context, d *boardData, f boardFilter, repository string) ([]factoryd.BoardTask, error) {
-	q := factoryd.FinishedQuery{Repository: repository, Since: time.Now().Add(-finishedSince), Oldest: !f.wide() && f.Done.Order == "oldest"}
+	q := factoryd.FinishedQuery{Repository: repository, Statuses: factoryd.FinalStatuses, Since: time.Now().Add(-finishedSince), Oldest: f.Done.Order == "oldest"}
 	if f.whole() {
-		q.Statuses = factoryd.FinalStatuses
 		all, _, err := c.cfg.Tasks.FinishedTasks(ctx, q)
 		return all, err
 	}
@@ -2317,10 +2211,7 @@ func (c *Console) readFinished(ctx context.Context, d *boardData, f boardFilter,
 		if col.Finished == "" || f.Col != "" && col.Finished != f.Col {
 			continue
 		}
-		q.Statuses, q.After, q.Limit = []string{col.Finished}, f.After, max(finishedPerPage, f.Shown[col.Finished])
-		if !f.wide() {
-			q.Statuses = factoryd.FinalStatuses
-		}
+		q.After, q.Limit = f.After, max(finishedPerPage, f.Shown[col.Finished])
 		if f.Col != "" {
 			q.Limit = finishedPerPage
 		}
@@ -2473,7 +2364,7 @@ func (c *Console) placeGhosts(ctx context.Context, v *boardView, d *boardData, r
 	} else if i := slices.IndexFunc(views, func(rv factoryd.RoutineView) bool { return rv.Soon }); i >= 0 {
 		d.Status.RoutineCell = "↻ " + cellWord(views[i].Routine.Name) + " in " + coarse(views[i].Next.Sub(now))
 	}
-	if d.wide() || len(views) == 0 {
+	if len(views) == 0 {
 		return
 	}
 	d.HasRoutines = true
@@ -3100,16 +2991,16 @@ func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	// the five columns stand a human's open card in Needs you
-	inNeeds := fiveColumn(bt.Task) == colNeedsYou || bt.Kind == "human" && !factoryd.Final(bt.Status)
-	n, needs := need{Since: waitingSince(bt), Card: k}, inNeeds && !v.filter.wide()
+	needs := fiveColumn(bt.Task) == colNeedsYou || bt.Kind == "human" && !factoryd.Final(bt.Status)
+	n := need{Since: waitingSince(bt), Card: k}
 	if bt.Kind == "human" {
 		n.Since = bt.CreatedAt
 	}
-	if cs, err := c.caseSetOf(ctx, bt.Repository); err != nil {
+	if cs, err := c.caseSetOf(ctx, bt.Repository, bt); err != nil {
 		log.Printf("console: the cases of %s: %v", bt.ID, err)
 	} else {
 		v.cases = cs
-		if cs.holds(bt.Task) && !v.filter.wide() {
+		if cs.holds(bt.Task) {
 			all, _ := c.coderProjects(ctx)
 			if i := slices.IndexFunc(all, func(p factoryd.Project) bool { return p.Repository == bt.Repository }); i >= 0 {
 				v.filter.Project = all[i].Name

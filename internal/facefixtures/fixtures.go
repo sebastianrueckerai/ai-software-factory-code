@@ -35,7 +35,8 @@ import (
 // question_asked row, nil for a case no ask put there; Approval is the
 // pending request the card waits on and Plan a plan card's newest
 // revision, nil for none. Brief is the facts a Go-filed card's brief is
-// written from (factoryd.SourceBriefs).
+// written from (factoryd.SourceBriefs). Parent is a helper task's parent,
+// the card the board shows the helper on; nil for any other card.
 type Fixture struct {
 	Group, Kind string
 	Task        factoryd.Task
@@ -45,6 +46,7 @@ type Fixture struct {
 	Approval    *factoryd.ApprovalRequest
 	Plan        *factoryd.Plan
 	Brief       factoryd.BriefFacts
+	Parent      *factoryd.Task
 }
 
 // The groups of All. A source's Kind is the source and the column it
@@ -434,7 +436,7 @@ func (b *builder) sources() {
 			kind := s.name + "/" + col.Name
 			t := s.card(b, n, col.Status)
 			if col.Status != "waiting-human" {
-				b.out = append(b.out, Fixture{Group: GroupSource, Kind: kind, Task: t, Facts: facts(t, ""), Brief: s.brief})
+				b.out = append(b.out, b.onParent(Fixture{Group: GroupSource, Kind: kind, Task: t, Facts: facts(t, ""), Brief: s.brief}))
 				continue
 			}
 			t.Usage.Attempts = 3
@@ -442,7 +444,7 @@ func (b *builder) sources() {
 			in := capStop(&f)
 			fx := b.stop(GroupSource, kind, n*3, t, f, in, nil, 40*time.Minute)
 			fx.Brief = s.brief
-			b.out = append(b.out, fx)
+			b.out = append(b.out, b.onParent(fx))
 		}
 	}
 	for _, s := range humanSources {
@@ -574,13 +576,32 @@ var agentSources = []agentSource{
 // issue, its brief its source's over the parent's text.
 func helper(source string) func(b *builder, n int64, status string) factoryd.Task {
 	return func(b *builder, n int64, status string) factoryd.Task {
-		parent := b.parentCard()
+		parent := b.helperParent(source)
 		br := factoryd.SourceBriefs[source](factoryd.BriefFacts{})
 		br.Body = parent.Objective
 		t := b.briefed(n, status, source, 3*time.Hour, br)
 		t.Parent, t.IssueNumber, t.Author = parent.ID, 0, parent.Author
 		return t
 	}
+}
+
+// helperParent is the card a helper task of source is a step of: plan
+// #1947 for its prover, #2003 for its screening and its sizing.
+func (b *builder) helperParent(source string) factoryd.Task {
+	if source == factoryd.SourceProver {
+		return b.out[slices.IndexFunc(b.out, func(fx Fixture) bool { return fx.Task.ID == plan1947ID })].Task
+	}
+	return b.parentCard()
+}
+
+// onParent is fx with the parent it stands on when its card is a helper
+// task.
+func (b *builder) onParent(fx Fixture) Fixture {
+	if factoryd.Helper(fx.Task) {
+		p := b.helperParent(fx.Task.Source)
+		fx.Parent = &p
+	}
+	return fx
 }
 
 // The commits the red main, the roll and the chain stand at.
@@ -1356,7 +1377,7 @@ func (b *builder) cards() {
 	agent := func(name, status, source string, objective func(n int64) factoryd.Task) {
 		t := objective(b.next())
 		t.Status = status
-		b.out = append(b.out, Fixture{Group: GroupCard, Kind: name, Task: t, Facts: facts(t, "")})
+		b.out = append(b.out, b.onParent(Fixture{Group: GroupCard, Kind: name, Task: t, Facts: facts(t, "")}))
 	}
 	sourced := func(source string) func(n int64) factoryd.Task {
 		i := slices.IndexFunc(agentSources, func(s agentSource) bool { return s.name == source })

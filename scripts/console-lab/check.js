@@ -88,7 +88,7 @@ const mustHave = {
     "Refused: The ready check refuses the filing", "0 acceptance tests; want 1 to 10",
     "acceptance the chat shows the documents a member sends; the agent reads them by tool",
     "The failing run is img1", "analyze_image", "In #606's session", "A fresh session",
-    "Wide view", "?", "Find on the board", "Find: a word, #612, plan:558",
+    "?", "Find on the board", "Find: a word, #612, plan:558",
     "Order and show", "Order", "Show", "newest first", "oldest first", "next up", "by stage", "by spend", "blocked only", "exceptional only", "failed only",
     "↻ routines", "within", "Weekly bump", "Template pass", "Dependency update", "Audit", "every Monday 06:00", "after 6 more merges",
     "#779"],

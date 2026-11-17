@@ -117,11 +117,10 @@ func TestBoardPlacesGhostsAtTheFootOfTheirLane(t *testing.T) {
 	if !strings.Contains(body, `<details class="col-menu routines-ctl"><summary aria-label="Routines on the board" title="Routines on the board">↻ routines</summary>`) {
 		t.Fatal("the board's head has no routines control")
 	}
-	// t-781 waits on a human: Needs you shows its ask with no foot, so its foot is read in the wide view's column
-	wide := col(t, r.do(httptest.NewRequest(http.MethodGet, codeBoard+"&view=wide", nil), ck).Body.String(), "Waiting on a human")
-	for id, board := range map[string]string{"t-792": body, "t-781": wide} {
-		if !strings.Contains(faceOf(t, board, id), `<span class="it place">↻ routine</span>`) {
-			t.Fatalf("%s's place names no routine:\n%s", id, faceOf(t, board, id))
+	// t-781 waits on a human: Needs you shows its ask, its place in its band
+	for id, place := range map[string]string{"t-792": `<span class="it place">↻ routine</span>`, "t-781": `<span class="place">↻ routine</span>`} {
+		if !strings.Contains(faceOf(t, body, id), place) {
+			t.Fatalf("%s's place names no routine:\n%s", id, faceOf(t, body, id))
 		}
 	}
 	if strings.Contains(faceOf(t, body, "t-455"), "↻") {
@@ -275,19 +274,11 @@ func TestBoardShowsNoGhostForARemovedRoutine(t *testing.T) {
 	}
 }
 
-// The wide view has no four columns to stand the ghosts in: the strip
-// keeps its cell, the board has no ghost and no control. A member who
-// reads the project but does not write it sees the ghosts without acts.
-func TestGhostsInTheWideViewAndForAReader(t *testing.T) {
+// A human who reads the project but does not write it sees the ghosts
+// without acts.
+func TestGhostsForAReader(t *testing.T) {
 	r := newRig(t)
 	r.routines.views = []factoryd.RoutineView{audit(), soonBump()}
-	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, codeBoard+"&view=wide", nil), ck).Body.String()
-	if !strings.Contains(body, `<span class="cell routine">↻ bump in 20 min</span>`) || strings.Contains(body, "data-ghost=") ||
-		strings.Contains(body, "routines-ctl") || strings.Contains(body, "ghosts-hidden") {
-		t.Fatal("the wide view: want the cell, no ghost, no control")
-	}
-
 	ak, _ := r.readerOfCode(t, "anna")
 	rec := r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ak)
 	if rec.Code != http.StatusOK {

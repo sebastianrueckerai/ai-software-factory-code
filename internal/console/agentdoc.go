@@ -257,6 +257,11 @@ type agentDocChat struct {
 	next   int64
 }
 
+// ChatIntake: the drives' project keeps its intake open.
+func (s *agentDocChat) ChatIntake(context.Context, string) (factoryd.IntakeRow, bool, error) {
+	return factoryd.IntakeRow{}, false, nil
+}
+
 func (s *agentDocChat) EnsureChatTask(context.Context, string, string, float64, time.Time) (factoryd.Task, error) {
 	return factoryd.Task{ID: agentDocTask, Kind: factoryd.KindChat, Status: "running"}, nil
 }

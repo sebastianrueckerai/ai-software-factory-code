@@ -2544,7 +2544,7 @@ func imagesFact(p factoryd.Project) string {
 // project without a board, one no agent works on, gets a line of its own
 // facts: why it has none, and its spend this month against its month cap.
 func (t *turn) snapshot() (string, error) {
-	d, err := t.c.boardOf(t.r, boardFilter{Project: t.p.Name, View: viewWide}, t.a)
+	d, err := t.c.boardOf(t.r, boardFilter{Project: t.p.Name}, t.a)
 	if errors.Is(err, errNoProject) {
 		spend, err := t.c.spendLine(t.r.Context(), t.p)
 		return "Status: " + noBoard(t.p) + "; " + spend, err

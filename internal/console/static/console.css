@@ -80,8 +80,8 @@ p { margin: 0 0 8px; }
 /* buttons: quiet by default (a 1 px line, no fill), 28 px high; the
    primary ones take a fill: cyan for the system's actions (Send, Do it,
    File the issue), amber for a person's decision (Approve, Answer, Grant) */
-button, .view-toggle, .keys-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; padding: 0 12px; margin: 0; border: 1px solid var(--btn-line); border-radius: 3px; background: transparent; color: var(--text); font-size: 13px; font-weight: 500; line-height: 1; white-space: nowrap; cursor: pointer; text-decoration: none; transition: background-color .12s, border-color .12s, color .12s; }
-button:hover, .view-toggle:hover, .keys-toggle:hover { background: var(--bg-hover); border-color: var(--text-faint); }
+button, .keys-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; padding: 0 12px; margin: 0; border: 1px solid var(--btn-line); border-radius: 3px; background: transparent; color: var(--text); font-size: 13px; font-weight: 500; line-height: 1; white-space: nowrap; cursor: pointer; text-decoration: none; transition: background-color .12s, border-color .12s, color .12s; }
+button:hover, .keys-toggle:hover { background: var(--bg-hover); border-color: var(--text-faint); }
 button:disabled { opacity: .5; cursor: default; }
 .primary, .chat-form button[type=submit], .proposal .doit, .newtask button[type=submit], .project-new button[type=submit] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .primary:hover, .chat-form button[type=submit]:hover, .proposal .doit:hover, .newtask button[type=submit]:hover { background: color-mix(in srgb, var(--accent) 86%, var(--text)); border-color: color-mix(in srgb, var(--accent) 86%, var(--text)); }
@@ -192,7 +192,7 @@ footer#live:empty { display: none; }
 
 /* columns: sunken panels with corner marks, the title in small capitals
    and the count in mono on one baseline */
-.lane { display: grid; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); gap: 6px; }
+.lane { display: grid; gap: 6px; }
 .column { display: flex; flex-direction: column; min-height: 4rem; min-width: 0; background: var(--bg-panel); border: 1px solid var(--line-strong); }
 .column > h3 { display: flex; flex: none; align-items: baseline; gap: 8px; height: 32px; margin: 0; padding: 0 10px; border-bottom: 1px solid var(--line); color: var(--text-muted); font-size: 13.5px; line-height: 31px; white-space: nowrap; overflow: hidden; }
 .column > h3 .count { margin-left: auto; color: var(--text); font-size: 12px; font-weight: 400; letter-spacing: 0; font-variant-caps: normal; }
@@ -508,7 +508,7 @@ ol li[aria-current="step"] { font-weight: 600; }
 .board-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 26px; flex: none; margin-bottom: 8px; }
 .board-head > * { flex: none; }
 .board-head h2 { margin: 0; color: var(--text-muted); font-size: 14px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
-.view-toggle, .keys-toggle { height: 24px; padding: 0 8px; font-size: 12px; color: var(--text-muted); }
+.keys-toggle { height: 24px; padding: 0 8px; font-size: 12px; color: var(--text-muted); }
 .documents { height: 24px; padding: 0 8px; font-size: 12px; color: var(--text-muted); }
 .documents[aria-expanded=true] { color: var(--text); border-color: var(--accent); }
 .keys-toggle { width: 24px; padding: 0; font-family: var(--font-mono); }
@@ -652,8 +652,6 @@ body:has(#screen) #flash { flex: none; }
 #chat-divider { position: relative; cursor: col-resize; }
 #chat-divider::after { content: ""; position: absolute; inset: 0 4px; background: var(--line); }
 #chat-divider:hover::after, #chat-divider:focus-visible::after { background: var(--accent); }
-#screen.wide { grid-template-columns: minmax(0, 1fr); }
-#screen.wide .chat { display: none; }
 #screen.chat-only { grid-template-columns: minmax(0, 1fr); }
 #screen.chat-only .chat { display: flex; }
 #screen.chat-only #board, #screen.chat-only #chat-divider { display: none; }
@@ -785,7 +783,7 @@ form.poolctl button { height: 28px; background: none; color: var(--text); border
 .doc-view { position: absolute; top: 12px; right: 0; bottom: 12px; z-index: 20; display: flex; flex-direction: column; width: min(46%, 720px); background: var(--bg-raised); border: 1px solid var(--line-strong); border-left: 1px solid var(--accent); border-right: 0; box-shadow: var(--drawer-shadow); animation: drin .16s ease-out; }
 .doc-view:focus { outline: none; }
 .doc-view.wide { left: calc(12px + (100% - 34px) * .4 + 10px); width: auto; }
-#screen.wide .doc-view.wide, #screen:not(.with-chat) .doc-view.wide { left: 12px; }
+#screen:not(.with-chat) .doc-view.wide { left: 12px; }
 .doc-head { flex: none; border-bottom: 1px solid var(--line); }
 .doc-row { display: flex; align-items: center; gap: 6px; min-height: 34px; padding: 6px 12px 6px 8px; }
 .doc-row .xs { min-width: 28px; }
@@ -956,7 +954,6 @@ form.poolctl button { height: 28px; background: none; color: var(--text); border
   .chat-form { padding: 10px 12px 12px; }
   .chat-form button, .proposal .doit, button.skip { height: 44px; min-width: 96px; }
   .chat-form .chat-grow { min-width: 0; }
-  .board-head .view-toggle { display: none; }
   .board-head .documents { height: 44px; padding: 0 12px; font-size: 13px; }
   .find { flex: 1 1 100%; max-width: none; order: 5; margin: 0; }
   .find input { width: 100%; height: 44px; padding-right: 44px; font-size: 14px; }

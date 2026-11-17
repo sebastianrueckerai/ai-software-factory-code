@@ -617,3 +617,75 @@ func TestBoardTaskReadNetsHolds(t *testing.T) {
 		t.Fatalf("BoardTasks = %+v, %v; want t-held with 0.40 held", board, err)
 	}
 }
+
+// A helper task is a step of its parent's life, never a card: the board's
+// reads leave the screening, sizing and prover tasks out and put each one
+// that has not ended on its parent's Helpers, oldest first. A plan whose
+// prover still runs stays in the finished page past the window, so the
+// prover's ask always has its card to stand on, and a finished helper is
+// in no page. Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL).
+func TestTheBoardsReadsPutHelperTasksOnTheirParent(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	t.Cleanup(func() { s.db.Close() })
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, cases, events CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	now := time.Now()
+	for _, c := range []struct {
+		id, status, source, parent, track string
+		created, finished                 time.Duration
+	}{
+		{"t-plan", "done", SourceWebhook, "", policy.TrackPlan, 40 * 24 * time.Hour, 30 * 24 * time.Hour},
+		{"t-prove", "running", SourceProver, "t-plan", policy.TrackDirect, time.Hour, 0},
+		{"t-c", "running", SourceWebhook, "", policy.TrackDirect, 2 * time.Hour, 0},
+		{"t-screen", "done", SourceScreening, "t-c", policy.TrackDirect, 110 * time.Minute, time.Minute},
+		{"t-size", "waiting-human", SourceSizing, "t-c", policy.TrackDirect, 100 * time.Minute, 0},
+	} {
+		tk := Task{ID: c.id, Status: c.status, BudgetEUR: 1, Repository: "sf/r", Kind: "agent", Objective: "x", Track: c.track, Source: c.source, Parent: c.parent}
+		if err := s.CreateTask(ctx, tk); err != nil {
+			t.Fatalf("CreateTask %s: %v", c.id, err)
+		}
+		var finished *time.Time
+		if c.finished > 0 {
+			at := now.Add(-c.finished)
+			finished = &at
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET created_at = $2, finished_at = $3 WHERE id = $1`, c.id, now.Add(-c.created), finished); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids := func(tasks []BoardTask) []string {
+		var out []string
+		for _, b := range tasks {
+			out = append(out, b.ID)
+		}
+		return out
+	}
+	board, err := s.BoardTasks(ctx, "sf/r")
+	if err != nil || !slices.Equal(ids(board), []string{"t-c"}) || !slices.Equal(ids(board[0].Helpers), []string{"t-size"}) {
+		t.Fatalf("BoardTasks = %v, %v; want t-c alone, its sizing on it", ids(board), err)
+	}
+	if h := board[0].Helpers[0]; h.Status != "waiting-human" || h.Source != SourceSizing {
+		t.Errorf("t-c's helper = %+v, want the waiting sizing task", h.Task)
+	}
+	finished, _, err := s.FinishedTasks(ctx, FinishedQuery{Repository: "sf/r", Statuses: FinalStatuses, Since: now.Add(-7 * 24 * time.Hour)})
+	if err != nil || !slices.Equal(ids(finished), []string{"t-plan"}) || !slices.Equal(ids(finished[0].Helpers), []string{"t-prove"}) {
+		t.Fatalf("FinishedTasks = %v, %v; want the done plan alone, its running prover on it", ids(finished), err)
+	}
+	for id, want := range map[string]string{"t-plan": "t-prove", "t-c": "t-size"} {
+		b, ok, err := s.BoardTask(ctx, id)
+		if err != nil || !ok || !slices.Equal(ids(b.Helpers), []string{want}) {
+			t.Errorf("BoardTask(%s) = %v %v, helpers %v; want %s on it", id, ok, err, ids(b.Helpers), want)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = 't-prove'`); err != nil {
+		t.Fatal(err)
+	}
+	if finished, _, err := s.FinishedTasks(ctx, FinishedQuery{Repository: "sf/r", Statuses: FinalStatuses, Since: now.Add(-7 * 24 * time.Hour)}); err != nil || len(finished) != 0 {
+		t.Fatalf("FinishedTasks once the prover ended = %v, %v; want none: the plan ended past the window, and a helper is no card", ids(finished), err)
+	}
+}

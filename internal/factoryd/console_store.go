@@ -71,6 +71,9 @@ type BoardTask struct {
 	// pull request in an opened or merged request; "" and 0 for none.
 	RollID    string
 	RollIssue int64
+	// Helpers are the card's helper tasks that have not ended, oldest
+	// first: steps of its life, which the board shows on the card.
+	Helpers []BoardTask
 }
 
 // deployLive is the SQL test that a finished card's change runs on the
@@ -201,13 +204,25 @@ func BoardAsk(c Case, ask map[string]any) (escalation string, choices []string, 
 }
 
 // BoardTasks lists repository's open tasks for the console's board, most
-// urgent first; a chat task is no card. A merged task is open: its card
-// waits until the chain runs its change live. The escalation reason comes
-// from the escalation's intake event, so a poll reads no timeline object.
+// urgent first; a chat task and a helper task are no card. A merged task
+// is open: its card waits until the chain runs its change live. The
+// escalation reason comes from the escalation's intake event, so a poll
+// reads no timeline object.
 func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTask, error) {
-	rows, err := s.db.QueryContext(ctx, boardTaskQuery+`
-		 WHERE repository = $2 AND kind <> $1 AND status NOT IN ('done', 'failed', 'closed')
+	tasks, err := s.boardTasks(ctx, `
+		 WHERE repository = $2 AND kind <> $1 AND status NOT IN ('done', 'failed', 'closed') AND tasks.source NOT IN `+helperSourcesSQL+`
 		 ORDER BY priority DESC, finished_at DESC NULLS LAST, tasks.id`, KindChat, repository)
+	if err != nil {
+		return nil, err
+	}
+	setSlotWaits(tasks)
+	return tasks, s.fillCards(ctx, tasks)
+}
+
+// boardTasks reads the tasks where, the WHERE and ORDER BY of
+// boardTaskQuery with its args, names.
+func (s *PGStore) boardTasks(ctx context.Context, where string, args ...any) ([]BoardTask, error) {
+	rows, err := s.db.QueryContext(ctx, boardTaskQuery+where, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -220,11 +235,50 @@ func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTas
 		}
 		tasks = append(tasks, b)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	return tasks, rows.Err()
+}
+
+// liveHelper is the SQL test that the card has a helper task that has not
+// ended.
+const liveHelper = `EXISTS (SELECT 1 FROM tasks h WHERE h.parent_task = tasks.id AND h.source IN ` + helperSourcesSQL + `
+	AND h.status NOT IN ('done', 'failed', 'closed'))`
+
+// fillCards fills the asks of the cards in tasks and puts on each its
+// helper tasks that have not ended, oldest first, with their asks.
+func (s *PGStore) fillCards(ctx context.Context, tasks []BoardTask) error {
+	if err := s.fillAsks(ctx, tasks); err != nil || len(tasks) == 0 {
+		return err
 	}
-	setSlotWaits(tasks)
-	return tasks, s.fillAsks(ctx, tasks)
+	ids := make([]string, len(tasks))
+	for i, b := range tasks {
+		ids[i] = b.ID
+	}
+	helpers, err := s.boardTasks(ctx, ` WHERE tasks.parent_task = ANY($1::text[]) AND tasks.source IN `+helperSourcesSQL+`
+		 AND tasks.status NOT IN ('done', 'failed', 'closed') ORDER BY tasks.created_at, tasks.id`, ids)
+	if err == nil {
+		err = s.fillAsks(ctx, helpers)
+	}
+	for i := range tasks {
+		for _, h := range helpers {
+			if h.Parent == tasks[i].ID {
+				tasks[i].Helpers = append(tasks[i].Helpers, h)
+			}
+		}
+	}
+	return err
+}
+
+// HelpersOf are card id's helper tasks among tasks that have not ended,
+// oldest first, as the board's reads put them on the card (Helpers).
+func HelpersOf(tasks []BoardTask, id string) []BoardTask {
+	var out []BoardTask
+	for _, h := range tasks {
+		if h.Parent == id && Helper(h.Task) && !Final(h.Status) {
+			out = append(out, h)
+		}
+	}
+	slices.SortStableFunc(out, func(a, b BoardTask) int { return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), strings.Compare(a.ID, b.ID)) })
+	return out
 }
 
 // setSlotWaits words the wait of every card in tasks, one project's live
@@ -309,13 +363,15 @@ func arrival(t Task) time.Time {
 
 // FinishedTasks lists the page q asks for, and how many cards the read
 // leaves from the page on, the page's own included; a chat task is no
-// card, nor a finished human task. A done card whose change is not live
-// yet is no finished card: it waits in the board's progress (roadmap 296).
+// card, nor a finished human task, nor a helper task. A done card whose
+// change is not live yet is no finished card: it waits in the board's
+// progress (roadmap 296). A card whose helper task has not ended stays
+// past the window, so the helper's ask has its card to stand on.
 func (s *PGStore) FinishedTasks(ctx context.Context, q FinishedQuery) ([]BoardTask, int, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+boardTaskColumns+`, count(*) OVER ()`+boardTaskFrom+`
-		 WHERE repository = $1 AND status = ANY($2) AND kind NOT IN ($3, 'human')
+		 WHERE repository = $1 AND status = ANY($2) AND kind NOT IN ($3, 'human') AND tasks.source NOT IN `+helperSourcesSQL+`
 		   AND (finished_at > $4 OR status = 'failed' AND plan_key IS NOT NULL AND EXISTS (SELECT 1 FROM task_deps td JOIN tasks w ON w.id = td.task_id
-		       WHERE td.depends_on = tasks.id AND w.status = 'waiting-deps'))
+		       WHERE td.depends_on = tasks.id AND w.status = 'waiting-deps') OR `+liveHelper+`)
 		   AND (status <> 'done' OR `+deployLive+`)
 		   AND ($6 = '' OR COALESCE(finished_at, created_at) = $5 AND tasks.id > $6
 		       OR CASE WHEN $7 THEN COALESCE(finished_at, created_at) > $5 ELSE COALESCE(finished_at, created_at) < $5 END)
@@ -338,7 +394,7 @@ func (s *PGStore) FinishedTasks(ctx context.Context, q FinishedQuery) ([]BoardTa
 	if err := rows.Err(); err != nil {
 		return nil, 0, err
 	}
-	return tasks, rest, s.fillAsks(ctx, tasks)
+	return tasks, rest, s.fillCards(ctx, tasks)
 }
 
 // BoardTask is task id as BoardTasks reads it, whether or not the board
@@ -353,7 +409,7 @@ func (s *PGStore) BoardTask(ctx context.Context, id string) (BoardTask, bool, er
 		return b, false, err
 	}
 	one := []BoardTask{b}
-	err = s.fillAsks(ctx, one)
+	err = s.fillCards(ctx, one)
 	return one[0], err == nil, err
 }
 
@@ -432,7 +488,8 @@ func SortBoardTasks(tasks []BoardTask) {
 // which keep no dependencies: a card without a finish stamp is in the
 // window. A done card whose change is not live yet is no finished card, as
 // FinishedTasks reads it; the fakes model a chain row as the task's
-// ChainState at its arrival.
+// ChainState at its arrival. A helper task is no card, and a card whose
+// helper has not ended stays past the window with its helpers on it.
 func FinishedPage(tasks []BoardTask, q FinishedQuery) ([]BoardTask, int) {
 	order := func(a, b Task) int {
 		by := arrival(b).Compare(arrival(a))
@@ -443,8 +500,9 @@ func FinishedPage(tasks []BoardTask, q FinishedQuery) ([]BoardTask, int) {
 	}
 	var out []BoardTask
 	for _, t := range tasks {
-		if t.Repository == q.Repository && slices.Contains(q.Statuses, t.Status) && t.Kind != KindChat && t.Kind != "human" &&
-			(t.FinishedAt == nil || t.FinishedAt.After(q.Since)) && (q.After.ID == "" || order(Task{ID: q.After.ID, FinishedAt: &q.After.At}, t.Task) < 0) &&
+		t.Helpers = HelpersOf(tasks, t.ID)
+		if t.Repository == q.Repository && slices.Contains(q.Statuses, t.Status) && t.Kind != KindChat && t.Kind != "human" && !Helper(t.Task) &&
+			(t.FinishedAt == nil || t.FinishedAt.After(q.Since) || len(t.Helpers) > 0) && (q.After.ID == "" || order(Task{ID: q.After.ID, FinishedAt: &q.After.At}, t.Task) < 0) &&
 			(t.Status != "done" || DeployLive(tasks, t)) {
 			out = append(out, t)
 		}

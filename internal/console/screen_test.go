@@ -236,10 +236,8 @@ func TestStatusLineFigures(t *testing.T) {
 <a href="#needs-you" class="cell needs on"><span><b class="n">6</b> need you</span></a>
 <span class="cell spend" ` + title + `><a href="/costs"><span><b class="n">€5.50</b> <span class="of">/ €50.00</span></span>` + gauge(11) + `</a><span class="pct">11%</span></span>
 ` + pool
-	for _, query := range []string{"", "?view=wide"} {
-		if got := line(query); got != code {
-			t.Errorf("board%s: status line\n%s\nwant\n%s", query, got, code)
-		}
+	if got := line(""); got != code {
+		t.Errorf("board: status line\n%s\nwant\n%s", got, code)
 	}
 	r.tasks.tasks = append(r.tasks.tasks,
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-ask", Kind: "agent", Status: "waiting-poster", Author: "sebastian", Repository: "demo-app/demo-app"}},
@@ -398,9 +396,7 @@ func TestBoardShowsOneProjectTheViewerWrites(t *testing.T) {
 // The fine state is a mark in the need's text: waiting on the author,
 // retrying (the newest session ended for a retry), stale (no event for
 // half an hour), in a small card's foot or a Needs-you card's band; failed
-// and closed are the state's own words. The wide view's columns name the
-// wait on the author, so there a card wears only what the column leaves
-// unsaid.
+// and closed are the state's own words.
 func TestCardFineChips(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -425,22 +421,18 @@ func TestCardFineChips(t *testing.T) {
 		return strings.Join(regexp.MustCompile(`<span class="(?:it )?flag">[^<]*</span>`).FindAllString(faceOf(t, body, id), -1), "")
 	}
 	five := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	for id, want := range map[string][2]string{
-		"t-lane":   {"", ""},
-		"t-other":  {`<span class="flag">waiting on the author</span>`, ""},
-		"t-fail":   {"", ""},
-		"t-closed": {"", ""},
-		"t-done":   {"", ""},
-		"t-stale":  {`<span class="it flag">stale</span>`, `<span class="it flag">stale</span>`},
-		"t-retry":  {`<span class="it flag">retrying</span>`, `<span class="it flag">retrying</span>`},
-		"t-again":  {"", ""},
+	for id, want := range map[string]string{
+		"t-lane":   "",
+		"t-other":  `<span class="flag">waiting on the author</span>`,
+		"t-fail":   "",
+		"t-closed": "",
+		"t-done":   "",
+		"t-stale":  `<span class="it flag">stale</span>`,
+		"t-retry":  `<span class="it flag">retrying</span>`,
+		"t-again":  "",
 	} {
-		if got := marks(five, id); got != want[0] {
-			t.Errorf("four columns, %s: marks %q, want %q", id, got, want[0])
-		}
-		if got := marks(wide, id); got != want[1] {
-			t.Errorf("wide view, %s: marks %q, want %q", id, got, want[1])
+		if got := marks(five, id); got != want {
+			t.Errorf("%s: marks %q, want %q", id, got, want)
 		}
 	}
 }
@@ -489,67 +481,10 @@ func TestCardWaitingOnTheProvider(t *testing.T) {
 	}
 }
 
-// The wide view keeps the board as it was, a column per state and no
-// lane column (roadmap 225), under the human lane, with the status line;
-// the view rides on the poll, the script's swaps and every form, and the
-// header's switch names the other view.
-func TestWideViewKeepsTheStatesAndSurvivesThePoll(t *testing.T) {
-	r := newRig(t)
-	withLinkshort(r)
-	r.tasks.tasks = append(planTasks(), failedCard())
-	ck, s := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&view=wide", nil), ck).Body.String()
-	var titles []string
-	for _, m := range regexp.MustCompile(`<h3 id="col-\d+">([^<]+) <span`).FindAllStringSubmatch(body, -1) {
-		titles = append(titles, m[1])
-	}
-	if want := []string{"Queued", "Running", "Waiting on a human", "Waiting for image", "Waiting on the author", "In review", "Merged", "Done", "Failed", "Closed"}; !slices.Equal(titles, want) {
-		t.Errorf("the wide view's columns are %v, want %v", titles, want)
-	}
-	for _, want := range []string{`<div id="board" data-project="linkshort" data-query="?project=linkshort&amp;view=wide" hx-get="/board?project=linkshort&amp;view=wide" hx-trigger="board-refresh from:body" hx-swap="outerHTML">`,
-		`<section aria-labelledby="human-lane" id="needs-you">`, `id="status-line"`,
-		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`,
-		`<a href="/?project=linkshort" id="view-toggle" class="view-toggle" data-view="" aria-keyshortcuts="w">Four columns</a>`} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the wide view lacks %s", want)
-		}
-	}
-	if poll := r.do(httptest.NewRequest(http.MethodGet, "/board?project=linkshort&view=wide", nil), ck).Body.String(); !strings.Contains(poll, `data-holds="queued waiting-deps"`) ||
-		strings.Contains(poll, `class="lane five"`) {
-		t.Error("the wide view's poll answers the five columns")
-	}
-	if opened := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c7/drawer?project=linkshort&view=wide", nil), ck).Body.String(); !strings.Contains(opened,
-		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide"><input type="hidden" name="action" value="retry">`) {
-		t.Errorf("the opened card under the wide view's query keeps no view on its forms: %s", opened)
-	}
-	form := url.Values{"csrf": {s.csrf}, "action": {factoryd.AnswerEditBrief}, "edit_brief.why": {"So links stay short."}, "edit_brief.summary": {"The links"},
-		"project": {"linkshort"}, "view": {"wide"}}
-	req := post("/tasks/t-c2/resolve", form)
-	req.Header.Set("HX-Request", "true")
-	if rec := r.do(req, ck); !pressRefreshes(rec) {
-		t.Errorf("a form of the wide view answers %d: %s", rec.Code, rec.Body)
-	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-c2"); task.Summary != "The links" {
-		t.Errorf("the wide view's form stored the summary %q, want The links", task.Summary)
-	}
-	form.Set("edit_brief.summary", "The links, kept short")
-	if rec := r.do(post("/tasks/t-c2/resolve", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=linkshort&view=wide" {
-		t.Errorf("a browser's form of the wide view: %d to %q", rec.Code, rec.Header().Get("Location"))
-	}
-	five := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if !strings.Contains(five, `<a href="/?project=linkshort&amp;view=wide" id="view-toggle" class="view-toggle" data-view="wide" aria-keyshortcuts="w">Wide view</a>`) ||
-		!strings.Contains(five, `<div class="lane five">`) {
-		t.Error("the five columns lack the switch to the wide view")
-	}
-	if rec := r.do(httptest.NewRequest(http.MethodGet, "/?view=tall", nil), ck); rec.Code != http.StatusBadRequest {
-		t.Errorf("an unknown view = %d, want 400", rec.Code)
-	}
-}
-
 // The page holds the drawer, empty and hidden, every card's open link
-// opens it by #card=<id>, and the ? list names the keys w, Escape and ?; the
+// opens it by #card=<id>, and the ? list names the keys Escape and ?; the
 // script binds them on the board only, never with a modifier, and the
-// head's script restores the remembered view with the card's hash.
+// head's script paints the theme chosen and moves the page nowhere.
 func TestKeysAndDrawerOnThePage(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -559,7 +494,6 @@ func TestKeysAndDrawerOnThePage(t *testing.T) {
 		`<a class="open" href="#card=t-run"><span class="visually-hidden">Open #11</span></a>` + "\n" + `<p class="para"><strong class="title">Fix the cache.</strong></p>`,
 		`<button type="button" id="keys-toggle" class="keys-toggle" aria-haspopup="dialog" aria-controls="keys" aria-keyshortcuts="Shift+?" title="Keys" aria-label="Keys">?</button>`,
 		`<div id="keys" class="overlay" role="dialog" aria-modal="true" aria-labelledby="keys-title" hidden>`,
-		`<dt><kbd>w</kbd></dt><dd>the wide view, the board across the full width with the chat hidden, or back</dd>`,
 		`<dt><kbd>Escape</kbd></dt><dd>close the card's drawer, the document, or this list</dd>`,
 		`<dt><kbd>?</kbd></dt><dd>this list</dd>`} {
 		if !strings.Contains(body, want) {
@@ -568,15 +502,20 @@ func TestKeysAndDrawerOnThePage(t *testing.T) {
 	}
 	for path, wants := range map[string][]string{
 		"/static/console.js": {`if (!document.getElementById("board") || e.ctrlKey || e.metaKey || e.altKey) return;`, `e.key === "Escape"`,
-			`e.key === "w"`, `e.key === "?"`, `window.addEventListener("hashchange", showDrawer);`, `"/drawer"`,
+			`e.key === "?"`, `window.addEventListener("hashchange", showDrawer);`, `"/drawer"`,
 			`if (el.querySelector("details[open]")) return true;`},
-		"/static/theme.js": {`localStorage.getItem("view") !== "wide"`, `location.replace("/?" + q + location.hash);`},
+		"/static/theme.js": {`document.documentElement.setAttribute("data-theme", localStorage.getItem("theme") === "light" ? "light" : "dark");`},
 	} {
 		js := r.do(httptest.NewRequest(http.MethodGet, path, nil)).Body.String()
 		for _, want := range wants {
 			if !strings.Contains(js, want) {
 				t.Errorf("%s lacks %s", path, want)
 			}
+		}
+	}
+	for path, gone := range map[string]string{"/static/console.js": `e.key === "w"`, "/static/theme.js": "location.replace"} {
+		if strings.Contains(r.do(httptest.NewRequest(http.MethodGet, path, nil)).Body.String(), gone) {
+			t.Errorf("%s still holds %s", path, gone)
 		}
 	}
 }
@@ -1053,7 +992,7 @@ func TestApprovalFormsKeepTheBoard(t *testing.T) {
 		want string
 	}{
 		{"/approvals/30/approve", url.Values{"project": {"linkshort"}, "action": {"approve"}}, "/?project=linkshort"},
-		{"/approvals/3/approve", url.Values{"project": {"ai-software-factory-code"}, "view": {"wide"}}, "/?project=ai-software-factory-code&view=wide"},
+		{"/approvals/3/approve", url.Values{"project": {"ai-software-factory-code"}, "q": {"load"}}, "/?project=ai-software-factory-code&q=load"},
 		{"/approvals/4/deny", url.Values{"project": {"ai-software-factory-code"}, "action": {"request_changes"}, "note": {"not now"}}, "/?project=ai-software-factory-code"},
 	} {
 		tc.form.Set("csrf", s.csrf)
@@ -1133,16 +1072,16 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 func TestNeedsYouCardOpensItsDrawer(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
-	lane := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String(), "Approvals")
+	lane := col(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), "Needs you")
 	for _, id := range []string{"t-res", "t-m"} {
 		if want := `<a class="open" href="#card=` + id + `">`; !strings.Contains(faceOf(t, lane, id), want) {
-			t.Errorf("a writer's approval column lacks %q:\n%s", want, lane)
+			t.Errorf("a writer's Needs you lacks %q:\n%s", want, lane)
 		}
 	}
 	ak, _ := r.readerOfCode(t, "alice")
-	lane = col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ak).Body.String(), "Approvals")
+	lane = col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ak).Body.String(), "Needs you")
 	if strings.Contains(lane, `class="open"`) || strings.Contains(lane, `href="#card=`) || !strings.Contains(lane, `data-card="t-res"`) || !strings.Contains(lane, `data-card="t-m"`) {
-		t.Errorf("a reader's approval column links to a drawer that would refuse:\n%s", lane)
+		t.Errorf("a reader's Needs you links to a drawer that would refuse:\n%s", lane)
 	}
 }
 
@@ -1150,8 +1089,7 @@ func TestNeedsYouCardOpensItsDrawer(t *testing.T) {
 // (Sebastian, 2026-10-14): Queued by filing, In progress by admission,
 // Done by finishing, whatever order the store gave them; a card without
 // the time keeps its filing time, and the store's order holds among
-// equals. The wide view keeps the store's order, where the fake, as
-// the store since #762, ranks the running cards by rank and id.
+// equals.
 func TestColumnsHoldTheNewestCardOnTop(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -1189,12 +1127,6 @@ func TestColumnsHoldTheNewestCardOnTop(t *testing.T) {
 		if got := columnItems(t, body, title); !slices.Equal(got, items) {
 			t.Errorf("%s holds %v, want %v", title, got, items)
 		}
-	}
-	// the wide view keeps the store's order, which since #762 puts the
-	// newest finished first (the rig's fake sorts as the store does)
-	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	if got := columnItems(t, wide, "Running"); !slices.Equal(got, []string{"t-r-first", "t-r-last", "t-r-mid"}) {
-		t.Errorf("the wide view's Running holds %v, want the store's order", got)
 	}
 }
 
@@ -1319,10 +1251,9 @@ func TestNoPreservedElementSitsInsideAnother(t *testing.T) {
 	walk(doc, false)
 }
 
-// The filter's query carries the find, trimmed, beside the project and
-// the view.
+// The filter's query carries the find, trimmed, beside the project.
 func TestFilterQueryCarriesTheFind(t *testing.T) {
-	if got := (boardFilter{Project: "p", View: "wide", Q: "a b"}).query(); got != "?project=p&q=a+b&view=wide" {
+	if got := (boardFilter{Project: "p", Q: "a b"}).query(); got != "?project=p&q=a+b" {
 		t.Errorf("query %q", got)
 	}
 	if got := urlFilter(httptest.NewRequest(http.MethodGet, "/?q=%20x%20", nil)); got.Q != "x" {
@@ -1440,8 +1371,7 @@ func TestColumnMenusOrderAndShow(t *testing.T) {
 // without script asks for the board showing 50 more. A page starts after
 // the card the one before ended with, ties on the stamp by id, so a card
 // finishing meanwhile repeats none; the head counts them all and no line
-// says the board stops. A find or a show reads them all; the wide view
-// pages each final status.
+// says the board stops. A find or a show reads them all.
 func TestDonePagesItsFinishedCards(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -1534,21 +1464,12 @@ func TestDonePagesItsFinishedCards(t *testing.T) {
 		t.Errorf("Done oldest first holds %v, want t-f, t-d327 to t-d329, then t-d324, 50 in all", columnItems(t, body, "Done"))
 	}
 
-	// the wide view: Done pages its own, Failed and Closed hold theirs
-	_, body = get("/?view=wide")
-	if got := columnItems(t, body, "Done"); !slices.Equal(got, append([]string{"t-new"}, ids(0, 49)...)) ||
-		!strings.Contains(body, `data-finished="failed"><h3 id="col-`) || !slices.Equal(columnItems(t, body, "Failed"), []string{"t-f"}) ||
-		strings.Contains(col(t, body, "Failed"), `class="more"`) || !strings.Contains(col(t, body, "Done"), `<input type="hidden" name="view" value="wide">`) {
-		t.Errorf("the wide view's Done holds %v and Failed %v, want 50 with the form and t-f alone", got, columnItems(t, body, "Failed"))
-	}
-
 	for _, target := range []string{
-		"/board/finished?col=done",                                                        // after no card
-		"/board/finished?col=done&after-id=t-d049",                                        // no arrival
-		"/board/finished?col=done&after=yesterday&after-id=t-d049",                        // no time
-		"/board/finished?col=done&after=2026-10-15T00:00:00Z&after-id=t-d049&q=t-f",       // a find reads them all
-		"/board/finished?col=failed&after=2026-10-15T00:00:00Z&after-id=t-d049",           // the four columns' Done holds failed
-		"/board/finished?col=done&after=2026-10-15T00:00:00Z&after-id=t-d049&view=narrow", // no such view
+		"/board/finished?col=done",                                                  // after no card
+		"/board/finished?col=done&after-id=t-d049",                                  // no arrival
+		"/board/finished?col=done&after=yesterday&after-id=t-d049",                  // no time
+		"/board/finished?col=done&after=2026-10-15T00:00:00Z&after-id=t-d049&q=t-f", // a find reads them all
+		"/board/finished?col=failed&after=2026-10-15T00:00:00Z&after-id=t-d049",     // Done holds failed
 	} {
 		if code, body := get(target); code != http.StatusBadRequest {
 			t.Errorf("%s = %d %q, want 400", target, code, body)
@@ -1719,5 +1640,31 @@ func TestActivityLineOfAnIssueClosedWithoutWriteAccess(t *testing.T) {
 	e := factoryd.Event{Kind: factoryd.EventIssueClosedWithoutWriteAccess, Actor: "mallory", Via: factoryd.ViaFactoryd, At: time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)}
 	if got, want := activityLine(e), "Ignored the close by mallory: mallory cannot write the repository."; got != want {
 		t.Errorf("activityLine = %q, want %q", got, want)
+	}
+}
+
+// The four columns are the one board: an old link to the wide view reads
+// the board as any other link does, with no lanes, no toggle and no view
+// carried on.
+func TestNoWideView(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	for _, path := range []string{"/?view=wide", "/board?view=wide"} {
+		rec := getPage(r, ck, path)
+		body := rec.Body.String()
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d: %s", path, rec.Code, body)
+		}
+		for _, title := range []string{"Needs you", "Queued", "In progress", "Done"} {
+			col(t, body, title)
+		}
+		if n := strings.Count(body, `<section class="column`); n != 4 {
+			t.Errorf("GET %s holds %d columns, want the four", path, n)
+		}
+		for _, gone := range []string{"Human lane", "Agent lane", `id="view-toggle"`, `name="view"`, "view=wide"} {
+			if strings.Contains(body, gone) {
+				t.Errorf("GET %s still holds %q", path, gone)
+			}
+		}
 	}
 }

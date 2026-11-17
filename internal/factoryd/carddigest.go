@@ -131,8 +131,8 @@ func (r *Runner) CardDigest(ctx context.Context, taskID string) (CardDigest, err
 
 // cardRows are the rows a card's digest is read from: the task, its
 // events oldest first, its dependencies, its cases, the steps of its
-// live cases, its criteria verdicts and its timeline object, nil when
-// it has none; a plan task's proofs (planProofCounts) and since when
+// live cases, its criteria verdicts, its helper tasks and its timeline
+// object, nil when it has none; a plan task's proofs (planProofCounts) and since when
 // its prover is due: its foundation card's end done, or for a plan
 // without a foundation card its first card's filing, at its
 // confirmation; zero while the foundation is not done, no card is filed
@@ -144,6 +144,7 @@ type cardRows struct {
 	cases                      []Case
 	caseSteps                  []CaseStep
 	verdicts                   []CriterionVerdict
+	helpers                    []Task
 	timeline                   []byte
 	proofsStored, proofsWanted int
 	proverDue                  time.Time
@@ -183,6 +184,15 @@ func (r *Runner) readCard(ctx context.Context, taskID string) (cardRows, error) 
 	}
 	if rows.verdicts, err = r.store.CriteriaVerdicts(ctx, taskID); err != nil {
 		return cardRows{}, err
+	}
+	for _, source := range HelperSources {
+		h, ok, err := r.store.ReportOf(ctx, taskID, source)
+		if err != nil {
+			return cardRows{}, err
+		}
+		if ok {
+			rows.helpers = append(rows.helpers, h)
+		}
 	}
 	if rows.timeline, err = r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl"); err != nil {
 		return cardRows{}, fmt.Errorf("read the timeline: %w", err)
@@ -245,7 +255,8 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 			return CardDigest{}, err
 		}
 	}
-	steps := slices.Concat([]DigestStep{filedStep(t, rows.deps)}, eventSteps(r.Scrub, t, rows.events, rows.cases, rows.deps), lines, criteriaSteps(rows.verdicts))
+	steps := slices.Concat([]DigestStep{filedStep(t, rows.deps)}, eventSteps(r.Scrub, t, rows.events, rows.cases, rows.deps), lines, criteriaSteps(rows.verdicts),
+		helperSteps(r.Scrub, rows.helpers))
 	slices.SortStableFunc(steps, func(a, b DigestStep) int { return a.At.Compare(b.At) })
 	for i := range steps {
 		steps[i].N, steps[i].Offset, steps[i].Count = i+1, steps[i].At.Sub(steps[0].At), 1
@@ -454,6 +465,40 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 		out = append(out, s)
 	}
 	return out
+}
+
+// helperSteps are the card's helper tasks as steps of its life: each when
+// it was filed, by its source, with where it stands, a finished one with
+// its result.
+func helperSteps(scrub *redact.Scrubber, helpers []Task) []DigestStep {
+	var out []DigestStep
+	for _, h := range helpers {
+		outcome := statusText(h.Status, h.Gate)
+		if result := helperResult(h); Final(h.Status) && result != "" {
+			outcome = h.Status + ": " + result
+		}
+		out = append(out, DigestStep{At: h.CreatedAt, Kind: h.Source, Outcome: digestText(scrub, outcome)})
+	}
+	return out
+}
+
+// helperResult is helper task h's report on one line: a screening's
+// verdict with its first reason, a sizing's size with its reason, else
+// the report's first line; "" for none.
+func helperResult(h Task) string {
+	report := strings.TrimSpace(h.AgentSummary)
+	switch {
+	case report == "":
+		return ""
+	case h.Source == SourceScreening:
+		res := parseScreening(report)
+		return strings.Join(append([]string{res.Verdict}, res.Reasons...)[:min(2, len(res.Reasons)+1)], ": ")
+	case h.Source == SourceSizing:
+		if v, ok := parseSizing(report); ok {
+			return v.Size + ": " + v.Reason
+		}
+	}
+	return FirstLine(report)
 }
 
 // openedStep is a proof_opened event's step: the criterion that opened,

@@ -31,11 +31,19 @@ type caseRow struct {
 	Answers        bool
 	// Query is the board's filter, which the arrows' reads carry
 	Query string
-	// Placed: the row is the card's place on the board, which a card swap replaces; the wide view
-	// keeps the card's place in its state column
-	Placed bool
 	// Plan is the slot's part 5 when the case is a plan question or its confirmation
 	Plan *planSlot
+	// Owner is the helper task whose case this is, nil for the card's own:
+	// its answers act on the helper (card)
+	Owner *card
+}
+
+// card is the card case row r of card k acts on: its owner's, else k.
+func (r caseRow) card(k card) card {
+	if r.Owner != nil {
+		return *r.Owner
+	}
+	return k
 }
 
 // planSlot is a plan question's or confirmation's form: the answer of
@@ -65,20 +73,30 @@ func (r caseRow) Waiting() string {
 }
 
 // caseSet is what one board read holds of its repository's cases: the
-// desk, each card's cases at the human oldest first, and each card's live
-// ask, the newest live case an answer on the card ends. The minute pass
-// withdraws an older ask the live one replaced.
+// desk, each card's cases at the human oldest first, a helper task's
+// among its parent's, each task's live ask, the newest live case an answer
+// on the task ends, and the helper tasks whose cases a card holds. The
+// minute pass withdraws an older ask the live one replaced.
 type caseSet struct {
 	desk    factoryd.CaseDesk
 	byCard  map[string][]factoryd.Case
 	liveAsk map[string]factoryd.Case
+	helpers map[string]factoryd.BoardTask
 }
 
-func (c *Console) caseSetOf(ctx context.Context, repository string) (caseSet, error) {
+// caseSetOf reads repository's case set, the cases of the helper tasks of
+// cards among their parent's.
+func (c *Console) caseSetOf(ctx context.Context, repository string, cards ...factoryd.BoardTask) (caseSet, error) {
 	desk, err := c.cfg.CaseDesk(ctx, repository)
-	cs := caseSet{desk: desk, byCard: map[string][]factoryd.Case{}, liveAsk: map[string]factoryd.Case{}}
+	cs := caseSet{desk: desk, byCard: map[string][]factoryd.Case{}, liveAsk: map[string]factoryd.Case{}, helpers: map[string]factoryd.BoardTask{}}
 	if err != nil {
 		return cs, err
+	}
+	parent := map[string]string{}
+	for _, bt := range cards {
+		for _, h := range bt.Helpers {
+			parent[h.ID], cs.helpers[h.ID] = bt.ID, h
+		}
 	}
 	for _, k := range desk.Cases {
 		if factoryd.AnsweredOnCard(k.Kind) && k.ID > cs.liveAsk[k.TaskID].ID {
@@ -87,7 +105,8 @@ func (c *Console) caseSetOf(ctx context.Context, repository string) (caseSet, er
 	}
 	for _, k := range desk.Cases {
 		if k.Status == factoryd.CaseAtHuman {
-			cs.byCard[k.TaskID] = append(cs.byCard[k.TaskID], k)
+			id := cmp.Or(parent[k.TaskID], k.TaskID)
+			cs.byCard[id] = append(cs.byCard[id], k)
 		}
 	}
 	for _, list := range cs.byCard {
@@ -180,15 +199,25 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		since = waitingSince(bt)
 	}
 	shown := cases[at]
-	face := factoryd.CaseFace(shown, bt.Task, cs.desk.Asks[shown.ID])
+	// a helper's case asks on its parent and acts on the helper
+	owner, helper := cs.helpers[shown.TaskID]
+	if !helper {
+		owner = bt
+	}
+	face := factoryd.CaseFace(shown, owner.Task, cs.desk.Asks[shown.ID])
 	var slot *planSlot
 	if planCase(shown) {
 		slot = c.planSlotOf(ctx, face, shown)
 	}
 	hosts := v.policy.Document.LinkHosts
 	face = v.scrubbed(face)
-	row := caseRow{Case: shown, Face: face, Since: cmp.Or(cs.faceAt(shown), since), At: at + 1, Of: len(cases), Project: v.filter.Project, Placed: !v.filter.wide(), Query: v.filter.query(),
-		Answers: cs.liveAsk[bt.ID].ID == shown.ID && shown.CommentID == bt.QuestionComment}
+	row := caseRow{Case: shown, Face: face, Since: cmp.Or(cs.faceAt(shown), since), At: at + 1, Of: len(cases), Project: v.filter.Project, Query: v.filter.query(),
+		Answers: cs.liveAsk[owner.ID].ID == shown.ID && shown.CommentID == owner.QuestionComment}
+	if helper {
+		o := c.card(owner.Task)
+		o.Filter, o.MayWriteSummary, o.CSRF = k.Filter, k.MayWriteSummary, k.CSRF
+		row.Owner = &o
+	}
 	if at > 0 {
 		row.PrevID = cases[at-1].ID
 	}
@@ -332,7 +361,7 @@ func (c *Console) caseFragment(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	cs, cerr := c.caseSetOf(ctx, shown.Repository)
+	cs, cerr := c.caseSetOf(ctx, shown.Repository, bt)
 	if cerr != nil {
 		log.Printf("console: the cases of %s: %v", shown.Name, cerr)
 		http.Error(w, "cannot read the cases", http.StatusInternalServerError)

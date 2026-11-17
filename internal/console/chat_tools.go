@@ -143,7 +143,6 @@ type toolInput struct {
 	// The view tools' arguments (282), one per control of the screen
 	// board_view works; Find is the find's words, a call that names it
 	// with empty text clearing them.
-	View         string `json:"view,omitempty"`
 	Queued       string `json:"queued,omitempty"`
 	QueuedOnly   string `json:"queued_only,omitempty"`
 	Progress     string `json:"progress,omitempty"`
@@ -804,12 +803,12 @@ func cardLine(t factoryd.Task) string {
 // cards, the approval requests and the notes.
 const boardListed = 25
 
-// boardText is project p's board in the wide view as the session's member
-// sees it, for the agent: each column with its cards, the human lane, the
-// escalations and the approval requests waiting. a is the chat's actor,
-// whose member its approval cards read a healed head's checks as.
+// boardText is project p's board as the session's human sees it, for the
+// agent: each column with its cards and the approval requests waiting. a
+// is the chat's actor, whose human its approval cards read a healed
+// head's checks as.
 func (c *Console) boardText(r *http.Request, p factoryd.Project, a actor) (string, error) {
-	d, err := c.boardOf(r, boardFilter{Project: p.Name, View: viewWide}, a)
+	d, err := c.boardOf(r, boardFilter{Project: p.Name}, a)
 	if errors.Is(err, errNoProject) {
 		return "Project " + p.Name + " takes no agent cards: it has no board.", nil
 	}
@@ -853,17 +852,21 @@ func boardWords(d boardData) string {
 		fmt.Fprintf(&b, "Pool (%s, %s UTC): %s.\n", d.Status.Pool.Policy, d.Status.Pool.Month, d.Status.Pool.Words)
 	}
 	b.WriteString("Open cards:\n")
+	var approvals []*approvalCard
 	for _, col := range d.Columns {
-		if col.Finished == "" {
-			list(col.Title, len(col.Cards), col.Cards)
+		if col.Finished != "" {
+			continue
 		}
+		cards := col.Cards
+		for _, n := range col.Needs {
+			if n.Approval != nil {
+				approvals = append(approvals, n.Approval)
+				continue
+			}
+			cards = append(cards, n.Card)
+		}
+		list(col.Title, len(cards), cards)
 	}
-	list("Human lane", len(d.HumanTasks), d.HumanTasks)
-	escalated := make([]card, 0, len(d.Escalations))
-	for _, n := range d.Escalations {
-		escalated = append(escalated, n.Card)
-	}
-	list("Escalated, waiting on an answer", len(escalated), escalated)
 	if i := slices.IndexFunc(d.Columns, func(col column) bool { return col.Finished != "" }); i >= 0 {
 		fmt.Fprintf(&b, "Finished cards, ended in the last %d days and open no more:\n", finishedSince/(24*time.Hour))
 		for _, col := range d.Columns[i:] {
@@ -872,10 +875,9 @@ func boardWords(d boardData) string {
 			}
 		}
 	}
-	fmt.Fprintf(&b, "Approval requests waiting (%d):", len(d.Approvals))
-	requests := make([]string, len(d.Approvals))
-	for i, n := range d.Approvals {
-		a := n.Approval
+	fmt.Fprintf(&b, "Approval requests waiting (%d):", len(approvals))
+	requests := make([]string, len(approvals))
+	for i, a := range approvals {
 		requests[i] = fmt.Sprintf("%s request %d of %s", a.Kind, a.ID, a.TaskID)
 		if a.Issue > 0 {
 			requests[i] += fmt.Sprintf(" (#%d)", a.Issue)
@@ -1062,16 +1064,12 @@ func takeShow(m menuSpec, w string) (set bool, v string, err error) {
 	return false, "", refuse(http.StatusBadRequest, fmt.Sprintf("The %s show must be %s.", m.Name, orWords(showWords(m)...)))
 }
 
-// pageFilter is the board's filter the member's page stands on (282):
+// pageFilter is the board's filter the human's page stands on (282):
 // the view field the chat's POST carries, read as the URL's query is,
-// under the chat's own project. Only the wide view is a view the board
-// carries, so no other view word rides along.
+// under the chat's own project.
 func (t *turn) pageFilter() boardFilter {
 	v, _ := url.ParseQuery(strings.TrimPrefix(t.pageQuery, "?"))
 	f := boardFilter{Project: t.p.Name, Q: strings.TrimSpace(v.Get("q"))}
-	if v.Get("view") == viewWide {
-		f.View = viewWide
-	}
 	readCols(&f, v.Get)
 	return f
 }
@@ -1080,9 +1078,6 @@ func (t *turn) pageFilter() boardFilter {
 // for the view tools' stored answer (282).
 func (f boardFilter) viewNote() string {
 	var parts []string
-	if f.View == viewWide {
-		parts = append(parts, "the wide view")
-	}
 	if f.Q != "" {
 		parts = append(parts, fmt.Sprintf("find %q", f.Q))
 	}
@@ -1166,15 +1161,6 @@ func (t *turn) setView(in toolInput, reset bool) (string, *inverse, error) {
 		if t.present["find"] {
 			f.Q = strings.TrimSpace(in.Find)
 		}
-		switch in.View {
-		case "":
-		case "wide":
-			f.View = viewWide
-		case "none":
-			f.View = ""
-		default:
-			return "", nil, refuse(http.StatusBadRequest, "The view must be wide or none.")
-		}
 		switch in.Routines {
 		case "":
 		case "all":
@@ -1255,7 +1241,6 @@ func (t *turn) setView(in toolInput, reset bool) (string, *inverse, error) {
 // control of the screen, the menus' words read from the menus themselves.
 func boardViewParams() map[string]any {
 	p := map[string]any{
-		"view":     enum("the wide view: wide or none", "wide", "none"),
 		"find":     str("the find's words, empty clears"),
 		"routines": enum("the routines: all, within or none", "all", "within", "none"),
 		"within":   map[string]any{"type": "integer", "description": "the period's length, 1 to 999", "minimum": 1, "maximum": 999},
@@ -1286,7 +1271,7 @@ func init() {
 				return s, nil, err
 			}},
 		{name: "board", title: "Read the board",
-			about: "The project's board: each column's cards, the human lane, the escalations and the approval requests.",
+			about: "The project's board: each column's cards and the approval requests in Needs you.",
 			run: func(t *turn, _ toolInput) (string, *inverse, error) {
 				s, err := t.c.boardText(t.r, t.p, t.a)
 				return s, nil, err

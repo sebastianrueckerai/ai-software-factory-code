@@ -164,13 +164,20 @@ func galleryScene() labScene {
 }
 
 // fixtureScene is the code project holding fixture fx, and the plan a
-// plan's card belongs to, so its chip and its drawer name the plan.
+// plan's card belongs to, so its chip and its drawer name the plan. A
+// helper task stands on its parent, whose cards the scene shows.
 func fixtureScene(fx facefixtures.Fixture, all []facefixtures.Fixture) labScene {
 	s := galleryScene()
 	s.drawer = fx.Task.ID
 	s.seat(fx)
-	if i := slices.IndexFunc(all, func(p facefixtures.Fixture) bool { return p.Task.ID == fx.Task.Parent && p.Plan != nil }); i >= 0 {
+	if fx.Parent != nil {
+		s.drawer = fx.Parent.ID
+	}
+	switch i := slices.IndexFunc(all, func(p facefixtures.Fixture) bool { return p.Task.ID == fx.Task.Parent && p.Plan != nil }); {
+	case i >= 0:
 		s.seat(all[i])
+	case fx.Parent != nil:
+		s.seat(facefixtures.Fixture{Task: *fx.Parent})
 	}
 	return s
 }
@@ -549,6 +556,7 @@ var galleryColumns = map[string]string{"needs-you": "Needs you", "queued": "Queu
 // source's small card stands in the column its kind names.
 func TestGalleryHoldsEveryKind(t *testing.T) {
 	entries := galleryEntries()
+	helperParents := slices.DeleteFunc(facefixtures.All(), func(fx facefixtures.Fixture) bool { return fx.Group != facefixtures.GroupSource || fx.Parent == nil })
 	holds := func(group string, match func(kind string) bool) bool {
 		return slices.ContainsFunc(entries, func(e galleryEntry) bool { return e.Group == group && match(e.Kind) })
 	}
@@ -594,10 +602,16 @@ func TestGalleryHoldsEveryKind(t *testing.T) {
 			if e.Kind == "author wait" && !strings.Contains(string(f.Open), ">Answer in my words</button>") {
 				t.Errorf("the card that waits on its author offers no answer:\n%s", f.Open)
 			}
-			if _, col, ok := strings.Cut(e.Kind, "/"); ok && e.Group == facefixtures.GroupSource {
+			if source, col, ok := strings.Cut(e.Kind, "/"); ok && e.Group == facefixtures.GroupSource {
+				// a helper task stands on its parent: its ask in Needs you,
+				// else the parent's card in its own column
+				want := galleryColumns[col]
+				if i := slices.IndexFunc(helperParents, func(p facefixtures.Fixture) bool { return p.Kind == e.Kind }); i >= 0 && col != "needs-you" {
+					want = columnTitles[fiveColumn(*helperParents[i].Parent)]
+				}
 				small := string(f.Small)
-				if n := strings.Count(small, `<section class="column`); n != 1 || !strings.Contains(small, ">"+galleryColumns[col]+` <span class="count">`) {
-					t.Errorf("the card stands in %d columns, wanted %s alone:\n%s", n, galleryColumns[col], small)
+				if n := strings.Count(small, `<section class="column`); n != 1 || !strings.Contains(small, ">"+want+` <span class="count">`) {
+					t.Errorf("the %s card stands in %d columns, wanted %s alone:\n%s", source, n, want, small)
 				}
 			}
 		})

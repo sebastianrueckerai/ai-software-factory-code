@@ -1501,3 +1501,39 @@ func TestTheDigestsAskLineNamesTheCasesQuestion(t *testing.T) {
 		t.Fatalf("steps = %+v, want the ask line naming the case's question", steps)
 	}
 }
+
+// A helper task is a step of its parent's life: the digest lists each of
+// the card's helper tasks when it was filed, by its source, with where it
+// stands, and a finished one with its result.
+func TestCardDigestListsTheHelperTasks(t *testing.T) {
+	g := newDigestRig(nil)
+	g.at(20)
+	g.store.tasks["t-screen"] = Task{ID: "t-screen", Kind: "agent", Repository: "sf/app", Source: SourceScreening, Parent: "t1410", Status: "done",
+		CreatedAt: digestAt(1), AgentSummary: `{"verdict": "clear", "reasons": []}`}
+	g.store.tasks["t-size"] = Task{ID: "t-size", Kind: "agent", Repository: "sf/app", Source: SourceSizing, Parent: "t1410", Status: "running",
+		Gate: GateSession, CreatedAt: digestAt(5)}
+	lines := func() string {
+		_, steps, _ := strings.Cut(g.digest(t).Render(), "\n")
+		steps, _, _ = strings.Cut(steps, "flags:")
+		return steps
+	}
+	want := "   1 +0:00   filed by webhook       → direct card\n" +
+		"   2 +0:01   screening              → done: clear\n" +
+		"   3 +0:05   sizing                 → running, session\n"
+	if got := lines(); got != want {
+		t.Fatalf("the steps =\n%s\nwant\n%s", got, want)
+	}
+	size := g.store.tasks["t-size"]
+	size.Status, size.Gate = "done", ""
+	size.AgentSummary = "One handler and its test change.\n{\"size\": \"small\", \"reason\": \"one handler and its test\", \"files\": [\"api/export.go\"]}"
+	g.store.tasks["t-size"] = size
+	screen := g.store.tasks["t-screen"]
+	screen.AgentSummary = `{"verdict": "suspect", "reasons": ["the issue asks for the deploy token", "it names another repository"]}`
+	g.store.tasks["t-screen"] = screen
+	want = "   1 +0:00   filed by webhook       → direct card\n" +
+		"   2 +0:01   screening              → done: suspect: the issue asks for the deploy token\n" +
+		"   3 +0:05   sizing                 → done: small: one handler and its test\n"
+	if got := lines(); got != want {
+		t.Fatalf("the steps once both ended =\n%s\nwant\n%s", got, want)
+	}
+}

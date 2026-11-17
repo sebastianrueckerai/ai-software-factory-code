@@ -18,8 +18,8 @@ import (
 // tabs of a narrow screen under the status line, which spans both, the
 // chat's keys and its script; a reader's (a project they see but do not
 // write) holds it without the input, the history it may not read or the
-// keys; a human who writes no project, the wide view and a console
-// without the chat's model get no panel.
+// keys; a human who writes no project and a console without the chat's
+// model get no panel.
 func TestChatPanel(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	r.repoWriters["linkshort/linkshort"] = []string{"sebastian", "alice"}
@@ -116,7 +116,6 @@ func TestChatPanel(t *testing.T) {
 		}
 	}
 	none("bob, who writes no project agents work on", page(bk, "/"))
-	none("the wide view", page(ck, code+"&view=wide"))
 	r.c.cfg.Operator = nil
 	none("a console without the model", page(ck, code))
 }

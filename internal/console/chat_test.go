@@ -1558,23 +1558,14 @@ func equal(t *testing.T, what string, got, want any) {
 // boardText is the board read of the chat rig's project, its pool with no
 // draws first.
 var boardText = defaultPoolRead() + ".\n" + `Open cards:
+Needs you (1):
+  #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
 Queued (1):
   #5 t-m "Fix the cache. It drops entries." queued (waits for a free work slot, in filing order), €0.40 of €3.00
-Running (1):
+In progress (1):
   #11 t-r "Speed up the board." running (runs an agent session), gate session (an agent works in a sandbox)
-Waiting on a human (1):
-  #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
-Waiting for image (0):
-Waiting on the author (0):
-In review (0):
-Merged (0):
-Human lane (0):
-Escalated, waiting on an answer (1):
-  #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
 Finished cards, ended in the last 7 days and open no more:
 Done (0):
-Failed (0):
-Closed (0):
 Approval requests waiting (2):
   resource request 3 of t-res
   merge request 4 of t-m (#5), pull request #9`
@@ -2220,36 +2211,34 @@ func TestChatOpeningContextRestatesNoRead(t *testing.T) {
 }
 
 // The board's text keeps the finished cards apart from the open ones: the
-// open columns, the human lane and the escalations under Open cards, the
-// final states' columns under their own head after them, so a count of
-// open cards takes in no card that ended.
+// open columns under Open cards, Needs you's cards with them, Done under
+// its own head after them, so a count of open cards takes in no card that
+// ended; the approval requests Needs you holds follow in their own list.
 func TestBoardWordsKeepsTheFinishedApart(t *testing.T) {
 	task := func(n int64, status, title string) card {
 		return card{Task: factoryd.Task{ID: fmt.Sprintf("t-%d", n), IssueNumber: n, Status: status, Objective: title}}
 	}
+	merge := &approvalCard{ApprovalRequest: factoryd.ApprovalRequest{ID: 4, Kind: "merge", TaskID: "t-1"}, Issue: 1}
 	d := boardData{Columns: []column{
+		{Title: "Needs you", Needs: []need{{Approval: merge}, {Card: task(7, "waiting-human", "Use a replica?")}}},
 		{Title: "Queued", Cards: []card{task(1, "queued", "Fix the cache.")}},
-		{Title: "Running", Cards: []card{task(2, "running", "Speed up the board.")}},
-		{Title: "Done", Finished: "done", Cards: []card{task(3, "done", "Add the feed.")}},
-		{Title: "Failed", Finished: "failed", Cards: []card{task(4, "failed", "Port the store."), task(5, "failed", "Drop the cache."), task(6, "failed", "Rename the page.")}},
-		{Title: "Closed", Finished: "closed"},
+		{Title: "In progress", Cards: []card{task(2, "running", "Speed up the board.")}},
+		{Title: "Done", Finished: "done", Cards: []card{task(3, "done", "Add the feed."), task(4, "failed", "Port the store."), task(5, "closed", "Drop the cache.")}},
 	}}
 	equal(t, "the board's text", boardWords(d), `Open cards:
+Needs you (1):
+  #7 t-7 "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
 Queued (1):
   #1 t-1 "Fix the cache." queued (waits for a free work slot, in filing order)
-Running (1):
+In progress (1):
   #2 t-2 "Speed up the board." running (runs an agent session)
-Human lane (0):
-Escalated, waiting on an answer (0):
 Finished cards, ended in the last 7 days and open no more:
-Done (1):
+Done (3):
   #3 t-3 "Add the feed." done (is done)
-Failed (3):
   #4 t-4 "Port the store." failed (has failed)
-  #5 t-5 "Drop the cache." failed (has failed)
-  #6 t-6 "Rename the page." failed (has failed)
-Closed (0):
-Approval requests waiting (0):`)
+  #5 t-5 "Drop the cache." closed (was closed)
+Approval requests waiting (1):
+  merge request 4 of t-1 (#1)`)
 }
 
 // Every list of the board's text is bounded as a column's cards are: 25
@@ -2258,21 +2247,22 @@ Approval requests waiting (0):`)
 func TestBoardWordsBoundsEveryList(t *testing.T) {
 	var d boardData
 	var cards []card
+	var requests []need
 	for i := 1; i <= 27; i++ {
 		cards = append(cards, card{Task: factoryd.Task{ID: fmt.Sprintf("t-%d", i), IssueNumber: int64(i), Status: "queued", Objective: "Fix."}})
-		d.Approvals = append(d.Approvals, need{Approval: &approvalCard{ApprovalRequest: factoryd.ApprovalRequest{ID: int64(i), Kind: "merge", TaskID: fmt.Sprintf("t-%d", i)}}})
+		requests = append(requests, need{Approval: &approvalCard{ApprovalRequest: factoryd.ApprovalRequest{ID: int64(i), Kind: "merge", TaskID: fmt.Sprintf("t-%d", i)}}})
 		d.Problems = append(d.Problems, fmt.Sprintf("problem %d", i))
 	}
 	done := []card{
 		{Task: factoryd.Task{ID: "t-90", IssueNumber: 90, Status: "done", Objective: "Ship."}},
 		{Task: factoryd.Task{ID: "t-91", IssueNumber: 91, Status: "done", Objective: "Ship."}},
 	}
-	d.Columns = []column{{Title: "Queued", Cards: cards}, {Title: "Done", Finished: "done", Whole: 60, Cards: done}}
+	d.Columns = []column{{Title: "Needs you", Needs: requests}, {Title: "Queued", Cards: cards}, {Title: "Done", Finished: "done", Whole: 60, Cards: done}}
 	got := boardWords(d)
 	for _, want := range []string{
 		"\nDone (60):\n  #90 t-90 \"Ship.\" done (is done)\n  #91 t-91 \"Ship.\" done (is done)\n  and 58 more\nApproval requests waiting (27):",
-		"Queued (27):\n  #1 t-1 \"Fix.\" queued (waits for a free work slot, in filing order)\n",
-		"\n  #25 t-25 \"Fix.\" queued (waits for a free work slot, in filing order)\n  and 2 more\nHuman lane (0):\n",
+		"Open cards:\nNeeds you (0):\nQueued (27):\n  #1 t-1 \"Fix.\" queued (waits for a free work slot, in filing order)\n",
+		"\n  #25 t-25 \"Fix.\" queued (waits for a free work slot, in filing order)\n  and 2 more\nFinished cards,",
 		"\nApproval requests waiting (27):\n  merge request 1 of t-1\n",
 		"\n  merge request 25 of t-25\n  and 2 more\nNote: problem 1\n",
 	} {
@@ -2555,7 +2545,7 @@ func TestChatAppliedWithUndo(t *testing.T) {
 		t.Fatalf("stream length = %d, want 7; events: %v", len(events), events)
 	}
 	equal(t, "stream text before board", events[0], `text {"text":"Let me look."}`)
-	if !strings.HasPrefix(events[1], `tool {"arguments":{},"duration_ms":0,"name":"board","result":"`+defaultPoolRead()+`.\nOpen cards:\nQueued (1):`) {
+	if !strings.HasPrefix(events[1], `tool {"arguments":{},"duration_ms":0,"name":"board","result":"`+defaultPoolRead()+`.\nOpen cards:\nNeeds you (1):`) {
 		t.Errorf("board tool line prefix mismatch: %s", events[1])
 	}
 	equal(t, "stream after board", events[2:], []string{
@@ -2764,14 +2754,13 @@ func TestChatBoardView(t *testing.T) {
 	if !slices.Contains(ev, `view {"card":"t-r","query":"?project=ai-software-factory-code","tab":"chat","theme":"light"}`) {
 		t.Errorf("the card, tab and theme do not ride along:\n%s", strings.Join(ev, "\n"))
 	}
-	// the POST's view field is bounded and only the wide view rides: one
-	// too long reads as absent (its find with it), a view word the board
-	// does not carry drops
+	// the POST's view field is bounded: one too long reads as absent (its
+	// find with it), and a view word, the old wide view's too, drops
 	ev = post("q="+strings.Repeat("a", chatViewMax+1), `{}`)
 	if !slices.Contains(ev, `view {"query":"?project=ai-software-factory-code"}`) {
 		t.Errorf("an overlong view field does not read as absent:\n%s", strings.Join(ev, "\n"))
 	}
-	ev = post("?project=ai-software-factory-code&view=narrow&q=cache", `{}`)
+	ev = post("?project=ai-software-factory-code&view=wide&q=cache", `{}`)
 	if !slices.Contains(ev, `view {"query":"?project=ai-software-factory-code\u0026q=cache"}`) {
 		t.Errorf("a view word the board does not carry rides along:\n%s", strings.Join(ev, "\n"))
 	}
@@ -2877,7 +2866,6 @@ func TestChatBoardViewRefusals(t *testing.T) {
 	refuse(`{"queued":"first"}`, "The queued order must be newest, oldest or next.")
 	refuse(`{"progress_only":"both"}`, "The progress show must be all or exceptional.")
 	refuse(`{"done":"latest"}`, "The done order must be newest or oldest.")
-	refuse(`{"view":"narrow"}`, "The view must be wide or none.")
 	refuse(`{"routines":"sometimes"}`, "The routines must be all, within or none.")
 	refuse(`{"within":0}`, "The period must be 1 to 999.")
 	refuse(`{"within":1000}`, "The period must be 1 to 999.")

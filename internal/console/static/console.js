@@ -844,8 +844,8 @@ document.addEventListener("view", function (e) {
   document.addEventListener("htmx:afterSettle", pendingTabShot);
 });
 
-// The board's keys, listed by ? : w switches the view, Escape closes the
-// list or the drawer. The view chosen is remembered (theme.js applies it).
+// The board's keys, listed by ?: Escape closes the list or the drawer, f
+// finds on the board.
 (function () {
   function keys() { return document.getElementById("keys"); }
   function showKeys(open) {
@@ -872,11 +872,7 @@ document.addEventListener("view", function (e) {
       return;
     }
     if (e.target.closest("input, textarea, select, [contenteditable]")) return;
-    if (e.key === "w" && window.innerWidth < 900) return;
-    if (e.key === "w") {
-      e.preventDefault();
-      document.getElementById("view-toggle").click();
-    } else if (e.key === "?") {
+    if (e.key === "?") {
       e.preventDefault();
       showKeys(true);
     } else if (e.key === "f") {
@@ -891,10 +887,6 @@ document.addEventListener("view", function (e) {
     if (e.target.closest("#keys-toggle")) showKeys(true);
     else if (e.target.closest("#keys-close") || e.target.id === "keys") showKeys(false);
     else if (e.target.closest("#drawer-close")) closeDrawer();
-    var toggle = e.target.closest("#view-toggle");
-    if (!toggle) return;
-    if (toggle.dataset.view) localStorage.setItem("view", toggle.dataset.view);
-    else localStorage.removeItem("view");
   });
 })();
 

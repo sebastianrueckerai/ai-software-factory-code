@@ -1405,7 +1405,7 @@ func TestCloseADonePlan(t *testing.T) {
 		return open, factoryd.PlanCloseWords(by, note, true), true, nil
 	}
 	ck, s := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
 	// a done plan's small card offers no Close: the close is the chat's
 	// and the POST's, with the note that waives
 	for _, id := range []string{"t-br", "t-cl", "t-fp", "t-cc", "t-lr", "t-one"} {

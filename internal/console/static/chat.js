@@ -1360,12 +1360,6 @@ var chatView = (function () {
     if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey || (keys && !keys.hidden) ||
       e.target.closest("input, textarea, select, [contenteditable]")) return;
     e.preventDefault();
-    // the wide view hides the chat: "/" brings it back
-    var screen = document.getElementById("screen");
-    if (screen && screen.classList.contains("wide")) {
-      document.getElementById("view-toggle").click();
-      return;
-    }
     if (!inboxOpen) input.focus();
   });
   // the stop button in the log: a press ends the open thread's turn, so

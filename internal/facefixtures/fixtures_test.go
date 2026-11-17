@@ -100,7 +100,7 @@ func (r fixtureReads) PlanQuestions(context.Context, string, int) ([]factoryd.Pl
 
 // Every fixture's card has a brief, the gallery's cards included: a card
 // of plan #1947, the fixtures' plan, belongs to it at its place, with the
-// plan's outcome.
+// plan's outcome. The plan's prover is a step of the plan, no card of it.
 func TestEveryFixtureHasACardBrief(t *testing.T) {
 	all := facefixtures.All()
 	plan := ""
@@ -121,7 +121,7 @@ func TestEveryFixtureHasACardBrief(t *testing.T) {
 		if b.Text.Title == "" {
 			t.Errorf("%s %s: no title", fx.Group, fx.Kind)
 		}
-		if fx.Task.Parent != plan {
+		if fx.Task.Parent != plan || factoryd.Helper(fx.Task) {
 			continue
 		}
 		if p := b.Plan; p == nil || p.Issue != 1947 || p.Index == 0 || p.Of != 6 || p.Outcome == "" || len(p.Cards) != 6 {

@@ -117,7 +117,7 @@ func TestCaseRouteRefusesAnotherProjectsCard(t *testing.T) {
 
 // A board read that names the case a card showed keeps it while it is at
 // the human, and falls back to the oldest once it is not; an event's card
-// read does the same, and the wide view's card read is the plain face.
+// read does the same.
 func TestBoardReadKeepsTheCaseInView(t *testing.T) {
 	r := newRig(t)
 	seatCases(r)
@@ -131,25 +131,6 @@ func TestBoardReadKeepsTheCaseInView(t *testing.T) {
 	frag := getAs(r, ck, "/cards/t-a?case=t-a:3", false).Body.String()
 	if !strings.HasPrefix(frag, `<article class="card face need`) || !strings.Contains(frag, `<span class="why">Ask three.</span>`) || !strings.Contains(frag, ` data-place="case `) {
 		t.Errorf("the card fragment is not the case in view with its place:\n%s", frag)
-	}
-	if wide := getAs(r, ck, "/cards/t-a?view=wide", false).Body.String(); !strings.HasPrefix(wide, `<article class="card face`) || strings.HasPrefix(wide, `<article class="card face need`) {
-		t.Errorf("the wide view's card fragment is not the plain face:\n%s", wide)
-	}
-}
-
-// The wide view lists its Escalations from the same case rows as the
-// column, and keeps the card's face in its state column.
-func TestWideViewListsTheCaseRows(t *testing.T) {
-	r := newRig(t)
-	seatCases(r)
-	ck, _ := r.loggedIn(t)
-	body := getAs(r, ck, "/?view=wide", false).Body.String()
-	esc := col(t, body, "Escalations")
-	if strings.Count(esc, `class="card face need`) != 2 || !strings.Contains(esc, `<span class="why">A session that changes no code spends money and moves the work no closer to done.</span>`) || strings.Contains(esc, ` data-place="`) {
-		t.Errorf("the wide view's Escalations are not the case rows:\n%s", esc)
-	}
-	if waiting := col(t, body, "Waiting on a human"); strings.Count(waiting, `<article class="card face`) != 2 || strings.Contains(waiting, `class="card face need`) {
-		t.Errorf("the state column lost the cards' faces:\n%s", waiting)
 	}
 }
 
@@ -370,8 +351,8 @@ func TestNeedsYouOrdersRowsByTheOldestAsk(t *testing.T) {
 }
 
 // A case row and a plain card face never share a place, so a card swap
-// replaces like with like; the wide view's arrows keep the view, and the
-// row they fetch has no place of its own there.
+// replaces like with like; the arrows keep the board's filter, and the row
+// they fetch keeps the row's place.
 func TestCaseRowsHaveTheirOwnPlace(t *testing.T) {
 	r := newRig(t)
 	seatCases(r)
@@ -387,9 +368,9 @@ func TestCaseRowsHaveTheirOwnPlace(t *testing.T) {
 		t.Errorf("the row's place %v and the face's %v must differ", rp, fp)
 	}
 	seatCases(r)
-	wide := getAs(r, ck, "/projects/"+casesProject+"/cards/t-a/cases/2?view=wide", true).Body.String()
-	if strings.Contains(wide, ` data-place=`) || !strings.Contains(wide, `/cases/3?`) || !strings.Contains(wide, `view=wide`) {
-		t.Errorf("the wide view's case fragment has a place or loses the view:\n%s", wide)
+	next := getAs(r, ck, "/projects/"+casesProject+"/cards/t-a/cases/2?q=card", true).Body.String()
+	if !strings.Contains(next, ` data-place="`+rp[1]+`"`) || !strings.Contains(next, `/cases/3?`) || !strings.Contains(next, `q=card`) {
+		t.Errorf("the arrows' case fragment has not the row's place or loses the find:\n%s", next)
 	}
 }
 

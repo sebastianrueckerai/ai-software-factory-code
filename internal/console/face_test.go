@@ -81,7 +81,8 @@ func TestCardFaceTitle(t *testing.T) {
 // The foot's state: one hue per state and the board's word for it, so the
 // waits stay apart; the author's wait wears the hollow hue, a card in the
 // Queued column the queued hue, and a card parked on its image says it
-// waits for it. A final card's word stands without a dot.
+// waits for it. A final card's word stands without a dot. A waiting card
+// stands in Needs you with its ask, so its state is its opened card's.
 func TestCardFacePillPerStatus(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -100,11 +101,11 @@ func TestCardFacePillPerStatus(t *testing.T) {
 	} {
 		r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: status, Track: "direct", Repository: "sf/code", Objective: "work"})
 		body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+		face := faceOf(t, body, "t-1")
 		if status == "waiting-human" || status == "waiting-poster" {
-			// Needs you shows the card's ask with no foot; its foot stays in the wide view's column
-			body = r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+			face = drawer(t, r, ck, "t-1", "overview")
 		}
-		if face := faceOf(t, body, "t-1"); !strings.Contains(face, want) || status == "waiting-image" && !strings.Contains(face, `<span class="it waits">waits for its image</span>`) {
+		if !strings.Contains(face, want) || status == "waiting-image" && !strings.Contains(face, `<span class="it waits">waits for its image</span>`) {
 			t.Errorf("%s: the face lacks %s:\n%s", status, want, face)
 		}
 	}
@@ -430,21 +431,17 @@ func TestCardFaceChecksCached(t *testing.T) {
 	render(2)
 }
 
-// The wide view renders an escalated card twice, as its case's row in the
-// escalations and as its face in its column, the five columns once, in
-// Needs you, and no id repeats on the page; the opened card's brief and
-// colour fields each carry their own id.
+// The board renders an escalated card once, in Needs you, and no id
+// repeats on the page; the opened card's brief and colour fields each
+// carry their own id.
 func TestEscalatedCardRepeatsNoID(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	r.tasks.set("The agent asks: which region?", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code",
 		IssueNumber: 13, Objective: "asks"})
-	if n := strings.Count(r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), `data-card="t-e"`); n != 1 {
-		t.Errorf("the five columns render the escalated card's data-card %d times, want its case row's alone", n)
-	}
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	if n := strings.Count(body, `data-card="t-e"`); n != 2 {
-		t.Fatalf("the escalated card renders %d times, want its case row's and its column card's", n)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if n := strings.Count(body, `data-card="t-e"`); n != 1 {
+		t.Errorf("the board renders the escalated card's data-card %d times, want once", n)
 	}
 	ids := map[string]int{}
 	for _, m := range regexp.MustCompile(` id="([^"]+)"`).FindAllStringSubmatch(body, -1) {
@@ -543,11 +540,12 @@ func TestCardFaceStaleRing(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-ask", Kind: "agent", Status: "waiting-human",
 		Repository: "sf/code", Objective: "asks", CreatedAt: old}, Escalation: "The agent asks: which region?\nthe details"})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	// the waiting card's foot is its column's in the wide view; Needs you shows its ask
-	waiting := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String(), "Waiting on a human")
-	for id, board := range map[string]string{"t-quiet": body, "t-ask": waiting} {
-		if face := faceOf(t, board, id); !strings.HasPrefix(face, `<article class="card face stale" data-card="`+id+`" `) ||
-			!strings.Contains(face, `<span class="it flag">stale</span>`) {
+	// the waiting card stands in Needs you, its mark in its band
+	for id, want := range map[string][2]string{
+		"t-quiet": {`<article class="card face stale" data-card="t-quiet" `, `<span class="it flag">stale</span>`},
+		"t-ask":   {`<article class="card face need stale" data-card="t-ask" `, `<span class="flag">stale</span>`},
+	} {
+		if face := faceOf(t, body, id); !strings.HasPrefix(face, want[0]) || !strings.Contains(face, want[1]) {
 			t.Errorf("%s lacks the ring or the stale mark:\n%s", id, face)
 		}
 	}
@@ -605,8 +603,7 @@ func TestCardFaceStaleRingReadsTheTimeline(t *testing.T) {
 }
 
 // A waiting card's small card asks the question it waits on, as a
-// sentence, never its newest event: in Needs you, in its wide column and
-// in the opened card.
+// sentence, never its newest event: in Needs you and in the opened card.
 func TestCardFaceWaitingReason(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	ck, _ := r.loggedIn(t)
@@ -620,10 +617,6 @@ func TestCardFaceWaitingReason(t *testing.T) {
 	five := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	if face := faceOf(t, five, "t-e"); !strings.Contains(face, `<strong class="title">Use a replica or a shard?</strong>`) || strings.Contains(face, "card_retried") {
 		t.Errorf("Needs you: the waiting card's ask is not its question:\n%s", face)
-	}
-	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	if face := faceOf(t, col(t, wide, "Waiting on a human"), "t-e"); strings.Contains(face, "card_retried") {
-		t.Errorf("Waiting on a human: the waiting card shows its newest event:\n%s", face)
 	}
 	if row := escalationOf(t, r, ck, "t-e"); !strings.Contains(row, `<p class="o-question">Use a replica or a shard?</p>`) || strings.Contains(row, "card_retried") {
 		t.Errorf("the opened card's ask is not its question:\n%s", row)
@@ -968,9 +961,9 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 	}
 
 	before := ev.count()
-	rec := r.do(post("/tasks/t-ch/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "view": {"wide"},
+	rec := r.do(post("/tasks/t-ch/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "q": {"shard"},
 		"case_id": {"1"}, "action": {"say:a shard"}}), ck)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code&view=wide" {
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code&q=shard" {
 		t.Fatalf("the choice = %d to %q, want 303 to the filtered board", rec.Code, rec.Header().Get("Location"))
 	}
 	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "a shard" {

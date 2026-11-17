@@ -74,16 +74,16 @@ func planTasks() []factoryd.BoardTask {
 	}
 }
 
-// Roadmap 225: the wide view shows a column per state and no lane column,
-// queued and waiting-deps in Queued, closing in Running; no card wears a
-// lane badge; a plan's card reads its plan; the board shows one project.
-func TestWideViewHasNoLaneColumn(t *testing.T) {
+// Roadmap 225: the board shows its four columns and no lane column,
+// queued and waiting-deps in Queued, closing in In progress; no card wears
+// a lane badge; a plan's card reads its plan; the board shows one project.
+func TestBoardHasNoLaneColumn(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
 	ck, _ := r.loggedIn(t)
 	r.tasks.tasks = planTasks()
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&view=wide", nil), ck).Body.String()
-	titles := []string{"Queued", "Running", "Waiting on a human", "Waiting for image", "Waiting on the author", "In review", "Merged", "Done", "Failed", "Closed"}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	titles := []string{"Needs you", "Queued", "In progress", "Done"}
 	last := -1
 	for _, title := range titles {
 		i := strings.Index(body, ">"+title+" <span")
@@ -94,19 +94,19 @@ func TestWideViewHasNoLaneColumn(t *testing.T) {
 	}
 	for _, gone := range []string{">Backlog <span", ">Plan <span", ">Ready <span", "data-lane=", `class="badge"`, "/lane\"", "start-plan"} {
 		if strings.Contains(body, gone) {
-			t.Errorf("the wide view still has %s", gone)
+			t.Errorf("the board still has %s", gone)
 		}
 	}
-	if !strings.Contains(body, `data-holds="queued waiting-deps"`) || !strings.Contains(body, `data-holds="running closing"`) {
-		t.Errorf("Queued does not hold waiting-deps, or Running closing:\n%s", body)
+	if !strings.Contains(body, `data-holds="queued waiting-deps waiting-image"`) || !strings.Contains(body, `data-holds="running closing in-review merged"`) {
+		t.Errorf("Queued does not hold waiting-deps, or In progress closing:\n%s", body)
 	}
-	code := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+	code := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
 	for title, want := range map[string][]string{
 		"Queued": {`<strong class="title">card 2</strong>`, `<strong class="title">card 3</strong>`, `<strong class="title">card 4</strong>`,
 			`<span class="it waits">waits for <a class="ref-link" href="#card=t-c3">#3</a> <span class="ref-of">(card 3, queued)</span>`, "Another spec"},
-		"Done":         {"Link shortener", `<strong class="title">card 5</strong>`},
-		"code Queued":  {"an improvement"},
-		"code Running": {"fix the cache"},
+		"Done":             {"Link shortener", `<strong class="title">card 5</strong>`},
+		"code Queued":      {"an improvement"},
+		"code In progress": {"fix the cache"},
 	} {
 		board := body
 		if name, ok := strings.CutPrefix(title, "code "); ok {
@@ -197,17 +197,17 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 	planRig(r)
 	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": {{Text: "How long are the results kept?", Choices: []string{"7 days", "30 days"}}}}
 	ck, s := r.loggedIn(t)
-	board := func(ck *http.Cookie, view string) string {
-		return r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort"+view, nil), ck).Body.String()
+	board := func(ck *http.Cookie) string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
 	}
 	opened := func() string { return planDrawer(t, r, ck) }
-	card := col(t, board(ck, ""), "Needs you")
+	card := col(t, board(ck), "Needs you")
 	if !strings.Contains(card, `<strong class="title">How long are the results kept?</strong>`) ||
 		!strings.Contains(card, `<span class="place">plan Link shortener, 3 cards</span>`) {
 		t.Errorf("an unnamed plan's small card lacks its question, or its title in its place:\n%s", card)
 	}
 	r.tasks.tasks[0].PlanName = "fix prod latency"
-	card = col(t, board(ck, ""), "Needs you")
+	card = col(t, board(ck), "Needs you")
 	if !strings.Contains(card, `<span class="place">plan fix prod latency, 3 cards</span>`) {
 		t.Errorf("a named plan's small card lacks its name in its place:\n%s", card)
 	}
@@ -238,22 +238,22 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 		}
 	}
 	// a plan at the session cap shows as its case's row, which holds the
-	// plan's questions and Request changes: one row in Escalations, no
-	// second card in Approvals, and the cap's raw text nowhere on it
+	// plan's questions and Request changes: one row in Needs you, no
+	// second card for its request, and the cap's raw text nowhere on it
 	requested := time.Now().Add(-time.Hour)
 	r.approvals.rows[len(r.approvals.rows)-1].CreatedAt = requested
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = "limit reached: 3 sessions", requested.Add(time.Minute)
 	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 5, TaskID: "t-plan", Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman, Problem: "The plan hit its session cap."}}}
-	wide := board(ck, "&view=wide")
-	if !strings.Contains(col(t, wide, "Escalations"), `<strong class="title">The planner has a question about this plan. How should it go?</strong>`) || strings.Contains(wide, "limit reached: 3 sessions") ||
-		!strings.Contains(wide, `Escalations <span class="count">1</span>`) || !strings.Contains(wide, `Approvals <span class="count">0</span>`) {
-		t.Errorf("the plan's escalation is not its case's row alone:\n%s", wide)
+	asked := board(ck)
+	if needs := col(t, asked, "Needs you"); !strings.Contains(needs, `<strong class="title">The planner has a question about this plan. How should it go?</strong>`) || strings.Contains(asked, "limit reached: 3 sessions") ||
+		!strings.Contains(asked, `Needs you <span class="count">1</span>`) || strings.Count(needs, `data-card="t-plan"`) != 1 {
+		t.Errorf("the plan's escalation is not its case's row alone:\n%s", needs)
 	}
 	// the opened card's answers keep the filter
-	filtered := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort&view=wide", nil), ck).Body.String()
+	filtered := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort&q=plan", nil), ck).Body.String()
 	if at := strings.Index(filtered, `action="/tasks/t-plan/plan/answer"`); at < 0 {
 		t.Fatalf("the opened plan card lacks its answer:\n%s", filtered)
-	} else if form, _, _ := strings.Cut(filtered[at:], "</form>"); !strings.Contains(form, `<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) {
+	} else if form, _, _ := strings.Cut(filtered[at:], "</form>"); !strings.Contains(form, `<input type="hidden" name="project" value="linkshort"><input type="hidden" name="q" value="plan">`) {
 		t.Errorf("the plan's answer does not keep the filter:\n%s", form)
 	}
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = "", time.Time{}

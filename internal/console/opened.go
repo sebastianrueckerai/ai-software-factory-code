@@ -219,7 +219,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		}
 		o.Brief.Approvals = append(o.Brief.Approvals, ap)
 	}
-	cs, err := c.caseSetOf(ctx, bt.Repository)
+	cs, err := c.caseSetOf(ctx, bt.Repository, bt)
 	casesRead := err == nil
 	if !casesRead {
 		problem("cases", "Reload the board.", err)
@@ -239,7 +239,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 	onCase := false
 	switch {
 	case row != nil:
-		f := factoryd.Facts{CaseFacts: factoryd.FactsOf(row.Case), Card: bt.Task, Case: row.Case}
+		f := factoryd.Facts{CaseFacts: factoryd.FactsOf(row.Case), Card: row.card(k).Task, Case: row.Case}
 		o.Ask = c.askOf(ctx, v, k, row.Face, seen)
 		o.Ask.Position, o.Ask.Of = row.At, row.Of
 		base := "/cards/" + k.ID + "/drawer?tab=overview&case=" + url.QueryEscape(k.ID) + ":"
@@ -261,8 +261,11 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 			return casePress(v, k, *row, a, key)
 		}, r.URL.Query().Get("press"), seen)
 		o.Ask.whoMay()
+		if row.Owner != nil {
+			o.Ask.Note = helperNote(*row.Owner)
+		}
 		// a page behind the card's live ask says why its answers wait
-		if live := cs.liveAsk[bt.ID]; !requestPage(row.Case) && factoryd.AnsweredOnCard(row.Case.Kind) && live.ID > row.Case.ID {
+		if live := cs.liveAsk[row.card(k).ID]; !requestPage(row.Case) && factoryd.AnsweredOnCard(row.Case.Kind) && live.ID > row.Case.ID {
 			o.Ask.Note = "A newer ask on the card replaced this one."
 			if live.Status != factoryd.CaseAtHuman {
 				o.Ask.Note = "A newer ask on this card waits on the factory first."
@@ -419,11 +422,12 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 }
 
 // holds says card t holds a case at the human that its row of Needs you
-// shows: a live card's, and a done plan's wait on its failed card. The
-// board, a card's swap and its opened card read it alike.
+// shows: a live card's, a done plan's wait on its failed card, and its
+// helper task's whatever its state. The board, a card's swap and its
+// opened card read it alike.
 func (cs caseSet) holds(t factoryd.Task) bool {
 	return slices.ContainsFunc(cs.byCard[t.ID], func(o factoryd.Case) bool {
-		return !factoryd.Final(t.Status) || factoryd.PlanWaitCase(o, t)
+		return !factoryd.Final(t.Status) || factoryd.PlanWaitCase(o, t) || o.TaskID != t.ID
 	})
 }
 
@@ -593,6 +597,16 @@ func dataTo(k card, a factoryd.Answer) string {
 // answer, any other answer to the case's resolve; nil on a page an answer
 // on the card does not take.
 func casePress(v *boardView, k card, row caseRow, a factoryd.Answer, key string) (*pressForm, func(string) string) {
+	if owner := row.Owner; owner != nil {
+		// a helper's answer acts on the helper, and its parent's card
+		// stays where it is until the board reads it again
+		row.Owner = nil
+		p, name := casePress(v, *owner, row, a, key)
+		if p != nil {
+			p.DataTo = ""
+		}
+		return p, name
+	}
 	if requestPage(row.Case) {
 		if row.Approval == nil {
 			return nil, nil

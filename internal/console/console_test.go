@@ -784,13 +784,17 @@ func (s *fakeTasks) TaskByIssue(_ context.Context, repository string, issue int6
 }
 
 // BoardTasks lists repository's open cards, as the store does, in its
-// order: a chat task is none, and every final card is gone.
+// order: a chat task and a helper task are none, every final card is
+// gone, and each card holds its live helpers.
 func (s *fakeTasks) BoardTasks(_ context.Context, repository string) ([]factoryd.BoardTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cards := slices.DeleteFunc(slices.Clone(s.tasks), func(t factoryd.BoardTask) bool {
-		return t.Repository != repository || t.Kind == factoryd.KindChat || factoryd.Final(t.Status)
+		return t.Repository != repository || t.Kind == factoryd.KindChat || factoryd.Final(t.Status) || factoryd.Helper(t.Task)
 	})
+	for i := range cards {
+		cards[i].Helpers = factoryd.HelpersOf(s.tasks, cards[i].ID)
+	}
 	factoryd.SortBoardTasks(cards)
 	return cards, nil
 }
@@ -809,7 +813,9 @@ func (s *fakeTasks) BoardTask(_ context.Context, id string) (factoryd.BoardTask,
 	if i < 0 {
 		return factoryd.BoardTask{}, false, nil
 	}
-	return s.tasks[i], true, nil
+	bt := s.tasks[i]
+	bt.Helpers = factoryd.HelpersOf(s.tasks, id)
+	return bt, true, nil
 }
 
 // set replaces the tasks; the escalated ones carry reason. ChainLive is
@@ -2120,27 +2126,24 @@ func TestBoardRendersColumnsFromTheStore(t *testing.T) {
 	// the reason comes from the task's row; the board reads no timeline
 	r.objects["sessions/t-e/timeline.jsonl"] = []byte(`{"step":"escalated","reason":"old reason","comment":4}
 `)
-	// the state columns are the wide view's
-	rec := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck)
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET / = %d: %s", rec.Code, rec.Body)
 	}
 	body := rec.Body.String()
-	cols := []string{"Queued", "Running", "Waiting on a human", "In review", "Done", "Failed"}
-	objs := []string{"queued work", "closing work", "stuck work", "review work", "done work", "failed work"}
-	for i, col := range cols {
-		start := strings.Index(body, ">"+col+" <span")
-		if start < 0 {
-			t.Fatalf("column %q missing", col)
-		}
-		end := strings.Index(body[start:], "</section>")
-		if !strings.Contains(body[start:start+end], objs[i]) {
-			t.Errorf("column %q lacks %q", col, objs[i])
+	// a card in Needs you shows its ask in its title's place
+	for title, objs := range map[string][]string{
+		"Needs you": {`data-card="t-e"`, `data-card="t-h"`}, "Queued": {"queued work"},
+		"In progress": {"closing work", "review work"}, "Done": {"done work", "failed work"},
+	} {
+		for _, obj := range objs {
+			if !strings.Contains(col(t, body, title), obj) {
+				t.Errorf("column %q lacks %q", title, obj)
+			}
 		}
 	}
 	for _, want := range []string{
-		"cannot reach the database", `name="csrf" value="` + s.csrf + `"`,
-		"human work", "load test",
+		"cannot reach the database", `name="csrf" value="` + s.csrf + `"`, "load test",
 		`data-project="ai-software-factory-code"`, `<script src="/static/htmx.min.js"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -2370,7 +2373,7 @@ func TestBoardShowsTheConfigVersion(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	line := `<a class="lchip" href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory" target="_blank" rel="noopener" data-tip="version 4 · c9d98bb0aa11">config</a>`
-	for _, path := range []string{"/", "/?view=wide", "/board"} {
+	for _, path := range []string{"/", "/board"} {
 		body := r.do(httptest.NewRequest(http.MethodGet, path, nil), ck).Body.String()
 		if !strings.Contains(body, line) {
 			t.Errorf("%s lacks the configuration version line", path)
@@ -2812,22 +2815,20 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	r.tasks.set("", factoryd.Task{ID: "t-res", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 21})
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 9}})
-	// the human lane's approvals column is the wide view's, its small
-	// cards the register's asks; each opens its card, which holds the facts
-	// and the one decide in full. The merge, which its model review
-	// approved, holds that pick as its one button; the resource request,
-	// which no one suggests, holds none
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	start := strings.Index(body, `id="col-approvals"`)
-	end := strings.Index(body[start:], "</section>")
-	lane := body[start : start+end]
+	// the requests stand in Needs you, their small cards the register's
+	// asks; each opens its card, which holds the facts and the one decide
+	// in full. The merge, which its model review approved, holds that pick
+	// as its one button; the resource request, which no one suggests,
+	// holds none
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	lane := col(t, body, "Needs you")
 	for id, ask := range map[string]string{
 		"t-res": `<strong class="title">Rent a cx33 server for 5 hours at about 0.07 EUR?</strong> <span class="why">The card says what the server is for: load test.</span>`,
 		"t-m": `<strong class="title">Merge this card&#39;s pull request?</strong> ` +
 			`<span class="why">The change is high risk, and the factory&#39;s rules let only a human merge it.</span>`,
 	} {
 		if face := faceOf(t, lane, id); !strings.Contains(face, ask) {
-			t.Errorf("the lane's %s card lacks its ask %q:\n%s", id, ask, face)
+			t.Errorf("Needs you's %s card lacks its ask %q:\n%s", id, ask, face)
 		}
 	}
 	if face := faceOf(t, lane, "t-res"); strings.Contains(face, "<form") || strings.Contains(face, `class="by"`) {
@@ -2888,11 +2889,11 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	}
 	for _, wall := range []string{"<dl class=\"facts\">", "Risk class", "Earlier review", "Security audit", "Why a human", "Agent's recommendation", "Red in the log"} {
 		if strings.Contains(lane, wall) {
-			t.Errorf("the wide approval card shows the facts wall %q", wall)
+			t.Errorf("a request's small card shows the facts wall %q", wall)
 		}
 	}
-	if strings.Contains(lane, "/approvals/5/") || !strings.Contains(lane, `Approvals <span class="count">2</span>`) {
-		t.Error("the lane shows a decided request")
+	if strings.Contains(lane, "/approvals/5/") || !strings.Contains(lane, `Needs you <span class="count">2</span>`) {
+		t.Errorf("Needs you shows a decided request:\n%s", lane)
 	}
 }
 
@@ -3256,13 +3257,14 @@ func TestNilActorRedChecksBoard(t *testing.T) {
 	r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
 	r.fg.calls = nil
 	req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(context.WithValue(t.Context(), ctxKey{}, &session{}))
-	d, err := r.c.boardOf(req, boardFilter{Project: "ai-software-factory-code", View: viewWide}, actor{})
+	d, err := r.c.boardOf(req, boardFilter{Project: "ai-software-factory-code"}, actor{})
 	if err != nil {
 		t.Fatalf("boardOf through a sessionless actor: %v", err)
 	}
-	i := slices.IndexFunc(d.Approvals, func(n need) bool { return n.Approval.ID == 4 })
-	if i < 0 || !d.Approvals[i].Approval.HeadUnread || d.Approvals[i].Approval.Healed {
-		t.Fatalf("the merge card = %+v: want the head unread, not healed", d.Approvals)
+	needs := d.Columns[colNeedsYou].Needs
+	i := slices.IndexFunc(needs, func(n need) bool { return n.Approval != nil && n.Approval.ID == 4 })
+	if i < 0 || !needs[i].Approval.HeadUnread || needs[i].Approval.Healed {
+		t.Fatalf("the merge card = %+v: want the head unread, not healed", needs)
 	}
 	if len(r.fg.calls) != 0 {
 		t.Fatalf("the sessionless read asked Forgejo as a member: %q", r.fg.calls)
@@ -3600,14 +3602,13 @@ func TestBoardCardShowsTotalAndCurrentGate(t *testing.T) {
 	}
 }
 
-// A card in waiting-deps sits in the wide view's Queued column and reads
-// the issues it waits on.
+// A card in waiting-deps sits in Queued and reads the issues it waits on.
 func TestBoardCardShowsWaitingOn(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-deps", Track: "direct", Objective: "links api",
 		Repository: "sf/code", IssueNumber: 7}, WaitingOn: "#3, #5"}}
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	want := `<span class="it waits">waits for <a class="ref-link" href="https://git.example/sf/code/issues/3" target="_blank" rel="noopener">#3</a>`
 	if c := faceOf(t, col(t, body, "Queued"), "t-w"); !strings.Contains(c, "links api") || !strings.Contains(c, want) || !strings.Contains(c, `#5</a>`) {
 		t.Fatalf("Queued column = %s, want the card waiting on #3, #5", c)
@@ -3621,7 +3622,7 @@ func TestBoardCardShowsSlotWait(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-s", Kind: "agent", Status: "queued", Track: "direct", Objective: "waits for room",
 		Repository: "sf/code", IssueNumber: 7}, SlotWait: "waits for its turn to start, 2 ahead (7 running)"}}
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	if c := col(t, body, "Queued"); !strings.Contains(c, `<span class="it waits">waits for its turn to start, 2 ahead (7 running)</span>`) {
 		t.Fatalf("Queued column = %s, want the slot wait", c)
 	}

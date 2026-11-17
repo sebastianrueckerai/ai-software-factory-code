@@ -42,13 +42,15 @@ decimals: a task's model calls cost fractions of a cent.
   main stays the merge authority.
 - `/`: the board (done and failed for 7 days, at most 300 tasks, open
   ones first) in four columns: Needs you, Queued (`queued`,
-  `waiting-deps`, `waiting-image`), In progress and Done. `?view=wide`
-  shows one column per task state instead: Queued, Running, Waiting on a
-  human, Waiting for image, Waiting on the author, In review, Merged,
-  Done, Failed, Closed. `?project=<name>` (a select at the top) shows one
+  `waiting-deps`, `waiting-image`), In progress and Done; they are the one
+  board. `?project=<name>` (a select at the top) shows one
   project. Needs you holds approval requests, escalations with their
   reason, read from the escalation's intake event, and an answer box,
-  human tasks, and cards waiting on their author. htmx
+  human tasks, and cards waiting on their author. A helper task (a card's
+  screening or sizing, a plan's proof writing) is no card: while it runs
+  its card's state reads screening, sizing or writing the proofs, its ask
+  is a page of its card's asks in Needs you, and the card's life lists
+  it with its result. A finished helper task is in no column. htmx
   polls `/board` every 10 s. Above the columns the board names the
   configuration version factoryd runs with its commit, linked to the
   commit's tree in the infra repository, as `/policy` shows it. A card
@@ -166,7 +168,7 @@ decimals: a task's model calls cost fractions of a cent.
   beside it. Every answer meets the same gates first: a running card's
   words steer its session, and an action on a card no answer fits is
   refused.
-- Approval cards in the human lane, from `approval_requests`. Each opens
+- Approval cards in Needs you, from `approval_requests`. Each opens
   with its brief, one factoryd call (purpose `brief`) a moment after the
   request files. A brief the card's own budget refuses (`refused_budget`)
   says so in its place, and an approver's Fund there (`POST

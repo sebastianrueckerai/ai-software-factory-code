@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -123,10 +124,10 @@ func (c *Console) faceOf(ctx context.Context, v *boardView, n need, needs bool) 
 		f.Since = n.Waiting()
 		if row := n.Case; row != nil {
 			f.Key, f.CaseID = "case "+k.Place, row.Case.ID
-			if !row.Placed {
-				f.Key = ""
-			}
 			f.Since = row.Waiting()
+			if row.Owner != nil {
+				f.Marks = append(f.Marks, fine{helperSteps[row.Owner.Source] + " asks", "flag"})
+			}
 			c.askFace(ctx, v, &f, k, *row)
 		} else {
 			f.Sent = k.Status == "waiting-human"
@@ -170,7 +171,7 @@ func (c *Console) askFace(ctx context.Context, v *boardView, f *faceView, k card
 		return
 	}
 	o := face.Offers[i]
-	answer, ok := factoryd.AnswerFor(o.Value, factoryd.Facts{CaseFacts: factoryd.FactsOf(row.Case), Card: k.Task, Case: row.Case})
+	answer, ok := factoryd.AnswerFor(o.Value, factoryd.Facts{CaseFacts: factoryd.FactsOf(row.Case), Card: row.card(k).Task, Case: row.Case})
 	if !ok {
 		answer, _ = factoryd.AnswerOf(o.Value)
 	}
@@ -330,10 +331,25 @@ func (v *boardView) planOf(ctx context.Context, c *Console, id string) (factoryd
 	return p, p.Cards != nil
 }
 
+// helperWords are the states a card reads while its helper task of each
+// source runs, and helperSteps the steps that ask on the card.
+var (
+	helperWords = map[string]string{factoryd.SourceScreening: "screening", factoryd.SourceSizing: "sizing", factoryd.SourceProver: "writing the proofs"}
+	helperSteps = map[string]string{factoryd.SourceScreening: "the screening", factoryd.SourceSizing: "the sizing", factoryd.SourceProver: "the proof writing"}
+)
+
+// helperNote is what the opened card says of a page of helper task h:
+// whose ask it is and what its answers act on.
+func helperNote(h card) string {
+	step := helperSteps[h.Source]
+	return "This ask is " + step + "'s, a step of this card: its answers act on " + step + " alone."
+}
+
 // stateOf sets face f's state from card k: its word in its hue, its one
-// time, and while it is active the marks of an exceptional state. A
-// merged card says where its chain stands, a failed one names its
-// failure, a done one the chain covered how it went live.
+// time, and while it is active the marks of an exceptional state. A card
+// whose helper task runs names the helper's step, a merged card where its
+// chain stands, a failed one its failure, a done one the chain covered
+// how it went live.
 func (c *Console) stateOf(ctx context.Context, v *boardView, f *faceView, k card) {
 	word := template.HTML(template.HTMLEscapeString(stateWord(k.Task)))
 	f.Hue = k.StatusClass
@@ -341,6 +357,8 @@ func (c *Console) stateOf(ctx context.Context, v *boardView, f *faceView, k card
 		f.Hue = statusClass("queued")
 	}
 	switch {
+	case k.Helper != nil:
+		word = template.HTML(template.HTMLEscapeString(helperWords[k.Helper.Source]))
 	case k.Status == "merged" && k.Stage != "":
 		f.Hue = k.ChainHue()
 		stage := template.HTMLEscapeString(k.Stage)
@@ -357,6 +375,8 @@ func (c *Console) stateOf(ctx context.Context, v *boardView, f *faceView, k card
 	}
 	f.State = word
 	switch {
+	case k.Helper != nil:
+		f.Clock = minutes(time.Since(k.Helper.CreatedAt))
 	case f.Final && k.Cover != "":
 		f.Clock = k.Cover
 	case k.Stage != "" && k.StageAge != "":
@@ -436,14 +456,5 @@ func (c *Console) setFaces(ctx context.Context, v *boardView, d *boardData) {
 		for j := range col.Cards {
 			col.Cards[j].Face = c.faceOf(ctx, v, need{Card: col.Cards[j]}, false)
 		}
-	}
-	for i := range d.Approvals {
-		d.Approvals[i].Face = c.faceOf(ctx, v, d.Approvals[i], true)
-	}
-	for i := range d.Escalations {
-		d.Escalations[i].Face = c.faceOf(ctx, v, d.Escalations[i], true)
-	}
-	for i := range d.HumanTasks {
-		d.HumanTasks[i].Face = c.faceOf(ctx, v, need{Card: d.HumanTasks[i]}, false)
 	}
 }

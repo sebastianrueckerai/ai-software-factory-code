@@ -122,7 +122,6 @@ async function main() {
         await shot("board-1920.png", wide, "/", doIt);
         // the columns scroll inside the viewport: a tall one shows every card
         await shot("board-tall-1440.png", tall, "/", doIt);
-        await shot("wide-1440.png", desk, "/?view=wide");
         // the status in detail opens on the strip's click
         await shot("status-open-1440.png", desk, "/", async (p) => {
           await p.page.locator("#status-line > summary").click();
@@ -136,10 +135,10 @@ async function main() {
           await shot("drawer-running-1440.png", desk, (id) => "/#card=" + id, null, false);
           await shot("drawer-overview-1440.png", desk, (id) => "/#card=" + id, tab("Overview"), false);
           await shot("drawer-files-1440.png", desk, (id) => "/#card=" + id, tab("Files"), false);
-          // the Overview's Time section open (C10)
-          await shot("drawer-time-1440.png", desk, (id) => "/#card=" + id, async (p) => {
+          // the opened card's life fold open (C10)
+          await shot("drawer-life-1440.png", desk, (id) => "/#card=" + id, async (p) => {
             await tab("Overview")(p);
-            await p.page.locator('#drawer [data-sec="time"] > summary').click();
+            await p.page.locator('#drawer [data-sec="life"] > summary').click();
             await p.page.waitForTimeout(200);
           }, false);
         }
