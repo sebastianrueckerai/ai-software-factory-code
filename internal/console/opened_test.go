@@ -190,7 +190,7 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 		}
 		field := n.Data == "select" || n.Data == "textarea" || n.Data == "input" && htmlAttr(n, "type") != "hidden"
 		if field && !within(n, o, func(p *html.Node) bool {
-			return p.Data == "details" || slices.ContainsFunc(p.Attr, func(a html.Attribute) bool { return a.Key == "hidden" })
+			return slices.ContainsFunc(p.Attr, func(a html.Attribute) bool { return a.Key == "hidden" }) || standingForm(p)
 		}) {
 			t.Errorf("the field %s shows before a press:\n%s", htmlAttr(n, "name"), shown)
 		}
@@ -281,6 +281,19 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 			t.Errorf("%q names %q", s, m)
 		}
 	}
+}
+
+// standingForm says n is one of the two forms that still stand in the full
+// brief outside the register, until the promise pages and the hold-out
+// pages ask them as answers: a merge's per-promise verdict and a plan's
+// hold-out decision. No other form's field shows before its press.
+func standingForm(n *html.Node) bool {
+	if n.Data != "form" || n.Parent == nil {
+		return false
+	}
+	action := htmlAttr(n, "action")
+	return hasClass(n.Parent, "criterion") && strings.HasSuffix(action, "/criterion") ||
+		strings.HasSuffix(action, "/plan/holdout") && within(n, nil, func(p *html.Node) bool { return hasClass(p, "holdouts") })
 }
 
 // answerPost is an answer's form on the opened card as its send posts
