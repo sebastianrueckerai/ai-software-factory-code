@@ -393,6 +393,79 @@ func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 	}
 }
 
+// A parked card still answers: on one card, the park pressed through the
+// console's one mapping (doAnswerValue) settles the case it answers — Act
+// takes the settle with the park arg, the ruling stands as the case's
+// answer row and the card keeps its wait — and the later substantive
+// presses on the same card, its close and an extend of one session, act
+// on the parked card exactly as on any waiting card: through Act, nothing
+// refused, nothing restarted. The settle's store work — the case resolved,
+// none left open — is Act's own, proven beside this in factoryd's
+// TestAParkSettlesTheCaseItAnswers and the acceptance suite.
+func TestAParkedCardStillAnswers(t *testing.T) {
+	const comments = "/api/v1/repos/sf/code/issues/15/comments"
+	r, ev := newRigWithEvents(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 15, Objective: "add the feed"},
+		Escalation: "the card's spend is above the policy's bound",
+		Question: &factoryd.HumanQuestion{Ask: "The card's spend is above the policy's bound: 0.90 EUR of the 6.00 EUR budget. Which way on?",
+			Why:  "the card's spend is above the policy's bound: sessions bought on now would overrun the card's budget",
+			Info: "Fund raises the card's budget. Park holds it.",
+			Choices: []factoryd.QuestionChoice{
+				{Value: "fund", Label: "Fund the card"},
+				{Value: "park", Label: "Park it"},
+				{Value: "close", Label: "Done"},
+			}}}}
+	ck, s := r.loggedIn(t)
+	the := func(i int) factoryd.ActInput {
+		got := r.acted[i]
+		got.Post, got.Work = nil, nil
+		return got
+	}
+
+	// the park settles the case it answers and parks the card
+	before := ev.count()
+	if rec := r.do(post("/tasks/t-q/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerPark}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the park = %d %q, want 303", rec.Code, rec.Body.String())
+	}
+	equal(t, "the park", the(0), factoryd.ActInput{TaskID: "t-q", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
+		Res: factoryd.Resolution{Action: factoryd.ActSettle, Args: map[string]any{"park": factoryd.AnswerPark}, Note: "Park it"}})
+	equal(t, "the park's answer", r.fg.commentBodies(comments), []string{"Park it"})
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q",
+		detail: map[string]any{"action": factoryd.ActSettle, "answer": "Park it", "case_id": int64(1), "comment": int64(1)}})
+	if k, _, _ := r.tasks.Task(t.Context(), "t-q"); k.Status != "waiting-human" {
+		t.Fatalf("the parked card = %s, want it waiting-human", k.Status)
+	}
+
+	// the later close on the same parked card: Act's, nothing refused
+	before = ev.count()
+	if rec := r.do(post("/tasks/t-q/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerClose}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the close = %d %q, want 303", rec.Code, rec.Body.String())
+	}
+	equal(t, "the close", the(1), factoryd.ActInput{TaskID: "t-q", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
+		Res: factoryd.Resolution{Action: factoryd.ActClose}})
+	if posts := r.acted[1].Post != nil; posts {
+		t.Errorf("the close posted a comment; want Act's close alone")
+	}
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q",
+		detail: map[string]any{"action": factoryd.ActClose, "answer": factoryd.ActClose, "case_id": int64(1)}})
+	equal(t, "the close kept the park's answer alone", r.fg.commentBodies(comments), []string{"Park it"})
+
+	// the extend one session more on the same parked card: Act's, posted
+	before = ev.count()
+	if rec := r.do(post("/tasks/t-q/extend", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"sessions": {"1"}, "lines": {"0"}, "eur": {"0"}, "reason": {"one more run"}}), ck); rec.Code >= 400 {
+		t.Fatalf("the extend = %d: %s", rec.Code, rec.Body)
+	}
+	equal(t, "the extend", the(2), factoryd.ActInput{TaskID: "t-q", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
+		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "lines": 0, "agent_time_s": 0}, Note: "one more run"}})
+	equal(t, "the extend's answer", r.fg.commentBodies(comments), []string{"Park it", "one more run"})
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventSessionGranted, repo: "sf/code", taskID: "t-q",
+		detail: map[string]any{"action": factoryd.ActExtend, "answer": "one more run", "case_id": int64(1), "comment": int64(2)}})
+	if len(r.fg.patched) != 0 {
+		t.Errorf("the presses patched %v; want nothing restarted", r.fg.patched)
+	}
+}
+
 // The board's answer route takes an agent card's close value as its
 // Close: Act closes the card on its case, the console posts nothing and
 // patches nothing, and Act's answer is the one row.
@@ -1025,5 +1098,76 @@ func TestThePlansWaitAnswersOnItsOwnFace(t *testing.T) {
 	got, _ := actedOnce(t, r)
 	if got.Res.Action != factoryd.ActRetry || got.Res.Args["task_id"] != "t-a" {
 		t.Fatalf("the inbox's Retry took %+v, want the failed card's retry", got.Res)
+	}
+}
+
+// catchStore is the store factoryd.GrantCriteria reads through the rig's plan
+// and records the catch rows it writes.
+type catchStore struct {
+	factoryd.Store
+	t       *fakeTasks
+	catches []string
+}
+
+func (s *catchStore) Task(ctx context.Context, id string) (factoryd.Task, bool, error) {
+	return s.t.Task(ctx, id)
+}
+
+func (s *catchStore) PlanRevision(ctx context.Context, id string, n int) (factoryd.PlanRevision, bool, error) {
+	return s.t.PlanRevision(ctx, id, n)
+}
+
+func (s *catchStore) PlanCards(ctx context.Context, plan string) ([]factoryd.Task, error) {
+	return s.t.PlanCards(ctx, plan)
+}
+
+func (s *catchStore) CriteriaVerdicts(ctx context.Context, id string) ([]factoryd.CriterionVerdict, error) {
+	return s.t.CriteriaVerdicts(ctx, id)
+}
+
+func (s *catchStore) PutPlanCatches(_ context.Context, _ string, _ int, kind, finder string, details []string) (bool, error) {
+	for _, d := range details {
+		s.catches = append(s.catches, kind+" "+finder+" "+d)
+	}
+	return true, nil
+}
+
+// A plan whose criteria no review ever judged takes the grant on its
+// criteria_rerun ask: one delta due per criterion, the request approved.
+func TestGrantOnANeverJudgedPlanDraftsOneCard(t *testing.T) {
+	r, _, g := newChatRig(t)
+	verdictRig(r)
+	plan, _ := json.Marshal(factoryd.Plan{Summary: "The shortener", Criteria: []factoryd.PlanCriterion{
+		{ID: "c1", Kind: factoryd.CriterionTest, Claim: "a link is stored", Inputs: "POST /api/links with a url", Expected: "201"},
+		{ID: "c2", Kind: factoryd.CriterionHuman, Claim: "the pages read well"},
+	}, Cards: []factoryd.PlanCard{
+		{Key: "foundation", Role: "foundation", Title: "Foundation"},
+		{Key: "integration", Role: "integration", Title: "Integration"},
+	}})
+	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan, SHA256: "sha-1"}}}
+	r.tasks.criteria = nil
+	r.approvals.rows[len(r.approvals.rows)-1].Kind = factoryd.ApprovalCriteriaRerun
+	st := &catchStore{t: r.tasks}
+	r.c.cfg.GrantCriteria = func(ctx context.Context, id, by string, approval int64) (int, error) {
+		return factoryd.GrantCriteria(ctx, st, id, by, approval)
+	}
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "answer_criteria", `{"task_id":"t-plan","action":"grant"}`)}, {say("Granted.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"grant the plan one more card"}})
+	note := "Granted one more bounded card for 2 criteria; the planner drafts it and the board shows it."
+	equal(t, "stream", events, []string{
+		`tool {"arguments":{"task_id":"t-plan","action":"grant"},"duration_ms":0,"name":"answer_criteria","result":"` + note + `"}`,
+		`applied {"result":"` + note + `","tool":"answer_criteria"}`,
+		`text {"text":"Granted."}`, `done {}`})
+	if len(r.acted) != 1 || r.acted[0].Res.Action != factoryd.ActGrantCriteria {
+		t.Fatalf("Act took %+v, want one grant_criteria", r.acted)
+	}
+	if a := r.approvals.get(30); a.Status != "approved" {
+		t.Errorf("the grant left the request %+v", a)
+	}
+	want := []string{"delta " + factoryd.FinderApprover + " c1 grant 30", "delta " + factoryd.FinderApprover + " c2 grant 30"}
+	if !slices.Equal(st.catches, want) {
+		t.Errorf("catches = %q, want %q", st.catches, want)
 	}
 }

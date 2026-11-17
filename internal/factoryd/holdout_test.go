@@ -431,21 +431,16 @@ func TestGateCriteriaFailsWhenThePodEndsBeforeTheHoldouts(t *testing.T) {
 	objects := &fakeObjectStore{}
 	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
 	proofsWorker(t, r)
-	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
-		`{"id":"a_green","kind":"invariant","suite":"./a"}`)
-	if _, err := store.PutPlanProofs(context.Background(), "plan1", 1, []PlanProof{
-		{Idx: 1, Round: 1, ID: "door_state", Origin: ProofOriginHoldout, State: ProofStored, Suite: "proofs/door_state", Name: "TestDoorState",
-			Path: "proofs/door_state/door_state_test.go", Code: "package door_state"},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	plan, rows := openedGuards(hub, "green_login")
+	seedBlindPlan(t, store, plan, append(rows, PlanProof{Idx: 2, Round: 1, ID: "door_state", Origin: ProofOriginHoldout, State: ProofStored, Suite: "proofs/door_state", Name: "TestDoorState",
+		Path: "proofs/door_state/door_state_test.go", Code: "package door_state"}))
 	done := make(chan struct{})
 	var err error
 	go func() {
 		defer close(done)
 		_, err = runCriteria(t, r)
 	}()
-	body := proofLines(harness.ProofRun{ID: "a_green", Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))})
+	body := proofLines(harness.ProofRun{ID: "green_login", Report: junitGz(t, wrap(`<testcase name="TestLogin"></testcase>`))})
 	scriptReproPods(kube, body[:strings.LastIndex(body, "\n")])
 	<-done
 	if err == nil || !strings.Contains(err.Error(), "the proofs pod ended early: 1 of 2 entries unreported") {

@@ -154,7 +154,7 @@ type Runner struct {
 	gateRun   string
 	// criteriaGate replaces GateCriteria in the criteria gate pass; a
 	// test scripts it
-	criteriaGate func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error)
+	criteriaGate func(ctx context.Context, taskID string, pr int64, commit, checked string) (CriteriaResult, error)
 	// endpointWait bounds how long the worker's message endpoint is given
 	// to come up for a brief, record or proofs list delivery; a test
 	// shortens it

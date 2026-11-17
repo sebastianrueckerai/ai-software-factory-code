@@ -3393,7 +3393,7 @@ func (t *taskRun) reproduction(out *ReproResult, commit string) (verdict, bool, 
 func (t *taskRun) criteria(out *CriteriaResult, commit string) (verdict, bool, error) {
 	for {
 		*out = CriteriaResult{}
-		v, decided, err := t.gateActivity(true, reproOptions(), out, ActivityGateCriteria, t.taskID, t.pr.Number, commit)
+		v, decided, err := t.gateActivity(true, reproOptions(), out, ActivityGateCriteria, t.taskID, t.pr.Number, commit, t.checkedHead)
 		if err != nil {
 			return v, decided, err
 		}

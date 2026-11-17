@@ -172,6 +172,8 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			var n int64
 			fmt.Sscanf(p, "/pulls/%d/files", &n)
 			io.WriteString(w, `[{"filename":"k8s/factoryd.yaml"}]`)
+		case r.Method == "GET" && strings.HasSuffix(p, ".diff"):
+			io.WriteString(w, "diff --git a/k8s/factoryd.yaml b/k8s/factoryd.yaml\n--- a/k8s/factoryd.yaml\n+++ b/k8s/factoryd.yaml\n@@ -1 +1 @@\n-a\n+b\n")
 		case r.Method == "GET" && strings.HasPrefix(p, "/pulls/"):
 			if f.pullsDown {
 				http.Error(w, "forgejo down", http.StatusInternalServerError)

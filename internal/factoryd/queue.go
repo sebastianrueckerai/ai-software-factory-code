@@ -88,6 +88,47 @@ func (s *PGStore) QueueHead(ctx context.Context, project string) (string, bool, 
 	return id, err == nil, err
 }
 
+// QueuePlace is a task's place in its project's merge queue: the entries
+// ahead of it, and the task, with its issue, that holds the turn.
+type QueuePlace struct {
+	Ahead     int
+	HeadTask  string
+	HeadIssue int64
+}
+
+// MergeQueuePlaces answers the place of every task in any project's merge
+// queue, as EnterQueue gives the turn: ordered as QueueHead orders them,
+// except that a paused queue puts its pause's own cards first and holds
+// every other task behind them.
+func (s *PGStore) MergeQueuePlaces(ctx context.Context) (map[string]QueuePlace, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT r.task_id, r.ahead, r.head, COALESCE(h.issue_number, 0) FROM (
+		SELECT q.task_id,
+			CASE WHEN q.is_pause THEN 0
+			     ELSE row_number() OVER (PARTITION BY q.project, q.is_pause ORDER BY q.entered_at, q.task_id) - 1 + q.paused::int END AS ahead,
+			CASE WHEN q.paused THEN q.pause_head ELSE first_value(q.task_id) OVER (PARTITION BY q.project ORDER BY q.entered_at, q.task_id) END AS head
+		FROM (SELECT mq.project, mq.task_id, mq.entered_at, p.project IS NOT NULL AS paused,
+			COALESCE(mq.task_id IN (p.fix_task, p.revert_task), false) AS is_pause,
+			CASE WHEN EXISTS (SELECT 1 FROM merge_queue f WHERE f.task_id = p.fix_task) THEN p.fix_task
+			     WHEN EXISTS (SELECT 1 FROM merge_queue f WHERE f.task_id = p.revert_task) THEN p.revert_task
+			     WHEN p.fix_task <> '' THEN p.fix_task ELSE COALESCE(p.revert_task, '') END AS pause_head
+			FROM merge_queue mq LEFT JOIN queue_pauses p ON p.project = mq.project) q) r
+		LEFT JOIN tasks h ON h.id = r.head`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]QueuePlace{}
+	for rows.Next() {
+		var id string
+		var p QueuePlace
+		if err := rows.Scan(&id, &p.Ahead, &p.HeadTask, &p.HeadIssue); err != nil {
+			return nil, err
+		}
+		out[id] = p
+	}
+	return out, rows.Err()
+}
+
 // LeaveQueue takes taskID out of its project's merge queue; left: it was
 // in one.
 func (s *PGStore) LeaveQueue(ctx context.Context, taskID string) (project string, left bool, err error) {
