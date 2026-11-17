@@ -66,8 +66,8 @@ func (r caseRow) Waiting() string {
 
 // caseSet is what one board read holds of its repository's cases: the
 // desk, each card's cases at the human oldest first, and each card's live
-// ask, the newest live case an answer on the card ends. An older ask at
-// the human that an answer on the card no longer takes is no page.
+// ask, the newest live case an answer on the card ends. The minute pass
+// withdraws an older ask the live one replaced.
 type caseSet struct {
 	desk    factoryd.CaseDesk
 	byCard  map[string][]factoryd.Case
@@ -86,7 +86,7 @@ func (c *Console) caseSetOf(ctx context.Context, repository string) (caseSet, er
 		}
 	}
 	for _, k := range desk.Cases {
-		if k.Status == factoryd.CaseAtHuman && (!factoryd.AnsweredOnCard(k.Kind) || k.ID == cs.liveAsk[k.TaskID].ID) {
+		if k.Status == factoryd.CaseAtHuman {
 			cs.byCard[k.TaskID] = append(cs.byCard[k.TaskID], k)
 		}
 	}

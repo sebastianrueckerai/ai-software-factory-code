@@ -154,10 +154,11 @@ func TestWideViewListsTheCaseRows(t *testing.T) {
 }
 
 // The suggested answer's press sits on the case that is the card's live
-// ask, the newest live case an answer ends, and nowhere else: an older ask
-// an answer cannot end shows on no row, a live ask still with the ladder
-// takes the at-human ask's row away, and a post that names another case is
-// refused with the case in view.
+// ask, the newest live case an answer ends, and nowhere else. The board
+// shows the asks the store holds at the human: an older ask the minute pass
+// has not withdrawn yet is a page with no press, and so is an at-human ask
+// while a newer live ask is still with the ladder. A post that names
+// another case is refused with the live ask named.
 func TestAnswerFormsSitOnTheLiveAsksCaseOnly(t *testing.T) {
 	r := newRig(t)
 	seatCases(r)
@@ -172,18 +173,21 @@ func TestAnswerFormsSitOnTheLiveAsksCaseOnly(t *testing.T) {
 		needs := needsOf(t, r, ck, path)
 		return needs[strings.Index(needs, `data-card="t-a"`):strings.Index(needs, `data-card="t-b"`)]
 	}
-	if a := row("/?case=t-a:7"); strings.Contains(a, `action="/tasks/t-a/resolve"`) || strings.Contains(a, "Ask seven.") || !strings.Contains(a, "1 of 2") {
-		t.Errorf("an at-human ask shows while the card's live ask is open with the ladder:\n%s", a)
+	if a := row("/?case=t-a:7"); strings.Contains(a, `action="/tasks/t-a/resolve"`) || !strings.Contains(a, "Ask seven.") || !strings.Contains(a, "4 of 4") {
+		t.Errorf("an at-human ask carries a press while the card's live ask is with the ladder:\n%s", a)
 	}
 	r.openCases["t-a"] = r.openCases["t-a"][:4]
-	if a := row("/?case=t-a:7"); !strings.Contains(a, `action="/tasks/t-a/resolve"`) || !strings.Contains(a, "3 of 3") || strings.Contains(row("/?case=t-a:3"), "Ask three.") {
-		t.Errorf("the live ask carries no press, or the older ask shows:\n%s", a)
+	if a := row("/?case=t-a:7"); !strings.Contains(a, `action="/tasks/t-a/resolve"`) || !strings.Contains(a, "4 of 4") {
+		t.Errorf("the live ask carries no press:\n%s", a)
+	}
+	if a := row("/?case=t-a:3"); !strings.Contains(a, "Ask three.") || strings.Contains(a, `action="/tasks/t-a/resolve"`) {
+		t.Errorf("the older ask is no page, or carries a press:\n%s", a)
 	}
 	if frag := getAs(r, ck, caseURL("t-a", 7), true).Body.String(); !strings.Contains(frag, `<input type="hidden" name="case_id" value="7">`) {
 		t.Errorf("the live ask's press does not name its case:\n%s", frag)
 	}
-	if rec := getAs(r, ck, caseURL("t-a", 3), true); rec.Code != http.StatusNotFound {
-		t.Errorf("the older ask's case = %d, want 404", rec.Code)
+	if frag := getAs(r, ck, caseURL("t-a", 3), true).Body.String(); strings.Contains(frag, `name="case_id" value="3"`) {
+		t.Errorf("the older ask's page holds a press of its case:\n%s", frag)
 	}
 	rec := r.do(post("/tasks/t-a/resolve", url.Values{"csrf": {s.csrf}, "project": {casesProject}, "action": {factoryd.ActClose}, "case_id": {"3"}}), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Case 3 is not the card's live ask: the card's live ask is case 7") {

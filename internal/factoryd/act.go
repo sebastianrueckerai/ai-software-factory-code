@@ -396,9 +396,10 @@ func LeaveCaseToAct(ctx context.Context) context.Context {
 // CaseLeftToAct reports whether ctx came through LeaveCaseToAct.
 func CaseLeftToAct(ctx context.Context) bool { left, _ := ctx.Value(caseLeftKey{}).(bool); return left }
 
-// StoreMissedOffers stores, once, the face of each case at the human whose
-// ask holds none: one that reached the human before the register wrote
-// its faces. It asks on the board, once, the information request a card
+// StoreMissedOffers withdraws a card's asks a newer ask on the card
+// replaced (withdrawReplaced), and stores, once, the face of each case at
+// the human whose ask holds none: one that reached the human before the
+// register wrote its faces. It asks on the board, once, the information request a card
 // waits on without its case: one asked before the board asked them, or
 // whose ask failed to write. It also stores again an agent's question whose
 // stored face no longer fits its caps: a cap that binds after the ask,
@@ -437,7 +438,7 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 			log.Printf("offers pass: task %s: %v", t.ID, err)
 			continue
 		}
-		for _, c := range cases {
+		for _, c := range r.withdrawReplaced(ctx, t, cases) {
 			if c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
 				continue
 			}
@@ -469,6 +470,29 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// withdrawReplaced ends each of card t's live cases that an answer on the
+// card ends and a newer one of them replaced: an answer on the card ends
+// its newest live ask only (NewestAskCase), so an older one can never be
+// answered. It answers the cases left.
+func (r *Runner) withdrawReplaced(ctx context.Context, t Task, cases []Case) []Case {
+	var newest int64
+	for _, c := range cases {
+		if AnsweredOnCard(c.Kind) {
+			newest = max(newest, c.ID)
+		}
+	}
+	return slices.DeleteFunc(cases, func(c Case) bool {
+		if !AnsweredOnCard(c.Kind) || c.ID == newest {
+			return false
+		}
+		if err := r.EndCase(ctx, c.ID, "a newer ask on the card replaced it"); err != nil {
+			log.Printf("offers pass: task %s: case %d: %v", t.ID, c.ID, err)
+			return false
+		}
+		return true
+	})
 }
 
 // TryLockCase takes case id's answer lock, which Act holds from its first read

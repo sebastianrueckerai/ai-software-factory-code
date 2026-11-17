@@ -898,3 +898,26 @@ func TestAQuestionsFaceWaitsForWholeReads(t *testing.T) {
 		t.Error("an unread plan's siblings keep a question's face from its store")
 	}
 }
+
+// The minute pass withdraws a card's asks a newer ask on the card replaced:
+// an answer on the card ends its newest live ask only, so an older one at
+// the human, or still on a rung, can never be answered. The newest ask and
+// the asks answered by their own number (a merge, a monitor flag) stay.
+func TestTheMinutePassWithdrawsAnAskANewerOneReplaced(t *testing.T) {
+	g := newFactsRig(t)
+	ctx := context.Background()
+	g.store.cases = append(g.store.cases,
+		Case{ID: 5, TaskID: "t1", Kind: CaseSessionCap, Status: CaseOpen},
+		Case{ID: 7, TaskID: "t1", Kind: CaseAgentEscalate, Status: CaseAtHuman, Facts: map[string]any{"reason": AgentAsks + "Which store keeps the snapshots?"}},
+		Case{ID: 8, TaskID: "t1", Kind: CaseMonitorFlag, Status: CaseAtHuman},
+		Case{ID: 9, TaskID: "t1", Kind: CaseMergeApproval, Status: CaseAtHuman},
+		Case{ID: 11, TaskID: "t1", Kind: CaseBudgetFloor, Status: CaseAtHuman})
+	g.r.StoreMissedOffers(ctx)
+	status := map[int64]string{}
+	for _, c := range g.store.cases {
+		status[c.ID] = c.Status
+	}
+	if want := map[int64]string{5: CaseWithdrawn, 7: CaseWithdrawn, 8: CaseAtHuman, 9: CaseAtHuman, 11: CaseAtHuman}; !maps.Equal(status, want) {
+		t.Errorf("after the pass the cases stand %v, want %v", status, want)
+	}
+}
