@@ -1033,7 +1033,7 @@ func migrationTwinFixture() Fixture {
 		},
 		Checks: []FixtureChecks{{Head: "c1", State: "success"}},
 		Expect: &FixtureExpect{ResolvedByRung: []int{0, ResolvedOpen}, Sessions: 2, HumanCases: 1,
-			Face: []FixtureFace{{Ask: "pull request?", Why: "the migration risk class"}}},
+			Face: []FixtureFace{{Ask: "pull request?", Why: "The change alters the database"}}},
 	}
 }
 

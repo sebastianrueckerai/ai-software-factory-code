@@ -901,7 +901,7 @@ func TestHumanCardAndPlanQuestionAsksReachTheFace(t *testing.T) {
 	if err := g.s.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	q := HumanQuestion{Ask: "Which store keeps the snapshots?", Why: "Two fit.", Info: "Postgres is shared.", Recommendation: "Postgres", Source: "the agent",
+	q := HumanQuestion{Ask: "Which store keeps the snapshots?", Why: "Two fit.", Info: "Postgres is shared.", Recommendation: "Postgres", Recommended: "say:Postgres", Source: "the agent",
 		Choices: []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}}}
 	if err := recordAsk(ctx, g.r.timeline, task, q, "factoryd", "chat", ViaFactoryd, "", nil); err != nil {
 		t.Fatal(err)
