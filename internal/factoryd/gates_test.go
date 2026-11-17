@@ -50,6 +50,7 @@ type gateForgejo struct {
 	mergeCommit string   // and the commit the merge made on the base
 	mergedBy    string   // and by whom; "" = factory-merge
 	head        string   // GET /pulls/9's head sha; "" = c1
+	diffPush    string   // a read of the diff moves the head here: a push lands while the gate reads it
 	base        string   // and its base; "" = main
 	conflict    bool     // and it no longer merges into its base (mergeable false)
 	mergeWait   bool     // a 405 answers "Please try again later", Forgejo's conflict check still running
@@ -115,6 +116,9 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			}
 			time.Sleep(f.diffDelay)
 			io.WriteString(w, d)
+			if f.diffPush != "" {
+				f.head = f.diffPush
+			}
 		case r.Method == "POST" && p == "/pulls/9/reviews":
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
@@ -3210,6 +3214,32 @@ func TestGatesRefuseAMovedHead(t *testing.T) {
 	val, err = execActivity(t, ar, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{}, 1)
 	if a := getInto[AuditResult](t, val, err); a.MovedTo != "c2" || len(a.Findings) != 1 || a.Findings[0].Item != auditNoVerdict {
 		t.Fatalf("audit = %+v, want no verdict and the head c2 named", a)
+	}
+}
+
+// A push that lands while a gate reads the diff is a moved head too: the
+// gate checks the head after the read, so it never judges c2's diff as
+// c1's. GatePolicy refuses it, ModelReview and the audit name c2 with no
+// model call.
+func TestGatesRefuseAHeadThatMovesDuringTheDiffRead(t *testing.T) {
+	fj := &gateForgejo{diffPush: "c2", files: []string{`{"filename":"README.md"}`}, diff: "d"}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	if _, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1"); err == nil || !isHeadMoved(err) || !strings.Contains(err.Error(), "head moved to c2") {
+		t.Fatalf("GatePolicy with a push during its diff read = %v, want a head-moved refusal", err)
+	}
+	fj.head = "c1"
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"s"}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	if rv := getInto[Review](t, val, err); !strings.Contains(rv.Note, "head moved to c2") || rv.MovedTo != "c2" || len(ll.chats) != 0 {
+		t.Fatalf("review = %+v after %d model calls", rv, len(ll.chats))
+	}
+	al := &fakeLiteLLM{content: `{"verdict":"clear","findings":[]}`}
+	ar, _ := newAuditRunner(t, &gateForgejo{diffPush: "c2", diff: "d"}, al, true)
+	val, err = execActivity(t, ar, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{}, 1)
+	if a := getInto[AuditResult](t, val, err); a.MovedTo != "c2" || len(a.Findings) != 1 || a.Findings[0].Item != auditNoVerdict ||
+		!strings.Contains(a.Findings[0].Why, "head moved to c2") || len(al.chats) != 0 {
+		t.Fatalf("audit = %+v after %d model calls, want no verdict and the head c2 named", a, len(al.chats))
 	}
 }
 

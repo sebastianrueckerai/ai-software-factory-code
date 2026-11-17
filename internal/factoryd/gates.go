@@ -549,12 +549,6 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	if err != nil {
 		return PolicyGate{}, err
 	}
-	// a call with no commit checks no head
-	if commit != "" {
-		if _, err := r.headIs(ctx, repo, pr, commit); err != nil {
-			return PolicyGate{}, err
-		}
-	}
 	files, err := r.forgejo.PullRequestFiles(ctx, repo.Owner, repo.Name, pr)
 	if err != nil {
 		return PolicyGate{}, err
@@ -563,6 +557,14 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	unread := errors.Is(err, ErrDiffTooLong)
 	if err != nil && !unread {
 		return PolicyGate{}, err
+	}
+	// the head is checked after the reads, which go by the pull request's
+	// number, so a push before them is a moved head and never classifies
+	// another head as commit; a call with no commit checks no head
+	if commit != "" {
+		if _, err := r.headIs(ctx, repo, pr, commit); err != nil {
+			return PolicyGate{}, err
+		}
 	}
 	// a path either list names counts against its class: a file moved out
 	// of a guarded directory by its old name, a path the diff parser misses
@@ -2026,6 +2028,9 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		}
 		return rv, nil
 	}
+	prFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr.Number)
+	// the head is checked after the read, which goes by the pull request's
+	// number, so a push before it is a moved head, never another head's diff
 	if moved, err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
 		if !isTerminal(err) && !isHeadMoved(err) {
 			return Review{}, err
@@ -2034,7 +2039,6 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		rv.MovedTo = moved
 		return rv, err
 	}
-	prFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr.Number)
 	if errors.Is(err, ErrDiffTooLong) {
 		return notRun(err.Error())
 	}

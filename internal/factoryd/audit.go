@@ -249,6 +249,9 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	noVerdict := func(why string) {
 		res.Findings = append(res.Findings, AuditFinding{Item: auditNoVerdict, Why: why})
 	}
+	prFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr.Number)
+	// the head is checked after the read, which goes by the pull request's
+	// number, so a push before it is a moved head, never another head's diff
 	if moved, err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
 		if !isTerminal(err) && !isHeadMoved(err) {
 			return AuditResult{}, err
@@ -257,7 +260,6 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		res.MovedTo = moved
 		return r.recordAudit(ctx, t, pr, commit, round, gates.Beside, res, redact.New())
 	}
-	prFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr.Number)
 	if errors.Is(err, ErrDiffTooLong) {
 		noVerdict("the audit did not run: " + err.Error())
 		return r.recordAudit(ctx, t, pr, commit, round, gates.Beside, res, redact.New())
