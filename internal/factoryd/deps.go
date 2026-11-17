@@ -715,19 +715,20 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 		b.Body = strings.Join(append(parts, "handed over by "+by), "\n\n")
 	}
 	// the agent card keeps what a retry's replacement keeps: the work's
-	// priority, size and rung, and the author whose standing its text has,
-	// which the factory's own cards lack; its budget is the one its text
+	// priority, size and rung, and the author whose standing its text has.
+	// The factory's own cards outside a plan have none: the bot wrote their
+	// text, which no alert's telemetry fills. Its budget is the one its text
 	// asked for, else its size's
 	_, asked := askedBudget(t.Objective)
 	agent := Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: t.RiskClass, BudgetEUR: policy.CardBudget(v.Document.Budget, p.Budget, t.Size, t.Rung == RungFrontier, asked),
 		Objective: IssueObjective(b.Title, b.Body), Source: t.Source, Rung: t.Rung, Size: t.Size, Image: t.Image, ToolImage: t.ToolImage, ChatFiled: t.ChatFiled}
-	if t.Author != r.forgejo.BotUser {
+	inPlace := t.Source == SourcePlan && t.Parent != ""
+	if t.Author != r.forgejo.BotUser || inPlace || t.Source == SourceAlert {
 		agent.Author, agent.AuthorWriter = t.Author, t.AuthorWriter
 	}
 	var into interface {
 		CreateTask(ctx context.Context, t Task) error
 	} = r.store
-	inPlace := t.Source == SourcePlan && t.Parent != ""
 	if inPlace {
 		// a plan's card: the agent card takes its place, as a retry's
 		// replacement does, so the plan and its dependents wait on the work

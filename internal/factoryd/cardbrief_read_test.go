@@ -286,6 +286,20 @@ func TestHandOverCarriesWhatARetryCarries(t *testing.T) {
 	if got := issues.deps[6]; !slices.Equal(got, []int64{n}) {
 		t.Errorf("redirects' #6 depends on %v, want the agent card's #%d alone", got, n)
 	}
+
+	// a plan no human approved files its cards as the factory's bot, an
+	// outside author: the agent card keeps that standing, as the plan's
+	// other cards, a retry and a successor do
+	r, store, _ = handOverRig(t)
+	h = store.tasks["t-a"]
+	h.Author = "factory-agent"
+	store.tasks["t-a"] = h
+	if _, err := r.Go(ctx, "t-a", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if agent := cardsByKey(t, store)["links-api"]; agent.Author != "factory-agent" || agent.AuthorWriter || agent.Standing() != harness.StandingOutside {
+		t.Errorf("the bot-approved plan's agent card = %+v, want the bot as author, standing outside", agent)
+	}
 }
 
 // An outside account's issue that waited on a human (its project ran no
@@ -317,6 +331,30 @@ func TestGoKeepsTheOutsidersStandingAndTheAskedBudget(t *testing.T) {
 	}
 	if why := (&taskRun{standing: agent.Standing()}).skipReason(screening); screening.When != policy.WhenOutsider || why != "" {
 		t.Errorf("screening %+v skipped: %q, want it run on the outsider's card", screening, why)
+	}
+}
+
+// An alert's card that waited on a human is the factory's bot's, and its
+// text is telemetry: handed to the factory, it keeps that standing.
+func TestGoKeepsAnAlertsTelemetryStanding(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _ := routineRunner(t, routineTree(t))
+	if err := store.CreateTask(ctx, Task{ID: "t-alert", Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-code", IssueNumber: 8,
+		Source: SourceAlert, RiskClass: "standard", Author: "factory-agent", Objective: "Disk full on the runner\n\nThe runner's disk is at 97 percent."}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := r.Go(ctx, "t-alert", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var agent Task
+	for _, c := range store.tasks {
+		if c.IssueNumber == n {
+			agent = c
+		}
+	}
+	if agent.Author != "factory-agent" || agent.Standing() != harness.StandingTelemetry {
+		t.Errorf("the alert's agent card = %+v, want the bot as author, standing telemetry", agent)
 	}
 }
 
