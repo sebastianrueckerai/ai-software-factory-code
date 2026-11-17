@@ -515,6 +515,47 @@ func TestCardDigestReadsEveryStepKind(t *testing.T) {
 	}
 }
 
+// Two audit findings of one item in one file, at lines a run apart, are one
+// finding of the card: the step lists each id once, sorted. Ids by
+// sha256sum: "secrets at a.go" 99f3acc590cc, "network egress at b.go"
+// e60f60b44189.
+func TestCardDigestCountsAnAuditFindingOnce(t *testing.T) {
+	g := newDigestRig(nil)
+	g.line(t, 1, "audit", map[string]any{"commit": "f00dfeed1234", "verdict": AuditFindings, "findings": []AuditFinding{
+		{Item: "secrets", File: "a.go", Line: 154, Why: "a literal"}, {Item: "secrets", File: "a.go", Line: 155, Why: "the literal"},
+		{Item: "network egress", File: "b.go", Line: 9, Why: "a new host"}}})
+	d := g.digest(t)
+	audit := d.Steps[len(d.Steps)-1]
+	if want := []string{"99f3acc590cc", "e60f60b44189"}; audit.Kind != "audit" || !slices.Equal(audit.Findings, want) ||
+		audit.Outcome != "findings 99f3acc590cc e60f60b44189" {
+		t.Fatalf("audit step = %+v, want the findings %v", audit, want)
+	}
+}
+
+// An audit finding has one id wherever it stands: the audit step, a
+// check-in's verdict on its text and the step's detail all name FindingID
+// of the text, a path's capitals folded like every finding's words. By
+// sha256sum, "policy and workflow files at codeowners" is 86e1569746b6.
+func TestAuditFindingHasTheCheckInsID(t *testing.T) {
+	g := newDigestRig(nil)
+	g.line(t, 10, "audit", map[string]any{"commit": "f00dfeed1234", "verdict": AuditFindings,
+		"findings": []AuditFinding{{Item: "policy and workflow files", File: "CODEOWNERS", Line: 1, Why: "w"}}})
+	g.line(t, 12, "checkin", map[string]any{"round": 1, "decision": CheckHandover,
+		"verdicts": map[string]CheckVerdict{"policy and workflow files at CODEOWNERS": {State: CheckConfirmed}},
+		"record":   CheckInRecord{Moment: CheckInGate, Decision: CheckHandover}})
+	want := []string{"86e1569746b6"}
+	for _, s := range g.digest(t).Steps {
+		if (s.Kind == "audit" || s.Kind == "checkin") && !slices.Equal(s.Findings, want) {
+			t.Errorf("%s step names %v, want %v", s.Kind, s.Findings, want)
+		}
+	}
+	var b strings.Builder
+	writeFields(&b, map[string]any{"findings": []any{map[string]any{"item": "policy and workflow files", "file": "CODEOWNERS"}}})
+	if !strings.Contains(b.String(), "- 86e1569746b6 ") {
+		t.Fatalf("detail = %q, want the finding's id 86e1569746b6", b.String())
+	}
+}
+
 // stateGuardLine is the gate's line for a test that failed; its id is the
 // first 12 hex of the sha256 of the lowercased text, by sha256sum.
 const (

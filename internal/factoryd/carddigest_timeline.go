@@ -156,10 +156,14 @@ func lineSteps(scrub *redact.Scrubber, tl []byte) ([]DigestStep, []*digestSessio
 			var found []AuditFinding
 			_ = json.Unmarshal(l.Findings, &found)
 			items := make([]string, len(found))
+			var atFile []string
 			for k, f := range found {
 				items[k] = f.Text()
+				if f.File != "" {
+					atFile = append(atFile, items[k])
+				}
 			}
-			step.Kind, step.Findings, step.texts = "audit", textIDs(items), items
+			step.Kind, step.Findings, step.texts, step.atFile = "audit", textIDs(items), items, textIDs(atFile)
 			step.Outcome = cmp.Or(l.Verdict, "no verdict")
 			if len(step.Findings) > 0 {
 				step.Outcome = "findings " + strings.Join(step.Findings, " ")
@@ -442,12 +446,12 @@ func findingList(raw json.RawMessage) []string {
 	return texts
 }
 
-// textIDs are the sorted ids of texts.
+// textIDs are the sorted ids of texts, each once.
 func textIDs(texts []string) []string {
 	var out []string
 	for _, t := range texts {
 		out = append(out, FindingID(t))
 	}
 	slices.Sort(out)
-	return out
+	return slices.Compact(out)
 }
