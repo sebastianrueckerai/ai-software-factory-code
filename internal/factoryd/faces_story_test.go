@@ -108,12 +108,31 @@ func TestTheStoryOf2004(t *testing.T) {
 	}
 	f.Findings, f.ReviewFindings, f.AuditFindings = before[2:], before[2:], nil
 	f.LastSession = &factoryd.LastSessionFacts{CostEUR: 2, Pushed: true, Judged: []string{"review"}, Review: before}
-	got := factoryd.FaceOf(x.c, f).Story
+	face := factoryd.FaceOf(x.c, f)
+	got := face.Story
 	want := factoryd.Story{Planned: "This card builds “The three faults end to end: priced, asked, funded”.",
 		Happened: "It spent 4.00 of 4.00 EUR in 3 sessions. The last session fixed 2 of 10 review findings.",
 		Left:     "8 findings are open. One more session costs about 2.00 EUR."}
 	if got.Planned != want.Planned || got.Happened != want.Happened || got.Left != want.Left {
 		t.Errorf("the story is\n %q\n %q\n %q\nwant\n %q\n %q\n %q", got.Planned, got.Happened, got.Left, want.Planned, want.Happened, want.Left)
+	}
+	// one number: the ask buys the session the story prices, beyond the
+	// 0.40 EUR the gates hold back of the 0.00 EUR left
+	if ask, why := "Add 2.40 EUR to fix the 8 open review findings, or end the card?", "The card has 0.00 EUR left, and the review and the audit hold back 0.40 EUR."; face.Ask != ask || face.Why != why {
+		t.Errorf("ask %q, why %q; want %q, %q", face.Ask, face.Why, ask, why)
+	}
+	fund := slices.IndexFunc(face.Answers, func(a factoryd.Answer) bool { return a.Action == factoryd.ActFund })
+	if fund < 0 || face.Answers[fund].Fields[0].Default(f) != "2.40" {
+		t.Errorf("the fund's default is not the ask's 2.40 EUR: %+v", face.Answers)
+	}
+	// a last session cheaper than the opening: the ask is the opening's
+	// price, which the why names, and the story names no other price
+	f.LastSession.CostEUR = 0.3
+	face = factoryd.FaceOf(x.c, f)
+	if ask, why, left := "Add 1.00 EUR to fix the 8 open review findings, or end the card?",
+		"The card has 0.00 EUR left, the review and the audit hold back 0.40 EUR, and the next session needs 0.60 EUR to start.",
+		"8 findings are open."; face.Ask != ask || face.Why != why || face.Story.Left != left {
+		t.Errorf("ask %q, why %q, left %q; want %q, %q, %q", face.Ask, face.Why, face.Story.Left, ask, why, left)
 	}
 }
 

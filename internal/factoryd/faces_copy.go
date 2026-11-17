@@ -214,14 +214,27 @@ func extendMinutes(f Facts) string {
 	return fmt.Sprint(max(1, int(math.Ceil(f.SessionLeastS/60))))
 }
 
-// shortfall is what the card's next session needs past what a session may
-// spend, in cents rounded up; 0 when it has the room.
+// shortfall is what the card's next session costs past what a session may
+// spend, in cents rounded up; 0 when it has the room to open one.
 func shortfall(f CaseFacts) float64 {
 	if f.SessionLeft() >= f.FloorEUR {
 		return 0
 	}
-	return fundFor(f.FloorEUR, f.SessionLeft())
+	return fundFor(sessionPrice(f), f.SessionLeft())
 }
+
+// sessionPrice is what the card's next session costs: about what its last
+// one cost, but never less than what an opening needs.
+func sessionPrice(f CaseFacts) float64 {
+	if s := f.LastSession; s != nil && s.CostEUR > f.FloorEUR {
+		return s.CostEUR
+	}
+	return f.FloorEUR
+}
+
+// pricedBySession: the card's next session is priced at what its last one
+// cost, which the story names, not at the opening's floor.
+func pricedBySession(f CaseFacts) bool { return sessionPrice(f) > f.FloorEUR }
 
 // raiseFund is what a raise of the spend limit adds to the budget beside
 // it: a card out of money gets the shortfall, so it goes on; 0 elsewhere.
@@ -831,7 +844,9 @@ func leftLine(f Facts) string {
 	case f.Checks == "green":
 		out = "No finding is open, and the checks are green."
 	}
-	if s := f.LastSession; s != nil && s.CostEUR >= 0.005 {
+	// at the budget floor the ask's amount and this price are one number: a
+	// session priced at the opening is named by the why
+	if s := f.LastSession; s != nil && s.CostEUR >= 0.005 && (f.Kind != CaseBudgetFloor || pricedBySession(f.CaseFacts)) {
 		out = strings.TrimSpace(out + fmt.Sprintf(" One more session costs about %s EUR.", money(s.CostEUR)))
 	}
 	return out
@@ -914,13 +929,19 @@ func budgetFaceAsk(f Facts) string {
 }
 
 // budgetWhy says what the card has left, what the review and the audit
-// hold back of it, and what the next session needs: the sums of the ask.
+// hold back of it, and what the next session needs to start where the
+// story names no price: with the price, the sums of the ask.
 func budgetWhy(f Facts) string {
-	if f.ReserveEUR > 0 {
-		return fmt.Sprintf("The card has %s EUR left, the review and the audit hold back %s EUR, and the next session needs %s EUR.",
+	switch reserve, priced := f.ReserveEUR > 0, pricedBySession(f.CaseFacts); {
+	case reserve && priced:
+		return fmt.Sprintf("The card has %s EUR left, and the review and the audit hold back %s EUR.", money(f.LeftEUR), money(f.ReserveEUR))
+	case priced:
+		return fmt.Sprintf("The card has %s EUR left.", money(f.LeftEUR))
+	case reserve:
+		return fmt.Sprintf("The card has %s EUR left, the review and the audit hold back %s EUR, and the next session needs %s EUR to start.",
 			money(f.LeftEUR), money(f.ReserveEUR), money(f.FloorEUR))
 	}
-	return fmt.Sprintf("The card has %s EUR left, and the next session needs %s EUR.", money(f.LeftEUR), money(f.FloorEUR))
+	return fmt.Sprintf("The card has %s EUR left, and the next session needs %s EUR to start.", money(f.LeftEUR), money(f.FloorEUR))
 }
 
 // capWhy names the limit and the file that sets it.

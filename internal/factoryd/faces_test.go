@@ -474,7 +474,7 @@ func TestBudgetFloorAtTheSpendLimitAsksForTheRaise(t *testing.T) {
 	if got, want := labels(face.Answers), []string{"Raise the spend limit", "Start a fresh card on this work", "End the card", "Not now"}; !slices.Equal(got, want) {
 		t.Errorf("answers %v, want %v", got, want)
 	}
-	if want := "The card has 0.00 EUR left, and the next session needs 2.00 EUR."; face.Why != want {
+	if want := "The card has 0.00 EUR left, and the next session needs 2.00 EUR to start."; face.Why != want {
 		t.Errorf("why %q, want %q", face.Why, want)
 	}
 }
@@ -601,7 +601,7 @@ func TestAnAgentsQuestionAtEveryCapIsTheCapsFace(t *testing.T) {
 		{"day cap", capWait(policy.RefusedDayCap), "The factory's spending limit for today is reached. Wait for it to reset, or end the card?", wait},
 		{"month cap", capWait(policy.RefusedMonthCap), "The factory's spending limit for this month is reached. Wait for it to reset, or end the card?", wait},
 		{"project cap", capWait(policy.RefusedProjectCap), "This project's spending limit for the month is reached. Wait for it to reset, or end the card?", wait},
-		{"budget floor", func(f *factoryd.CaseFacts) { f.LeftEUR = 0.1 }, "The card is out of money. Add 0.20 EUR, or end the card?",
+		{"budget floor", func(f *factoryd.CaseFacts) { f.LeftEUR = 0.1 }, "The card is out of money. Add 0.38 EUR, or end the card?",
 			[]string{"Add money", "End the card", "Not now"}},
 		{"session cap", func(f *factoryd.CaseFacts) { f.Attempts = f.SessionCap }, "The card used all 3 sessions. Allow more, or end the card?",
 			[]string{"Allow more sessions", "End the card", "Not now"}},
