@@ -69,7 +69,11 @@ func (c *Console) ProjectPool(ctx context.Context, v policy.Version, p factoryd.
 	}
 	if len(over) > 0 {
 		out.Overdrawn = true
-		out.Words += ", overdrawn in " + textutil.AndList(over) + ": only the human draws more until the month turns"
+		part := "that part"
+		if len(over) > 1 {
+			part = "those parts"
+		}
+		out.Words += ", overdrawn in " + textutil.AndList(over) + ": only the human draws more of " + part + " until the month turns"
 	}
 	return out
 }

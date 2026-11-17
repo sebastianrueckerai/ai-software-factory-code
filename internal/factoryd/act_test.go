@@ -287,9 +287,10 @@ func retriedTwice(t *testing.T, second ActInput) {
 
 // A card stopped at its agent time cap takes an extend of its agent time,
 // not one of the sessions alone: that raises nothing the stop names, is
-// refused with the stop's own words before it draws — no row, no raise, the
-// case open — so the stop's next answer is not already weighed as a draw
-// that bought nothing. The same extend with its minutes of agent time
+// refused with the stop's own words and the minutes each rung may ask for
+// (the large card's draw of 90 minutes, the pool's 30 hours) before it
+// draws — no row, no raise, the case open — so the stop's next answer is
+// not already weighed as a draw that bought nothing. The same extend with its minutes of agent time
 // raises the card and resolves the stop.
 func TestActRefusesASessionsOnlyExtendAtTheTimeCap(t *testing.T) {
 	g := newFactsRig(t)
@@ -300,7 +301,8 @@ func TestActRefusesASessionsOnlyExtendAtTheTimeCap(t *testing.T) {
 		Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Fund: &policy.Draw{EUR: 1}}}
 	var refused ErrActRefused
 	if _, err := g.r.Act(context.Background(), in); !errors.As(err, &refused) ||
-		!strings.HasPrefix(err.Error(), "this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none") {
+		!strings.HasPrefix(err.Error(), "this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none. "+
+			"The card's draw leaves 90 minutes and the pool 1800 minutes of agent time, so rung 1 may ask for up to 90 minutes, rung 2 for up to 600 minutes and the human for up to 600 minutes, ") {
 		t.Fatalf("a sessions-only extend at the time cap = %v, want the stop's own refusal", err)
 	}
 	if len(g.store.events) != events || g.store.tasks["t1"].Usage != usage || len(g.store.resolved) != 0 ||

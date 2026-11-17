@@ -243,8 +243,9 @@ func TestPoolEscalationFallback(t *testing.T) {
 		Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#13 needs you: fund?", TaskID: "t-e"}); err != nil {
 		t.Fatal(err)
 	}
-	const spent = "the escalation pool leaves 30 sessions, 1800 minutes of agent time and 0.50 EUR this month: only the human draws more"
-	if got := (&factoryd.DrawBoundError{Left: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 0.5}}).Error(); got != spent {
+	const spent = "the escalation pool leaves 30 sessions, 1800 minutes of agent time and 0.50 EUR this month: only the human draws more. " +
+		"This draw does not fit in EUR (asked 1.00, left 0.50). The largest draw that fits is 0 sessions, 0 seconds of agent time and 0.50 EUR: ask for that"
+	if got := (&factoryd.DrawBoundError{Want: policy.Draw{EUR: 1}, Left: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 0.5}, Fit: policy.Draw{EUR: 0.5}}).Error(); got != spent {
 		t.Fatalf("the store's refusal reads %q, want %q", got, spent)
 	}
 	r.RefuseActs(spent)

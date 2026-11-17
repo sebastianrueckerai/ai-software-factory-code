@@ -390,7 +390,7 @@ decimals: a task's model calls cost fractions of a cent.
   the project file, and 30 sessions, 30 hours and 60 EUR stand where
   neither does. The board's pool cell and the chat's status line read
   what the cards drew against it, and say overdrawn once a part is past
-  its pool. Past it, only the human draws more until the month turns.
+  its pool. Past it, only the human draws more of that part until the month turns.
 
 ## Projects (task 65)
 

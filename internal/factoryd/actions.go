@@ -200,7 +200,17 @@ var Actions = []Action{
 		case d.AgentTime > MaxExtendMinutes*time.Minute:
 			return fmt.Sprintf("an extend raises at most %d minutes of agent time at once", MaxExtendMinutes)
 		case f.Kind == CaseAgentTimeCap && d.AgentTime == 0:
-			return "this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none"
+			card, pool := int(f.CardDrawLeft.AgentTime/time.Minute), int(f.PoolLeft.AgentTime/time.Minute)
+			upTo := func(minutes int) string {
+				if minutes <= 0 {
+					return "none"
+				}
+				return "up to " + textutil.Plural(minutes, "minute", "minutes")
+			}
+			return fmt.Sprintf("this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none. "+
+				"The card's draw leaves %s and the pool %s of agent time, so rung 1 may ask for %s, rung 2 for %s and the human for %s",
+				textutil.Plural(card, "minute", "minutes"), textutil.Plural(pool, "minute", "minutes"),
+				upTo(min(card, pool, MaxExtendMinutes)), upTo(min(pool, MaxExtendMinutes)), upTo(MaxExtendMinutes))
 		case !d.IsZero() && boughtNothing(f):
 			return boughtNothingText(f)
 		}
@@ -642,14 +652,14 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	case buys && boughtNothing(f):
 		return boughtNothingText(f)
 	}
-	if why := drawWithin(f, rung, d, false); why != "" || budget == 0 {
+	if why := drawWithin(f, rung, d, r.lines(), false); why != "" || budget == 0 {
 		return why
 	}
 	if r.Action == ActRaiseCeiling {
 		raise, _ := r.Args["eur"].(float64)
 		f.CeilingEUR += raise
 	}
-	return drawWithin(f, rung, policy.Draw{EUR: budget}, true)
+	return drawWithin(f, rung, policy.Draw{EUR: budget}, 0, true)
 }
 
 // draw is everything r draws from the pool: an extend's sessions and
@@ -833,16 +843,21 @@ func boughtNothingText(f CaseFacts) string {
 		"the checks and the findings unchanged: hand over, start a successor, replan or close"
 }
 
-// drawWithin reports why draw d does not fit rung's bounds on f: the pool for
-// rungs 0 to 2, the card bound for rungs 0 and 1, the ceiling for fund.
-func drawWithin(f CaseFacts, rung int, d policy.Draw, toBudget bool) string {
-	switch {
-	case rung < 0 || rung > 3:
+// drawWithin reports why draw d, lines beside it, does not fit rung's
+// bounds on f: the pool for rungs 0 to 2, the card bound for rungs 0 and 1,
+// the ceiling for fund. At a cap a fit without the part the cap names
+// buys no session, so none fits.
+func drawWithin(f CaseFacts, rung int, d policy.Draw, lines int, toBudget bool) string {
+	if rung < 0 || rung > 3 {
 		return fmt.Sprintf("there is no rung %d", rung)
-	case rung <= 1 && !fitsIn(d, f.CardDrawLeft):
-		return (&DrawBoundError{Card: true, Left: f.CardDrawLeft}).Error()
-	case rung <= 2 && !fitsIn(d, f.PoolLeft):
-		return (&DrawBoundError{Left: f.PoolLeft}).Error()
+	}
+	if e := newDrawBound(rung, d, lines, f.CardDrawLeft, f.PoolLeft); e != nil {
+		if f.Kind == CaseAgentTimeCap && d.AgentTime > 0 && e.Fit.AgentTime == 0 || f.Kind == CaseSessionCap && d.Sessions > 0 && e.Fit.Sessions == 0 {
+			e.Fit, e.Lines = policy.Draw{}, 0
+		}
+		return e.Error()
+	}
+	switch {
 	case toBudget && Cents(f.BudgetEUR)+Cents(d.EUR) > Cents(f.CeilingEUR):
 		return fmt.Sprintf("%.2f EUR more takes the budget of %.2f EUR past the card's ceiling of %.2f EUR: raise the ceiling first",
 			d.EUR, f.BudgetEUR, f.CeilingEUR)

@@ -22,6 +22,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // Task is a factory task row. factoryd owns these rows; the gateway reads
@@ -2153,26 +2154,72 @@ func (s *PGStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (bool
 	return wrote && err == nil, err
 }
 
-// DrawBoundError refuses a draw past a bound of its rung: the card's draw
-// bound (Card) or the project's pool, with what the bound left when the
-// draw met it.
+// DrawBoundError refuses draw Want past a bound of its rung: the card's
+// draw bound (Card) or the project's pool, with what the bound left when
+// the draw met it, and the largest part of Want every bound of the rung
+// leaves room for (Fit), zero when none that buys anything does. Lines
+// are the lines asked beside the draw, which no bound weighs.
 type DrawBoundError struct {
-	Card bool
-	Left policy.Draw
+	Card            bool
+	Want, Left, Fit policy.Draw
+	Lines           int
+}
+
+// newDrawBound is the refusal of draw want, lines beside it, on rung:
+// against cardLeft on rungs 0 and 1 first, then against poolLeft on rungs
+// 0 to 2. nil when want fits.
+func newDrawBound(rung int, want policy.Draw, lines int, cardLeft, poolLeft policy.Draw) *DrawBoundError {
+	e := &DrawBoundError{Want: want, Lines: lines, Fit: want.Min(poolLeft)}
+	if rung <= 1 {
+		e.Fit = e.Fit.Min(cardLeft)
+	}
+	if e.Fit.AgentTime < want.AgentTime {
+		// minutesWord rounds: a fit cut to the minute is never named above what is left
+		e.Fit.AgentTime = e.Fit.AgentTime.Truncate(time.Minute)
+	}
+	switch {
+	case rung <= 1 && !fitsIn(want, cardLeft):
+		e.Card, e.Left = true, cardLeft
+	case rung <= 2 && !fitsIn(want, poolLeft):
+		e.Left = poolLeft
+	default:
+		return nil
+	}
+	return e
 }
 
 func (e *DrawBoundError) Error() string {
+	bound := fmt.Sprintf("the escalation pool leaves %s this month: only the human draws more", drawText(e.Left))
 	if e.Card {
-		return fmt.Sprintf("the card's draw bound leaves %s: rung 2 or the human may draw more", drawText(e.Left))
+		bound = fmt.Sprintf("the card's draw bound leaves %s: rung 2 or the human may draw more", drawText(e.Left))
 	}
-	return fmt.Sprintf("the escalation pool leaves %s this month: only the human draws more", drawText(e.Left))
+	var over []string
+	if e.Want.Sessions > e.Left.Sessions {
+		over = append(over, fmt.Sprintf("sessions (asked %d, left %d)", e.Want.Sessions, e.Left.Sessions))
+	}
+	if e.Want.AgentTime > e.Left.AgentTime {
+		over = append(over, fmt.Sprintf("agent time (asked %s, left %s)", minutesWord(e.Want.AgentTime), minutesWord(e.Left.AgentTime)))
+	}
+	if Cents(e.Want.EUR) > Cents(e.Left.EUR) {
+		over = append(over, fmt.Sprintf("EUR (asked %.2f, left %.2f)", e.Want.EUR, e.Left.EUR))
+	}
+	bound += ". This draw does not fit in " + textutil.AndList(over)
+	switch {
+	case e.Fit.IsZero() && e.Lines == 0:
+		return bound + ", and nothing of it fits: hand_up with it as the recommendation"
+	case e.Lines > 0:
+		return fmt.Sprintf("%s. The largest draw that fits is %s with %s beside it, as lines ride free: ask for that", bound, drawText(e.Fit), textutil.Plural(e.Lines, "line", "lines"))
+	}
+	return fmt.Sprintf("%s. The largest draw that fits is %s: ask for that", bound, drawText(e.Fit))
 }
 
 // drawFits takes the project's pool lock for tx, so draws on one project
 // are weighed one at a time, and refuses d of card taskID past its rung's
-// bounds as drawWithin does: on rungs 0 and 1 the card's rows of those
-// rungs with d against CardBound, on rungs 0 to 2 the month's pool rows
-// with d against Pool, a raise of the ceiling included. The human's draw
+// bounds as drawWithin does: on rungs 0 and 1 d against what CardBound
+// leaves past the card's rows of those rungs, on rungs 0 to 2 against what
+// Pool leaves past the month's pool rows, a raise of the ceiling included,
+// each part on its own: a part the human drew past its bound refuses only
+// a draw that asks for some of it. The human's draw
 // takes the lock and is refused nothing. A draw whose identity key a row
 // holds already, a retry's after its commit, writes no row and is refused
 // nothing: its own row stands in the pool.
@@ -2189,23 +2236,23 @@ func (s *PGStore) drawFits(ctx context.Context, tx *sql.Tx, taskID string, d Cas
 			return err
 		}
 	}
+	var cardLeft, poolLeft policy.Draw
 	if d.Rung <= 1 {
 		drawn, err := cardDrawn(ctx, tx, taskID)
 		if err != nil {
 			return err
 		}
-		if !fitsIn(drawn.Plus(d.amount()), d.CardBound) {
-			return &DrawBoundError{Card: true, Left: d.CardBound.Minus(drawn)}
-		}
+		cardLeft = d.CardBound.Minus(drawn)
 	}
 	if d.Rung <= 2 {
 		drawn, err := poolDrawn(ctx, tx, d.Event.Repository, time.Now())
 		if err != nil {
 			return err
 		}
-		if !fitsIn(drawn.Plus(d.amount()), d.Pool) {
-			return &DrawBoundError{Left: d.Pool.Minus(drawn)}
-		}
+		poolLeft = d.Pool.Minus(drawn)
+	}
+	if e := newDrawBound(d.Rung, d.amount(), d.Lines, cardLeft, poolLeft); e != nil {
+		return e
 	}
 	return nil
 }

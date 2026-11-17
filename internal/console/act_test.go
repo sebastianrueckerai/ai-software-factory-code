@@ -229,7 +229,7 @@ func TestBoardShowsThePoolInThreeParts(t *testing.T) {
 		t.Fatalf("the board lacks %q or says overdrawn:\n%s", within, page)
 	}
 	r.drawn.Sessions = 11
-	const over = "11 of 10 sessions, 1 h 20 min of 5 h agent time and €12.50 of €20.00 drawn this UTC month, overdrawn in sessions: only the human draws more until the month turns"
+	const over = "11 of 10 sessions, 1 h 20 min of 5 h agent time and €12.50 of €20.00 drawn this UTC month, overdrawn in sessions: only the human draws more of that part until the month turns"
 	if page := board(); !strings.Contains(page, over) {
 		t.Fatalf("the board lacks %q:\n%s", over, page)
 	}
