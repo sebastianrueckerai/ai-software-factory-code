@@ -20,8 +20,9 @@ import (
 )
 
 // factsRig is a runner on a fake store, a fake object store and a Forgejo
-// whose head h2 is green, at noon on 2026-11-03, under a policy where card
-// t1, a large card of demo-app/demo-app, runs the direct track's coder
+// whose head h2 is green and whose fork holds no branch of a card, at noon
+// on 2026-11-03, under a policy where card t1, a large card of
+// demo-app/demo-app, runs the direct track's coder
 // class: 3 sessions, 10 minutes of agent time, task_max_eur 5, floors of
 // 0.30 EUR cheap and 0.60 EUR frontier, and the default pool and card
 // draw. Its last session ran on small, whose recorded opening is two
@@ -42,6 +43,10 @@ func factsAt(hh, mm int) time.Time { return time.Date(2026, 11, 3, hh, mm, 0, 0,
 func newFactsRig(t *testing.T) factsRig {
 	t.Helper()
 	forge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/demo-app/branches/") {
+			http.NotFound(w, r)
+			return
+		}
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/repos/demo-app/demo-app/commits/h2/status" {
 			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -172,7 +177,7 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 		Findings:     []string{idA, idB},
 		FindingTexts: map[string]string{idA: findingA, idB: findingB}, FindingOrder: []string{idA, idB}, ReviewFindings: []string{idA},
 		AuditFindings: []string{idB},
-		LastDrawAt:    &drawn, DrawHead: "h2", DrawChecks: "green", DrawFindings: []string{idA, idB}, Pushed: true,
+		LastDrawAt:    &drawn, DrawHead: "h2", DrawChecks: "green", DrawFindings: []string{idA, idB}, Pushed: true, BranchRead: true,
 		TimeDraw: &DrawFacts{At: factsAt(9, 0), Head: "h1", Checks: "red", Pushed: true},
 		Dependencies: []DepFact{
 			{TaskID: "d1", Issue: 20, Status: "failed", Why: "session error: the pod is gone", Replaced: RetryID("d1")},
@@ -209,6 +214,36 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	report.Source = SourceSizing
 	if f, err := g.r.tripFacts(context.Background(), report, "", ""); err != nil || !f.Report {
 		t.Errorf("a sizing card's facts: report %v (%v), want true", f.Report, err)
+	}
+}
+
+// The facts read the card's branch on the fork: a branch at c9 whose merge
+// base with main is c1 holds work main lacks, a branch at c9 whose merge
+// base is c9 itself holds none main lacks, no branch holds none, and a
+// compare that fails reads nothing and names its reader.
+func TestTripFactsReadsTheBranch(t *testing.T) {
+	for name, tc := range map[string]struct {
+		branch     string
+		mergeBases map[string]string
+		read       bool
+		head       string
+	}{
+		"a branch ahead of main": {"c9", map[string]string{"c9": "c1"}, true, "c9"},
+		"a branch main holds":    {"c9", map[string]string{"c9": "c9"}, true, ""},
+		"no branch":              {"", nil, true, ""},
+		"a compare that fails":   {"c9", nil, false, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, hub, store := newTestRunner(t, gateTask, newFakeKube(), &fakeObjectStore{})
+			hub.branchHead, hub.mergeBases = tc.branch, tc.mergeBases
+			f, err := r.tripFacts(context.Background(), store.tasks["t1"], "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.BranchRead != tc.read || f.BranchHead != tc.head || slices.Contains(f.Partial, "branch") == tc.read {
+				t.Errorf("branch read %v, head %q, partial %v; want read %v, head %q", f.BranchRead, f.BranchHead, f.Partial, tc.read, tc.head)
+			}
+		})
 	}
 }
 

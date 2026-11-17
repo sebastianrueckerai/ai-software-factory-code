@@ -1094,7 +1094,9 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 		kind, named = in.Kind, nil
 	}
 	kind = HumanCardKind(kind, t)
-	problem := ShapedQuestion(in.Reason, r.questionFacts(ctx, t, in.Reason), in.Choices).Ask
+	qf := r.questionFacts(ctx, t, in.Reason)
+	qf.BranchRead, qf.BranchHead = f.BranchRead, f.BranchHead
+	problem := ShapedQuestion(in.Reason, qf, in.Choices).Ask
 	if problem == plainAsk {
 		problem = EscalationQuestion(in.Reason)
 	}
@@ -1467,7 +1469,9 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		if c.Kind == CaseMonitorFlag {
 			shaped = r.monitorFace(t, reason)
 		} else {
-			shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
+			qf, held := r.questionFacts(ctx, t, reason), factsOf(c)
+			qf.BranchRead, qf.BranchHead = held.BranchRead, held.BranchHead
+			shaped = ShapedQuestion(reason, qf, choices)
 		}
 		// the ask leads with what stands on its head, as its case stored
 		// it (tripCase): a merge conflict, and unresolved review or audit

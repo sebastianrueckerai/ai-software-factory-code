@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +38,44 @@ func TestCaseFaceBudgetFloorOnAGreenHeadAsksTheMoney(t *testing.T) {
 	}
 	if got := CaseFace(c, nil, CaseFacts{Checks: "green", Findings: []string{"f1"}}, CaseAsk{}, nil); got.Ask != c.Problem || got.Money != line {
 		t.Errorf("with a finding: Ask = %q, Money = %q; want the problem over the money line", got.Ask, got.Money)
+	}
+}
+
+// A budget floor on a card whose sessions left no work on its branch says
+// the work is lost on its face, read from the case's stored facts, in the
+// same words as the ask the human was sent.
+func TestCaseFaceAndAskAgreeOnLostWork(t *testing.T) {
+	g := newFactsRig(t)
+	ctx := context.Background()
+	card := g.store.tasks["t1"]
+	card.SpentEUR, card.HeldEUR, card.IssueNumber = 4.4, 0, 0
+	g.store.tasks["t1"] = card
+	g.r.timeline = &Timeline{Objects: &fakeObjectStore{}, Events: g.store, Store: g.store}
+	f, err := g.r.tripFacts(ctx, card, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	why, err := g.r.SessionFunded(ctx, "t1", "factory/small")
+	if err != nil || !BudgetRefusal(why) {
+		t.Fatalf("SessionFunded = (%q, %v), want the money ask", why, err)
+	}
+	c, _, err := g.r.tripCase(ctx, card, f, TripInput{TaskID: "t1", Reason: why})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.r.AskHuman(ctx, card, c, why, "next", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	var asked string
+	for _, e := range g.store.events {
+		if e.Kind == EventQuestionAsked {
+			asked, _ = e.Detail["why"].(string)
+		}
+	}
+	const lost = "The last session's work was not pushed and is lost."
+	face := CaseFace(c, nil, FactsOf(c), CaseAsk{}, nil)
+	if !strings.Contains(asked, lost) || face.Why != asked {
+		t.Errorf("face why %q, asked why %q; want both to say the work is lost", face.Why, asked)
 	}
 }
 

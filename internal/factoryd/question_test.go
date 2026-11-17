@@ -369,6 +369,30 @@ func TestBudgetQuestionButtons(t *testing.T) {
 	}
 }
 
+// A budget floor after a session, on a card whose branch was read and
+// holds no work, says the work is lost and a fund starts again from main.
+// A branch with work on it, a branch never read (an older stored case)
+// and a card that ran no session lose nothing.
+func TestBudgetQuestionSaysWhenTheWorkIsLost(t *testing.T) {
+	reason := BudgetRefused + ": 0.170 EUR of the 5.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); it cannot start."
+	const lost = "The last session's work was not pushed and is lost. A fund starts a new session from main, and the work must be done again."
+	facts := QuestionFacts{BudgetEUR: 5, SpentEUR: 4.83, LeftEUR: 0.17, Attempts: 2, BranchRead: true}
+	if why := ShapedQuestion(reason, facts, nil).Why; !strings.Contains(why, lost) || strings.Contains(why, "Nothing is lost") {
+		t.Errorf("why = %q, want the work said lost", why)
+	}
+	for name, change := range map[string]func(f *QuestionFacts){
+		"a branch at c9":  func(f *QuestionFacts) { f.BranchHead = "c9" },
+		"a branch unread": func(f *QuestionFacts) { f.BranchRead = false },
+		"no session ran":  func(f *QuestionFacts) { f.Attempts = 0 },
+	} {
+		f := facts
+		change(&f)
+		if why := ShapedQuestion(reason, f, nil).Why; !strings.Contains(why, "Nothing is lost") || strings.Contains(why, lost) {
+			t.Errorf("%s: why = %q, want nothing lost", name, why)
+		}
+	}
+}
+
 // A cap stop's question names the cap the check-in ran with, which its
 // reason carries, not the cap of the policy in force when it is asked:
 // card #1491's check-in ran 5 minutes under its pinned version, and the
