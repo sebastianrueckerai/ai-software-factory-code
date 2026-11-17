@@ -174,7 +174,7 @@ var Actions = []Action{
 		case f.MergeConflict != "":
 			return conflictRefusal(f, ActConfirmAudit)
 		case len(f.AuditConfirmable) == 0:
-			return "the head's newest audit holds no finding at a file a person could confirm: reverify runs the audit on the head again"
+			return "the head's newest audit holds no finding at a file a human could confirm: reverify runs the audit on the head again"
 		case strings.TrimSpace(r.Note) == "":
 			return "a one-line reason is required"
 		}

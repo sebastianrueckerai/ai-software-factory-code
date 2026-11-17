@@ -1184,7 +1184,7 @@ func TestConfirmAuditNamesOneFindingWhole(t *testing.T) {
 	}
 	f.AuditFindings, f.AuditConfirmable = []string{"d"}, nil
 	if got, want := applies(t, ActConfirmAudit, f, Resolution{Note: "fixtures"}),
-		"the head's newest audit holds no finding at a file a person could confirm: reverify runs the audit on the head again"; got != want {
+		"the head's newest audit holds no finding at a file a human could confirm: reverify runs the audit on the head again"; got != want {
 		t.Errorf("only the count past the list: confirm_audit applies = %q, want %q", got, want)
 	}
 }
