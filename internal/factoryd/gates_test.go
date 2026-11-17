@@ -4648,34 +4648,44 @@ func TestChangeSetUnreadable(t *testing.T) {
 }
 
 // The review's input carries the head's check runs, read at the call:
-// every check's context and state, a red one with its description, a
-// pending one named pending — the loop's own check runs the merge needs
+// every check's context and state — a fake whose combined status reports
+// two green checks and one red with its description, and one whose
+// checks are still pending — the loop's own check runs the merge needs
 // green, as the prompt's checks sentence says.
 func TestReviewInputCarriesTheCheckRuns(t *testing.T) {
-	fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n",
-		statusesRaw: `[{"context":"ci / test","status":"success"},{"context":"ci / lint","status":"failure","description":"gofmt needs b.go"},{"context":"ci / e2e","status":"pending"}]`}
-	r, _, _ := newGateRunner(t, gateTask, fj)
-	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
-	r.supervisor = testSupervisorModel(ll.srv(t).URL)
-	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Policy: PolicyGate{Class: "normal"}}); err != nil {
-		t.Fatal(err)
-	}
-	var in reviewInput
-	user := strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), ChatInputLead)
-	if err := json.Unmarshal([]byte(user), &in); err != nil {
-		t.Fatal(err)
-	}
-	want := []reviewCheck{{Context: "ci / test", State: "success"},
-		{Context: "ci / lint", State: "failure", Description: "gofmt needs b.go"},
-		{Context: "ci / e2e", State: "pending"}}
-	if !slices.Equal(in.Checks, want) {
-		t.Fatalf("checks = %+v, want %+v", in.Checks, want)
-	}
-	if !slices.Equal(fj.statusReads, []string{"c1"}) {
-		t.Fatalf("status reads = %v, want the reviewed head's combined status", fj.statusReads)
-	}
-	prompt, _ := ll.chats[0]["messages"].([]any)[0].(map[string]any)["content"].(string)
-	if !strings.Contains(prompt, "the loop's own check runs the merge needs green") {
-		t.Fatalf("the prompt does not name the loop's own check runs: %s", prompt)
+	for name, tc := range map[string]struct {
+		statuses string
+		want     []reviewCheck
+	}{
+		"two green and one red": {`[{"context":"ci / test","status":"success"},{"context":"ci / race","status":"success"},{"context":"ci / lint","status":"failure","description":"gofmt needs b.go"}]`,
+			[]reviewCheck{{Context: "ci / test", State: "success"}, {Context: "ci / race", State: "success"},
+				{Context: "ci / lint", State: "failure", Description: "gofmt needs b.go"}}},
+		"checks still pending": {`[{"context":"ci / test","status":"pending"},{"context":"ci / race","status":"pending"}]`,
+			[]reviewCheck{{Context: "ci / test", State: "pending"}, {Context: "ci / race", State: "pending"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n", statusesRaw: tc.statuses}
+			r, _, _ := newGateRunner(t, gateTask, fj)
+			ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
+			r.supervisor = testSupervisorModel(ll.srv(t).URL)
+			if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Policy: PolicyGate{Class: "normal"}}); err != nil {
+				t.Fatal(err)
+			}
+			var in reviewInput
+			user := strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), ChatInputLead)
+			if err := json.Unmarshal([]byte(user), &in); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(in.Checks, tc.want) {
+				t.Fatalf("checks = %+v, want %+v", in.Checks, tc.want)
+			}
+			if !slices.Equal(fj.statusReads, []string{"c1"}) {
+				t.Fatalf("status reads = %v, want the reviewed head's combined status", fj.statusReads)
+			}
+			prompt, _ := ll.chats[0]["messages"].([]any)[0].(map[string]any)["content"].(string)
+			if !strings.Contains(prompt, "the loop's own check runs the merge needs green") {
+				t.Fatalf("the prompt does not name the loop's own check runs: %s", prompt)
+			}
+		})
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -272,5 +273,91 @@ func TestCallTimeoutKeepsAMinuteBeforeTheDeadline(t *testing.T) {
 		if got := callTimeout(now, deadline, timeout); got != want {
 			t.Errorf("callTimeout(%s before the deadline, %s) = %s, want %s", deadline.Sub(now), timeout, got, want)
 		}
+	}
+}
+
+// A review's or an audit's gate retry is pinned to a provider-limit
+// freeze's reset while a hold covers the class: the wave stops at the
+// first freeze refusal, the retry waits the hold out uncapped at the
+// reset plus the margin (waitUntil answers a cancelled context, so a
+// cancelled attempt makes no call inside the freeze), and the refused
+// calls are made again once, at the reset.
+func TestGateRetryPinnedToTheFreezeReset(t *testing.T) {
+	reset := time.Now().UTC().Add(-3 * time.Minute).Truncate(time.Second)
+	var mu sync.Mutex
+	var calls []time.Time
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		n := len(calls)
+		calls = append(calls, time.Now())
+		mu.Unlock()
+		if n < 2 {
+			w.Header().Set(gateway.HeaderDecision, gateway.RefusedProviderLimit)
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprintf(w, `{"error":{"message":"Usage limit reached for 5 hour"},"reset":%q}`, reset.Format(time.RFC3339))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"review answer"}}]}`))
+	}))
+	defer srv.Close()
+	r := &Runner{supervisor: testSupervisorModel(srv.URL)}
+
+	// both calls of the wave are refused, the retry waits the freeze out
+	// in one uncapped wait and re-calls each once, at the reset
+	results, err := r.callAll(context.Background(), "t1", "big", policy.PurposeReview, time.Minute, time.Time{}, labelledCalls(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	n, times := len(calls), slices.Clone(calls)
+	mu.Unlock()
+	if n != 4 {
+		t.Fatalf("the pinned retry made %d calls in all, want two refusals and one re-call each", n)
+	}
+	for i, res := range results {
+		if res.Err != nil || res.Content != "review answer" {
+			t.Fatalf("call %d = %q, %v; want the answer after the re-call at the reset", i, res.Content, res.Err)
+		}
+	}
+	for _, at := range times[2:] {
+		if at.Before(reset) {
+			t.Fatalf("a re-call ran at %v, before the reset %v: the retry re-entered the frozen class", at, reset)
+		}
+	}
+
+	// the production wait answers a cancelled context, so a cancelled
+	// attempt holds at the freeze instead of sleeping through it
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := waitUntil(ctx, time.Now().Add(time.Hour)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitUntil on a cancelled context = %v, want context.Canceled", err)
+	}
+	if err := waitUntil(context.Background(), time.Now().Add(-time.Hour)); err != nil {
+		t.Fatalf("waitUntil past the moment = %v, want nil", err)
+	}
+
+	// an attempt whose context ends inside the freeze makes no re-call:
+	// the hold answers the wave, the cancellation ends the attempt before
+	// the retry
+	frozen := time.Now().UTC().Add(5 * time.Hour).Truncate(time.Second)
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	var again []string
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		again = append(again, r.Header.Get(gateway.HeaderFactoryTask))
+		mu.Unlock()
+		w.Header().Set(gateway.HeaderDecision, gateway.RefusedProviderLimit)
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprintf(w, `{"error":{"message":"Usage limit reached for 5 hour"},"reset":%q}`, frozen.Format(time.RFC3339))
+		cancel()
+	}))
+	defer srv2.Close()
+	r2 := &Runner{supervisor: testSupervisorModel(srv2.URL)}
+	if _, err := r2.callAll(ctx, "t1", "big", policy.PurposeReview, time.Minute, time.Time{}, labelledCalls(2)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the attempt inside the freeze = %v, want context.Canceled", err)
+	}
+	if len(again) > 2 {
+		t.Fatalf("the cancelled attempt made %d calls, want no re-call inside the freeze", len(again))
 	}
 }

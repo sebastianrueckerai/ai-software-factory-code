@@ -407,35 +407,92 @@ func TestApplyClaimsLeavesUnsettledRunsStanding(t *testing.T) {
 	}
 }
 
-// Every kept test-outcome claim runs, however many the review holds:
-// well past the eight a bundled finding names. This replaces the old
-// TestApplyClaimsRunsTwoTestClaimsAtMost, which pinned the maxTestRuns=2
-// run cap the card's spec deleted; every kept claim now runs, this test
-// covers that rule, and maxKeptTestClaims=16 bounds the parse.
+// Every kept test-outcome claim runs, however many the review holds and
+// however they bundle: a finding bundling three claims — the shape the
+// old maxTestRuns=2 cap left unrun at two — and five single-claim
+// findings past that old cap all run through a settle seam that answers
+// a passing head, no Unsettled line says a claim was not run, and a
+// bundled finding's one drop names each run. The settle tells its gate
+// watch waves that scale with the claims it runs: a claim's
+// podStartWait+ReproTimeout each, plus the one setup. This replaces the
+// old TestApplyClaimsRunsTwoTestClaimsAtMost, which pinned the cap the
+// card's spec deleted; maxKeptTestClaims=16 bounds the parse.
 func TestEveryKeptTestClaimRuns(t *testing.T) {
 	runs := 0
-	settle := func(Claim) (claimRun, error) { runs++; return claimRun{Exit: 1, Output: "FAIL"}, nil }
+	settle := func(Claim) (claimRun, error) { runs++; return claimRun{Commit: "c1", Exit: 0, Output: "ok"}, nil }
+	// a concerns review whose one finding bundles three failing-test
+	// claims on a head where the tests pass
+	bundled := Review{Verdict: "concerns", Summary: "s", Findings: []string{"internal/x: TestY, TestZ and TestW fail at head"}, Claims: []Claim{
+		testClaim(0, "TestY", "internal/x", RefHead, OutcomeFail),
+		testClaim(0, "TestZ", "internal/x", RefHead, OutcomeFail),
+		testClaim(0, "TestW", "internal/x", RefHead, OutcomeFail),
+	}}
+	got := applyClaims(bundled, nil, nil, settle)
+	if runs != 3 || len(got.Findings) != 0 || got.Unsettled != nil || got.Pending != nil {
+		t.Fatalf("runs = %d, review = %+v; want every bundled claim run and the finding dropped", runs, got)
+	}
+	if len(got.Dropped) != 1 {
+		t.Fatalf("drops = %d, want the one bundled finding's", len(got.Dropped))
+	}
+	for _, name := range []string{"TestY", "TestZ", "TestW"} {
+		if ev := fmt.Sprintf("go test -run %s internal/x at head (c1): exit 0, the test did not fail:\nok", name); !strings.Contains(got.Dropped[0].Evidence, ev) {
+			t.Fatalf("drop evidence = %q, want each run named, %s's among them", got.Dropped[0].Evidence, name)
+		}
+	}
+	if got.Verdict != "approve" || got.TurnedFrom != "concerns" {
+		t.Fatalf("verdict = %q turned from %q, want the concerns turned approve", got.Verdict, got.TurnedFrom)
+	}
+	// five single-claim findings, past the old cap of two
+	runs = 0
 	var claims []Claim
 	var findings []string
-	for i := range 9 {
-		claims = append(claims, testClaim(i, fmt.Sprintf("TestY%d", i), "internal/x", RefBase, OutcomePass))
+	for i := range 5 {
+		claims = append(claims, testClaim(i, fmt.Sprintf("TestY%d", i), "internal/x", RefHead, OutcomeFail))
 		findings = append(findings, fmt.Sprintf("f%d", i))
 	}
-	got := applyClaims(Review{Verdict: "concerns", Summary: "s", Findings: findings, Claims: claims}, nil, nil, settle)
-	if runs != 9 || len(got.Findings) != 0 || len(got.Dropped) != 9 || got.Unsettled != nil || got.Pending != nil {
+	got = applyClaims(Review{Verdict: "concerns", Summary: "s", Findings: findings, Claims: claims}, nil, nil, settle)
+	if runs != 5 || len(got.Findings) != 0 || len(got.Dropped) != 5 || got.Unsettled != nil || got.Pending != nil {
 		t.Fatalf("runs = %d, review = %+v; want every claim run, every finding dropped", runs, got)
 	}
 	if got.Verdict != "approve" || got.TurnedFrom != "concerns" {
 		t.Fatalf("verdict = %q turned from %q, want the concerns turned approve", got.Verdict, got.TurnedFrom)
 	}
+	// the settle's gate watch bound scales with the claims it runs: one
+	// claim tells its 30 waves (a start and the command each, plus the
+	// one setup), five tell 110, at a wave a minute
+	for count, want := range map[int]int{1: policy.ReviewParts + 30, 5: policy.ReviewParts + 110} {
+		kube := newFakeKube()
+		r, _, _ := newTestRunner(t, gateTask, kube, &fakeObjectStore{})
+		var waves int
+		ctx := context.WithValue(context.Background(), wavesKey{}, func(n int) { waves = n })
+		var rvClaims []Claim
+		var rvFindings []string
+		var bodies []string
+		for i := range count {
+			rvClaims = append(rvClaims, testClaim(i, fmt.Sprintf("TestY%d", i), "internal/x", RefHead, OutcomeFail))
+			rvFindings = append(rvFindings, fmt.Sprintf("f%d", i))
+			bodies = append(bodies, reproLine(0, "ok"))
+		}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			r.dropContradicted(ctx, gateTask, Repo{Owner: "sf", Name: "repo"}, 9, "c1", time.Minute, 0,
+				Review{Findings: rvFindings, Claims: rvClaims}, nil, nil)
+		}()
+		scriptReproPods(kube, bodies...)
+		<-done
+		if waves != want {
+			t.Errorf("%d claims: bound waves = %d, want %d", count, waves, want)
+		}
+	}
 	// the parse keeps at most maxKeptTestClaims test claims: past the
 	// bound a claim is spent unnamed, its finding standing as any
 	// finding without a claim
-	var bundled []string
+	var joined []string
 	for i := range maxKeptTestClaims + 2 {
-		bundled = append(bundled, fmt.Sprintf(`{"finding":0,"kind":"test","symbol":"TestY%d","package":"internal/x","ref":"base","outcome":"pass"}`, i))
+		joined = append(joined, fmt.Sprintf(`{"finding":0,"kind":"test","symbol":"TestY%d","package":"internal/x","ref":"base","outcome":"pass"}`, i))
 	}
-	rv := parseReview(fmt.Sprintf(`{"verdict":"concerns","summary":"s","findings":["a"],"claims":[%s]}`, strings.Join(bundled, ",")))
+	rv := parseReview(fmt.Sprintf(`{"verdict":"concerns","summary":"s","findings":["a"],"claims":[%s]}`, strings.Join(joined, ",")))
 	if len(rv.Claims) != maxKeptTestClaims {
 		t.Fatalf("claims kept = %d, want the bound %d", len(rv.Claims), maxKeptTestClaims)
 	}
@@ -756,6 +813,21 @@ func TestVerdictTurnsWhenEveryFindingIsDropped(t *testing.T) {
 	if got.Verdict != "approve" || got.TurnedFrom != "concerns" || got.Summary != "Y passes at base" || len(got.Dropped) != 1 {
 		t.Fatalf("review = %+v, want the concerns turned approve with the record kept", got)
 	}
+	// two findings whose claims all contradict — one refuted by a settle
+	// run, one by a grep — turn the verdict on the total of the drops
+	two := applyClaims(Review{Verdict: "concerns", Summary: "two", Findings: []string{"internal/x: TestY fails at head", "s.go: TasksByPR is never defined"}, Claims: []Claim{
+		testClaim(0, "TestY", "internal/x", RefHead, OutcomeFail),
+		{Finding: 1, Kind: ClaimUndefined, Symbol: "TasksByPR"},
+	}}, nil, func(string) ([]grepHit, error) {
+		return mainHit("internal/s.go", 7, "func (s *PG) TasksByPR() {"), nil
+	}, func(Claim) (claimRun, error) { return claimRun{Commit: "abc", Exit: 0, Output: "ok"}, nil })
+	if two.Verdict != "approve" || two.TurnedFrom != "concerns" || len(two.Findings) != 0 || len(two.Dropped) != 2 {
+		t.Fatalf("review = %+v, want both findings dropped — one by the run, one by the grep — and the concerns turned", two)
+	}
+	if !strings.HasPrefix(two.Dropped[0].Evidence, "go test -run TestY internal/x at head (abc): exit 0, the test did not fail") ||
+		two.Dropped[1].Evidence != "internal/s.go:7 at main: func (s *PG) TasksByPR() {" {
+		t.Fatalf("drops = %+v, want the run's evidence then the grep's", two.Dropped)
+	}
 	if got = applyClaims(Review{Verdict: "concerns", Summary: "s", Findings: []string{"Y passes at base"}, Claims: []Claim{finding}}, nil, nil, keep); got.Verdict != "concerns" || got.TurnedFrom != "" {
 		t.Fatalf("review = %+v, want the concerns standing on a kept finding", got)
 	}
@@ -779,15 +851,20 @@ func TestVerdictTurnsWhenEveryFindingIsDropped(t *testing.T) {
 	}
 }
 
-// A finding only a run can refute cannot hold the card: the round's
-// review settles it in the sandbox, the verdict turns on the run's
-// evidence, and the workflow opens the approval card — no fix session
-// for a finding the factory's own run dropped.
+// A finding only a run can refute cannot hold the card: the reviewer
+// re-files the untouched tests as failing, the round's review settles
+// each bundled claim in the sandbox on a head where the tests pass, the
+// verdict turns on the run's evidence, and the workflow opens the
+// approval card — no fix session for a finding the factory's own run
+// dropped.
 func TestARefutedTestClaimCannotHoldTheCard(t *testing.T) {
 	fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n"}
 	r, _, _ := newGateRunner(t, gateTask, fj)
 	kube := r.kube.(*fakeKube)
-	ll := &fakeLiteLLM{content: `{"verdict":"concerns","summary":"the base is green","findings":["internal/x: TestY passes at base"],"claims":[{"finding":0,"kind":"test","symbol":"TestY","package":"internal/x","ref":"base","outcome":"pass"}]}`}
+	ll := &fakeLiteLLM{content: `{"verdict":"concerns","summary":"the untouched tests still fail","findings":["internal/x: TestY, TestZ and TestW still fail at head"],"claims":[
+		{"finding":0,"kind":"test","symbol":"TestY","package":"internal/x","ref":"head","outcome":"fail"},
+		{"finding":0,"kind":"test","symbol":"TestZ","package":"internal/x","ref":"head","outcome":"fail"},
+		{"finding":0,"kind":"test","symbol":"TestW","package":"internal/x","ref":"head","outcome":"fail"}]}`}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	var (
 		rv  Review
@@ -801,21 +878,28 @@ func TestARefutedTestClaimCannotHoldTheCard(t *testing.T) {
 			err = val.Get(&rv)
 		}
 	}()
-	scriptReproPods(kube, reproLine(1, "--- FAIL: TestY\nFAIL"))
+	scriptReproPods(kube, reproLine(0, "ok  \tinternal/x\t0.01s"), reproLine(0, "ok  \tinternal/x\t0.01s"), reproLine(0, "ok  \tinternal/x\t0.01s"))
 	<-done
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rv.Verdict != "approve" || rv.TurnedFrom != "concerns" || len(rv.Findings) != 0 || len(rv.Dropped) != 1 ||
-		!strings.HasPrefix(rv.Dropped[0].Evidence, "go test -run TestY internal/x at base (base): exit 1, the test did not pass:") {
-		t.Fatalf("review = %+v, want the finding dropped on the run and the concerns turned", rv)
+	if rv.Verdict != "approve" || rv.TurnedFrom != "concerns" || len(rv.Findings) != 0 || len(rv.Dropped) != 1 {
+		t.Fatalf("review = %+v, want the bundled finding dropped and the concerns turned", rv)
+	}
+	for _, name := range []string{"TestY", "TestZ", "TestW"} {
+		if ev := fmt.Sprintf("go test -run %s internal/x at head (c1): exit 0, the test did not fail:", name); !strings.Contains(rv.Dropped[0].Evidence, ev) {
+			t.Fatalf("drop evidence = %q, want each go test run named with exit 0, %s's among them", rv.Dropped[0].Evidence, name)
+		}
+	}
+	if len(kube.podOrder) != 3 {
+		t.Fatalf("pods = %d, want one settling run a kept claim", len(kube.podOrder))
 	}
 	g := newGateHarness(t, func(g *gateHarness) { g.review = rv })
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 	if final := g.run(t); final != "done" {
-		t.Fatalf("final = %q", final)
+		t.Fatalf("final = %q, want the card to proceed past the review stage", final)
 	}
 	if len(g.sessions) != 1 || len(g.approvals) != 1 || g.approvals[0].Review.Verdict != "approve" || g.approvals[0].Review.TurnedFrom != "concerns" {
 		t.Fatalf("sessions %d, approvals %+v: want no fix session and the turned review on the approval card", len(g.sessions), g.approvals)
@@ -827,7 +911,7 @@ func TestARefutedTestClaimCannotHoldTheCard(t *testing.T) {
 // call — the input names the run's outcome — and the re-filed finding
 // drops on that run's evidence without a second pod.
 func TestUnsettledClaimsRunOnTheNextRound(t *testing.T) {
-	answer := `{"verdict":"concerns","summary":"the base is green","findings":["internal/x: TestY passes at base"],"claims":[{"finding":0,"kind":"test","symbol":"TestY","package":"internal/x","ref":"base","outcome":"pass"}]}`
+	answer := `{"verdict":"concerns","summary":"the untouched tests still fail","findings":["internal/x: TestY still fails at head"],"claims":[{"finding":0,"kind":"test","symbol":"TestY","package":"internal/x","ref":"head","outcome":"fail"}]}`
 	fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n", mintError: `{"message":"denied"}`}
 	r, _, _ := newGateRunner(t, gateTask, fj)
 	kube := r.kube.(*fakeKube)
@@ -838,25 +922,25 @@ func TestUnsettledClaimsRunOnTheNextRound(t *testing.T) {
 	if first.Verdict != "concerns" || len(first.Findings) != 1 || first.Unsettled == nil || first.Pending == nil {
 		t.Fatalf("round one = %+v, want the finding kept and the claim carried", first)
 	}
-	wantPending := []PendingClaim{{Claim: testClaim(0, "TestY", "internal/x", RefBase, OutcomePass), Finding: "internal/x: TestY passes at base"}}
+	wantPending := []PendingClaim{{Claim: testClaim(0, "TestY", "internal/x", RefHead, OutcomeFail), Finding: "internal/x: TestY still fails at head"}}
 	if !slices.Equal(first.Pending, wantPending) {
 		t.Fatalf("round one pending = %+v, want %+v", first.Pending, wantPending)
 	}
-	// the next round: a new head, the sandbox answers, the model
-	// re-files the finding with the same claim
+	// the next round: a new head where the scripted runs pass, the model
+	// re-filing the finding with the same claim
 	fj.mintError, fj.head = "", "c2"
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		val, err = execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c2", GateResults{Policy: PolicyGate{Class: "normal"}}, []Review{first}, 2)
 	}()
-	scriptReproPods(kube, reproLine(1, "--- FAIL: TestY\nFAIL"))
+	scriptReproPods(kube, reproLine(0, "ok  \tinternal/x\t0.01s"))
 	<-done
 	second := getInto[Review](t, val, err)
 	if second.Verdict != "approve" || second.TurnedFrom != "concerns" || len(second.Findings) != 0 || len(second.Dropped) != 1 || second.Pending != nil {
 		t.Fatalf("round two = %+v, want the re-filed finding dropped and the concerns turned", second)
 	}
-	if ev := second.Dropped[0].Evidence; !strings.HasPrefix(ev, "go test -run TestY internal/x at base (base): exit 1, the test did not pass:") {
+	if ev := second.Dropped[0].Evidence; !strings.HasPrefix(ev, "go test -run TestY internal/x at head (c2): exit 0, the test did not fail:") {
 		t.Fatalf("drop evidence = %q, want the carried run's", ev)
 	}
 	if len(kube.podOrder) != 1 {
@@ -869,8 +953,8 @@ func TestUnsettledClaimsRunOnTheNextRound(t *testing.T) {
 	if err := json.Unmarshal([]byte(user), &in); err != nil {
 		t.Fatal(err)
 	}
-	if want := (reviewCarried{Claim: testClaim(0, "TestY", "internal/x", RefBase, OutcomePass), Finding: "internal/x: TestY passes at base",
-		Outcome: "go test -run TestY internal/x at base (base): exit 1, the test did not pass:\n--- FAIL: TestY\nFAIL"}); len(in.CarriedRuns) != 1 || in.CarriedRuns[0] != want {
+	if want := (reviewCarried{Claim: testClaim(0, "TestY", "internal/x", RefHead, OutcomeFail), Finding: "internal/x: TestY still fails at head",
+		Outcome: "go test -run TestY internal/x at head (c2): exit 0, the test did not fail:\nok  \tinternal/x\t0.01s"}); len(in.CarriedRuns) != 1 || in.CarriedRuns[0] != want {
 		t.Fatalf("carried runs = %+v, want %+v", in.CarriedRuns, want)
 	}
 	if strings.Contains(user, `"pending":`) {

@@ -79,7 +79,7 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 					return
 				}
 				call(i)
-				if refusedForHeadroom(results[i].Err) {
+				if _, frozen := providerLimitUntil(results[i].Err); frozen || refusedForHeadroom(results[i].Err) {
 					refused.Store(true)
 				}
 			}
@@ -91,7 +91,8 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 	}
 	var retries []int
 	for i := range calls {
-		if !ran[i] || refusedForHeadroom(results[i].Err) {
+		_, frozen := providerLimitUntil(results[i].Err)
+		if !ran[i] || refusedForHeadroom(results[i].Err) || frozen {
 			retries = append(retries, i)
 		}
 	}
