@@ -393,12 +393,32 @@ type planGateReader interface {
 	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
 }
 
-// PlanOpenCriteria is planOpen for the console: the criteria of plan id's p
-// that stand neither met nor waived and so hold production, as planOpen
-// decides.
+// PlanOpenCriteria are the criteria of plan id's p that a Close waives
+// (closeOpen): the console and the rungs count them as the Close does.
 func PlanOpenCriteria(ctx context.Context, store PlanVerdictReader, id string, p Plan) ([]PlanCriterion, error) {
-	open, _, err := planOpen(ctx, store, id, p)
+	open, _, err := closeOpen(ctx, store, id, p)
 	return open, err
+}
+
+// closeOpen are the criteria of plan id's p open to its Close, and the card
+// that holds the rows: planOpen's, less each one the newest run of the gate
+// on main met (metOnMain) whose met row still stands. The cards changed
+// since, and the Close, the human's decision, runs no gate again.
+func closeOpen(ctx context.Context, store PlanVerdictReader, id string, p Plan) ([]PlanCriterion, string, error) {
+	open, home, err := planOpen(ctx, store, id, p)
+	if err != nil || len(open) == 0 {
+		return open, home, err
+	}
+	met, err := metOnMain(ctx, store, id, home)
+	if err != nil {
+		return nil, "", err
+	}
+	rows, err := store.CriteriaVerdicts(ctx, home)
+	if err != nil {
+		return nil, "", err
+	}
+	stands := gateMetIDs(p, rows)
+	return slices.DeleteFunc(open, func(c PlanCriterion) bool { return slices.Contains(met, c.ID) && slices.Contains(stands, c.ID) }), home, nil
 }
 
 // planOpen are the criteria of plan id's p that stand neither met nor
@@ -461,8 +481,8 @@ func gateMetIDs(p Plan, rows []CriterionVerdict) []string {
 // mark reverted, whenever the revert is dated, or a card merged after the
 // attempt started, which its started record dates, right after the head
 // read.
-func (r *Runner) metOnMain(ctx context.Context, id, home string) ([]string, error) {
-	runs, err := r.gateRuns(ctx, id, home)
+func metOnMain(ctx context.Context, store PlanVerdictReader, id, home string) ([]string, error) {
+	runs, err := gateRunsOf(ctx, store, id, home)
 	if err != nil {
 		return nil, err
 	}
@@ -480,7 +500,7 @@ func (r *Runner) metOnMain(ctx context.Context, id, home string) ([]string, erro
 	if met == "" || j < 0 {
 		return nil, nil
 	}
-	cards, err := planWaits(ctx, r.store, id)
+	cards, err := planWaits(ctx, store, id)
 	if err != nil {
 		return nil, err
 	}
@@ -488,7 +508,7 @@ func (r *Runner) metOnMain(ctx context.Context, id, home string) ([]string, erro
 	if slices.ContainsFunc(cards, func(c Task) bool { return c.RevertedAt != nil && !reverted[c.ID] }) {
 		return nil, nil
 	}
-	if merged, err := mergedSince(ctx, r.store, cards, runs[i+1+j].At); err != nil || merged {
+	if merged, err := mergedSince(ctx, store, cards, runs[i+1+j].At); err != nil || merged {
 		return nil, err
 	}
 	return strings.Fields(met), nil
@@ -507,11 +527,9 @@ func revertedIn(mark string) map[string]bool {
 	return out
 }
 
-// planCloseOpen reads plan t's newest revision and the criteria that hold
-// production, and refuses a close that needs an approver or a note it
-// lacks. A criterion the newest run of the gate on main met, whose met row
-// still stands, is not open to the close: the cards changed since, and the
-// close, the human's decision, runs no gate again.
+// planCloseOpen reads plan t's newest revision and the criteria open to
+// its close (closeOpen), and refuses a close that needs an approver or a
+// note it lacks.
 func (r *Runner) planCloseOpen(ctx context.Context, t Task, note string, approver bool) (p Plan, open []PlanCriterion, home string, err error) {
 	switch rev, ok, err := r.store.PlanRevision(ctx, t.ID, 0); {
 	case err != nil:
@@ -521,20 +539,8 @@ func (r *Runner) planCloseOpen(ctx context.Context, t Task, note string, approve
 			return p, nil, "", terminalError("plan %s revision %d: %v", t.ID, rev.Revision, err)
 		}
 	}
-	if open, home, err = planOpen(ctx, r.store, t.ID, p); err != nil {
+	if open, home, err = closeOpen(ctx, r.store, t.ID, p); err != nil {
 		return p, nil, "", err
-	}
-	if len(open) > 0 {
-		met, err := r.metOnMain(ctx, t.ID, home)
-		if err != nil {
-			return p, nil, "", err
-		}
-		rows, err := r.store.CriteriaVerdicts(ctx, home)
-		if err != nil {
-			return p, nil, "", err
-		}
-		stands := gateMetIDs(p, rows)
-		open = slices.DeleteFunc(open, func(c PlanCriterion) bool { return slices.Contains(met, c.ID) && slices.Contains(stands, c.ID) })
 	}
 	switch {
 	case len(open) > 0 && !approver:

@@ -2110,6 +2110,18 @@ func TestCloseHeldPlanKeepsWhatTheGateMetOnMain(t *testing.T) {
 				t.Fatal(err)
 			}
 			c.after(s)
+			p, _, err := planOfStore(ctx, s, "t-plan", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			open, err := PlanOpenCriteria(ctx, s, "t-plan", p)
+			ids := make([]string, 0, len(open))
+			for _, o := range open {
+				ids = append(ids, o.ID)
+			}
+			if err != nil || !slices.Equal(ids, c.waived) {
+				t.Fatalf("PlanOpenCriteria = %v, %v; want %v, the criteria the Close waives", ids, err, c.waived)
+			}
 			if n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil || n != len(c.waived) || closeRows(s) != 1 {
 				t.Fatalf("CloseHeldPlan = %d, %v, closes %d; want %d waived and the plan closed", n, err, closeRows(s), len(c.waived))
 			}
