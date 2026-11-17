@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -21,7 +21,7 @@ func TestRestartPlanOnACriteriaCaseIsResolvedByAct(t *testing.T) {
 		t.Fatalf("case = %s %+v, want resolved by sebastian as restart_plan", got.Status, got.Resolution)
 	}
 	var status string
-	if err := g.s.db.QueryRowContext(ctx, `SELECT status FROM approval_requests WHERE task_id = 't1' AND kind = 'criteria'`).Scan(&status); err != nil || status != "approved" {
+	if err := g.s.PgDB().QueryRowContext(ctx, `SELECT status FROM approval_requests WHERE task_id = 't1' AND kind = 'criteria'`).Scan(&status); err != nil || status != "approved" {
 		t.Fatalf("the request is %q, %v; want approved by the close", status, err)
 	}
 }
@@ -48,7 +48,7 @@ func TestAConfirmedCriteriaRequestGetsNoCaseFromTheHeal(t *testing.T) {
 		Res: Resolution{Action: ActConfirmCriteria, Note: "the cards deliver it"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE approval_requests SET created_at = now() - interval '5 minutes'`); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE approval_requests SET created_at = now() - interval '5 minutes'`); err != nil {
 		t.Fatal(err)
 	}
 	rep, err := g.s.ReconcileCases(ctx, "demo-app/demo-app")
@@ -72,8 +72,8 @@ func TestAMonthCapHumanCardIsAnsweredByItsChoices(t *testing.T) {
 			if err := g.s.CreateTask(ctx, Task{ID: "h1", Kind: "human", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app", IssueNumber: 51, Source: SourceMonthCap}); err != nil {
 				t.Fatal(err)
 			}
-			h, _, _ := g.r.task(ctx, "h1")
-			if err := recordAsk(ctx, g.r.timeline, h, monthCapCardQuestion(100, "2026-11", 100, "", ""), "factoryd", SourceMonthCap, ViaFactoryd, "", nil); err != nil {
+			h, _, _ := g.r.PgTask(ctx, "h1")
+			if err := recordAsk(ctx, g.r.PgTimeline(), h, monthCapCardQuestion(100, "2026-11", 100, "", ""), "factoryd", SourceMonthCap, ViaFactoryd, "", nil); err != nil {
 				t.Fatal(err)
 			}
 			cases, _ := g.s.OpenCasesOf(ctx, "h1")
@@ -104,7 +104,7 @@ func TestAnAskStoresTheOffersOfTheLiveFacts(t *testing.T) {
 	}
 	stale := cases[0]
 	stale.Facts = nil
-	task, _, _ := g.r.task(ctx, "t1")
+	task, _, _ := g.r.PgTask(ctx, "t1")
 	live, err := g.r.FactsAtCase(ctx, task, cases[0])
 	if err != nil {
 		t.Fatal(err)

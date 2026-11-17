@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"context"
 	"database/sql"
 	"maps"
 
@@ -54,3 +55,30 @@ func (s *PGStore) PgSetDB(db *sql.DB) *sql.DB {
 // PgTripAttempt aliases the ladder's unexported tripAttempt, whose fields
 // the moved trip tests set.
 type PgTripAttempt = tripAttempt
+
+// The names the round3 and round4 round tests reach, added as they moved
+// into internal/factoryd/pg.
+
+// PgTask runs the runner's unexported task read, for the moved round tests
+// that fetch the card before they ask on it.
+func (r *Runner) PgTask(ctx context.Context, id string) (Task, Repo, error) {
+	return r.task(ctx, id)
+}
+
+// PgDB exposes the store's database handle, for the moved round tests and
+// rigs that read and write the tables their assertions name directly.
+func (s *PGStore) PgDB() *sql.DB { return s.db }
+
+// PgTimeline exposes the runner's unexported timeline, for the moved rigs
+// that append the model review their cards carry.
+func (r *Runner) PgTimeline() *Timeline { return r.timeline }
+
+// PgSetPrices sets the runner's unexported cfg's price book, for the moved
+// rung rig that prices its check-in model's alias.
+func (r *Runner) PgSetPrices(p Pricer) { r.cfg.Prices = p }
+
+// PgMonthCapCardQuestion is the moved monthCapCardQuestion: the question a
+// month cap's human card asks at its limit.
+func PgMonthCapCardQuestion(limit float64, month string, eur float64, link, refusal string) HumanQuestion {
+	return monthCapCardQuestion(limit, month, eur, link, refusal)
+}
