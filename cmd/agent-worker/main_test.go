@@ -996,6 +996,107 @@ func TestCommitAndPushKeepsPulledMainOutOfTheChange(t *testing.T) {
 	}
 }
 
+// seedResetBehindTheStart seeds a session whose start s merges the card's
+// commit c1 (task's edit on m0) with main's m1 (mainEdit's on m0), the sync a
+// predecessor's push leaves, keeping the card's side where both edit a file:
+// the fork holds branch at s, the remote's main is m1, and the session's
+// clone is prepared at s with its agent reset to c1, behind the sync. m0
+// holds a.txt "a\n" and b.txt "b\n".
+func seedResetBehindTheStart(t *testing.T, branch string, task, mainEdit func(dir string)) (dir string, e workerEnv, s, m1, mainHead string) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	run := func(args ...string) string { return gitRun(t, args...) }
+	seed := t.TempDir()
+	commit := func(args ...string) string {
+		run("-C", seed, "add", "-A")
+		run(append([]string{"-C", seed, "-c", "user.name=H", "-c", "user.email=h@h"}, args...)...)
+		return run("-C", seed, "rev-parse", "HEAD")
+	}
+	run("init", "-q", "-b", "main", seed)
+	os.WriteFile(filepath.Join(seed, "a.txt"), []byte("a\n"), 0o644)
+	os.WriteFile(filepath.Join(seed, "b.txt"), []byte("b\n"), 0o644)
+	commit("commit", "-q", "-m", "m0")
+	run("-C", seed, "checkout", "-q", "-b", "task")
+	task(seed)
+	c1 := commit("commit", "-q", "-m", "the card's work")
+	run("-C", seed, "checkout", "-q", "main")
+	mainEdit(seed)
+	m1 = commit("commit", "-q", "-m", "main moves on")
+	run("-C", seed, "checkout", "-q", "task")
+	s = commit("merge", "-q", "--no-edit", "-X", "ours", "main")
+	remote, fork := filepath.Join(t.TempDir(), "remote.git"), filepath.Join(t.TempDir(), "fork.git")
+	run("init", "-q", "--bare", "-b", "main", remote)
+	run("init", "-q", "--bare", fork)
+	run("-C", seed, "push", "-q", remote, "main")
+	run("-C", seed, "push", "-q", fork, s+":refs/heads/"+branch)
+
+	e = workerEnv{taskID: "t1", objective: "o", repoSHA: s, branch: branch, repoURL: remote, pushURL: fork}
+	dir = filepath.Join(t.TempDir(), "repo")
+	if err := cloneBase(e, dir); err != nil {
+		t.Fatal(err)
+	}
+	e.repoURL = ""
+	base, mainHead, err := prepareRepo(dir, e)
+	if err != nil || base != s || mainHead != m1 {
+		t.Fatalf("prepareRepo = %s, %s, %v; want the start %s and main %s", base, mainHead, err, s, m1)
+	}
+	run("-C", dir, "reset", "-q", "--hard", c1)
+	return dir, e, s, m1, mainHead
+}
+
+// An agent that resets its HEAD behind the session's start, onto the card's
+// commit before the start's sync with main, holds files without main's
+// commits the start already holds. The pushed commit stays on the start, so
+// its tree is the start's main content plus the agent's own change: main's
+// lines are not reverted, and the bound measures the card's lines alone. A
+// small revert no longer passes the bound unseen (4 lines against main
+// without the sync: own.txt's 2, a.txt's 2); a large one no longer trips it
+// (87: own.txt's 6, a.txt's 81). An agent that adds nothing past the reset
+// has nothing to push.
+func TestCommitAndPushRestoresMainAnAgentResetBehindTheStart(t *testing.T) {
+	lines := func(n int, word string) string { return strings.Repeat(word+"\n", n) }
+	for _, tc := range []struct {
+		name      string
+		own, main string // own.txt the card adds, a.txt main's m1 writes
+		more      string // what the agent appends to own.txt after its reset
+		bound     int
+	}{
+		{name: "a revert within the bound", own: "own\n", main: "a2\n", more: "more\n", bound: 5},
+		{name: "a revert over the bound", own: lines(5, "own"), main: lines(80, "main"), more: "more\n", bound: 10},
+		{name: "nothing past the reset", own: "own\n", main: "a2\n", bound: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
+			dir, e, s, m1, mainHead := seedResetBehindTheStart(t, branch,
+				func(dir string) { os.WriteFile(filepath.Join(dir, "own.txt"), []byte(tc.own), 0o644) },
+				func(dir string) { os.WriteFile(filepath.Join(dir, "a.txt"), []byte(tc.main), 0o644) })
+			os.WriteFile(filepath.Join(dir, "own.txt"), []byte(tc.own+tc.more), 0o644)
+			e.lineBound = tc.bound
+
+			commit, err := commitAndPush(dir, e, s, mainHead, func() error { return nil }, fixedToken("t"))
+			if tc.more == "" {
+				if err != nil || commit != "" || gitRun(t, "-C", e.pushURL, "rev-parse", "refs/heads/"+branch) != s {
+					t.Fatalf("commitAndPush = %q, %v; want nothing pushed, the branch kept at the start %s", commit, err, s)
+				}
+				return
+			}
+			if err != nil || commit == "" {
+				t.Fatalf("commitAndPush = %q, %v; want the agent's change pushed", commit, err)
+			}
+			if got := gitRun(t, "-C", e.pushURL, "rev-list", "--parents", "-n", "1", commit); got != commit+" "+s {
+				t.Fatalf("commit and parents = %q, want %s on the start %s", got, commit, s)
+			}
+			if got := gitRun(t, "-C", e.pushURL, "show", commit+":a.txt"); got+"\n" != tc.main {
+				t.Fatalf("a.txt = %q, want main's %q kept", got, tc.main)
+			}
+			if got := gitRun(t, "-C", e.pushURL, "diff", "--name-only", m1, commit); got != "own.txt" {
+				t.Fatalf("change against main = %q, want own.txt alone", got)
+			}
+		})
+	}
+}
+
 // The work guide asks an agent to write its reproduction as a scratch test
 // named zz_repro_*_test.go; that file is the agent's evidence, not the
 // change. The worker commits the agent's work tree, so it must leave the

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"slices"
 	"strconv"
@@ -168,11 +169,18 @@ func (r *Runner) askWip(ctx context.Context, t Task, s sessionSpec, ns, pod stri
 		return "", "", wipOutcome{}
 	}
 	commit, bundle, err := r.postWorkerWip(ctx, workerStop, ns, pod, s.messageToken, r.endpointWait)
+	var answer *workerAnswer
 	switch {
 	case errors.Is(err, errWorkerStop):
 		// factoryd stopping cuts the ask: its own shutdown is the last
 		// word, and the stop's logs already say it
 		return "", "", wipOutcome{unpushed: "factoryd stopped before the pod handed the work over"}
+	case errors.As(err, &answer) && answer.code == http.StatusConflict:
+		// the worker's staging refused the work itself, which the agent
+		// can change
+		text := r.Scrub.String(answer.text)
+		r.wipFailure(ctx, t, s, "ask", text)
+		return "", "", wipOutcome{refusal: wipRefused + text, unpushed: text}
 	case err != nil:
 		text := r.Scrub.String(err.Error())
 		r.wipFailure(ctx, t, s, "ask", text)
@@ -212,13 +220,16 @@ func (r *Runner) shipWip(ctx context.Context, t Task, s sessionSpec, commit, bun
 		if errors.Is(err, ErrPushRefused) || errors.Is(err, ErrPushOverBound) {
 			// the rules judged the work itself, and the work can
 			// change: the refusal is the agent's to act on
-			return wipOutcome{refusal: "factoryd's interim push of your work in progress was refused: " + text, unpushed: text}
+			return wipOutcome{refusal: wipRefused + text, unpushed: text}
 		}
 		return wipOutcome{unpushed: text}
 	}
 	r.record(ctx, t.ID, "wip_pushed", map[string]any{"session": s.id, "commit": head})
 	return wipOutcome{head: head, parts: parts}
 }
+
+// wipRefused leads a refusal of the work the agent gets.
+const wipRefused = "factoryd's interim push of your work in progress was refused: "
 
 // wipFailure records one interim push that did not land: logged for the
 // operator, and a wip_push_failed timeline step for the session's story.

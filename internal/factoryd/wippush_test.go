@@ -266,6 +266,94 @@ func TestPushRuleRecordsTheSyncAsItsOwnMerge(t *testing.T) {
 	}
 }
 
+// SyncOnMain on a hand-built history: m0 holds a.txt "a" and b.txt "b", the
+// card's c1 adds own.txt "own" on m0, main's m1 writes a.txt "a2", and the
+// start s merges the two. An agent reset behind s to c1 holds a tree that
+// lacks a2; the synced tree is s's main content plus the agent's own
+// change, one line against m1. Without the sync the tree is 3 lines off m1
+// (own +1, a -1 +1), a revert that fits any bound of 100 unseen.
+func TestSyncOnMainRestoresMainsContentAFalseSyncDiscarded(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	write := func(dir, name, body string) { os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644) }
+	own := func(dir string) { write(dir, "own.txt", "own\n") }
+	for _, tc := range []struct {
+		name       string
+		task, main func(dir string) // the card's c1 on m0, main's m1 on m0
+		atStart    bool             // the agent's HEAD stays on the start, else it resets to c1
+		mainPast   bool             // main's m2 writes b.txt "b2" past the start
+		files      string           // the tree's files; "" = refused
+		lines      int              // the tree's changed lines against m1
+	}{
+		{name: "reset behind the start", task: own, main: func(dir string) { write(dir, "a.txt", "a2\n") },
+			files: "a.txt=a2 b.txt=b own.txt=own", lines: 1},
+		{name: "HEAD on the start", task: own, main: func(dir string) { write(dir, "a.txt", "a2\n") }, atStart: true,
+			files: "a.txt=a2 b.txt=b own.txt=own", lines: 1},
+		{name: "main moved past the start", task: own, main: func(dir string) { write(dir, "a.txt", "a2\n") }, mainPast: true,
+			files: "a.txt=a2 b.txt=b own.txt=own", lines: 1},
+		{name: "the card's own deletion", main: func(dir string) { write(dir, "a.txt", "a2\n") }, task: func(dir string) {
+			own(dir)
+			os.Remove(filepath.Join(dir, "b.txt"))
+		}, files: "a.txt=a2 own.txt=own", lines: 2},
+		{name: "main's commits conflict with the card's", task: own, main: func(dir string) {
+			write(dir, "a.txt", "a2\n")
+			write(dir, "own.txt", "theirs\n")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			wipRun(t, "init", "-q", "-b", "main", dir)
+			write(dir, "a.txt", "a\n")
+			write(dir, "b.txt", "b\n")
+			wipCommit(t, dir, "m0")
+			wipRun(t, "-C", dir, "checkout", "-q", "-b", "task")
+			tc.task(dir)
+			c1 := wipCommit(t, dir, "the card's work")
+			wipRun(t, "-C", dir, "checkout", "-q", "main")
+			tc.main(dir)
+			m1 := wipCommit(t, dir, "main moves on")
+			wipRun(t, "-C", dir, "checkout", "-q", "task")
+			wipRun(t, "-C", dir, "-c", "user.name=test", "-c", "user.email=test@test", "merge", "-q", "--no-edit", "-X", "ours", "main")
+			s := wipRun(t, "-C", dir, "rev-parse", "HEAD")
+			mainHead := m1
+			if tc.mainPast {
+				wipRun(t, "-C", dir, "checkout", "-q", "main")
+				write(dir, "b.txt", "b2\n")
+				mainHead = wipCommit(t, dir, "main moves past the start")
+			}
+			agent := c1
+			if tc.atStart {
+				agent = s
+			}
+			tree := wipRun(t, "-C", dir, "rev-parse", agent+"^{tree}")
+
+			got, err := SyncOnMain(wipGit{}, dir, s, mainHead, agent, tree)
+			if tc.files == "" {
+				if !errors.Is(err, ErrPushRefused) || !strings.Contains(err.Error(), "git merge main") {
+					t.Fatalf("SyncOnMain = %q, %v; want the refusal that says to merge main", got, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.atStart && got != tree {
+				t.Fatalf("SyncOnMain = %s, want the start's tree %s untouched", got, tree)
+			}
+			var files []string
+			for _, name := range strings.Split(wipRun(t, "-C", dir, "ls-tree", "--name-only", got), "\n") {
+				files = append(files, name+"="+wipRun(t, "-C", dir, "cat-file", "-p", got+":"+name))
+			}
+			if strings.Join(files, " ") != tc.files {
+				t.Fatalf("the synced tree's files = %q, want %q", strings.Join(files, " "), tc.files)
+			}
+			if n, err := ChangedLines(wipGit{}, dir, m1, got); err != nil || n != tc.lines {
+				t.Fatalf("the synced tree's lines against main's m1 = %d (%v), want %d", n, err, tc.lines)
+			}
+		})
+	}
+}
+
 // wipServe is the pod's half of the interim push for the tests: it
 // answers POST /wip as the worker does — one WIP commit of the worker's
 // own shape on the session's start, built in the seed repo by the next
@@ -1580,6 +1668,31 @@ func TestInterimPushRefusalReachesTheSessionAndItsCheckin(t *testing.T) {
 	}
 	if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip != serve.base {
 		t.Fatalf("task branch = %s, want the start alone: the WIP was refused", tip)
+	}
+}
+
+// The worker's staging refuses work that would revert main and does not
+// merge with it, with 409 and the refusal's sentence: the sentence reaches
+// the session as the interim push's refusal, and the timeline records it at
+// the ask.
+func TestInterimPushDeliversTheWorkersRefusal(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil)
+	serve.wipStatus = http.StatusConflict
+	serve.wipBody = "refusing to push: your HEAD forks from main at 1111111, behind main's 2222222 that the start already holds: run `git merge main`"
+	runner.Checkin = &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	serve.mu.Lock()
+	msgs := slices.Clone(serve.msgs)
+	serve.mu.Unlock()
+	if want := "factoryd's interim push of your work in progress was refused: " + serve.wipBody; len(msgs) != 1 || msgs[0] != want {
+		t.Fatalf("the pod was messaged %q, want exactly %q", msgs, want)
+	}
+	if step := timelineStep(t, objects, "t2", "wip_push_failed"); step["at"] != "ask" || step["error"] != serve.wipBody {
+		t.Fatalf("the wip_push_failed step = %v, want the worker's refusal at the ask", step)
 	}
 }
 

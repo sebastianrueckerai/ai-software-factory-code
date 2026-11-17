@@ -1104,6 +1104,12 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	if err := os.WriteFile(filepath.Join(send, ".git", "objects", "info", "alternates"), []byte(filepath.Join(own, ".git", "objects")+"\n"), 0o600); err != nil {
 		return "", err
 	}
+	if tree, err = factoryd.SyncOnMain(pushRulesGit{e}, send, base, mainHead, agent, tree); err != nil {
+		return "", err
+	}
+	if tree == baseTree && !e.startWip {
+		return "", nil
+	}
 	parents, guard := sessionParents(e, send, base, mainHead, agent)
 	guardTree, err := e.git(send, "rev-parse", guard+"^{tree}")
 	if err != nil {
