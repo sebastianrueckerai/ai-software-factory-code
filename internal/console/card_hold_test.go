@@ -284,6 +284,12 @@ func TestAPlansCloseWaivesOnlyOnTheHumansPress(t *testing.T) {
 		"t-br": {{TaskID: "t-br", Revision: 1, Plan: json.RawMessage(`{"round": 1, "outline": ["the console"]}`)}}}
 	r.tasks.criteria = map[string][]factoryd.CriterionVerdict{"t-lr-int": {{Criterion: "k1", Verdict: "met", Source: "review", Kind: factoryd.CriterionInvariant}}}
 	r.tasks.mu.Unlock()
+	// the integration card merged at the head its criteria gate judged
+	r.events.mu.Lock()
+	r.events.rows = append(r.events.rows,
+		factoryd.Event{TaskID: "t-lr-int", Kind: factoryd.EventCriteriaJudged, Detail: map[string]any{"head": "h-lr"}},
+		factoryd.Event{TaskID: "t-lr-int", Kind: factoryd.EventPullRequestMerged, Detail: map[string]any{"by": factoryd.MergeUser, "head": "h-lr"}})
+	r.events.mu.Unlock()
 	if open, err := factoryd.PlanOpenCriteria(t.Context(), planReader{r.c.cfg.Tasks, r.c.cfg.Events}, "t-lr", crit); err != nil || len(open) != 2 {
 		t.Fatalf("plan #51's open criteria = %v, %v; want k2 and k3", open, err)
 	}
