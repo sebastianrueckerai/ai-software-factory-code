@@ -622,7 +622,7 @@ func TestConfirmationNamesTheOutline(t *testing.T) {
 func deltaCard(t *testing.T, store *fakeStore) (Task, bool) {
 	t.Helper()
 	for key, c := range cardsByKey(t, store) {
-		if strings.HasPrefix(key, "delta-") {
+		if isDeltaKey(key) {
 			return c, true
 		}
 	}
@@ -942,7 +942,7 @@ func TestDeltaRoundFilesOneCardForADueRunTwice(t *testing.T) {
 	r.draftDelta(ctx, t1, repo, due)
 	n := 0
 	for key := range cardsByKey(t, store) {
-		if strings.HasPrefix(key, "delta-") {
+		if isDeltaKey(key) {
 			n++
 		}
 	}
@@ -1619,5 +1619,63 @@ func TestRoundCheckEndsAClosedPlanInItsLastRound(t *testing.T) {
 		if got := store.tasks["p"].Status; got != tc.want || len(replanSteps(t, r, "p")) != 0 {
 			t.Errorf("%s: plan %s, replan steps %d; want %s and none", tc.name, got, len(replanSteps(t, r, "p")), tc.want)
 		}
+	}
+}
+
+// The delta round hands the planner each open criterion with its state: unmet
+// from its row, or never judged, the criteria gate's reason beside it.
+func TestTheDeltaRoundNamesEachCriterionsStateAndTheGatesReason(t *testing.T) {
+	const reason = "The required checks were still running on abcdef12 after 50 minutes"
+	for _, tc := range []struct {
+		name         string
+		never        bool
+		state, wantR string
+		evidence     string
+	}{
+		{"unmet", false, "unmet", "", "a redirect counts twice in internal/stats"},
+		{"never judged", true, "never_judged", reason, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			model := &fakeLiteLLM{content: `{"card": {"title": "x"}}`}
+			r, store, _, _ := deltaRig(t, model, 0)
+			if tc.never {
+				store.criteriaVerdicts["t-integration"] = slices.DeleteFunc(store.criteriaVerdicts["t-integration"], func(v CriterionVerdict) bool { return v.Criterion == "redirect_302" })
+				if _, err := store.Record(ctx, Event{Repository: "sf/code", TaskID: "t-plan", Kind: EventCriteriaGateRun, Actor: FactoryDecider, Via: ViaFactoryd,
+					Detail: map[string]any{"task": "t-integration", "outcome": gateStarted, "reason": reason}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t1, repo, err := r.task(ctx, "t-plan")
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.draftDelta(ctx, t1, repo, []PlanCatch{{TaskID: "t-plan", Revision: 1, Kind: CatchDelta, Finder: FinderApprover, Detail: "redirect_302 grant 9"}})
+			model.mu.Lock()
+			defer model.mu.Unlock()
+			if len(model.chats) == 0 {
+				t.Fatal("the round called no model")
+			}
+			body, _ := json.Marshal(model.chats[0])
+			var req struct {
+				Messages []struct{ Content string } `json:"messages"`
+			}
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Fatal(err)
+			}
+			var in struct {
+				Criteria []deltaCriterion `json:"criteria"`
+			}
+			_, input, _ := strings.Cut(req.Messages[len(req.Messages)-1].Content, "The input, as JSON:\n")
+			if err := json.Unmarshal([]byte(input), &in); err != nil {
+				t.Fatalf("the round's input: %v", err)
+			}
+			if len(in.Criteria) != 1 || in.Criteria[0].ID != "redirect_302" {
+				t.Fatalf("criteria = %+v, want redirect_302 alone", in.Criteria)
+			}
+			if c := in.Criteria[0]; c.State != tc.state || c.Reason != tc.wantR || c.Evidence != tc.evidence {
+				t.Errorf("criterion = state %q reason %q evidence %q, want %q %q %q", c.State, c.Reason, c.Evidence, tc.state, tc.wantR, tc.evidence)
+			}
+		})
 	}
 }

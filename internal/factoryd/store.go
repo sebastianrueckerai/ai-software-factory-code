@@ -887,6 +887,7 @@ type Store interface {
 	EnterQueue(ctx context.Context, project, taskID string) (QueueSpot, error)
 	QueueHead(ctx context.Context, project string) (string, bool, error)
 	LeaveQueue(ctx context.Context, taskID string) (project string, left bool, err error)
+	MergeQueuePlaces(ctx context.Context) (map[string]QueuePlace, error)
 	WaitingQueueHeads(ctx context.Context) ([]string, error)
 	// RoutineRunOfTask and EndRoutineRun end the run of a routine's card
 	// when the card ends (taskEnded, RoutineStore).
@@ -976,9 +977,8 @@ const (
 	ApprovalCriteria = "criteria"
 	// ApprovalCriteriaRerun is a plan whose cards ran out with criteria
 	// no verdict row holds, a review that never judged them: the approver
-	// waives, or confirms the delivered cards (Spec a CriteriaSpec). No
-	// Approve runs that review: the gateway takes no hold of a finished
-	// card.
+	// grants one more bounded card, waives, or confirms the delivered cards
+	// (Spec a CriteriaSpec).
 	ApprovalCriteriaRerun = "criteria_rerun"
 )
 

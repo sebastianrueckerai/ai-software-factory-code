@@ -348,9 +348,6 @@ var Actions = []Action{
 		return ""
 	}},
 	{Name: ActGrantCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
-		if f.ApprovalKind == ApprovalCriteriaRerun {
-			return "this plan's ask is criteria never judged: grant_criteria grants no card and runs no review; waive a criterion with your reason, or confirm the delivered cards"
-		}
 		return criteriaRequestRefusal(f, ActGrantCriteria)
 	}},
 	{Name: ActConfirmCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {

@@ -54,6 +54,41 @@ func (s *fakeStore) QueueHead(ctx context.Context, project string) (string, bool
 	return "", false, nil
 }
 
+func (s *fakeStore) MergeQueuePlaces(ctx context.Context) (map[string]QueuePlace, error) {
+	out := map[string]QueuePlace{}
+	heads := map[string]string{}
+	ahead := map[string]int{}
+	for _, e := range s.queue {
+		p, paused := s.pauses[e.project]
+		isPause := paused && (e.task == p.FixTask || e.task == p.RevertTask)
+		head, ok := heads[e.project]
+		if !ok {
+			head = e.task
+			if paused {
+				head = cmp.Or(p.FixTask, p.RevertTask)
+				queued := func(id string) bool {
+					return id != "" && slices.ContainsFunc(s.queue, func(q queueEntry) bool { return q.task == id })
+				}
+				if !queued(p.FixTask) && queued(p.RevertTask) {
+					head = p.RevertTask
+				}
+			}
+			heads[e.project] = head
+			if paused {
+				ahead[e.project] = 1
+			}
+		}
+		n := ahead[e.project]
+		if isPause {
+			n = 0
+		} else {
+			ahead[e.project]++
+		}
+		out[e.task] = QueuePlace{Ahead: n, HeadTask: head, HeadIssue: s.tasks[head].IssueNumber}
+	}
+	return out, nil
+}
+
 func (s *fakeStore) LeaveQueue(ctx context.Context, taskID string) (string, bool, error) {
 	i := slices.IndexFunc(s.queue, func(e queueEntry) bool { return e.task == taskID })
 	if i < 0 {
@@ -2149,5 +2184,63 @@ func TestSyncOverlapFailsOnAnotherNotFound(t *testing.T) {
 	r := &Runner{forgejo: &Forgejo{BaseURL: srv.URL}}
 	if got, err := r.syncOverlap(context.Background(), Repo{Owner: "sf", Name: "code"}, 7, "b", "m"); err == nil {
 		t.Fatalf("overlap %v with no error, want the 404 to fail the sync", got)
+	}
+}
+
+func TestPGStoreMergeQueuePlaces(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, merge_queue CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	for id, n := range map[string]int64{"a1": 1949, "a2": 1984, "a3": 2098, "b1": 77, "p1": 10, "p2": 11, "fix": 12,
+		"w1": 20, "w2": 21, "fixo": 22, "x1": 30, "r1": 40, "r2": 41, "rev": 42, "fixr": 43} {
+		repo := "sf/code"
+		switch id {
+		case "b1":
+			repo = "sf/other"
+		case "p1", "p2", "fix":
+			repo = "sf/paused"
+		case "w1", "w2", "fixo":
+			repo = "sf/nofix"
+		case "x1":
+			repo = "sf/bare"
+		case "r1", "r2", "rev", "fixr":
+			repo = "sf/rev"
+		}
+		if err := s.CreateTask(ctx, Task{ID: id, Status: "in-review", Repository: repo, Track: "direct", IssueNumber: n}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, q := range []struct{ project, id, at string }{{"sf/code", "a3", "2026-11-16T12:02:00Z"}, {"sf/code", "a1", "2026-11-16T09:00:00Z"},
+		{"sf/other", "b1", "2026-11-16T10:00:00Z"}, {"sf/code", "a2", "2026-11-16T09:46:00Z"},
+		{"sf/paused", "p1", "2026-11-16T08:00:00Z"}, {"sf/paused", "p2", "2026-11-16T08:30:00Z"}, {"sf/paused", "fix", "2026-11-16T09:00:00Z"},
+		{"sf/nofix", "w1", "2026-11-16T08:00:00Z"}, {"sf/nofix", "w2", "2026-11-16T08:30:00Z"}, {"sf/bare", "x1", "2026-11-16T08:00:00Z"},
+		{"sf/rev", "r1", "2026-11-16T08:00:00Z"}, {"sf/rev", "r2", "2026-11-16T08:30:00Z"}, {"sf/rev", "rev", "2026-11-16T09:00:00Z"}} {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO merge_queue (project, task_id, entered_at) VALUES ($1, $2, $3)`, q.project, q.id, q.at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO queue_pauses (project, run_id, sha, since, fix_task) VALUES ('sf/paused', 5, 'red1', now(), 'fix'), ('sf/nofix', 5, 'red1', now(), 'fixo'), ('sf/bare', 5, 'red1', now(), '')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO queue_pauses (project, run_id, sha, since, fix_task, revert_task) VALUES ('sf/rev', 5, 'red1', now(), 'fixr', 'rev')`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.MergeQueuePlaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]QueuePlace{
+		"a1": {0, "a1", 1949}, "a2": {1, "a1", 1949}, "a3": {2, "a1", 1949}, "b1": {0, "b1", 77},
+		"fix": {0, "fix", 12}, "p1": {1, "fix", 12}, "p2": {2, "fix", 12},
+		"w1": {1, "fixo", 22}, "w2": {2, "fixo", 22}, "x1": {1, "", 0},
+		"r1": {1, "rev", 42}, "r2": {2, "rev", 42}, "rev": {0, "rev", 42}}
+	if !maps.Equal(got, want) {
+		t.Fatalf("MergeQueuePlaces = %v, want %v", got, want)
 	}
 }
