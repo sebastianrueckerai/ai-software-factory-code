@@ -888,6 +888,7 @@ func newTestRunner(t *testing.T, task Task, kube *fakeKube, objects ObjectStore)
 	}
 	runner.stopWait = 500 * time.Millisecond
 	runner.endpointWait = 50 * time.Millisecond
+	runner.startPoll = 10 * time.Millisecond
 	runner.newOwner = func() string { return "own" }
 	return runner, hub, store
 }
