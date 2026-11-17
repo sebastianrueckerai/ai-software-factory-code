@@ -123,20 +123,30 @@ func callTimeout(now, deadline time.Time, timeout time.Duration) time.Duration {
 	return min(timeout, deadline.Sub(now)-time.Minute)
 }
 
-// gateFreezeWaitMax bounds how long a review's or an audit's pin to a
-// provider-limit freeze's reset may hold its attempt: the gate watch's
-// bound of one attempt, reviewActivityMax less its trip margin. A var, so
-// a test shortens it.
-var gateFreezeWaitMax = reviewActivityMax - fanOutTripMargin
+// gateFreezeNow and gateFreezeSleep shape the pin's clock: the pin reads
+// the clock to time its wait and sleeps to the reset the refusal named,
+// uncapped — no attempt bound cuts the wait, the callers' heartbeats keep
+// the attempt alive. Vars, so a test moves the clock instead of waiting a
+// hold out.
+var gateFreezeNow = time.Now
+var gateFreezeSleep = func(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
 
 // pinGateFreeze pins a review's or an audit's retry to a provider-limit
-// freeze's reset, "while a hold covers it": a frozen class answers every
+// freeze's reset, in the case wake's shape: a frozen class answers every
 // call with the same named refusal, so the calls it refused are made
-// again once, at the reset the earliest refusal named — the probes the
-// hold's lapse admits — and the wait before them rides under the
-// attempt's own bound (gateFreezeWaitMax), the callers' heartbeats
-// keeping the attempt alive. A hold whose reset outlives the bound answers
-// as today: the refusal note stands and the freeze card owns the wait.
+// again once, at the reset the earliest refusal named — the wait runs to
+// that reset and no cap cuts it, so no capped dead wait re-enters the
+// still-frozen class before the reset is reached; the re-call guard keeps
+// the re-call to the refusals the hold gave.
 func (r *Runner) pinGateFreeze(ctx context.Context, taskID, model, purpose string, timeout time.Duration, calls []reviewCall, results []callResult) {
 	var until time.Time
 	named := false
@@ -148,21 +158,12 @@ func (r *Runner) pinGateFreeze(ctx context.Context, taskID, model, purpose strin
 	if !named {
 		return
 	}
-	wait := time.Until(until)
-	if wait > gateFreezeWaitMax {
-		log.Printf("%s: the model class is frozen until %s, past the gate's wait %s; the refusal stands and the freeze card owns the wait",
-			taskID, until.UTC().Format(time.RFC3339), gateFreezeWaitMax.Round(time.Second))
-		return
-	}
+	wait := until.Sub(gateFreezeNow())
 	if wait > 0 {
 		log.Printf("%s: the model class is frozen until %s; the gate's retry waits %s at it", taskID,
 			until.UTC().Format(time.RFC3339), wait.Round(time.Second))
-		timer := time.NewTimer(wait)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
+		if !gateFreezeSleep(ctx, wait) {
 			return
-		case <-timer.C:
 		}
 	}
 	for i, res := range results {

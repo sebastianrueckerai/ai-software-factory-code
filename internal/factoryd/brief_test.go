@@ -897,47 +897,58 @@ func TestBriefWakeAtReset(t *testing.T) {
 // while a hold covers it: the call the hold refused is made again once,
 // at the reset it named, and not before.
 func TestGateRetryPinnedToTheFreezeReset(t *testing.T) {
-	// a whole second: the gateway's reason carries the reset as RFC 3339,
-	// which names no fraction of one
-	reset := time.Now().Add(2 * time.Second).Truncate(time.Second)
+	// the freeze: a hold whose reset sits five hours out, the incident's
+	// five-hour hold; the clock moves to the reset when the pin sleeps, so
+	// the test waits no hold out
+	now := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
+	reset := now.Add(5 * time.Hour).Truncate(time.Second)
+	clock := now
+	var waited time.Duration
+	oldNow, oldSleep := gateFreezeNow, gateFreezeSleep
+	gateFreezeNow = func() time.Time { return clock }
+	gateFreezeSleep = func(ctx context.Context, d time.Duration) bool {
+		waited = d
+		clock = reset.Add(time.Second)
+		return true
+	}
+	defer func() { gateFreezeNow, gateFreezeSleep = oldNow, oldSleep }()
 	var called []time.Time
+	// the results arrive already refused, so the handler's one request is
+	// the pinned re-call itself, made at the reset the hold named: the
+	// hold has lapsed there, and the gateway answers it
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = append(called, time.Now())
-		w.Header().Set(gateway.HeaderDecision, gateway.RefusedProviderLimit)
-		w.WriteHeader(http.StatusTooManyRequests)
-		fmt.Fprintf(w, `{"error":{"message":"provider limit hold for class big: reset %s: five-hour limit"}}`,
-			reset.Format(time.RFC3339))
+		called = append(called, clock)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"review answer"}}]}`))
 	}))
 	defer gw.Close()
-	oldMax := gateFreezeWaitMax
-	gateFreezeWaitMax = time.Hour
-	defer func() { gateFreezeWaitMax = oldMax }()
 	r := &Runner{supervisor: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}}
-	results := []callResult{{Err: fmt.Errorf("gateway %s: %w", gateway.RefusedProviderLimit,
-		&policy.Refusal{Decision: gateway.RefusedProviderLimit,
-			Reason: "provider limit hold for class big: reset " + reset.Format(time.RFC3339) + ": five-hour limit"})}}
-	calls := []reviewCall{{Prompt: "p", Input: func() any { return "in" }}}
+	refusal := func(at time.Time) error {
+		return fmt.Errorf("gateway %s: %w", gateway.RefusedProviderLimit,
+			&policy.Refusal{Decision: gateway.RefusedProviderLimit,
+				Reason: "provider limit hold for class big: reset " + at.Format(time.RFC3339) + ": five-hour limit"})
+	}
+	results := []callResult{{Err: refusal(reset)}, {Err: fmt.Errorf("gateway refused_budget: no money")}}
+	calls := []reviewCall{{Prompt: "p", Input: func() any { return "in" }}, {Prompt: "q", Input: func() any { return "in2" }}}
+
+	// the retry is scheduled at the reset: the pin waits the five hours in
+	// one sleep, makes no call and no dead wait inside the freeze, and
+	// re-calls once, at or after the reset — the money refusal is no
+	// freeze, so the guard re-calls the frozen call alone
 	r.pinGateFreeze(context.Background(), "t1", "big", policy.PurposeReview, time.Minute, calls, results)
+	if waited != reset.Sub(now) {
+		t.Fatalf("the pin waited %s, want the whole hold to the reset %s", waited, reset.Sub(now))
+	}
 	if len(called) != 1 {
 		t.Fatalf("the pinned retry made %d calls, want one", len(called))
 	}
 	if called[0].Before(reset) {
 		t.Fatalf("the pinned retry ran at %v, before the reset %v", called[0], reset)
 	}
-	// a hold whose reset outlives the gate's wait costs no dead wait: no
-	// capped wait that re-calls into the still-frozen class, the refusal
-	// note stands and the freeze card owns the wait
-	gateFreezeWaitMax = time.Second
-	far := time.Now().Add(time.Hour).Truncate(time.Second)
-	results = []callResult{{Err: fmt.Errorf("gateway %s: %w", gateway.RefusedProviderLimit,
-		&policy.Refusal{Decision: gateway.RefusedProviderLimit,
-			Reason: "provider limit hold for class big: reset " + far.Format(time.RFC3339) + ": five-hour limit"})}}
-	r.pinGateFreeze(context.Background(), "t1", "big", policy.PurposeReview, time.Minute, calls, results)
-	if len(called) != 1 {
-		t.Fatalf("a reset past the gate's wait made %d calls in all, want only the pinned one before", len(called))
+	if refused, ok := refusedForFreeze(results[0].Err); ok {
+		t.Fatalf("the re-called call was refused again at %v: %v", refused, results[0].Err)
 	}
-	if _, ok := refusedForFreeze(results[0].Err); !ok {
-		t.Fatal("the refusal the hold gave no longer stands")
+	if _, ok := refusedForFreeze(results[1].Err); ok || results[1].Err.Error() != "gateway refused_budget: no money" {
+		t.Fatalf("the money refusal moved: %v", results[1].Err)
 	}
 	if _, ok := refusedForFreeze(fmt.Errorf("gateway %s: %w", policy.RefusedBudget,
 		&policy.Refusal{Decision: policy.RefusedBudget, Reason: "no money"})); ok {
@@ -945,6 +956,16 @@ func TestGateRetryPinnedToTheFreezeReset(t *testing.T) {
 	}
 	if _, ok := refusedForFreeze(nil); ok {
 		t.Fatal("no error is no freeze")
+	}
+
+	// a cancelled attempt makes no call at all: the sleep gives up on the
+	// context, the re-call guard keeps the attempt out of the class
+	clock = now
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.pinGateFreeze(ctx, "t1", "big", policy.PurposeReview, time.Minute, calls, []callResult{{Err: refusal(reset)}})
+	if len(called) != 1 {
+		t.Fatalf("a cancelled attempt made %d calls in all, want none beside the pinned one", len(called))
 	}
 }
 
