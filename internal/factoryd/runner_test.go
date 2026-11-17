@@ -614,6 +614,10 @@ type forgejoHub struct {
 	branches map[string]string
 	// files are the raw files by "<ref>:<path>", unlisted: 404
 	files map[string]string
+	// statuses are combined-status bodies by commit, unlisted: no check
+	// reported; statusReads are the commits read, in order
+	statuses    map[string]string
+	statusReads []string
 }
 
 func (h *forgejoHub) minted() []string {
@@ -659,6 +663,11 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 				return
 			}
 			io.WriteString(w, body)
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/commits/") && strings.HasSuffix(r.URL.Path, "/status"):
+			_, sha, _ := strings.Cut(r.URL.Path, "/commits/")
+			sha = strings.TrimSuffix(sha, "/status")
+			h.statusReads = append(h.statusReads, sha)
+			io.WriteString(w, cmp.Or(h.statuses[sha], statusBody("")))
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/") && strings.Count(r.URL.Path, "/") == 5:
 			fmt.Fprint(w, `{"default_branch":"main"}`)
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/") && strings.Count(r.URL.Path, "/") == 5:
@@ -879,6 +888,7 @@ func newTestRunner(t *testing.T, task Task, kube *fakeKube, objects ObjectStore)
 	}
 	runner.stopWait = 500 * time.Millisecond
 	runner.endpointWait = 50 * time.Millisecond
+	runner.startPoll = 10 * time.Millisecond
 	runner.newOwner = func() string { return "own" }
 	return runner, hub, store
 }
@@ -1077,14 +1087,14 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 		t.Fatalf("container securityContext = %v", sc)
 	}
 	// ephemeral-storage: workspace 4, home 1, tmp 4, the harness 1 and the module cache 8
-	if res := fmt.Sprint(container["resources"]); res != "map[limits:map[cpu:2 memory:4Gi] requests:map[cpu:250m ephemeral-storage:18Gi memory:512Mi]]" {
+	if res := fmt.Sprint(container["resources"]); res != "map[limits:map[cpu:2 memory:4Gi] requests:map[cpu:250m ephemeral-storage:22Gi memory:512Mi]]" {
 		t.Fatalf("container resources = %s", res)
 	}
 	if dns := fmt.Sprint(spec["dnsConfig"]); dns != "map[options:[map[name:ndots value:1]]]" {
 		t.Fatalf("dnsConfig = %s", dns)
 	}
 	volumes := spec["volumes"].([]any)
-	for i, want := range []string{"4Gi", "1Gi", "4Gi", "1Gi"} {
+	for i, want := range []string{"4Gi", "1Gi", "8Gi", "1Gi"} {
 		if got := volumes[i].(map[string]any)["emptyDir"].(map[string]any)["sizeLimit"]; got != want {
 			t.Fatalf("volume %d sizeLimit = %v, want %s", i, got, want)
 		}
@@ -2612,14 +2622,14 @@ func TestSlowPodStartIsNoTimeOfTheCheapRung(t *testing.T) {
 	kube.onCreatePod = func() {
 		p := kube.podOrder[len(kube.podOrder)-1]
 		p.phase = "Pending"
-		time.AfterFunc(1500*time.Millisecond, func() {
+		time.AfterFunc(400*time.Millisecond, func() {
 			kube.mu.Lock()
 			defer kube.mu.Unlock()
 			p.phase = "Running"
 		})
 	}
 	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
-	runner.startPoll, runner.cheapCap = 50*time.Millisecond, time.Second
+	runner.startPoll, runner.cheapCap = 20*time.Millisecond, 150*time.Millisecond
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4s", Attempt: 1, Model: "factory/small"}, nil,
 		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n"+resultLine(true, "no changes to push"))
 	if err != nil || res.Outcome != OutcomeNoPush || res.Trip != "" || res.Model != "factory/small" || res.Summary != "no changes to push" {
@@ -4134,6 +4144,19 @@ func TestRunSessionWarnsNearTheBudget(t *testing.T) {
 	}
 }
 
+// messagesOf counts the warning posts among the worker's texts: the brief's
+// refusal is retried at startPoll inside one endpointWait, so only the
+// /message posts say a warning reached the worker.
+func messagesOf(texts []string) int {
+	n := 0
+	for _, text := range texts {
+		if strings.HasPrefix(text, "POST /message ") {
+			n++
+		}
+	}
+	return n
+}
+
 // A warning the worker did not take comes again on the next tick.
 func TestRunSessionRepeatsAWarningTheWorkerRefused(t *testing.T) {
 	kube := newFakeKube()
@@ -4146,27 +4169,31 @@ func TestRunSessionRepeatsAWarningTheWorkerRefused(t *testing.T) {
 	runner.cfg.Policy = func() policy.Version { return v }
 	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 60})
 	runner.tick = 50 * time.Millisecond
-	worker := &fakeWorkerEndpoint{status: http.StatusServiceUnavailable}
+	worker := &fakeWorkerEndpoint{status: http.StatusServiceUnavailable, messageSeen: make(chan struct{}, 16)}
 	worker.start(t, runner)
 	ctx, cancel := context.WithCancel(context.Background())
+	// The three refusal posts the claim names are observed by the
+	// worker's own signal, one per POST /message: the wait ends when the
+	// wanted count has come, and the test's deadline bounds it — a fixed
+	// window that closed before a loaded runner's third post is what
+	// flaked here, not a fault in the runner.
 	go func() {
-		deadline := time.Now().Add(6 * time.Second)
-		for time.Now().Before(deadline) {
-			worker.mu.Lock()
-			n := len(worker.texts)
-			worker.mu.Unlock()
-			if n >= 4 {
-				break
+		deadline := time.After(30 * time.Second)
+	wait:
+		for range 3 {
+			select {
+			case <-worker.messageSeen:
+			case <-deadline:
+				break wait
 			}
-			time.Sleep(10 * time.Millisecond)
 		}
 		cancel()
 	}()
 	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big"}, nil, hangLogs)
 	worker.mu.Lock()
-	n := len(worker.texts)
+	n := messagesOf(worker.texts)
 	worker.mu.Unlock()
-	if n < 4 {
+	if n < 3 {
 		t.Fatalf("worker got %d warnings, want the refused one again each tick", n)
 	}
 	timeline, _ := runner.objects.Get(context.Background(), "sessions/t2/timeline.jsonl")

@@ -37,12 +37,15 @@ const stepDepsStarted = "dependencies_started"
 // depRecheck is how often a waiting card asks again without a dep_ended.
 const depRecheck = 10 * time.Minute
 
-// Dependency is a card another waits on, with its status.
+// Dependency is a card another waits on, with its status. DeliveredBy,
+// set at a plan's filing only, is the issue of the successor that
+// delivered the card's work: the dependency is met and no edge stands.
 type Dependency struct {
-	TaskID string
-	Issue  int64
-	Key    string // its plan key
-	Status string
+	TaskID      string
+	Issue       int64
+	Key         string // its plan key
+	Status      string
+	DeliveredBy int64
 }
 
 // DepState is where a card's dependencies stand: Ended, one that ended

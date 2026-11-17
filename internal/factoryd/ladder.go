@@ -712,12 +712,36 @@ func (a CaseAction) preselected() map[string]any {
 	return map[string]any{"action": a.Action, "args": a.Args, "fund": a.Fund}
 }
 
+// storedDecision is a case step's decision as the run reads it back: the
+// migration moved the stored values onto the rungs' names, and a row the
+// store wrote before the change under the old name human reads through
+// the same reader as one written hand_up.
+func storedDecision(d string) string {
+	if d == "human" {
+		return RungHandUp
+	}
+	return d
+}
+
 // HandedUpBy is the hand-up of the rungs from rung from up (from rung 1 for
 // a case that climbs from rung 0 after rung 1 judged it already): the
 // newest step of one that ended handed up, with found as it climbed; nil for
 // a case no rung above 0 handed up.
 func HandedUpBy(steps []CaseStep, from int, found string) *HandUp {
 	up := &HandUp{Found: found, Rung: from}
+	// a moment's own hand-up answers the case: the first checkin step that
+	// stored the hand-up (under the rungs' name, or the old name human the
+	// migration moved) is the hand-up — its grounds the found, no action of
+	// its own — outranking the action rows around it
+	for k := 0; k < len(steps); k++ {
+		s := &steps[k]
+		if s.Outcome != StepHandedUp || s.Rung < max(from, 1) || s.Rung >= 3 || storedDecision(s.Decision) != RungHandUp {
+			continue
+		}
+		up.Rung = s.Rung
+		up.Found = cmp.Or(s.Found, s.Grounds)
+		return up
+	}
 	var first *CaseStep
 	for k := len(steps) - 1; k >= 0; k-- {
 		s := &steps[k]
@@ -739,7 +763,7 @@ func HandedUpBy(steps []CaseStep, from int, found string) *HandUp {
 		// rung found is the face's, not rung 0's
 		up.Found = first.Found
 	}
-	if first.Decision == RungHandUp {
+	if storedDecision(first.Decision) == RungHandUp {
 		// a moment's own human answer: its reason is what it found
 		up.Found = cmp.Or(first.Found, first.Grounds)
 		return up
@@ -764,7 +788,7 @@ func HandedUpBy(steps []CaseStep, from int, found string) *HandUp {
 	}
 	for k := len(steps) - 1; k >= 0; k-- {
 		s := steps[k]
-		if s.Outcome == StepHandedUp && s.Rung >= 1 && s.Rung < 3 && s.Decision != "" && s.Decision != RungHandUp {
+		if s.Outcome == StepHandedUp && s.Rung >= 1 && s.Rung < 3 && storedDecision(s.Decision) != RungHandUp && s.Decision != "" {
 			up.Action, up.Grounds, up.ActionRung = s.Decision, s.Grounds, s.Rung
 			if i := slices.IndexFunc(s.Did, func(a CaseAction) bool { return a.Result == resultProposed || a.Result == resultRecommended }); i >= 0 {
 				up.Preselected = &s.Did[i]

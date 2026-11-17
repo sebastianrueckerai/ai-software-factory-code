@@ -507,7 +507,7 @@ func TestHealSignalsWaitingCards(t *testing.T) {
 	}
 	wf := &fakeWorkflows{}
 	forgejo, _ := resyncForgejoStub(t, "sebastian")
-	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"}, nil, noneCompleted)
+	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"}, nil, noneCompleted, nil)
 	var dep []string
 	for _, s := range wf.signals {
 		if strings.Contains(s, " "+SignalDepEnded+" ") {

@@ -1770,8 +1770,13 @@ func (r *Runner) RecordNotRun(ctx context.Context, taskID, kind string, pr int64
 
 // ProviderWait records that the task waits w.Backoff on the model
 // provider; its schedule puts the task in gate provider (activityGates).
+// A named limit's words ride the row, for the face and the life to read.
 func (r *Runner) ProviderWait(ctx context.Context, taskID string, w ProviderWait) error {
-	return r.timeline.Append(ctx, taskID, StepProviderRefused, map[string]any{"status": w.Status, "reason": w.Reason, "backoff_s": int(w.Backoff.Seconds())})
+	detail := map[string]any{"status": w.Status, "reason": w.Reason, "backoff_s": int(w.Backoff.Seconds())}
+	if w.Words != "" {
+		detail["words"] = w.Words
+	}
+	return r.timeline.Append(ctx, taskID, StepProviderRefused, detail)
 }
 
 // finishClosesIssue reports whether Finish closes the issue of card t as

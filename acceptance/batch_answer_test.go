@@ -1073,6 +1073,9 @@ func (s *accBatchStore) SetTaskSHA(ctx context.Context, id, sha string) error { 
 func (s *accBatchStore) EnterQueue(ctx context.Context, project, taskID string) (factoryd.QueueSpot, error) {
 	panic("unused")
 }
+func (s *accBatchStore) MergeQueuePlaces(ctx context.Context) (map[string]factoryd.QueuePlace, error) {
+	panic("unused")
+}
 func (s *accBatchStore) QueueHead(ctx context.Context, project string) (string, bool, error) {
 	panic("unused")
 }

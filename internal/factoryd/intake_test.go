@@ -2600,7 +2600,7 @@ func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 			}
 		} else {
 			in.Projects = projectList{none}
-			HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store}, noneCompleted)
+			HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store}, noneCompleted, nil)
 		}
 		if got := store.tasks["t-q"]; got.Kind != "human" || got.Status != "waiting-human" || slices.Contains(workflowsOf(in).started, "t-q") {
 			t.Fatalf("%s: task %+v, started %v", via, got, workflowsOf(in).started)
