@@ -1197,7 +1197,7 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, i
 	// answers apply as answers; only the card form's words go to the chat.
 	// A console without a chat posts the words on the card's issue instead.
 	if a.via == factoryd.ViaButton && bt.Question != nil && text != "" && value == "" && c.cfg.Chat != nil && c.cfg.Operator != nil {
-		return answerInChat(c, ctx, a, t, text)
+		return c.answerInChatTurn(ctx, a, t, text)
 	}
 	k, err := c.liveCase(ctx, t)
 	if err != nil {
@@ -1749,7 +1749,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 			return "", refuse(http.StatusNotFound, "There is no project of "+t.Repository+".")
 		}
 		work = func(ctx context.Context) (int64, error) {
-			if _, _, err := chatFundRun(c, ctx, a, p.Name, eur, label, ""); err != nil {
+			if _, _, err := c.doChatFund(ctx, a, p.Name, eur, label, ""); err != nil {
 				return 0, err
 			}
 			return closing(ctx)
@@ -2099,14 +2099,6 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, n
 	}
 	return c.answerCard(ctx, a, t, res)
 }
-
-// chatFundRun is doChatFund, set in init: a human card's answer reaches it,
-// and its resume of the stopped turns reaches the chat's tools table, the
-// table a card's answer is itself reached from, a cycle Go refuses at
-// package init.
-var chatFundRun func(c *Console, ctx context.Context, a actor, name string, eur float64, note, skip string) (float64, float64, error)
-
-func init() { chatFundRun = (*Console).doChatFund }
 
 // doChatFund raises the project's chat task's monthly budget by eur, from
 // before to after: the approver's answer to the chat's budget stop, or a

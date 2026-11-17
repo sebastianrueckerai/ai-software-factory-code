@@ -58,25 +58,30 @@ type tellBranch struct {
 // branch is the existing action's own: steer for a running session,
 // deny_merge with request_changes at the approval gate, answer at
 // waiting-human; it answers the action's result and records its event.
-var tellRoutes = map[tellKey]tellBranch{
-	{status: "running"}: {
-		about: "its session reads the message",
-		event: factoryd.EventCardSteered,
-		run: func(t *turn, in toolInput, _ factoryd.Task, _ factoryd.ApprovalRequest) (string, error) {
-			return t.c.doSteer(t.r.Context(), t.a, in.TaskID, in.Text)
-		}},
-	{status: "in-review", merge: true}: {
-		about: "the text denies its merge request, changes requested",
-		event: factoryd.EventMergeDenied,
-		run: func(t *turn, in toolInput, _ factoryd.Task, q factoryd.ApprovalRequest) (string, error) {
-			return t.c.doDeny(t.r.Context(), t.a, q.ID, "request_changes", in.Text)
-		}},
-	{status: "waiting-human"}: {
-		about: "the text answers the question it waits on",
-		event: factoryd.EventQuestionAnswered,
-		run: func(t *turn, in toolInput, k factoryd.Task, _ factoryd.ApprovalRequest) (string, error) {
-			return t.tellAnswer(in, k)
-		}},
+// It is built in init, as the chat's tools table is.
+var tellRoutes map[tellKey]tellBranch
+
+func init() {
+	tellRoutes = map[tellKey]tellBranch{
+		{status: "running"}: {
+			about: "its session reads the message",
+			event: factoryd.EventCardSteered,
+			run: func(t *turn, in toolInput, _ factoryd.Task, _ factoryd.ApprovalRequest) (string, error) {
+				return t.c.doSteer(t.r.Context(), t.a, in.TaskID, in.Text)
+			}},
+		{status: "in-review", merge: true}: {
+			about: "the text denies its merge request, changes requested",
+			event: factoryd.EventMergeDenied,
+			run: func(t *turn, in toolInput, _ factoryd.Task, q factoryd.ApprovalRequest) (string, error) {
+				return t.c.doDeny(t.r.Context(), t.a, q.ID, "request_changes", in.Text)
+			}},
+		{status: "waiting-human"}: {
+			about: "the text answers the question it waits on",
+			event: factoryd.EventQuestionAnswered,
+			run: func(t *turn, in toolInput, k factoryd.Task, _ factoryd.ApprovalRequest) (string, error) {
+				return t.tellAnswer(in, k)
+			}},
+	}
 }
 
 // tellFits names the three states the tool routes in.

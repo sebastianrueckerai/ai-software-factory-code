@@ -172,15 +172,6 @@ func (t *turn) settleCost() {
 	}
 }
 
-// answerInChat runs the member's card answer, whose words matched none of
-// the question's choices, as their chat turn. It is a variable set in
-// init, because the chat's tool table reaches doAnswerValue, whose chat
-// route reaches the turn, whose tool calls read the table: a direct call
-// would close that circle at package init.
-var answerInChat func(c *Console, ctx context.Context, a actor, t factoryd.Task, text string) (string, error)
-
-func init() { answerInChat = (*Console).answerInChatTurn }
-
 // answerInChatTurn stores the member's words as a user row on their
 // current thread before it returns, runs the turn on without the request,
 // and answers the note the answer route reads to land the member on the

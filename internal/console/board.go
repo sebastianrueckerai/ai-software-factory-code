@@ -3144,7 +3144,7 @@ func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 }
 
 // answer posts the human's answer to an escalation (doAnswer). Words that
-// matched none of the question's choices went to the chat (answerInChat):
+// matched none of the question's choices went to the chat (answerInChatTurn):
 // the member lands on it.
 func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 	if err := c.answersLiveAsk(r.Context(), r.PathValue("id"), r.PostFormValue("case")); err != nil {
