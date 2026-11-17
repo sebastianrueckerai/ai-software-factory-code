@@ -1204,6 +1204,8 @@ form.poolctl button { height: 28px; background: none; color: var(--text); border
 .msg.wake .fold:hover, .msg.wake .fold:focus-visible { color: var(--text-muted); }
 .msg.wake .fold .fw { flex: none; color: var(--text-muted); }
 .msg.wake .fold .ft { min-width: 0; }
+details.more > summary { cursor: pointer; color: var(--text-faint); font-size: 12px; }
+details.more > summary:hover, details.more > summary:focus-visible { color: var(--text-muted); }
 .msg.wake .fold .ft a { color: inherit; }
 .msg.wake.expanded .fold { display: none; }
 .msg.wake.expanded .wake-b { display: block; }
