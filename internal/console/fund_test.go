@@ -58,8 +58,8 @@ func TestFundOpensWhereASessionCannotStart(t *testing.T) {
 	}
 	got, posts := actedOnce(t, r)
 	equal(t, "the fund", []any{got, posts}, []any{fundOf(0.5, "", 3, factoryd.ViaButton), true})
-	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got == "" {
-		t.Fatal("the fund posted no answer on the issue")
+	if got, want := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"], "fund: 0.50 EUR from the pool"; got != want {
+		t.Fatalf("the fund posted %q on the issue, want the answer in its words %q", got, want)
 	}
 }
 
