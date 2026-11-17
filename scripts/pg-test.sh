@@ -5,8 +5,8 @@
 # GATEWAY_TEST_DATABASE_URL point at the server's postgres database, whose
 # superuser postgres needs no password. The server keeps its dynamic
 # shared memory in mmap files, not /dev/shm, which a container caps at
-# 64 MB. The server stops and the directory
-# goes on every exit; the exit status is the command's. initdb and postgres
+# 64 MB. The server stops and the directory goes when the script exits;
+# the exit status is the command's. initdb and postgres
 # refuse root: run as root, the script runs the server as nobody.
 set -euo pipefail
 if [ $# -eq 0 ]; then
@@ -23,11 +23,29 @@ cleanup() {
   exit "$status"
 }
 as=()
-dir=$(mktemp -d)
+if [ "$(id -u)" -eq 0 ]; then
+  as=(runuser -u nobody --)
+fi
+# A run killed outright skips its trap: its server runs on and its
+# directory, over a GiB once the tests made their databases, stays. Each
+# directory's name carries its run's process id, and a run ends the server
+# and the directory of every run no longer going.
+base=${TMPDIR:-/tmp}
+for old in "$base"/pg-test.*.*; do
+  run=${old##*/pg-test.}
+  run=${run%%.*}
+  [ -d "$old" ] && [ ! -d "/proc/$run" ] || continue
+  server=$(head -n 1 "$old/data/postmaster.pid" 2>/dev/null) || server=
+  args=$(tr '\0' ' ' <"/proc/$server/cmdline" 2>/dev/null) || args=
+  if [ -n "$server" ] && [[ $args == *"$old/data"* ]]; then
+    "${as[@]}" pg_ctl -D "$old/data" -m immediate stop >/dev/null || true
+  fi
+  rm -rf "$old"
+done
+dir=$(mktemp -d "$base/pg-test.$$.XXXXXX")
 trap cleanup EXIT
 if [ "$(id -u)" -eq 0 ]; then
   chown nobody "$dir"
-  as=(runuser -u nobody --)
 fi
 
 "${as[@]}" initdb -D "$dir/data" -U postgres -A trust -E UTF8 --locale=C -N >/dev/null
