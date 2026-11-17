@@ -76,29 +76,26 @@ func TestStatusPanelListsNoCards(t *testing.T) {
 	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Track: policy.TrackDirect, Repository: "sf/code", Objective: "working", CreatedAt: time.Now().Add(-time.Hour)},
 		factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/code", Objective: "rotate the key", IssueNumber: 16})
 	ck, _ := r.loggedIn(t)
-	for _, page := range []string{"/"} {
-		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()
-		start := strings.Index(body, `<div class="sp" id="status-panel"`)
-		if start < 0 {
-			t.Fatalf("%s: the status panel is missing", page)
-		}
-		panel := body[start:]
-		end := strings.Index(panel, "</section>\n</div>")
-		if end < 0 {
-			t.Fatalf("%s: the status panel does not close", page)
-		}
-		panel = panel[:end]
-		if n := strings.Count(panel, "<h3>"); n != 2 || !strings.Contains(panel, "<h3>Spend</h3>") || !strings.Contains(panel, "<h3>Factory</h3>") {
-			t.Errorf("%s: the panel holds %d sections, want only Spend and Factory:\n%s", page, n, panel)
-		}
-		if strings.Contains(body, `class="sp-link"`) || strings.Contains(panel, "<h3>In progress</h3>") || strings.Contains(panel, "<h3>Needs you</h3>") {
-			t.Errorf("%s: the panel still lists the board's cards", page)
-		}
-		if strings.Contains(panel, `need-t-h`) {
-			t.Errorf("%s: the panel lists the human task", page)
-		}
-	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	start := strings.Index(body, `<div class="sp" id="status-panel"`)
+	if start < 0 {
+		t.Fatal("the status panel is missing")
+	}
+	panel := body[start:]
+	end := strings.Index(panel, "</section>\n</div>")
+	if end < 0 {
+		t.Fatal("the status panel does not close")
+	}
+	panel = panel[:end]
+	if n := strings.Count(panel, "<h3>"); n != 2 || !strings.Contains(panel, "<h3>Spend</h3>") || !strings.Contains(panel, "<h3>Factory</h3>") {
+		t.Errorf("the panel holds %d sections, want only Spend and Factory:\n%s", n, panel)
+	}
+	if strings.Contains(body, `class="sp-link"`) || strings.Contains(panel, "<h3>In progress</h3>") || strings.Contains(panel, "<h3>Needs you</h3>") {
+		t.Error("the panel still lists the board's cards")
+	}
+	if strings.Contains(panel, `need-t-h`) {
+		t.Error("the panel lists the human task")
+	}
 	if !strings.Contains(col(t, body, "Needs you"), `data-card="t-h"`) || !strings.Contains(col(t, body, "In progress"), `data-card="t-run"`) {
 		t.Error("the four columns do not list the human task and the running card the panel once listed")
 	}

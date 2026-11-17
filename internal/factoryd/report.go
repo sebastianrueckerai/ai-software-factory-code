@@ -30,16 +30,6 @@ const (
 	SourceProver    = "prover"
 )
 
-// HelperSources are the sources of the helper tasks: each is one step of
-// its parent's life, which the board shows on the parent, never as a card.
-var HelperSources = []string{SourceScreening, SourceSizing, SourceProver}
-
-// helperSourcesSQL is HelperSources as an SQL list.
-const helperSourcesSQL = `('` + SourceScreening + `', '` + SourceSizing + `', '` + SourceProver + `')`
-
-// Helper says t is a helper task.
-func Helper(t Task) bool { return slices.Contains(HelperSources, t.Source) }
-
 // SourcePlan is a card a plan filed; its parent is the plan task.
 const SourcePlan = "plan"
 

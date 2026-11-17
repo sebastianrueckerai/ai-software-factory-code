@@ -1056,6 +1056,18 @@ func (s *acceptanceStore) OpenReportTask(_ context.Context, t factoryd.Task) (fa
 	return t, s.CreateTask(context.Background(), t)
 }
 
+func (s *acceptanceStore) TasksByParent(_ context.Context, id string) ([]factoryd.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []factoryd.Task
+	for _, t := range s.tasks {
+		if t.Parent == id {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
 func (s *acceptanceStore) ReportOf(_ context.Context, parent, source string) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

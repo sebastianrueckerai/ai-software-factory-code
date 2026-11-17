@@ -121,7 +121,7 @@ func TestEveryFixtureHasACardBrief(t *testing.T) {
 		if b.Text.Title == "" {
 			t.Errorf("%s %s: no title", fx.Group, fx.Kind)
 		}
-		if fx.Task.Parent != plan || factoryd.Helper(fx.Task) {
+		if fx.Task.Parent != plan || fx.Task.Report() {
 			continue
 		}
 		if p := b.Plan; p == nil || p.Issue != 1947 || p.Index == 0 || p.Of != 6 || p.Outcome == "" || len(p.Cards) != 6 {

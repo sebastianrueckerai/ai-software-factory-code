@@ -185,12 +185,12 @@ func (r *Runner) readCard(ctx context.Context, taskID string) (cardRows, error) 
 	if rows.verdicts, err = r.store.CriteriaVerdicts(ctx, taskID); err != nil {
 		return cardRows{}, err
 	}
-	for _, source := range HelperSources {
-		h, ok, err := r.store.ReportOf(ctx, taskID, source)
-		if err != nil {
-			return cardRows{}, err
-		}
-		if ok {
+	children, err := r.store.TasksByParent(ctx, taskID)
+	if err != nil {
+		return cardRows{}, err
+	}
+	for _, h := range children {
+		if h.Report() {
 			rows.helpers = append(rows.helpers, h)
 		}
 	}
@@ -468,14 +468,17 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 }
 
 // helperSteps are the card's helper tasks as steps of its life: each when
-// it was filed, by its source, with where it stands, a finished one with
-// its result.
+// it was filed, by its source, with where it stands and what it spent, a
+// finished one with its result.
 func helperSteps(scrub *redact.Scrubber, helpers []Task) []DigestStep {
 	var out []DigestStep
 	for _, h := range helpers {
 		outcome := statusText(h.Status, h.Gate)
+		if h.SpentEUR > 0 {
+			outcome += fmt.Sprintf(", %.2f EUR", h.SpentEUR)
+		}
 		if result := helperResult(h); Final(h.Status) && result != "" {
-			outcome = h.Status + ": " + result
+			outcome += ": " + result
 		}
 		out = append(out, DigestStep{At: h.CreatedAt, Kind: h.Source, Outcome: digestText(scrub, outcome)})
 	}

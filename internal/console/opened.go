@@ -281,7 +281,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		}
 		// a monitor's flag sits beside the card's run, so the card's own
 		// actions stand beside its answers
-		onCase = row.Case.Kind != factoryd.CaseMonitorFlag
+		onCase = row.Case.Kind != factoryd.CaseMonitorFlag || row.Owner != nil
 		live := factoryd.FaceOf(row.Case, f)
 		for _, a := range append(live.Answers, live.More...) {
 			if !mayAnswer(v, k, a.Action) || slices.ContainsFunc(row.Face.Offers, func(m factoryd.AskOffer) bool { return m.Value == a.Key() || m.Label == a.Label }) ||

@@ -900,6 +900,9 @@ func (s *accBatchStore) OpenReportTask(ctx context.Context, t factoryd.Task) (fa
 func (s *accBatchStore) ReportOf(ctx context.Context, parent, source string) (factoryd.Task, bool, error) {
 	panic("unused")
 }
+func (s *accBatchStore) TasksByParent(ctx context.Context, id string) ([]factoryd.Task, error) {
+	panic("unused")
+}
 func (s *accBatchStore) PlanCards(ctx context.Context, plan string) ([]factoryd.Task, error) {
 	panic("unused")
 }

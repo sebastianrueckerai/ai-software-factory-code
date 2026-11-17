@@ -600,7 +600,7 @@ func (b *builder) helperParent(source string) factoryd.Task {
 // onParent is fx with the parent it stands on when its card is a helper
 // task.
 func (b *builder) onParent(fx Fixture) Fixture {
-	if factoryd.Helper(fx.Task) {
+	if fx.Task.Report() {
 		p := b.helperParent(fx.Task.Source)
 		fx.Parent = &p
 	}

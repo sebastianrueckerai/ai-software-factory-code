@@ -1,8 +1,11 @@
 package console
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +57,10 @@ func helperRig(t *testing.T) (*rig, *http.Cookie, *session) {
 func TestHelperTasksShowOnTheirParent(t *testing.T) {
 	r, ck, _ := helperRig(t)
 	body := getPage(r, ck, "/").Body.String()
+	// the plan whose prover runs works, beside the two running cards
+	if want := `<b class="n">3</b> working`; !strings.Contains(body, want) {
+		t.Errorf("the status line lacks %s", want)
+	}
 	for _, id := range []string{"t-prove", "t-screen", "t-size", "t-screen-d"} {
 		if strings.Contains(body, `data-card="`+id+`"`) {
 			t.Errorf("the board holds a card for the helper task %s", id)
@@ -128,6 +135,58 @@ func TestAHelpersAskIsAPageOfItsParent(t *testing.T) {
 	in, _ := actedOnce(t, r)
 	if in.TaskID != "t-size" || in.CaseID != 7 || in.Res.Action != factoryd.ActClose {
 		t.Fatalf("Act took %+v, want close on the sizing's case 7", in)
+	}
+}
+
+// A helper's ask reaches the human whatever page of Done its parent is
+// on: the board reads the parent of every helper that asks by its open
+// cases, so Needs you holds the row and the status line counts it.
+func TestAHelpersAskStandsOnItsParentPastDonesPage(t *testing.T) {
+	r, ck, _ := helperRig(t)
+	now := time.Now()
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-prove" {
+			r.tasks.tasks[i].Status = "waiting-human"
+		}
+	}
+	for i := range 51 {
+		at := now.Add(-time.Duration(i+1) * time.Minute)
+		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: fmt.Sprintf("t-f%02d", i), Kind: "agent", Status: "done",
+			Repository: "sf/code", IssueNumber: int64(100 + i), Objective: "Ship it.", CreatedAt: at.Add(-time.Hour), FinishedAt: &at}})
+	}
+	r.tasks.mu.Unlock()
+	r.openCases = map[string][]factoryd.Case{"t-prove": {{ID: 9, TaskID: "t-prove", Kind: factoryd.CaseGateStop, Status: factoryd.CaseAtHuman, OpenedAt: now.Add(-time.Hour)}}}
+	body := getPage(r, ck, "/").Body.String()
+	if needs := col(t, body, "Needs you"); !strings.Contains(needs, `data-card="t-plan"`) || !strings.Contains(needs, `data-case="9"`) ||
+		!strings.Contains(needs, `<span class="flag">the proof writing asks</span>`) {
+		t.Errorf("Needs you lacks the plan's row with its prover's ask:\n%s", needs)
+	}
+	if done := columnItems(t, body, "Done"); len(done) != 50 || slices.Contains(done, "t-plan") {
+		t.Errorf("Done holds %d cards (the plan among them: %v), want the newest 50 without the plan", len(done), slices.Contains(done, "t-plan"))
+	}
+	// the plan's row and the rig's two pending requests
+	if want := `<b class="n">3</b> need you`; !strings.Contains(body, want) {
+		t.Errorf("the status line lacks %s", want)
+	}
+}
+
+// Beside a helper's page only the parent's tools stand among the other
+// actions: a monitor flag on the sizing offers none of the parent's own
+// actions, which would act on the parent under the sizing's ask.
+func TestAHelpersPageOffersNoneOfItsParentsActions(t *testing.T) {
+	r, ck, _ := helperRig(t)
+	r.openCases = map[string][]factoryd.Case{"t-size": {{ID: 7, TaskID: "t-size", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman,
+		OpenedAt: time.Now().Add(-time.Hour), Facts: map[string]any{"flag": "wait_over_bound"}}}}
+	opened := getPage(r, ck, "/cards/t-c/drawer?tab=overview&case=t-c:7").Body.String()
+	if !strings.Contains(opened, `action="/tasks/t-size/resolve"`) {
+		t.Fatalf("the sizing's flag offers no answer of its own:\n%s", opened)
+	}
+	tools := []string{factoryd.AnswerAccent, factoryd.AnswerEditBrief, factoryd.AnswerSteer, factoryd.AnswerThread}
+	for _, m := range regexp.MustCompile(`action="/tasks/t-c/resolve"[^>]*data-answer="([^"]+)"`).FindAllStringSubmatch(opened, -1) {
+		if !slices.Contains(tools, m[1]) {
+			t.Errorf("the sizing's page offers the parent's own %s", m[1])
+		}
 	}
 }
 

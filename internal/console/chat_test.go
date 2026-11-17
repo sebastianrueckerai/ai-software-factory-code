@@ -2219,10 +2219,12 @@ func TestBoardWordsKeepsTheFinishedApart(t *testing.T) {
 		return card{Task: factoryd.Task{ID: fmt.Sprintf("t-%d", n), IssueNumber: n, Status: status, Objective: title}}
 	}
 	merge := &approvalCard{ApprovalRequest: factoryd.ApprovalRequest{ID: 4, Kind: "merge", TaskID: "t-1"}, Issue: 1}
+	sized := task(2, "running", "Speed up the board.")
+	sized.Helper = &factoryd.Task{ID: "t-size", Source: factoryd.SourceSizing, Status: "waiting-human"}
 	d := boardData{Columns: []column{
 		{Title: "Needs you", Needs: []need{{Approval: merge}, {Card: task(7, "waiting-human", "Use a replica?")}}},
 		{Title: "Queued", Cards: []card{task(1, "queued", "Fix the cache.")}},
-		{Title: "In progress", Cards: []card{task(2, "running", "Speed up the board.")}},
+		{Title: "In progress", Cards: []card{sized}},
 		{Title: "Done", Finished: "done", Cards: []card{task(3, "done", "Add the feed."), task(4, "failed", "Port the store."), task(5, "closed", "Drop the cache.")}},
 	}}
 	equal(t, "the board's text", boardWords(d), `Open cards:
@@ -2231,7 +2233,7 @@ Needs you (1):
 Queued (1):
   #1 t-1 "Fix the cache." queued (waits for a free work slot, in filing order)
 In progress (1):
-  #2 t-2 "Speed up the board." running (runs an agent session)
+  #2 t-2 "Speed up the board." running (runs an agent session), its sizing t-size is waiting-human
 Finished cards, ended in the last 7 days and open no more:
 Done (3):
   #3 t-3 "Add the feed." done (is done)

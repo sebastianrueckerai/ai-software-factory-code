@@ -841,6 +841,9 @@ func boardWords(d boardData) string {
 			if k.Provider {
 				lines[i] += ", " + providerWords
 			}
+			if h := k.Helper; h != nil {
+				lines[i] += fmt.Sprintf(", its %s %s is %s", h.Source, h.ID, h.Status)
+			}
 		}
 		listed("\n  ", lines, whole)
 		b.WriteString("\n")

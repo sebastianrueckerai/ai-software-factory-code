@@ -2017,7 +2017,7 @@ func (s *fakeStore) BoardTasks(ctx context.Context, repository string) ([]BoardT
 		all = append(all, BoardTask{Task: t})
 	}
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.Kind != KindChat && !factorydFinal(t.Status) && !Helper(t) {
+		if t.Repository == repository && t.Kind != KindChat && !factorydFinal(t.Status) && !t.Report() {
 			out = append(out, BoardTask{Task: t, Helpers: HelpersOf(all, t.ID)})
 		}
 	}

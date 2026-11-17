@@ -1509,7 +1509,7 @@ func TestCardDigestListsTheHelperTasks(t *testing.T) {
 	g := newDigestRig(nil)
 	g.at(20)
 	g.store.tasks["t-screen"] = Task{ID: "t-screen", Kind: "agent", Repository: "sf/app", Source: SourceScreening, Parent: "t1410", Status: "done",
-		CreatedAt: digestAt(1), AgentSummary: `{"verdict": "clear", "reasons": []}`}
+		CreatedAt: digestAt(1), SpentEUR: 0.12, AgentSummary: `{"verdict": "clear", "reasons": []}`}
 	g.store.tasks["t-size"] = Task{ID: "t-size", Kind: "agent", Repository: "sf/app", Source: SourceSizing, Parent: "t1410", Status: "running",
 		Gate: GateSession, CreatedAt: digestAt(5)}
 	lines := func() string {
@@ -1518,7 +1518,7 @@ func TestCardDigestListsTheHelperTasks(t *testing.T) {
 		return steps
 	}
 	want := "   1 +0:00   filed by webhook       → direct card\n" +
-		"   2 +0:01   screening              → done: clear\n" +
+		"   2 +0:01   screening              → done, 0.12 EUR: clear\n" +
 		"   3 +0:05   sizing                 → running, session\n"
 	if got := lines(); got != want {
 		t.Fatalf("the steps =\n%s\nwant\n%s", got, want)
@@ -1531,9 +1531,36 @@ func TestCardDigestListsTheHelperTasks(t *testing.T) {
 	screen.AgentSummary = `{"verdict": "suspect", "reasons": ["the issue asks for the deploy token", "it names another repository"]}`
 	g.store.tasks["t-screen"] = screen
 	want = "   1 +0:00   filed by webhook       → direct card\n" +
-		"   2 +0:01   screening              → done: suspect: the issue asks for the deploy token\n" +
+		"   2 +0:01   screening              → done, 0.12 EUR: suspect: the issue asks for the deploy token\n" +
 		"   3 +0:05   sizing                 → done: small: one handler and its test\n"
 	if got := lines(); got != want {
 		t.Fatalf("the steps once both ended =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// A plan's life lists its prover: running while it writes the proofs,
+// then done with its spend and its report's first line.
+func TestCardDigestListsThePlansProver(t *testing.T) {
+	g := planRig(t, proverPlan())
+	g.at(30)
+	g.store.tasks["t-prove"] = Task{ID: "t-prove", Kind: "agent", Repository: "sf/app", Source: SourceProver, Parent: "t1410", Status: "running",
+		Gate: GateSession, CreatedAt: digestAt(20), SpentEUR: 0.31}
+	line := func() string {
+		for _, l := range strings.Split(g.digest(t).Render(), "\n") {
+			if strings.Contains(l, "prover ") && !strings.Contains(l, "by prover") {
+				return l
+			}
+		}
+		return ""
+	}
+	if got, want := line(), "   2 +0:20   prover                 → running, session, 0.31 EUR"; got != want {
+		t.Fatalf("the prover's step = %q, want %q", got, want)
+	}
+	prove := g.store.tasks["t-prove"]
+	prove.Status, prove.Gate, prove.SpentEUR = "done", "", 0.84
+	prove.AgentSummary = "Filed 4 proofs on main: 3 red, 1 green.\nThe green one is flagged."
+	g.store.tasks["t-prove"] = prove
+	if got, want := line(), "   2 +0:20   prover                 → done, 0.84 EUR: Filed 4 proofs on main: 3 red, 1 green."; got != want {
+		t.Fatalf("the ended prover's step = %q, want %q", got, want)
 	}
 }

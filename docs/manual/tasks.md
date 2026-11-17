@@ -135,9 +135,9 @@ project by its registration. Mirroring
 failures are logged and retried on the next transition, never fail the
 task itself. A webhook-created task is mirrored immediately after its
 row exists: `state/queued` for an agent card, and `state/waiting-human`
-for the human lane, which starts no workflow (architecture 5.6's
-"waiting on a human" board column is the human lane's whole lifecycle,
-not a transient state on the way to `running`).
+for the human lane, which starts no workflow (a human card stands in
+Needs you for its whole life: `waiting-human` is its lifecycle, not a
+transient state on the way to `running`).
 
 ## Task workflow
 

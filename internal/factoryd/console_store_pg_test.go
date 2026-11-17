@@ -658,6 +658,13 @@ func TestTheBoardsReadsPutHelperTasksOnTheirParent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// the sizing asks: its row carries its ask as a card's does, which its
+	// parent's page reads
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-size", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"question": "the sizing ran out of sessions", "ask": "the sizing ran out of sessions", "why": "it has no size yet",
+			"comment": 51, "source": "agent", "reason": "the sizing used its sessions"}}); err != nil {
+		t.Fatal(err)
+	}
 	ids := func(tasks []BoardTask) []string {
 		var out []string
 		for _, b := range tasks {
@@ -669,8 +676,10 @@ func TestTheBoardsReadsPutHelperTasksOnTheirParent(t *testing.T) {
 	if err != nil || !slices.Equal(ids(board), []string{"t-c"}) || !slices.Equal(ids(board[0].Helpers), []string{"t-size"}) {
 		t.Fatalf("BoardTasks = %v, %v; want t-c alone, its sizing on it", ids(board), err)
 	}
-	if h := board[0].Helpers[0]; h.Status != "waiting-human" || h.Source != SourceSizing {
-		t.Errorf("t-c's helper = %+v, want the waiting sizing task", h.Task)
+	if h := board[0].Helpers[0]; h.Status != "waiting-human" || h.Source != SourceSizing || h.AskCase == 0 || h.QuestionComment != 51 ||
+		h.Escalation != "the sizing used its sessions" || h.Question == nil || h.Question.Ask != "the sizing ran out of sessions" {
+		t.Errorf("t-c's helper = %+v, ask case %d, comment %d, reason %q, question %+v; want the waiting sizing with its ask",
+			h.Task, h.AskCase, h.QuestionComment, h.Escalation, h.Question)
 	}
 	finished, _, err := s.FinishedTasks(ctx, FinishedQuery{Repository: "sf/r", Statuses: FinalStatuses, Since: now.Add(-7 * 24 * time.Hour)})
 	if err != nil || !slices.Equal(ids(finished), []string{"t-plan"}) || !slices.Equal(ids(finished[0].Helpers), []string{"t-prove"}) {

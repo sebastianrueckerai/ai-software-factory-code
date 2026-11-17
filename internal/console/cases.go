@@ -93,12 +93,6 @@ func (c *Console) caseSetOf(ctx context.Context, repository string, cards ...fac
 	if err != nil {
 		return cs, err
 	}
-	parent := map[string]string{}
-	for _, bt := range cards {
-		for _, h := range bt.Helpers {
-			parent[h.ID], cs.helpers[h.ID] = bt.ID, h
-		}
-	}
 	for _, k := range desk.Cases {
 		if factoryd.AnsweredOnCard(k.Kind) && k.ID > cs.liveAsk[k.TaskID].ID {
 			cs.liveAsk[k.TaskID] = k
@@ -106,15 +100,74 @@ func (c *Console) caseSetOf(ctx context.Context, repository string, cards ...fac
 	}
 	for _, k := range desk.Cases {
 		if k.Status == factoryd.CaseAtHuman {
-			id := cmp.Or(parent[k.TaskID], k.TaskID)
-			cs.byCard[id] = append(cs.byCard[id], k)
+			cs.byCard[k.TaskID] = append(cs.byCard[k.TaskID], k)
 		}
 	}
 	for _, list := range cs.byCard {
-		slices.SortFunc(list, func(a, b factoryd.Case) int { return cmp.Compare(a.ID, b.ID) })
-		orderPlanCases(list)
+		sortCases(list)
 	}
+	cs.adopt(cards...)
 	return cs, nil
+}
+
+// adopt files the cases of the helper tasks of cards among their
+// parent's.
+func (cs caseSet) adopt(cards ...factoryd.BoardTask) {
+	for _, bt := range cards {
+		for _, h := range bt.Helpers {
+			cs.helpers[h.ID] = h
+			if list, ok := cs.byCard[h.ID]; ok {
+				cs.byCard[bt.ID] = append(cs.byCard[bt.ID], list...)
+				delete(cs.byCard, h.ID)
+				sortCases(cs.byCard[bt.ID])
+			}
+		}
+	}
+}
+
+// sortCases puts a card's cases in reading order: by id, a plan's in its
+// own order (orderPlanCases).
+func sortCases(list []factoryd.Case) {
+	slices.SortFunc(list, func(a, b factoryd.Case) int { return cmp.Compare(a.ID, b.ID) })
+	orderPlanCases(list)
+}
+
+// askingCards are the cards that hold a case at the human in cs but that
+// cards, the board's read, does not hold: a finished card past Done's
+// pages, such as a done plan whose prover asks. Each is read by its case,
+// a helper's parent in its place, and cs files the helper's cases among
+// the parent's, so Needs you holds the row whatever page the card is on.
+func (c *Console) askingCards(ctx context.Context, cs caseSet, cards []factoryd.BoardTask) []factoryd.BoardTask {
+	held := map[string]bool{}
+	for _, bt := range cards {
+		held[bt.ID] = true
+		for _, h := range bt.Helpers {
+			held[h.ID] = true
+		}
+	}
+	read := func(id string) (factoryd.BoardTask, bool) {
+		bt, ok, err := c.cfg.Tasks.BoardTask(ctx, id)
+		if err != nil {
+			log.Printf("console: the card of a case at the human, %s: %v", id, err)
+		}
+		return bt, ok && err == nil
+	}
+	var out []factoryd.BoardTask
+	for _, id := range slices.Sorted(maps.Keys(cs.byCard)) {
+		if held[id] {
+			continue
+		}
+		bt, ok := read(id)
+		if ok && bt.Report() && !held[bt.Parent] {
+			bt, ok = read(bt.Parent)
+			cs.adopt(bt)
+		}
+		if ok && !held[bt.ID] && cs.holds(bt.Task) {
+			held[bt.ID] = true
+			out = append(out, bt)
+		}
+	}
+	return out
 }
 
 func planCase(k factoryd.Case) bool {

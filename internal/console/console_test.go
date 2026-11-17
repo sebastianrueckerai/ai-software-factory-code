@@ -792,7 +792,7 @@ func (s *fakeTasks) BoardTasks(_ context.Context, repository string) ([]factoryd
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cards := slices.DeleteFunc(slices.Clone(s.tasks), func(t factoryd.BoardTask) bool {
-		return t.Repository != repository || t.Kind == factoryd.KindChat || factoryd.Final(t.Status) || factoryd.Helper(t.Task)
+		return t.Repository != repository || t.Kind == factoryd.KindChat || factoryd.Final(t.Status) || t.Report()
 	})
 	for i := range cards {
 		cards[i].Helpers = factoryd.HelpersOf(s.tasks, cards[i].ID)

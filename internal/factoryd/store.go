@@ -197,12 +197,19 @@ func (t Task) EnforcedSpent() float64 { return t.SpentEUR + t.HeldEUR }
 // Left is the budget the caps and the floor leave the card.
 func (t Task) Left() float64 { return policy.Left(t.BudgetEUR, t.SpentEUR, t.HeldEUR) }
 
+// reportSources are the sources of the report tasks; reportSourcesSQL
+// is the same list in SQL.
+var (
+	reportSources    = []string{SourceScreening, SourceSizing, SourceProver}
+	reportSourcesSQL = "('" + strings.Join(reportSources, "', '") + "')"
+)
+
 // Report tells a report task by its source: a plan's cards
 // have a parent too and are no report. The report flow, the analytics
 // and the runner's RunState ask it; it folds Source alone, no row read.
-func (t Task) Report() bool {
-	return t.Source == SourceScreening || t.Source == SourceSizing || t.Source == SourceProver
-}
+// A report task is a step of its parent's life: the board shows it on
+// its parent, never as a card.
+func (t Task) Report() bool { return slices.Contains(reportSources, t.Source) }
 
 // Standing is the issue author's standing: telemetry for an
 // alert card, writer for an author who could write the repository,
@@ -682,6 +689,9 @@ type Store interface {
 	OpenReportTask(ctx context.Context, t Task) (Task, error)
 	// ReportOf is parent's report task of source.
 	ReportOf(ctx context.Context, parent, source string) (Task, bool, error)
+	// TasksByParent is the tasks whose parent is task id, in any status,
+	// oldest first.
+	TasksByParent(ctx context.Context, id string) ([]Task, error)
 	// PlanCards are the cards plan filed (source plan) that hold their
 	// key: a retried card's replacement in its place.
 	PlanCards(ctx context.Context, plan string) ([]Task, error)

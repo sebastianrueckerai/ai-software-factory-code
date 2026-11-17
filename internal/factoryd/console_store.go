@@ -211,7 +211,7 @@ func BoardAsk(c Case, ask map[string]any) (escalation string, choices []string, 
 // reads no timeline object.
 func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTask, error) {
 	tasks, err := s.boardTasks(ctx, `
-		 WHERE repository = $2 AND kind <> $1 AND status NOT IN ('done', 'failed', 'closed') AND tasks.source NOT IN `+helperSourcesSQL+`
+		 WHERE repository = $2 AND kind <> $1 AND status NOT IN ('done', 'failed', 'closed') AND tasks.source NOT IN `+reportSourcesSQL+`
 		 ORDER BY priority DESC, finished_at DESC NULLS LAST, tasks.id`, KindChat, repository)
 	if err != nil {
 		return nil, err
@@ -241,7 +241,7 @@ func (s *PGStore) boardTasks(ctx context.Context, where string, args ...any) ([]
 
 // liveHelper is the SQL test that the card has a helper task that has not
 // ended.
-const liveHelper = `EXISTS (SELECT 1 FROM tasks h WHERE h.parent_task = tasks.id AND h.source IN ` + helperSourcesSQL + `
+var liveHelper = `EXISTS (SELECT 1 FROM tasks h WHERE h.parent_task = tasks.id AND h.source IN ` + reportSourcesSQL + `
 	AND h.status NOT IN ('done', 'failed', 'closed'))`
 
 // fillCards fills the asks of the cards in tasks and puts on each its
@@ -254,7 +254,7 @@ func (s *PGStore) fillCards(ctx context.Context, tasks []BoardTask) error {
 	for i, b := range tasks {
 		ids[i] = b.ID
 	}
-	helpers, err := s.boardTasks(ctx, ` WHERE tasks.parent_task = ANY($1::text[]) AND tasks.source IN `+helperSourcesSQL+`
+	helpers, err := s.boardTasks(ctx, ` WHERE tasks.parent_task = ANY($1::text[]) AND tasks.source IN `+reportSourcesSQL+`
 		 AND tasks.status NOT IN ('done', 'failed', 'closed') ORDER BY tasks.created_at, tasks.id`, ids)
 	if err == nil {
 		err = s.fillAsks(ctx, helpers)
@@ -274,7 +274,7 @@ func (s *PGStore) fillCards(ctx context.Context, tasks []BoardTask) error {
 func HelpersOf(tasks []BoardTask, id string) []BoardTask {
 	var out []BoardTask
 	for _, h := range tasks {
-		if h.Parent == id && Helper(h.Task) && !Final(h.Status) {
+		if h.Parent == id && h.Report() && !Final(h.Status) {
 			out = append(out, h)
 		}
 	}
@@ -370,7 +370,7 @@ func arrival(t Task) time.Time {
 // past the window, so the helper's ask has its card to stand on.
 func (s *PGStore) FinishedTasks(ctx context.Context, q FinishedQuery) ([]BoardTask, int, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+boardTaskColumns+`, count(*) OVER ()`+boardTaskFrom+`
-		 WHERE repository = $1 AND status = ANY($2) AND kind NOT IN ($3, 'human') AND tasks.source NOT IN `+helperSourcesSQL+`
+		 WHERE repository = $1 AND status = ANY($2) AND kind NOT IN ($3, 'human') AND tasks.source NOT IN `+reportSourcesSQL+`
 		   AND (finished_at > $4 OR status = 'failed' AND plan_key IS NOT NULL AND EXISTS (SELECT 1 FROM task_deps td JOIN tasks w ON w.id = td.task_id
 		       WHERE td.depends_on = tasks.id AND w.status = 'waiting-deps') OR `+liveHelper+`)
 		   AND (status <> 'done' OR `+deployLive+`)
@@ -502,7 +502,7 @@ func FinishedPage(tasks []BoardTask, q FinishedQuery) ([]BoardTask, int) {
 	var out []BoardTask
 	for _, t := range tasks {
 		t.Helpers = HelpersOf(tasks, t.ID)
-		if t.Repository == q.Repository && slices.Contains(q.Statuses, t.Status) && t.Kind != KindChat && t.Kind != "human" && !Helper(t.Task) &&
+		if t.Repository == q.Repository && slices.Contains(q.Statuses, t.Status) && t.Kind != KindChat && t.Kind != "human" && !t.Report() &&
 			(t.FinishedAt == nil || t.FinishedAt.After(q.Since) || len(t.Helpers) > 0) && (q.After.ID == "" || order(Task{ID: q.After.ID, FinishedAt: &q.After.At}, t.Task) < 0) &&
 			(t.Status != "done" || DeployLive(tasks, t)) {
 			out = append(out, t)

@@ -2055,6 +2055,10 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		log.Printf("console: the cases of %s: %v", shown.Name, err)
 		v.problems = append(v.problems, "the cases waiting on you could not be read")
 	}
+	for _, bt := range c.askingCards(ctx, cs, tasks) {
+		v.byID[bt.ID] = bt.Task
+		tasks = append(tasks, bt)
+	}
 	v.cases = cs
 	inView := casesInView(r)
 	// BoardTasks and readFinished read shown.Repository's cards only, so
@@ -2078,6 +2082,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			if !factoryd.Final(t.Status) {
 				d.Status.NeedYou++
 			}
+		case len(bt.Helpers) > 0 && bt.Helpers[len(bt.Helpers)-1].Status == "running":
+			d.Status.Working++
 		case col == colProgress && t.Status == "running" && c.timelineFace(ctx, t.ID).provider:
 			d.Status.Waiting++
 		case col == colProgress && t.Status != "in-review":
@@ -2912,7 +2918,7 @@ func (c *Console) forgejoFailed(w http.ResponseWriter, r *http.Request, what str
 }
 
 // writableCard is the card the path names, built as the board shows it
-// under the URL's filter (?project, ?view); an unknown card is
+// under the URL's filter (?project, ?q, the menus); an unknown card is
 // 404. The route's access-table rule has judged the writer. false: the
 // answer is written.
 func (c *Console) writableCard(w http.ResponseWriter, r *http.Request) (factoryd.BoardTask, card, *boardView, bool) {
@@ -2948,7 +2954,7 @@ func (c *Console) writableCard(w http.ResponseWriter, r *http.Request) (factoryd
 
 // cardFragment answers GET /cards/{id} to a writer of the card's project,
 // 404 to anyone else: the one card as the board renders it, its forms
-// carrying the filter (?project, ?view) of the board it is
+// carrying the filter (?project, ?q, the menus) of the board it is
 // swapped into.
 func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
 	bt, k, v, ok := c.writableCard(w, r)
