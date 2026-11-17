@@ -55,20 +55,21 @@ func parseFileDiff(text string) fileDiff {
 			f.Removed++
 		case inHunk:
 		case strings.HasPrefix(l, "diff --git "):
-			a, b, _ := strings.Cut(strings.TrimPrefix(l, "diff --git "), " b/")
-			oldPath, newPath = strings.TrimPrefix(a, "a/"), b
+			oldPath, newPath = gitHeaderPaths(strings.TrimPrefix(l, "diff --git "))
 		case strings.HasPrefix(l, "rename from "), strings.HasPrefix(l, "copy from "):
 			_, oldPath, _ = strings.Cut(l, " from ")
+			oldPath = unquoteGit(oldPath)
 		case strings.HasPrefix(l, "rename to "), strings.HasPrefix(l, "copy to "):
 			_, newPath, _ = strings.Cut(l, " to ")
+			newPath = unquoteGit(newPath)
 		case l == "--- /dev/null":
 			oldPath = ""
-		case strings.HasPrefix(l, "--- a/"):
-			oldPath = strings.TrimSuffix(strings.TrimPrefix(l, "--- a/"), "\t")
+		case strings.HasPrefix(l, "--- a/"), strings.HasPrefix(l, `--- "a/`):
+			oldPath = strings.TrimPrefix(unquoteGit(strings.TrimSuffix(strings.TrimPrefix(l, "--- "), "\t")), "a/")
 		case l == "+++ /dev/null":
 			newPath = ""
-		case strings.HasPrefix(l, "+++ b/"):
-			newPath = strings.TrimSuffix(strings.TrimPrefix(l, "+++ b/"), "\t")
+		case strings.HasPrefix(l, "+++ b/"), strings.HasPrefix(l, `+++ "b/`):
+			newPath = strings.TrimPrefix(unquoteGit(strings.TrimSuffix(strings.TrimPrefix(l, "+++ "), "\t")), "b/")
 		}
 	}
 	f.Path = cmp.Or(newPath, oldPath)
@@ -76,6 +77,52 @@ func parseFileDiff(text string) fileDiff {
 		f.OldPath = oldPath
 	}
 	return f
+}
+
+// unquoteGit is s with git's C-style quoting undone: git quotes a path
+// that holds a quote, a backslash, a control character or, by default, a
+// byte above 0x7f. An unquoted s is returned as it is.
+func unquoteGit(s string) string {
+	if !strings.HasPrefix(s, `"`) {
+		return s
+	}
+	if u, err := strconv.Unquote(s); err == nil {
+		return u
+	}
+	return s
+}
+
+// gitHeaderPaths are the old and new path of a "diff --git" line's
+// remainder. Of an unquoted header whose paths differ the first " b/" cut
+// is a guess that a rename line corrects; one whose two paths are equal
+// is found exactly, even where the path holds " b/".
+func gitHeaderPaths(rest string) (oldPath, newPath string) {
+	if strings.HasPrefix(rest, `"`) {
+		end := 1
+		for end < len(rest) && rest[end] != '"' {
+			if rest[end] == '\\' {
+				end++
+			}
+			end++
+		}
+		if end >= len(rest) {
+			return "", ""
+		}
+		oldPath = strings.TrimPrefix(unquoteGit(rest[:end+1]), "a/")
+		return oldPath, strings.TrimPrefix(unquoteGit(strings.TrimPrefix(rest[end+1:], " ")), "b/")
+	}
+	if strings.HasPrefix(rest, "a/") {
+		for i := 0; i < len(rest); i++ {
+			if strings.HasPrefix(rest[i:], " b/") && rest[2:i] == rest[i+3:] {
+				return rest[2:i], rest[i+3:]
+			}
+		}
+	}
+	if a, b, ok := strings.Cut(rest, ` "b/`); ok {
+		return strings.TrimPrefix(a, "a/"), strings.TrimPrefix(unquoteGit(`"b/`+b), "b/")
+	}
+	a, b, _ := strings.Cut(rest, " b/")
+	return strings.TrimPrefix(a, "a/"), b
 }
 
 // packFiles fills chunks in order, each with files whose texts together

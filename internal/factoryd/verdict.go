@@ -1401,11 +1401,16 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 // The outcomes of a done plan's criteria gate run (EventCriteriaGateRun):
 // ran wrote what it could, cut ended without a verdict (timed out, the
 // sandbox lost or never started), no_room found the card's ceiling too
-// low to hold the gate reserve free.
+// low to hold the gate reserve free, pending left an invariant's required
+// checks still running: no attempt is spent, and while the newest record is
+// pending and the checks wait's bound has not passed since its since, a pass
+// reads only the head's checks and runs the gate when they conclude. Past
+// the bound the gate runs once more, and checks still running end it as ran.
 const (
-	gateDone   = "ran"
-	gateCut    = "cut"
-	gateNoRoom = "no_room"
+	gateDone    = "ran"
+	gateCut     = "cut"
+	gateNoRoom  = "no_room"
+	gatePending = "pending"
 	// gateStarted is the row written before a run; with no outcome after
 	// it and no run of the plan in this process, a restart or a lost
 	// write cut the attempt.
@@ -1434,13 +1439,45 @@ func gateRan(runs []Event, outcome string) bool {
 }
 
 // gateAttempts counts the attempts runs record: a run that started and
-// recorded no outcome, a restart's or a lost write's, was cut.
+// recorded no outcome, a restart's or a lost write's, was cut. An attempt
+// that is pending and has no other outcome is not spent.
 func gateAttempts(runs []Event) int {
-	seen := map[any]bool{}
+	seen, pending, ended := map[any]bool{}, map[any]bool{}, map[any]bool{}
 	for _, e := range runs {
-		seen[e.Detail["attempt"]] = true
+		a := e.Detail["attempt"]
+		seen[a] = true
+		switch e.Detail["outcome"] {
+		case gatePending:
+			pending[a] = true
+		case gateDone, gateCut, gateNoRoom:
+			ended[a] = true
+		}
 	}
-	return len(seen)
+	n := 0
+	for a := range seen {
+		if !pending[a] || ended[a] {
+			n++
+		}
+	}
+	return n
+}
+
+// gatePendingSince is when the checks first read pending: the since of the
+// newest pending record of runs, zero when a record of an outcome (ran, cut
+// or no_room) is newer or there is none. A started record after it, a
+// restart's, does not renew it.
+func gatePendingSince(runs []Event) time.Time {
+	for _, e := range runs {
+		switch e.Detail["outcome"] {
+		case gatePending:
+			since, _ := e.Detail["since"].(string)
+			t, _ := time.Parse(time.RFC3339, since)
+			return t
+		case gateDone, gateCut, gateNoRoom:
+			return time.Time{}
+		}
+	}
+	return time.Time{}
 }
 
 // gateDue tells whether the criteria gate is still to run for plan id on
@@ -1575,6 +1612,18 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 		return
 	}
 	v := r.cfg.Policy()
+	since := gatePendingSince(runs)
+	expired := !since.IsZero() && r.Clock().Sub(since) > v.ChecksBound(plan.Repository)
+	if !since.IsZero() && !expired {
+		checks, err := r.HeadChecks(ctx, integration.ID, pr.HeadSHA)
+		if err != nil {
+			log.Printf("plan %s: the criteria gate's checks: %s", id, r.Scrub.String(err.Error()))
+			return
+		}
+		if checks.State == ChecksPending {
+			return
+		}
+	}
 	_, project, _ := v.ProjectOf(plan.Repository)
 	if raise := policy.CeilMicro(v.Document.Limits.GateReserve() - integration.Left()); raise > 0 {
 		_, _, err := r.store.FundCard(ctx, integration.ID, raise, CardCeiling(v.Document, project), Event{Repository: integration.Repository, TaskID: integration.ID, IssueNumber: integration.IssueNumber,
@@ -1613,12 +1662,24 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 	}
 	gctx, cancel := context.WithTimeout(rctx, criteriaGateBound)
 	defer cancel()
-	res, err := gate(gctx, integration.ID, integration.PRNumber, pr.HeadSHA)
+	res, err := gate(gctx, integration.ID, integration.PRNumber, pr.HeadSHA, "")
 	if err != nil {
 		log.Printf("plan %s: the criteria gate: %s", id, r.Scrub.String(err.Error()))
 	}
 	if err != nil || res.Escalate != "" {
 		record(gateCut, pr.HeadSHA)
+		return
+	}
+	if res.Pending {
+		var d map[string]any
+		if expired {
+			d = detail(gateDone, pr.HeadSHA)
+			d["reason"] = "The required checks were still running on " + pr.HeadSHA[:min(8, len(pr.HeadSHA))] + " after " + minutesWord(v.ChecksBound(plan.Repository))
+		} else {
+			d = detail(gatePending, pr.HeadSHA)
+			d["since"] = cmp.Or(since, r.Clock()).UTC().Format(time.RFC3339)
+		}
+		r.timeline.recordEvent(rctx, id, EventCriteriaGateRun, d)
 		return
 	}
 	record(gateDone, pr.HeadSHA)
@@ -1740,6 +1801,11 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 		}
 		if gateRan(runs, gateNoRoom) {
 			parts = append(parts, "the card's ceiling left no room for the gate")
+		}
+		if len(runs) > 0 {
+			if reason, _ := runs[0].Detail["reason"].(string); reason != "" {
+				parts = append(parts, reason)
+			}
 		}
 	}
 	why := strings.Join(parts, ". ")
