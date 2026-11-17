@@ -154,6 +154,26 @@ func TestNoFaceHoldsARawStopReason(t *testing.T) {
 	}
 }
 
+// A stop on starts that never reached the model counts them as starts on
+// the whole face: the ask, the why and the story count no sessions but the
+// money line's.
+func TestAStopOnStartsCountsNoSessions(t *testing.T) {
+	want := map[factoryd.CaseKind][2]string{
+		factoryd.CasePodNeverStarted: {"No machine could start the card's session. Try again, or end the card?",
+			"Several starts in a row waited for a machine with room, and no agent ran."},
+		factoryd.CaseProviderRefused: {"The model provider refused the card's last starts. Try again, or switch the model?",
+			"The provider turned down the first call of several starts in a row."},
+		factoryd.CaseNoAnswer: {"The model gave no answer to the card's last starts. Try again, or switch the model?",
+			"Several starts in a row ended without an answer from the model."},
+	}
+	for kind, w := range want {
+		x := fixture(t, "case", string(kind))
+		if x.face.Ask != w[0] || x.face.Why != w[1] {
+			t.Errorf("%s: %q / %q, want %q / %q", kind, x.face.Ask, x.face.Why, w[0], w[1])
+		}
+	}
+}
+
 // A plan's wait on its failed card tells the plan's story: the plan it
 // plans, its sessions and the card it waits for, and its cards still to
 // merge.
