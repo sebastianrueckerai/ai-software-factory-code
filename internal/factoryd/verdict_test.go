@@ -3042,7 +3042,7 @@ func TestCriteriaGatePassEndsPendingChecksPastTheBound(t *testing.T) {
 		t.Fatalf("calls %d, outcomes %v; want the gate run once more and ran on attempt 1", *calls, gateOutcomes(s))
 	}
 	last := s.events[len(s.events)-1]
-	if last.Detail["reason"] != "the required checks were still running on h9 after the bound" {
+	if last.Detail["reason"] != "The required checks were still running on h9 after 50 minutes" {
 		t.Fatalf("the ran record's detail = %v", last.Detail)
 	}
 	r.CriteriaPass(ctx)
@@ -3050,7 +3050,7 @@ func TestCriteriaGatePassEndsPendingChecksPastTheBound(t *testing.T) {
 	if len(pending) != 1 || pending[0].Kind != ApprovalCriteriaRerun {
 		t.Fatalf("pending asks = %+v, want the one criteria_rerun ask", pending)
 	}
-	if want := "criteria never judged: the criteria gate has not settled c1, c3. the required checks were still running on h9 after the bound"; !strings.HasPrefix(pending[0].Reason, want) {
+	if want := "criteria never judged: the criteria gate has not settled c1, c3. The required checks were still running on h9 after 50 minutes"; !strings.HasPrefix(pending[0].Reason, want) {
 		t.Fatalf("ask reason = %q, want it to start with %q", pending[0].Reason, want)
 	}
 	sweep(ctx, r)

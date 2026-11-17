@@ -1674,7 +1674,7 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 		var d map[string]any
 		if expired {
 			d = detail(gateDone, pr.HeadSHA)
-			d["reason"] = "the required checks were still running on " + pr.HeadSHA[:min(8, len(pr.HeadSHA))] + " after the bound"
+			d["reason"] = "The required checks were still running on " + pr.HeadSHA[:min(8, len(pr.HeadSHA))] + " after " + minutesWord(v.ChecksBound(plan.Repository))
 		} else {
 			d = detail(gatePending, pr.HeadSHA)
 			d["since"] = cmp.Or(since, r.Clock()).UTC().Format(time.RFC3339)
