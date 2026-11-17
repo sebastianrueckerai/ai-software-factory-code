@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strconv"
@@ -90,6 +90,9 @@ func (proofStore) ProjectByRepository(_ context.Context, repository string) (fac
 	return factoryd.Project{Name: "sf-code", Repository: repository, File: true, Objects: policy.ObjectsSeed}, true, nil
 }
 
+// proofGitBase is proofRunner's git base.
+const proofGitBase = "http://forgejo.forgejo.svc.cluster.local:3000"
+
 // proofRunner wires the real Runner over the real store, its timeline
 // recording beside it, the scripted Forgejo and the completion of
 // production, over the kube the test hands it.
@@ -104,7 +107,7 @@ func proofRunner(t *testing.T, s *factoryd.PGStore, fj string, objects *accObjec
 	cfg := factoryd.RunnerConfig{
 		AgentNamespacePrefix: "factory-agents-", WorkerImage: "reg/worker@sha256:abc",
 		SandboxBaseImage: "reg/sandbox-base@sha256:bcd", RegistryHost: "store.test", FactoryNamespace: "factory",
-		GatewayURL: "http://gateway.factory.svc.cluster.local:8081", GitBaseURL: "http://forgejo.forgejo.svc.cluster.local:3000",
+		GatewayURL: "http://gateway.factory.svc.cluster.local:8081", GitBaseURL: proofGitBase,
 		Models:       factoryd.ModelLadder{Start: "factory/small", Stronger: "factory/big"},
 		AnswerTokens: 8192, HeadroomTokens: 16384, ChecksPoll: time.Millisecond,
 		EgressCanary: "example.com:443", EgressDirectIP: "192.0.2.7:443",
@@ -187,30 +190,33 @@ func (k *proofKube) PodLog(context.Context, string, string) (io.ReadCloser, erro
 	return io.NopCloser(strings.NewReader(k.log)), nil
 }
 
-// proofWorker is the worker's message endpoint on the port the runner
-// posts to: it takes the proofs list under its bearer and records it.
+// proofWorker is the worker's message endpoint: it takes the proofs list
+// under its bearer and records it.
 type proofWorker struct {
 	mu    sync.Mutex
 	lists []string
 	auth  []string
 }
 
-func (w *proofWorker) start(t *testing.T) {
+// start serves the worker on a free port and points r's posts at it.
+func (w *proofWorker) start(t *testing.T, r *factoryd.Runner) {
 	t.Helper()
-	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(workerharness.MessagePort)))
-	if err != nil {
-		t.Fatalf("listen on the worker's message port: %v", err)
-	}
-	srv := &http.Server{Handler: http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
+	u, err := url.Parse(serve(t, http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		body, _ := io.ReadAll(req.Body)
 		w.mu.Lock()
 		w.lists = append(w.lists, string(body))
-		w.auth = append(w.auth, r.Header.Get("Authorization"))
+		w.auth = append(w.auth, req.Header.Get("Authorization"))
 		w.mu.Unlock()
 		rw.WriteHeader(http.StatusNoContent)
-	})}
-	go func() { _ = srv.Serve(ln) }()
-	t.Cleanup(func() { _ = srv.Close() })
+	})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.SetTestEndpoints(port, proofGitBase)
 }
 
 // proofJunit is a JUnit report as the worker returns it: gzipped.
@@ -345,7 +351,7 @@ func TestGateRunsCarriedTest(t *testing.T) {
 			fj := &proofForgejo{}
 			r := proofRunner(t, s, serve(t, fj), &accObjects{files: map[string][]byte{}}, kube)
 			worker := &proofWorker{}
-			worker.start(t)
+			worker.start(t, r)
 			res, err := r.GateCriteria(ctx, "t-int", 9, "c1", "")
 			if err != nil {
 				t.Fatal(err)
