@@ -2221,6 +2221,8 @@ func TestLoadEnvCodingSessionCarriesNoWritingGuide(t *testing.T) {
 // diff against the merge base with main, the main its push bills from: after
 // the session merges main (m.txt's 4 lines), that main. Measured from the
 // start's m0 instead, the merged session's card would be 3 files and 9 lines.
+// The agent plants a ref to a missing object in the checkpoint store, which
+// fails any git that lists the store's refs.
 func TestCheckpointCarriesTheCardDiffAcrossSessions(t *testing.T) {
 	for _, tc := range []struct {
 		name                 string
@@ -2282,6 +2284,7 @@ func TestCheckpointCarriesTheCardDiffAcrossSessions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			os.WriteFile(filepath.Join(ck.store, ".git", "refs", "heads", "x"), []byte(strings.Repeat("1", 40)+"\n"), 0o644)
 			if tc.merge {
 				run("-C", dir, "merge", "-q", "--no-edit", "origin/main")
 			}

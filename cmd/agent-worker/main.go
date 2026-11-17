@@ -684,10 +684,12 @@ func authHeader(token string) string {
 }
 
 // safeGit is prepended to every worker git command: agent-planted hooks and
-// fsmonitor never run. "-c" reaches nested gits through GIT_CONFIG_PARAMETERS,
-// except upload-pack on a local fetch: git clears that variable for it, so
-// uploadPack puts the flags on its command line.
-var safeGit = []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
+// fsmonitor never run, and no git runs in a repository's alternate to list
+// its refs, under the alternate's own config and without these flags.
+// "-c" reaches nested gits through GIT_CONFIG_PARAMETERS, except upload-pack
+// on a local fetch: git clears that variable for it, so uploadPack puts the
+// flags on its command line.
+var safeGit = []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.alternateRefsCommand=true"}
 
 var uploadPack = "--upload-pack=git " + strings.Join(safeGit, " ") + " upload-pack"
 
@@ -1419,14 +1421,16 @@ type diffStat struct{ Files, Insertions, Deletions int }
 
 // checkpointer measures the agent's diff against the base commit for the
 // supervisor's churn detector and progress digest. Like the push path it
-// never runs git with the agent repo as its repository: store holds the
-// base objects, fetched before the agent starts, and no git runs in it
-// after that, for the agent could have written its config. Every
-// measurement fetches the agent's HEAD the push's way into a fresh repo of
-// the worker's own that borrows those objects, and indexes the agent's
-// work tree there. Hooks and fsmonitor are off, diffs run without
-// external diff or textconv, system and global config are ignored, and
-// no token is in the environment. The agent runs under the same uid and
+// never runs git with the agent repo as its repository. store holds the
+// base and main objects, fetched before the agent starts; no git runs in it
+// after that, for the agent can write to it. Every measurement makes a
+// fresh repo of the worker's own that borrows the store's objects, and any
+// the agent adds to the store's alternates, but never its refs or config:
+// its own refs name base and main, and safeGit keeps git from listing an
+// alternate's refs. It fetches the agent's HEAD there the push's way and
+// indexes the agent's work tree. Hooks and fsmonitor are off, diffs run
+// without external diff or textconv, system and global config are ignored,
+// and no token is in the environment. The agent runs under the same uid and
 // could still write to a fresh repo while it exists; what it could plant
 // there runs with the rights it already has.
 type checkpointer struct {
@@ -1544,6 +1548,12 @@ func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch 
 // merges main, the agent's own lines since its fork are the card's; with
 // no fork or no HEAD to read, the work tree's against the start's main.
 func (c *checkpointer) cardTrees(ctx context.Context, run func(context.Context, string, []string, ...string) (string, error), tmp, tree string) (from, to string) {
+	// the fetch's haves, so only the agent's new objects transfer
+	for ref, id := range map[string]string{"refs/heads/base": c.base, "refs/heads/main": c.main} {
+		if _, err := run(ctx, tmp, nil, "update-ref", ref, id); err != nil {
+			return c.fork, tree
+		}
+	}
 	if _, err := run(ctx, tmp, nil, "fetch", "-q", "--no-tags", uploadPack, c.work, "+HEAD:refs/heads/agent"); err != nil {
 		return c.fork, tree
 	}
