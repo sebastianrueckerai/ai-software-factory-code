@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
