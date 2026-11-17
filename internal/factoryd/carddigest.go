@@ -36,18 +36,23 @@ type CardDigest struct {
 	// the steps of the card's live cases, and at is when the digest was
 	// built, the time its waits are aged to. A running card's lastCallAt
 	// is its newest model call's time, and its retryDue the time the
-	// newest provider_refused line's backoff ends. cases are the card's
+	// newest provider_refused line's backoff ends. refusedAt and
+	// refusedBackoff are that line's time and backoff, and freezes the
+	// card's provider-limit freezes (freezeSpans). cases are the card's
 	// cases, issueCloses whether Finish closes the issue of the card's end
 	// (finishClosesIssue), and issueClosed whether its events hold its
 	// issue's close, which the webhook records on an ended card.
-	lastStep    string
-	caseSteps   []CaseStep
-	at          time.Time
-	lastCallAt  time.Time
-	retryDue    time.Time
-	cases       []Case
-	issueCloses bool
-	issueClosed bool
+	lastStep       string
+	caseSteps      []CaseStep
+	at             time.Time
+	lastCallAt     time.Time
+	retryDue       time.Time
+	refusedAt      time.Time
+	refusedBackoff time.Duration
+	freezes        []freezeSpan
+	cases          []Case
+	issueCloses    bool
+	issueClosed    bool
 }
 
 // DigestHead is where the card stands: its issue, its plan's issue and
@@ -263,9 +268,12 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 			return CardDigest{}, err
 		}
 		if refused := newestLine(rows.timeline, StepProviderRefused); !refused.Time.IsZero() {
-			d.retryDue = refused.Time.Add(time.Duration(refused.BackoffS * float64(time.Second)))
+			d.refusedAt = refused.Time
+			d.refusedBackoff = time.Duration(refused.BackoffS * float64(time.Second))
+			d.retryDue = refused.Time.Add(d.refusedBackoff)
 		}
 	}
+	d.freezes = freezeSpans(rows.timeline)
 	var unproven []string
 	if t.Gate == GateApproval {
 		for _, c := range neverJudged(Plan{Criteria: rows.criteria}, rows.verdicts) {

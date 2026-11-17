@@ -908,7 +908,15 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	case convCallCap:
 		return stop(CheckCallCap, checkinCapStop(checkinCallCapStop, fmt.Sprintf("%d calls", callsLeft)))
 	case convRefused:
-		rec.Decision, rec.Reason = CheckHandover, CheckinRefusedReason+end.Detail
+		rec.Decision = CheckHandover
+		if at, frozen := providerLimitUntil(end.Err); frozen {
+			// the class is frozen: the check-in did not run, and the
+			// record says so instead of the refusal's own words, so no
+			// flag rises on a known block
+			rec.Reason = CheckinFrozenReason + at.UTC().Format("15:04") + " UTC"
+		} else {
+			rec.Reason = CheckinRefusedReason + end.Detail
+		}
 		return CheckInOutcome{Decision: CheckHandover, Record: rec}
 	case convUnreadable:
 		return stop(CheckUnreadable, "check-in answer unreadable: "+end.Detail)
@@ -919,6 +927,12 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 // CheckinRefusedReason opens the reason of a check-in whose every call the
 // provider refused.
 const CheckinRefusedReason = "check-in calls refused: "
+
+// CheckinFrozenReason opens the reason of a check-in the class's freeze
+// stopped before its first call: the record names the reset instead of the
+// refusal's words, and the digest raises no flag on it (checkinStep marks
+// only a CheckinRefusedReason refused).
+const CheckinFrozenReason = "not run, the class is frozen until "
 
 // conversation is one forced-call conversation: the persona, the
 // statement that opens it, the evidence tools every call posts beside the
@@ -951,10 +965,13 @@ const (
 
 // convEnd is how a conversation ended. Detail is the scrubbed text of the
 // last refusal or parse error, Refusals every parse error in order, and
-// Evidence the evidence calls among Calls.
+// Evidence the evidence calls among Calls. Err is the last call's own
+// error, unscrubbed, when the end is a refusal: it carries the refusal's
+// chain, whose named limit's reset the frozen record reads.
 type convEnd struct {
 	Kind           convKind
 	Detail         string
+	Err            error
 	Refusals       []string
 	Calls          []CheckCall
 	Evidence       []CheckCall
@@ -993,8 +1010,11 @@ func converse(ctx context.Context, chat checkinChat, tools podTools, taskID, ali
 	}
 	conv := c.Statement + dueLine()
 	end.StatementBytes = len(conv)
-	finish := func(k convKind, detail string) convEnd {
+	finish := func(k convKind, detail string, errs ...error) convEnd {
 		end.Kind, end.Detail = k, detail
+		if len(errs) > 0 {
+			end.Err = errs[0]
+		}
 		return end
 	}
 
@@ -1033,7 +1053,7 @@ func converse(ctx context.Context, chat checkinChat, tools podTools, taskID, ali
 			if !last && ctx.Err() == nil && !time.Now().Before(due()) {
 				continue // the evidence call ran into the answer's reserve
 			}
-			return finish(convRefused, oneLine(c.Scrub(err.Error())))
+			return finish(convRefused, oneLine(c.Scrub(err.Error())), err)
 		}
 		answer := resp.Text
 		if resp.ToolName != "" {
@@ -1216,9 +1236,11 @@ func (g *checkinGateway) Call(ctx context.Context, taskID, alias string, in Chec
 			Error struct {
 				Message string `json:"message"`
 			} `json:"error"`
+			Reset string `json:"reset"`
 		}
 		if d := res.Header.Get(gateway.HeaderDecision); d != "" && json.Unmarshal(raw, &refused) == nil {
-			return CheckinResponse{}, fmt.Errorf("gateway %s: %w", d, &policy.Refusal{Decision: d, Reason: refused.Error.Message})
+			until, _ := time.Parse(time.RFC3339, refused.Reset)
+			return CheckinResponse{}, fmt.Errorf("gateway %s: %w", d, &policy.Refusal{Decision: d, Reason: refused.Error.Message, Until: until})
 		}
 		return CheckinResponse{}, fmt.Errorf("status %d: %s", res.StatusCode, textutil.Truncate(string(bytes.TrimSpace(raw)), 300))
 	}

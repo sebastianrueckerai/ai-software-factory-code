@@ -5241,3 +5241,117 @@ func TestLandsAgainSessionClonesTheSalvage(t *testing.T) {
 		})
 	}
 }
+
+// metRig is plan t-plan, done, whose round-2 card a (issue 31) ended
+// failed and, when end is not empty, was cut into a successor of status
+// end (issue 33), with the round-2 plan whose card d depends on a: the
+// state of a delta card filed on a key its successor carried on.
+func metRig(t *testing.T, end string) (*Runner, *fakeStore, *planForgejo, func(revision int) Task) {
+	t.Helper()
+	ctx := context.Background()
+	pinned := fixtureVersion(t)
+	r, store, _, fj := newPlanRunner(t, testPlan())
+	r.cfg.Policy = func() policy.Version { return pinned }
+	r.cfg.Workflows = &fakeWorkflows{}
+	plan := store.tasks["t-plan"]
+	plan.Status = "done"
+	store.tasks["t-plan"] = plan
+	card := func(id, source, status string, issue int64) Task {
+		return Task{ID: id, Kind: "agent", Track: policy.TrackDirect, Source: source, Parent: "t-plan", PlanKey: "a",
+			Repository: "linkshort/linkshort", IssueNumber: issue, SHA: "b0", Status: status, PlanRevision: 1}
+	}
+	if err := store.CreateTask(ctx, card("t-a", SourcePlan, "failed", 31)); err != nil {
+		t.Fatal(err)
+	}
+	if end != "" {
+		store.tasks[SuccessorID("t-a")] = card(SuccessorID("t-a"), SourceSuccessor, end, 33)
+	}
+	p := Plan{Summary: "delta", Round: 2, Cards: []PlanCard{
+		{Key: "a", Role: RoleFeature, Title: "A", Brief: "A.", Size: "small", Round: 2, Acceptance: []PlanItem{{Text: "a works"}}},
+		{Key: "d", Role: RoleFeature, Title: "D", Brief: "D.", Size: "small", Round: 2, DependsOn: []string{"a"}, Acceptance: []PlanItem{{Text: "d works"}}},
+	}}
+	file := func(revision int) Task {
+		t.Helper()
+		plan, repo, err := r.task(ctx, "t-plan")
+		if err != nil {
+			t.Fatal(err)
+		}
+		old, err := r.oldCards(ctx, plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cards, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", p, FactoryDecider, true, revision, "", old)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cards[1].PlanKey != "d" {
+			t.Fatalf("cards = %+v", cards)
+		}
+		return cards[1]
+	}
+	return r, store, fj, file
+}
+
+// A dependency whose card failed and was cut into a successor that
+// delivered the work, done or merged, is met: d gets no edge and no
+// Forgejo dependency, its issue names the successor, it is admitted and
+// waits on nothing, the impasse pass leaves the plan done, and a refile
+// of a later revision adds nothing either.
+func TestFileChildrenMeetsADependencyItsSuccessorDelivered(t *testing.T) {
+	for _, end := range []string{"done", "merged"} {
+		t.Run(end, func(t *testing.T) {
+			ctx := context.Background()
+			r, store, fj, file := metRig(t, end)
+			var d Task
+			for revision := 2; revision <= 3; revision++ {
+				d = file(revision)
+				if got := store.deps[d.ID]; len(got) != 0 {
+					t.Errorf("revision %d: task_deps of d = %v, want none", revision, got)
+				}
+				if got := fj.issues[d.IssueNumber].deps; len(got) != 0 {
+					t.Errorf("revision %d: d's Forgejo dependencies = %v, want none", revision, got)
+				}
+			}
+			if body := fj.issues[d.IssueNumber].body; !strings.Contains(body, "\nDepends on: #31 (a, delivered by #33)\n") {
+				t.Errorf("d's issue does not name the successor that delivered a:\n%s", body)
+			}
+			if why, err := admissionWait(ctx, store, policy.Tree{}, time.Now(), d); err != nil || why != "" {
+				t.Errorf("admission = %q, %v; want no wait", why, err)
+			}
+			if st, err := r.Dependencies(ctx, d.ID); err != nil || !reflect.DeepEqual(st, DepState{}) {
+				t.Errorf("d's dependencies = %+v, %v; want none to wait on", st, err)
+			}
+			r.ImpassePass(ctx)
+			if got := replanSteps(t, r, "t-plan"); len(got) != 0 {
+				t.Errorf("the plan's replan steps %+v, want none", got)
+			}
+			if got := reopens(r); len(got) != 0 || store.tasks["t-plan"].Status != "done" {
+				t.Errorf("reopens %+v, plan %s; want the plan left done", got, store.tasks["t-plan"].Status)
+			}
+		})
+	}
+}
+
+// A dependency whose card has no successor, or whose chain ends failed,
+// closed or still running, keeps its edge on the plan card: d waits on
+// #31, and its issue names #31 alone.
+func TestFileChildrenKeepsTheEdgeOfAnUndeliveredDependency(t *testing.T) {
+	for _, end := range []string{"", "failed", "closed", "running"} {
+		t.Run(cmp.Or(end, "no successor"), func(t *testing.T) {
+			_, store, fj, file := metRig(t, end)
+			d := file(2)
+			if got := store.deps[d.ID]; !slices.Equal(got, []string{"t-a"}) {
+				t.Errorf("task_deps of d = %v, want [t-a]", got)
+			}
+			if got := fj.issues[d.IssueNumber].deps; !slices.Equal(got, []int64{31}) {
+				t.Errorf("d's Forgejo dependencies = %v, want [31]", got)
+			}
+			if body := fj.issues[d.IssueNumber].body; !strings.Contains(body, "\nDepends on: #31 (a)\n") {
+				t.Errorf("d's issue does not name #31 alone:\n%s", body)
+			}
+			if why, err := admissionWait(context.Background(), store, policy.Tree{}, time.Now(), d); err != nil || why != "waits on #31" {
+				t.Errorf("admission = %q, %v; want waits on #31", why, err)
+			}
+		})
+	}
+}

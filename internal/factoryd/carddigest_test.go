@@ -1468,6 +1468,64 @@ func TestProviderBackoffAgesFromTheDueRetry(t *testing.T) {
 	}
 }
 
+// A named provider limit freezes the card for the interval its
+// provider_refused line's BackoffS names — 3 h 12 m into the stage a
+// refusal with a reset 6 h 48 m out, held ten hours in all: the owned
+// wait reads provider_limit since the refusal for the whole interval,
+// never run_quiet, with no per-card bound, and a check-in the limit
+// refused and a session that emptied a grant inside the interval flag
+// nothing. Past the reset the ladder's provider_backoff row is back, and
+// a check-in the provider refused outside the interval flags again.
+func TestDigestQuietInsideFreeze(t *testing.T) {
+	g := newDigestRig(nil)
+	g.event(150, EventSessionGranted, "sebastian", map[string]any{"sessions": 1})
+	g.session(t, 180, 192, 1, string(OutcomeProviderRefused))
+	g.line(t, 192, StepProviderRefused, map[string]any{"status": 429, "reason": "provider limit for class big",
+		"backoff_s": 24480, "words": "rate limit exceeded, resets at 17:04:50 UTC"})
+	g.line(t, 300, "checkin", map[string]any{"moment": "gate", "decision": "handover", "reason": CheckinRefusedReason + "class frozen"})
+	for _, at := range []int{193, 300, 420, 599} {
+		g.at(at)
+		d := g.digest(t)
+		if w, ok := d.ownedWait(); !ok || w != (ownedWait{"provider_limit", 0, digestAt(192)}) {
+			t.Fatalf("at +%d: ownedWait = %+v, %t; want provider_limit since +3:12", at, w, ok)
+		}
+		if len(d.Flags) != 0 {
+			t.Fatalf("at +%d: Flags = %v, want none inside the freeze", at, d.Flags)
+		}
+	}
+	g.line(t, 610, "checkin", map[string]any{"moment": "gate", "decision": "handover", "reason": CheckinRefusedReason + "overloaded"})
+	g.at(620)
+	d := g.digest(t)
+	if w, ok := d.ownedWait(); !ok || w != (ownedWait{"provider_backoff", 0, digestAt(600)}) {
+		t.Fatalf("past the reset: ownedWait = %+v, %t; want the ladder's provider_backoff", w, ok)
+	}
+	if want := []DigestFlag{{"checkin_refused", "+10:10"}}; !slices.Equal(d.Flags, want) {
+		t.Fatalf("past the reset: Flags = %v, want the check-in outside the freeze to flag: %v", d.Flags, want)
+	}
+}
+
+// A check-in the provider refused before the freeze arms still flags:
+// suppression is scoped to the freeze's interval, and a check-in stands
+// at its moment, not a span. The same life's newest session — no step
+// after it — is emptied by the freeze, and its grant buys nothing
+// without a push flags not: the limit bought the quiet, not the grant.
+func TestCheckinRefusedBeforeTheFreezeFlags(t *testing.T) {
+	g := newDigestRig(nil)
+	g.event(150, EventSessionGranted, "sebastian", map[string]any{"sessions": 1})
+	g.line(t, 160, "checkin", map[string]any{"moment": "gate", "decision": "handover", "reason": CheckinRefusedReason + "overloaded"})
+	g.session(t, 180, 192, 1, string(OutcomeProviderRefused))
+	g.line(t, 192, StepProviderRefused, map[string]any{"status": 429, "reason": "provider limit for class big",
+		"backoff_s": 24480, "words": "rate limit exceeded, resets at 17:04:50 UTC"})
+	g.at(300)
+	d := g.digest(t)
+	if w, ok := d.ownedWait(); !ok || w != (ownedWait{"provider_limit", 0, digestAt(192)}) {
+		t.Fatalf("ownedWait = %+v, %t; want provider_limit since +3:12", w, ok)
+	}
+	if want := []DigestFlag{{"checkin_refused", "+2:40"}}; !slices.Equal(d.Flags, want) {
+		t.Fatalf("Flags = %v, want the check-in before the freeze to flag and the emptied session to flag nothing: %v", d.Flags, want)
+	}
+}
+
 // A skipped stage's timeline line also writes its events row, which the
 // approval rule reads to leave the stage out.
 func TestSkippedStageWritesItsEventRow(t *testing.T) {

@@ -1803,6 +1803,54 @@ func TestPlanCloseOffMainTakesAnInvariantTheGateMet(t *testing.T) {
 	}
 }
 
+// A plan whose integration card ended closed closes once a delta card of the
+// plan, done or merged, stands and the gate met every criterion on its rows;
+// a merged card a later revision dropped is no delta card and closes nothing.
+func TestPlanCloseTakesADeltaCardTheGateMet(t *testing.T) {
+	ctx := context.Background()
+	key := deltaKey("t-plan", 1, []PlanCatch{{Detail: "c1 grant 9"}})
+	for _, tc := range []struct {
+		name, planKey, status string
+		closes                int
+	}{
+		{"delta done", key, "done", 1},
+		{"delta merged", key, "merged", 1},
+		{"dropped card merged", "dropped", "merged", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := seedVerdictPlan(t, "t-plan", "t-int", "closed")
+			s.tasks["t-extra"] = Task{ID: "t-extra", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: tc.planKey, Status: tc.status}
+			for _, row := range []CriterionVerdict{
+				{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+				{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},
+				{Criterion: "c3", Verdict: "met", Kind: CriterionInvariant},
+			} {
+				if err := s.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceGate, FactoryDecider, []CriterionVerdict{row}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteriaRerun, TaskID: "t-plan", Project: "sf/code", Spec: json.RawMessage(`{}`), Reason: "never judged"}); err != nil {
+				t.Fatal(err)
+			}
+			objs := &fakeObjectStore{}
+			r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: objs, Events: s, Store: s}}
+			r.CriteriaPass(ctx)
+			body, _ := objs.Get(ctx, "sessions/t-plan/timeline.jsonl")
+			if got := strings.Count(string(body), `"event":"`+EventPlanClosed+`"`); got != tc.closes {
+				t.Fatalf("plan_closed recorded %d times, want %d", got, tc.closes)
+			}
+			pending, _ := s.ApprovalRequests(ctx, "pending")
+			approved, _ := s.ApprovalRequests(ctx, "approved")
+			if tc.closes == 1 && (len(pending) != 0 || len(approved) != 1 || approved[0].Kind != ApprovalCriteriaRerun) {
+				t.Fatalf("pending %+v approved %+v, want the rerun request approved", pending, approved)
+			}
+			if tc.closes == 0 && len(pending) != 1 {
+				t.Fatalf("pending %+v, want the request left standing", pending)
+			}
+		})
+	}
+}
+
 // gatePlan seeds a done plan whose integration card (pull request 9,
 // merged, its own ceiling 6.00) holds budget and spent, an approver's row on the human
 // criterion c2 and a runner whose gate is gate.

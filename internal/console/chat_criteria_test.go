@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -125,34 +124,6 @@ func TestChatGrantsTheCriteriaCardOnTheHumansWord(t *testing.T) {
 	}
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-plan", IssueNumber: 3,
 		Kind: factoryd.EventCriterionDecided, Detail: map[string]any{"approval": int64(30), "criteria": 2, "verb": "granted"}})
-}
-
-// On a criteria_rerun ask the chat's grant goes to Act, whose own refusal
-// (factoryd's TestActRefusesAGrantOnCriteriaNeverJudged) names the answers the
-// ask has; the console carries it and decides nothing.
-func TestChatGrantOnCriteriaNeverJudgedRefuses(t *testing.T) {
-	r, _, g := newChatRig(t)
-	verdictRig(r)
-	r.approvals.rows[len(r.approvals.rows)-1].Kind = factoryd.ApprovalCriteriaRerun
-	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
-	r.c.cfg.GrantCriteria = func(context.Context, string, string, int64) (int, error) {
-		t.Error("a grant on the criteria never judged reached GrantCriteria")
-		return 0, nil
-	}
-	const refusal = "Refused: this plan's ask is criteria never judged: grant_criteria grants no card and runs no review"
-	r.actErr = factoryd.ErrActRefused(strings.TrimPrefix(refusal, "Refused: "))
-	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "answer_criteria", `{"task_id":"t-plan","action":"grant"}`)}, {say("It cannot.")}}
-	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"grant the plan one more card"}})
-	if len(r.acted) != 1 || r.acted[0].Res.Action != factoryd.ActGrantCriteria {
-		t.Fatalf("Act took %+v, want one grant_criteria", r.acted)
-	}
-	equal(t, "stream", events, []string{
-		`tool {"arguments":{"task_id":"t-plan","action":"grant"},"duration_ms":0,"name":"answer_criteria","result":"` + refusal + `"}`,
-		`text {"text":"It cannot."}`, `done {}`})
-	if a := r.approvals.get(30); a.Status != "pending" {
-		t.Errorf("the refused grant left the request %+v", a)
-	}
 }
 
 // The chat confirms the delivered cards on the human's word: their line

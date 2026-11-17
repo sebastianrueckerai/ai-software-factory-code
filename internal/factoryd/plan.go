@@ -1243,19 +1243,23 @@ func cardFacts(c PlanCard, criteria []PlanCriterion) string {
 
 // cardBody is card c's issue body before its marker: card i of n of of
 // (plan #n), filed for author, with the issues of the cards it depends on
-// (deps, their keys by issue; a card not filed yet by its key alone), the
-// plan's criteria its items cite, and start, the line on the old card's
-// work it starts from, after the facts ("" for none). The integration
-// card carries the plan's spec (piece 7: its brief already does), spec
-// the rendered spec block or "".
+// (deps, their keys by issue; a card not filed yet by its key alone; a
+// met one with the successor that delivered it), the plan's criteria its
+// items cite, and start, the line on the old card's work it starts from,
+// after the facts ("" for none). The integration card carries the plan's
+// spec (piece 7: its brief already does), spec the rendered spec block or
+// "".
 func cardBody(c PlanCard, criteria []PlanCriterion, of string, i, n int, author string, deps []Dependency, spec, start string) string {
 	on := make([]string, 0, len(deps))
 	for _, d := range deps {
-		if d.Issue == 0 {
+		switch {
+		case d.Issue == 0:
 			on = append(on, d.Key)
-			continue
+		case d.DeliveredBy != 0:
+			on = append(on, fmt.Sprintf("#%d (%s, delivered by #%d)", d.Issue, d.Key, d.DeliveredBy))
+		default:
+			on = append(on, fmt.Sprintf("#%d (%s)", d.Issue, d.Key))
 		}
-		on = append(on, fmt.Sprintf("#%d (%s)", d.Issue, d.Key))
 	}
 	directories, facts, _ := strings.Cut(cardFacts(c, criteria), "\n")
 	body := fmt.Sprintf("Card %s of %s (%d of %d), filed for %s. Written by the planner.\n\n%s\n\n%s\nDepends on: %s\n%s",
@@ -3782,9 +3786,12 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 // issues found by their markers or filed,
 // records the edges in Forgejo and task_deps, then starts each under the
 // work bound, where a card waits for the cards it depends on (plans do not
-// nest: a plan's card is never a plan). approver authors the cards, with
-// writer as its standing: a plan's are its card's, whose spec an outside
-// account may have written; the cards in filing order. A card whose from
+// nest: a plan's card is never a plan). A card cut into successors whose
+// chain ends done or merged delivered its work: an edge on it is met, so
+// none is recorded, and the issue names the successor. approver authors
+// the cards, with writer as its standing: a plan's are its card's, whose
+// spec an outside account may have written; the cards in filing order. A
+// card whose from
 // names one of old, the plan's record (oldCards), starts from its work,
 // unless a row of its key started or ended: it files at the old card's
 // base, and its branch is the old card's before its issue exists; an old
@@ -3818,6 +3825,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 	}
 	fork := r.forgejo.Fork(repo)
 	cards := map[string]Task{}
+	on := map[string]Dependency{} // each key's dependency, read once
 	var all []webhookIssue
 	for i, c := range order {
 		if c.Round < p.Round {
@@ -3830,7 +3838,20 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		}
 		var deps []Dependency
 		for _, d := range dependsOn(order, edges, c.Key) {
-			deps = append(deps, Dependency{TaskID: cards[d].ID, Issue: cards[d].IssueNumber, Key: d})
+			dep, read := on[d]
+			if !read {
+				k := cards[d]
+				dep = Dependency{TaskID: k.ID, Issue: k.IssueNumber, Key: d}
+				end, ok, err := throughSuccessors(ctx, r.store, k)
+				if err != nil {
+					return nil, err
+				}
+				if ok && end.ID != k.ID && (end.Status == "done" || end.Status == "merged") {
+					dep.DeliveredBy = end.IssueNumber
+				}
+				on[d] = dep
+			}
+			deps = append(deps, dep)
 		}
 		title := r.untrusted(t, c.Title)
 		spec := ""
@@ -3944,11 +3965,13 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		}
 		// the card's dependencies are stored before its issue exists: the
 		// issue's label event can start it, and the start must find them
-		if len(deps) > 0 {
-			ids := make([]string, len(deps))
-			for j, d := range deps {
-				ids[j] = d.TaskID
+		var ids []string
+		for _, d := range deps {
+			if d.DeliveredBy == 0 {
+				ids = append(ids, d.TaskID)
 			}
+		}
+		if len(ids) > 0 {
 			if err := r.store.AddTaskDeps(ctx, card.ID, ids); err != nil {
 				return nil, err
 			}
@@ -3982,8 +4005,8 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			return nil, err
 		}
 		for _, d := range dependsOn(order, edges, c.Key) {
-			if dep := cards[d]; !dependsOnIssue(have, repo, dep.IssueNumber) {
-				if err := r.forgejo.AddIssueDependency(ctx, repo, child.IssueNumber, dep.IssueNumber); err != nil {
+			if dep := on[d]; dep.DeliveredBy == 0 && !dependsOnIssue(have, repo, dep.Issue) {
+				if err := r.forgejo.AddIssueDependency(ctx, repo, child.IssueNumber, dep.Issue); err != nil {
 					return nil, err
 				}
 			}
