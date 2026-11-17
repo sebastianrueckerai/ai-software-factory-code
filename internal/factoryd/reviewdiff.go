@@ -161,9 +161,9 @@ func diffParts(files []fileDiff, limit int) [][]fileDiff {
 }
 
 // RenameCounts are the case renames quietRenames turned into context, the
-// pairs and the files that held them, and the reads of a file at the head
-// that failed, the caller's to count: a file it cannot read keeps its
-// renames.
+// pairs and the files that held them, and the reads of a side of the diff
+// that failed, the caller's to count: a side it cannot read keeps every
+// rename.
 type RenameCounts struct {
 	Pairs       int `json:"pairs"`
 	Files       int `json:"files"`
@@ -179,67 +179,46 @@ var auditByPath = []string{"factory/", ".forgejo/", ".gitea/", ".github/"}
 // so the audit reads each rename once, where it is declared. A changed
 // block, a run of removed lines and a run of added lines of one length,
 // pairs its lines in order; a pair is a case rename when caseRenames finds
-// one, the added line stands at its line of head(path), the file at the
-// head (nil: unread), outside every literal and comment of more than one
-// line, which one diff line cannot show, and no other added line of a .go
-// file names a new spelling it brings. A pair that declares a renamed name
-// stays (identRoles); one that uses it is quiet only when a pair the diff
-// keeps declares the same rename where the use reaches it: a local in the
-// same file, a package-level name for a bare use, a field or method for a
-// selector, either for a composite literal's key, both in the same
-// directory. A hunk left with no change is dropped, and a file left with
-// no hunk unless its header holds more than its paths.
-func quietRenames(files []fileDiff, head func(path string) []byte) ([]fileDiff, RenameCounts) {
-	type use struct {
-		old, new string
-		role     identRole
-	}
+// one. read(base, dirs) is every .go file directly in dirs at the diff's
+// base or at its head, nil when unread. A pair that declares a renamed
+// name stays. A pair of uses is quiet only when each renamed identifier,
+// read in its package type-checked at either side (checkGo), denotes at
+// the base the object a declaration pair renames and at the head that
+// object renamed, found past the package's own types alone (knownPath):
+// no other object can be the one either spelling names, wherever its
+// twin stands. Each line must stand at its line of its side. A hunk left
+// with no change is dropped, and a file left with no hunk unless its
+// header holds more than its paths.
+func quietRenames(files []fileDiff, read func(base bool, dirs []string) map[string][]byte) ([]fileDiff, RenameCounts) {
 	type block struct {
-		at, n, newLine int // the first removed line's index, the run's length, the first added line's line in the new file
-		renames        [][]caseRename
-		uses           [][]use // a pair's renames that it uses and declares none of; nil: not quiet
-	}
-	type decl struct {
-		old, new, scope string
-		role            identRole
+		at, n, oldLine, newLine int // the first removed line's index, the run's length, the first removed and added lines' lines
+		renames                 [][]caseRename
 	}
 	blocks := make([][]block, len(files))
-	named := map[string]bool{}
-	name := func(l string) {
-		ids := identsAt(lineBody(l))
-		if ids == nil {
-			for _, w := range goWord.FindAllString(l, -1) {
-				named[w] = true
-			}
-		}
-		for _, id := range ids {
-			named[id] = true
-		}
-	}
+	var headDirs, baseDirs []string
 	for i, f := range files {
-		if !strings.HasSuffix(f.Path, ".go") {
+		if !strings.HasSuffix(f.Path, ".go") || f.OldPath != "" && !strings.HasSuffix(f.OldPath, ".go") ||
+			slices.ContainsFunc(auditByPath, func(p string) bool { return strings.HasPrefix(f.Path, p) || strings.HasPrefix(f.OldPath, p) }) {
 			continue
 		}
-		renames := (f.OldPath == "" || strings.HasSuffix(f.OldPath, ".go")) && !slices.ContainsFunc(auditByPath, func(p string) bool {
-			return strings.HasPrefix(f.Path, p) || strings.HasPrefix(f.OldPath, p)
-		})
 		lines := strings.SplitAfter(f.Text, "\n")
-		newLine := -1
+		oldLine, newLine := -1, -1
 		for k := 0; k < len(lines); k++ {
 			l := lines[k]
 			switch {
 			case strings.HasPrefix(l, "@@ "):
-				newLine = -1
+				oldLine, newLine = -1, -1
 				if m := hunkHeader.FindStringSubmatch(l); m != nil {
+					oldLine, _ = strconv.Atoi(m[1])
 					newLine, _ = strconv.Atoi(m[3])
 				}
 				continue
 			case newLine < 0:
 				continue
-			case strings.HasPrefix(l, "+"):
-				name(l)
-				fallthrough
 			case strings.HasPrefix(l, " "):
+				oldLine, newLine = oldLine+1, newLine+1
+				continue
+			case strings.HasPrefix(l, "+"):
 				newLine++
 				continue
 			case !strings.HasPrefix(l, "-"):
@@ -247,89 +226,78 @@ func quietRenames(files []fileDiff, head func(path string) []byte) ([]fileDiff, 
 			}
 			n := runOf(lines[k:], "-")
 			m := runOf(lines[k+n:], "+")
-			b, found := block{at: k, n: n, newLine: newLine}, false
-			for j := range m {
-				var r []caseRename
-				if renames && n == m {
-					r = caseRenames(lineBody(lines[k+j]), lineBody(lines[k+n+j]))
+			if n == m {
+				b, found := block{at: k, n: n, oldLine: oldLine, newLine: newLine}, false
+				for j := range n {
+					r := caseRenames(lineBody(lines[k+j]), lineBody(lines[k+n+j]))
+					b.renames, found = append(b.renames, r), found || r != nil
 				}
-				if r == nil {
-					name(lines[k+n+j])
+				if found {
+					blocks[i] = append(blocks[i], b)
+					headDirs, baseDirs = append(headDirs, path.Dir(f.Path)), append(baseDirs, path.Dir(cmp.Or(f.OldPath, f.Path)))
 				}
-				b.renames, found = append(b.renames, r), found || r != nil
 			}
-			if found {
-				blocks[i] = append(blocks[i], b)
-			}
-			newLine += m
+			oldLine, newLine = oldLine+n, newLine+m
 			k += n + m - 1
 		}
 	}
-	declared := map[decl]bool{}
+	if len(headDirs) == 0 {
+		return files, RenameCounts{}
+	}
+	head, base := checkGo(read(false, slices.Compact(slices.Sorted(slices.Values(headDirs))))), checkGo(read(true, slices.Compact(slices.Sorted(slices.Values(baseDirs)))))
+	// a renamed identifier as each side reads it
+	type ident struct {
+		r       caseRename
+		was, is *ast.Ident
+		bf, hf  *checkedFile
+	}
+	uses := make([][][][]ident, len(files))
+	declared := map[[2]string][][2]types.Object{}
 	for i, f := range files {
-		if len(blocks[i]) == 0 {
-			continue
-		}
-		src := head(f.Path)
-		multi, scanned := multiLine(src)
-		roles, parsed := identRoles(src)
-		if src == nil || !scanned || !parsed {
-			continue
-		}
-		at, starts := strings.Split(string(src), "\n"), []int{0}
-		for k, c := range src {
-			if c == '\n' {
-				starts = append(starts, k+1)
-			}
-		}
+		hf, bf := head[f.Path], base[cmp.Or(f.OldPath, f.Path)]
 		lines := strings.SplitAfter(f.Text, "\n")
-		for bi := range blocks[i] {
-			b := &blocks[i][bi]
-			b.uses = make([][]use, b.n)
+		uses[i] = make([][][]ident, len(blocks[i]))
+		for bi, b := range blocks[i] {
+			uses[i][bi] = make([][]ident, b.n)
 			for j, rs := range b.renames {
-				line := b.newLine + j
-				if rs == nil || line < 1 || line > len(at) || at[line-1] != lineBody(lines[b.at+b.n+j]) || multi[line] ||
-					slices.ContainsFunc(rs, func(r caseRename) bool { return named[r.new] }) {
-					continue
-				}
-				var uses []use
+				var ids []ident
+				declares := false
 				for _, r := range rs {
-					role := roles[starts[line-1]+r.off]
-					switch role {
-					case declLocal:
-						declared[decl{r.old, r.new, "file " + f.Path, role}] = true
-					case declPackage, declMember:
-						declared[decl{r.old, r.new, "dir " + path.Dir(f.Path), role}] = true
+					was, is := bf.identAt(b.oldLine+j, r.off, lineBody(lines[b.at+j])), hf.identAt(b.newLine+j, r.off, lineBody(lines[b.at+b.n+j]))
+					if was == nil || is == nil {
+						ids = nil
+						break
 					}
-					uses = append(uses, use{r.old, r.new, role})
+					if bf.declares(was) || hf.declares(is) {
+						declares = true
+						if o, n := bf.info.Defs[was], hf.info.Defs[is]; o != nil && n != nil {
+							declared[[2]string{r.old, r.new}] = append(declared[[2]string{r.old, r.new}], [2]types.Object{origin(o), origin(n)})
+						}
+					}
+					ids = append(ids, ident{r, was, is, bf, hf})
 				}
-				if !slices.ContainsFunc(uses, func(u use) bool { return u.role >= declLocal }) {
-					b.uses[j] = uses
+				if !declares && len(ids) == len(rs) {
+					uses[i][bi][j] = ids
 				}
 			}
 		}
 	}
-	reaches := func(f fileDiff, u use) bool {
-		file, dir := "file "+f.Path, "dir "+path.Dir(f.Path)
-		local, pkg, member := declared[decl{u.old, u.new, file, declLocal}], declared[decl{u.old, u.new, dir, declPackage}], declared[decl{u.old, u.new, dir, declMember}]
-		switch u.role {
-		case useSelector:
-			return member
-		case useKey:
-			return local || pkg || member
-		}
-		return local || pkg
+	renamed := func(id ident) bool {
+		o, n := origin(id.bf.info.Uses[id.was]), origin(id.hf.info.Uses[id.is])
+		return o != nil && n != nil && !id.bf.dot && !id.hf.dot && slices.Contains(declared[[2]string{id.r.old, id.r.new}], [2]types.Object{o, n}) &&
+			id.bf.knownPath(id.was) && id.hf.knownPath(id.is)
 	}
 	var out []fileDiff
 	var counts RenameCounts
 	for i, f := range files {
-		quiet := func(b block, j int) bool {
-			return b.uses != nil && b.uses[j] != nil && !slices.ContainsFunc(b.uses[j], func(u use) bool { return !reaches(f, u) })
+		quiet := func(bi, j int) bool {
+			ids := uses[i][bi][j]
+			return ids != nil && !slices.ContainsFunc(ids, func(id ident) bool { return !renamed(id) })
 		}
 		pairs := 0
-		for _, b := range blocks[i] {
+		for bi, b := range blocks[i] {
 			for j := range b.n {
-				if quiet(b, j) {
+				if quiet(bi, j) {
 					pairs++
 				}
 			}
@@ -342,17 +310,17 @@ func quietRenames(files []fileDiff, head func(path string) []byte) ([]fileDiff, 
 		lines := strings.SplitAfter(f.Text, "\n")
 		var kept []string
 		k := 0
-		for _, b := range blocks[i] {
+		for bi, b := range blocks[i] {
 			kept = append(kept, lines[k:b.at]...)
 			removed, added := lines[b.at:b.at+b.n], lines[b.at+b.n:b.at+2*b.n]
 			for j := 0; j < b.n; {
-				if quiet(b, j) {
+				if quiet(bi, j) {
 					kept = append(kept, " "+added[j][1:])
 					j++
 					continue
 				}
 				e := j + 1
-				for e < b.n && !quiet(b, e) {
+				for e < b.n && !quiet(bi, e) {
 					e++
 				}
 				kept = append(append(kept, removed[j:e]...), added[j:e]...)
@@ -367,7 +335,202 @@ func quietRenames(files []fileDiff, head func(path string) []byte) ([]fileDiff, 
 	return out, counts
 }
 
-var goWord = regexp.MustCompile(`[\p{L}_][\p{L}\p{N}_]*`)
+// checkedFile is a .go file of one side of a diff, parsed and type-checked
+// with every file of its package.
+type checkedFile struct {
+	lines  []string
+	starts []int
+	idents map[int]*ast.Ident
+	sels   map[*ast.Ident]*ast.SelectorExpr
+	// decls are the identifiers that name a declaration Defs holds none
+	// for: the package clause, and a method receiver's type, which moves
+	// the method to another type
+	decls map[*ast.Ident]bool
+	dot   bool // the file imports a package with .
+	info  *types.Info
+	pkg   *types.Package
+}
+
+// identAt is the identifier of the file's syntax at off of line, from 1,
+// when the line is body; nil for a nil c, and inside a literal or a
+// comment, which holds none.
+func (c *checkedFile) identAt(line, off int, body string) *ast.Ident {
+	if c == nil || line < 1 || line > len(c.lines) || c.lines[line-1] != body {
+		return nil
+	}
+	return c.idents[c.starts[line-1]+off]
+}
+
+// declares reports whether id names a declaration.
+func (c *checkedFile) declares(id *ast.Ident) bool { return c.info.Defs[id] != nil || c.decls[id] }
+
+// knownPath reports whether the member a selector's name id selects, if it
+// is one, was found past only the package's own types: a type of another
+// package, which checkGo reads with no members, could hold a member of
+// that name no deeper and so be the one the name selects.
+func (c *checkedFile) knownPath(id *ast.Ident) bool {
+	sel, ok := c.sels[id]
+	if !ok {
+		return true
+	}
+	s := c.info.Selections[sel]
+	if s == nil {
+		return false
+	}
+	level := []types.Type{s.Recv()}
+	for range len(s.Index()) - 1 {
+		var next []types.Type
+		for _, t := range level {
+			st, ok := c.own(t).(*types.Struct)
+			if !ok {
+				return false
+			}
+			for k := range st.NumFields() {
+				if f := st.Field(k); f.Embedded() {
+					if c.own(f.Type()) == nil {
+						return false
+					}
+					next = append(next, f.Type())
+				}
+			}
+		}
+		level = next
+	}
+	return true
+}
+
+// own is the struct or interface t is, past a pointer, when the package
+// declares it, or it is a struct literal, and every interface it embeds
+// is the package's own too; nil otherwise.
+func (c *checkedFile) own(t types.Type) types.Type {
+	t = types.Unalias(t)
+	if p, ok := t.(*types.Pointer); ok {
+		t = types.Unalias(p.Elem())
+	}
+	if n, ok := t.(*types.Named); ok {
+		if n.Obj().Pkg() != c.pkg {
+			return nil
+		}
+		t = n.Underlying()
+	}
+	switch u := t.(type) {
+	case *types.Struct:
+		return u
+	case *types.Interface:
+		for k := range u.NumEmbeddeds() {
+			if c.own(u.EmbeddedType(k)) == nil {
+				return nil
+			}
+		}
+		return u
+	}
+	return nil
+}
+
+// origin is the declaration obj stems from: a field or method of an
+// instantiated generic type is an object of its own.
+func origin(obj types.Object) types.Object {
+	switch o := obj.(type) {
+	case *types.Var:
+		return o.Origin()
+	case *types.Func:
+		return o.Origin()
+	}
+	return obj
+}
+
+// checkGo parses files, path to content, and type-checks each package of
+// each directory, every other package read as an empty one (emptyImporter):
+// the checked files by path. A directory with a file go/parser cannot read
+// holds none.
+func checkGo(files map[string][]byte) map[string]*checkedFile {
+	byDir := map[string][]string{}
+	for p := range files {
+		byDir[path.Dir(p)] = append(byDir[path.Dir(p)], p)
+	}
+	out := map[string]*checkedFile{}
+	imports := emptyImporter{}
+	for _, paths := range byDir {
+		slices.Sort(paths)
+		fset := token.NewFileSet()
+		parsed := map[string]*ast.File{}
+		byPkg := map[string][]string{}
+		for _, p := range paths {
+			f, err := parser.ParseFile(fset, p, files[p], parser.SkipObjectResolution)
+			if err != nil {
+				parsed = nil
+				break
+			}
+			parsed[p] = f
+			byPkg[f.Name.Name] = append(byPkg[f.Name.Name], p)
+		}
+		for _, ps := range byPkg {
+			if parsed == nil {
+				break
+			}
+			asts := make([]*ast.File, len(ps))
+			for k, p := range ps {
+				asts[k] = parsed[p]
+			}
+			info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
+			conf := types.Config{Importer: imports, FakeImportC: true, Error: func(error) {}}
+			pkg, _ := conf.Check(path.Dir(ps[0]), fset, asts, info)
+			for _, p := range ps {
+				out[p] = newCheckedFile(files[p], fset, parsed[p], info, pkg)
+			}
+		}
+	}
+	return out
+}
+
+func newCheckedFile(src []byte, fset *token.FileSet, f *ast.File, info *types.Info, pkg *types.Package) *checkedFile {
+	c := &checkedFile{lines: strings.Split(string(src), "\n"), starts: []int{0}, idents: map[int]*ast.Ident{},
+		sels: map[*ast.Ident]*ast.SelectorExpr{}, decls: map[*ast.Ident]bool{f.Name: true}, info: info, pkg: pkg}
+	for k, b := range src {
+		if b == '\n' {
+			c.starts = append(c.starts, k+1)
+		}
+	}
+	tf := fset.File(f.Pos())
+	for _, im := range f.Imports {
+		c.dot = c.dot || im.Name != nil && im.Name.Name == "."
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.Ident:
+			c.idents[tf.Offset(n.Pos())] = n
+		case *ast.SelectorExpr:
+			c.sels[n.Sel] = n
+		case *ast.FuncDecl:
+			if n.Recv != nil {
+				ast.Inspect(n.Recv, func(m ast.Node) bool {
+					if id, ok := m.(*ast.Ident); ok && !slices.ContainsFunc(n.Recv.List, func(f *ast.Field) bool { return slices.Contains(f.Names, id) }) {
+						c.decls[id] = true
+					}
+					return true
+				})
+			}
+		}
+		return true
+	})
+	return c
+}
+
+// emptyImporter imports every package as an empty one, by its path, named
+// by its path's last element: a name another package declares resolves to
+// nothing, which keeps every pair that uses it.
+type emptyImporter map[string]*types.Package
+
+func (m emptyImporter) Import(p string) (*types.Package, error) {
+	if pkg, ok := m[p]; ok {
+		return pkg, nil
+	}
+	name, _, _ := strings.Cut(path.Base(p), ".")
+	pkg := types.NewPackage(p, name)
+	pkg.MarkComplete()
+	m[p] = pkg
+	return pkg, nil
+}
 
 // runOf is how many of lines, from the first, start with prefix.
 func runOf(lines []string, prefix string) int {
@@ -433,125 +596,6 @@ func entryName(name string) bool {
 	return false
 }
 
-// identRole is what an identifier is where it stands: a use as a bare
-// name, a selector or a composite literal's key, or the declaration of a
-// local (a parameter, a := or a local var, a label, an import name), a
-// package-level name, or a member (a field, an embedded type, a method).
-type identRole int
-
-const (
-	useBare identRole = iota
-	useSelector
-	useKey
-	declLocal
-	declPackage
-	declMember
-)
-
-// identRoles maps the offset in src of each identifier that is no bare use
-// to its role; read is false when go/parser cannot read src.
-func identRoles(src []byte) (roles map[int]identRole, read bool) {
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "", src, parser.SkipObjectResolution)
-	if err != nil {
-		return nil, false
-	}
-	tf := fset.File(file.Pos())
-	roles = map[int]identRole{}
-	set := func(role identRole, ids ...*ast.Ident) {
-		for _, id := range ids {
-			if id != nil && (role >= declLocal || roles[tf.Offset(id.Pos())] == useBare) {
-				roles[tf.Offset(id.Pos())] = role
-			}
-		}
-	}
-	fields := func(role identRole, l *ast.FieldList) {
-		for _, f := range fieldsOf(l) {
-			set(role, f.Names...)
-			if len(f.Names) == 0 && role == declMember {
-				ast.Inspect(f.Type, func(n ast.Node) bool {
-					if id, ok := n.(*ast.Ident); ok {
-						set(role, id)
-					}
-					return true
-				})
-			}
-		}
-	}
-	specs := func(role identRole, g *ast.GenDecl) {
-		for _, s := range g.Specs {
-			switch s := s.(type) {
-			case *ast.TypeSpec:
-				set(role, s.Name)
-			case *ast.ValueSpec:
-				set(role, s.Names...)
-			case *ast.ImportSpec:
-				set(declLocal, s.Name)
-			}
-		}
-	}
-	for _, d := range file.Decls {
-		if g, ok := d.(*ast.GenDecl); ok {
-			specs(declPackage, g)
-		}
-	}
-	idents := func(es ...ast.Expr) (out []*ast.Ident) {
-		for _, e := range es {
-			if id, ok := e.(*ast.Ident); ok {
-				out = append(out, id)
-			}
-		}
-		return out
-	}
-	ast.Inspect(file, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.FuncDecl:
-			if n.Recv == nil {
-				set(declPackage, n.Name)
-			} else {
-				set(declMember, n.Name)
-				fields(declLocal, n.Recv)
-			}
-		case *ast.FuncType:
-			fields(declLocal, n.TypeParams)
-			fields(declLocal, n.Params)
-			fields(declLocal, n.Results)
-		case *ast.TypeSpec:
-			fields(declLocal, n.TypeParams)
-		case *ast.DeclStmt:
-			specs(declLocal, n.Decl.(*ast.GenDecl))
-		case *ast.StructType:
-			fields(declMember, n.Fields)
-		case *ast.InterfaceType:
-			fields(declMember, n.Methods)
-		case *ast.AssignStmt:
-			if n.Tok == token.DEFINE {
-				set(declLocal, idents(n.Lhs...)...)
-			}
-		case *ast.RangeStmt:
-			if n.Tok == token.DEFINE {
-				set(declLocal, idents(n.Key, n.Value)...)
-			}
-		case *ast.LabeledStmt:
-			set(declLocal, n.Label)
-		case *ast.SelectorExpr:
-			set(useSelector, n.Sel)
-		case *ast.KeyValueExpr:
-			set(useKey, idents(n.Key)...)
-		}
-		return true
-	})
-	return roles, true
-}
-
-// fieldsOf is l's fields, none for a nil l.
-func fieldsOf(l *ast.FieldList) []*ast.Field {
-	if l == nil {
-		return nil
-	}
-	return l.List
-}
-
 // identsAt maps the offset of each identifier of line to the identifier;
 // nil when go/scanner cannot read line whole.
 func identsAt(line string) map[int]string {
@@ -564,21 +608,6 @@ func identsAt(line string) map[int]string {
 		return nil
 	}
 	return out
-}
-
-// multiLine are the lines, from 1, of src that a literal or a comment of
-// more than one line covers; read is false when go/scanner cannot read src
-// whole.
-func multiLine(src []byte) (lines map[int]bool, read bool) {
-	lines = map[int]bool{}
-	read = goTokens(src, func(_, line int, tok token.Token, lit string) {
-		if n := strings.Count(lit, "\n"); n > 0 && (tok == token.STRING || tok == token.COMMENT) {
-			for l := line; l <= line+n; l++ {
-				lines[l] = true
-			}
-		}
-	})
-	return lines, read
 }
 
 // goTokens calls each with every token of src, comments too, its offset

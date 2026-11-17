@@ -721,31 +721,31 @@ func TestGateAuditKeepsThePreChecksPath(t *testing.T) {
 	}
 }
 
-// lookHunk is the hunk of image_look_test.go a rename card changed, lines
-// 151 to 157 of newLookEnv, its one pair a use of the field kube renamed
-// Kube; more adds lines after it. runnerKube renames the field in
-// runner.go, runnerHead at the head.
-func lookHunk(more ...string) (diff, head string) {
-	const path = "internal/factoryd/image_look_test.go"
-	ctx := []string{"\tcoder.VisionModel = \"vision\"", "\tpv.Document.Classes[\"coder\"] = coder", "\tcfg.Policy = func() policy.Version { return pv }"}
-	line := "\te.runner = &Runner{cfg: cfg, store: e.store, %s: kube, forgejo: &Forgejo{BaseURL: fj.URL, BotUser: \"factory-agent\", BotPassword: \"bot-pw\"}}"
-	diff = fmt.Sprintf("diff --git a/%s b/%s\nindex a892a1edc..22741d60b 100644\n--- a/%s\n+++ b/%s\n@@ -151,7 +151,%d @@ func newLookEnv(t *testing.T) *lookEnv {\n",
-		path, path, path, path, 7+len(more))
-	diff += " " + strings.Join(ctx, "\n ") + "\n-" + fmt.Sprintf(line, "kube") + "\n+" + fmt.Sprintf(line, "Kube") + "\n \te.runner.workerPort, _ = strconv.Atoi(port)\n"
-	for _, l := range more {
-		diff += "+" + l + "\n"
+// GoFiles reads one archive of the commit: the .go files directly in the
+// directories asked for, by their paths in the repository; a commit with
+// no archive is an error.
+func TestGoFilesReadsTheDirsAsked(t *testing.T) {
+	fj := &gateForgejo{archives: map[string]map[string]string{"c1": {"x/a.go": "package x\n", "x/b.txt": "b", "x/sub/c.go": "package sub\n",
+		"y/d.go": "package y\n", "e.go": "package e\n"}}}
+	r, _ := newAuditRunner(t, fj, &fakeLiteLLM{}, true)
+	got, err := r.forgejo.GoFiles(context.Background(), "sf", "repo", "c1", []string{"x", "."})
+	if err != nil || len(got) != 2 || string(got["x/a.go"]) != "package x\n" || string(got["e.go"]) != "package e\n" {
+		t.Fatalf("GoFiles = %q, %v, want x/a.go and e.go", got, err)
 	}
-	diff += " \treturn e\n }\n"
-	head = "package factoryd\n" + strings.Repeat("\n", 148) + "func newLookEnv(t *testing.T) *lookEnv {\n" +
-		strings.Join(append(append(ctx, fmt.Sprintf(line, "Kube"), "\te.runner.workerPort, _ = strconv.Atoi(port)"), more...), "\n") + "\n\treturn e\n}\n"
-	return diff, head
+	if _, err := r.forgejo.GoFiles(context.Background(), "sf", "repo", "c2", []string{"x"}); err == nil {
+		t.Fatal("GoFiles of a commit with no archive gave no error")
+	}
 }
 
-const (
-	runnerKube = "diff --git a/internal/factoryd/runner.go b/internal/factoryd/runner.go\n--- a/internal/factoryd/runner.go\n+++ b/internal/factoryd/runner.go\n" +
-		"@@ -4 +4 @@ type Runner struct {\n-\tkube Kube\n+\tKube Kube\n"
-	runnerHead = "package factoryd\n\ntype Runner struct {\n\tKube Kube\n}\n"
-)
+// renameCard is a card that renames the field kube of Runner to Kube in
+// runner.go and its use in look.go, more added first in newLookEnv, and
+// its trees by side.
+func renameCard(more string) (base, head map[string]string) {
+	const runner, look = "package factoryd\n\ntype Runner struct {\n\t%s Kube\n}\n\ntype Kube interface{}\n",
+		"package factoryd\n\ntype lookEnv struct{ runner *Runner }\n\nfunc newLookEnv(kube Kube) *lookEnv {\n%s\te := &lookEnv{}\n\te.runner = &Runner{%s: kube}\n\treturn e\n}\n"
+	return map[string]string{"internal/factoryd/runner.go": fmt.Sprintf(runner, "kube"), "internal/factoryd/look.go": fmt.Sprintf(look, "", "kube")},
+		map[string]string{"internal/factoryd/runner.go": fmt.Sprintf(runner, "Kube"), "internal/factoryd/look.go": fmt.Sprintf(look, more, "Kube")}
+}
 
 // auditDiff is the diff the audit call chat read.
 func auditDiff(t *testing.T, chat map[string]any) string {
@@ -759,12 +759,12 @@ func auditDiff(t *testing.T, chat map[string]any) string {
 
 // The audit model reads a use of a renamed field as the context line that
 // holds the new line, beside the hunk's real change and the field's
-// renamed declaration, from the files read at the audited head; the step
-// counts the pair.
+// renamed declaration, both sides read from archives of the head and of
+// the pull request's merge base; the step counts the pair.
 func TestGateAuditSendsNoRenameLines(t *testing.T) {
-	diff, head := lookHunk("\te.look = true")
-	fj := &gateForgejo{diff: runnerKube + diff, raw: map[string]string{"sf/repo/raw/internal/factoryd/image_look_test.go": head,
-		"sf/repo/raw/internal/factoryd/runner.go": runnerHead}}
+	base, head := renameCard("\tif kube == nil {\n\t\treturn nil\n\t}\n")
+	files, _ := renameDiff(t, base, head)
+	fj := &gateForgejo{diff: joinFiles(files), archives: map[string]map[string]string{"c1": head, "old-base": base}}
 	ll := &fakeLiteLLM{content: `{"verdict":"clear"}`}
 	r, objects := newAuditRunner(t, fj, ll, true)
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
@@ -772,12 +772,9 @@ func TestGateAuditSendsNoRenameLines(t *testing.T) {
 		t.Fatalf("audit = %+v after %d calls", res, len(ll.chats))
 	}
 	got := auditDiff(t, ll.chats[0])
-	if !strings.Contains(got, "\n \te.runner = &Runner{cfg: cfg, store: e.store, Kube: kube,") || strings.Contains(got, "kube: kube") ||
-		!strings.Contains(got, "\n+\te.look = true\n") || !strings.Contains(got, "\n-\tkube Kube\n+\tKube Kube\n") {
-		t.Fatalf("the audit read %q, want the use as context, the declaration and the added line", got)
-	}
-	if !slices.Equal(fj.rawRefs, []string{"c1", "c1"}) {
-		t.Fatalf("raw reads at %q, want the two at the audited head", fj.rawRefs)
+	if !strings.Contains(got, "\n \te.runner = &Runner{Kube: kube}\n") || strings.Contains(got, "kube: kube") ||
+		!strings.Contains(got, "\n+\tif kube == nil {\n") || !strings.Contains(got, "\n-\tkube Kube\n+\tKube Kube\n") {
+		t.Fatalf("the audit read %q, want the use as context, the declaration and the added lines", got)
 	}
 	if renames, _ := timelineStep(t, objects, "t1", "audit")["renames"].(map[string]any); renames["pairs"] != 1.0 || renames["files"] != 1.0 {
 		t.Fatalf("the step's renames = %v, want one pair in one file", renames)
@@ -788,39 +785,42 @@ func TestGateAuditSendsNoRenameLines(t *testing.T) {
 // of the field kube and of the field password, whose credential-shaped
 // literal stood in the base, are context, so the pre-check raises nothing.
 func TestGateAuditReadsARenameCardAtItsDeclarations(t *testing.T) {
-	diff, head := lookHunk()
-	diff = runnerKube + diff + "diff --git a/internal/x/x.go b/internal/x/x.go\n--- a/internal/x/x.go\n+++ b/internal/x/x.go\n@@ -4 +4 @@ type Config struct {\n" +
-		"-\tpassword string\n+\tPassword string\n" +
-		"diff --git a/internal/x/x_test.go b/internal/x/x_test.go\n--- a/internal/x/x_test.go\n+++ b/internal/x/x_test.go\n@@ -4 +4 @@ func f() {\n" +
-		"-\tc := Config{password: \"hunter2hunter2\"}\n+\tc := Config{Password: \"hunter2hunter2\"}\n"
-	fj := &gateForgejo{diff: diff, raw: map[string]string{"sf/repo/raw/internal/factoryd/image_look_test.go": head, "sf/repo/raw/internal/factoryd/runner.go": runnerHead,
-		"sf/repo/raw/internal/x/x.go":      "package x\n\ntype Config struct {\n\tPassword string\n}\n",
-		"sf/repo/raw/internal/x/x_test.go": "package x\n\nfunc f() {\n\tc := Config{Password: \"hunter2hunter2\"}\n}\n"}}
+	base, head := renameCard("")
+	const config, use = "package x\n\ntype Config struct {\n\t%s string\n}\n", "package x\n\nfunc f() Config {\n\treturn Config{%s: \"hunter2hunter2\"}\n}\n"
+	base["internal/x/x.go"], base["internal/x/x_test.go"] = fmt.Sprintf(config, "password"), fmt.Sprintf(use, "password")
+	head["internal/x/x.go"], head["internal/x/x_test.go"] = fmt.Sprintf(config, "Password"), fmt.Sprintf(use, "Password")
+	files, _ := renameDiff(t, base, head)
+	fj := &gateForgejo{diff: joinFiles(files), archives: map[string]map[string]string{"c1": head, "old-base": base}}
 	ll := &fakeLiteLLM{content: `{"verdict":"clear"}`}
 	r, _ := newAuditRunner(t, fj, ll, true)
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	if res := getInto[AuditResult](t, val, err); res.Verdict != AuditClear || len(res.Findings) != 0 || len(ll.chats) != 1 || res.Renames != (RenameCounts{Pairs: 2, Files: 2}) {
 		t.Fatalf("audit = %+v after %d calls, want clear after one call", res, len(ll.chats))
 	}
-	got := auditDiff(t, ll.chats[0])
-	if want := splitDiff(runnerKube)[0].Text + "diff --git a/internal/x/x.go b/internal/x/x.go\n--- a/internal/x/x.go\n+++ b/internal/x/x.go\n@@ -4 +4 @@ type Config struct {\n" +
-		"-\tpassword string\n+\tPassword string\n"; got != want {
-		t.Fatalf("the audit read %q, want the two declarations alone %q", got, want)
+	var want []fileDiff
+	for _, f := range files {
+		if f.Path == "internal/factoryd/runner.go" || f.Path == "internal/x/x.go" {
+			want = append(want, f)
+		}
+	}
+	if got := auditDiff(t, ll.chats[0]); got != joinFiles(want) || len(want) != 2 {
+		t.Fatalf("the audit read %q, want the two declarations alone", got)
 	}
 }
 
-// A file the audit cannot read at the head filters nothing, and the step
-// counts the failed read.
+// A side the audit cannot read filters nothing, and the step counts the
+// failed read: the head's archive is missing.
 func TestGateAuditCountsAFailedHeadRead(t *testing.T) {
-	diff, _ := lookHunk()
-	fj := &gateForgejo{diff: runnerKube + diff, raw: map[string]string{"sf/repo/raw/internal/factoryd/runner.go": runnerHead}}
+	base, head := renameCard("")
+	files, _ := renameDiff(t, base, head)
+	fj := &gateForgejo{diff: joinFiles(files), archives: map[string]map[string]string{"old-base": base}}
 	ll := &fakeLiteLLM{content: `{"verdict":"clear"}`}
 	r, objects := newAuditRunner(t, fj, ll, true)
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	if res := getInto[AuditResult](t, val, err); res.Renames != (RenameCounts{ReadsFailed: 1}) {
 		t.Fatalf("audit = %+v, want one failed read and nothing quiet", res)
 	}
-	if got := auditDiff(t, ll.chats[0]); !strings.Contains(got, "\n-\te.runner = &Runner{cfg: cfg, store: e.store, kube: kube,") {
+	if got := auditDiff(t, ll.chats[0]); !strings.Contains(got, "\n-\te.runner = &Runner{kube: kube}\n+\te.runner = &Runner{Kube: kube}\n") {
 		t.Fatalf("the audit read %q, want the use as it is", got)
 	}
 	if renames, _ := timelineStep(t, objects, "t1", "audit")["renames"].(map[string]any); renames["reads_failed"] != 1.0 || renames["pairs"] != 0.0 {

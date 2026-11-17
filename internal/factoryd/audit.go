@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -272,17 +271,21 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		return AuditResult{}, err
 	}
 	failed := 0
-	modelFiles, renames := quietRenames(prFiles, func(p string) []byte {
-		segments := strings.Split(p, "/")
-		for i, s := range segments {
-			segments[i] = url.PathEscape(s)
+	modelFiles, renames := quietRenames(prFiles, func(base bool, dirs []string) map[string][]byte {
+		ref := commit
+		if base {
+			st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr.Number)
+			if ref = st.MergeBase; err != nil || ref == "" {
+				failed++
+				return nil
+			}
 		}
-		b, err := r.forgejo.FileAt(ctx, repo.Owner, repo.Name, commit, strings.Join(segments, "/"))
+		files, err := r.forgejo.GoFiles(ctx, repo.Owner, repo.Name, ref, dirs)
 		if err != nil {
 			failed++
 			return nil
 		}
-		return b
+		return files
 	})
 	renames.ReadsFailed = failed
 	res.Renames = renames

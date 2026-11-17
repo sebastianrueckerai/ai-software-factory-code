@@ -2,8 +2,10 @@ package factoryd
 
 import (
 	"fmt"
-	"maps"
+	"os"
+	"os/exec"
 	"path"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -558,87 +560,113 @@ func TestFileListBoundsTheDirectoryTail(t *testing.T) {
 	}
 }
 
-// goDiff is the diff of path, its header and hunks.
-func goDiff(path, hunks string) []fileDiff {
-	return splitDiff("diff --git a/" + path + " b/" + path + "\nindex 1111111..2222222 100644\n--- a/" + path + "\n+++ b/" + path + "\n" + hunks)
-}
-
-// headOf reads files, path to content at the head; nil for any other path.
-func headOf(files map[string]string) func(string) []byte {
-	return func(p string) []byte {
-		if c, ok := files[p]; ok {
-			return []byte(c)
+// renameDiff is git's diff from base to head, files by path, and the reader
+// of either side's .go files in the directories asked for.
+func renameDiff(t *testing.T, base, head map[string]string) ([]fileDiff, func(bool, []string) map[string][]byte) {
+	t.Helper()
+	dir := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.email=t@t", "-c", "user.name=t", "-c", "color.ui=false"}, args...)...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
-		return nil
+		return string(out)
 	}
+	write := func(files map[string]string) {
+		for p, c := range files {
+			if err := os.MkdirAll(filepath.Join(dir, path.Dir(p)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, p), []byte(c), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	git("init", "-q")
+	write(base)
+	git("add", "-A")
+	git("commit", "-qm", "base")
+	git("rm", "-rq", ".")
+	write(head)
+	git("add", "-A")
+	git("commit", "-qm", "head")
+	read := func(b bool, dirs []string) map[string][]byte {
+		side, out := head, map[string][]byte{}
+		if b {
+			side = base
+		}
+		for p, c := range side {
+			if strings.HasSuffix(p, ".go") && slices.Contains(dirs, path.Dir(p)) {
+				out[p] = []byte(c)
+			}
+		}
+		return out
+	}
+	return splitDiff(git("diff", "-M", "HEAD~1", "HEAD")), read
 }
 
-// declHunks rename, in d.go of declHead, kube to Kube (a package-level
-// var and a field of T), refusal to Refusal (a field) and allow to Allow
-// (a package-level func): the declarations a use of them needs.
-const (
-	declHunks = "@@ -3 +3 @@\n-var kube = 1\n+var Kube = 1\n@@ -6,2 +6,2 @@ type T struct {\n-\tkube    int\n-\trefusal func(int)\n+\tKube    int\n+\tRefusal func(int)\n" +
-		"@@ -10 +10 @@\n-func allow(host string) bool { return true }\n+func Allow(host string) bool { return true }\n"
-	declHead = "package a\n\nvar Kube = 1\n\ntype T struct {\n\tKube    int\n\tRefusal func(int)\n}\n\nfunc Allow(host string) bool { return true }\n"
-)
-
-// useIn is a.go's diff of one line of f's body, line 4, and a.go at the
-// head.
-func useIn(removed, added string) ([]fileDiff, string) {
-	return goDiff("a.go", "@@ -4 +4 @@\n-"+removed+"\n+"+added+"\n"), "package a\n\nfunc f() {\n" + added + "\n}\n"
-}
-
-// fileAt is the file of files at path p.
-func fileAt(files []fileDiff, p string) (fileDiff, bool) {
-	i := slices.IndexFunc(files, func(f fileDiff) bool { return f.Path == p })
-	if i < 0 {
-		return fileDiff{}, false
+// addedLines are the added lines of files, each as path: line.
+func addedLines(files []fileDiff) []string {
+	var out []string
+	for _, f := range files {
+		for _, l := range strings.Split(f.Text, "\n") {
+			if strings.HasPrefix(l, "+") && !strings.HasPrefix(l, "+++ ") {
+				out = append(out, f.Path+": "+strings.TrimSpace(l[1:]))
+			}
+		}
 	}
-	return files[i], true
+	return out
 }
 
 // A use of a renamed field becomes the context line that holds the added
-// line, its declaration staying; the header stays, as old and new side
-// still count 4 and 5 lines.
+// line, its declaration staying; the header stays, as the old and new side
+// count the same lines.
 func TestQuietRenamesTurnsAUseIntoContext(t *testing.T) {
-	decl := goDiff("d.go", declHunks)
-	use := goDiff("a.go", "@@ -4,4 +4,5 @@ func f() {\n \tx := 1\n-\tr.kube.Create(x)\n+\tr.Kube.Create(x)\n \tx++\n+\tc()\n }\n")
-	got, counts := quietRenames(slices.Concat(decl, use), headOf(map[string]string{"d.go": declHead,
-		"a.go": "package a\n\nfunc f() {\n\tx := 1\n\tr.Kube.Create(x)\n\tx++\n\tc()\n}\n"}))
-	want := "diff --git a/a.go b/a.go\nindex 1111111..2222222 100644\n--- a/a.go\n+++ b/a.go\n@@ -4,4 +4,5 @@ func f() {\n \tx := 1\n \tr.Kube.Create(x)\n \tx++\n+\tc()\n }\n"
-	if len(got) != 2 || !reflect.DeepEqual(got[0], decl[0]) || got[1].Text != want || got[1].Added != 1 || got[1].Removed != 0 {
-		t.Fatalf("quietRenames = %+v, want d.go as it is and a.go's text %q, +1 -0", got, want)
-	}
-	if counts != (RenameCounts{Pairs: 1, Files: 1}) {
-		t.Fatalf("counts = %+v, want one pair in one file", counts)
+	const was = "package a\n\ntype runner struct {\n\tkube int\n}\n\nfunc (r *runner) run(x int) {\n\tx = 1\n\tr.kube = x\n\tx++\n}\n"
+	files, read := renameDiff(t, map[string]string{"a.go": was},
+		map[string]string{"a.go": strings.ReplaceAll(strings.Replace(was, "\tx++\n", "\tx++\n\t_ = x\n", 1), "kube", "Kube")})
+	got, counts := quietRenames(files, read)
+	want := strings.Replace(files[0].Text, "-\tr.kube = x\n+\tr.Kube = x\n", " \tr.Kube = x\n", 1)
+	if len(got) != 1 || got[0].Text != want || want == files[0].Text || got[0].Added != 2 || got[0].Removed != 1 || counts != (RenameCounts{Pairs: 1, Files: 1}) {
+		t.Fatalf("quietRenames = %+v, %+v, want the text %q, +2 -1, one pair in one file", got, counts, want)
 	}
 }
 
-// A file whose one hunk is a use is left out; of two hunks, the one that
-// changes nothing after the use goes and the other stays as it is.
+// A file whose one change is a use is left out; of two hunks, the one that
+// changes nothing after the use goes and the other stays.
 func TestQuietRenamesDropsWhatChangesNothing(t *testing.T) {
-	a, aHead := useIn("\tf(kube)", "\tf(Kube)")
-	b := goDiff("b.go", "@@ -3,3 +3,3 @@\n func g() {\n-\tf(kube)\n+\tf(Kube)\n }\n@@ -20,3 +20,4 @@\n func h() {\n \tx := 1\n+\ty := 2\n }\n")
-	got, _ := quietRenames(slices.Concat(goDiff("d.go", declHunks), a, b), headOf(map[string]string{"d.go": declHead, "a.go": aHead,
-		"b.go": "package a\n\nfunc g() {\n\tf(Kube)\n}\n" + strings.Repeat("\n", 14) + "func h() {\n\tx := 1\n\ty := 2\n}\n"}))
-	want := "diff --git a/b.go b/b.go\nindex 1111111..2222222 100644\n--- a/b.go\n+++ b/b.go\n@@ -20,3 +20,4 @@\n func h() {\n \tx := 1\n+\ty := 2\n }\n"
-	if len(got) != 2 || got[0].Path != "d.go" || got[1].Text != want || got[1].Added != 1 || got[1].Removed != 0 {
-		t.Fatalf("quietRenames = %+v, want d.go and b.go's second hunk alone", got)
+	b := "package a\n\nfunc g() {\n\tf(kube)\n}\n" + strings.Repeat("\n", 14) + "func h() {\n\tx := 1\n\t_ = x\n}\n"
+	files, read := renameDiff(t,
+		map[string]string{"d.go": "package a\n\nvar kube = 1\n\nfunc f(int) {}\n", "a.go": "package a\n\nfunc e() { f(kube) }\n", "b.go": b},
+		map[string]string{"d.go": "package a\n\nvar Kube = 1\n\nfunc f(int) {}\n", "a.go": "package a\n\nfunc e() { f(Kube) }\n",
+			"b.go": strings.Replace(strings.Replace(b, "f(kube)", "f(Kube)", 1), "\t_ = x\n", "\t_ = x\n\ty := 2\n\t_ = y\n", 1)})
+	got, _ := quietRenames(files, read)
+	if want := []string{"b.go: _ = y", "b.go: y := 2", "d.go: var Kube = 1"}; !slices.Equal(sorted(addedLines(got)), want) || len(got) != 2 ||
+		strings.Count(got[0].Text, "\n@@ ") != 1 || got[0].Path != "b.go" || got[0].Added != 2 || got[0].Removed != 0 {
+		t.Fatalf("quietRenames = %+v, want b.go's second hunk and d.go alone, changing %v", got, want)
 	}
+}
+
+func sorted(s []string) []string {
+	slices.Sort(s)
+	return s
 }
 
 // A removed line and the added line that differs from it in a literal, in
 // a number, or a block of two removed lines against one added line, stay
 // as they are.
 func TestQuietRenamesKeepsARealChange(t *testing.T) {
-	for name, hunk := range map[string]string{
-		"literal": "@@ -1 +1 @@\n-\treturn \"kube\"\n+\treturn \"Kube\"\n",
-		"number":  "@@ -1 +1 @@\n-\tx := 1\n+\tx := 2\n",
-		"2 for 1": "@@ -1,2 +1 @@\n-\tr.kube.A()\n-\tr.kube.B()\n+\tr.Kube.A()\n",
+	for name, tc := range map[string][2]string{
+		"literal": {"package a\n\nfunc f() string { return \"kube\" }\n", "package a\n\nfunc f() string { return \"Kube\" }\n"},
+		"number":  {"package a\n\nvar x = 1\n", "package a\n\nvar x = 2\n"},
+		"2 for 1": {"package a\n\nvar r struct{ kube, b int }\n\nfunc f() {\n\tr.kube = 1\n\tr.b = 2\n}\n",
+			"package a\n\nvar r struct{ kube, b int }\n\nfunc f() {\n\tr.Kube = 1\n}\n"},
 	} {
-		files := goDiff("a.go", hunk)
-		_, added, _ := strings.Cut(hunk, "\n+")
-		if got, _ := quietRenames(files, headOf(map[string]string{"a.go": added})); !reflect.DeepEqual(got, files) {
+		files, read := renameDiff(t, map[string]string{"a.go": tc[0]}, map[string]string{"a.go": tc[1]})
+		if got, _ := quietRenames(files, read); !reflect.DeepEqual(got, files) {
 			t.Errorf("%s: quietRenames = %+v, want the diff as it is", name, got)
 		}
 	}
@@ -647,178 +675,262 @@ func TestQuietRenamesKeepsARealChange(t *testing.T) {
 // Of three pairs, the use becomes context in its place and the real
 // changes stay, a removed run before its added run.
 func TestQuietRenamesKeepsAMixedHunk(t *testing.T) {
-	for name, tc := range map[string]struct{ hunk, head, want string }{
-		"between": {
-			"@@ -4,4 +4,4 @@ func f() {\n-\ty := 1\n-\tr.kube.Create(x)\n-\tz := 1\n+\ty := 2\n+\tr.Kube.Create(x)\n+\tz := 2\n }\n",
-			"package a\n\nfunc f() {\n\ty := 2\n\tr.Kube.Create(x)\n\tz := 2\n}\n",
-			"@@ -4,4 +4,4 @@ func f() {\n-\ty := 1\n+\ty := 2\n \tr.Kube.Create(x)\n-\tz := 1\n+\tz := 2\n }\n",
-		},
-		"last": {
-			"@@ -4,4 +4,4 @@ func f() {\n-\ty := 1\n-\tz := 1\n-\tr.kube.Create(x)\n+\ty := 2\n+\tz := 2\n+\tr.Kube.Create(x)\n }\n",
-			"package a\n\nfunc f() {\n\ty := 2\n\tz := 2\n\tr.Kube.Create(x)\n}\n",
-			"@@ -4,4 +4,4 @@ func f() {\n-\ty := 1\n-\tz := 1\n+\ty := 2\n+\tz := 2\n \tr.Kube.Create(x)\n }\n",
-		},
+	for name, tc := range map[string]struct{ was, is, want string }{
+		"between": {"\ty := 1\n\tr.kube = 0\n\tz := 1\n", "\ty := 2\n\tr.Kube = 0\n\tz := 2\n",
+			"-\ty := 1\n+\ty := 2\n \tr.Kube = 0\n-\tz := 1\n+\tz := 2\n"},
+		"last": {"\ty := 1\n\tz := 1\n\tr.kube = 0\n", "\ty := 2\n\tz := 2\n\tr.Kube = 0\n",
+			"-\ty := 1\n-\tz := 1\n+\ty := 2\n+\tz := 2\n \tr.Kube = 0\n"},
 	} {
-		got, _ := quietRenames(slices.Concat(goDiff("d.go", declHunks), goDiff("a.go", tc.hunk)), headOf(map[string]string{"d.go": declHead, "a.go": tc.head}))
-		a, ok := fileAt(got, "a.go")
-		if !ok || !strings.HasSuffix(a.Text, "+++ b/a.go\n"+tc.want) || a.Added != 2 || a.Removed != 2 {
-			t.Errorf("%s: quietRenames = %+v, want a.go's hunk %q, +2 -2", name, got, tc.want)
+		fn := "package a\n\nvar r struct{ %s int }\n\nfunc f() {\n%s\t_, _ = y, z\n}\n"
+		files, read := renameDiff(t, map[string]string{"a.go": fmt.Sprintf(fn, "kube", tc.was)}, map[string]string{"a.go": fmt.Sprintf(fn, "Kube", tc.is)})
+		got, _ := quietRenames(files, read)
+		if len(got) != 1 || !strings.Contains(got[0].Text, tc.want) || got[0].Added != 3 || got[0].Removed != 3 {
+			t.Errorf("%s: quietRenames = %+v, want the block %q, +3 -3", name, got, tc.want)
 		}
 	}
 }
 
-// A rename of the file, or a mode change, is no hunk: its header stays
-// when its one hunk was a use, and a file renamed without a hunk stays as
-// it is.
+// A rename of the file is no hunk: its header stays when its one hunk was
+// a use.
 func TestQuietRenamesKeepsAFileRename(t *testing.T) {
-	bare := splitDiff("diff --git a/old.go b/new.go\nsimilarity index 100%\nrename from old.go\nrename to new.go\n")
-	if got, _ := quietRenames(bare, headOf(nil)); !reflect.DeepEqual(got, bare) {
-		t.Fatalf("quietRenames = %+v, want the rename as it is", got)
+	body := "package a\n\n// f calls g once.\nfunc f() {\n\tg(%s)\n}\n\n// g takes one int.\nfunc g(int) {}\n\n// h does nothing.\nfunc h() {}\n"
+	files, read := renameDiff(t, map[string]string{"d.go": "package a\n\nvar kube = 1\n", "old.go": fmt.Sprintf(body, "kube")},
+		map[string]string{"d.go": "package a\n\nvar Kube = 1\n", "new.go": fmt.Sprintf(body, "Kube")})
+	got, _ := quietRenames(files, read)
+	i := slices.IndexFunc(got, func(f fileDiff) bool { return f.Path == "new.go" })
+	if i < 0 || strings.Contains(got[i].Text, "@@") || !strings.Contains(got[i].Text, "rename from old.go\nrename to new.go\n") || got[i].OldPath != "old.go" {
+		t.Fatalf("quietRenames = %+v, want new.go's header alone", got)
 	}
-	for name, header := range map[string]string{
-		"rename": "diff --git a/old.go b/new.go\nsimilarity index 90%\nrename from old.go\nrename to new.go\nindex 1111111..2222222 100644\n--- a/old.go\n+++ b/new.go\n",
-		"mode":   "diff --git a/new.go b/new.go\nold mode 100644\nnew mode 100755\nindex 1111111..2222222\n--- a/new.go\n+++ b/new.go\n",
+}
+
+// renameCase is testdata/renames/name's base and head trees, path to
+// content.
+func renameCase(t *testing.T, name string) (base, head map[string]string) {
+	t.Helper()
+	base, head = map[string]string{}, map[string]string{}
+	for side, files := range map[string]map[string]string{"base": base, "head": head} {
+		root := filepath.Join("testdata", "renames", name, side)
+		if err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			b, err := os.ReadFile(p)
+			rel, _ := filepath.Rel(root, p)
+			files[filepath.ToSlash(rel)] = string(b)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return base, head
+}
+
+// A use is quiet only where it denotes the declaration a pair renames at
+// both sides of the diff. Each case base and head compiles: a decoy that
+// makes the new spelling name another object (a twin in base, a local
+// shadow, a method or field that moves to another type or depth, a twin
+// in another package, a sibling block) keeps the use; uses of the renamed
+// declaration where Go resolves them to it are quiet. The visible lines
+// stay added; the quiet ones are context.
+func TestQuietRenamesKeepsEveryUseADecoyReaches(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		pairs          int
+		visible, quiet []string
+	}{
+		{"a1_init", 0, []string{"x/i.go: func Init() {"}, nil},
+		{"a2_test", 0, []string{"x/egress_test.go: func testEgressRefusesPrivate(t *testing.T) {"}, nil},
+		{"a3_methods", 1, []string{`x/m.go: func (s secret) logValue() slog.Value { return slog.StringValue("[redacted]") }`,
+			`x/m.go: func (s secret) marshalJSON() ([]byte, error) { return json.Marshal("[redacted]") }`,
+			"x/m.go: func (g gate) serveHTTP(w http.ResponseWriter, r *http.Request) {", "x/m.go: func (d denied) unwrap() error { return d.err }"},
+			[]string{"x/m.go: return s.logValue(), d.unwrap()"}},
+		{"a4_field", 1, []string{"x/c.go: Token string"}, []string{`x/c.go: func header(c creds) string { return "Bearer " + c.Token }`}},
+		{"a5a_use_alone", 0, []string{"x/proxy.go: if !Allow(host) {"}, nil},
+		{"a5b_use_decoy_local_samefile", 1, []string{"x/proxy.go: if !Allow(host) {", "x/proxy.go: Allow := 3"}, []string{"x/proxy.go: return Allow"}},
+		{"a5c_use_decoy_xtest_samedir", 2, []string{"x/proxy.go: if !Allow(host) {", "x/proxy_ext_test.go: var Allow = 1"},
+			[]string{"x/proxy_ext_test.go: if Allow != 1 {", "x/proxy_ext_test.go: t.Fatal(Allow)"}},
+		{"a5d_use_decoy_otherdir", 1, []string{"x/proxy.go: if !Allow(host) {"}, []string{"y/y.go: func Level() int { return Allow }"}},
+		{"a5e_use_decoy_field_samedir", 1, []string{"x/proxy.go: if !Allow(host) {"}, []string{"x/opts.go: func (o opts) on() bool { return o.Allow }"}},
+		{"d_declaration_forms", 7, []string{`x/d.go: Str "strings"`, "x/d.go: func run[Elem any](xs []Elem) (Err error) {"},
+			[]string{"x/d.go: break Loop", "x/d.go: return Err", "x/d.go: f := (*set[int]).Add", "x/d.go: k.Hook = nil", "x/d.go: _ = TokenA + tokenB"}},
+		{"d_funcvar_assign", 1, nil, []string{"x/h.go: hook = Allow"}},
+		{"n1_embedded_depth", 1, []string{`x/pod.go: "privileged":   s.Privileged,`}, []string{"x/pod.go: func ciClass() limits { return limits{Privileged: true, cpu: 4} }"}},
+		{"n1b_method_override", 1, []string{"x/upload.go: return g.Send(host)"}, []string{"x/transport.go: return g.transport.Send(host)"}},
+		{"n2_receiver_type", 1, []string{`x/log.go: func (t Token) LogValue() slog.Value { return slog.StringValue("[redacted]") }`}, []string{"x/log.go: return Token"}},
+		{"n2b_conversion_twin", 1, []string{`x/a.go: log.Printf("auth %s", Token(raw))`}, []string{"x/a.go: return Token"}},
+		{"n4_package_clause", 1, []string{"egress/e.go: package Egress"}, []string{"egress/e.go: func Level() int { return Egress }"}},
+		{"p_factory", 0, nil, nil},
+		{"p_github", 0, nil, nil},
+		{"p_move_in", 0, nil, nil},
+		{"p_move_out", 0, nil, nil},
+		{"p_nested_factory", 1, nil, nil},
+		{"s1_shadow_local", 0, []string{"x/a.go: return Allow(host)"}, nil},
+		{"s2_selector_twin", 0, []string{"x/a.go: return c.Egress, a.Egress"}, nil},
+		{"t1_sibling_block", 1, []string{"x/proxy.go: if !Allow(host) {"}, []string{"x/proxy.go: _ = Allow"}},
 	} {
-		got, _ := quietRenames(slices.Concat(goDiff("d.go", declHunks), splitDiff(header+"@@ -4 +4 @@\n-\tf(kube)\n+\tf(Kube)\n")),
-			headOf(map[string]string{"d.go": declHead, "new.go": "package a\n\nfunc f() {\n\tf(Kube)\n}\n"}))
-		f, ok := fileAt(got, "new.go")
-		if !ok || f.Text != header || f.Added != 0 || f.Removed != 0 {
-			t.Errorf("%s: quietRenames = %+v, want new.go's header alone", name, got)
+		base, head := renameCase(t, tc.name)
+		files, read := renameDiff(t, base, head)
+		got, counts := quietRenames(files, read)
+		left, all := addedLines(got), addedLines(files)
+		for _, l := range tc.visible {
+			if !slices.Contains(left, l) {
+				t.Errorf("%s: %q is quiet or absent, want it visible; left %q", tc.name, l, left)
+			}
+		}
+		for _, l := range tc.quiet {
+			if slices.Contains(left, l) || !slices.Contains(all, l) {
+				t.Errorf("%s: %q is visible or absent, want it quiet", tc.name, l)
+			}
+		}
+		if counts.Pairs != tc.pairs {
+			t.Errorf("%s: %d pairs quiet, want %d; left %q", tc.name, counts.Pairs, tc.pairs, left)
 		}
 	}
 }
 
-// A use is quiet only when the diff renames its declaration where the use
-// reaches it: a twin in the base, or a declaration of another kind, keeps
-// it.
-func TestQuietRenamesQuietsAUseItsDeclarationReaches(t *testing.T) {
+// More decoys, each compiling at both sides: a map literal's key that
+// names a twin in base while a field of its spelling is renamed; a member
+// reached through a type of another package, which could hold the new
+// spelling no deeper (sync.Mutex's Lock), against one at depth 0 that
+// wins over it; uses of a generic type's renamed field; a method
+// receiver's type, which moves the method; a use in a file that imports
+// with a dot.
+func TestQuietRenamesKeepsAUseItCannotProve(t *testing.T) {
+	for _, tc := range []struct {
+		name, base, head string
+		pairs            int
+		visible, quiet   []string
+	}{
+		{"a map key",
+			"package x\n\nvar allow = \"internal\"\n\nconst Allow = \"any\"\n\ntype opts struct{ allow bool }\n\nfunc on(o opts) bool { return o.allow }\n\nvar hosts = map[string]bool{allow: true}\n",
+			"package x\n\nvar allow = \"internal\"\n\nconst Allow = \"any\"\n\ntype opts struct{ Allow bool }\n\nfunc on(o opts) bool { return o.Allow }\n\nvar hosts = map[string]bool{Allow: true}\n",
+			1, []string{"x/a.go: var hosts = map[string]bool{Allow: true}"}, []string{"x/a.go: func on(o opts) bool { return o.Allow }"}},
+		{"another package's type on the way",
+			"package x\n\nimport \"sync\"\n\ntype deep struct{ lock int }\n\ntype mid struct{ deep }\n\ntype outer struct {\n\tsync.Mutex\n\tmid\n}\n\ntype near struct {\n\tsync.Mutex\n\tlock int\n}\n\nfunc f(o outer, n near) {\n\t_ = o.lock\n\t_ = n.lock\n}\n",
+			"package x\n\nimport \"sync\"\n\ntype deep struct{ Lock int }\n\ntype mid struct{ deep }\n\ntype outer struct {\n\tsync.Mutex\n\tmid\n}\n\ntype near struct {\n\tsync.Mutex\n\tLock int\n}\n\nfunc f(o outer, n near) {\n\t_ = o.Lock\n\t_ = n.Lock\n}\n",
+			1, []string{"x/a.go: _ = o.Lock"}, []string{"x/a.go: _ = n.Lock"}},
+		{"a generic type",
+			"package x\n\ntype box[T any] struct{ kube T }\n\nfunc f() int {\n\tb := box[int]{kube: 1}\n\treturn b.kube\n}\n",
+			"package x\n\ntype box[T any] struct{ Kube T }\n\nfunc f() int {\n\tb := box[int]{Kube: 1}\n\treturn b.Kube\n}\n",
+			2, nil, []string{"x/a.go: b := box[int]{Kube: 1}", "x/a.go: return b.Kube"}},
+		{"a method receiver's type",
+			"package x\n\ntype token string\n\nfunc (t token) LogValue() string { return \"[redacted]\" }\n",
+			"package x\n\ntype Token string\n\nfunc (t Token) LogValue() string { return \"[redacted]\" }\n",
+			0, []string{`x/a.go: func (t Token) LogValue() string { return "[redacted]" }`}, nil},
+		{"a dot import",
+			"package x\n\nimport . \"strings\"\n\nvar kube = \"k\"\n\nfunc f() string { return ToUpper(kube) }\n",
+			"package x\n\nimport . \"strings\"\n\nvar Kube = \"k\"\n\nfunc f() string { return ToUpper(Kube) }\n",
+			0, []string{"x/a.go: func f() string { return ToUpper(Kube) }"}, nil},
+	} {
+		files, read := renameDiff(t, map[string]string{"x/a.go": tc.base}, map[string]string{"x/a.go": tc.head})
+		got, counts := quietRenames(files, read)
+		left, all := addedLines(got), addedLines(files)
+		for _, l := range tc.visible {
+			if !slices.Contains(left, l) {
+				t.Errorf("%s: %q is quiet or absent, want it visible; left %q", tc.name, l, left)
+			}
+		}
+		for _, l := range tc.quiet {
+			if slices.Contains(left, l) || !slices.Contains(all, l) {
+				t.Errorf("%s: %q is visible or absent, want it quiet", tc.name, l)
+			}
+		}
+		if counts.Pairs != tc.pairs {
+			t.Errorf("%s: %d pairs quiet, want %d; left %q", tc.name, counts.Pairs, tc.pairs, left)
+		}
+	}
+}
+
+// A use stays where a side cannot be read whole: an unread base or head, a
+// line the side holds otherwise, a file of the package go/parser cannot
+// read, a line inside a literal of more than one line; and wherever the
+// checklist judges the path or the file is no Go at both sides.
+func TestQuietRenamesReadsBothSides(t *testing.T) {
+	base := map[string]string{"x/d.go": "package x\n\nvar kube = 1\n", "x/a.go": "package x\n\nfunc f() int { return kube }\n"}
+	head := map[string]string{"x/d.go": "package x\n\nvar Kube = 1\n", "x/a.go": "package x\n\nfunc f() int { return Kube }\n"}
+	files, read := renameDiff(t, base, head)
+	if _, counts := quietRenames(files, read); counts.Pairs != 1 {
+		t.Fatalf("%d pairs quiet with both sides read, want 1", counts.Pairs)
+	}
+	for name, side := range map[string]func(bool, []string) map[string][]byte{
+		"an unread base": func(b bool, dirs []string) map[string][]byte {
+			if b {
+				return nil
+			}
+			return read(b, dirs)
+		},
+		"an unread head": func(b bool, dirs []string) map[string][]byte {
+			if !b {
+				return nil
+			}
+			return read(b, dirs)
+		},
+		"another line at the head": func(b bool, dirs []string) map[string][]byte {
+			out := read(b, dirs)
+			if !b {
+				out["x/a.go"] = []byte("package x\n\nfunc f() int { return Kube + 0 }\n")
+			}
+			return out
+		},
+		"a file of the base go/parser cannot read": func(b bool, dirs []string) map[string][]byte {
+			out := read(b, dirs)
+			if b {
+				out["x/e.go"] = []byte("package x\n\nfunc {\n")
+			}
+			return out
+		},
+	} {
+		if got, _ := quietRenames(files, side); !reflect.DeepEqual(got, files) {
+			t.Errorf("%s: quietRenames = %+v, want the diff as it is", name, got)
+		}
+	}
+	for name, tc := range map[string][2]map[string]string{
+		"a raw literal of lines":      {{"x/a.go": "package x\n\nvar kube = 1\n\nconst m = `\nx: kube\n`\n"}, {"x/a.go": "package x\n\nvar Kube = 1\n\nconst m = `\nx: Kube\n`\n"}},
+		"a path the checklist judges": {{"factory/d.go": base["x/d.go"], "factory/a.go": base["x/a.go"]}, {"factory/d.go": head["x/d.go"], "factory/a.go": head["x/a.go"]}},
+		"Go from a text file":         {{"x/d.go": base["x/d.go"], "x/a.txt": base["x/a.go"]}, {"x/d.go": head["x/d.go"], "x/a.go": head["x/a.go"]}},
+	} {
+		files, read := renameDiff(t, tc[0], tc[1])
+		if _, counts := quietRenames(files, read); counts.Pairs != 0 {
+			t.Errorf("%s: %d pairs quiet, want none", name, counts.Pairs)
+		}
+	}
+}
+
+// The line rule: two lines are a case rename when each byte they differ
+// in is the first ASCII letter of an identifier both hold, flipped in
+// case, and go/scanner reads both whole; the renames name each identifier
+// with its spellings.
+func TestCaseRenames(t *testing.T) {
 	for _, tc := range []struct {
 		name, removed, added string
-		decls, quiet         bool
+		want                 []caseRename
 	}{
-		{"a bare use of a package-level var", "\tf(kube)", "\tf(Kube)", true, true},
-		{"no declaration in the diff", "\tf(kube)", "\tf(Kube)", false, false},
-		{"a twin in the base", "\tif !allow(host) { return }", "\tif !Allow(host) { return }", false, false},
-		{"its declaration in the diff", "\tif !allow(host) { return }", "\tif !Allow(host) { return }", true, true},
-		{"a selector of a field", "\tt.kube = 1", "\tt.Kube = 1", true, true},
-		{"a selector of a package-level func", "\tt.allow(h)", "\tt.Allow(h)", true, false},
-		{"a bare use of a field", "\trefusal(1)", "\tRefusal(1)", true, false},
-		{"a composite literal's key", "\tv := T{kube: 1}", "\tv := T{Kube: 1}", true, true},
+		{"a field key", "\te.runner = &Runner{kube: kube}", "\te.runner = &Runner{Kube: kube}", []caseRename{{20, "kube", "Kube"}}},
+		{"after a literal holding //", "\tf(\"http://x\", kube)", "\tf(\"http://x\", Kube)", []caseRename{{15, "kube", "Kube"}}},
+		{"after the rune literal '\"'", "\ts := '\"' + kube + \"x\"", "\ts := '\"' + Kube + \"x\"", []caseRename{{12, "kube", "Kube"}}},
+		{"beside a literal key", "\tm := map[string]int{\"kube\": kube}", "\tm := map[string]int{\"kube\": Kube}", []caseRename{{29, "kube", "Kube"}}},
+		{"two names", "\tr.kube.refusal(x)", "\tr.Kube.Refusal(x)", []caseRename{{3, "kube", "Kube"}, {8, "refusal", "Refusal"}}},
+		{"inside a literal holding //", "\tx := \"a // kube\"", "\tx := \"a // Kube\"", nil},
+		{"in a literal after the rune literal '\"'", "\ts := '\"' + \"kube\"", "\ts := '\"' + \"Kube\"", nil},
+		{"in a line comment", "\tx() // kube.Run()", "\tx() // Kube.Run()", nil},
+		{"in a block comment", "\t/* kube */ f()", "\t/* Kube */ f()", nil},
+		{"an unclosed block comment", "\t/* kube", "\t/* Kube", nil},
+		{"an unclosed raw literal", "\tx := `kube", "\tx := `Kube", nil},
+		{"an unclosed literal", "\tx := \"kube", "\tx := \"Kube", nil},
+		{"a character Go does not know", "\t$kube", "\t$Kube", nil},
+		{"a letter past the first", "\tuserID := 1", "\tuserId := 1", nil},
+		{"all but the first", "\tURL := 1", "\tUrl := 1", nil},
+		{"a letter outside ASCII", "\tärger := 1", "\tÄrger := 1", nil},
+		{"the Kelvin sign", "\tkube := 1", "\tKube := 1", nil},
+		{"a keyword", "\tfunc f() {}", "\tFunc f() {}", nil},
+		{"a predeclared name", "\treturn nil", "\treturn Nil", nil},
+		{"a builtin", "\tdefer close(ch)", "\tdefer Close(ch)", nil},
+		{"a test", "\tTestKube(t)", "\ttestKube(t)", nil},
+		{"white space", "\ta := kube", "\ta :=  Kube", nil},
+		{"nothing", "\ta := kube", "\ta := kube", nil},
 	} {
-		use, head := useIn(tc.removed, tc.added)
-		files, heads := use, map[string]string{"a.go": head}
-		if tc.decls {
-			files, heads["d.go"] = slices.Concat(goDiff("d.go", declHunks), use), declHead
-		}
-		got, _ := quietRenames(files, headOf(heads))
-		a, kept := fileAt(got, "a.go")
-		if kept == tc.quiet || kept && !reflect.DeepEqual(a, use[0]) {
-			t.Errorf("%s: quietRenames = %+v, want quiet %t", tc.name, got, tc.quiet)
-		}
-	}
-}
-
-// A pair that declares a renamed name stays, whatever the name runs:
-// initializers, tests, interface methods, fields reflection reads, locals,
-// parameters, types and embedded fields.
-func TestQuietRenamesKeepsEveryDeclaration(t *testing.T) {
-	type pair struct{ name, head, removed, added string }
-	cases := []pair{
-		{"init", "package a\n\nfunc Init() { installEgressGuard() }\n", "func init() { installEgressGuard() }", "func Init() { installEgressGuard() }"},
-		{"a test", "package a\n\nfunc testEgressRefusesPrivate(t *testing.T) {\n}\n", "func TestEgressRefusesPrivate(t *testing.T) {", "func testEgressRefusesPrivate(t *testing.T) {"},
-		{"TestMain", "package a\n\nfunc testMain(m *testing.M) {\n}\n", "func TestMain(m *testing.M) {", "func testMain(m *testing.M) {"},
-		{"a field JSON writes", "package a\n\ntype Config struct {\n\tToken string\n}\n", "\ttoken string", "\tToken string"},
-		{"a field YAML reads", "package a\n\ntype Config struct {\n\tname string `yaml:\"name\"`\n}\n", "\tName string `yaml:\"name\"`", "\tname string `yaml:\"name\"`"},
-		{"a local", "package a\n\nfunc f() {\n\tKube := New()\n}\n", "\tkube := New()", "\tKube := New()"},
-		{"a parameter", "package a\n\nfunc f(Kube int) {\n}\n", "func f(kube int) {", "func f(Kube int) {"},
-		{"a type", "package a\n\ntype Kube struct{}\n", "type kube struct{}", "type Kube struct{}"},
-		{"an interface method", "package a\n\ntype I interface {\n\tlogValue() int\n}\n", "\tLogValue() int", "\tlogValue() int"},
-		{"an embedded field", "package a\n\ntype S struct {\n\tInner\n}\n", "\tinner", "\tInner"},
-	}
-	for _, m := range []string{"LogValue", "MarshalJSON", "ServeHTTP", "Unwrap", "Format", "GoString"} {
-		low := strings.ToLower(m[:1]) + m[1:]
-		cases = append(cases, pair{m, "package a\n\nfunc (s Secret) " + low + "() {}\n", "func (s Secret) " + m + "() {}", "func (s Secret) " + low + "() {}"})
-	}
-	for _, tc := range cases {
-		line := strings.Count(tc.head[:strings.Index(tc.head, tc.added)], "\n") + 1
-		files := goDiff("a.go", fmt.Sprintf("@@ -%d +%d @@\n-%s\n+%s\n", line, line, tc.removed, tc.added))
-		if got, counts := quietRenames(files, headOf(map[string]string{"a.go": tc.head})); !reflect.DeepEqual(got, files) || counts != (RenameCounts{}) {
-			t.Errorf("%s: quietRenames = %+v, %+v, want the declaration as it is", tc.name, got, counts)
-		}
-	}
-}
-
-// A local's declaration reaches its uses in its own file alone, and a
-// package-level one those in its own directory alone.
-func TestQuietRenamesScopesADeclaration(t *testing.T) {
-	use, head := useIn("\tif !allow(host) { return }", "\tif !Allow(host) { return }")
-	b := goDiff("b.go", "@@ -4,2 +4,2 @@ func g() {\n-\tallow := 1\n-\t_ = allow\n+\tAllow := 1\n+\t_ = Allow\n")
-	got, _ := quietRenames(slices.Concat(b, use), headOf(map[string]string{"a.go": head, "b.go": "package a\n\nfunc g() {\n\tAllow := 1\n\t_ = Allow\n}\n"}))
-	want := "diff --git a/b.go b/b.go\nindex 1111111..2222222 100644\n--- a/b.go\n+++ b/b.go\n@@ -4,2 +4,2 @@ func g() {\n-\tallow := 1\n+\tAllow := 1\n \t_ = Allow\n"
-	if len(got) != 2 || got[0].Text != want || !reflect.DeepEqual(got[1], use[0]) {
-		t.Fatalf("quietRenames = %+v, want b.go's use quiet and a.go as it is", got)
-	}
-	use, head = useIn("\tf(kube)", "\tf(Kube)")
-	got, _ = quietRenames(slices.Concat(goDiff("x/d.go", declHunks), use), headOf(map[string]string{"x/d.go": declHead, "a.go": head}))
-	if a, ok := fileAt(got, "a.go"); !ok || !reflect.DeepEqual(a, use[0]) {
-		t.Fatalf("quietRenames = %+v, want a.go as it is: x/d.go is another package", got)
-	}
-}
-
-// The pairs go/scanner reads as a rename of identifiers by the case of
-// their first ASCII letter, and nothing else, are quiet where their
-// declaration is renamed; every other pair stays, the ones a tokenizer
-// that reads less than Go would misread too.
-func TestQuietRenamesReadsTheLineAsGo(t *testing.T) {
-	for _, tc := range []struct {
-		name, removed, added string
-		quiet                bool
-	}{
-		{"a field key", "\te.runner = &Runner{kube: kube}", "\te.runner = &Runner{Kube: kube}", true},
-		{"after a literal holding //", "\tf(\"http://x\", kube)", "\tf(\"http://x\", Kube)", true},
-		{"after the rune literal '\"'", "\ts := '\"' + kube + \"x\"", "\ts := '\"' + Kube + \"x\"", true},
-		{"beside a literal key", "\tm := map[string]int{\"kube\": kube}", "\tm := map[string]int{\"kube\": Kube}", true},
-		{"two names", "\tr.kube.refusal(x)", "\tr.Kube.Refusal(x)", true},
-		{"inside a literal holding //", "\tx := \"a // kube\"", "\tx := \"a // Kube\"", false},
-		{"in a literal after the rune literal '\"'", "\ts := '\"' + \"kube\"", "\ts := '\"' + \"Kube\"", false},
-		{"in a line comment", "\tx() // kube.Run()", "\tx() // Kube.Run()", false},
-		{"in a block comment", "\t/* kube */ f()", "\t/* Kube */ f()", false},
-		{"an unclosed block comment", "\t/* kube", "\t/* Kube", false},
-		{"an unclosed raw literal", "\tx := `kube", "\tx := `Kube", false},
-		{"an unclosed literal", "\tx := \"kube", "\tx := \"Kube", false},
-		{"a character Go does not know", "\t$kube", "\t$Kube", false},
-		{"a letter past the first", "\tuserID := 1", "\tuserId := 1", false},
-		{"all but the first", "\tURL := 1", "\tUrl := 1", false},
-		{"a letter outside ASCII", "\tärger := 1", "\tÄrger := 1", false},
-		{"the Kelvin sign", "\tkube := 1", "\t\u212aube := 1", false},
-		{"a keyword", "\tfunc f() {}", "\tFunc f() {}", false},
-		{"a predeclared name", "\treturn nil", "\treturn Nil", false},
-		{"a builtin", "\tdefer close(ch)", "\tdefer Close(ch)", false},
-		{"a test", "\tTestKube(t)", "\ttestKube(t)", false},
-		{"white space", "\ta := kube", "\ta :=  Kube", false},
-		{"nothing", "\ta := kube", "\ta := kube", false},
-	} {
-		use, head := useIn(tc.removed, tc.added)
-		got, _ := quietRenames(slices.Concat(goDiff("d.go", declHunks), use), headOf(map[string]string{"d.go": declHead, "a.go": head}))
-		a, kept := fileAt(got, "a.go")
-		if kept == tc.quiet || kept && !reflect.DeepEqual(a, use[0]) {
-			t.Errorf("%s: quietRenames = %+v, want quiet %t", tc.name, got, tc.quiet)
-		}
-	}
-}
-
-// A use of a predeclared name, or of a name go test runs by itself, stays,
-// its declaration renamed beside it or not.
-func TestQuietRenamesKeepsAUseOfAPredeclaredOrTestName(t *testing.T) {
-	for _, tc := range []struct{ name, declWas, declIs, removed, added string }{
-		{"a builtin", "func close(ch chan int) {}", "func Close(ch chan int) {}", "\tdefer close(ch)", "\tdefer Close(ch)"},
-		{"a test", "func TestKube(t *testing.T) {}", "func testKube(t *testing.T) {}", "\tTestKube(t)", "\ttestKube(t)"},
-	} {
-		files := goDiff("d.go", "@@ -3 +3 @@\n-"+tc.declWas+"\n+"+tc.declIs+"\n")
-		use, head := useIn(tc.removed, tc.added)
-		files = append(files, use...)
-		if got, _ := quietRenames(files, headOf(map[string]string{"d.go": "package a\n\n" + tc.declIs + "\n", "a.go": head})); !reflect.DeepEqual(got, files) {
-			t.Errorf("%s: quietRenames = %+v, want both as they are", tc.name, got)
+		if got := caseRenames(tc.removed, tc.added); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: caseRenames = %+v, want %+v", tc.name, got, tc.want)
 		}
 	}
 }
@@ -829,51 +941,5 @@ func TestEntryName(t *testing.T) {
 		if got := entryName(name); got != want {
 			t.Errorf("entryName(%q) = %t, want %t", name, got, want)
 		}
-	}
-}
-
-// A use stays where the head does not show it as code at its line: inside
-// a literal or a comment of more than one line, whatever //line directive
-// says the lines are, at a line that holds something else, in a file
-// unread or one go/scanner or go/parser cannot read. A file whose path
-// does not end in .go, or whose old one does not, or that the checklist
-// judges by its path, stays, and so does a rename to a name an added line
-// of the diff brings.
-func TestQuietRenamesReadsTheLineAtTheHead(t *testing.T) {
-	pair, code := "@@ -4 +4 @@\n-from: selector\n+from: Selector\n", "package a\n\nfunc f() {\nfrom: Selector\n}\n"
-	decl := func(dir string) []fileDiff {
-		return goDiff(dir+"b.go", "@@ -3 +3 @@\n-var selector = 1\n+var Selector = 1\n")
-	}
-	declHead := "package a\n\nvar Selector = 1\n"
-	for _, tc := range []struct {
-		name, path string
-		files      []fileDiff
-		heads      map[string]string
-	}{
-		{"a raw literal of lines", "a.go", goDiff("a.go", pair), map[string]string{"a.go": "package a\n\nconst m = `\nfrom: Selector\n`\n"}},
-		{"a //line directive", "a.go", goDiff("a.go", pair), map[string]string{"a.go": "package a\n//line x.go:1\nconst m = `\nfrom: Selector\n`\n"}},
-		{"a block comment of lines", "a.go", goDiff("a.go", pair), map[string]string{"a.go": "package a\n\n/*\nfrom: Selector\n*/\n"}},
-		{"another line at the head", "a.go", goDiff("a.go", pair), map[string]string{"a.go": "package a\n\nfunc f() {\nfrom: selector\n}\n"}},
-		{"an unread head", "a.go", goDiff("a.go", pair), nil},
-		{"a head go/scanner cannot read", "a.go", goDiff("a.go", pair), map[string]string{"a.go": code + "`\n"}},
-		{"a head go/parser cannot read", "a.go", goDiff("a.go", pair), map[string]string{"a.go": "package a\n\n\nfrom: Selector\n"}},
-		{"YAML", "k8s/a.yaml", goDiff("k8s/a.yaml", pair), map[string]string{"k8s/a.yaml": "a:\n\n\nfrom: Selector\n"}},
-		{"Go from a text file", "a.go", splitDiff("diff --git a/a.txt b/a.go\nsimilarity index 90%\nrename from a.txt\nrename to a.go\n--- a/a.txt\n+++ b/a.go\n" + pair),
-			map[string]string{"a.go": code}},
-		{"a path the checklist judges", "factory/a.go", goDiff("factory/a.go", pair), map[string]string{"factory/a.go": code}},
-		{"a name the diff adds", "a.go", slices.Concat(goDiff("a.go", pair), goDiff("c.go", "@@ -1,0 +2 @@\n+var wide = Selector\n")),
-			map[string]string{"a.go": code, "c.go": "package a\nvar wide = Selector\n"}},
-	} {
-		dir := strings.TrimSuffix(tc.path, path.Base(tc.path))
-		heads := map[string]string{dir + "b.go": declHead}
-		maps.Copy(heads, tc.heads)
-		got, _ := quietRenames(slices.Concat(decl(dir), tc.files), headOf(heads))
-		if f, ok := fileAt(got, tc.path); !ok || !reflect.DeepEqual(f, tc.files[0]) {
-			t.Errorf("%s: quietRenames = %+v, want %s as it is", tc.name, got, tc.path)
-		}
-	}
-	got, _ := quietRenames(slices.Concat(decl(""), goDiff("a.go", pair)), headOf(map[string]string{"b.go": declHead, "a.go": code}))
-	if _, ok := fileAt(got, "a.go"); ok {
-		t.Fatalf("quietRenames = %+v, want the use quiet where the head reads it as code", got)
 	}
 }

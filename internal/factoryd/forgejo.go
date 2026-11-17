@@ -1,8 +1,10 @@
 package factoryd
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -14,6 +16,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -884,6 +887,56 @@ func (f *Forgejo) CommitParent(ctx context.Context, owner, repo, sha string) (st
 // FileAt reads path at ref.
 func (f *Forgejo) FileAt(ctx context.Context, owner, repo, ref, path string) ([]byte, error) {
 	return f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/raw/%s?ref=%s", owner, repo, path, url.QueryEscape(ref)), nil, http.StatusOK)
+}
+
+// The bounds of an archive GoFiles reads: its gzipped answer, what it
+// unpacks to, and the time the read may take.
+const (
+	maxArchiveRead     = 64 << 20
+	maxArchiveUnpacked = 512 << 20
+	archiveReadTimeout = 2 * time.Minute
+)
+
+// errArchiveTooLarge is an archive that unpacks past maxArchiveUnpacked.
+var errArchiveTooLarge = fmt.Errorf("the archive unpacks past %d MiB", maxArchiveUnpacked>>20)
+
+// GoFiles reads the .go files directly in each of dirs at ref, path to
+// content, from one archive of the repository at ref.
+func (f *Forgejo) GoFiles(ctx context.Context, owner, repo, ref string, dirs []string) (map[string][]byte, error) {
+	body, err := f.doLimit(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/archive/%s.tar.gz", owner, repo, url.PathEscape(ref)), nil,
+		http.StatusOK, f.callAuth(), maxArchiveRead, archiveReadTimeout)
+	if err != nil {
+		return nil, err
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	unpacked := &io.LimitedReader{R: zr, N: maxArchiveUnpacked}
+	tr := tar.NewReader(unpacked)
+	out := map[string][]byte{}
+	for {
+		h, err := tr.Next()
+		switch {
+		case unpacked.N <= 0:
+			return nil, errArchiveTooLarge
+		case err == io.EOF:
+			return out, nil
+		case err != nil:
+			return nil, err
+		}
+		// the archive holds the tree under one directory named for the repository
+		_, name, _ := strings.Cut(h.Name, "/")
+		if h.Typeflag != tar.TypeReg || !strings.HasSuffix(name, ".go") || !slices.Contains(dirs, path.Dir(name)) {
+			continue
+		}
+		if out[name], err = io.ReadAll(tr); err != nil {
+			return nil, err
+		}
+		if unpacked.N <= 0 {
+			return nil, errArchiveTooLarge
+		}
+	}
 }
 
 // CIRunnerRegistration is a freshly registered ephemeral runner. Secret is

@@ -1,7 +1,9 @@
 package factoryd
 
 import (
+	"archive/tar"
 	"cmp"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -79,6 +81,9 @@ type gateForgejo struct {
 	// diffs are other pull requests' diffs by number; 9's is diff unless
 	// diffs holds one
 	diffs map[int64]string
+	// archives are sf/repo's trees by ref, path to content, each served
+	// as a gzipped tar under the directory repo/
+	archives map[string]map[string]string
 }
 
 func (f *gateForgejo) nextHead() string {
@@ -202,6 +207,20 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 				f.comments[i] = body.Body
 			}
 			io.WriteString(w, `{}`)
+		case r.Method == "GET" && strings.HasPrefix(p, "/archive/") && strings.HasSuffix(p, ".tar.gz"):
+			tree, ok := f.archives[strings.TrimSuffix(strings.TrimPrefix(p, "/archive/"), ".tar.gz")]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			zw := gzip.NewWriter(w)
+			tw := tar.NewWriter(zw)
+			for _, name := range slices.Sorted(maps.Keys(tree)) {
+				tw.WriteHeader(&tar.Header{Name: "repo/" + name, Mode: 0o644, Size: int64(len(tree[name])), Typeflag: tar.TypeReg})
+				io.WriteString(tw, tree[name])
+			}
+			tw.Close()
+			zw.Close()
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/raw/"):
 			rest := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/")
 			f.rawRefs = append(f.rawRefs, r.URL.Query().Get("ref"))
