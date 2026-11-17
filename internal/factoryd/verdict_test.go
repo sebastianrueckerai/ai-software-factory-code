@@ -2032,6 +2032,63 @@ func TestPlanCloseJudgesOffMainRowsOnMain(t *testing.T) {
 	}
 }
 
+// An approver's Close of a plan with a merged card waives only the
+// criteria nothing settles: a criterion the gate's last run on main met
+// stays met, though the human closed the failed card since and the gate
+// has not run for the cards as they stand; a criterion met only at the
+// head of a closed card's unmerged pull request is waived, as the human
+// criterion no row settles.
+func TestCloseHeldPlanKeepsWhatTheGateMetOnMain(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name   string
+		onMain bool
+		waived []string
+	}{
+		{"met by a run on main", true, []string{"c2"}},
+		{"met at an unmerged head", false, []string{"c1", "c2", "c3"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 2085, ""), func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+				return CriteriaResult{}, gateMet(ctx, s, taskID)
+			})
+			s.criteriaVerdicts["t-int"] = nil
+			plan := s.tasks["t-plan"]
+			plan.Track = policy.TrackPlan
+			s.tasks["t-plan"] = plan
+			mergeCard(s, "card-foundation")
+			failed := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
+			s.tasks["card-extra"] = Task{ID: "card-extra", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "extra", Status: "failed", FinishedAt: &failed}
+			if c.onMain {
+				sweep(ctx, r)
+				if len(*calls) != 1 || closeRows(s) != 0 {
+					t.Fatalf("calls %v, closes %d; want one run on main and the plan open on c2", *calls, closeRows(s))
+				}
+				closed := time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)
+				card := s.tasks["card-extra"]
+				card.Status, card.FinishedAt = "closed", &closed
+				s.tasks["card-extra"] = card
+			} else if err := gateMet(ctx, s, "t-int"); err != nil {
+				t.Fatal(err)
+			}
+			if n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil || n != len(c.waived) || closeRows(s) != 1 {
+				t.Fatalf("CloseHeldPlan = %d, %v, closes %d; want %d waived and the plan closed", n, err, closeRows(s), len(c.waived))
+			}
+			rows, _ := s.CriteriaVerdicts(ctx, "t-int")
+			var waived []string
+			for _, v := range rows {
+				if v.Source == CriteriaSourceApprover && v.Verdict == "waived" {
+					waived = append(waived, v.Criterion)
+				}
+			}
+			slices.Sort(waived)
+			if !slices.Equal(waived, c.waived) {
+				t.Fatalf("waived %v, want %v; rows %+v", waived, c.waived, rows)
+			}
+		})
+	}
+}
+
 // A run on main cut after it wrote rows (its judgement step failed) wrote
 // them for main's head: they stand. Rows for every criterion close the plan
 // on the next pass; a criterion it left without a row runs the gate once

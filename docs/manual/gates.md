@@ -211,13 +211,17 @@ activities, each with a timeline step and a comment on the pull request:
    card merged (by its `pull_request_merged` event, else its finish with a
    merge commit) or was reverted after it, or a run of the gate on main's
    head is on record for the plan as it stands: its newest revision and
-   each card's status, finish and revert. Otherwise only an approver's row settles it;
-   the production hold and a plan's Close count open criteria the same way.
+   each card's status, finish and revert. Otherwise only an approver's
+   row settles it; the production hold and a plan's Close count open
+   criteria the same way, except that a Close, the human's decision, runs
+   no gate again and waives no criterion the newest run on main met
+   (`met` on its record) while that met row stands.
    Once every card is final and a gate criterion has no row that settles
    it, the close runs the gate on the integration card: at its pull
    request's head when its rows judge main, else at main's head, the commit
    fetched by itself, with no comment, after it withdraws every row but the
-   approver's (`criteria_rows_withdrawn` on the plan's timeline). A failed
+   approver's (`criteria_rows_withdrawn` on the plan's timeline); each
+   record of a run's outcome names the criteria it left met (`met`). A failed
    card is final as any other. Each state of the plan gets at most two
    attempts; a card that ends or is reverted after the last run, or a new
    revision, makes the gate due again.

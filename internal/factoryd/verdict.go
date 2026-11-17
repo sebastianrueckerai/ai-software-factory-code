@@ -441,8 +441,38 @@ func planOpen(ctx context.Context, store PlanVerdictReader, id string, p Plan) (
 	return openCriteria(p, rows), home, nil
 }
 
+// gateMetIDs are the criteria of p whose standing row of rows is a met
+// verdict of the gate's, not the approver's, in the plan's order.
+func gateMetIDs(p Plan, rows []CriterionVerdict) []string {
+	var ids []string
+	for _, c := range p.Criteria {
+		if v, ok := StandingRow(rows, c); ok && v.Source != CriteriaSourceApprover && v.Verdict == "met" {
+			ids = append(ids, c.ID)
+		}
+	}
+	return ids
+}
+
+// metOnMain are the criteria the newest run of plan id's criteria gate on
+// card home left met on main, by its record; none before a run.
+func (r *Runner) metOnMain(ctx context.Context, id, home string) ([]string, error) {
+	runs, err := r.gateRuns(ctx, id, home)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range runs {
+		if met, ok := e.Detail["met"].(string); ok {
+			return strings.Fields(met), nil
+		}
+	}
+	return nil, nil
+}
+
 // planCloseOpen reads plan t's newest revision and the criteria that hold
-// production, and refuses a close that needs an approver or a note it lacks.
+// production, and refuses a close that needs an approver or a note it
+// lacks. A criterion the newest run of the gate on main met, whose met row
+// still stands, is not open to the close: the cards changed since, and the
+// close, the human's decision, runs no gate again.
 func (r *Runner) planCloseOpen(ctx context.Context, t Task, note string, approver bool) (p Plan, open []PlanCriterion, home string, err error) {
 	switch rev, ok, err := r.store.PlanRevision(ctx, t.ID, 0); {
 	case err != nil:
@@ -454,6 +484,18 @@ func (r *Runner) planCloseOpen(ctx context.Context, t Task, note string, approve
 	}
 	if open, home, err = planOpen(ctx, r.store, t.ID, p); err != nil {
 		return p, nil, "", err
+	}
+	if len(open) > 0 {
+		met, err := r.metOnMain(ctx, t.ID, home)
+		if err != nil {
+			return p, nil, "", err
+		}
+		rows, err := r.store.CriteriaVerdicts(ctx, home)
+		if err != nil {
+			return p, nil, "", err
+		}
+		stands := gateMetIDs(p, rows)
+		open = slices.DeleteFunc(open, func(c PlanCriterion) bool { return slices.Contains(met, c.ID) && slices.Contains(stands, c.ID) })
 	}
 	switch {
 	case len(open) > 0 && !approver:
@@ -1864,8 +1906,14 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 	runs := g.runs
 	attempt := fmt.Sprint(gateAttempts(runs) + 1)
 	pr, mark := g.pr, g.mark
+	// met: the criteria the run left met on main, once it ran
+	var met *string
 	detail := func(outcome, commit string) map[string]any {
-		return map[string]any{"task": integration.ID, "pr": pr, "commit": commit, "outcome": outcome, "attempt": attempt, "cards": mark}
+		d := map[string]any{"task": integration.ID, "pr": pr, "commit": commit, "outcome": outcome, "attempt": attempt, "cards": mark}
+		if met != nil {
+			d["met"] = *met
+		}
+		return d
 	}
 	record := func(outcome, commit string) {
 		r.timeline.recordEvent(rctx, id, EventCriteriaGateRun, detail(outcome, commit))
@@ -1943,6 +1991,12 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 	res, err := gate(gctx, integration.ID, pr, head, "")
 	if err != nil {
 		log.Printf("plan %s: the criteria gate: %s", id, r.Scrub.String(err.Error()))
+	}
+	if rows, rerr := r.store.CriteriaVerdicts(rctx, integration.ID); rerr != nil {
+		log.Printf("plan %s: the criteria gate's rows: %s", id, r.Scrub.String(rerr.Error()))
+	} else {
+		ids := strings.Join(gateMetIDs(p, rows), " ")
+		met = &ids
 	}
 	if err != nil || res.Escalate != "" {
 		record(gateCut, head)
