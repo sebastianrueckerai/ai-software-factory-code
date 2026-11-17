@@ -180,7 +180,7 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 		"confirmed_eur": 12.0, "to_eur": 12.0, "reason": "the review findings cost money", "pr": "sf/infra#101"})
 
 	// the agent's fund of 1 EUR: no human click, the card's live case
-	// answered on rung 2
+	// answered on rung 2 as the chat user
 	r.SetLoadedAutonomy(policy.AutonomyAutonomous)
 	fund := `{"task_id":"t-e","eur":1,"text":"the replica is worth it"}`
 	equal(t, "the unattended fund", agentCall(t, r, path, ck, csrf, "fund", fund, "funded it"), []string{
@@ -188,7 +188,7 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 		`applied {"result":"Case 1 took fund.","tool":"fund"}`,
 		`text {"text":"funded it"}`, `done {}`})
 	equal(t, "the agent's answer", lastAct(t, r),
-		[]any{"t-e", int64(1), "anna", factoryd.ViaChat, 2, factoryd.ActFund, 1.0, "the replica is worth it"})
+		[]any{"t-e", int64(1), factoryd.ChatUser, factoryd.ViaChat, 2, factoryd.ActFund, 1.0, "the replica is worth it"})
 	card, _, _ := r.Task(t.Context(), "t-e")
 	equal(t, "the card's budget", card.BudgetEUR, 3.0)
 	equal(t, "the pool line after the agent's fund", poolLineOf(t, r, now), []any{12.0, 4.0, true, false,
@@ -254,7 +254,7 @@ func TestPoolEscalationFallback(t *testing.T) {
 		`tool {"arguments":` + raise + `,"duration_ms":0,"name":"fund","result":"Refused: ` + spent + `"}`,
 		`text {"text":"the human decides"}`, `done {}`})
 	equal(t, "the refused call's status", lastToolRow(t, r, "anna", "fund").Status, http.StatusConflict)
-	equal(t, "the refused answer", lastAct(t, r), []any{"t-e", int64(1), "anna", factoryd.ViaChat, 2, factoryd.ActFund, 1.0, "the replica is worth it"})
+	equal(t, "the refused answer", lastAct(t, r), []any{"t-e", int64(1), factoryd.ChatUser, factoryd.ViaChat, 2, factoryd.ActFund, 1.0, "the replica is worth it"})
 	card, _, _ := r.Task(t.Context(), "t-e")
 	if card.BudgetEUR != 2 || card.Status != "waiting-human" {
 		t.Fatalf("the refusal moved the card to %v %v", card.BudgetEUR, card.Status)

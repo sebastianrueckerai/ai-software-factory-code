@@ -150,7 +150,9 @@ func keepsOpen(c Case, t Task, res Resolution) bool {
 // records a step and ends nothing. A human card's case takes a value of its question's
 // choices, which Act records and runs nothing for, deploy_now excepted, which
 // runs outside the run. Rung 0 is factoryd's,
-// and factoryd answers on rung 0 alone. An answer holds its case from its
+// and factoryd answers on rung 0 alone. Rung 2 is the project agent's:
+// its answer is recorded as ChatUser, never as the human whose turn woke
+// it, so no record of it reads as the human's. An answer holds its case from its
 // first read to its end, so a second answer on it waits, then finds it
 // ended, with nothing of its own run.
 func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
@@ -161,6 +163,11 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		return ActResult{}, ErrActRefused(fmt.Sprintf("rung 0 is factoryd's own, and factoryd answers on rung 0 alone: answer on rung 0, not rung %d", in.Rung))
 	case in.Rung != 1 && in.By == CheckinDecider:
 		return ActResult{}, ErrActRefused(fmt.Sprintf("the check-in answers on rung 1 alone, not rung %d", in.Rung))
+	case in.Rung != 2 && in.By == ChatUser:
+		return ActResult{}, ErrActRefused(fmt.Sprintf("the project agent answers on rung 2 alone, not rung %d", in.Rung))
+	}
+	if in.Rung == 2 {
+		in.By = ChatUser
 	}
 	out, err := r.act(ctx, in)
 	if err != nil && in.CaseID != 0 {

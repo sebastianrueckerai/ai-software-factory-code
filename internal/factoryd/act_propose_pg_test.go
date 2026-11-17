@@ -78,7 +78,7 @@ func TestRung2ProposesAtAssistedAndManual(t *testing.T) {
 			g.chat.answers = []CheckinResponse{g.handUp(t)}
 			out := g.trip(t, tripCap)
 			g.settle()
-			res, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaChat, Rung: 2,
+			res, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: out.CaseID, By: ChatUser, Via: ViaChat, Rung: 2,
 				Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Fund: &policy.Draw{AgentTime: 10 * time.Minute}, Note: leaky}, Found: leaky})
 			if err != nil {
 				t.Fatalf("Act: %v", err)
@@ -131,7 +131,7 @@ func TestRung2RunsAtAutonomousAndFullAuto(t *testing.T) {
 			g.chat.answers = []CheckinResponse{g.handUp(t)}
 			out := g.trip(t, tripCap)
 			g.settle()
-			if _, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaChat, Rung: 2,
+			if _, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: out.CaseID, By: ChatUser, Via: ViaChat, Rung: 2,
 				Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Note: "one more"}}); err != nil {
 				t.Fatalf("Act: %v", err)
 			}
@@ -172,7 +172,7 @@ func TestPolicyClassFacesWithRung2sAnalysisOnly(t *testing.T) {
 		t.Fatalf("rung 1 steps %+v, want the check-in's own human answer as one handed-up step", one)
 	}
 	ctx := context.Background()
-	_, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActClose}})
+	_, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActClose}})
 	want := "this case is the human's by its kind (the merge gate marks the policy class human): record your analysis and recommended option with attach_analysis"
 	if err == nil || err.Error() != want {
 		t.Fatalf("Act close = %v, want %q", err, want)

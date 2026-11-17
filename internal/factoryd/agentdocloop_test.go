@@ -196,7 +196,8 @@ func TestAgentDocLoopFactsFollowTheMode(t *testing.T) {
 }
 
 // sessionMessage is the one composer of a writer's message into a running
-// session: the first one carries the basics, later ones do not.
+// session: the first one carries the basics, later ones do not, and the
+// project agent's names the project agent, never a writer.
 func TestSessionMessage(t *testing.T) {
 	first := sessionMessage("t-1", "Ann", "carry on", true)
 	again := sessionMessage("t-1", "Ann", "and again", false)
@@ -207,6 +208,9 @@ func TestSessionMessage(t *testing.T) {
 	if strings.Contains(again, "You are the agent session") ||
 		!strings.Contains(again, "A message from Ann, a writer of this project: and again") {
 		t.Fatalf("a later message carries the basics: %q", again)
+	}
+	if got := sessionMessage("t-1", ChatUser, "rebase first", false); got != "A message from the project agent: rebase first" {
+		t.Fatalf("the project agent's message = %q, want it named as the project agent's", got)
 	}
 }
 

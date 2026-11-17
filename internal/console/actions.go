@@ -612,7 +612,7 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 		}
 		return strings.Join(said, " "), nil
 	}
-	issue, err := c.cfg.RetryCard(ctx, t.ID, a.s.user)
+	issue, err := c.cfg.RetryCard(ctx, t.ID, a.approver())
 	var no factoryd.ErrNoRetry
 	switch {
 	case errors.As(err, &no):
@@ -685,7 +685,7 @@ func tailContext(ctx context.Context) (context.Context, context.CancelFunc) {
 // the card closes on the note, so its wait ends at once. It answers the
 // note's comment.
 func (c *Console) goWork(ctx context.Context, a actor, t factoryd.Task) (string, int64, error) {
-	issue, err := c.cfg.GoCard(ctx, t.ID, a.s.user)
+	issue, err := c.cfg.GoCard(ctx, t.ID, a.approver())
 	var no factoryd.ErrNoGo
 	switch {
 	case errors.As(err, &no):
@@ -995,7 +995,7 @@ func (c *Console) doDecideHoldout(ctx context.Context, a actor, id string, revis
 		return err
 	}
 	var stale factoryd.ErrStalePlan
-	switch err := c.cfg.DecideHoldout(ctx, t.ID, revision, idx, verb, a.s.user); {
+	switch err := c.cfg.DecideHoldout(ctx, t.ID, revision, idx, verb, a.approver()); {
 	case errors.As(err, &stale):
 		return refuse(http.StatusConflict, stale.Error())
 	case errors.Is(err, factoryd.ErrAnswered):
@@ -1630,7 +1630,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		}
 	case value == factoryd.AnswerDismiss:
 		work = func(ctx context.Context) (int64, error) {
-			switch err := c.cfg.DismissStall(ctx, t.Repository, t.SHA, a.s.user); {
+			switch err := c.cfg.DismissStall(ctx, t.Repository, t.SHA, a.approver()); {
 			case errors.As(err, &gone):
 				return 0, refuse(http.StatusConflict, fmt.Sprintf("Card #%d: %s.", t.IssueNumber, gone))
 			case err != nil:
@@ -1827,7 +1827,7 @@ func (c *Console) callActWork(ctx context.Context, a actor, t factoryd.Task, cas
 			return factoryd.ActResult{}, err
 		}
 	}
-	in := factoryd.ActInput{TaskID: t.ID, CaseID: caseID, By: a.s.user, Via: a.via, Rung: a.rung(), Res: res, Post: post, Work: work,
+	in := factoryd.ActInput{TaskID: t.ID, CaseID: caseID, By: a.approver(), Via: a.via, Rung: a.rung(), Res: res, Post: post, Work: work,
 		Detail: stamped(ctx, c.eventOf(a, t.Repository, t.ID, t.IssueNumber, factoryd.EventQuestionAnswered, nil)).Detail}
 	if in.Rung == 2 && a.reads != nil {
 		in.Read = a.reads()
@@ -2121,7 +2121,7 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 // closing words and closes as a, so the card ends closed. An issue close
 // that fails after the write is finished by the sweep.
 func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
-	approver := c.isApprover(ctx, a.s.user, t.Repository)
+	approver := c.isApprover(ctx, a.approver(), t.Repository)
 	if err := c.cfg.CheckClosePlan(ctx, t.ID, note, approver); err != nil {
 		return "", c.planCloseRefusal(ctx, a, t, err)
 	}
@@ -2132,7 +2132,7 @@ func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note 
 			return "", err
 		}
 	}
-	n, words, merged, err := c.cfg.CloseHeldPlan(ctx, t.ID, a.s.user, note, approver)
+	n, words, merged, err := c.cfg.CloseHeldPlan(ctx, t.ID, a.approver(), note, approver)
 	if err != nil {
 		return "", c.planCloseRefusal(ctx, a, t, err)
 	}
@@ -2260,7 +2260,7 @@ func (c *Console) commentOnce(ctx context.Context, a actor, t factoryd.Task, tex
 // issue, or the card alone, and records note on the close.
 func (c *Console) closeIssueNoted(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
 	if t.IssueNumber == 0 || t.Status == "merged" {
-		if err := c.cfg.CloseCard(ctx, t.ID, a.s.user); err != nil {
+		if err := c.cfg.CloseCard(ctx, t.ID, a.approver()); err != nil {
 			log.Printf("console: %s closes %s: %v", a.s.user, t.ID, err)
 			return "", refuse(http.StatusConflict, "The card could not be closed: "+errText(err)+". Reload the board and press the button again.")
 		}
@@ -2663,7 +2663,7 @@ func (c *Console) doHoldCard(ctx context.Context, a actor, id, release, reason s
 			return "", err
 		}
 	}
-	ok, err := c.cfg.HoldCard(ctx, t.ID, rel.ID, reason, a.s.user)
+	ok, err := c.cfg.HoldCard(ctx, t.ID, rel.ID, reason, a.approver())
 	if err != nil {
 		log.Printf("console: %s holds %s: %v", a.s.user, t.ID, err)
 		return "", refuse(http.StatusInternalServerError, "The hold could not be stored; hold the card again.")
@@ -2917,7 +2917,7 @@ func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string
 	if t.Status != "running" {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a running session")
 	}
-	switch err := c.cfg.Steer(ctx, t.ID, a.s.user, text); {
+	switch err := c.cfg.Steer(ctx, t.ID, a.approver(), text); {
 	case errors.Is(err, factoryd.ErrNoLiveSession), errors.Is(err, harness.ErrNotRunning):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d runs no session right now.", t.IssueNumber))
 	case errors.Is(err, harness.ErrNotSupported):
@@ -3426,7 +3426,7 @@ func (c *Console) criterionVerdict(ctx context.Context, a actor, q factoryd.Appr
 			return "", err
 		}
 	} else {
-		switch err := c.cfg.DecideCriterion(ctx, plan, cid, verb, a.s.user, reason); {
+		switch err := c.cfg.DecideCriterion(ctx, plan, cid, verb, a.approver(), reason); {
 		case errors.Is(err, factoryd.ErrNoCriterion):
 			return "", refuse(http.StatusConflict, fmt.Sprintf("The plan holds no criterion %s. Reload the board.", cid))
 		case errors.Is(err, factoryd.ErrCriterionMet):
@@ -3481,7 +3481,7 @@ func (c *Console) doConfirmCriteria(ctx context.Context, a actor, id int64, line
 
 // confirmCriteria is the work of the confirmation Act runs for a on request q.
 func (c *Console) confirmCriteria(ctx context.Context, a actor, q factoryd.ApprovalRequest, line string) (string, error) {
-	n, err := c.cfg.ConfirmDeliveredCriteria(ctx, q.TaskID, a.s.user, line)
+	n, err := c.cfg.ConfirmDeliveredCriteria(ctx, q.TaskID, a.approver(), line)
 	switch {
 	case errors.Is(err, factoryd.ErrChildOpen):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Cannot confirm the delivered cards: %v.", err))

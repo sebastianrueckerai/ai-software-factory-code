@@ -274,11 +274,11 @@ func TestRung2DeployNowRunsOrProposesByLevel(t *testing.T) {
 				}
 				return
 			}
-			if len(h.stub.calls) != 1 || h.stub.calls[0] != (deployCall{heldRepo, "sebastian", ViaChat, "agent"}) {
+			if len(h.stub.calls) != 1 || h.stub.calls[0] != (deployCall{heldRepo, ChatUser, ViaChat, "agent"}) {
 				t.Fatalf("DeployNow calls %+v, want one as the agent", h.stub.calls)
 			}
-			if c.Status != CaseResolved || c.Resolution == nil || c.Resolution.Rung != 2 || c.Resolution.By != "sebastian" {
-				t.Errorf("case %s, resolution %+v; want resolved on rung 2 by sebastian", c.Status, c.Resolution)
+			if c.Status != CaseResolved || c.Resolution == nil || c.Resolution.Rung != 2 || c.Resolution.By != ChatUser {
+				t.Errorf("case %s, resolution %+v; want resolved on rung 2 by %s", c.Status, c.Resolution, ChatUser)
 			}
 			if want := "Deploy now: main of demo-app/demo-app at 9d9d9d9 goes to production."; !strings.Contains(out.Text, want) {
 				t.Errorf("text %q lacks %q", out.Text, want)
@@ -311,7 +311,7 @@ func TestDeployNowIsRefusedOnOtherCases(t *testing.T) {
 	h := newHeldRig(t, policy.AutonomyFullAuto)
 	out := h.trip(t, tripCap)
 	h.settle()
-	_, err := h.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActDeployNow}})
+	_, err := h.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: out.CaseID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActDeployNow}})
 	if err == nil || !strings.HasPrefix(err.Error(), notRollHeld) {
 		t.Fatalf("Act on a session cap = %v, want %q", err, notRollHeld)
 	}
@@ -388,7 +388,7 @@ func TestEndedCardTakesNoReplanButStillCloses(t *testing.T) {
 	if _, err := h.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'closed', finished_at = now() WHERE id = 't1'`); err != nil {
 		t.Fatal(err)
 	}
-	_, err := h.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActReplan}})
+	_, err := h.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActReplan}})
 	if want := "ended closed, so its case takes no replan"; err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("replan on a closed card = %v, want %q", err, want)
 	}

@@ -2198,7 +2198,7 @@ func (t *turn) requestImage(in toolInput) (string, error) {
 			return factoryd.QueueRefusal(ctx, t.c.cfg.Tasks, tree, t.p.Repository, title)
 		})
 	}
-	ask, err := t.c.cfg.RequestImage(ctx, t.p.Repository, tool, strings.TrimSpace(in.Need), strings.TrimSpace(in.Image), t.a.s.user, admit)
+	ask, err := t.c.cfg.RequestImage(ctx, t.p.Repository, tool, strings.TrimSpace(in.Need), strings.TrimSpace(in.Image), t.a.approver(), admit)
 	var no factoryd.ErrImageRequest
 	var admission *refusal
 	switch {

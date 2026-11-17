@@ -214,7 +214,11 @@ func (r *Runner) MessageSession(ctx context.Context, taskID, user, text string) 
 // session's first message, the basics preamble that tells the session
 // what it is.
 func sessionMessage(taskID, user, text string, basics bool) string {
-	msg := "A message from " + user + ", a writer of this project: " + text
+	from := user + ", a writer of this project"
+	if user == ChatUser {
+		from = "the project agent"
+	}
+	msg := "A message from " + from + ": " + text
 	if basics {
 		msg = "You are the agent session of card " + taskID + " in the AI software factory. " + manual.Loop +
 			". When you end, the factory commits your working tree, pushes it and opens the pull request. " +
