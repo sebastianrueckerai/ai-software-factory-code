@@ -179,8 +179,11 @@ var Actions = []Action{
 			return "a one-line reason is required"
 		}
 		for _, p := range confirmAuditFindings(r.Args) {
-			if !f.auditFindingNamed(p) {
-				return fmt.Sprintf("the head's audit holds no finding %q names; name each finding as its audit section shows it, or none to confirm them all", p)
+			switch _, n := f.auditFindingNamed(p); {
+			case n == 0:
+				return fmt.Sprintf("the head's audit holds no finding %q names; name each finding as the case lists it, its item at its file, or none to confirm them all", p)
+			case n > 1:
+				return fmt.Sprintf("%q starts %d findings of the head's audit; name each one whole, one per line, or none to confirm them all", p, n)
 			}
 		}
 		return ""
@@ -488,9 +491,9 @@ func argString(args map[string]any, key string) string {
 	return s
 }
 
-// confirmAuditFindings is confirm_audit's findings argument: the finding
-// text prefixes a person confirms, one per line; empty confirms every
-// finding the head's newest audit holds.
+// confirmAuditFindings is confirm_audit's findings argument: the findings
+// a person confirms, one per line, each by its text or a start of it;
+// empty confirms every finding the head's newest audit holds.
 func confirmAuditFindings(args map[string]any) []string {
 	var out []string
 	for _, line := range strings.Split(argString(args, "findings"), "\n") {
@@ -501,14 +504,22 @@ func confirmAuditFindings(args map[string]any) []string {
 	return out
 }
 
-// auditFindingNamed: text prefixes one of f's audit findings' texts.
-func (f CaseFacts) auditFindingNamed(text string) bool {
+// auditFindingNamed is the text of the finding of the head's newest audit
+// that text names: the one whose text it is, else the one whose text it
+// starts. n is how many it names; key is "" unless n is 1.
+func (f CaseFacts) auditFindingNamed(text string) (key string, n int) {
 	for _, id := range f.AuditFindings {
-		if strings.HasPrefix(f.FindingTexts[id], text) {
-			return true
+		switch t := f.FindingTexts[id]; {
+		case t == text:
+			return t, 1
+		case strings.HasPrefix(t, text):
+			key, n = t, n+1
 		}
 	}
-	return false
+	if n != 1 {
+		return "", n
+	}
+	return key, n
 }
 
 // boardActions are the actions whose work the console's code does

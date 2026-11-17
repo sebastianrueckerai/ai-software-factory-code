@@ -1159,6 +1159,29 @@ func TestAMergeConflictRefusesTheAnswersThatRerunTheGates(t *testing.T) {
 	}
 }
 
+// confirm_audit names a finding of the head's newest audit by its whole
+// text, or by a start of it no other finding shares: a text that is
+// another's start still names its own finding, a start of two is refused
+// with how many it names, and a start of none is refused.
+func TestConfirmAuditNamesOneFindingWhole(t *testing.T) {
+	texts := map[string]string{"a": "secrets at a.go", "b": "secrets at a.go.orig", "c": "network egress at b.go"}
+	f := CaseFacts{Kind: CaseGateStop, AuditFindings: []string{"a", "b", "c"}, FindingTexts: texts}
+	for _, tc := range []struct{ named, key, refusal string }{
+		{"secrets at a.go", "secrets at a.go", ""},
+		{"secrets at a.go.o", "secrets at a.go.orig", ""},
+		{"network", "network egress at b.go", ""},
+		{"secrets", "", `"secrets" starts 2 findings of the head's audit; name each one whole, one per line, or none to confirm them all`},
+		{"secrets at a.go:154", "", `the head's audit holds no finding "secrets at a.go:154" names; name each finding as the case lists it, its item at its file, or none to confirm them all`},
+	} {
+		if key, _ := f.auditFindingNamed(tc.named); key != tc.key {
+			t.Errorf("%q names %q, want %q", tc.named, key, tc.key)
+		}
+		if got := applies(t, ActConfirmAudit, f, Resolution{Note: "fixtures", Args: map[string]any{"findings": tc.named}}); got != tc.refusal {
+			t.Errorf("%q: confirm_audit applies = %q, want %q", tc.named, got, tc.refusal)
+		}
+	}
+}
+
 // A decision's riding draw counts before the cap check. At a cap of 3
 // reached with 3 attempts, a handover that draws one session applies (the
 // cap becomes 4), one that draws nothing does not, and a draw of agent time

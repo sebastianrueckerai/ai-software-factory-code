@@ -762,19 +762,24 @@ func answersACase(a Action) bool {
 }
 
 // confirmAudit records the audit findings a person's confirm_audit marks
-// fixtures (audit-confirm): each finding text prefix they named, or every
-// finding the head's newest audit holds when none, as an
-// audit_finding_confirmed step with who, why and when. Every GateAudit of
-// the task reads the steps off the timeline and settles its verdict past
-// them, on this attempt and a fresh one alike, until the head's audit
-// clears on its own. A confirmation stands once: one already recorded
-// under the same prefix is not recorded again.
+// fixtures (audit-confirm): each finding they named, under its whole text
+// (auditFindingNamed), or every finding the head's newest audit holds when
+// none, as an audit_finding_confirmed step with who, why and when. Every
+// GateAudit of the task reads the steps off the timeline and settles its
+// verdict past the findings of those texts, on this attempt and a fresh
+// one alike, until the head's audit clears on its own. A confirmation
+// stands once: one already recorded under the same text is not recorded
+// again.
 func (r *Runner) confirmAudit(ctx context.Context, t Task, f CaseFacts, in ActInput) error {
-	named := confirmAuditFindings(in.Res.Args)
-	if len(named) == 0 {
+	var texts []string
+	for _, p := range confirmAuditFindings(in.Res.Args) {
+		text, _ := f.auditFindingNamed(p)
+		texts = append(texts, text)
+	}
+	if len(texts) == 0 {
 		for _, id := range f.AuditFindings {
 			if text := f.FindingTexts[id]; text != "" {
-				named = append(named, text)
+				texts = append(texts, text)
 			}
 		}
 	}
@@ -782,14 +787,15 @@ func (r *Runner) confirmAudit(ctx context.Context, t Task, f CaseFacts, in ActIn
 	if err != nil {
 		return err
 	}
-	for _, prefix := range named {
-		if _, done := seen[prefix]; done {
+	for _, text := range texts {
+		if _, done := seen[text]; done {
 			continue
 		}
-		detail := map[string]any{"finding": prefix, "by": in.By, "why": strings.TrimSpace(in.Res.Note)}
+		detail := map[string]any{"finding": text, "by": in.By, "why": strings.TrimSpace(in.Res.Note)}
 		if err := r.timeline.Append(ctx, t.ID, stepAuditConfirmed, detail); err != nil {
 			return err
 		}
+		seen[text] = Adjudication{}
 	}
 	return nil
 }

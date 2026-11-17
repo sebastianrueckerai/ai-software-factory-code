@@ -72,17 +72,17 @@ func TestParseAudit(t *testing.T) {
 	}{
 		"clear":  {`{"verdict":"clear","findings":[]}`, nil, ""},
 		"fenced": {"```json\n{\"verdict\":\"clear\"}\n```", nil, ""},
-		"findings": {`{"verdict":"findings","findings":[{"item":"network egress","file":"k8s/egress.yaml","line":12,"why":"allows api.example.org"}]}`,
+		"findings": {`{"verdict":"findings","findings":[{"item":2,"file":"k8s/egress.yaml","line":12,"why":"allows api.example.org"}]}`,
 			[]AuditFinding{{Item: "network egress", File: "k8s/egress.yaml", Line: 12, Why: "allows api.example.org"}}, ""},
-		"clear with findings listed": {`{"verdict":"clear","findings":[{"item":"RBAC","file":"k8s/rbac.yaml","line":3,"why":"a new ClusterRole"}]}`,
-			[]AuditFinding{{Item: "RBAC", File: "k8s/rbac.yaml", Line: 3, Why: "a new ClusterRole"}}, ""},
+		"clear with findings listed": {`{"verdict":"clear","findings":[{"item":3,"file":"k8s/rbac.yaml","line":3,"why":"a new ClusterRole"}]}`,
+			[]AuditFinding{{Item: "RBAC and ServiceAccounts", File: "k8s/rbac.yaml", Line: 3, Why: "a new ClusterRole"}}, ""},
 		"not json":             {"all good", nil, "the answer is not one JSON object"},
 		"empty":                {"", nil, "the answer is not one JSON object"},
 		"unknown verdict":      {`{"verdict":"pass"}`, nil, `unknown verdict "pass"`},
 		"findings without any": {`{"verdict":"findings","findings":[]}`, nil, "verdict findings names none"},
 		"extra field":          {`{"verdict":"clear","summary":"nothing touched"}`, nil, ""},
-		"negative line": {`{"verdict":"findings","findings":[{"item":"RBAC","file":"k8s/rbac.yaml","line":-3,"why":"a new Role"}]}`,
-			[]AuditFinding{{Item: "RBAC", File: "k8s/rbac.yaml", Why: "a new Role"}}, ""},
+		"negative line": {`{"verdict":"findings","findings":[{"item":3,"file":"k8s/rbac.yaml","line":-3,"why":"a new Role"}]}`,
+			[]AuditFinding{{Item: "RBAC and ServiceAccounts", File: "k8s/rbac.yaml", Why: "a new Role"}}, ""},
 		"trailing text": {`{"verdict":"clear"} ok`, nil, "the answer is not one JSON object"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -100,6 +100,82 @@ func TestParseAudit(t *testing.T) {
 	}
 }
 
+// The model answers an item by its checklist number, and the finding holds
+// the item's name.
+func TestParseAuditItemIsChecklistNumber(t *testing.T) {
+	for n, want := range map[int]string{1: "secrets", 3: "RBAC and ServiceAccounts", 6: "sandbox contract"} {
+		got, why := parseAudit(fmt.Sprintf(`{"verdict":"findings","findings":[{"item":%d,"file":"a.go","line":5,"why":"x"}]}`, n))
+		if why != "" || !slices.Equal(got, []AuditFinding{{Item: want, File: "a.go", Line: 5, Why: "x"}}) {
+			t.Errorf("item %d: parseAudit = %+v, %q, want one finding of %q", n, got, why, want)
+		}
+	}
+}
+
+// An item that is no checklist number makes the whole answer one without a
+// verdict, its reason naming the item.
+func TestParseAuditRefusesAnItemOutOfRange(t *testing.T) {
+	for item, want := range map[string]string{
+		`0`:                             "the answer named checklist item 0, which is not a number from 1 to 6",
+		`7`:                             "the answer named checklist item 7, which is not a number from 1 to 6",
+		`"3. RBAC and ServiceAccounts"`: `the answer named checklist item "3. RBAC and ServiceAccounts", which is not a number from 1 to 6`,
+	} {
+		got, why := parseAudit(`{"verdict":"findings","findings":[{"item":1,"file":"a.go","why":"x"},{"item":` + item + `,"file":"b.go","why":"y"}]}`)
+		if got != nil || why != want {
+			t.Errorf("item %s: parseAudit = %+v, %q, want no findings and %q", item, got, why, want)
+		}
+	}
+}
+
+// A finding's text is its item at its file, never its line.
+func TestAuditFindingTextHasNoLine(t *testing.T) {
+	for _, tc := range []struct {
+		f    AuditFinding
+		want string
+	}{
+		{AuditFinding{Item: "secrets", File: "a.go", Line: 5}, "secrets at a.go"},
+		{AuditFinding{Item: "secrets", File: "a.go"}, "secrets at a.go"},
+		{AuditFinding{Item: "secrets"}, "secrets"},
+	} {
+		if got := tc.f.Text(); got != tc.want {
+			t.Errorf("%+v.Text() = %q, want %q", tc.f, got, tc.want)
+		}
+	}
+}
+
+// The card's own case: a confirmation of the secrets in image_look_test.go
+// covers them at the line the next run cites, and covers no other file,
+// not even one whose path its file starts.
+func TestConfirmationSurvivesAnotherRun(t *testing.T) {
+	confirmed := map[string]Adjudication{"secrets at internal/factoryd/image_look_test.go": {By: "sebastian", Why: "the rig's fake"}}
+	for _, tc := range []struct {
+		f    AuditFinding
+		want bool
+	}{
+		{AuditFinding{Item: "secrets", File: "internal/factoryd/image_look_test.go", Line: 154}, true},
+		{AuditFinding{Item: "secrets", File: "internal/factoryd/image_look_test.go", Line: 155}, true},
+		{AuditFinding{Item: "secrets", File: "internal/factoryd/ci.go"}, false},
+		{AuditFinding{Item: "secrets", File: "internal/factoryd/image_look_test.go.orig", Line: 154}, false},
+		{AuditFinding{Item: "network egress", File: "internal/factoryd/image_look_test.go", Line: 154}, false},
+	} {
+		if got := auditConfirmedOf(tc.f, confirmed); got != tc.want {
+			t.Errorf("auditConfirmedOf(%+v) = %t, want %t", tc.f, got, tc.want)
+		}
+	}
+}
+
+// The prompt's checklist is the table's: one numbered line for each item.
+func TestChecklistIsBuiltFromTheTable(t *testing.T) {
+	numbered := 0
+	for _, line := range strings.Split(auditChecklist, "\n") {
+		if len(line) > 1 && line[0] >= '1' && line[0] <= '9' && line[1] == '.' {
+			numbered++
+		}
+	}
+	if !strings.Contains(auditChecklist, "\n3. RBAC and ServiceAccounts: ") || numbered != len(auditItems) {
+		t.Fatalf("the checklist has %d numbered lines, want %d:\n%s", numbered, len(auditItems), auditChecklist)
+	}
+}
+
 // A planted password in a test file: the pre-check finds it at its file
 // and line without the value, the model's findings join, and the call is
 // the coder class's audit model on the task's account with purpose audit.
@@ -107,7 +183,7 @@ func TestParseAudit(t *testing.T) {
 // its start; no comment reaches the pull request.
 func TestGateAuditFindsAPlantedSecret(t *testing.T) {
 	fj := &gateForgejo{diff: secretTestDiff}
-	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[{"item":"secrets","file":"internal/x/x_test.go","line":4,"why":"a password literal and a token ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 in a test"}]}`,
+	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[{"item":1,"file":"internal/x/x_test.go","line":4,"why":"a password literal and a token ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 in a test"}]}`,
 		deployment: "zai/glm-5.3"}
 	r, objects := newAuditRunner(t, fj, ll, true)
 	from := time.Now()
@@ -151,13 +227,13 @@ func TestGateAuditFindsAPlantedSecret(t *testing.T) {
 // beside it on the step.
 func TestGateAuditSettlesPastAPersonsConfirmations(t *testing.T) {
 	fj := &gateForgejo{diff: secretTestDiff}
-	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[{"item":"secrets","file":"internal/x/x_test.go","line":4,"why":"a password literal in a test"}]}`}
+	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[{"item":1,"file":"internal/x/x_test.go","line":4,"why":"a password literal in a test"}]}`}
 	r, objects := newAuditRunner(t, fj, ll, true)
 	ctx := context.Background()
 	from := time.Now()
 	for _, c := range []struct{ finding, why string }{
-		{"secret in the diff: password, secret or token assigned a literal at internal/x/x_test.go:4", "the rig's fake, not a real credential"},
-		{"secrets at internal/x/x_test.go:4", "test rig fixture"},
+		{"secret in the diff: password, secret or token assigned a literal at internal/x/x_test.go", "the rig's fake, not a real credential"},
+		{"secrets at internal/x/x_test.go", "test rig fixture"},
 	} {
 		if err := r.timeline.Append(ctx, "t1", stepAuditConfirmed, map[string]any{"finding": c.finding, "by": "sebastian", "why": c.why}); err != nil {
 			t.Fatal(err)
@@ -171,7 +247,7 @@ func TestGateAuditSettlesPastAPersonsConfirmations(t *testing.T) {
 	if len(res.Confirmed) != 2 {
 		t.Fatalf("confirmed = %+v, want both confirmations", res.Confirmed)
 	}
-	adj := res.Confirmed["secrets at internal/x/x_test.go:4"]
+	adj := res.Confirmed["secrets at internal/x/x_test.go"]
 	if adj.By != "sebastian" || adj.Why != "test rig fixture" || adj.When.IsZero() || adj.When.Before(from) {
 		t.Fatalf("the model finding's confirmation = %+v, want sebastian's, recorded with the step's time since %s", adj, from)
 	}
@@ -180,7 +256,7 @@ func TestGateAuditSettlesPastAPersonsConfirmations(t *testing.T) {
 		t.Fatalf("audit step = %v, want the settled clear verdict", step)
 	}
 	confirmed, _ := step["confirmed"].(map[string]any)
-	by, _ := confirmed["secrets at internal/x/x_test.go:4"].(map[string]any)
+	by, _ := confirmed["secrets at internal/x/x_test.go"].(map[string]any)
 	if by["by"] != "sebastian" || by["why"] != "test rig fixture" {
 		t.Fatalf("the step's confirmations = %v, want sebastian's beside the verdict", confirmed)
 	}
@@ -191,12 +267,12 @@ func TestGateAuditSettlesPastAPersonsConfirmations(t *testing.T) {
 func TestGateAuditKeepsAFindingItsConfirmationDoesNotCover(t *testing.T) {
 	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n--- a/Makefile\n+++ b/Makefile\n@@ -1 +1,2 @@\n all:\n+check:\n"}
 	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[` +
-		`{"item":"secrets","file":"internal/x/x_test.go","line":4,"why":"a rig literal"},` +
-		`{"item":"secrets","file":"internal/y/y.go","line":9,"why":"a real credential"}]}`}
+		`{"item":1,"file":"internal/x/x_test.go","line":4,"why":"a rig literal"},` +
+		`{"item":1,"file":"internal/y/y.go","line":9,"why":"a real credential"}]}`}
 	r, _ := newAuditRunner(t, fj, ll, true)
 	at := time.Now().UTC().Round(time.Second)
 	if err := r.timeline.Append(context.Background(), "t1", stepAuditConfirmed,
-		map[string]any{"finding": "secrets at internal/x/x_test.go:4", "by": "sebastian", "why": "test rig fixture", "time": at}); err != nil {
+		map[string]any{"finding": "secrets at internal/x/x_test.go", "by": "sebastian", "why": "test rig fixture", "time": at}); err != nil {
 		t.Fatal(err)
 	}
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
@@ -205,7 +281,7 @@ func TestGateAuditKeepsAFindingItsConfirmationDoesNotCover(t *testing.T) {
 	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) {
 		t.Fatalf("audit = %+v, want the uncovered finding %+v holding the verdict", res, want)
 	}
-	if len(res.Confirmed) != 1 || res.Confirmed["secrets at internal/x/x_test.go:4"].By != "sebastian" {
+	if len(res.Confirmed) != 1 || res.Confirmed["secrets at internal/x/x_test.go"].By != "sebastian" {
 		t.Fatalf("confirmed = %+v, want the one confirmation beside the verdict", res.Confirmed)
 	}
 }
@@ -231,7 +307,7 @@ func TestGateAuditNeverSettlesItsNoVerdictFinding(t *testing.T) {
 // findings stand.
 func TestGateAuditWithoutAConfirmationHoldsAsBefore(t *testing.T) {
 	fj := &gateForgejo{diff: secretTestDiff}
-	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[{"item":"secrets","file":"internal/x/x_test.go","line":4,"why":"a password literal in a test"}]}`}
+	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[{"item":1,"file":"internal/x/x_test.go","line":4,"why":"a password literal in a test"}]}`}
 	r, _ := newAuditRunner(t, fj, ll, true)
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
@@ -381,7 +457,7 @@ func TestGateAuditOfFailedPartsCollapsesByStatus(t *testing.T) {
 func TestGateAuditCapsThePartsFindings(t *testing.T) {
 	var ten []string
 	for i := range 10 {
-		ten = append(ten, fmt.Sprintf(`{"item":"network egress","file":"f.go","line":%d,"why":"a new host"}`, i+1))
+		ten = append(ten, fmt.Sprintf(`{"item":2,"file":"f.go","line":%d,"why":"a new host"}`, i+1))
 	}
 	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[` + strings.Join(ten, ",") + `]}`}
 	diff := ""
@@ -413,7 +489,7 @@ func TestGateAuditReadsABigFileInPieces(t *testing.T) {
 // Every audit call reads the whole checklist: no call sees another's.
 func TestAuditPromptsCarryTheChecklist(t *testing.T) {
 	for name, prompt := range map[string]string{"first": auditPrompt, "part": auditPartPrompt} {
-		if !strings.HasSuffix(prompt, auditChecklist) || !strings.Contains(auditChecklist, "\n6. the sandbox contract") {
+		if !strings.HasSuffix(prompt, auditChecklist) || !strings.Contains(auditChecklist, "\n6. sandbox contract: ") {
 			t.Errorf("the %s prompt does not end with the checklist", name)
 		}
 	}
@@ -427,9 +503,9 @@ func TestGateAuditReadsTheDiffInParts(t *testing.T) {
 	diff := diffFile("a.go", 30<<10, "\tgo func() {") + diffFile("b.go", 30<<10)
 	ll := &fakeLiteLLM{answer: func(user string) string {
 		if strings.Contains(user, "part 1 of 2") {
-			return `{"verdict":"findings","findings":[{"item":"network egress","file":"a.go","line":1,"why":"a new host"}]}`
+			return `{"verdict":"findings","findings":[{"item":2,"file":"a.go","line":1,"why":"a new host"}]}`
 		}
-		return `{"verdict":"findings","findings":[{"item":"RBAC and ServiceAccounts","file":"b.go","line":1,"why":"a new Role"}]}`
+		return `{"verdict":"findings","findings":[{"item":3,"file":"b.go","line":1,"why":"a new Role"}]}`
 	}}
 	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
@@ -466,7 +542,7 @@ func TestGateAuditPartWithoutAVerdict(t *testing.T) {
 		if strings.Contains(user, "part 1 of 2") {
 			return "LGTM"
 		}
-		return `{"verdict":"findings","findings":[{"item":"secrets","file":"b.go","line":1,"why":"w"}]}`
+		return `{"verdict":"findings","findings":[{"item":1,"file":"b.go","line":1,"why":"w"}]}`
 	}}
 	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
@@ -496,7 +572,7 @@ func TestGateAuditPartsRunInParallel(t *testing.T) {
 	ll := &fakeLiteLLM{delay: 200 * time.Millisecond, answer: func(user string) string {
 		for k, file := range []string{"a.go", "b.go", "c.go", "d.go"} {
 			if strings.Contains(user, fmt.Sprintf("part %d of 4", k+1)) {
-				return `{"verdict":"findings","findings":[{"item":"network egress","file":"` + file + `","line":1,"why":"a new host"}]}`
+				return `{"verdict":"findings","findings":[{"item":2,"file":"` + file + `","line":1,"why":"a new host"}]}`
 			}
 		}
 		return "no part"
@@ -529,12 +605,13 @@ func TestGateAuditSkipsAProjectWithoutIt(t *testing.T) {
 }
 
 // The planted secret's value reaches neither the result (the card) nor
-// the timeline, whatever the model echoes: in an unparseable answer, in a
-// finding's file or why.
+// the timeline, whatever the model echoes: in an unparseable answer, in an
+// item that is no checklist number, in a finding's file or why.
 func TestGateAuditNeverShowsThePlantedSecret(t *testing.T) {
 	for name, content := range map[string]string{
-		"unparseable": `I cannot answer in JSON. The diff sets password = "hunter2hunter2" in a test.`,
-		"finding": `{"verdict":"findings","findings":[{"item":"secrets hunter2hunter2","file":"internal/x/x_test.go hunter2hunter2","line":4,` +
+		"unparseable":          `I cannot answer in JSON. The diff sets password = "hunter2hunter2" in a test.`,
+		"an item not a number": `{"verdict":"findings","findings":[{"item":"secrets hunter2hunter2","file":"internal/x/x_test.go","line":4,"why":"w"}]}`,
+		"finding": `{"verdict":"findings","findings":[{"item":1,"file":"internal/x/x_test.go hunter2hunter2","line":4,` +
 			`"why":"password = \"hunter2hunter2\""}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -571,7 +648,7 @@ func TestGateAuditCapsThePreCheck(t *testing.T) {
 // the scrubber hides; the model's file is scrubbed.
 func TestGateAuditKeepsThePreChecksPath(t *testing.T) {
 	diff := "diff --git a/k8s/hunter2hunter2.yaml b/k8s/hunter2hunter2.yaml\n--- /dev/null\n+++ b/k8s/hunter2hunter2.yaml\n@@ -0,0 +1 @@\n+password: \"hunter2hunter2\"\n"
-	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[{"item":"secrets","file":"k8s/hunter2hunter2.yaml","line":1,"why":"a password"}]}`}
+	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[{"item":1,"file":"k8s/hunter2hunter2.yaml","line":1,"why":"a password"}]}`}
 	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)

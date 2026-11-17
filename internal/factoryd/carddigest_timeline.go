@@ -442,12 +442,12 @@ func findingList(raw json.RawMessage) []string {
 	return texts
 }
 
-// textIDs are the sorted ids of texts.
+// textIDs are the sorted ids of texts, each once.
 func textIDs(texts []string) []string {
 	var out []string
 	for _, t := range texts {
 		out = append(out, FindingID(t))
 	}
 	slices.Sort(out)
-	return out
+	return slices.Compact(out)
 }

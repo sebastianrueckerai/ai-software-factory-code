@@ -515,6 +515,23 @@ func TestCardDigestReadsEveryStepKind(t *testing.T) {
 	}
 }
 
+// Two audit findings of one item in one file, at lines a run apart, are one
+// finding of the card: the step lists each id once, sorted. Ids by
+// sha256sum: "secrets at a.go" 99f3acc590cc, "network egress at b.go"
+// e60f60b44189.
+func TestCardDigestCountsAnAuditFindingOnce(t *testing.T) {
+	g := newDigestRig(nil)
+	g.line(t, 1, "audit", map[string]any{"commit": "f00dfeed1234", "verdict": AuditFindings, "findings": []AuditFinding{
+		{Item: "secrets", File: "a.go", Line: 154, Why: "a literal"}, {Item: "secrets", File: "a.go", Line: 155, Why: "the literal"},
+		{Item: "network egress", File: "b.go", Line: 9, Why: "a new host"}}})
+	d := g.digest(t)
+	audit := d.Steps[len(d.Steps)-1]
+	if want := []string{"99f3acc590cc", "e60f60b44189"}; audit.Kind != "audit" || !slices.Equal(audit.Findings, want) ||
+		audit.Outcome != "findings 99f3acc590cc e60f60b44189" {
+		t.Fatalf("audit step = %+v, want the findings %v", audit, want)
+	}
+}
+
 // stateGuardLine is the gate's line for a test that failed; its id is the
 // first 12 hex of the sha256 of the lowercased text, by sha256sum.
 const (

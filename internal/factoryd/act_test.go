@@ -598,7 +598,8 @@ func TestAParkSettlesTheCaseItAnswers(t *testing.T) {
 // The human's confirm_audit on the gate stop's case records the audit
 // findings it names, all of them when it names none, as
 // audit_finding_confirmed steps with who and why, and ends the case; a
-// second one under a recorded prefix records nothing again. The project
+// second one naming a recorded finding, by its text or a start of it,
+// records nothing again. The project
 // agent's press, a press without a reason and one naming a finding the
 // audit does not hold are refused, and write nothing.
 func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
@@ -665,5 +666,15 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 	}
 	if got := steps(); len(got) != 1 {
 		t.Fatalf("confirmations = %v, want the one standing, the second press recording nothing again", got)
+	}
+	// a start of the finding's text names it whole: the recorded text stands, nothing records again
+	g.store.cases = append(g.store.cases, Case{ID: 11, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
+		Facts: map[string]any{"head": "h2", "gate": "GateCriteria"}})
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 11, By: "sebastian", Rung: 3,
+		Res: Resolution{Action: ActConfirmAudit, Note: "once more", Args: map[string]any{"findings": "metricDividePlans"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := steps(); len(got) != 1 || got[0]["finding"] != findingB {
+		t.Fatalf("confirmations = %v, want %q alone, the start resolved to it", got, findingB)
 	}
 }
