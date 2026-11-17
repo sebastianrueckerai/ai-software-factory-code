@@ -639,6 +639,45 @@ func TestGateCriteriaFindsAPlanWithoutARun(t *testing.T) {
 	}
 }
 
+// A gate run on the pull request of a card that ended undelivered, as an
+// attempt still running after a human closed the card, writes no row: the
+// rows on the plan's integration card stand as they were. The card's own
+// run while it is open writes them, as the close's run on main and its run
+// on a merged integration card's pull request.
+func TestGateCriteriaOfACardThatEndedWritesNoRow(t *testing.T) {
+	const criterion = `{"id":"green_login","kind":"test","claim":"a login with the right password answers 200",` +
+		`"inputs":"POST /login as ada with the right password","expected":"200 and a session cookie"}`
+	for _, tc := range []struct {
+		name, status, merge string
+		pr                  int64
+		writes              bool
+	}{
+		{"closed", "closed", "", 9, false},
+		{"failed", "failed", "", 9, false},
+		{"done with nothing merged", "done", "", 9, false},
+		{"open", "in-review", "", 9, true},
+		{"done and merged", "done", "m9", 9, true},
+		{"closed, the run on main", "closed", "", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			task := seedCriteriaPlan(t)
+			task.Status, task.MergeCommit = tc.status, tc.merge
+			r, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+			seedPlan(t, store, map[string]string{"integ": RoleIntegration}, criterion)
+			old := []CriterionVerdict{{Criterion: "green_login", Verdict: "met", Evidence: "before", Kind: CriterionTest}}
+			if err := store.PutCriteriaVerdicts(ctx, "t1", CriteriaSourceGate, FactoryDecider, old); err != nil {
+				t.Fatal(err)
+			}
+			_, err := execActivity(t, r, ActivityGateCriteria, "t1", tc.pr, "c1", "")
+			rows, _ := store.CriteriaVerdicts(ctx, "t1")
+			if wrote := len(rows) == 1 && rows[0].Evidence != "before"; wrote != tc.writes || (err == nil) != tc.writes {
+				t.Fatalf("rows %+v, err %v; want written %v", rows, err, tc.writes)
+			}
+		})
+	}
+}
+
 // The gate runs a carried test criterion's named test from the head's
 // tree with no proof row: present and green it meets its criterion, and
 // absent at the head is a builder finding naming the missing test, its

@@ -840,6 +840,12 @@ type Store interface {
 	// 8): verdict rows on the plan's integration card, one per source, and
 	// the tasks that carry them.
 	PutCriteriaVerdicts(ctx context.Context, taskID, source, by string, rows []CriterionVerdict) error
+	// PutGateVerdicts writes a gate run's rows of source on card taskID as
+	// PutCriteriaVerdicts does, then deletes every row but the approver's
+	// of the criteria of drop, in one transaction. A run on card writer's
+	// pull request (writer not "") writes nothing once writer ended
+	// undelivered (ErrCardEnded), and the end of writer waits for a write.
+	PutGateVerdicts(ctx context.Context, writer, taskID, source string, rows []CriterionVerdict, drop []string) error
 	// ClosePlanWithWaivers writes what prepare decides (a PlanClose) and
 	// ends plan's pending criteria asks in one transaction that locks the
 	// plan's task row, re-checks it is at rest (ErrNotDonePlan) and not

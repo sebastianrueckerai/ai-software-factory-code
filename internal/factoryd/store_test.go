@@ -5053,6 +5053,24 @@ func (s *fakeStore) ClosePlanWithWaivers(ctx context.Context, plan, by string, p
 	return nil
 }
 
+func (s *fakeStore) PutGateVerdicts(ctx context.Context, writer, taskID, source string, rows []CriterionVerdict, drop []string) error {
+	if len(rows) == 0 && len(drop) == 0 {
+		return nil
+	}
+	if w, ok := s.tasks[writer]; writer != "" && ok && Final(w.Status) && !(w.Status == "done" && w.MergeCommit != "") {
+		return ErrCardEnded
+	}
+	if err := s.PutCriteriaVerdicts(ctx, taskID, source, FactoryDecider, rows); err != nil {
+		return err
+	}
+	for _, id := range drop {
+		if err := s.DeleteVerdictsButApprover(ctx, taskID, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *fakeStore) DeleteVerdictsButApprover(ctx context.Context, taskID, criterion string) error {
 	if s.criteriaVerdicts == nil {
 		return nil

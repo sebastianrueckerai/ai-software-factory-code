@@ -170,7 +170,12 @@ activities, each with a timeline step and a comment on the pull request:
    The rows land in `criteria_verdicts` on the plan's integration card,
    source `gate`, one per test and invariant criterion: met for a passed
    run, unmet for any other, the run's line the evidence, opening
-   `blind: ` or `open: ` when the proof has a state. A green stored proof
+   `blind: ` or `open: ` when the proof has a state. A run on the pull
+   request of a card that ended undelivered (closed, failed, or done with
+   nothing merged), as an attempt still running after a human closed the
+   card, writes no row: each write reads the card's row under a share
+   lock, so the card's end waits for a write, and a write after the end
+   is refused. A green stored proof
    is met, blind, and stays stored. Any other outcome opens it:
    `OpenPlanProof` turns its row opened, the event `proof_opened` lands
    on the card and the plan once per head, and a finding hands the

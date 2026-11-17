@@ -87,6 +87,42 @@ func putCriteriaVerdicts(ctx context.Context, db interface {
 	return err
 }
 
+// ErrCardEnded refuses the rows of a gate run on the pull request of a
+// card that ended undelivered: closed, failed, or done with nothing
+// merged, as an attempt still running after a human closed the card.
+var ErrCardEnded = errors.New("the card ended undelivered: its gate run writes no row")
+
+func (s *PGStore) PutGateVerdicts(ctx context.Context, writer, taskID, source string, rows []CriterionVerdict, drop []string) error {
+	if len(rows) == 0 && len(drop) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if writer != "" {
+		var ended bool
+		if err := tx.QueryRowContext(ctx, `SELECT status IN ('done', 'failed', 'closed') AND NOT (status = 'done' AND merge_commit <> '')
+			FROM tasks WHERE id = $1 FOR SHARE`, writer).Scan(&ended); err != nil {
+			return err
+		}
+		if ended {
+			return ErrCardEnded
+		}
+	}
+	if err := putCriteriaVerdicts(ctx, tx, taskID, source, FactoryDecider, rows); err != nil {
+		return err
+	}
+	if len(drop) > 0 {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM criteria_verdicts WHERE task_id = $1 AND criterion_id = ANY($2) AND source <> $3`,
+			taskID, drop, CriteriaSourceApprover); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // PlanClose is what a plan's Close writes: waiver rows on card Home, the
 // plan's plan_closed event (nil while a card of the plan is not final) and
 // the Words that end its pending criteria asks.

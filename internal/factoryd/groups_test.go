@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"slices"
 	"strings"
@@ -215,6 +216,83 @@ func TestPlansAwaitingCriteria(t *testing.T) {
 	}
 	if got, err := s.PlansAwaitingCriteria(ctx); err != nil || !slices.Equal(got, []string{"a1", "a2", "a8"}) {
 		t.Fatalf("PlansAwaitingCriteria = %v, %v; want [a1 a2 a8]", got, err)
+	}
+}
+
+// A gate run's rows land on the integration card unless the card whose
+// pull request it judged ended undelivered: closed, failed or done with
+// nothing merged refuse; open, done with its merge, merged and a run with
+// no pull request write. The rows of drop go with the write, the
+// approver's stay. A card's end that waits on a write's lock is seen by
+// the write: it lands no row after the end.
+func TestPutGateVerdictsRefusesACardThatEndedUndelivered(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_gate_verdicts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const fin = "'2026-10-01T09:00:00Z'"
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, track, issue_number, finished_at, merge_commit) VALUES
+		('g-int', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 'direct', 1, `+fin+`, ''), ('g-open', 1, 0, 'in-review', 'sf/r', 'agent', 'plan', 'direct', 2, NULL, ''),
+		('g-closed', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 'direct', 3, `+fin+`, ''), ('g-failed', 1, 0, 'failed', 'sf/r', 'agent', 'plan', 'direct', 4, `+fin+`, ''),
+		('g-done', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'direct', 5, `+fin+`, ''), ('g-landed', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'direct', 6, `+fin+`, 'm6'),
+		('g-merged', 1, 0, 'merged', 'sf/r', 'agent', 'plan', 'direct', 7, `+fin+`, 'm7'), ('g-ending', 1, 0, 'in-review', 'sf/r', 'agent', 'plan', 'direct', 8, NULL, '')`); err != nil {
+		t.Fatal(err)
+	}
+	for writer, want := range map[string]error{"g-open": nil, "g-closed": ErrCardEnded, "g-failed": ErrCardEnded, "g-done": ErrCardEnded,
+		"g-landed": nil, "g-merged": nil, "": nil} {
+		row := []CriterionVerdict{{Criterion: "c-" + writer, Verdict: "met", Kind: CriterionTest}}
+		if err := s.PutGateVerdicts(ctx, writer, "g-int", CriteriaSourceGate, row, nil); !errors.Is(err, want) || (err == nil) != (want == nil) {
+			t.Errorf("writer %q: err %v, want %v", writer, err, want)
+		}
+	}
+	rows, err := s.CriteriaVerdicts(ctx, "g-int")
+	var got []string
+	for _, v := range rows {
+		got = append(got, v.Criterion)
+	}
+	if err != nil || !slices.Equal(got, []string{"c-", "c-g-landed", "c-g-merged", "c-g-open"}) {
+		t.Fatalf("rows %v, %v; want the open, landed and merged writers' and the one with no pull request", got, err)
+	}
+	if err := s.PutCriteriaVerdicts(ctx, "g-int", CriteriaSourceApprover, "sebastian", []CriterionVerdict{{Criterion: "c-g-open", Verdict: "met", Kind: CriterionTest}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutGateVerdicts(ctx, "g-open", "g-int", CriteriaSourceJudgement, []CriterionVerdict{{Criterion: "j1", Verdict: "met", Kind: CriterionJudgement}},
+		[]string{"c-g-open", "c-g-landed"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = s.CriteriaVerdicts(ctx, "g-int")
+	got = nil
+	for _, v := range rows {
+		got = append(got, v.Criterion+"/"+v.Source)
+	}
+	if want := []string{"c-/gate", "c-g-merged/gate", "c-g-open/approver", "j1/judgement"}; !slices.Equal(got, want) {
+		t.Fatalf("rows after the drop %v, want %v", got, want)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status = 'closed', finished_at = now() WHERE id = 'g-ending'`); err != nil {
+		t.Fatal(err)
+	}
+	wrote := make(chan error, 1)
+	go func() {
+		wrote <- s.PutGateVerdicts(ctx, "g-ending", "g-int", CriteriaSourceGate, []CriterionVerdict{{Criterion: "late", Verdict: "met", Kind: CriterionTest}}, nil)
+	}()
+	select {
+	case err := <-wrote:
+		t.Fatalf("the write went past the card's open end: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-wrote; !errors.Is(err, ErrCardEnded) {
+		t.Fatalf("the write after the end: %v, want ErrCardEnded", err)
 	}
 }
 

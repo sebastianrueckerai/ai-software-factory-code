@@ -313,10 +313,11 @@ func TestFilingRefusesUncarriedTest(t *testing.T) {
 }
 
 // The gate runs a carried test criterion's named test from the head's
-// tree with no proof row: present and green it meets its criterion, and
-// absent at the head is a builder finding naming the missing test, its
-// unmet row's evidence the same line. Never a held row or a card line,
-// and under a policy that runs a prover, never the prover's wait.
+// tree of the integration card's pull request, the card in review, with
+// no proof row: present and green it meets its criterion, and absent at
+// the head is a builder finding naming the missing test, its unmet row's
+// evidence the same line. Never a held row or a card line, and under a
+// policy that runs a prover, never the prover's wait.
 func TestGateRunsCarriedTest(t *testing.T) {
 	ctx := context.Background()
 	const absent = "criterion door_open: no test TestDoorOpen in ./internal/doors"
@@ -334,8 +335,11 @@ func TestGateRunsCarriedTest(t *testing.T) {
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s, _ := accReceiptStore(t, fmt.Sprintf("gate_carried_%d", i))
+			s, db := accReceiptStore(t, fmt.Sprintf("gate_carried_%d", i))
 			seedProofPlan(ctx, t, s)
+			if _, err := db.ExecContext(ctx, `UPDATE tasks SET status = 'in-review', finished_at = NULL WHERE id = 't-int'`); err != nil {
+				t.Fatal(err)
+			}
 			kube := &proofKube{log: proofPodLog(t, workerharness.ProofRun{ID: "door_open", Started: true,
 				Exit: tc.exit, Report: proofJunit(t, tc.report)})}
 			fj := &proofForgejo{}

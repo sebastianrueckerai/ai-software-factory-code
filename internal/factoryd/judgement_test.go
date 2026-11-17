@@ -82,7 +82,7 @@ func TestJudgeCallsTheModelWithThePromptAndTheArtifactAlone(t *testing.T) {
 	ll := &fakeLiteLLM{content: "```json\n{\"verdict\":\"met\",\"reason\":\"the page names every size\"}\n```"}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	before := time.Now()
-	findings, card, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{readsCalm}}, []GateArtifact{calmPage("c1")})
+	findings, card, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", "t1", Plan{Criteria: []PlanCriterion{readsCalm}}, []GateArtifact{calmPage("c1")})
 	if err != nil || len(findings) != 0 || len(card) != 0 || met != 1 {
 		t.Fatalf("judgeArtifacts = %q, %q, %d, %v; want one met and no line", findings, card, met, err)
 	}
@@ -137,7 +137,7 @@ func TestJudgeWithoutAVerdictLeavesNoRow(t *testing.T) {
 			r, _, store := newTestRunner(t, gateTask, newFakeKube(), objects)
 			r.cfg.Policy = withSupervisorTimeout(300 * time.Millisecond)
 			r.supervisor = testSupervisorModel(tc.ll.srv(t).URL)
-			findings, card, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{readsCalm}}, []GateArtifact{calmPage("c1")})
+			findings, card, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", "t1", Plan{Criteria: []PlanCriterion{readsCalm}}, []GateArtifact{calmPage("c1")})
 			if err != nil || met != 0 || len(findings) != 0 {
 				t.Fatalf("judgeArtifacts = %q, %q, %d, %v; want no finding", findings, card, met, err)
 			}
@@ -166,11 +166,11 @@ func TestJudgementWithoutAVerdictReplacesAnEarlierHeadsMet(t *testing.T) {
 	r, _, store := newTestRunner(t, gateTask, newFakeKube(), &fakeObjectStore{})
 	p := Plan{Criteria: []PlanCriterion{readsCalm}}
 	r.supervisor = testSupervisorModel((&fakeLiteLLM{content: `{"verdict":"met","reason":"the page names every size"}`}).srv(t).URL)
-	if _, _, met, err := r.judgeArtifacts(ctx, gateTask, "t1", p, []GateArtifact{calmPage("c1")}); err != nil || met != 1 {
+	if _, _, met, err := r.judgeArtifacts(ctx, gateTask, "t1", "t1", p, []GateArtifact{calmPage("c1")}); err != nil || met != 1 {
 		t.Fatalf("at c1: met %d, %v", met, err)
 	}
 	r.supervisor = testSupervisorModel((&fakeLiteLLM{status: http.StatusInternalServerError}).srv(t).URL)
-	_, card, _, err := r.judgeArtifacts(ctx, gateTask, "t1", p, []GateArtifact{calmPage("c2")})
+	_, card, _, err := r.judgeArtifacts(ctx, gateTask, "t1", "t1", p, []GateArtifact{calmPage("c2")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestJudgeArtifactsCallsAtOnce(t *testing.T) {
 	r.supervisor = testSupervisorModel(srv.URL)
 	a, b := readsCalm, readsCalm
 	a.ID, b.ID = "a", "b"
-	findings, card, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{a, b}}, []GateArtifact{
+	findings, card, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", "t1", Plan{Criteria: []PlanCriterion{a, b}}, []GateArtifact{
 		{Criterion: "a", Name: "a.html", Head: "c1", Content: "<p>a</p>"}, {Criterion: "b", Name: "b.html", Head: "c1", Content: "<p>b</p>"}})
 	if err != nil || met != 1 || len(findings) != 0 {
 		t.Fatalf("judgeArtifacts = %q, %q, %d, %v; want a met", findings, card, met, err)
@@ -245,7 +245,7 @@ func TestJudgeArtifactsKeepsTheVerdictWithoutItsCost(t *testing.T) {
 	r, _, store := newTestRunner(t, gateTask, newFakeKube(), objects)
 	store.spendErr = errors.New("the ledger is down")
 	r.supervisor = testSupervisorModel((&fakeLiteLLM{content: `{"verdict":"met","reason":"the page names every size"}`}).srv(t).URL)
-	if _, _, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{readsCalm}}, []GateArtifact{calmPage("c1")}); err != nil || met != 1 {
+	if _, _, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", "t1", Plan{Criteria: []PlanCriterion{readsCalm}}, []GateArtifact{calmPage("c1")}); err != nil || met != 1 {
 		t.Fatalf("met %d, %v; want the verdict", met, err)
 	}
 	if lines := judgementLines(t, objects); len(lines) != 1 || lines[0]["cost"] != nil || lines[0]["verdict"] != "met" {
@@ -611,7 +611,7 @@ func TestJudgeArtifactsCallsFourAtOnce(t *testing.T) {
 		p.Criteria = append(p.Criteria, c)
 		artifacts = append(artifacts, GateArtifact{Criterion: c.ID, Name: c.ID + ".html", Head: "c1", Content: sizesPage})
 	}
-	findings, _, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", p, artifacts)
+	findings, _, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", "t1", p, artifacts)
 	if err != nil || met != 6 || len(findings) != 0 {
 		t.Fatalf("judgeArtifacts = %q, %d, %v; want six met", findings, met, err)
 	}
@@ -633,7 +633,7 @@ func TestJudgeArtifactsRetriesAHeadroomRefusalAlone(t *testing.T) {
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	a, b := readsCalm, readsCalm
 	a.ID, b.ID = "a", "b"
-	findings, _, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{a, b}}, []GateArtifact{
+	findings, _, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", "t1", Plan{Criteria: []PlanCriterion{a, b}}, []GateArtifact{
 		{Criterion: "a", Name: "a.html", Head: "c1", Content: "<p>a</p>"}, {Criterion: "b", Name: "b.html", Head: "c1", Content: "<p>b</p>"}})
 	if err != nil || met != 2 || len(findings) != 0 {
 		t.Fatalf("judgeArtifacts = %q, %d, %v; want both met", findings, met, err)
