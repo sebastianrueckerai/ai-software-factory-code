@@ -741,16 +741,19 @@ func TestPGStoreBoardTasksNameThePlanAHeldCardWaitsFor(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, merge_queue, events CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	for n, id := range []string{"held", "queued", "other"} {
-		gate := GateMergeQueue
-		if id == "other" {
+	for n, id := range []string{"held", "queued", "other", "running", "merged"} {
+		gate, status := GateMergeQueue, "in-review"
+		switch id {
+		case "other":
 			gate = GateReview
+		case "running", "merged":
+			status = id
 		}
-		if err := s.CreateTask(ctx, Task{ID: id, Status: "in-review", Gate: gate, Repository: "sf/r", Track: "direct", IssueNumber: int64(5 + n)}); err != nil {
+		if err := s.CreateTask(ctx, Task{ID: id, Status: status, Gate: gate, Repository: "sf/r", Track: "direct", IssueNumber: int64(5 + n)}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, id := range []string{"held", "queued"} {
+	for _, id := range []string{"held", "queued", "running", "merged"} {
 		if err := s.SetGate(ctx, id, GateMergeQueue, time.Now()); err != nil {
 			t.Fatal(err)
 		}
@@ -761,7 +764,8 @@ func TestPGStoreBoardTasksNameThePlanAHeldCardWaitsFor(t *testing.T) {
 	for _, e := range []struct {
 		task, kind, detail string
 	}{{"held", "queue_group_wait", `{"issue": 1900}`}, {"held", "queue_group_wait", `{"issue": 1939}`}, {"held", "card_retried", `{}`},
-		{"queued", "queue_group_wait", `{"issue": 1800}`}, {"other", "queue_group_wait", `{"issue": 1700}`}} {
+		{"queued", "queue_group_wait", `{"issue": 1800}`}, {"other", "queue_group_wait", `{"issue": 1700}`},
+		{"running", "queue_group_wait", `{"issue": 1600}`}, {"merged", "queue_group_wait", `{"issue": 1500}`}} {
 		if _, err := s.db.ExecContext(ctx, `INSERT INTO events (repository, task_id, kind, actor, via, detail) VALUES ('sf/r', $1, $2, 'factoryd', 'system', $3::jsonb)`,
 			e.task, e.kind, e.detail); err != nil {
 			t.Fatal(err)
@@ -775,7 +779,7 @@ func TestPGStoreBoardTasksNameThePlanAHeldCardWaitsFor(t *testing.T) {
 	for _, b := range board {
 		got[b.ID] = b.HeldFor
 	}
-	if want := (map[string]int64{"held": 1939, "queued": 0, "other": 0}); !maps.Equal(got, want) {
+	if want := (map[string]int64{"held": 1939, "queued": 0, "other": 0, "running": 0, "merged": 0}); !maps.Equal(got, want) {
 		t.Fatalf("HeldFor = %v, want %v", got, want)
 	}
 }

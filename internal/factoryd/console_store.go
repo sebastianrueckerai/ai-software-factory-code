@@ -229,7 +229,7 @@ func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTas
 		switch {
 		case ok && p.Ahead > 0 && p.HeadIssue > 0:
 			tasks[i].MergeBehind = p.HeadIssue
-		case !ok && tasks[i].Gate == GateMergeQueue:
+		case !ok && tasks[i].Gate == GateMergeQueue && tasks[i].Status == "in-review":
 			held = append(held, tasks[i].ID)
 		}
 	}
