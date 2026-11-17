@@ -1588,7 +1588,7 @@ tokens: {read: forgejo-ci-registrar, actions: forgejo-ci-registrar, merge: forge
   direct: {class: coder}
   plan: {class: planner, plan: {max_cards: 8, min_cards: 2, foundation: true, integration: true}}
 dependencies: {wait_until: done, on_failed: human}
-merge: {queue: none}
+merge: {queue: project}
 stages:
   - {name: checks, on_findings: agent, enabled: true}
   - {name: policy, on_findings: fail, enabled: true}

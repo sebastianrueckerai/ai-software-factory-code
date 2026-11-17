@@ -57,7 +57,7 @@ tracks:
     class: planner
     plan: {max_cards: 12, min_cards: 1, foundation: true, integration: true}
 dependencies: {wait_until: done, on_failed: human}
-merge: {queue: none}
+merge: {queue: project}
 stages:
   - {name: checks, on_findings: agent, enabled: true}
   - {name: policy, on_findings: fail, enabled: true}
