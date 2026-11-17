@@ -391,15 +391,21 @@ func TestGateRunsCarriedTest(t *testing.T) {
 
 // A carried test whose test is missing at the head asks the ordinary
 // unmet-work question, never a proof gap: the integration card's pull
-// request merged, so its gate's row judges main, the sweep opens no
-// prover card under a policy that runs one, and the plan's one ask names
-// the criterion.
+// request merged at the head its gate judged, so its gate's row judges
+// main, the sweep opens no prover card under a policy that runs one, and
+// the plan's one ask names the criterion.
 func TestNoGapCardForMissingProof(t *testing.T) {
 	ctx := context.Background()
 	s, db := accReceiptStore(t, "gap_no_proof")
 	seedProofPlan(ctx, t, s)
 	if _, err := db.ExecContext(ctx, `UPDATE tasks SET pr_number = 12, merge_commit = 'm12' WHERE id = 't-int'`); err != nil {
 		t.Fatal(err)
+	}
+	for _, kind := range []string{factoryd.EventCriteriaJudged, factoryd.EventPullRequestMerged} {
+		if _, err := s.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-int", IssueNumber: 8, Kind: kind, Actor: factoryd.FactoryDecider,
+			Via: factoryd.ViaFactoryd, Detail: map[string]any{"pr": 12, "head": "h12"}}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := s.PutCriteriaVerdicts(ctx, "t-int", factoryd.CriteriaSourceGate, factoryd.FactoryDecider, []factoryd.CriterionVerdict{
 		{Criterion: "door_open", Verdict: "unmet", Evidence: "criterion door_open: no test TestDoorOpen in ./internal/doors",

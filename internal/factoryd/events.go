@@ -74,6 +74,12 @@ const (
 	// attempt "1" or "2" (a cut run runs once more). A quiet record, no
 	// poke.
 	EventCriteriaGateRun = "criteria_gate_run"
+	// EventCriteriaJudged records, on a plan's integration or delta card,
+	// the head of its pull request the criteria gate judged and wrote the
+	// plan's rows for: detail {"pr", "head"}. The plan's close counts those
+	// rows as main's only when the pull request merged at that head
+	// (pull_request_merged's "head"). A quiet record, no poke.
+	EventCriteriaJudged = "criteria_judged"
 	// EventProductionReleased records the end of a project's production
 	// hold (roadmap 336), a row of the project: detail {"how", "held_since",
 	// "hours"}, how closed when no plan is open on main any more (by

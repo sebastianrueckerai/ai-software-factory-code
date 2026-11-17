@@ -879,9 +879,9 @@ func integrationCardOf(cards []Task, p Plan) (Task, bool) {
 // planGate is how a plan's criteria gate stands on its integration card.
 // The rows judge main (onMain) when the plan's newest criteria card, its
 // newest delta card or else its integration card, is a card the plan
-// filed whose own pull request reached main and stands, with no card
-// merged or reverted after it, so its gate's rows judged a head main
-// holds; or when a run of the gate on main's head is on record for the
+// filed whose own pull request merged at the head its gate judged and
+// stands, with no card merged or reverted after it, so its gate's rows
+// judged a head main holds; or when a run of the gate on main's head is on record for the
 // plan as it stands (mark): such a run first withdraws every row that
 // judges no head on main, and nothing changed since. Otherwise only the
 // approver's rows settle a criterion.
@@ -916,11 +916,15 @@ func planGateOf(ctx context.Context, store planGateReader, plan string, integrat
 	g := planGate{cards: cards, mark: cardsMark(rev.Revision, cards)}
 	g.runs = slices.DeleteFunc(runs, func(e Event) bool { m, _ := e.Detail["cards"].(string); return m != g.mark })
 	if last, ok := newestCriteriaCard(cards, integration); ok && last.Source == SourcePlan && landed(last) {
+		same, err := judgedWhatMerged(ctx, store, last)
+		if err != nil {
+			return planGate{}, err
+		}
 		after, err := changedMainAfter(ctx, store, cards, last)
 		if err != nil {
 			return planGate{}, err
 		}
-		if !after {
+		if same && !after {
 			g.onMain = true
 			if last.ID == integration.ID {
 				g.pr = integration.PRNumber
@@ -980,6 +984,23 @@ func newestCriteriaCard(cards []Task, integration Task) (Task, bool) {
 // reverted.
 func landed(c Task) bool {
 	return c.RevertedAt == nil && (c.Status == "merged" || c.Status == "done" && c.MergeCommit != "")
+}
+
+// judgedWhatMerged tells whether the newest head of card c's pull request
+// the criteria gate judged (criteria_judged) is the head it merged at
+// (pull_request_merged): not when main moved into the head after the gate,
+// a human merged another head, or either record is missing.
+func judgedWhatMerged(ctx context.Context, store planGateReader, c Task) (bool, error) {
+	judged, err := store.TaskEventsOfKind(ctx, c.ID, EventCriteriaJudged, 1)
+	if err != nil {
+		return false, err
+	}
+	merged, err := store.TaskEventsOfKind(ctx, c.ID, EventPullRequestMerged, 1)
+	if err != nil || len(judged) == 0 || len(merged) == 0 {
+		return false, err
+	}
+	head, _ := judged[0].Detail["head"].(string)
+	return head != "" && head == merged[0].Detail["head"], nil
 }
 
 // cardMergedAt is when card c's own pull request merged, as groupOpenings

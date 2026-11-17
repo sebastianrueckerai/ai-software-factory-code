@@ -1021,6 +1021,7 @@ func TestACarriedTestsMissingTestAsksNoProofGap(t *testing.T) {
 	s.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/code", IssueNumber: 7, Track: policy.TrackPlan, Kind: "agent", Source: SourceChat, Status: "done"}
 	s.tasks["t-int"] = Task{ID: "t-int", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Kind: "agent", Track: policy.TrackDirect, Status: "done",
 		PRNumber: 9, MergeCommit: "abc"}
+	mergedAtJudgedHead(s, "t-int", time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC))
 	if err := s.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
 		{Criterion: "door_open", Verdict: "unmet", Evidence: "criterion door_open: no test TestDoorOpen in ./internal/doors", Kind: CriterionTest}}); err != nil {
 		t.Fatal(err)

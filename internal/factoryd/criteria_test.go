@@ -639,6 +639,41 @@ func TestGateCriteriaFindsAPlanWithoutARun(t *testing.T) {
 	}
 }
 
+// A gate run on a card's pull request records the head it judged and
+// wrote the plan's rows for, on the card: the plan's close counts those
+// rows as main's only when the pull request merged at that head. A run on
+// main's head records none: the plan's own record of the run serves it.
+func TestGateCriteriaRecordsTheHeadItJudged(t *testing.T) {
+	const criterion = `{"id":"green_login","kind":"test","claim":"a login with the right password answers 200",` +
+		`"inputs":"POST /login as ada with the right password","expected":"200 and a session cookie"}`
+	for _, tc := range []struct {
+		name string
+		pr   int64
+		head string
+		want []string
+	}{
+		{"on the pull request", 9, "c1", []string{"9@c1"}},
+		{"on main's head", 0, "m1", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _, store := newTestRunner(t, seedCriteriaPlan(t), newFakeKube(), &fakeObjectStore{})
+			seedPlan(t, store, map[string]string{"integ": RoleIntegration}, criterion)
+			if _, err := execActivity(t, r, ActivityGateCriteria, "t1", tc.pr, tc.head, ""); err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, e := range store.events {
+				if e.TaskID == "t1" && e.Kind == EventCriteriaJudged {
+					got = append(got, fmt.Sprintf("%v@%v", e.Detail["pr"], e.Detail["head"]))
+				}
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("judged records %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // A gate run on the pull request of a card that ended undelivered, as an
 // attempt still running after a human closed the card, writes no row: the
 // rows on the plan's integration card stand as they were, and its error is

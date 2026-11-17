@@ -1681,7 +1681,7 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	fresh, err := in.decide(ctx, taskID, kind, p.Sender.UserName, p.PullRequest.Index)
 	switch {
 	case fresh && p.PullRequest.Merged:
-		in.humanMerged(ctx, taskID, p.Sender.UserName, p.PullRequest.Index)
+		in.humanMerged(ctx, taskID, p.Sender.UserName, p.PullRequest.Index, p.PullRequest.Head.SHA)
 	case fresh && p.Sender.UserName != in.ProjectsUser:
 		in.intervened(ctx, t, p.Sender.UserName, InterventionReject)
 	}
@@ -1726,10 +1726,11 @@ func (in *Intake) withdrawMovedHead(ctx context.Context, p *pullRequestPayload) 
 }
 
 // humanMerged records the event pull_request_merged of task taskID's pull
-// request pr merged in Forgejo by by; factory-merge's merges are Merge's.
-func (in *Intake) humanMerged(ctx context.Context, taskID, by string, pr int64) {
+// request pr merged in Forgejo by by at head; factory-merge's merges are
+// Merge's.
+func (in *Intake) humanMerged(ctx context.Context, taskID, by string, pr int64, head string) {
 	if by != MergeUser {
-		in.Timeline.recordEvent(ctx, taskID, EventPullRequestMerged, map[string]any{"pr": pr, "by": by})
+		in.Timeline.recordEvent(ctx, taskID, EventPullRequestMerged, map[string]any{"pr": pr, "by": by, "head": head})
 	}
 }
 
@@ -2138,7 +2139,7 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 		case pr.Merged:
 			var fresh bool
 			if fresh, err = in.decide(ctx, t.ID, "pull_request_merged", healAuthor, t.PRNumber); fresh {
-				in.humanMerged(ctx, t.ID, pr.MergedBy, t.PRNumber)
+				in.humanMerged(ctx, t.ID, pr.MergedBy, t.PRNumber, pr.HeadSHA)
 			}
 		case pr.State == "closed":
 			_, err = in.decide(ctx, t.ID, "pull_request_closed", healAuthor, t.PRNumber)

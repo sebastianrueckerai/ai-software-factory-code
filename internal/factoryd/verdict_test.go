@@ -1010,12 +1010,31 @@ func planWithoutCriteria(t *testing.T, statuses ...string) (*Runner, *fakeStore,
 	return r, s, objs, fj
 }
 
-// mergeCard gives card id of s a merge commit and its finish.
+// mergeCard gives card id of s a merge commit and its finish, and the
+// records of a pull request that merged then at the head its criteria gate
+// judged (mergedAtJudgedHead).
 func mergeCard(s *fakeStore, id string) {
 	finished := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
 	card := s.tasks[id]
 	card.MergeCommit, card.FinishedAt = "abc", &finished
 	s.tasks[id] = card
+	mergedAtJudgedHead(s, id, finished)
+}
+
+// mergedAtJudgedHead records that card id's pull request merged at at, at
+// the head h-<id> its criteria gate judged an hour before.
+func mergedAtJudgedHead(s *fakeStore, id string, at time.Time) {
+	s.events = append(s.events, Event{TaskID: id, Kind: EventCriteriaJudged, At: at.Add(-time.Hour), Detail: map[string]any{"head": "h-" + id}},
+		Event{TaskID: id, Kind: EventPullRequestMerged, At: at, Detail: map[string]any{"by": MergeUser, "head": "h-" + id}})
+}
+
+// unmergeCard leaves card id of s with no merge: no merge commit and no
+// pull_request_merged record.
+func unmergeCard(s *fakeStore, id string) {
+	card := s.tasks[id]
+	card.MergeCommit = ""
+	s.tasks[id] = card
+	s.events = slices.DeleteFunc(s.events, func(e Event) bool { return e.TaskID == id && e.Kind == EventPullRequestMerged })
 }
 
 // closeRows counts t-plan's plan_closed event rows.
@@ -1457,6 +1476,7 @@ func TestPlanCloseWaitsForTheIntegrationCard(t *testing.T) {
 		t.Fatalf("plan_closed recorded %d times while the integration card is running, want 0", got)
 	}
 	set("merged")
+	mergedAtJudgedHead(s, "t-int", time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC))
 	r.CriteriaPass(ctx)
 	r.CriteriaPass(ctx)
 	if got := closed(objs); got != 1 {
@@ -2214,6 +2234,64 @@ func TestARevertMarkedAfterTheRunMakesTheGateDueOnMain(t *testing.T) {
 	}
 }
 
+// Rule (a) counts the integration card's rows as main's only when its pull
+// request merged at the head its gate judged. Feature card F (the
+// foundation) merged and its gate-judged work stands in c1's met row,
+// which the integration card's gate wrote at head h1. While the merge ask
+// waited, F's merge was reverted on main (dated 08:00, before the
+// integration card merged at 09:00), and the press synced the pull request
+// to h2 and merged it without a gate run. The plan does not close: the
+// gate runs on main's head, withdraws c1 and c3, finds c1 red, and the gap
+// ask opens. When the pull request merged at h1, the gate's head, the rows
+// settle and the plan closes with no gate run. A human's merge in Forgejo
+// of another head (h3) runs the gate on main as the sync does.
+func TestPlanGateCountsRowsOnlyForTheHeadThatMerged(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name, merged, by string
+		reverted         bool
+		calls            []string
+		closes           int
+	}{
+		{"main moved under the merge ask", "h2", MergeUser, true, []string{"t-int#0@m1:"}, 0},
+		{"merged at the judged head", "h1", MergeUser, false, nil, 1},
+		{"a human merged another head", "h3", "sebastian", false, []string{"t-int#0@m1:"}, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, s, calls := mainGatePlan(t, nil, func(*fakeStore) {}, func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+				return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+					{Criterion: "c1", Verdict: "unmet", Evidence: "red on main", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}})
+			})
+			mergeCard(s, "card-foundation")
+			if c.reverted {
+				at := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
+				card := s.tasks["card-foundation"]
+				card.RevertedAt = &at
+				s.tasks["card-foundation"] = card
+			}
+			s.events = slices.DeleteFunc(s.events, func(e Event) bool { return e.TaskID == "t-int" })
+			mergedAt := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+			s.events = append(s.events,
+				Event{TaskID: "t-int", Kind: EventCriteriaJudged, At: mergedAt.Add(-time.Hour), Detail: map[string]any{"pr": int64(9), "head": "h1"}},
+				Event{TaskID: "t-int", Kind: EventPullRequestMerged, At: mergedAt, Detail: map[string]any{"pr": int64(9), "by": c.by, "head": c.merged}})
+			if err := gateMet(ctx, s, "t-int"); err != nil {
+				t.Fatal(err)
+			}
+			sweep(ctx, r)
+			r.CriteriaPass(ctx)
+			if !slices.Equal(*calls, c.calls) || closeRows(s) != c.closes {
+				t.Fatalf("calls %v, closes %d; want %v and %d", *calls, closeRows(s), c.calls, c.closes)
+			}
+			if c.closes == 0 {
+				pending, _ := s.ApprovalRequests(ctx, "pending")
+				if len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c1" {
+					t.Fatalf("pending %+v, want the gap ask on c1", pending)
+				}
+			}
+		})
+	}
+}
+
 // gateRunsAt dates the criteria gate's records of s, which the fake store
 // leaves undated: a run's start at started, its outcome at ended.
 func gateRunsAt(s *fakeStore, started, ended time.Time) {
@@ -2461,6 +2539,9 @@ func TestPlanCloseTakesADeltaCardTheGateMet(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := seedVerdictPlan(t, "t-plan", "t-int", "closed")
 			s.tasks["t-extra"] = Task{ID: "t-extra", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: tc.planKey, Status: tc.status, MergeCommit: tc.merge}
+			if tc.status == "merged" || tc.merge != "" {
+				mergedAtJudgedHead(s, "t-extra", time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC))
+			}
 			for _, row := range []CriterionVerdict{
 				{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
 				{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},
@@ -2858,12 +2939,16 @@ func mainGatePlan(t *testing.T, statuses []string, card func(*fakeStore), answer
 	return r, s, calls
 }
 
-// integrationAs sets t-int's status, pull request and merge commit.
+// integrationAs sets t-int's status, pull request and merge commit; with
+// no merge commit it holds no merge (unmergeCard).
 func integrationAs(status string, pr int64, merge string) func(*fakeStore) {
 	return func(s *fakeStore) {
 		c := s.tasks["t-int"]
 		c.Status, c.PRNumber, c.MergeCommit = status, pr, merge
 		s.tasks["t-int"] = c
+		if merge == "" {
+			unmergeCard(s, "t-int")
+		}
 	}
 }
 

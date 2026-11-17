@@ -2645,7 +2645,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 		log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 	}
 	r.record(ctx, t.ID, "merged", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "merged_by": MergeUser}))
-	r.timeline.recordEvent(ctx, t.ID, EventPullRequestMerged, map[string]any{"pr": pr, "by": MergeUser})
+	r.timeline.recordEvent(ctx, t.ID, EventPullRequestMerged, map[string]any{"pr": pr, "by": MergeUser, "head": commit})
 	return MergeResult{Merged: true}, nil
 }
 
@@ -2660,7 +2660,7 @@ func (r *Runner) mergedAlready(ctx context.Context, t Task, pr int64, commit, ap
 			log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 		}
 		r.record(ctx, t.ID, "merged", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "merged_by": MergeUser}))
-		r.timeline.recordEvent(ctx, t.ID, EventPullRequestMerged, map[string]any{"pr": pr, "by": MergeUser})
+		r.timeline.recordEvent(ctx, t.ID, EventPullRequestMerged, map[string]any{"pr": pr, "by": MergeUser, "head": st.HeadSHA})
 		return MergeResult{Merged: true}
 	}
 	by := cmp.Or(st.MergedBy, "an unknown user")

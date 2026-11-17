@@ -207,7 +207,9 @@ activities, each with a timeline step and a comment on the pull request:
    the criteria not met by id alone. It opens nothing and writes no row.
    A plan's close settles a criterion on the rows only while they judge
    main: the plan's newest criteria card (its newest delta card, else its
-   integration card) merged its own pull request, not reverted, and no
+   integration card) merged its own pull request at the head its gate
+   judged (its newest `criteria_judged` record and its `pull_request_merged`
+   record name the same head), not reverted, and no
    card merged (by its `pull_request_merged` event, else its finish with a
    merge commit) or was reverted after it, or a run of the gate on main's
    head is on record for the plan as it stands: its newest revision and

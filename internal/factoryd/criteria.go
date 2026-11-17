@@ -736,6 +736,9 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	}
 	r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit,
 		"proofs": rep.proofs, "holdouts": rep.holdouts, "opened": opened, "findings": all}))
+	if pr != 0 {
+		r.timeline.RecordRow(ctx, t.ID, EventCriteriaJudged, FactoryDecider, ViaFactoryd, map[string]any{"pr": pr, "head": commit})
+	}
 	return CriteriaResult{Findings: rep.findings, Card: rep.card, Stand: stand, Pending: rep.pending}, nil
 }
 

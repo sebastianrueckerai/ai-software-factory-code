@@ -2089,6 +2089,10 @@ func TestMergeAsFactoryMerge(t *testing.T) {
 	if !strings.Contains(timeline(t, objects), `"step":"merged"`) {
 		t.Fatal("no merged step")
 	}
+	if i := slices.IndexFunc(store.events, func(e Event) bool { return e.TaskID == "t1" && e.Kind == EventPullRequestMerged }); i < 0 ||
+		store.events[i].Detail["head"] != "c1" {
+		t.Fatalf("events %+v, want pull_request_merged naming the head c1 it merged", store.events)
+	}
 	startedWithin(t, objects, "merged", from)
 	// a human's approval is the human's review: the gate posts none
 	if len(fj.reviews) != 0 {

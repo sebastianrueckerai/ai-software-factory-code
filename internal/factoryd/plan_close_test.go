@@ -275,16 +275,14 @@ func TestPlanIssueActsOnlyAfterTheComment(t *testing.T) {
 func TestPlanWithoutAMergeHoldsNothing(t *testing.T) {
 	ctx := context.Background()
 	r, s, _ := plannedCards(t, nil, "done")
-	card := s.tasks["card-1"]
-	card.MergeCommit = ""
-	s.tasks["card-1"] = card
+	unmergeCard(s, "card-1")
 	setStatus(s, "t-plan", "failed")
 	if n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "", false); err != nil || n != 0 {
 		t.Fatalf("a writer's Close of an unmerged failed plan = %d, %v; want 0 and no error", n, err)
 	}
 	_, s, _ = plannedCards(t, nil, "done")
 	reverted := time.Now()
-	card = s.tasks["card-1"]
+	card := s.tasks["card-1"]
 	card.RevertedAt = &reverted
 	s.tasks["card-1"] = card
 	if open, _, err := planOpen(ctx, s, "t-plan", criteriaPlan()); err != nil || len(open) != 0 {
@@ -339,9 +337,7 @@ func TestCriteriaPassFinishesAFailedPlanClose(t *testing.T) {
 func TestPlanMergedByARowAloneHolds(t *testing.T) {
 	ctx := context.Background()
 	r, s, _ := tenCriteriaPlan(t, "done")
-	card := s.tasks["card-1"]
-	card.MergeCommit = ""
-	s.tasks["card-1"] = card
+	unmergeCard(s, "card-1")
 	if merged, err := s.PlanMerged(ctx, "t-plan"); err != nil || merged {
 		t.Fatalf("PlanMerged with no commit and no row = %t, %v; want false", merged, err)
 	}
@@ -364,9 +360,7 @@ func TestFailedPlanClosedByFactorydEnds(t *testing.T) {
 	ctx := context.Background()
 	for _, byPerson := range []bool{true, false} {
 		r, s, fj := plannedCards(t, nil, "done")
-		card := s.tasks["card-1"]
-		card.MergeCommit = ""
-		s.tasks["card-1"] = card
+		unmergeCard(s, "card-1")
 		setStatus(s, "t-plan", "failed")
 		s.Record(ctx, Event{Repository: "linkshort/linkshort", TaskID: "t-plan", Kind: EventPlanClosed, Actor: FactoryDecider, Via: ViaFactoryd})
 		if byPerson {
@@ -394,18 +388,18 @@ func TestCheckClosePlanAgreesWithCloseHeldPlan(t *testing.T) {
 	shape := func(status, merge string, row bool) (*Runner, *fakeStore) {
 		r, s, _ := tenCriteriaPlan(t, "done")
 		setStatus(s, "t-plan", status)
-		card := s.tasks["card-1"]
 		switch merge {
 		case "none":
-			card.MergeCommit = ""
+			unmergeCard(s, "card-1")
 		case "row":
-			card.MergeCommit = ""
+			unmergeCard(s, "card-1")
 			s.Record(ctx, Event{Repository: "sf/code", TaskID: "card-1", Kind: "pull_request_merged"})
 		case "reverted":
 			now := time.Now()
+			card := s.tasks["card-1"]
 			card.RevertedAt = &now
+			s.tasks["card-1"] = card
 		}
-		s.tasks["card-1"] = card
 		if row {
 			s.Record(ctx, Event{Repository: "linkshort/linkshort", TaskID: "t-plan", Kind: EventPlanClosed, Actor: FactoryDecider, Via: ViaFactoryd})
 		}
