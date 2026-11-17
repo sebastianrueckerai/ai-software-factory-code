@@ -1063,7 +1063,7 @@ func TestCardFragmentAnswers404ForNonWriter(t *testing.T) {
 // and no timer for anything; counters set the status line and the
 // columns' counts; the agent's text and a steer reach the drawer's Chat
 // once each, and another session's text and the card's new status load
-// the tab again, a steer being typed kept; event board swaps the board,
+// the tab again; event board swaps the board,
 // and a swap the open drawer holds back runs once it closes, or once the
 // focus lands elsewhere, not while it moves on to another field. The
 // find's box, focused and holding text, holds no swap; a find in flight
@@ -1118,7 +1118,7 @@ log.querySelector = function (sel) {
 };
 var themeLight = el({dataset: {themeSet: "light"}});
 var byID = {board: el({id: "board", dataset: {project: "code", query: "?project=code"}}), "status-line": el(), live: el(),
-  drawer: el({hidden: true}), "session-log": log, "steer-input": el({value: "half a steer"})};
+  drawer: el({hidden: true}), "session-log": log};
 function EventSource(url) { this.url = url; this.on = {}; sources.push(this); }
 EventSource.prototype.addEventListener = function (type, fn) { this.on[type] = fn; };
 EventSource.prototype.close = function () { this.closed = true; };
@@ -1141,7 +1141,6 @@ var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchPar
       return Promise.resolve();
     }
     requests.push(verb + " " + url);
-    if (url.indexOf("/drawer") > 0) byID["steer-input"] = el({value: ""});
     if (url.indexOf("/board") !== 0) return new Promise(function (ok) { pending.push(ok); });
     locked = true;
     return new Promise(function (ok) { pending.push(function () { swapped(); ok(); }); });
@@ -1234,7 +1233,6 @@ out.released = requests;
 out.said = log.children.map(function (m) { var who = m.children[1]; return [m.className, m.dataset.key, who.children[0].textContent + " · " + who.children[1].textContent, m.children[2].textContent].join(" | "); });
 out.timers = timers;
 await settle();
-out.steer = byID["steer-input"].value;
 // the find's box, focused and holding text, holds no swap of the board
 var q = el({id: "q", type: "text", value: "exp", defaultValue: "", selectionStart: 2, selectionEnd: 3,
   matches: function () { return true; }, focus: function () { sandbox.document.activeElement = q; },
@@ -1400,7 +1398,7 @@ console.log(JSON.stringify(out));
 		`"status":"\n<strong class=\"pname\">code</strong>\n","counts":["2","0","1"],` +
 		`"after":["GET /board?project=code","GET /cards/t-run/drawer?tab=chat","GET /cards/t-run/drawer?tab=chat","GET /board?project=code","GET /board?project=code"],` +
 		`"held":["GET /board?project=code","GET /board?project=code"],"moved":["GET /board?project=code","GET /board?project=code"],"focused":["GET /board?project=code","GET /board?project=code"],"released":["GET /board?project=code"],` +
-		`"said":["msg agent | s-2@2026-10-11T10:05:00.25Z | agent · 10-11 10:05Z | Tests pass.","msg you | e7 | sebastian · 10-11 10:06Z | Merge it."],"steer":"half a steer",` +
+		`"said":["msg agent | s-2@2026-10-11T10:05:00.25Z | agent · 10-11 10:05Z | Tests pass.","msg you | e7 | sebastian · 10-11 10:06Z | Merge it."],` +
 		`"typing":["GET /board?project=code"],"finding":[],"found":["GET /board?project=code","GET /board?project=code"],` +
 		`"failing":[],"failed":["GET /board?project=code"],"reads":[1,2,2],"unsettled":["GET /board?project=code","GET /board?project=code"],` +
 		`"rerun":["GET /board?project=code","GET /board?project=code","GET /cards/t-run/drawer?tab=chat","GET /board?project=code"],` +
@@ -1655,7 +1653,6 @@ var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchPar
       return Promise.resolve();
     }
     requests.push(verb + " " + url);
-    if (url.indexOf("/drawer") > 0) byID["steer-input"] = el({value: ""});
     if (url.indexOf("/board") !== 0) return new Promise(function (ok) { pending.push(ok); });
     locked = true;
     return new Promise(function (ok) { pending.push(function () { swapped(); ok(); }); });

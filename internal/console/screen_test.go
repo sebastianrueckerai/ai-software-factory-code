@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -800,8 +801,9 @@ func TestDrawerFiles(t *testing.T) {
 
 // The drawer's Chat: a running card opens on it, with its newest
 // session's agent text and the steers sent within that session in time
-// order, each keyed as the stream's copy is, and the input that steers it;
-// a card whose session ended opens on Overview and shows them read-only;
+// order, each keyed as the stream's copy is, and no box of its own: a
+// word to the session is an answer of the opened card; a card whose
+// session ended opens on Overview and shows them read-only;
 // a card without a session says so.
 func TestDrawerChat(t *testing.T) {
 	r, ck := drawerRig(t)
@@ -850,11 +852,6 @@ func TestDrawerChat(t *testing.T) {
 <div class="msg agent" data-key="s-2@2026-10-11T10:04:00Z"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">agent</span> <time>10-11 10:04Z</time></p><p class="said">Done &lt;b&gt;here&lt;/b&gt;.
 Next: the tests.</p></div>
 </div>
-<form id="steer-form" class="chat-form composer" hx-post="/tasks/t-run/steer" hx-target="#drawer" hx-swap="innerHTML">
-<div class="prompt"><span class="ps" aria-hidden="true">›</span><label for="steer-input" class="visually-hidden">Your message to the running session</label>
-<textarea id="steer-input" name="text" rows="2" maxlength="8192" required placeholder="Message the running session; it reads it at its next step"></textarea>
-<button type="submit">Send</button></div>
-</form>
 </div>`,
 	} {
 		if !strings.Contains(running, want) {
@@ -894,12 +891,13 @@ func TestDrawerChatShowsNoProversTranscript(t *testing.T) {
 	}
 }
 
-// A steer from the drawer is the member's own act, so no proposal: the
-// steer function at once, its row with the text, and the Chat tab again
-// with the message in it and no note; a GitHub token in it
-// reaches neither the session, the row, the stream nor the answer; a
-// card that runs no session refuses it and records nothing.
-func TestDrawerSteer(t *testing.T) {
+// A word to the running session is "Tell the running session" among the
+// opened card's other actions, the one way a human steers it: the steer
+// function at once with the words trimmed, and its row with the text; a
+// GitHub token in it reaches neither the session, the row nor the
+// stream. A card that runs no session does not offer it and refuses it.
+// The Session tab holds no box of its own, and the old door is gone.
+func TestTellTheRunningSession(t *testing.T) {
 	r, _ := drawerRig(t)
 	var steered []string
 	r.c.cfg.Steer = func(_ context.Context, taskID, user, text string) error {
@@ -909,11 +907,20 @@ func TestDrawerSteer(t *testing.T) {
 	r.objects["sessions/t-run/timeline.jsonl"] = []byte(`{"time":"2020-01-01T00:00:00Z","step":"session_start","session":"s-1","model":"big","attempt":1}
 `)
 	ck, s := r.loggedIn(t)
+	send := answerForm(t, drawer(t, r, ck, "t-run", "overview"), factoryd.AnswerSteer)
+	if send.Label != "Tell the running session" || send.Action != "/tasks/t-run/resolve" {
+		t.Fatalf("the steer answer is %q to %s", send.Label, send.Action)
+	}
+	tell := func(text string) *httptest.ResponseRecorder {
+		v := maps.Clone(send.Values)
+		v.Set(factoryd.AnswerSteer+".note", text)
+		return r.do(post(send.Action, v), ck)
+	}
 	before := r.events.count()
-	rec := r.do(post("/tasks/t-run/steer", url.Values{"csrf": {s.csrf}, "text": {" Rebase on main first. "}}), ck)
+	rec := tell(" Rebase on main first. ")
 	rows := r.events.all()[before:]
-	if rec.Code != http.StatusOK || len(rows) != 1 {
-		t.Fatalf("POST steer = %d, %d rows: %s", rec.Code, len(rows), rec.Body)
+	if rec.Code != http.StatusSeeOther || len(rows) != 1 {
+		t.Fatalf("the steer = %d, %d rows: %s", rec.Code, len(rows), rec.Body)
 	}
 	row := rows[0]
 	if want := (factoryd.Event{ID: row.ID, At: row.At, Repository: "sf/code", TaskID: "t-run", IssueNumber: 11, Kind: factoryd.EventCardSteered,
@@ -923,42 +930,40 @@ func TestDrawerSteer(t *testing.T) {
 	if !slices.Equal(steered, []string{"t-run sebastian: Rebase on main first."}) {
 		t.Errorf("steered %q", steered)
 	}
-	if strings.Contains(rec.Body.String(), `class="note"`) {
-		t.Errorf("the steer's answer holds a note:\n%s", rec.Body)
-	}
-	for _, want := range []string{drawerTabMarkup("t-run", "chat", "Session", true),
-		`<div id="drawer-panel" class="drawer-body" role="tabpanel">`,
-		`<div class="msg you" data-key="e` + strconv.FormatInt(row.ID, 10) + `"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>` + row.At.UTC().Format("01-02 15:04") +
-			`Z</time></p><p class="said">Rebase on main first.</p></div>`} {
-		if !strings.Contains(rec.Body.String(), want) {
-			t.Errorf("the steer's answer lacks %s:\n%s", want, rec.Body)
-		}
+	if got := drawer(t, r, ck, "t-run", "chat"); !strings.Contains(got, `<div class="msg you" data-key="e`+strconv.FormatInt(row.ID, 10)+`">`) ||
+		strings.Contains(got, "steer-form") || strings.Contains(got, "<textarea") {
+		t.Errorf("the Session tab after the steer:\n%s", got)
 	}
 
 	const token = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
 	_, br := streamOf(t, r, "")
-	rec = r.do(post("/tasks/t-run/steer", url.Values{"csrf": {s.csrf}, "text": {"Push with " + token + " now."}}), ck)
+	rec = tell("Push with " + token + " now.")
 	all := r.events.all()
 	row = all[len(all)-1]
-	if rec.Code != http.StatusOK || row.Detail["text"] != "Push with [token] now." || steered[1] != "t-run sebastian: Push with [token] now." {
+	if rec.Code != http.StatusSeeOther || row.Detail["text"] != "Push with [token] now." || steered[1] != "t-run sebastian: Push with [token] now." {
 		t.Errorf("a steer with a token = %d, row %v, steered %q", rec.Code, row.Detail, steered)
 	}
 	if got := strings.Join(nextMessage(t, br), "\n"); !strings.Contains(got, `"detail":{"text":"Push with [token] now."}`) || strings.Contains(got, token) {
 		t.Errorf("the stream carries %s", got)
 	}
-	if body := rec.Body.String(); strings.Contains(body, token) || !strings.Contains(body, `<p class="said">Push with [token] now.</p>`) || strings.Contains(body, `class="note"`) {
-		t.Errorf("the answer to a steer with a token:\n%s", body)
-	}
+
 	before = r.events.count()
-	if rec := r.do(post("/tasks/t-pr/steer", url.Values{"csrf": {s.csrf}, "text": {"hello"}}), ck); rec.Code != http.StatusConflict ||
-		len(steered) != 2 || r.events.count() != before {
+	if body := drawer(t, r, ck, "t-pr", "overview"); strings.Contains(body, `data-answer="`+factoryd.AnswerSteer+`"`) {
+		t.Errorf("a card in review offers a word to its session:\n%s", body)
+	}
+	v := maps.Clone(send.Values)
+	v.Set(factoryd.AnswerSteer+".note", "hello")
+	if rec := r.do(post("/tasks/t-pr/resolve", v), ck); rec.Code != http.StatusBadRequest || len(steered) != 2 || r.events.count() != before {
 		t.Errorf("a steer to a card in review = %d, steered %q, %d rows: %s", rec.Code, steered, r.events.count()-before, rec.Body)
+	}
+	if rec := r.do(post("/tasks/t-run/steer", url.Values{"csrf": {s.csrf}, "text": {"hello"}}), ck); rec.Code != http.StatusNotFound || len(steered) != 2 {
+		t.Errorf("the Session tab's old door = %d, steered %q", rec.Code, steered)
 	}
 }
 
-// The drawer and its steer are its project's writers': 403 to anyone
-// else and to a steer without the form token, 404 for an unknown card,
-// 400 for an unknown tab.
+// The drawer and its word to the session are its project's writers': 403
+// to anyone else and to a word without the form token, 404 for an unknown
+// card, 400 for an unknown tab.
 func TestDrawerRefusals(t *testing.T) {
 	r, ck := drawerRig(t)
 	steered := 0
@@ -976,10 +981,11 @@ func TestDrawerRefusals(t *testing.T) {
 	}
 	before := r.events.count()
 	ak, as := memberLogin(t, r, "alice")
-	if rec := r.do(post("/tasks/t-run/steer", url.Values{"csrf": {as.csrf}, "text": {"hello"}}), ak); rec.Code != http.StatusForbidden {
+	word := url.Values{"action": {factoryd.AnswerSteer}, factoryd.AnswerSteer + ".note": {"hello"}}
+	if rec := r.do(post("/tasks/t-run/resolve", url.Values{"csrf": {as.csrf}, "action": word["action"], factoryd.AnswerSteer + ".note": {"hello"}}), ak); rec.Code != http.StatusForbidden {
 		t.Errorf("alice steers t-run: %d, want 403", rec.Code)
 	}
-	if rec := r.do(post("/tasks/t-run/steer", url.Values{"text": {"hello"}}), ck); rec.Code != http.StatusForbidden {
+	if rec := r.do(post("/tasks/t-run/resolve", word), ck); rec.Code != http.StatusForbidden {
 		t.Errorf("a steer without the form token: %d, want 403", rec.Code)
 	}
 	if steered != 0 || r.events.count() != before {
@@ -1690,16 +1696,20 @@ func TestFindAndDrawerSpeakThePlanName(t *testing.T) {
 	}
 }
 
-// A console without factoryd's steer refuses a steer from the drawer and
-// records nothing, instead of calling a nil function.
-func TestDrawerSteerWithoutSteer(t *testing.T) {
+// A console without factoryd's steer offers no word to the running
+// session, refuses one and records nothing, instead of calling a nil
+// function.
+func TestTellTheRunningSessionWithoutSteer(t *testing.T) {
 	r, _ := drawerRig(t)
 	r.c.cfg.Steer = nil
 	ck, s := r.loggedIn(t)
+	if body := drawer(t, r, ck, "t-run", "overview"); strings.Contains(body, `data-answer="`+factoryd.AnswerSteer+`"`) {
+		t.Errorf("a console without steer offers a word to the session:\n%s", body)
+	}
 	before := r.events.count()
-	rec := r.do(post("/tasks/t-run/steer", url.Values{"csrf": {s.csrf}, "text": {"hello"}}), ck)
+	rec := r.do(post("/tasks/t-run/resolve", url.Values{"csrf": {s.csrf}, "action": {factoryd.AnswerSteer}, factoryd.AnswerSteer + ".note": {"hello"}}), ck)
 	if rec.Code != http.StatusNotImplemented || !strings.Contains(rec.Body.String(), "This console cannot message a running session") || r.events.count() != before {
-		t.Fatalf("POST steer without Steer = %d, %d new rows: %s", rec.Code, r.events.count()-before, rec.Body)
+		t.Fatalf("a word to the session without Steer = %d, %d new rows: %s", rec.Code, r.events.count()-before, rec.Body)
 	}
 }
 

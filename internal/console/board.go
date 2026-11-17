@@ -3131,8 +3131,7 @@ var drawerTabs = []drawerTab{{"overview", "Overview"}, {"chat", "Session"}, {"ac
 
 // drawerData is the card drawer on one tab. Overview: the opened card.
 // Activity: the timeline page's gates and steps. Files: the pull
-// request's changed files. Chat: the newest session's messages, and the
-// input that steers it while it runs.
+// request's changed files. Chat: the newest session's messages.
 type drawerData struct {
 	Card      card
 	Tab       string
@@ -3145,7 +3144,6 @@ type drawerData struct {
 	MoreFiles bool // Files are the first filesPages pages
 	Session   *sessionRef
 	Said      []said
-	Steers    bool   // the session runs and takes the human's messages
 	Problem   string // what the tab could not read
 	// Chain is the chain behind the card's change as the Chain section
 	// reads it (C38), nil while the chain holds nothing to say.
@@ -3452,16 +3450,6 @@ func (c *Console) seedCardAsk(ctx context.Context, bt factoryd.BoardTask, who st
 	}
 }
 
-// steerCard hands the member's message from the drawer's Chat to card
-// id's running session (doSteer) and answers the tab again.
-func (c *Console) steerCard(w http.ResponseWriter, r *http.Request) {
-	if _, err := c.doSteer(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("text")); err != nil {
-		c.fail(w, r, err)
-		return
-	}
-	c.drawer(w, r, "chat")
-}
-
 // drawer renders the card drawer on tab, "" for the card's default.
 func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 	bt, k, v, ok := c.writableCard(w, r)
@@ -3531,7 +3519,6 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 		case err != nil:
 			problem("session", "Reload the board.", err)
 		}
-		d.Steers = d.Session != nil && d.Session.Ended.IsZero() && bt.Status == "running" && c.cfg.Steer != nil
 	}
 	c.render(w, "drawer.html", d)
 }

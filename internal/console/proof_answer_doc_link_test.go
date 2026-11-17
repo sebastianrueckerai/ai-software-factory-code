@@ -52,7 +52,7 @@ anchor.getAttribute = function (k) { return k === "href" ? "?doc=docs/roadmap.md
 chatLog.appendChild(anchor);
 var chatPanel = el({dataset: {login: "sebastian", project: "code"}});
 var byID = {chat: chatPanel, board: el({dataset: {project: "code", query: "?project=code"}}), "status-line": el(), live: el(), drawer: el({hidden: true}),
-  "session-log": el(), "steer-input": el({value: ""}), "doc-view": el({hidden: true}), "doc-article": el(), "doc-path": el(), "doc-facts": el(),
+  "session-log": el(), "doc-view": el({hidden: true}), "doc-article": el(), "doc-path": el(), "doc-facts": el(),
   "doc-edit": el({hidden: true}), "doc-editor": el({value: ""}), "doc-back": el(), "doc-fwd": el(), "doc-wide": el(), "doc-close": el(),
   "doc-forgejo": el(), "doc-pins": el(), "doc-dot": el({hidden: true}), "doc-mode-read": el(), "doc-mode-edit": el(), documents: el(),
   "doc-new-form": el({hidden: true}), "doc-pathline": el(), "doc-name": el({value: ""}), "doc-edit-row": el(), "chat-log": chatLog};

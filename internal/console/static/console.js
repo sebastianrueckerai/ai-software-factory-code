@@ -403,14 +403,11 @@ document.addEventListener("DOMContentLoaded", offerTracks);
     if (counts.length === d.counts.length) d.counts.forEach(function (n, i) { counts[i].innerHTML = n; });
   }
   // chat loads the drawer's Chat again while it shows card id's session,
-  // any card's for "", the steer being typed kept
+  // any card's for ""
   function chat(id) {
-    var log = document.getElementById("session-log"), box = document.getElementById("steer-input"), typed = box && box.value;
+    var log = document.getElementById("session-log");
     if (!log || id && log.dataset.task !== id) return;
-    htmx.ajax("GET", "/cards/" + encodeURIComponent(log.dataset.task) + "/drawer?tab=chat", {target: "#drawer", swap: "innerHTML"}).then(function () {
-      var again = document.getElementById("steer-input");
-      if (typed && again) again.value = typed;
-    });
+    htmx.ajax("GET", "/cards/" + encodeURIComponent(log.dataset.task) + "/drawer?tab=chat", {target: "#drawer", swap: "innerHTML"});
   }
   // said adds the agent's text or a steer to the drawer's Chat while it
   // shows that card's session, once; another session's text loads the
@@ -483,7 +480,7 @@ document.addEventListener("DOMContentLoaded", offerTracks);
       else if (!e.task_id || e.kind === "card_filed" || e.kind === "project_merged") swapBoard();
       else {
         if (e.kind === "card_steered") said(e);
-        // a new status may end the session, and its steer box with it
+        // a new status may end the session
         if (e.kind === "task_status") chat(e.task_id);
         swapCard(e.task_id);
       }
@@ -800,8 +797,7 @@ function closeDrawer() {
 }
 window.addEventListener("hashchange", showDrawer);
 document.addEventListener("DOMContentLoaded", showDrawer);
-// a drawer refused or unreachable closes, so the board moves again; a
-// refused steer leaves it open, its sentence in the flash
+// a drawer refused or unreachable closes, so the board moves again
 function drawerFailed(e) {
   if (e.detail.target && e.detail.target.id === "drawer" && e.detail.requestConfig.verb === "get") closeDrawer();
 }
@@ -815,15 +811,13 @@ function lifeFailed(e) {
 }
 document.addEventListener("htmx:responseError", lifeFailed);
 document.addEventListener("htmx:sendError", lifeFailed);
-// after a tab the focus is on the tab shown, after a steer in its input
+// after a tab the focus is on the tab shown
 document.addEventListener("htmx:afterSwap", function (e) {
   var t = e.detail.target, shown = t && t.id === "drawer" && t.querySelector("[data-drawer], [data-routine-drawer]");
   if (!shown) return;
   var hash = shown.dataset.drawer ? "#card=" + shown.dataset.drawer : "#routine=" + shown.dataset.routineDrawer;
   if (location.hash !== hash) history.replaceState(null, "", hash);
-  var from = e.detail.requestConfig.elt, steer = document.getElementById("steer-input");
-  if (from.getAttribute("role") === "tab") t.querySelector("[role=tab][aria-selected=true]").focus();
-  else if (from.id === "steer-form" && steer) steer.focus();
+  if (e.detail.requestConfig.elt.getAttribute("role") === "tab") t.querySelector("[role=tab][aria-selected=true]").focus();
 });
 
 // the agent's view change opens the drawer's card as its link does, the

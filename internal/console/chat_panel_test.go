@@ -1644,7 +1644,7 @@ function el(props) {
   return Object.assign(e, props);
 }
 var byID = {board: el({dataset: {project: "code", query: "?project=code"}}), "status-line": el(), live: el(),
-  drawer: el({hidden: true}), "session-log": el(), "steer-input": el(), q: el({value: ""}),
+  drawer: el({hidden: true}), "session-log": el(), q: el({value: ""}),
   chat: el({dataset: {login: "sebastian", project: "code"}}), "chat-log": el(), "chat-input": el({value: ""}),
   "chat-new": el(), "thread-rows": el(), "thread-head": el(), "chat-answer": el(), "chat-commands": el(), "chat-palette": el(),
   documents: el(), "doc-view": el(), "doc-article": el(), "doc-path": el(), "doc-facts": el(), "doc-edit": el(),

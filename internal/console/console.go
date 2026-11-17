@@ -601,7 +601,6 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/plan/answer", http.HandlerFunc(c.planAnswer), nil},
 		{"POST /tasks/{id}/plan/holdout", http.HandlerFunc(c.planHoldout), nil},
 		{"POST /tasks/{id}/plan/changes", http.HandlerFunc(c.planChanges), nil},
-		{"POST /tasks/{id}/steer", http.HandlerFunc(c.steerCard), nil},
 		{"POST /projects/{name}/deploy-now", http.HandlerFunc(c.deployNow), nil},
 		{"POST /approvals/{id}/approve", http.HandlerFunc(c.approve), nil},
 		{"POST /approvals/{id}/deny", http.HandlerFunc(c.deny), nil},
