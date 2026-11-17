@@ -1,9 +1,16 @@
 package console
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
 // A step's time reads as the gates table's start: seconds in UTC. A
@@ -96,6 +103,34 @@ func TestFilterCarriesTheRoutinesPeriod(t *testing.T) {
 	}{{1, "days", "1 day"}, {3, "days", "3 days"}, {1, "hours", "1 hour"}, {12, "hours", "12 hours"}} {
 		if got := (boardFilter{Routines: "within", Within: tc.within, Unit: tc.unit}).Period(); got != tc.want {
 			t.Errorf("Period of %d %s = %q, want %q", tc.within, tc.unit, got, tc.want)
+		}
+	}
+}
+
+// A card behind another in the merge queue is no stale card: it names the
+// card ahead. A plan's card held back wears no ring either and names the plan.
+func TestBoardNamesTheCardAheadInTheMergeQueue(t *testing.T) {
+	r, ev := newRigWithEvents(t)
+	ck, _ := r.loggedIn(t)
+	old := time.Now().Add(-4 * time.Hour)
+	r.tasks.set("",
+		factoryd.Task{ID: "t-behind", Kind: "agent", Status: "in-review", Gate: factoryd.GateMergeQueue, Repository: "sf/code", Objective: "behind", CreatedAt: old},
+		factoryd.Task{ID: "t-held", Kind: "agent", Status: "in-review", Gate: factoryd.GateMergeQueue, Repository: "sf/code", Objective: "held", CreatedAt: old})
+	r.tasks.tasks[0].MergeBehind = 1949
+	for id, e := range map[string]factoryd.Event{
+		"t-behind": {Kind: factoryd.EventTaskStatus, Detail: map[string]any{"status": "in-review", "gate": factoryd.GateMergeQueue}},
+		"t-held":   {Kind: "queue_group_wait", Detail: map[string]any{"project": "sf/code", "plan": "p-g", "issue": float64(1939)}},
+	} {
+		e.Repository, e.TaskID, e.Actor, e.Via, e.At = "sf/code", id, "factoryd", factoryd.ViaButton, old
+		if _, err := ev.Record(context.Background(), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	for id, words := range map[string]string{"t-behind": "waits to merge behind #1949", "t-held": "waits for plan #1939 to close"} {
+		face := faceOf(t, body, id)
+		if strings.Contains(face, "stale") || strings.Contains(face, "nothing for over") || !strings.Contains(face, words) {
+			t.Errorf("%s is stale or lacks %q:\n%s", id, words, face)
 		}
 	}
 }

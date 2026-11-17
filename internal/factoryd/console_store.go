@@ -49,6 +49,9 @@ type BoardTask struct {
 	WaitingOn    string
 	Dependencies string
 	QueueAhead   int
+	// MergeBehind is the issue of the card that holds the turn of the
+	// merge queue this card waits in, 0 at the front or outside a queue.
+	MergeBehind int64
 	// SlotWait is the face's "waits for a slot, N ahead (L live)" of a card
 	// queued for a work slot, "" for any other: the resumed cards come
 	// first, then the never-started ones by filing.
@@ -212,6 +215,15 @@ func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTas
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	places, err := s.MergeQueuePlaces(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range tasks {
+		if p, ok := places[tasks[i].ID]; ok && p.Ahead > 0 {
+			tasks[i].MergeBehind = p.HeadIssue
+		}
 	}
 	setSlotWaits(tasks)
 	return tasks, s.fillAsks(ctx, tasks)

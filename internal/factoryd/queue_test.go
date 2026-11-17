@@ -54,6 +54,20 @@ func (s *fakeStore) QueueHead(ctx context.Context, project string) (string, bool
 	return "", false, nil
 }
 
+func (s *fakeStore) MergeQueuePlaces(ctx context.Context) (map[string]QueuePlace, error) {
+	out := map[string]QueuePlace{}
+	heads := map[string]queueEntry{}
+	ahead := map[string]int{}
+	for _, e := range s.queue {
+		if _, ok := heads[e.project]; !ok {
+			heads[e.project] = e
+		}
+		out[e.task] = QueuePlace{Ahead: ahead[e.project], HeadTask: heads[e.project].task, HeadIssue: s.tasks[heads[e.project].task].IssueNumber}
+		ahead[e.project]++
+	}
+	return out, nil
+}
+
 func (s *fakeStore) LeaveQueue(ctx context.Context, taskID string) (string, bool, error) {
 	i := slices.IndexFunc(s.queue, func(e queueEntry) bool { return e.task == taskID })
 	if i < 0 {
@@ -2149,5 +2163,41 @@ func TestSyncOverlapFailsOnAnotherNotFound(t *testing.T) {
 	r := &Runner{forgejo: &Forgejo{BaseURL: srv.URL}}
 	if got, err := r.syncOverlap(context.Background(), Repo{Owner: "sf", Name: "code"}, 7, "b", "m"); err == nil {
 		t.Fatalf("overlap %v with no error, want the 404 to fail the sync", got)
+	}
+}
+
+func TestPGStoreMergeQueuePlaces(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, merge_queue CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	for id, n := range map[string]int64{"a1": 1949, "a2": 1984, "a3": 2098, "b1": 77} {
+		repo := "sf/code"
+		if id == "b1" {
+			repo = "sf/other"
+		}
+		if err := s.CreateTask(ctx, Task{ID: id, Status: "in-review", Repository: repo, Track: "direct", IssueNumber: n}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, q := range []struct{ project, id, at string }{{"sf/code", "a3", "2026-11-16T12:02:00Z"}, {"sf/code", "a1", "2026-11-16T09:00:00Z"},
+		{"sf/other", "b1", "2026-11-16T10:00:00Z"}, {"sf/code", "a2", "2026-11-16T09:46:00Z"}} {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO merge_queue (project, task_id, entered_at) VALUES ($1, $2, $3)`, q.project, q.id, q.at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.MergeQueuePlaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]QueuePlace{
+		"a1": {0, "a1", 1949}, "a2": {1, "a1", 1949}, "a3": {2, "a1", 1949}, "b1": {0, "b1", 77}}
+	if !maps.Equal(got, want) {
+		t.Fatalf("MergeQueuePlaces = %v, want %v", got, want)
 	}
 }

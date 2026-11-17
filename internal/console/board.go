@@ -481,8 +481,10 @@ var stateColumns = []struct{ Title, Status string }{
 
 type card struct {
 	factoryd.Task
-	IssueURL string
-	PRURL    string
+	// MergeBehind is the issue of the card ahead in the merge queue, 0 for none.
+	MergeBehind int64
+	IssueURL    string
+	PRURL       string
 	// RollID is the roll task a merged card waits for.
 	RollID  string
 	Reason  string   // an escalation's reason
@@ -1937,7 +1939,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		k.Cover = fmt.Sprintf("live through run %d, %s after merge", bt.ChainGreen,
 			minutes(max(bt.ChainGreenAt.Sub(*bt.FinishedAt), 0)))
 	}
-	k.WaitingOn, k.SlotWait = bt.WaitingOn, bt.SlotWait
+	k.WaitingOn, k.SlotWait, k.MergeBehind = bt.WaitingOn, bt.SlotWait, bt.MergeBehind
 	// "blocked by n" counts the dependencies that are not done yet;
 	// WaitingOn already says so for a card in waiting-deps, where the
 	// face shows that chip and never both.
@@ -2118,7 +2120,7 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			return at
 		}
 		ring := func(d time.Duration) bool { return d >= factoryd.StaleWindow }
-		live := !factoryd.Final(k.Status) && k.Status != "queued"
+		live := !factoryd.Final(k.Status) && k.Status != "queued" && k.MergeBehind == 0
 		reason := func() string {
 			q, _, _ := strings.Cut(strings.TrimPrefix(k.Reason, factoryd.AgentAsks), "\n")
 			return q
@@ -2127,6 +2129,12 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 		titled := k.Kind == "human" && k.Question != nil
 		if e, ok := newest[k.ID]; ok {
 			k.Activity = activityLine(e)
+			if f, _ := e.Detail["issue"].(float64); e.Kind == "queue_group_wait" && f > 0 {
+				k.Activity, live = fmt.Sprintf("waits for plan #%d to close", int64(f)), false
+			}
+			if k.MergeBehind > 0 {
+				k.Activity = fmt.Sprintf("waits to merge behind #%d", k.MergeBehind)
+			}
 			// the stage began at its status row, when that row is the newest event
 			if k.Stage != "" && e.Kind == factoryd.EventTaskStatus && fmt.Sprint(e.Detail["status"]) == k.Status && !e.At.IsZero() {
 				k.StageAge = minutes(time.Since(e.At))

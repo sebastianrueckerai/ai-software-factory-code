@@ -88,6 +88,36 @@ func (s *PGStore) QueueHead(ctx context.Context, project string) (string, bool, 
 	return id, err == nil, err
 }
 
+// QueuePlace is a task's place in its project's merge queue: the entries
+// ahead of it, and the task, with its issue, that holds the turn.
+type QueuePlace struct {
+	Ahead     int
+	HeadTask  string
+	HeadIssue int64
+}
+
+// MergeQueuePlaces answers the place of every task in any project's merge
+// queue, ordered as QueueHead orders them.
+func (s *PGStore) MergeQueuePlaces(ctx context.Context) (map[string]QueuePlace, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT q.task_id, q.ahead, q.head, COALESCE(h.issue_number, 0) FROM (
+		SELECT task_id, row_number() OVER w - 1 AS ahead, first_value(task_id) OVER w AS head FROM merge_queue
+		WINDOW w AS (PARTITION BY project ORDER BY entered_at, task_id)) q JOIN tasks h ON h.id = q.head`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]QueuePlace{}
+	for rows.Next() {
+		var id string
+		var p QueuePlace
+		if err := rows.Scan(&id, &p.Ahead, &p.HeadTask, &p.HeadIssue); err != nil {
+			return nil, err
+		}
+		out[id] = p
+	}
+	return out, rows.Err()
+}
+
 // LeaveQueue takes taskID out of its project's merge queue; left: it was
 // in one.
 func (s *PGStore) LeaveQueue(ctx context.Context, taskID string) (project string, left bool, err error) {
