@@ -311,6 +311,15 @@ var effectFills = map[string]func(Facts) string{
 		}
 		return ""
 	},
+	AnswerConfirmPlan: func(f Facts) string {
+		switch p, _ := planOn(f); {
+		case p.Asks > 0:
+			return "The answers go to the next planner round."
+		case len(p.OffMain) > 0:
+			return "Reverts " + textutil.AndList(p.OffMain) + " from main, then the plan's cards start."
+		}
+		return ""
+	},
 	ActClose + "/" + variantPlanWait: func(f Facts) string {
 		d := failedDep(f.CaseFacts)
 		switch {
@@ -1705,12 +1714,14 @@ func OnHoldout(c Case, h HoldoutFact) Case {
 
 // PlanFacts are what a plan's question and confirmation name of the plan:
 // its outcome, its cards' titles, its promises, the cards it takes off
-// main with the planner's reasons, and how many extra promises wait.
+// main with the planner's reasons, how many extra promises wait, and how
+// many questions the planner asked beside the confirmation, whose answers
+// a confirm sends to the next planner round.
 type PlanFacts struct {
 	Outcome              string
 	Cards, Promises      []string
 	OffMain, OffMainWhys []string
-	HoldoutsOpen         int
+	HoldoutsOpen, Asks   int
 }
 
 // OnPlan is case c of a plan's question or confirmation with plan p.

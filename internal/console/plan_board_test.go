@@ -558,7 +558,8 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 }
 
 // A revision that takes merged cards off main names them in its Confirm's
-// effect, and each card's reason in the full brief, a blank reason none.
+// effect, each linked to its card as every effect's refs are, and each
+// card's reason in the full brief, a blank reason none.
 // The chat's read keeps its own line.
 func TestPlanViewsShowTakeOffMain(t *testing.T) {
 	r := newRig(t)
@@ -574,7 +575,9 @@ func TestPlanViewsShowTakeOffMain(t *testing.T) {
 		}
 	}
 	ck, _ := r.loggedIn(t)
-	want := `<button type="submit" class="pick">Confirm the plan</button> <span class="effect">Reverts #2, #4 and #5 from main, then the plan&#39;s cards start.</span>`
+	want := `<button type="submit" class="pick">Confirm the plan</button> <span class="effect">Reverts <a class="ref-link" href="#card=t-c2">#2</a> <span class="ref-of">(card 2, queued)</span>, ` +
+		`<a class="ref-link" href="#card=t-c4">#4</a> <span class="ref-of">(card 4, queued)</span> and ` +
+		`<a class="ref-link" href="#card=t-c5">#5</a> <span class="ref-of">(card 5, done)</span> from main, then the plan&#39;s cards start.</span>`
 	card := approvalFaceOf(t, planDrawer(t, r, ck), "t-plan")
 	if !strings.Contains(card, want) {
 		t.Errorf("the plan card lacks %q:\n%s", want, card)

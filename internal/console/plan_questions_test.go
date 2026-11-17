@@ -518,6 +518,33 @@ func TestConfirmBesideRealQuestions(t *testing.T) {
 	}
 }
 
+// The confirmation's page of a revision that asked a real question says
+// what its Confirm does, whether the question is open or answered: the
+// answers go to the next planner round, and nothing comes off main yet.
+func TestTheConfirmBesideRealQuestionsSaysWhereTheAnswersGo(t *testing.T) {
+	r := newRig(t)
+	planRig(r)
+	plan, _ := json.Marshal(factoryd.Plan{Summary: "Foundation first.", TakeOffMain: []string{"k2"},
+		Cards: []factoryd.PlanCard{{Key: "foundation", Role: "foundation", Title: "Foundation", Size: "medium"}}})
+	r.tasks.plans["t-plan"][1].Plan = plan
+	for _, t := range planTasks() {
+		if t.Parent == "t-plan" && t.PlanKey == "k2" {
+			r.tasks.tasks = append(r.tasks.tasks, t)
+		}
+	}
+	ck, _ := r.loggedIn(t)
+	const want = `<button type="submit" class="pick">Confirm the plan</button> <span class="effect">The answers go to the next planner round.</span>`
+	for name, answer := range map[string]string{"open": "", "answered": "30 days"} {
+		r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": {
+			{Text: "How long are the results kept?", Choices: []string{"7 days", "30 days"}, Answer: answer},
+			{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}}
+		page := getAs(r, ck, "/cards/t-plan/drawer?tab=overview&case=t-plan:501", false).Body.String()
+		if !strings.Contains(page, want) || strings.Contains(page, "Reverts") {
+			t.Errorf("%s: the confirmation's page lacks %q, or names a revert:\n%s", name, want, page)
+		}
+	}
+}
+
 // The project agent reads a decided confirmation as answered: the card
 // lists it under no open question, and the plan read shows its decision.
 func TestChatReadsADecidedConfirmation(t *testing.T) {

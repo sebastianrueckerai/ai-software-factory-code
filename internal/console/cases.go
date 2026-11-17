@@ -57,8 +57,6 @@ type planSlot struct {
 	Revision, Index int
 	Confirm         bool
 	Choices         []planChoice
-	TakeOffRefs     []string
-	TakeOffWhys     []string
 }
 
 // planChoice is one answer, which a send names by Index (from 1) among the
@@ -331,6 +329,11 @@ func planFacts(ap *approvalCard) factoryd.PlanFacts {
 			p.HoldoutsOpen++
 		}
 	}
+	for _, q := range ap.Questions {
+		if q.Kind != factoryd.QuestionConfirmation {
+			p.Asks++
+		}
+	}
 	return p
 }
 
@@ -424,13 +427,10 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		face.Story.Left = "The checks healed after a re-run."
 	}
 	if planCase(shown.Case) && shown.Part == 0 {
-		if slot := c.planSlotOf(ctx, face, shown.Case); slot != nil {
+		if slot := planSlotOf(face, shown.Case); slot != nil {
 			hosts := v.policy.Document.LinkHosts
 			for i := range slot.Choices {
 				slot.Choices[i].Label = sanitize.Outbound(scrubText(slot.Choices[i].Label), hosts)
-			}
-			for i := range slot.TakeOffWhys {
-				slot.TakeOffWhys[i] = sanitize.Outbound(scrubText(slot.TakeOffWhys[i]), hosts)
 			}
 			row.Plan = slot
 		}
@@ -457,24 +457,14 @@ func withDeps(k factoryd.Case, bt factoryd.BoardTask) factoryd.Case {
 
 // planSlotOf is the form of plan case k, whose face is face: the
 // question's choices, the one the face recommends checked, or the
-// confirmation with the cards it takes off main. A case that names no
-// revision and no index has none.
-func (c *Console) planSlotOf(ctx context.Context, face factoryd.Face, k factoryd.Case) *planSlot {
+// confirmation. A case that names no revision and no index has none.
+func planSlotOf(face factoryd.Face, k factoryd.Case) *planSlot {
 	revision, index := factInt(k, "revision"), factInt(k, "index")
 	if revision == 0 || index == 0 {
 		return nil
 	}
 	confirm := k.Kind == factoryd.CasePlanConfirmation
 	slot := &planSlot{Revision: revision, Index: index, Confirm: confirm}
-	_, p, ok, err := c.planTable(ctx, k.TaskID, revision)
-	if err != nil {
-		log.Printf("console: plan %s revision %d: %v", k.TaskID, revision, err)
-	}
-	if ok && confirm {
-		if slot.TakeOffRefs, slot.TakeOffWhys, err = c.takeOffOf(ctx, k.TaskID, p); err != nil {
-			log.Printf("console: %v", err)
-		}
-	}
 	if confirm {
 		return slot
 	}

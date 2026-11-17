@@ -19,7 +19,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // openedView is the opened card (C46), the drawer's first tab: the head,
@@ -283,9 +282,6 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 				o.Ask.Note = "A newer ask on this card waits on the factory first."
 			}
 		}
-		if row.Plan != nil {
-			takesOff(o.Ask.Answers, row.Plan.TakeOffRefs)
-		}
 		if row.Approval != nil {
 			requestAsk(o.Ask, *row.Approval)
 		}
@@ -322,16 +318,14 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 			}
 			return requestPress(v, k, ap, an, key)
 		}
-		takeOff := ap.TakeOffRefs
 		ask := k.ID + "-r" + strconv.FormatInt(ap.ID, 10)
 		if q, ok := planQuestionCase(ap); ok {
 			// a plan that waits on its open questions asks the first of them
 			kase, face = q, factoryd.CaseFace(q, bt.Task, factoryd.CaseAsk{})
-			slot := &caseRow{Case: q, Face: face, Plan: c.planSlotOf(ctx, face, q)}
+			slot := &caseRow{Case: q, Face: face, Plan: planSlotOf(face, q)}
 			press = func(an factoryd.Answer, key string) (*pressForm, func(string) string) {
 				return casePress(v, k, *slot, an, key)
 			}
-			takeOff = nil
 			ask += fmt.Sprintf("-q%v", q.Facts["index"])
 		}
 		face = v.scrubbed(face)
@@ -340,7 +334,6 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		f := factoryd.Facts{CaseFacts: factoryd.FactsOf(kase), Card: bt.Task, Case: kase}
 		o.Ask.Answers = c.answersOf(ctx, v, k, ask, face, f, press, r.URL.Query().Get("press"), seen)
 		o.Ask.whoMay()
-		takesOff(o.Ask.Answers, takeOff)
 		requestAsk(o.Ask, ap)
 		o.Brief.Evidence = c.evidenceOf(ctx, v, k, face)
 	}
@@ -760,19 +753,6 @@ func planQuestionCase(ap approvalCard) (factoryd.Case, bool) {
 				"recommended": q.Recommended, "grounds": q.Grounds}}, true
 	}
 	return factoryd.Case{}, false
-}
-
-// takesOff says on a plan's Confirm among answers that it takes the cards
-// refs names off main first.
-func takesOff(answers []answerView, refs []string) {
-	if len(refs) == 0 {
-		return
-	}
-	for i := range answers {
-		if answers[i].Action == factoryd.AnswerConfirmPlan {
-			answers[i].Effect = template.HTML(template.HTMLEscapeString("Reverts " + textutil.AndList(refs) + " from main, then the plan's cards start."))
-		}
-	}
 }
 
 // requestAsk fits the ask of request ap to its rows as they read now. A
