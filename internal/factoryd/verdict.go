@@ -336,13 +336,22 @@ func PlanCloseWords(by, note string, merged bool) string {
 }
 
 // PlanVerdictReader reads a plan's cards, whether one of them holds a merge
-// in production, and the verdict rows of its cards.
+// in production, the verdict rows of its cards and its criteria gate's
+// runs (planGateReader).
 type PlanVerdictReader interface {
-	PlanCards(ctx context.Context, plan string) ([]Task, error)
+	planGateReader
 	// PlanMerged says whether a card of plan holds an unreverted merge: the
 	// rule that opens the plan's production group (groupOpenings).
 	PlanMerged(ctx context.Context, plan string) (bool, error)
 	CriteriaVerdicts(ctx context.Context, taskID string) ([]CriterionVerdict, error)
+}
+
+// planGateReader reads what planGateOf weighs: a plan's cards, their
+// successors and the criteria gate's runs.
+type planGateReader interface {
+	PlanCards(ctx context.Context, plan string) ([]Task, error)
+	Task(ctx context.Context, id string) (Task, bool, error)
+	TaskEventsOfKind(ctx context.Context, id, kind string, limit int) ([]Event, error)
 }
 
 // PlanOpenCriteria is planOpen for the console: the criteria of plan id's p
@@ -354,7 +363,8 @@ func PlanOpenCriteria(ctx context.Context, store PlanVerdictReader, id string, p
 }
 
 // planOpen are the criteria of plan id's p that stand neither met nor
-// waived, and the card that holds the rows: the integration card. A plan
+// waived on the rows that settle them (planGate), and the card that holds
+// the rows: the integration card. A plan
 // none of whose cards holds an unreverted merge (PlanMerged, the rule of
 // the production hold) holds nothing, and nothing is open. A plan between
 // rounds (its outline holds later rounds) has filed no integration card
@@ -373,7 +383,8 @@ func planOpen(ctx context.Context, store PlanVerdictReader, id string, p Plan) (
 		return nil, "", err
 	}
 	home = id
-	if integration, ok := integrationCardOf(cards, p); ok {
+	integration, ok := integrationCardOf(cards, p)
+	if ok {
 		home = integration.ID
 	} else if len(p.Outline) > 0 {
 		return nil, id, nil
@@ -381,6 +392,13 @@ func planOpen(ctx context.Context, store PlanVerdictReader, id string, p Plan) (
 	rows, err := store.CriteriaVerdicts(ctx, home)
 	if err != nil {
 		return nil, "", fmt.Errorf("verdicts of %s: %w", home, err)
+	}
+	if ok {
+		g, err := planGateOf(ctx, store, id, integration)
+		if err != nil {
+			return nil, "", err
+		}
+		rows = g.settling(rows)
 	}
 	return openCriteria(p, rows), home, nil
 }
@@ -759,7 +777,7 @@ type planGate struct {
 
 // planGateOf reads how plan's criteria gate stands on integration card
 // integration.
-func planGateOf(ctx context.Context, store Store, plan string, integration Task) (planGate, error) {
+func planGateOf(ctx context.Context, store planGateReader, plan string, integration Task) (planGate, error) {
 	cards, err := planWaits(ctx, store, plan)
 	if err != nil {
 		return planGate{}, err
@@ -1582,7 +1600,9 @@ func (r *Runner) gateRuns(ctx context.Context, id, task string) ([]Event, error)
 }
 
 // gateRunsOf is gateRuns on store.
-func gateRunsOf(ctx context.Context, store Store, id, task string) ([]Event, error) {
+func gateRunsOf(ctx context.Context, store interface {
+	TaskEventsOfKind(ctx context.Context, id, kind string, limit int) ([]Event, error)
+}, id, task string) ([]Event, error) {
 	rows, err := store.TaskEventsOfKind(ctx, id, EventCriteriaGateRun, 50)
 	return slices.DeleteFunc(rows, func(e Event) bool { return e.Detail["task"] != task }), err
 }

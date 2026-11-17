@@ -1561,6 +1561,42 @@ func TestClosedPlanCardKeepsItsCriteriaApprovalUntilAnApproverCloses(t *testing.
 	}
 }
 
+// The production hold reads the same rule as the close: rows the gate wrote
+// at the head of the closed integration card settle nothing, so c1 and c3
+// stay open and hold the merged plan, and a person's close of the plan card
+// closes nothing while they do. Once a run on main is on record for the
+// cards as they stand, the rows settle and nothing is open.
+func TestPlanOpenHoldsOnRowsOffMain(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-plan", "t-int", "closed")
+	mergeCard(s, "card-foundation")
+	if err := gateMet(ctx, s, "t-int"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceApprover, "sebastian", []CriterionVerdict{{Criterion: "c2", Verdict: "met", Kind: CriterionHuman}}); err != nil {
+		t.Fatal(err)
+	}
+	p, _, _ := planOfStore(ctx, s, "t-plan", "")
+	open, err := PlanOpenCriteria(ctx, s, "t-plan", p)
+	if ids, _ := judgeIDs(open); err != nil || !slices.Equal(ids, []string{"c1", "c3"}) {
+		t.Fatalf("open = %v, %v; want c1 and c3", ids, err)
+	}
+	setStatus(s, "t-plan", "closed")
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r.planCloseCheck(ctx, "t-plan")
+	if closeRows(s) != 0 {
+		t.Fatal("the plan closed on rows that judged no head on main")
+	}
+	if _, err := s.Record(ctx, Event{Repository: "sf/code", TaskID: "t-plan", Kind: EventCriteriaGateRun, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"task": "t-int", "pr": int64(0), "commit": "m1", "outcome": gateDone, "attempt": "1",
+			"cards": "card-foundation:done@2026-10-01T09:00:00Z t-int:closed"}}); err != nil {
+		t.Fatal(err)
+	}
+	if open, err := PlanOpenCriteria(ctx, s, "t-plan", p); err != nil || len(open) != 0 {
+		t.Fatalf("after the run on main: open = %v, %v; want none", open, err)
+	}
+}
+
 // A human's confirmation of the delivered cards meets every open
 // criterion at once, their line the evidence, and the sweep that follows
 // ends the request and closes the plan. A child not done or merged

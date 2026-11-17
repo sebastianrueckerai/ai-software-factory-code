@@ -4183,11 +4183,18 @@ func (c *Console) prFiles(r *http.Request, repository string, pr int64) ([]prFil
 		fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files?", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), pr), filesPages)
 }
 
+// planReader is the store a plan's open criteria are read from: its cards
+// and rows on the tasks port, its criteria gate's runs on the events port.
+type planReader struct {
+	Tasks
+	Events
+}
+
 // planHold fills k with plan t's production hold: Close is offered while no
 // plan_closed row stands (a closed plan: while criteria are open), and with
 // the note's form while criteria are open.
 func (c *Console) planHold(ctx context.Context, v *boardView, t factoryd.Task, p factoryd.Plan, k *card) {
-	open, openErr := factoryd.PlanOpenCriteria(ctx, c.cfg.Tasks, t.ID, p)
+	open, openErr := factoryd.PlanOpenCriteria(ctx, planReader{c.cfg.Tasks, c.cfg.Events}, t.ID, p)
 	_, closed, closedErr := c.cfg.Tasks.PlanClosed(ctx, t.ID)
 	if err := cmp.Or(openErr, closedErr); err != nil {
 		log.Printf("console: the criteria of %s: %v", t.ID, err)
