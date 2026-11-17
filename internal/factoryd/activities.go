@@ -1735,6 +1735,17 @@ func (r *Runner) RequestInfo(ctx context.Context, taskID, reason string) (int64,
 		return 0, err
 	}
 	r.record(ctx, taskID, "info_requested", map[string]any{"reason": reason, "comment": id, "notify": notify})
+	// the board's ask: the request's case at the human, whose answer posts
+	// the human's words on the issue, where the wait reads them
+	t.Status = "waiting-poster"
+	f, err := r.tripFacts(ctx, t, "", "")
+	if err != nil {
+		return 0, err
+	}
+	if err := r.timeline.WriteRow(ctx, taskID, EventQuestionAsked, FactoryDecider, ViaFactoryd,
+		InfoRequestRow(t, f, reason, id, func(s string) string { return r.untrusted(t, s) }, r.scrub)); err != nil {
+		log.Printf("task %s: the ask of information request comment %d: %v", taskID, id, err)
+	}
 	// the durable anchor Reconcile rebuilds the wait from
 	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeInfoRequest, Author: "factoryd", Body: reason, CommentID: id}); err != nil {
 		log.Printf("task %s: record information request comment %d: %v", taskID, id, err)

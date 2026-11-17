@@ -49,7 +49,7 @@ func TestFixturesNameEachKindOnceAndActionsApply(t *testing.T) {
 		case fx.Case == nil:
 			t.Errorf("%s: no case to answer", key)
 		default:
-			if why := a.Applies(factoryd.FactsOf(*fx.Case), answer(fx.Kind)); why != "" {
+			if why := a.Applies(fx.Facts, answer(fx.Kind)); why != "" {
 				t.Errorf("%s: the action does not apply to the case's facts: %s", key, why)
 			}
 		}

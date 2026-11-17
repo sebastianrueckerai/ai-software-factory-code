@@ -154,6 +154,8 @@ func (g factsRig) timeline(t *testing.T) {
 //   - the time draw is the newest pool row that raised agent time: the
 //     09:00 extend of 300 s on h1, red, no findings recorded, with the
 //     pushes of s2 and s3 after it
+//   - no answer of the issue's author bought a session yet: its grant is
+//     left
 func TestTripFactsReadsTheCard(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
@@ -183,6 +185,7 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 		Autonomy:     policy.AutonomyFullAuto,
 		PoolLeft:     policy.Draw{Sessions: 29, AgentTime: 29*time.Hour + 55*time.Minute, EUR: 58.5},
 		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: 85 * time.Minute, EUR: 4},
+		PosterGrant:  true,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("facts =\n%+v\nwant\n%+v", got, want)

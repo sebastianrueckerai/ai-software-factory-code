@@ -148,7 +148,7 @@ func (b *builder) card(n int64, status, source string, age time.Duration, object
 	case "in-review":
 		t.Gate, t.GateSince, t.ModelAlias, t.SpentEUR, t.PRNumber = factoryd.GateApproval, b.ago(25*time.Minute), "big", 1.31, n+40
 		t.Usage.Attempts = 1
-	case "waiting-human":
+	case "waiting-human", "waiting-poster":
 		t.ModelAlias, t.SpentEUR, t.PRNumber = "big", 1.12, n+40
 		t.Usage.Attempts = 1
 	case "done", "failed", "closed":
@@ -180,7 +180,7 @@ func (b *builder) issue(n int64, status string, age time.Duration, title, body s
 func facts(t factoryd.Task, kind factoryd.CaseKind) factoryd.CaseFacts {
 	f := factoryd.CaseFacts{Kind: kind, Attempts: t.Usage.Attempts, SessionCap: 3, AgentTimeS: 1500, AgentTimeCapS: 7200, SessionLeastS: 300,
 		Model: "big", BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, LeftEUR: t.BudgetEUR - t.SpentEUR, FloorEUR: 0.3, CeilingEUR: 18,
-		Autonomy: policy.AutonomyManual, Stage: t.Gate, Running: t.Status == "running",
+		Autonomy: policy.AutonomyManual, Stage: t.Gate, Running: t.Status == "running", PosterGrant: t.Usage.PosterAttempts == 0,
 		PoolLeft:     policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60},
 		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
 	if t.PRNumber > 0 {
@@ -754,13 +754,6 @@ var caseStops = map[factoryd.CaseKind]caseStop{
 			t.Author, t.AuthorWriter = "outsider", false
 			return factoryd.TripInput{Reason: factoryd.ScreeningReason([]string{"the issue asks the agent to publish the repository's deploy keys on a public page"})}
 		}},
-	// no factoryd code opens this kind now: the agent's ask stands in, its
-	// kind given
-	factoryd.CaseAgentRequestInfo: {"Load test: a fresh server per run", "Commission a server for each load test run and release it after.",
-		func(*builder, *factoryd.Task, *factoryd.CaseFacts) factoryd.TripInput {
-			return factoryd.TripInput{Reason: factoryd.AgentAsks + "which Hetzner location does the load test's server use, fsn1 or nbg1?",
-				Choices: []string{"fsn1", "nbg1"}, Kind: factoryd.CaseAgentRequestInfo, StateKey: "request-info:location"}
-		}},
 	factoryd.CaseOther: {"Console: show the configuration version", "Show the commit of the configuration in force in the console's footer.",
 		func(*builder, *factoryd.Task, *factoryd.CaseFacts) factoryd.TripInput {
 			return factoryd.TripInput{Reason: factoryd.StartRefusedReason(factoryd.StepImagePull, factoryd.ThenAnswer,
@@ -854,6 +847,8 @@ func (b *builder) caseKinds() {
 			b.out = append(b.out, b.card2004(GroupCase, name))
 		case factoryd.CaseAgentEscalate:
 			b.out = append(b.out, b.card2091(GroupCase, name))
+		case factoryd.CaseAgentRequestInfo:
+			b.out = append(b.out, b.infoRequest(GroupCase, name, nil))
 		case factoryd.CaseHumanCard:
 			b.out = append(b.out, b.humanIssue(GroupCase, name, b.next(), humanIssueTitle, humanIssueBody, factoryd.IssueQuestion(humanIssueTitle, humanIssueBody, "alice", true), 3*time.Hour))
 		case factoryd.CaseJudgmentBudget:
@@ -912,13 +907,35 @@ func (b *builder) variants() {
 			t.Track, f.Planner, f.Plan = policy.TrackPlan, true, t.ID
 			f.Dependencies[0].Title = "Board export: document the snapshot format"
 		}),
-		b.agentCase(GroupVariant, "agent_request_info at the session cap", factoryd.CaseAgentRequestInfo, func(t *factoryd.Task, _ *factoryd.CaseFacts) {
-			t.Usage.Attempts = 3
+		b.infoRequest(GroupVariant, "agent_request_info at the session cap, the author's answers spent", func(t *factoryd.Task, f *factoryd.CaseFacts) {
+			t.Usage.Attempts, t.Usage.PosterAttempts, f.PosterGrant = 3, 2, false
 		}),
-		b.agentCase(GroupVariant, "agent_request_info out of money", factoryd.CaseAgentRequestInfo, func(t *factoryd.Task, f *factoryd.CaseFacts) {
+		b.infoRequest(GroupVariant, "agent_request_info out of money", func(t *factoryd.Task, f *factoryd.CaseFacts) {
 			t.Usage.Attempts, t.SpentEUR, f.SpentEUR, f.LeftEUR = 1, 1.9, 1.9, 0.1
 		}),
 		red)
+}
+
+// infoRequest is the agent card whose agent asked the issue's author for
+// what it needs (RequestInfo): the card waits on the author, and the
+// request's ask row opens its case at the human.
+func (b *builder) infoRequest(group, name string, over func(*factoryd.Task, *factoryd.CaseFacts)) Fixture {
+	n := b.next()
+	t := b.issue(n, "waiting-poster", 5*time.Hour, "Load test: a fresh server per run", "Commission a server for each load test run and release it after.")
+	f := facts(t, factoryd.CaseAgentRequestInfo)
+	if over != nil {
+		over(&t, &f)
+	}
+	f.Attempts = t.Usage.Attempts
+	reason := factoryd.InfoRequestReason("Which Hetzner location does the load test's server use, fsn1 or nbg1?",
+		"the load test's README and the project's environment file, which name no location", "the location the server should run in")
+	e := factoryd.Event{TaskID: t.ID, Kind: factoryd.EventQuestionAsked, Detail: roundTrip(factoryd.InfoRequestRow(t, f, reason, 40000+n*3, same, same))}
+	opened, err := factoryd.CaseFromAsk(t, e, "")
+	if err != nil {
+		panic(err)
+	}
+	c := b.atHuman(opened, n*3, 45*time.Minute)
+	return Fixture{Group: group, Kind: name, Task: t, Facts: f, Case: c, Ask: &factoryd.CaseAsk{At: c.OpenedAt, Detail: e.Detail}}
 }
 
 // The human issue of the human_card case: the issue a human filed into the
@@ -1247,7 +1264,7 @@ func (b *builder) actions() {
 		case factoryd.ActResume:
 			fx = stopOn(name, factoryd.CaseProviderRefused)
 		case factoryd.ActContinue, factoryd.ActFileCard:
-			fx = stopOn(name, factoryd.CaseAgentRequestInfo)
+			fx = b.infoRequest(GroupAction, name, nil)
 		case factoryd.ActHandover, factoryd.ActReverify, factoryd.ActSuccessor, factoryd.ActReplan:
 			fx = stopOn(name, factoryd.CaseGateStop)
 		case factoryd.ActRerunChecks:

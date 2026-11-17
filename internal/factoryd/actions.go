@@ -91,9 +91,25 @@ var capLifts = map[CaseKind][]string{CaseSessionCap: {ActExtend}, CaseAgentTimeC
 // itself.
 func (f CaseFacts) atCap() CaseFacts {
 	if slices.Contains(questionKinds, f.Kind) {
-		if k, _ := f.noSession(false, false); k != "" {
+		if k, _ := f.authorGranted().noSession(false, false); k != "" {
 			f.Kind = k
 		}
+	}
+	return f
+}
+
+// authorGranted is f with what the issue author's answer to an
+// information request buys while the run grants it (PosterGrant): one
+// more session, and the agent time a session needs.
+func (f CaseFacts) authorGranted() CaseFacts {
+	if f.Kind != CaseAgentRequestInfo || !f.PosterGrant {
+		return f
+	}
+	if f.SessionCap > 0 {
+		f.SessionCap = max(f.SessionCap, f.Attempts+1)
+	}
+	if f.AgentTimeCapS > 0 {
+		f.AgentTimeCapS = max(f.AgentTimeCapS, f.AgentTimeS+f.SessionLeastS)
 	}
 	return f
 }
@@ -130,7 +146,7 @@ var Actions = []Action{
 		case f.Running:
 			return ""
 		}
-		return sessionRoom(f.withDraw(r))
+		return sessionRoom(f.authorGranted().withDraw(r))
 	}},
 	{Name: ActHandover, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, r Resolution) string {
 		if f.Report {

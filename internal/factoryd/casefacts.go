@@ -146,6 +146,9 @@ type CaseFacts struct {
 	RunGone bool   `json:"run_gone,omitempty"`
 	// Killed is the memory kill that ended the session before the stop.
 	Killed *SessionKill `json:"killed,omitempty"`
+	// PosterGrant: the issue author's answer to an information request
+	// still buys the session it starts (grantPoster).
+	PosterGrant bool `json:"poster_grant,omitempty"`
 }
 
 // DrawFacts is a draw as the bought-nothing guard weighs it: its time, the
@@ -301,7 +304,8 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 		Attempts: t.Usage.Attempts, SessionCap: SessionCap(t, v.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
 		AgentTimeS: t.Usage.AgentTime.Seconds(), Model: sessionModel(v.Document, t, cmp.Or(model, t.ModelAlias)),
 		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), ReserveEUR: v.Document.Limits.GateReserve(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
-		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState(), NoIssue: t.IssueNumber == 0 && t.Status == "queued" && !t.Report(), Report: t.Report()}
+		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState(), NoIssue: t.IssueNumber == 0 && t.Status == "queued" && !t.Report(), Report: t.Report(),
+		PosterGrant: t.Usage.PosterAttempts < maxPosterAttempts}
 	if Final(t.Status) {
 		f.Final = t.Status
 	}

@@ -662,7 +662,7 @@ func reasonText(f Facts) string {
 	if m := gateDiagnosis.FindStringSubmatch(r); m != nil {
 		r = m[1]
 	}
-	for _, p := range []string{"check-in: ", AgentAsks, screeningAsks} {
+	for _, p := range []string{"check-in: ", AgentAsks, agentAsksAuthor, screeningAsks} {
 		r = strings.TrimPrefix(r, p)
 	}
 	if kind, rest, ok := strings.Cut(r, ": "); ok && !strings.Contains(kind, " ") {
@@ -811,9 +811,11 @@ func depWhy(f Facts) string {
 	return fmt.Sprintf("This card waits for #%d, which ended %s.", d.Issue, d.Status)
 }
 
-// agentQuestion is the agent's question: the stop's first line.
+// agentQuestion is the agent's question: the stop's first line, past the
+// words that open an escalation or a request for information.
 func agentQuestion(f Facts) string {
-	return strings.TrimSpace(EscalationQuestion(cmp.Or(factString(f.Case, "face"), factString(f.Case, "reason"), f.Case.Problem)))
+	q := EscalationQuestion(cmp.Or(factString(f.Case, "face"), factString(f.Case, "reason"), f.Case.Problem))
+	return strings.TrimSpace(strings.TrimPrefix(q, agentAsksAuthor))
 }
 
 // agentAsk is the agent's question when it reads as an ask, else its last

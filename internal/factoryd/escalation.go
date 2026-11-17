@@ -120,7 +120,7 @@ func (a AgentAsk) reason() string {
 	case AskReplan:
 		return a.Reason
 	case AskInfo:
-		return agentAsksAuthor + a.Question + "\nTried: " + a.Tried + "\nNeeds: " + a.Needs
+		return InfoRequestReason(a.Question, a.Tried, a.Needs)
 	case AskTool:
 		return AgentAsks + "a sandbox with " + a.Tool + "\nWhy: " + a.Need
 	}
@@ -129,6 +129,12 @@ func (a AgentAsk) reason() string {
 		pick = fmt.Sprintf("\nChoice: %d (%s)", a.Choice, a.Choices[a.Choice-1])
 	}
 	return AgentAsks + a.Question + pick + "\nWhy: " + a.Reason + "\nRecommendation: " + a.Recommendation
+}
+
+// InfoRequestReason is the reason of the agent's request for information:
+// its question to the issue's author, what it tried and what it needs.
+func InfoRequestReason(question, tried, needs string) string {
+	return agentAsksAuthor + question + "\nTried: " + tried + "\nNeeds: " + needs
 }
 
 // IntakeAgentEscalation is the intake event of an agent's escalate,

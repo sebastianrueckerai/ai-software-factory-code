@@ -1188,3 +1188,31 @@ func TestADrawOnAWaitingQuestionIsWeighedAtItsCap(t *testing.T) {
 		}
 	}
 }
+
+// The author's answer to an information request buys the session it starts
+// while the run still grants one (grantPoster): the session cap and the
+// agent time cap keep neither the request off its face nor its answer
+// off the card. Money still binds, and once the author's grants are
+// spent the cap comes first.
+func TestTheAuthorsAnswerBuysItsSession(t *testing.T) {
+	asked := CaseFacts{Kind: CaseAgentRequestInfo, AtHuman: true, PosterGrant: true, Attempts: 3, SessionCap: 3, AgentTimeS: 7200, AgentTimeCapS: 7200,
+		SessionLeastS: 300, BudgetEUR: 2, SpentEUR: 1, LeftEUR: 1, FloorEUR: 0.3, CeilingEUR: 10}
+	answer := Resolution{Action: ActContinue, Note: "fsn1"}
+	a, _ := ActionByName(ActContinue)
+	if k := asked.atCap().Kind; k != CaseAgentRequestInfo {
+		t.Errorf("at both caps with the author's grant left the face is %s's, want the request's", k)
+	}
+	if why := a.refusal(asked, 3, answer); why != "" {
+		t.Errorf("the human's answer is refused: %s", why)
+	}
+	spent := asked
+	spent.PosterGrant = false
+	if k := spent.atCap().Kind; k != CaseSessionCap {
+		t.Errorf("with the author's grants spent the face is %s's, want the session cap's", k)
+	}
+	broke := asked
+	broke.SpentEUR, broke.LeftEUR = 1.9, 0.1
+	if k := broke.atCap().Kind; k != CaseBudgetFloor {
+		t.Errorf("out of money the face is %s's, want the budget floor's", k)
+	}
+}

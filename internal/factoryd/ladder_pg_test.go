@@ -1083,3 +1083,68 @@ func TestTripCaseMakesAChatEscalatedHumanCardAHumanCard(t *testing.T) {
 		t.Error("humanCardKind turns an agent card's ask, or a specialised kind, into a human card")
 	}
 }
+
+// The agent's request for information puts its case at the human: the card
+// that waits for its issue's author asks the request on the board, with
+// "Answer in my words", "Not now" and "End the card". The answer's press
+// posts the human's words as the issue comment the run reads, and ends the
+// case; an answer the author writes on the issue ends it too.
+func TestAnInformationRequestAsksTheHuman(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	question := "Which Hetzner location does the load test's server use, fsn1 or nbg1?"
+	reason := AgentAsk{Kind: AskInfo, Question: question, Tried: "both regions' price lists", Needs: "the location the server runs in"}.reason()
+	asked := func() (Case, CaseAsk) {
+		t.Helper()
+		cs, err := g.s.CasesOf(ctx, "t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		i := slices.IndexFunc(cs, func(c Case) bool { return c.Status == CaseAtHuman })
+		if i < 0 {
+			t.Fatalf("cases %+v, want one at the human", cs)
+		}
+		ask, ok := g.r.CaseAsk(ctx, cs[i])
+		if !ok {
+			t.Fatalf("case %d has no ask row", cs[i].ID)
+		}
+		return cs[i], ask
+	}
+	comment, err := g.r.RequestInfo(ctx, "t1", reason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, ask := asked()
+	face := CaseFace(c, Task{ID: "t1", Kind: "agent"}, ask)
+	var offers []string
+	for _, o := range face.Offers {
+		offers = append(offers, o.Label)
+	}
+	if c.Kind != CaseAgentRequestInfo || face.Ask != question || !slices.Equal(offers, []string{"Answer in my words", "Not now", "End the card"}) || c.CommentID != comment {
+		t.Fatalf("case %s by comment %d asks %q with %v; want the request asking %q with its three answers, by comment %d", c.Kind, c.CommentID, face.Ask, offers, question, comment)
+	}
+	var posted []string
+	out, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3,
+		Res: Resolution{Action: ActContinue, Note: "fsn1"}, Post: func(context.Context) (int64, error) { posted = append(posted, "fsn1"); return comment + 1, nil }})
+	if err != nil {
+		t.Fatalf("the answer's press = %v", err)
+	}
+	if len(posted) != 1 || out.Comment != comment+1 || caseByID(t, g.s, c.ID).Status != CaseResolved {
+		t.Fatalf("posted %v, comment %d, case %s; want the human's words posted once as comment %d and the case resolved", posted, out.Comment, caseByID(t, g.s, c.ID).Status, comment+1)
+	}
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'running' WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	comment, err = g.r.RequestInfo(ctx, "t1", reason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ = asked()
+	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: EventQuestionAnswered, Actor: "alice", Via: ViaWebhook,
+		Detail: map[string]any{"comment": comment + 5}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := caseByID(t, g.s, c.ID).Status; got != CaseResolved {
+		t.Fatalf("after the author's comment the request's case is %s, want it resolved", got)
+	}
+}
