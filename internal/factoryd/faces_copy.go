@@ -257,9 +257,15 @@ func openDependency(f Facts) string {
 
 // effectFills are the effect lines the facts write, by answer key.
 var effectFills = map[string]func(Facts) string{
+	ActFund: func(f Facts) string {
+		if slices.Contains(questionKinds, f.Case.Kind) {
+			return "Adds the amount to the card's budget, and " + onward(f, "") + "."
+		}
+		return ""
+	},
 	ActRaiseCeiling: func(f Facts) string {
 		if need := raiseFund(f.CaseFacts); need > 0 {
-			return fmt.Sprintf("Raises the spend limit by %s EUR and adds %s EUR, and the card goes on.", money(ceilingPass(f.CaseFacts)), money(need))
+			return fmt.Sprintf("Raises the spend limit by %s EUR and adds %s EUR, and %s.", money(ceilingPass(f.CaseFacts)), money(need), onward(f, "the card goes on"))
 		}
 		return ""
 	},
@@ -287,9 +293,9 @@ var effectFills = map[string]func(Facts) string{
 	},
 	ActExtend: func(f Facts) string {
 		if m := extendMinutes(f); m != "0" {
-			return "Gives the card " + m + " more minutes of agent time, and it goes on."
+			return "Gives the card " + m + " more minutes of agent time, and " + onward(f, "it goes on") + "."
 		}
-		return "Gives the card one more session, and it goes on."
+		return "Gives the card one more session, and " + onward(f, "it goes on") + "."
 	},
 	ActReplan: func(f Facts) string {
 		switch {
@@ -842,9 +848,24 @@ func agentStory(f Facts) Story {
 			s.Happened = endSentence(h)
 		}
 	default:
-		s.Happened = "The agent asked: " + endSentence(strings.Join(strings.Fields(before), " "))
+		s.Happened = AgentAsks + agentWhole(f)
 	}
 	return s
+}
+
+// agentWhole is the agent's question whole, on one line: the words are the
+// agent's, and the face wraps them.
+func agentWhole(f Facts) string {
+	return endSentence(capitalize(strings.Join(strings.Fields(agentQuestion(f)), " ")))
+}
+
+// onward is what follows a draw on f: goes, or on the agent's question,
+// which the draw leaves open, the question's return to the human.
+func onward(f Facts, goes string) string {
+	if slices.Contains(questionKinds, f.Case.Kind) {
+		return "the agent's question comes back to you"
+	}
+	return goes
 }
 
 // agentPick is the key of the answer the agent picked through its

@@ -192,6 +192,19 @@ func faceSpecOf(c Case, f Facts) FaceSpec {
 	return CaseFaces[CaseOther]
 }
 
+// facing is case c on facts f as its face reads them: f holds c, and a
+// question of the agent's at a cap is its cap's case (atCap).
+func facing(c Case, f Facts) (Case, Facts) {
+	f.Case = c
+	if f.Kind == "" {
+		f.Kind = c.Kind
+	}
+	if capped := f.atCap(); capped.Kind != f.Kind {
+		f.CaseFacts, c.Kind = capped, capped.Kind
+	}
+	return c, f
+}
+
 // FaceOf is the face of case c on facts f. An answer whose press with its
 // defaults fails on f leaves the face. A rung's or the writer's
 // recommendation leads, else the kind's own suggestion with its grounds;
@@ -199,14 +212,15 @@ func faceSpecOf(c Case, f Facts) FaceSpec {
 // over four drops to More. A face left with one answer adds "Not now" and
 // "End the card", each unless an answer of its action is there.
 func FaceOf(c Case, f Facts) AskFace {
-	f.Case = c
-	if f.Kind == "" {
-		f.Kind = c.Kind
-	}
+	question := cmp.Or(f.Kind, c.Kind)
+	c, f = facing(c, f)
 	spec := faceSpecOf(c, f)
 	face := AskFace{Ask: spec.Ask(f), Why: spec.Why(f)}
 	if spec.Story != nil {
 		face.Story = spec.Story(f).without(face.Ask, face.Why)
+	}
+	if f.Kind != question {
+		face.Story.Happened = AgentAsks + agentWhole(f)
 	}
 	var answers []Answer
 	for _, key := range spec.Answers(f) {
@@ -394,6 +408,7 @@ func ArgsOf(a Answer, get func(name string) string) (map[string]any, float64, er
 // note as its reason. A required field left empty refuses the press,
 // saying what to write.
 func (a Answer) Press(f Facts, values map[string]string, note string) (Resolution, error) {
+	f.CaseFacts = f.atCap()
 	get := func(name string) string {
 		if v := values[name]; strings.TrimSpace(v) != "" {
 			return v

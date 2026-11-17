@@ -425,7 +425,7 @@ func TestCaseFaceScrubsTheQuestionAndNamesTheRecommendationsWriter(t *testing.T)
 			t.Errorf("the face holds %q:\n%s", leak, needs)
 		}
 	}
-	if !strings.Contains(needs, `<p class="recommendation">Recommendation (the check-in): wait</p>`) || !strings.Contains(needs, "The agent asked: The pull from") {
+	if !strings.Contains(needs, `<p class="recommendation">Recommendation (the check-in): wait</p>`) || !strings.Contains(needs, "The agent asks: The pull from") {
 		t.Errorf("the face lacks its recommendation with its writer or the agent's question:\n%s", needs)
 	}
 }

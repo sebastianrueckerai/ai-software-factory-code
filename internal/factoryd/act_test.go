@@ -319,6 +319,58 @@ func TestActRefusesASessionsOnlyExtendAtTheTimeCap(t *testing.T) {
 	}
 }
 
+// An agent's question at its session cap is the cap's case first: the
+// human's extend draws the session and leaves the question open, unanswered
+// and unsignalled, and the face stored again is the question's, with the
+// agent's answers.
+func TestAnExtendOnAQuestionAtTheCapLeavesTheQuestionOpen(t *testing.T) {
+	g := newFactsRig(t)
+	ctx := context.Background()
+	q := Case{ID: 7, TaskID: "t1", Kind: CaseAgentEscalate, Status: CaseAtHuman,
+		Facts: map[string]any{"trip": "trip-7", "reason": AgentAsks + "Which store keeps the snapshots?\nWhy: two fit\nRecommendation: SQLite", "choices": []any{"Postgres", "SQLite"}}}
+	g.store.cases = append(g.store.cases, q)
+	card := g.store.tasks["t1"]
+	card.SpentEUR, card.HeldEUR = 1, 0
+	f, err := g.r.FactsAtCase(ctx, card, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card.Usage.Attempts = f.SessionCap
+	g.store.tasks["t1"] = card
+	face := func() AskFace {
+		t.Helper()
+		f, err := g.r.FactsAtCase(ctx, g.store.tasks["t1"], q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return FaceOf(q, Facts{CaseFacts: f, Card: g.store.tasks["t1"]})
+	}
+	capped := face()
+	if len(capped.Answers) == 0 || capped.Answers[0].Action != ActExtend || capped.Story.Happened != "The agent asks: Which store keeps the snapshots?" {
+		t.Fatalf("at the cap the face is %q with %v and story %+v; want the cap's extend first and the question as a story line", capped.Ask, capped.Answers, capped.Story)
+	}
+	f, _ = g.r.FactsAtCase(ctx, card, q)
+	res, err := capped.Answers[0].Press(Facts{CaseFacts: f, Card: card, Case: q}, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 7, By: "sebastian", Via: ViaConsole, Rung: 3, Res: res})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Drawn.Sessions != 1 || len(g.store.resolved) != 0 || g.store.cases[len(g.store.cases)-1].Status != CaseAtHuman || len(g.store.pending) != 0 {
+		t.Fatalf("drawn %+v, resolved %v, case %s, signals %v; want one session drawn and the question open", out.Drawn, g.store.resolved,
+			g.store.cases[len(g.store.cases)-1].Status, g.store.pending)
+	}
+	open := face()
+	if open.Ask != "Which store keeps the snapshots?" || !slices.ContainsFunc(open.Answers, func(a Answer) bool { return a.Key() == "say:SQLite" }) {
+		t.Fatalf("with room the face is %q with %v; want the question with the agent's answers", open.Ask, open.Answers)
+	}
+	if stored := g.store.faces[7]; stored == nil || stored["ask"] != open.Ask {
+		t.Fatalf("the stored face is %v; want the question's, stored again", stored)
+	}
+}
+
 // A fund on a card that ended is refused naming its end, with no case
 // needed, and nothing is drawn.
 func TestActRefusesAFundOnAnEndedCard(t *testing.T) {

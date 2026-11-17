@@ -145,7 +145,7 @@ var (
 // agentWords leads the story line that quotes the agent's question whole:
 // the words are the agent's, so no bound or guide of the face's own copy
 // holds them.
-const agentWords = "The agent asked: "
+const agentWords = "The agent asks: "
 
 // viewLine is a writer's view: the writer named, then the words as they
 // wrote them, which no bound or guide of the face's own copy holds.
@@ -186,9 +186,9 @@ func TestFaceContract(t *testing.T) {
 			}
 			keys[a.Key()], shown[a.Label] = true, true
 		}
-		for _, a := range face.More {
+		for _, a := range slices.Concat(face.Answers, face.More) {
 			if why := actRefusal(x, a); why != "" {
-				t.Errorf("%s: More offers %q, which Act refuses: %s", name, a.Label, why)
+				t.Errorf("%s: the face offers %q, which Act refuses: %s", name, a.Label, why)
 			}
 		}
 		if v := face.Story.View; v != "" && !viewLine.MatchString(v) {
@@ -375,8 +375,11 @@ func TestAOneAnswerFaceAddsNoSecondEnd(t *testing.T) {
 	}
 }
 
-// The agent's own answers start a session: where none can start, they
-// leave the face, and the human's own words wait in More.
+// The agent's own answers start a session. Where none can start, the face
+// is the cap's, one decision at a time: the cap's ask and answers, the
+// agent's question as one story line, whole, and none of its answers. A
+// draw there leaves the question open and says so. #2091 pushed nothing,
+// so no fresh card can go on from its branch.
 func TestAnAgentsAnswersLeaveAFaceWhereNoSessionCanStart(t *testing.T) {
 	x := fixture(t, "case", string(factoryd.CaseAgentEscalate))
 	f := x.facts
@@ -390,8 +393,19 @@ func TestAnAgentsAnswersLeaveAFaceWhereNoSessionCanStart(t *testing.T) {
 	}
 	f.Attempts, f.SessionCap = 3, 3
 	capped := factoryd.FaceOf(x.c, f)
-	if got, want := labels(capped.Answers), []string{"Not now", "End the card"}; !slices.Equal(got, want) {
+	if want := "The card used all 3 sessions. Allow more, or end the card?"; capped.Ask != want {
+		t.Errorf("at the session cap the ask is %q, want %q", capped.Ask, want)
+	}
+	if got, want := labels(capped.Answers), []string{"Allow more sessions", "End the card", "Not now"}; !slices.Equal(got, want) {
 		t.Errorf("at the session cap the answers are %v, want %v", got, want)
+	}
+	if want := agentWords + "The weekly bump needs network access to the upstream registries and file hosts (docker.io, quay.io, ghcr.io, gcr.io, " +
+		"registry.k8s.io, deb.debian.org, snapshot.debian.org, go.dev, github.com, objects.githubusercontent.com), none of which resolve in this sandbox. " +
+		"How should the new digests, sha256 sums and versions be obtained?"; capped.Story.Happened != want {
+		t.Errorf("at the session cap the story's line is %q, want the agent's question whole", capped.Story.Happened)
+	}
+	if want := "Gives the card one more session, and the agent's question comes back to you."; capped.Answers[0].Effect != want {
+		t.Errorf("the extend's effect %q, want %q", capped.Answers[0].Effect, want)
 	}
 }
 

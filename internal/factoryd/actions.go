@@ -73,6 +73,27 @@ type Action struct {
 	InRun   bool // the run carries it out on case_resolved; false: Act runs it
 }
 
+// questionKinds are the agent's own questions, whose answer runs in a
+// session: where no session can run, each is its cap's case first.
+var questionKinds = []CaseKind{CaseAgentEscalate, CaseAgentRequestInfo}
+
+// capDraws are the draws that lift a cap: on a question's case they buy the
+// room and leave the question open.
+var capDraws = []string{ActExtend, ActFund, ActRaiseCeiling}
+
+// atCap is f as the human meets it: a question of the agent's that no
+// session can answer is the case of the cap that keeps the session off
+// (the budget floor, the session cap or the agent time cap, in the run's
+// order), one decision at a time. Any other f is itself.
+func (f CaseFacts) atCap() CaseFacts {
+	if slices.Contains(questionKinds, f.Kind) {
+		if k, _ := f.noSession(false, false); k == CaseBudgetFloor || k == CaseSessionCap || k == CaseAgentTimeCap {
+			f.Kind = k
+		}
+	}
+	return f
+}
+
 // extendKinds are the cases an extend answers: the caps, and the stops
 // whose questions offer extending the card as an owner exit.
 var extendKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseCheckinShare, CaseGateStop, CaseFindingsRepeated}
@@ -626,6 +647,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 		case a.Name != ActClose && !slices.Contains(monitorActions, a.Name):
 			return a.Name + " would do nothing on a monitor flag's case: the card's run waits on none"
 		}
+	}
+	if rung == 3 {
+		f = f.atCap()
 	}
 	if why := a.Applies(f, r); why != "" {
 		return why

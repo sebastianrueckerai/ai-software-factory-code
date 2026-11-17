@@ -42,7 +42,8 @@ func TestFromJSONSurfacesDecodeErrors(t *testing.T) {
 
 // fakeStore is the in-memory Store for tests of everything that persists.
 type fakeStore struct {
-	pending         []PendingSignal // the case signals no send delivered
+	faces           map[int64]map[string]any // the face keys SetCaseFace stored last, by case
+	pending         []PendingSignal          // the case signals no send delivered
 	refusals        map[string][]IntakeRefusal
 	released        map[string]bool
 	tasks           map[string]Task
@@ -6057,6 +6058,10 @@ func TestPGStoreTasksByParent(t *testing.T) {
 	}
 }
 
-func (s *fakeStore) SetCaseFace(context.Context, int64, map[string]any) error {
+func (s *fakeStore) SetCaseFace(_ context.Context, caseID int64, keys map[string]any) error {
+	if s.faces == nil {
+		s.faces = map[int64]map[string]any{}
+	}
+	s.faces[caseID] = keys
 	return nil
 }

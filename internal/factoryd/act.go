@@ -121,10 +121,12 @@ func lockWithin(ctx context.Context, mu *sync.Mutex) error {
 var keepsWaiting = []string{AnswerRerunAgain, AnswerPark, AnswerKeepWaiting, AnswerHoldWait}
 
 // keepsOpen says answer res leaves case c live: a note, a criterion's verdict
-// or a filed card, a decision whose request ended the case already, or a
-// human card's choice that keeps the card waiting.
+// or a filed card, a decision whose request ended the case already, a
+// human card's choice that keeps the card waiting, or a draw on the agent's
+// question, which buys its answer room and answers nothing.
 func keepsOpen(c Case, t Task, res Resolution) bool {
-	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(requestEnds, res.Action) || ChoiceCase(c, t.Kind) && slices.Contains(keepsWaiting, res.Action)
+	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(requestEnds, res.Action) ||
+		ChoiceCase(c, t.Kind) && slices.Contains(keepsWaiting, res.Action) || slices.Contains(questionKinds, c.Kind) && slices.Contains(capDraws, res.Action)
 }
 
 // Act is the one way a human, the chat or a rung answers a case. It reads
@@ -151,7 +153,9 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		return ActResult{}, ErrActRefused(fmt.Sprintf("the check-in answers on rung 1 alone, not rung %d", in.Rung))
 	}
 	out, err := r.act(ctx, in)
-	if err != nil && in.CaseID != 0 {
+	if in.CaseID != 0 && (err != nil || out.Case.Status == CaseAtHuman && slices.Contains(questionKinds, out.Case.Kind) && slices.Contains(capDraws, in.Res.Action)) {
+		// a refused press, or a draw that left its question open: the face
+		// shows what fits the state now
 		r.refreshOffersOf(ctx, in.TaskID, in.CaseID)
 	}
 	return out, err

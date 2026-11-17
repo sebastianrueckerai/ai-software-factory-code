@@ -22,10 +22,7 @@ func OfferRefusal(f Facts, name string) string {
 // SpecAnswers are the answers the face spec of case c names on facts f,
 // before any leaves the face.
 func SpecAnswers(c Case, f Facts) []Answer {
-	f.Case = c
-	if f.Kind == "" {
-		f.Kind = c.Kind
-	}
+	c, f = facing(c, f)
 	var out []Answer
 	for _, key := range faceSpecOf(c, f).Answers(f) {
 		if a, ok := answerFor(key, f); ok {

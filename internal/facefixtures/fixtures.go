@@ -893,6 +893,12 @@ func (b *builder) variants() {
 			t.Track, f.Planner, f.Plan = policy.TrackPlan, true, t.ID
 			f.Dependencies[0].Title = "Board export: document the snapshot format"
 		}),
+		b.agentCase(GroupVariant, "agent_request_info at the session cap", factoryd.CaseAgentRequestInfo, func(t *factoryd.Task, _ *factoryd.CaseFacts) {
+			t.Usage.Attempts = 3
+		}),
+		b.agentCase(GroupVariant, "agent_request_info out of money", factoryd.CaseAgentRequestInfo, func(t *factoryd.Task, f *factoryd.CaseFacts) {
+			t.Usage.Attempts, t.SpentEUR, f.SpentEUR, f.LeftEUR = 1, 1.9, 1.9, 0.1
+		}),
 		red)
 }
 
