@@ -457,7 +457,7 @@ func TestEscalatedCardRepeatsNoID(t *testing.T) {
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-e/drawer", nil), ck).Body.String()
 	for _, want := range []string{
-		`<input type="text" id="f-t-e-edit-brief-title" name="edit_brief.title" value="asks" hx-preserve>`, `<textarea id="f-t-e-edit-brief-summary" name="edit_brief.summary" rows="2" maxlength="4000" hx-preserve></textarea>`,
+		`<input type="text" id="f-t-e-edit-brief-title-03b496b3" name="edit_brief.title" value="asks" hx-preserve>`, `<textarea id="f-t-e-edit-brief-summary" name="edit_brief.summary" rows="2" maxlength="4000" hx-preserve></textarea>`,
 		`<select id="f-t-e-accent-accent" name="accent.accent">`,
 	} {
 		if !strings.Contains(drawer, want) {

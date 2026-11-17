@@ -176,7 +176,24 @@ func TestAnswerFormsSitOnTheLiveAsksCaseOnly(t *testing.T) {
 	if a := row("/?case=t-a:7"); strings.Contains(a, `action="/tasks/t-a/resolve"`) || !strings.Contains(a, "Ask seven.") || !strings.Contains(a, "4 of 4") {
 		t.Errorf("an at-human ask carries a press while the card's live ask is with the ladder:\n%s", a)
 	}
+	// the opened card says why a page's answers wait
+	note := func(id string) string {
+		ask := askBlockOf(t, drawer(t, r, ck, "t-a", "overview&case=t-a:"+id))
+		if i := strings.Index(ask, `<p class="o-note">`); i >= 0 {
+			return ask[i : i+strings.Index(ask[i:], "</p>")+4]
+		}
+		return ""
+	}
+	if got, want := note("7"), `<p class="o-note">A newer ask on this card waits on the factory first.</p>`; got != want {
+		t.Errorf("an at-human ask behind a newer one with the factory notes %q, want %q", got, want)
+	}
 	r.openCases["t-a"] = r.openCases["t-a"][:4]
+	if got, want := note("3"), `<p class="o-note">A newer ask on the card replaced this one.</p>`; got != want {
+		t.Errorf("a replaced ask notes %q, want %q", got, want)
+	}
+	if got := note("7"); got != "" {
+		t.Errorf("the live ask notes %q, want no note", got)
+	}
 	if a := row("/?case=t-a:7"); !strings.Contains(a, `action="/tasks/t-a/resolve"`) || !strings.Contains(a, "4 of 4") {
 		t.Errorf("the live ask carries no press:\n%s", a)
 	}
@@ -571,5 +588,20 @@ func TestACasesCardAsksItsResourceRequestAsAPage(t *testing.T) {
 	}
 	if frag := getAs(r, ck, "/projects/"+casesProject+"/cards/t-res/cases/-3", true); frag.Code != http.StatusOK || !strings.Contains(frag.Body.String(), serverAsk) {
 		t.Errorf("the request's page as a fragment = %d:\n%s", frag.Code, frag.Body)
+	}
+}
+
+// A case names its request by the request's id however its facts decode
+// the number: a resource request's case as its merge and criteria
+// siblings do, so an id of a million matches as it reads.
+func TestACaseNamesItsRequestByItsID(t *testing.T) {
+	q := factoryd.ApprovalRequest{ID: 1000000, Kind: factoryd.ApprovalResource}
+	for _, id := range []any{int64(1000000), float64(1000000)} {
+		if !approvalOf(q, factoryd.Case{Kind: factoryd.CaseKind(factoryd.ApprovalResource), Facts: map[string]any{"approval": id}}) {
+			t.Errorf("a resource case of approval %v does not name request 1000000", id)
+		}
+	}
+	if approvalOf(q, factoryd.Case{Kind: factoryd.CaseKind(factoryd.ApprovalResource), Facts: map[string]any{"approval": float64(7)}}) {
+		t.Error("a resource case of approval 7 names request 1000000")
 	}
 }

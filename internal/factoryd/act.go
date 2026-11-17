@@ -473,19 +473,20 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 }
 
 // withdrawReplaced ends each of card t's live cases that an answer on the
-// card ends and a newer one of them replaced: an answer on the card ends
-// its newest live ask only (NewestAskCase), so an older one can never be
-// answered. A case Act is answering is Act's to end, and the next pass
-// takes it. It answers the cases left.
+// card ends and a newer one of them at the human replaced: an answer on
+// the card ends its newest live ask only (NewestAskCase), so an older one
+// can never be answered. A newer case still on a rung replaces nothing
+// yet, as its rung may settle it. A case Act is answering is Act's to
+// end, and the next pass takes it. It answers the cases left.
 func (r *Runner) withdrawReplaced(ctx context.Context, t Task, cases []Case) []Case {
 	var newest int64
 	for _, c := range cases {
-		if AnsweredOnCard(c.Kind) {
+		if AnsweredOnCard(c.Kind) && c.Status == CaseAtHuman {
 			newest = max(newest, c.ID)
 		}
 	}
 	return slices.DeleteFunc(cases, func(c Case) bool {
-		if !AnsweredOnCard(c.Kind) || c.ID == newest {
+		if !AnsweredOnCard(c.Kind) || c.ID >= newest {
 			return false
 		}
 		unlock, ok := r.TryLockCase(c.ID)

@@ -16,6 +16,9 @@ import (
 
 // answerRequest answers approval request q's case with res through Act.
 func (c *Console) answerRequest(ctx context.Context, a actor, q factoryd.ApprovalRequest, res factoryd.Resolution) (string, error) {
+	if len(res.Note) > factoryd.MaxAnswer {
+		return "", answerFits(res.Note)
+	}
 	t, _, err := c.cfg.Tasks.Task(ctx, q.TaskID)
 	if err != nil {
 		return "", refuse(http.StatusInternalServerError, "cannot read the task")

@@ -659,3 +659,22 @@ func TestALongQuoteStandsInItsOwnFold(t *testing.T) {
 		t.Errorf("the ask block quotes the long question:\n%s", body)
 	}
 }
+
+// A field's id moves with its default: a swap keeps what the human typed
+// (hx-preserve) while the default stands, and shows the new default once
+// it moves, so Send never posts an amount the ask no longer holds.
+func TestAFieldsIDMovesWithItsDefault(t *testing.T) {
+	r, ctx, v := refsRig(t)
+	a := factoryd.Answer{Action: factoryd.ActFund, Label: "Add money", Fields: []factoryd.Field{
+		{Name: "eur", Label: "EUR", Kind: factoryd.FieldMoney, Default: func(f factoryd.Facts) string { return f.Card.Why }}}}
+	press := func(factoryd.Answer, string) (*pressForm, func(string) string) {
+		return &pressForm{Post: "/tasks/t-1/resolve"}, func(field string) string { return "fund." + field }
+	}
+	id := func(amount string) string {
+		f := factoryd.Facts{Card: factoryd.Task{ID: "t-1", Why: amount}}
+		return r.c.answerOf(ctx, v, card{Task: f.Card}, "t-1-5", factoryd.ActFund, a, f, press, nil).Fields[0].ID
+	}
+	if first, again, moved := id("2.68"), id("2.68"), id("3.10"); first != again || first == moved {
+		t.Errorf("the field's ids are %q, %q at the same amount and %q at another; want one id per amount", first, again, moved)
+	}
+}

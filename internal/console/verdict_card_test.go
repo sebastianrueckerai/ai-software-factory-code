@@ -302,6 +302,12 @@ func TestCriteriaGapConfirm(t *testing.T) {
 	if want := []string{`confirm t-plan by sebastian: ""`, `confirm t-plan by sebastian: "The board shows both pages."`}; fmt.Sprint(calls) != fmt.Sprint(want) {
 		t.Errorf("calls = %q, want %q", calls, want)
 	}
+	// a note longer than an answer the sessions read is refused, as a
+	// case's answer is, and confirms nothing
+	send.Values.Set("note", strings.Repeat("a", factoryd.MaxAnswer+1))
+	if rec := r.do(post(send.Action, send.Values), ck); rec.Code != http.StatusBadRequest || len(calls) != 2 {
+		t.Errorf("confirm with a note of %d bytes = %d, calls %q; want 400 and no confirmation", factoryd.MaxAnswer+1, rec.Code, calls)
+	}
 
 	// a child not done or merged shows no button
 	r.tasks.mu.Lock()

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"hash/fnv"
 	"html/template"
 	"net/http"
 	"net/url"
@@ -260,6 +261,13 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 			return casePress(v, k, *row, a, key)
 		}, r.URL.Query().Get("press"), seen)
 		o.Ask.whoMay()
+		// a page behind the card's live ask says why its answers wait
+		if live := cs.liveAsk[bt.ID]; !requestPage(row.Case) && factoryd.AnsweredOnCard(row.Case.Kind) && live.ID > row.Case.ID {
+			o.Ask.Note = "A newer ask on the card replaced this one."
+			if live.Status != factoryd.CaseAtHuman {
+				o.Ask.Note = "A newer ask on this card waits on the factory first."
+			}
+		}
 		if row.Plan != nil {
 			takesOff(o.Ask.Answers, row.Plan.TakeOffRefs)
 		}
@@ -542,6 +550,14 @@ func (c *Console) answerOf(ctx context.Context, v *boardView, k card, scope, key
 		}
 		for _, op := range field.Options {
 			fv.Options = append(fv.Options, optionView{Value: op.Value, Label: clean(cmp.Or(op.Label, op.Value)), Checked: op.Value == defaults[field.Name]})
+		}
+		if fv.Value != "" && slices.Contains([]string{"text", "note", "number", "money"}, fv.Kind) {
+			// a typed field's id moves with its default, so a swap keeps
+			// what the human typed (hx-preserve) only while the default
+			// stands
+			h := fnv.New32a()
+			h.Write([]byte(fv.Value))
+			fv.ID += fmt.Sprintf("-%08x", h.Sum32())
 		}
 		view.Fields = append(view.Fields, fv)
 	}

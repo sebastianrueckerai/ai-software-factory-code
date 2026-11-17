@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"slices"
@@ -292,7 +291,8 @@ func approvalOf(a factoryd.ApprovalRequest, k factoryd.Case) bool {
 		return a.Kind == factoryd.ApprovalMerge && string(id) == strconv.FormatInt(a.ID, 10)
 	case factoryd.CaseKind(factoryd.ApprovalResource):
 		id, named := k.Facts["approval"]
-		return a.Kind == factoryd.ApprovalResource && (!named || fmt.Sprint(id) == strconv.FormatInt(a.ID, 10))
+		raw, _ := json.Marshal(id)
+		return a.Kind == factoryd.ApprovalResource && (!named || string(raw) == strconv.FormatInt(a.ID, 10))
 	case factoryd.CasePlanCriteria:
 		id, _ := json.Marshal(k.Facts["approval"])
 		return slices.Contains([]string{factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun}, a.Kind) && string(id) == strconv.FormatInt(a.ID, 10)

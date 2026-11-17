@@ -901,25 +901,30 @@ func TestAQuestionsFaceWaitsForWholeReads(t *testing.T) {
 	}
 }
 
-// The minute pass withdraws a card's asks a newer ask on the card replaced:
-// an answer on the card ends its newest live ask only, so an older one at
-// the human, or still on a rung, can never be answered. The newest ask and
-// the asks answered by their own number (a merge, a monitor flag) stay.
+// The minute pass withdraws a card's asks a newer ask at the human
+// replaced: an answer on the card ends its newest live ask only, so an
+// older one at the human, or still on a rung, can never be answered. The
+// newest ask and the asks answered by their own number (a merge, a
+// monitor flag) stay. A newer ask still on a rung replaces nothing yet:
+// settled there, it leaves the older one the card's live ask again.
 func TestTheMinutePassWithdrawsAnAskANewerOneReplaced(t *testing.T) {
 	g := newFactsRig(t)
 	ctx := context.Background()
+	g.store.tasks["t2"] = Task{ID: "t2", Kind: "agent", Repository: "demo-app/demo-app", Status: "waiting-human"}
 	g.store.cases = append(g.store.cases,
 		Case{ID: 5, TaskID: "t1", Kind: CaseSessionCap, Status: CaseOpen},
 		Case{ID: 7, TaskID: "t1", Kind: CaseAgentEscalate, Status: CaseAtHuman, Facts: map[string]any{"reason": AgentAsks + "Which store keeps the snapshots?"}},
 		Case{ID: 8, TaskID: "t1", Kind: CaseMonitorFlag, Status: CaseAtHuman},
 		Case{ID: 9, TaskID: "t1", Kind: CaseMergeApproval, Status: CaseAtHuman},
-		Case{ID: 11, TaskID: "t1", Kind: CaseBudgetFloor, Status: CaseAtHuman})
+		Case{ID: 11, TaskID: "t1", Kind: CaseBudgetFloor, Status: CaseAtHuman},
+		Case{ID: 20, TaskID: "t2", Kind: CaseAgentEscalate, Status: CaseAtHuman, Facts: map[string]any{"reason": AgentAsks + "Which store keeps the snapshots?"}},
+		Case{ID: 21, TaskID: "t2", Kind: CaseSessionCap, Status: CaseOpen})
 	g.r.StoreMissedOffers(ctx)
 	status := map[int64]string{}
 	for _, c := range g.store.cases {
 		status[c.ID] = c.Status
 	}
-	if want := map[int64]string{5: CaseWithdrawn, 7: CaseWithdrawn, 8: CaseAtHuman, 9: CaseAtHuman, 11: CaseAtHuman}; !maps.Equal(status, want) {
+	if want := map[int64]string{5: CaseWithdrawn, 7: CaseWithdrawn, 8: CaseAtHuman, 9: CaseAtHuman, 11: CaseAtHuman, 20: CaseAtHuman, 21: CaseOpen}; !maps.Equal(status, want) {
 		t.Errorf("after the pass the cases stand %v, want %v", status, want)
 	}
 }
