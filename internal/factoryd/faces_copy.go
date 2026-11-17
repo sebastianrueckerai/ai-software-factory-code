@@ -417,10 +417,10 @@ func init() {
 		CaseMonthCap:   capFace("The factory's spending limit for this month is reached. Wait for it to reset, or end the card?"),
 		CaseProjectCap: capFace("This project's spending limit for the month is reached. Wait for it to reset, or end the card?"),
 		CaseCheckinHuman: work(FaceSpec{Ask: fixed("The session's check found a question only you can settle. Answer it, or send the card back to the planner?"),
-			Why: reasonWhy("A check during the session found a question that only a human can settle."), Story: writerStory,
+			Why:     reasonWhy("A check during the session found a question that only a human can settle."),
 			Answers: keys(ActContinue, ActReplan, ActClose, ActNote)}),
 		CasePolicyClass: work(FaceSpec{Ask: fixed("The change touches files only a human may approve. Let the card go on with it?"),
-			Why: reasonWhy("The factory's rules let only a human approve a change to these files."), Story: writerStory,
+			Why:     reasonWhy("The factory's rules let only a human approve a change to these files."),
 			Answers: keys(ActContinue, ActReplan, ActClose, ActNote)}),
 		CaseCheckinShare: work(FaceSpec{Ask: fixed("The last session spent more than its share of the card's money. Allow one more session, or end the card?"),
 			Why: reasonWhy("A session may spend only a share of the card's money before a human looks."), Answers: keys(ActExtend, ActClose, ActNote)}),
@@ -470,7 +470,7 @@ func init() {
 		CaseRollHeld:         humanFace,
 		CaseConfigRefused:    humanFace,
 		CaseOther: work(FaceSpec{Ask: fixed("The card stopped on a problem it cannot fix by itself. Run one more session, or send it back to the planner?"),
-			Why: reasonWhy("The card stopped for a reason the factory has no rule for."), Story: writerStory,
+			Why:     reasonWhy("The card stopped for a reason the factory has no rule for."),
 			Answers: keys(ActResume, ActReplan, ActClose, ActNote)}),
 		CaseMonitorFlag: {Ask: fixed("The factory flagged something odd on this card. Is that fine?"),
 			Why: fixed("The factory watches every card for signs that its work is stuck."), Answers: keys(ActSettle, ActNote)},
@@ -780,14 +780,11 @@ func imageWaitLine(f Facts) string {
 	return "It waited 24 hours for its image, then stopped."
 }
 
-// writerStory is workStory with the case writer's lines where it wrote
-// them: what the facts cannot say of a stop of its kind.
-func writerStory(f Facts) Story { return writerLines(workStory(f), f.Case) }
-
 // writerLines is story s with the lines case c's writer wrote in words
 // where it wrote them: what stopped the card after the money line, and
 // what is left of the work before the findings and the price, each as
-// much as its line holds.
+// much as its line holds. CaseFace alone adds them, to the story the
+// register composed.
 func writerLines(s Story, c Case) Story {
 	if h := line(c.Brief); h != "" {
 		s.Happened = both(firstSentence(s.Happened), h)

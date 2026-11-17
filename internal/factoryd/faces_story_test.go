@@ -1,6 +1,7 @@
 package factoryd_test
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -246,5 +247,12 @@ func TestTheWritersWordsStandBesideTheNumbers(t *testing.T) {
 		Left:     "Where the snapshots live is still open. No finding is open, and the checks are green. One more session costs about 0.48 EUR."}
 	if got := face.Story; got.Planned != want.Planned || got.Happened != want.Happened || got.Left != want.Left {
 		t.Errorf("the story is\n %q\n %q\n %q\nwant\n %q\n %q\n %q", got.Planned, got.Happened, got.Left, want.Planned, want.Happened, want.Left)
+	}
+	// a face stored after the writer wrote, as a refused press or a re-ask
+	// stores it, shows the writer's lines once
+	stored := maps.Clone(x.fx.Ask.Detail)
+	maps.Copy(stored, factoryd.FaceKeys(factoryd.FaceOf(c, x.facts)))
+	if got := factoryd.CaseFace(c, x.fx.Task, factoryd.CaseAsk{At: x.fx.Ask.At, Detail: stored}).Story; got.Happened != want.Happened || got.Left != want.Left {
+		t.Errorf("stored after the writer wrote, the story is\n %q\n %q\nwant\n %q\n %q", got.Happened, got.Left, want.Happened, want.Left)
 	}
 }

@@ -30,10 +30,10 @@ type CaseAsk struct {
 // stored one, the register's on the case's own facts.
 func CaseFace(c Case, t Task, ask CaseAsk) Face {
 	af, ok := storedFace(ask.Detail)
-	switch {
-	case !ok:
+	if !ok {
 		af = FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: t, Recommend: RecommendationOf(ask.Detail)})
-	case slices.Contains(storyWriterKinds, c.Kind):
+	}
+	if slices.Contains(storyWriterKinds, c.Kind) {
 		af.Story = writerLines(af.Story, c).without(af.Ask, af.Why)
 	}
 	face := Face{Ask: af.Ask, Why: af.Why, Story: af.Story, Offers: offersOfAnswers(af.Answers), Preselected: af.Suggested,
