@@ -65,9 +65,9 @@ func TestCheckinFailureKindsNameTheirCause(t *testing.T) {
 func TestCheckinCallErrorCases(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-1"}
 	t.Run("error past the cap", func(t *testing.T) {
-		chat := &scriptedChat{fails: 1, delay: 50 * time.Millisecond}
-		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, 10*time.Millisecond)
-		if out.Decision != RungHandUp || out.ReasonKind != CheckTimeCap || out.Reason != "check-in time cap reached after 10ms" {
+		chat := &scriptedChat{fails: 1, delay: time.Second}
+		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, 200*time.Millisecond)
+		if out.Decision != RungHandUp || out.ReasonKind != CheckTimeCap || out.Reason != "check-in time cap reached after 200ms" {
 			t.Fatalf("outcome = %+v, want the time cap's stop", out)
 		}
 	})
