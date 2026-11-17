@@ -65,11 +65,11 @@ const mustHave = {
   threads: ["/compact", "/new", "mark · thread · last", "Why is the session store card waiting?", "Give the costs page a from and a to date.",
     "Plan the members page", "Export the project to GitHub", "a turn in flight", "1 new", "New"],
   escalation: ["Answer:", "The factory's thread. Answer with its buttons, and write in a thread of your own.", "needs you",
-    "autonomous level · started by the agent", "Which store keeps the nightly board snapshots?", "Try the failed card again", "Not now"],
+    "autonomous level · started by the agent", "Postgres shares the factory's backups", "Try the failed card again", "Not now"],
   poke: ["Inbox", "Why is the session store card waiting?", "1 needs you · 1 new", "archived", "restore", "Archive", "Delete…"],
   compacted: ["4 earlier messages, compacted", "summary", "#11 waits until the store is settled.",
     "Why is the session store card waiting?"],
-  wake: ["wake", "#603: Which store keeps the nightly board snapshots?"],
+  wake: ["Nothing for you. The agent looked at #603 (Board export: keep the nightly snapshots)."],
   stopped: ["Plan the members page", "their logins, roles and", "Stopped by sebastian."],
   thinking: ["Plan the members page"],
   assisted: ["Inbox", "Board", "autonomy", "assisted", "Filed sf/code#8 on track direct.",
@@ -78,11 +78,10 @@ const mustHave = {
   busy: ["Factory console", "New task", "Settings", "Resources", "Costs", "Policy", "Notifications", "Log out", "sebastian", "Theme",
     "waiting on you", "3 working", "3 need you", "€61.40", "€120.00", "GitHub", "configuration", "version 4",
     "Needs you", "Queued", "In progress", "Done",
-    "Merge", "PR #612", "high", "migration", "Approve", "Deny", "requesting changes", "rejecting",
-    "Which store keeps the nightly board snapshots", "Postgres", "SQLite", "Ask the author", "answer on the issue", "Close",
-    "How far back does the feed page by default?", "One day", "One week",
-    "#598", "#616", "#617", "waiting on #603, #611", "#533",
-    "#606", "3/4 checks", "€1.72", "near its budget", "#611", "#614", "#601", "PR #605",
+    "Merge", "high", "Approve", "Close",
+    "How far back does the feed page by default?",
+    "#598", "#616", "#617", "waits for #603", "#533",
+    "#606", "€1.72", "near its budget", "#611", "#614", "#601",
     "#531", "#596", "#600", "#597", "failed", "#590", "closed", "#535", "Retry",
     "project agent", "Start a new thread", "What is #606 stuck on", "Do it", "Skip", "Send",
     "File roadmap 300 as a card", "One card, or one per deliverable", "One card",
@@ -92,17 +91,34 @@ const mustHave = {
     "Wide view", "?", "Find on the board", "Find: a word, #612, plan:558",
     "Order and show", "Order", "Show", "newest first", "oldest first", "next up", "by stage", "by spend", "blocked only", "exceptional only", "failed only",
     "↻ routines", "within", "Weekly bump", "Template pass", "Dependency update", "Audit", "every Monday 06:00", "after 6 more merges",
-    "Skip once", "Run now", "#779"],
+    "#779"],
   idle: ["idle", "0 working", "0 need you", "€144.16", "#455", "#178", "Done", "#618", "#597", "failed"],
-  fire: ["#610", "Grant one session with this answer", "Fund", "nothing for over", "2 waiting on the provider",
-    "#620", "€1.95", "#615", "#621", "#604", "#609", "failed", "Resource request", "cx33", "load test of the event stream",
-    "beyond the envelope", "#623", "waiting on #610", "#602"],
+  fire: ["#610", "Fund", "2 waiting on the provider",
+    "#620", "#615", "#621", "#604", "#609", "failed", "cx33", "load test of the event stream",
+    "#623", "waits for #610", "#602"],
   quiet: ["4 working", "0 need you", "€4.10", "#624", "#625", "#622", "#621", "#620", "done",
     "chain run 3251", "live through run 3248, 25 min after merge"],
 
   tokens: ["via claude-laptop", "sent by the chat token claude-laptop", "What does #606 still wait on?", "Leave #606 to its session."],
   metrics: ["Delivery", "Stability", "Cost", "Autonomy", "The factory itself", "deploys / week", "lead time, push to live",
     "spend by model", "served by", "7 days", "28 days", "90 days"],
+};
+
+// mustOpen are the words a scenario's opened cards show, by the hash that
+// opens each, its folds open: an ask's question, facts and answers, and a
+// routine's controls, which the small card leaves to its drawer.
+const mustOpen = {
+  busy: {
+    [labID(603)]: ["The agent asks: Which store keeps the nightly board snapshots?", "Postgres", "SQLite", "Ask the author", "Not now"],
+    [labID(607)]: ["pull request #612", "Merge this card's pull request?", "high risk", "Migration", "Merge it", "Send it back", "Reject and close it"],
+    [labID(558)]: ["How far back does the feed page by default?", "One day", "One week", "The 500 newest rows", "Answer in my words"],
+    [labID(601)]: ["pull request #605"],
+    "ai-software-factory-code/weekly-bump": ["Skip once", "Run now"],
+  },
+  fire: {
+    [labID(619) + ":overview"]: ["Rent a cx33 server for 5 hours at about 0.07 EUR?", "nothing for over 41 min", "Beyond the project's envelope", "Approve it", "Refuse it"],
+    [labID(620) + ":overview"]: ["€1.95"],
+  },
 };
 
 async function seed(s) {
@@ -218,15 +234,15 @@ async function viewChange(p, query, fails) {
   await page.waitForTimeout(600);
   const before = await page.evaluate(() => history.length);
   await page.evaluate(() => document.dispatchEvent(new CustomEvent("view",
-    {detail: {query: "?project=ai-software-factory-code&queued=oldest&q=export"}})));
+    {detail: {query: "?project=ai-software-factory-code&queued=oldest&q=costs"}})));
   await page.waitForTimeout(900);
   const at = new URL(page.url()).searchParams;
-  if (at.get("q") !== "export" || at.get("queued") !== "oldest" || !at.get("project")) fails.push(label + ": the URL holds " + page.url());
+  if (at.get("q") !== "costs" || at.get("queued") !== "oldest" || !at.get("project")) fails.push(label + ": the URL holds " + page.url());
   const words = await page.locator("#q").inputValue();
-  if (words !== "export") fails.push(label + ": the find's box holds " + JSON.stringify(words) + ", not the event's q");
+  if (words !== "costs") fails.push(label + ": the find's box holds " + JSON.stringify(words) + ", not the event's q");
   if ((await page.evaluate(() => history.length)) !== before + 1) fails.push(label + ": the change leaves no history entry");
   const shown = await page.locator(cards).allInnerTexts();
-  if (!shown.length || shown.some((t) => !t.toLowerCase().includes("export"))) fails.push(label + ": the board shows " + shown.length + " cards that do not say export");
+  if (!shown.length || shown.some((t) => !t.toLowerCase().includes("costs"))) fails.push(label + ": the board shows " + shown.length + " cards that do not say costs");
   await page.goBack({ waitUntil: "load" });
   await page.waitForTimeout(600);
   if (new URL(page.url()).searchParams.get("q")) fails.push(label + ": Back leaves q in the URL (" + page.url() + ")");
@@ -307,74 +323,74 @@ async function lateRead(page, label, fails) {
       .then(() => { window.labRead = "settled"; }, () => { window.labRead = "failed"; });
   });
   await page.locator("#q").click();
-  await page.keyboard.type("export", { delay: 40 });
+  await page.keyboard.type("costs", { delay: 40 });
   await page.waitForTimeout(2500);
   await page.unroute(slow, hold);
   const after = await page.evaluate(() => {
     const q = document.getElementById("q"), b = document.getElementById("board");
     return { inBoard: !!q && b.contains(q), box: q && q.value, focus: !!q && document.activeElement === q, query: b.dataset.query, read: window.labRead,
-      off: Array.from(b.querySelectorAll("[data-card]")).filter((k) => !k.innerText.toLowerCase().includes("export")).length };
+      off: Array.from(b.querySelectorAll("[data-card]")).filter((k) => !k.innerText.toLowerCase().includes("costs")).length };
   });
-  if (!after.inBoard || after.box !== "export" || !after.focus) {
+  if (!after.inBoard || after.box !== "costs" || !after.focus) {
     fails.push(label + ": after a late read the box is " + (after.inBoard ? "in the board" : "gone") + ", text " + JSON.stringify(after.box) + ", focus " + after.focus);
   }
-  if (after.query.indexOf("q=export") < 0 || after.off) fails.push(label + ": after a late read the board's query is " + after.query + ", " + after.off + " cards do not say export");
+  if (after.query.indexOf("q=costs") < 0 || after.off) fails.push(label + ": after a late read the board's query is " + after.query + ", " + after.off + " cards do not say costs");
   if (after.read !== "settled") fails.push(label + ": the late read's promise is " + after.read);
 }
 
-// cardPress presses Postgres on the busy board's escalation (603), its
-// answer held 1.2 s, and checks C31: before the answer is in the card
-// stands at the top of In progress, busy, no button of it live, and a
-// second press on it sends nothing; a refusal puts it back in Needs you
-// where it stood, live, the refusal in the flash. Pressed again in its
-// drawer and accepted while the factory's board still shows it waiting,
-// it keeps its new place and its lock, the drawer's open need locked too,
-// through the answer's board; a board that shows it out of Needs you lets
-// it go.
+// cardPress presses Merge it on the busy board's merge card (607), its
+// drawer open beside it and the answer held 1.2 s, and checks C31: before
+// the answer is in the card stands at the top of In progress, busy, no
+// button of it live, the drawer's answers locked too, and a second press
+// on it, the drawer's Merge it, sends nothing; a refusal puts it back in
+// Needs you where it stood, live, the refusal in the flash. Pressed again
+// in its drawer and accepted while the factory's board still shows it
+// waiting, it keeps its new place and its lock, the drawer's answers
+// locked too, through the answer's board; a board that shows it out of
+// Needs you lets it go.
 async function cardPress(page, fails) {
-  const id = labID(603), sel = '#board .cards > [data-card="' + id + '"]';
-  await page.goto(base + "/", { waitUntil: "load" });
+  const id = labID(607), sel = '#board .cards > [data-card="' + id + '"]';
+  await page.goto(base + "/#card=" + id, { waitUntil: "load" });
+  await page.waitForSelector("#drawer .o-answers button");
   await page.waitForTimeout(600);
   const where = () => page.evaluate((s) => {
-    const k = document.querySelector(s), f = document.getElementById("flash");
+    const k = document.querySelector(s), f = document.getElementById("flash"), o = document.querySelector("#drawer .o-answers");
     return k && { col: k.closest(".column").dataset.holds, at: Array.prototype.indexOf.call(k.parentNode.children, k), busy: k.getAttribute("aria-busy"),
-      live: Array.from(k.querySelectorAll("button")).filter((b) => !b.disabled).length, flash: f.hidden ? "" : f.textContent };
+      live: Array.from(k.querySelectorAll("button")).filter((b) => !b.disabled).length, flash: f.hidden ? "" : f.textContent, drawer: o && o.getAttribute("aria-busy") };
   }, sel);
   const before = await where();
-  if (!before || before.col.indexOf("waiting-human") < 0 || !before.live) return fails.push("card press: #603 is not a live card in Needs you: " + JSON.stringify(before));
+  if (!before || before.col.indexOf("waiting-human") < 0 || !before.live || before.drawer) return fails.push("card press: #607 is not a live card in Needs you: " + JSON.stringify(before));
   let posts = 0, answer;
-  const answers = (u) => u.pathname === "/tasks/" + id + "/answer";
+  const answers = (u) => u.pathname === "/approvals/51/approve";
   await page.route(answers, async (r) => {
     posts++;
     await new Promise((ok) => setTimeout(ok, 1200));
     await answer(r);
   });
   answer = (r) => r.fulfill({ status: 409, contentType: "text/plain", body: "The lab refuses the answer." });
-  await page.locator(sel + ' button:text-is("Postgres")').click();
+  await page.locator(sel + ' button:text-is("Merge it")').click();
   const now = await where();
-  if (!now || now.col.indexOf("running") < 0 || now.at !== 0 || now.busy !== "true" || now.live) {
-    fails.push("card press: right after the press the card stands " + JSON.stringify(now) + ", want the top of In progress, busy, no live button");
+  if (!now || now.col.indexOf("in-review") < 0 || now.at !== 0 || now.busy !== "true" || now.live || now.drawer !== "true") {
+    fails.push("card press: right after the press the card stands " + JSON.stringify(now) + ", want the top of In progress, busy, no live button, the drawer's answers locked");
   }
-  await page.evaluate((s) => document.querySelectorAll(s + ' form[action$="/answer"]')[1].requestSubmit(), sel);
+  await page.evaluate(() => document.querySelector('#drawer .o-answers form[action$="/approve"]').requestSubmit());
   await page.waitForTimeout(200);
   if (posts !== 1) fails.push("card press: two presses on the card sent " + posts + " answers");
   await page.waitForTimeout(1400);
   const refused = await where();
-  if (!refused || refused.col !== before.col || refused.at !== before.at || refused.busy || refused.live !== before.live || refused.flash !== "The lab refuses the answer.") {
+  if (!refused || refused.col !== before.col || refused.at !== before.at || refused.busy || refused.live !== before.live || refused.drawer || refused.flash !== "The lab refuses the answer.") {
     fails.push("card press: after the refusal the card stands " + JSON.stringify(refused) + ", want back where it stood " + JSON.stringify(before) + " and the refusal in the flash");
   }
   const query = await page.evaluate(() => document.getElementById("board").dataset.query);
   const waiting = await (await page.request.get(base + "/board" + query, { headers: { "HX-Request": "true" } })).text();
   answer = (r) => r.fulfill({ status: 204, headers: { "HX-Trigger": "board-refresh" } });
-  await page.evaluate((k) => { location.hash = "#card=" + k; }, id);
-  await page.waitForSelector("#drawer .open-need button");
   posts = 0;
-  await page.locator('#drawer .open-need button:text-is("Postgres")').click();
+  await page.locator('#drawer .o-answers button:text-is("Merge it")').click();
   await page.waitForTimeout(1800);
-  const kept = await where(), drawerBusy = await page.evaluate(() => { const o = document.querySelector("#drawer .open-need"); return o && o.getAttribute("aria-busy"); });
-  if (posts !== 1 || !kept || kept.col.indexOf("running") < 0 || kept.busy !== "true" || kept.live || drawerBusy !== "true") {
+  const kept = await where();
+  if (posts !== 1 || !kept || kept.col.indexOf("in-review") < 0 || kept.busy !== "true" || kept.live || kept.drawer !== "true") {
     fails.push("card press: accepted from the drawer while the factory's board shows the card waiting, " + posts + " answers sent, the card " + JSON.stringify(kept) +
-      ", the drawer's open need busy " + drawerBusy + ", want one answer, the card in In progress and both locked");
+      ", want one answer, the card in In progress and both locked");
   }
   await page.unroute(answers);
   await page.route((u) => u.pathname === "/board", (r) => r.fulfill({ status: 200, contentType: "text/html", body: waiting.split('data-card="' + id + '"').join('data-card="t-moved"') }));
@@ -384,151 +400,142 @@ async function cardPress(page, fails) {
   if (gone.card || gone.busy) fails.push("card press: a board that shows the card out of Needs you leaves " + JSON.stringify(gone) + ", want the card let go");
 }
 
-// criteriaWaive reads the criteria scene's gap card: its reviewer's
-// evidence, one unbroken file::test name in it, wraps inside the card at
-// 1440 and 390. With a reason typed under another criterion too, a Waive
-// dims the card and takes its buttons until the board that answers it
-// lands, that board's read held 1.2 s; the board shows the criterion
-// waived and settled, without its form, the other reason still typed,
-// and the card let go.
+// brief opens the full brief's fold of the card the drawer shows, where
+// its promises stand
+const brief = (page) => page.evaluate(() => document.querySelectorAll('#drawer details[data-sec="brief"]').forEach((d) => { d.open = true; }));
+
+// promises are the drawer's promise rows as their first line names them:
+// the promise and its state
+const promises = (page) => page.evaluate(() => Array.from(document.querySelectorAll("#drawer .criterion > p:first-child")).map((p) => p.textContent.trim().split(".")[0]));
+
+// outside are the drawer's promise rows, and their parts, that reach past
+// the drawer's edge, and a promise's artifact that scrolls sideways; null
+// for a drawer that shows no promise
+const outside = (page) => page.evaluate(() => {
+  const d = document.querySelector("#drawer");
+  if (!d || !d.querySelector(".criterion")) return null;
+  const edge = d.getBoundingClientRect().right;
+  return Array.from(d.querySelectorAll(".criterion, .criterion *")).filter((e) => e.getBoundingClientRect().right > edge + 1 ||
+    (e.matches("pre.artifact") && e.scrollWidth > e.clientWidth)).map((e) => e.tagName.toLowerCase() + (e.className ? "." + e.className : "")).slice(0, 4);
+});
+
+// criteriaWaive opens the criteria scene's gap card, plan #1344: its
+// promises in the full brief, the reviewer's evidence with one unbroken
+// file::test name, stay inside the drawer at 1440 and 390. Drop this
+// promise opens its pick on the first open promise and its reason; its
+// Send dims the card's answers until the board that answers it lands,
+// that board's read held 1.2 s; then the card reads the promise waived,
+// its pick offers the two still open, and its answers are live again.
 async function criteriaWaive(browser, fails) {
   await seed("criteria");
-  const card = "#board article.approval";
+  const gap = labID(1344);
   for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     const p = await open(browser, viewport);
-    await p.page.goto(base + "/", { waitUntil: "load" });
-    await p.page.waitForTimeout(600);
-    const out = await p.page.evaluate((s) => {
-      const k = document.querySelector(s);
-      if (!k) return null;
-      const edge = k.getBoundingClientRect().right;
-      return Array.from(k.querySelectorAll("fieldset.question, fieldset.question *")).filter((e) => e.getBoundingClientRect().right > edge + 1)
-        .map((e) => e.tagName.toLowerCase() + (e.className ? "." + e.className : "")).slice(0, 4);
-    }, card);
-    if (!out) fails.push("criteria waive: no criteria gap card on the board at " + viewport.width);
-    else if (out.length) fails.push("criteria waive: at " + viewport.width + " the criteria reach past the card's edge: " + out.join(", "));
+    await p.page.goto(base + "/#card=" + gap, { waitUntil: "load" });
+    await p.page.waitForTimeout(1200);
+    await brief(p.page);
+    await p.page.waitForTimeout(200);
+    const out = await outside(p.page);
+    if (!out) fails.push("criteria waive: the gap card #1344 shows no promise at " + viewport.width);
+    else if (out.length) fails.push("criteria waive: at " + viewport.width + " the promises reach past the drawer's edge: " + out.join(", "));
     await p.ctx.close();
   }
   const p = await open(browser, { width: 1440, height: 900 });
-  await p.page.goto(base + "/", { waitUntil: "load" });
-  await p.page.waitForTimeout(600);
-  const field = (c) => card + ' input[name="reason"][id$="-' + c + '"]';
-  await p.page.locator(field("ledger_retry_integrity")).fill("Producer retries are proved per producer.");
-  await p.page.locator(field("window_and_existing_figures")).fill("The markers, the denial and the range are proved.");
+  await p.page.goto(base + "/#card=" + gap, { waitUntil: "load" });
+  await p.page.waitForTimeout(1200);
+  const ask = p.page.locator('#drawer form[data-answer="answer_criteria/waive"]');
+  await ask.locator("button.pick").click();
+  const pick = ask.locator('select[name="criterion"]');
+  if ((await pick.inputValue()) !== "size_bound_escape") fails.push('criteria waive: Drop this promise opens on "' + (await pick.inputValue()) + '", want the first open promise size_bound_escape');
+  await pick.selectOption("window_and_existing_figures");
+  await ask.getByLabel("Your reason").fill("The markers, the denial and the range are proved.");
   let reads = 0;
   await p.page.route((u) => u.pathname === "/board", async (r) => {
     reads++;
     await new Promise((ok) => setTimeout(ok, 1200));
     await r.continue();
   });
-  await p.page.locator(card + ' button[aria-label^="Waive criterion window_and_existing_figures "]').click();
+  await ask.locator("button.send").click();
   await p.page.waitForTimeout(500);
-  const held = () => p.page.evaluate((s) => {
-    const k = document.querySelector(s);
-    return k && { busy: k.getAttribute("aria-busy"), live: Array.from(k.querySelectorAll("button")).filter((b) => !b.disabled).length };
-  }, card);
+  const held = () => p.page.evaluate(() => {
+    const a = Array.from(document.querySelectorAll("#drawer .o-answers"));
+    return { busy: a.filter((e) => e.getAttribute("aria-busy") === "true").length, live: a.reduce((n, e) => n + Array.from(e.querySelectorAll("button")).filter((b) => !b.disabled).length, 0) };
+  });
   const mid = await held();
-  if (!mid || mid.busy !== "true" || mid.live) fails.push("criteria waive: before its board lands the card stands " + JSON.stringify(mid) + ", want it dimmed with no live button");
-  await p.page.waitForTimeout(1600);
-  const after = await p.page.evaluate((s) => {
-    const k = document.querySelector(s);
-    if (!k) return null;
-    const q = (c) => Array.from(k.querySelectorAll("fieldset.question")).find((f) => f.querySelector("legend").textContent.startsWith(c + " "));
-    const w = q("window_and_existing_figures"), l = q("ledger_retry_integrity");
-    return { legend: w && w.querySelector("legend").textContent, settled: !!w && w.classList.contains("settled"), form: !!(w && w.querySelector("form")),
-      kept: l ? l.querySelector('input[name="reason"]').value : null, busy: k.getAttribute("aria-busy") };
-  }, card);
+  if (!mid.busy || mid.live) fails.push("criteria waive: before its board lands the card's answers stand " + JSON.stringify(mid) + ", want them dimmed with no live button");
+  await p.page.waitForTimeout(2500);
+  await brief(p.page);
+  const after = { rows: await promises(p.page), picks: await p.page.locator('#drawer select[name="criterion"] option').evaluateAll((o) => o.map((x) => x.value)), held: await held() };
   if (!reads) fails.push("criteria waive: the press read no board");
-  if (!after || after.legend !== "window_and_existing_figures (test): waived" || !after.settled || after.form || after.busy ||
-    after.kept !== "Producer retries are proved per producer.") {
-    fails.push("criteria waive: once its board landed the card reads " + JSON.stringify(after) +
-      ", want the criterion waived and settled without its form, the other reason kept and the card let go");
+  const want = { rows: ["size_bound_escape: partial", "window_and_existing_figures: waived", "ledger_retry_integrity: partial"], picks: ["size_bound_escape", "ledger_retry_integrity"] };
+  if (JSON.stringify(after.rows) !== JSON.stringify(want.rows) || JSON.stringify(after.picks) !== JSON.stringify(want.picks) || after.held.busy || !after.held.live) {
+    fails.push("criteria waive: once its board landed the card reads " + JSON.stringify(after) + ", want " + JSON.stringify(want) + " and its answers live");
   }
   await p.ctx.close();
 }
 
-// criteriaHuman reads the human scene's merge card of t-int: its rows
-// stay inside the card at 1440 and 390, and pages_ok's artifact, one
-// unbroken line, wraps without a sideways scroll. Enter in pages_ok's
-// field sends nothing and leaves the row open. With a reason typed under
-// all_green, Met on pages_ok dims the card and takes its buttons until
-// the board that answers it lands, that board's read held 1.2 s. The
-// board shows pages_ok met and settled without its form, and no Approve
-// while page_links waits. A Waive on page_links with its reason brings
-// the Approve, and the reason under all_green stays typed across both
-// boards.
+// criteriaHuman opens the human scene's merge card of t-int: its promise
+// rows in the full brief stay inside the drawer at 1440 and 390, and
+// pages_ok's artifact, one unbroken line, wraps without a sideways
+// scroll; Merge it stays disabled while a human promise waits. Enter in
+// pages_ok's field sends nothing. With a reason typed under all_green, Met
+// on pages_ok reads pages_ok met, Merge it still disabled for page_links,
+// and the reason under all_green kept; a Waive on page_links with its
+// reason enables Merge it, the reason under all_green still kept.
 async function criteriaHuman(browser, fails) {
   await seed("human");
-  const card = '#board article.approval[aria-labelledby="approval-31"]';
+  const merge = (page) => page.evaluate(() => Array.from(document.querySelectorAll("#drawer button.pick")).filter((b) => b.textContent.trim() === "Merge it").map((b) => b.disabled));
   for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     const p = await open(browser, viewport);
-    await p.page.goto(base + "/", { waitUntil: "load" });
-    await p.page.waitForTimeout(600);
-    const out = await p.page.evaluate((s) => {
-      const k = document.querySelector(s);
-      if (!k) return null;
-      const edge = k.getBoundingClientRect().right;
-      return Array.from(k.querySelectorAll("fieldset.question, fieldset.question *")).filter((e) => e.getBoundingClientRect().right > edge + 1 ||
-        (e.matches("pre.artifact") && e.scrollWidth > e.clientWidth)).map((e) => e.tagName.toLowerCase() + (e.className ? "." + e.className : "")).slice(0, 4);
-    }, card);
-    if (!out) fails.push("criteria human: no merge card of t-int on the board at " + viewport.width);
-    else if (out.length) fails.push("criteria human: at " + viewport.width + " the rows reach past the card's edge: " + out.join(", "));
+    await p.page.goto(base + "/#card=t-int", { waitUntil: "load" });
+    await p.page.waitForTimeout(1200);
+    await brief(p.page);
+    await p.page.waitForTimeout(200);
+    const out = await outside(p.page);
+    if (!out) fails.push("criteria human: the merge card of t-int shows no promise at " + viewport.width);
+    else if (out.length) fails.push("criteria human: at " + viewport.width + " the promises reach past the drawer's edge: " + out.join(", "));
     await p.ctx.close();
   }
   const p = await open(browser, { width: 1440, height: 900 });
-  await p.page.goto(base + "/", { waitUntil: "load" });
-  await p.page.waitForTimeout(600);
-  const field = (c) => card + ' input[name="reason"][id$="-' + c + '"]';
+  await p.page.goto(base + "/#card=t-int", { waitUntil: "load" });
+  await p.page.waitForTimeout(1200);
+  await brief(p.page);
+  const before = { rows: await promises(p.page), merge: await merge(p.page) };
+  const want = ["size_bound: met (blind)", "reads_calm: met", "all_green: unmet", "pages_ok: open", "page_links: open"];
+  if (JSON.stringify(before) !== JSON.stringify({ rows: want, merge: [true] })) {
+    fails.push("criteria human: the card reads " + JSON.stringify(before) + ", want " + JSON.stringify({ rows: want, merge: [true] }));
+  }
   const kept = "CI covers the suite.";
-  await p.page.locator(field("all_green")).fill(kept);
+  await p.page.locator("#waive-31-d-all_green").fill(kept);
   let posts = 0;
   p.page.on("request", (r) => { if (r.method() === "POST" && new URL(r.url()).pathname === "/approvals/31/criterion") posts++; });
-  await p.page.locator(field("pages_ok")).fill("The doors page has no rows.");
-  await p.page.locator(field("pages_ok")).press("Enter");
+  await p.page.locator("#waive-31-d-pages_ok").fill("The doors page has no rows.");
+  await p.page.locator("#waive-31-d-pages_ok").press("Enter");
   await p.page.waitForTimeout(600);
-  const entered = await p.page.evaluate((s) => {
-    const k = document.querySelector(s);
-    const q = k && Array.from(k.querySelectorAll("fieldset.question")).find((f) => f.querySelector("legend").textContent.startsWith("pages_ok "));
-    return q && { legend: q.querySelector("legend").textContent, form: !!q.querySelector("form"), busy: k.getAttribute("aria-busy") };
-  }, card);
-  if (posts || !entered || entered.legend !== "pages_ok (human): open" || !entered.form || entered.busy) {
-    fails.push("criteria human: Enter in pages_ok's field sent " + posts + " presses and left the row " + JSON.stringify(entered) + ", want no press and the row open");
+  if (posts) {
+    fails.push("criteria human: Enter in pages_ok's field sent " + posts + " presses, want none");
     return p.ctx.close();
   }
-  let reads = 0;
-  await p.page.route((u) => u.pathname === "/board", async (r) => {
-    reads++;
-    await new Promise((ok) => setTimeout(ok, 1200));
-    await r.continue();
-  });
-  const read = () => p.page.evaluate((s) => {
-    const k = document.querySelector(s);
-    if (!k) return null;
-    const q = Array.from(k.querySelectorAll("fieldset.question")).find((f) => f.querySelector("legend").textContent.startsWith("pages_ok "));
-    return { legend: q && q.querySelector("legend").textContent, settled: !!q && q.classList.contains("settled"), form: !!(q && q.querySelector("form")),
-      approve: !!k.querySelector('form[action$="/approve"] button'), kept: (k.querySelector('input[name="reason"][id$="-all_green"]') || {}).value,
-      busy: k.getAttribute("aria-busy"), live: Array.from(k.querySelectorAll("button")).filter((b) => !b.disabled).length };
-  }, card);
-  await p.page.locator(card + ' button[aria-label="Met: criterion pages_ok of t-int"]').click();
-  await p.page.waitForTimeout(500);
-  const mid = await read();
-  if (!mid || mid.busy !== "true" || mid.live) fails.push("criteria human: before the Met's board lands the card stands " + JSON.stringify(mid) + ", want it dimmed with no live button");
-  await p.page.waitForTimeout(1600);
-  const met = await read();
-  if (!reads) fails.push("criteria human: the Met read no board");
-  if (!met || met.legend !== "pages_ok (human): met" || !met.settled || met.form || met.approve || met.busy || met.kept !== kept) {
-    fails.push("criteria human: once the Met's board landed the card reads " + JSON.stringify(met) +
-      ", want pages_ok met and settled without its form, no Approve, the reason under all_green kept and the card let go");
+  await p.page.locator('#drawer button[aria-label="Met: promise pages_ok"]').click();
+  await p.page.waitForTimeout(2500);
+  await brief(p.page);
+  const met = { rows: await promises(p.page), merge: await merge(p.page), kept: await p.page.locator("#waive-31-d-all_green").inputValue() };
+  want[3] = "pages_ok: met";
+  if (JSON.stringify(met) !== JSON.stringify({ rows: want, merge: [true], kept })) {
+    fails.push("criteria human: after the Met the card reads " + JSON.stringify(met) + ", want " + JSON.stringify({ rows: want, merge: [true], kept }));
   }
-  await p.page.locator(field("page_links")).fill("The help page is gone.");
-  await p.page.locator(card + ' button[aria-label="Waive criterion page_links of t-int"]').click();
-  await p.page.waitForTimeout(2100);
-  const waived = await read();
-  if (!waived || !waived.approve || waived.busy || waived.kept !== kept) {
-    fails.push("criteria human: once the Waive's board landed the card reads " + JSON.stringify(waived) + ", want the Approve, the reason under all_green kept and the card let go");
+  await p.page.locator("#waive-31-d-page_links").fill("The help page is gone.");
+  await p.page.locator('#drawer button[aria-label="Waive promise page_links"]').click();
+  await p.page.waitForTimeout(2500);
+  await brief(p.page);
+  const waived = { rows: await promises(p.page), merge: await merge(p.page), kept: await p.page.locator("#waive-31-d-all_green").inputValue() };
+  want[4] = "page_links: waived";
+  if (JSON.stringify(waived) !== JSON.stringify({ rows: want, merge: [false], kept })) {
+    fails.push("criteria human: after the Waive the card reads " + JSON.stringify(waived) + ", want " + JSON.stringify({ rows: want, merge: [false], kept }));
   }
   await p.ctx.close();
 }
+
 
 async function text(page) {
   // what a disclosure hides (the deny form, the own-answer box, the status panel) counts once opened
@@ -559,6 +566,15 @@ async function text(page) {
     const low = (await text(p.page)).toLowerCase();
     if (await xp.count()) { await p.page.keyboard.press("Escape"); await p.page.waitForTimeout(200); }
     for (const w of words) if (!low.includes(w.toLowerCase())) fails.push(sc + ': missing "' + w + '"');
+    for (const [at, want] of Object.entries(mustOpen[sc] || {})) {
+      const op = await open(browser, { width: 1440, height: 900 });
+      await op.page.goto(base + "/#" + (at.startsWith("t-") ? "card=" : "routine=") + at, { waitUntil: "load" });
+      await op.page.waitForTimeout(800);
+      await op.page.evaluate(() => document.querySelectorAll("#drawer details").forEach((d) => { d.open = true; }));
+      const got = (await op.page.locator("#drawer").innerText()).toLowerCase();
+      for (const w of want) if (!got.includes(w.toLowerCase())) fails.push(sc + ": the drawer of " + at + ' lacks "' + w + '"');
+      await op.ctx.close();
+    }
     if (sc === "tokens") {
       // a token's rows (C43): the dashed avatar and "via" with the token's
       // name on each, nothing on the row the browser sent
@@ -620,7 +636,7 @@ async function text(page) {
     }
     if (sc === "quiet") {
       const merged = p.page.locator('#board [data-card="' + labID(623) + '"]');
-      const word = merged.locator(".line2 .st a");
+      const word = merged.locator(".foot .st a");
       if ((await word.count()) !== 1 || (await word.innerText()).trim() !== "blocked by roll #626") fails.push("quiet: the merged card's face does not read the linked word blocked by roll #626");
       else if ((await word.getAttribute("href")) !== "#card=" + labID(626)) fails.push("quiet: the roll word links " + (await word.getAttribute("href")) + ", not the roll card's drawer");
       else {
@@ -637,7 +653,7 @@ async function text(page) {
       // behind it collapsed to its summary, and the covered done face
       // carries the cover clause
       const carrier = p.page.locator('#board [data-card="' + labID(625) + '"]');
-      const runWord = carrier.locator(".line2 .st a");
+      const runWord = carrier.locator(".foot .st a");
       if ((await runWord.count()) !== 1 || (await runWord.innerText()).trim() !== "chain run 3251") fails.push("quiet: the carried card's face does not read the linked chain word chain run 3251");
       else if ((await runWord.getAttribute("href")) !== "https://git.example/sf/code/actions/runs/3251") fails.push("quiet: the chain word links " + (await runWord.getAttribute("href")) + ", not the run on the forge");
       else {
@@ -696,9 +712,8 @@ async function text(page) {
         if (!(await d.isVisible())) fails.push("busy: a click on the card does not open the drawer");
         else {
           const dt = await d.innerText();
-          for (const w of ["Overview", "Session", "Activity", "Files"]) if (!dt.includes(w)) fails.push('drawer: missing the tab "' + w + '"');
           const tabs = await d.getByRole("tab").allInnerTexts();
-          if (tabs[tabs.length - 1] !== "Files") fails.push("drawer: Files is not the last tab (" + tabs.join(", ") + ")");
+          if (tabs.join(", ") !== "Overview, Session, Activity, Files, Receipt") fails.push("drawer: the tabs read " + tabs.join(", ") + ", want Overview, Session, Activity, Files, Receipt");
           const box = await d.boundingBox();
           if (box && box.x + box.width < 1430) fails.push("drawer: not docked at the right edge (ends at " + Math.round(box.x + box.width) + ")");
           if (box && chatBox && box.x < chatBox.x + chatBox.width - 1) fails.push("drawer: over the chat (drawer from " + Math.round(box.x) + ", the chat ends at " + Math.round(chatBox.x + chatBox.width) + ")");
@@ -1136,8 +1151,9 @@ async function text(page) {
       if ((await p.page.locator("#board").getAttribute("data-query") || "").indexOf("q=is%3Afailed") < 0) fails.push("find: the board's query does not carry q");
       // the find as you type (2026-10-15), with the board's other fields in the URL, and so
       // in a browser without moveBefore (Safari), where htmx's hx-preserve takes the find's
-      // form out of the page and puts it back
-      await findAsYouType(p, "?queued=oldest&routines=within&within=2&unit=hours", "export", "find as you type", fails);
+      // form out of the page and puts it back. Its word, costs, is on the face of each card
+      // it finds: a face in Needs you shows its ask, not the title the find reads too
+      await findAsYouType(p, "?queued=oldest&routines=within&within=2&unit=hours", "costs", "find as you type", fails);
       // the agent's view change (282) on the same board: the page stands under the
       // order's and the routines' menu choices, and the event's query carries the
       // find and the order, so the merge into the URL reads plainly
@@ -1146,7 +1162,7 @@ async function text(page) {
       await nm.ctx.addInitScript(() => { delete Element.prototype.moveBefore; });
       await nm.page.goto(base + "/", { waitUntil: "load" });
       if (await nm.page.evaluate(() => "moveBefore" in Element.prototype)) fails.push("find without moveBefore: the lab could not take moveBefore away");
-      else await findAsYouType(nm, "", "export", "find without moveBefore", fails);
+      else await findAsYouType(nm, "", "costs", "find without moveBefore", fails);
       if (nm.errors.length) fails.push("find without moveBefore: " + nm.errors.join("; "));
       await nm.ctx.close();
       // a find keeps the open drawer's hash in the URL it writes, so the drawer's ✕ still closes it;
@@ -1154,15 +1170,15 @@ async function text(page) {
       await p.page.goto(base + "/#card=" + drawer + ":overview", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
       await p.page.locator("#q").focus();
-      await p.page.keyboard.type("export", { delay: 40 });
+      await p.page.keyboard.type("costs", { delay: 40 });
       await p.page.waitForTimeout(1200);
       const found = new URL(p.page.url());
-      if (found.hash !== "#card=" + drawer || found.searchParams.get("q") !== "export") fails.push("find with a drawer: the find writes " + p.page.url() + ", want q=export and #card=" + drawer);
+      if (found.hash !== "#card=" + drawer || found.searchParams.get("q") !== "costs") fails.push("find with a drawer: the find writes " + p.page.url() + ", want q=costs and #card=" + drawer);
       await p.page.locator("#drawer-close").click();
       await p.page.waitForTimeout(400);
       const closed = new URL(p.page.url());
       if (await p.page.locator("#drawer").isVisible()) fails.push("find with a drawer: the ✕ does not close the drawer after a find");
-      if (closed.hash || closed.searchParams.get("q") !== "export") fails.push("find with a drawer: after the ✕ the URL is " + p.page.url() + ", want q=export and no hash");
+      if (closed.hash || closed.searchParams.get("q") !== "costs") fails.push("find with a drawer: after the ✕ the URL is " + p.page.url() + ", want q=costs and no hash");
       // Back across a find: a drawer opened and closed (an entry of its own), a find, Back: the URL,
       // the box and the board agree, in place
       await p.page.goto(base + "/", { waitUntil: "load" });
@@ -1174,7 +1190,7 @@ async function text(page) {
       await p.page.locator("#drawer-close").click();
       await p.page.waitForTimeout(300);
       await p.page.locator("#q").click();
-      await p.page.keyboard.type("export", { delay: 40 });
+      await p.page.keyboard.type("costs", { delay: 40 });
       await p.page.waitForTimeout(1200);
       await p.page.goBack();
       await p.page.waitForTimeout(1200);
@@ -1189,7 +1205,7 @@ async function text(page) {
       await p.page.waitForTimeout(600);
       await p.page.evaluate(() => { window.labPage = true; });
       await p.page.locator("#q").click();
-      await p.page.keyboard.type("export", { delay: 40 });
+      await p.page.keyboard.type("costs", { delay: 40 });
       await p.page.waitForTimeout(1200);
       const narrowed = await p.page.locator("#board [data-card]").count();
       await p.page.locator('#board [data-card="' + labID(616) + '"]').click({ position: { x: 4, y: 4 } });
@@ -1200,24 +1216,24 @@ async function text(page) {
       if (await p.page.locator("#drawer").isVisible()) fails.push("find then drawer: Back does not close the drawer");
       const stay = await p.page.evaluate(() => ({ q: new URLSearchParams(location.search).get("q"), hash: location.hash, box: document.getElementById("q").value,
         cards: document.querySelectorAll("#board [data-card]").length, same: window.labPage === true }));
-      if (stay.q !== "export" || stay.hash || stay.box !== "export" || stay.cards !== narrowed || !stay.same) {
+      if (stay.q !== "costs" || stay.hash || stay.box !== "costs" || stay.cards !== narrowed || !stay.same) {
         fails.push("find then drawer: after Back the URL's q is " + stay.q + ", the hash " + JSON.stringify(stay.hash) + ", the box " + JSON.stringify(stay.box) + ", " +
           stay.cards + " of " + narrowed + " cards, the page " + (stay.same ? "kept" : "loaded again"));
       }
       // a stream swap that lands while a find is in flight leaves the find's answer on the board
       await p.page.goto(base + "/", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
-      const slow = (u) => u.pathname === "/" && u.searchParams.get("q") === "export";
+      const slow = (u) => u.pathname === "/" && u.searchParams.get("q") === "costs";
       await p.page.route(slow, async (r) => { await new Promise((ok) => setTimeout(ok, 1000)); await r.continue(); });
       await p.page.locator("#q").click();
-      await p.page.keyboard.type("export", { delay: 40 });
+      await p.page.keyboard.type("costs", { delay: 40 });
       await p.page.waitForTimeout(500);
       await p.page.evaluate(() => htmx.ajax("GET", "/board" + document.getElementById("board").dataset.query, { source: "#board", target: "#board", swap: "outerHTML" }));
       await p.page.waitForTimeout(2000);
       await p.page.unroute(slow);
       const raced = await p.page.evaluate(() => ({ query: document.getElementById("board").dataset.query,
-        off: Array.from(document.querySelectorAll("#board [data-card]")).filter((k) => !k.innerText.toLowerCase().includes("export")).length }));
-      if (raced.query.indexOf("q=export") < 0 || raced.off) fails.push("find in a race: after a stream swap landed first the board's query is " + raced.query + ", " + raced.off + " cards do not say export");
+        off: Array.from(document.querySelectorAll("#board [data-card]")).filter((k) => !k.innerText.toLowerCase().includes("costs")).length }));
+      if (raced.query.indexOf("q=costs") < 0 || raced.off) fails.push("find in a race: after a stream swap landed first the board's query is " + raced.query + ", " + raced.off + " cards do not say costs");
       // a read of the board that answers after the find's answer, so in a browser without moveBefore too
       await lateRead(p.page, "late read", fails);
       const lm = await open(browser, { width: 1440, height: 900 });
@@ -1228,10 +1244,10 @@ async function text(page) {
       // a drawer form aimed at the board whose refusal answers after a board swap still flashes it
       await p.page.goto(base + "/#card=" + drawer + ":overview", { waitUntil: "load" });
       await p.page.waitForTimeout(800);
-      const brief = p.page.locator("#drawer form.brief-edit");
-      if (!(await brief.count())) fails.push("drawer refusal: the drawer has no brief form");
+      const brief = p.page.locator('#drawer form[data-answer="edit_brief"]');
+      if (!(await brief.count())) fails.push("drawer refusal: the drawer has no Edit the brief");
       else {
-        const refuse = (u) => u.pathname.endsWith("/brief");
+        const refuse = (u) => u.pathname.endsWith("/resolve");
         await p.page.route(refuse, async (r) => {
           await new Promise((ok) => setTimeout(ok, 1000));
           await r.fulfill({ status: 422, contentType: "text/plain", body: "Refused: not yours." });
@@ -1242,7 +1258,7 @@ async function text(page) {
         await p.page.waitForTimeout(1500);
         await p.page.unroute(refuse);
         // the refusal is the step's own, not the console's
-        const own = p.errors.findIndex((x) => x.endsWith("/brief 422"));
+        const own = p.errors.findIndex((x) => x.endsWith("/resolve 422"));
         if (own >= 0) p.errors.splice(own, 1);
         const flash = p.page.locator("#flash"), said = (await flash.innerText()).trim();
         if (!(await flash.isVisible()) || said !== "Refused: not yours.") fails.push('drawer refusal: after a board swap the flash reads "' + said + '", shown ' + (await flash.isVisible()));
@@ -1307,26 +1323,27 @@ async function text(page) {
       await ns.close();
     }
     if (sc === "busy") {
-      // a plan's name: the children's chip, the parent's chip and the approval header
+      // a plan's name: the place of the children, of the plans and of
+      // the plan's own card in Needs you; a child's place links its plan
       await p.page.goto(base + "/", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
-      const chipOf = (id) => p.page.locator('#board [data-card="' + labID(id) + '"] .chip.plan');
-      for (const [child, want] of [[606, "from plan #531 · card chips"], [617, "from plan #531 · card chips"], [533, "from plan #531 · card chips"], [537, "#537 · quota guard"], [531, "#531 · card chips"]]) {
-        const got = (await chipOf(child).allInnerTexts()).map((t) => t.trim());
-        if (got.length !== 1 || got[0] !== want) fails.push("plan name: card #" + child + "'s plan chip reads " + JSON.stringify(got) + ", want " + JSON.stringify(want));
+      const placeOf = (id) => p.page.locator('#board .cards > [data-card="' + labID(id) + '"] .foot .place');
+      for (const [card, want] of [[606, "card chips"], [617, "card chips"], [533, "card chips"], [537, "plan quota guard"], [531, "plan card chips"], [527, "plan"]]) {
+        const got = (await placeOf(card).allInnerTexts()).map((t) => t.trim());
+        if (got.length !== 1 || got[0] !== want) fails.push("plan name: card #" + card + "'s place reads " + JSON.stringify(got) + ", want " + JSON.stringify(want));
       }
-      if (!(await p.page.locator('#board [data-card="' + labID(527) + '"]').count())) fails.push("plan name: the closed plan #527 is not on the board");
-      const closedChips = await chipOf(527).allInnerTexts();
-      if (closedChips.length !== 0) fails.push("plan name: the unnamed closed plan #527 wears a plan chip: " + JSON.stringify(closedChips));
-      const headEl = p.page.locator("#needs-you h4#approval-52");
-      if ((await headEl.count()) !== 1) fails.push("plan name: want one plan approval header #approval-52 in Needs you, found " + (await headEl.count()));
-      const head = (await headEl.first().innerText()).replace(/\s+/g, " ").trim();
-      if (head !== "Plan #558 · activity feed, revision 1") fails.push("plan name: the approval header reads " + JSON.stringify(head) + ", want \"Plan #558 · activity feed, revision 1\"");
+      for (const child of [606, 617, 533]) {
+        const href = await placeOf(child).locator("a").getAttribute("href").catch(() => null);
+        if (href !== "#card=" + labID(531)) fails.push("plan name: card #" + child + "'s place links " + href + ", not plan #531's drawer");
+      }
+      // the plan's own card in Needs you names the plan in its band
+      const place = (await p.page.locator('#needs-you [data-card="' + labID(558) + '"] .band .place').allInnerTexts()).map((t) => t.trim());
+      if (place.length !== 1 || place[0] !== "plan activity feed, 4 cards") fails.push("plan name: card #558's place in Needs you reads " + JSON.stringify(place) + ", want \"plan activity feed, 4 cards\"");
     }
     if (sc === "busy") {
       // the routines (C16): every ghost at the foot of Queued, Needs you holds only the
       // filed card (the 2026-10-17 ruling), the control in the
-      // board's head, the strip's cell, the chip, the routine's drawer, Skip once
+      // board's head, the strip's cell, the chip, the routine's drawer and its Skip once
       await seed("busy");
       await p.page.goto(base + "/", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
@@ -1351,7 +1368,8 @@ async function text(page) {
       if (period !== "1 999 1 days,hours days") fails.push('routines: the control\'s number and unit read "' + period + '", want min 1, max 999, 1, days or hours, days');
       const cell = await p.page.locator(".strip .cell.routine").allInnerTexts();
       if (!cell.includes("↻ bump in 20 min")) fails.push('routines: the strip\'s cell reads "' + cell.join(" | ") + '", want ↻ bump in 20 min');
-      if (!(await p.page.locator('#board [data-card="' + labID(779) + '"] .chip.routine').count())) fails.push("routines: #779 in Done carries no routine chip");
+      const routine779 = (await p.page.locator('#board [data-card="' + labID(779) + '"] .foot .place').allInnerTexts()).map((t) => t.trim());
+      if (routine779.join() !== "↻ dependency-update") fails.push("routines: #779's place in Done reads " + JSON.stringify(routine779) + ", want ↻ dependency-update");
       const d = p.page.locator("#drawer");
       await p.page.locator('#board [data-routine="ai-software-factory-code/weekly-bump"]').click();
       await p.page.waitForTimeout(600);
@@ -1369,12 +1387,15 @@ async function text(page) {
       await p.page.goto(base + "/#routine=ai-software-factory-code/weekly-bump:runs", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
       if (!(await d.locator('a[href="#card=' + labID(781) + '"]').count())) fails.push("routines: the Runs tab does not link #781");
-      await p.page.goto(base + "/", { waitUntil: "load" });
+      // Skip once is the routine drawer's act: the ghost then reads skipped
+      // once, and the drawer offers the undo
+      await p.page.goto(base + "/#routine=ai-software-factory-code/weekly-bump", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
-      await p.page.locator('#board [data-ghost="ai-software-factory-code/weekly-bump"]').getByRole("button", { name: "Skip Weekly bump once" }).click();
+      await d.getByRole("button", { name: "Skip Weekly bump once" }).click();
       await p.page.waitForTimeout(800);
       const skipped = await p.page.locator('#board [data-ghost="ai-software-factory-code/weekly-bump"]').innerText();
-      if (!skipped.includes("skipped once") || !skipped.includes("Undo skip")) fails.push("routines: after Skip once the ghost reads " + JSON.stringify(skipped) + ", want skipped once and Undo skip");
+      if (!skipped.includes("skipped once")) fails.push("routines: after Skip once the ghost reads " + JSON.stringify(skipped) + ", want skipped once");
+      if (!(await d.getByRole("button", { name: "Undo the skip of Weekly bump" }).count())) fails.push("routines: after Skip once the drawer offers no Undo skip");
       await p.page.goto(base + "/?routines=none", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
       if (await p.page.locator("#board .card.ghost").count()) fails.push("routines: ?routines=none leaves a ghost");
@@ -1458,20 +1479,22 @@ async function text(page) {
         fails.push("chat: a reload loses the message's thumbs");
     }
     if (sc === "fire") {
-      // the held run (C16): the ghost and the strip's cell in amber, #781 in Needs you with the chip
+      // the held run (C16): the ghost and the strip's cell in amber, #781 in Needs you with its routine as its place
       if (!(await p.page.locator("#board .card.ghost.held").count())) fails.push("fire: no held ghost");
       const cell = await p.page.locator(".strip .cell.routine").allInnerTexts();
       if (!cell.includes("↻ bump held")) fails.push('fire: the strip\'s cell reads "' + cell.join(" | ") + '", want ↻ bump held');
       const k781 = p.page.locator('#needs-you [data-card="' + labID(781) + '"]');
-      if (!(await k781.locator(".chip.routine").count())) fails.push("fire: #781 in Needs you carries no routine chip");
-      // #781's drawer names the run that filed it and links its routine; the menus text() opened close first
+      const place781 = (await k781.locator(".band .place").allInnerTexts()).map((t) => t.trim());
+      if (place781.join() !== "↻ weekly-bump") fails.push("fire: #781's place in Needs you reads " + JSON.stringify(place781) + ", want ↻ weekly-bump");
+      // #781's life names the run that filed it and links its routine; the menus text() opened close first
       await p.page.evaluate(() => document.querySelectorAll("details.col-menu").forEach((m) => { m.open = false; }));
       await k781.click({ position: { x: 4, y: 4 } });
       await p.page.waitForTimeout(600);
       const d = p.page.locator("#drawer");
-      const prov = await d.locator(".provenance").allInnerTexts();
-      if (!prov.some((t) => t.includes("filed by the factory · routine Weekly bump · run 14"))) {
-        fails.push('fire: #781\'s drawer lacks "filed by the factory · routine Weekly bump · run 14" (' + prov.join(" | ") + ")");
+      await p.page.evaluate(() => document.querySelectorAll('#drawer details[data-sec="life"]').forEach((l) => { l.open = true; }));
+      const prov = (await d.locator(".provenance").allInnerTexts()).map((t) => t.trim());
+      if (prov.join() !== "filed by the routine Weekly bump, run 14, last run held") {
+        fails.push('fire: #781\'s life reads ' + JSON.stringify(prov) + ', want "filed by the routine Weekly bump, run 14, last run held"');
       } else {
         await d.locator(".provenance [data-open-routine]").click();
         await p.page.waitForTimeout(600);
@@ -1799,9 +1822,10 @@ async function text(page) {
       }
     }
     if (sc === "wake") {
-      // one wake turn is one row (the main agent concept): it folds to the
-      // wake's first line, the turn's text sits behind the fold, a click
-      // opens the whole turn and the fold says which state it is in
+      // one wake turn is one row (the main agent concept): it folds to one
+      // line, what the turn means for the human and the card it looked at;
+      // the note and the turn sit behind the fold, a click opens the whole
+      // turn and the fold says which state it is in
       const row = p.page.locator("#chat-log .msg.wake");
       if ((await row.count()) !== 1) fails.push("wake: " + (await row.count()) + " wake rows, want 1");
       else {
@@ -1809,15 +1833,15 @@ async function text(page) {
         if (!(await fold.count())) fails.push("wake: the row carries no fold");
         else {
           if (!(await row.locator(".wake-b").count())) fails.push("wake: the row carries no expandable body");
-          if ((await fold.innerText()).replace(/\s+/g, " ").indexOf("#603: Which store keeps the nightly board snapshots?") < 0)
-            fails.push("wake: the fold does not lead with the wake's first line");
-          if ((await row.innerText()).includes("Read each card")) fails.push("wake: the folded row shows the turn's text");
+          const line = (await fold.innerText()).replace(/\s+/g, " ").trim();
+          if (line !== "Nothing for you. The agent looked at #603 (Board export: keep the nightly snapshots).") fails.push('wake: the fold reads "' + line + '"');
+          if ((await row.innerText()).includes("Wake: 1 ask waits")) fails.push("wake: the folded row shows the wake's note");
           if ((await row.innerText()).includes("Both stores hold the snapshots")) fails.push("wake: the folded row shows the agent's answer");
           if ((await fold.getAttribute("aria-expanded")) !== "false") fails.push("wake: the fold does not say closed");
           await fold.click();
           await p.page.waitForTimeout(150);
           const open = await row.innerText();
-          for (const w of ["Read each card", "Both stores hold the snapshots", "card"]) if (!open.includes(w)) fails.push('wake: the opened row hides "' + w + '"');
+          for (const w of ["Wake: 1 ask waits for a human: #603.", "Which store keeps the nightly board snapshots?", "Both stores hold the snapshots"]) if (!open.includes(w)) fails.push('wake: the opened row hides "' + w + '"');
           if ((await fold.getAttribute("aria-expanded")) !== "true") fails.push("wake: the opened fold does not say open");
         }
       }

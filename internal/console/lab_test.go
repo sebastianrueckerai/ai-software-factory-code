@@ -511,15 +511,15 @@ func escalationScene(now time.Time) labScene {
 // wakeScene is the threads scene at autonomous with one wake turn in the
 // inbox, which the human opens by its row (the main agent concept): the
 // factory woke the agent on #603's ask; the turn's rows are one row that
-// folds to the wake's first line and opens on a click, the settled row's
-// fold.
+// folds to one line, what the turn means for the human and the card it
+// looked at, and opens on a click.
 func wakeScene(now time.Time) labScene {
 	s := threadsScene(now)
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	s.autonomy, s.inbox, s.open = policy.AutonomyAutonomous, 5, 4
 	s.chat = append(s.chat,
 		factoryd.ChatMessage{Conversation: 5, Role: "user", BirthKind: "wake_ask", At: ago(15 * time.Minute),
-			Content: "Wake: 1 ask waits for a human.\n#603: Which store keeps the nightly board snapshots?"},
+			Content: "Wake: 1 ask waits for a human: #603.\n#603: Which store keeps the nightly board snapshots?"},
 		factoryd.ChatMessage{Conversation: 5, Role: "assistant", At: ago(15*time.Minute - 30*time.Second), ToolCalls: []factoryd.ChatToolCall{{
 			ID: "call_w", Name: "card", Arguments: `{"task_id":"#603"}`,
 			Result: "#603 asks which store keeps the nightly board snapshots; the plan names Postgres."}}},
