@@ -1263,3 +1263,20 @@ func TestTheChatAnswersAnInformationRequest(t *testing.T) {
 		t.Fatalf("signals %+v, want the answer whole by %s at comment %d", g.signals.got, ChatUser, comment+1)
 	}
 }
+
+// A card that ended or moved on while its session ended asks its author
+// nothing: the request refuses before it posts.
+func TestARequestOfACardThatCannotWaitPostsNothing(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'closing' WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	reason := AgentAsk{Kind: AskInfo, Question: "Which Hetzner location does the load test's server use, fsn1 or nbg1?"}.reason()
+	if _, err := g.r.RequestInfo(ctx, "t1", reason); !isTerminal(err) || len(g.forge.comments) != 0 {
+		t.Fatalf("the request of a closing card = %v with %d comments posted; want a terminal refusal and nothing posted", err, len(g.forge.comments))
+	}
+	if events, _ := g.s.IntakeEvents(ctx, "t1"); len(events) != 0 {
+		t.Fatalf("intake events %+v, want no anchor", events)
+	}
+}

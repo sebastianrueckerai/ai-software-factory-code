@@ -290,8 +290,9 @@ type IntakeEvent struct {
 	Author    string
 	Body      string
 	CreatedAt time.Time
-	// DeliveryID is the webhook delivery that produced it: a redelivery
-	// inserts no second row.
+	// DeliveryID is the webhook delivery that produced it, or the mark of
+	// the information request whose anchor it is (requestMark): a
+	// redelivery or a retry inserts no second row.
 	DeliveryID string
 	// CommentID is Forgejo's id of the comment (0 for a review; for a
 	// decision, the number of the issue or pull request it ended): the

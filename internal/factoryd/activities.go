@@ -1719,6 +1719,10 @@ func (r *Runner) RequestInfo(ctx context.Context, taskID, reason string) (int64,
 	if err != nil {
 		return 0, err
 	}
+	// a card that ended or moved on asks its author nothing
+	if !slices.Contains([]string{"running", "in-review", "waiting-poster"}, t.Status) {
+		return 0, terminalError("task %s is %s, cannot wait for the issue's author", taskID, t.Status)
+	}
 	mark := requestMark(ctx)
 	a, err := r.markedRequest(ctx, taskID, mark)
 	if err != nil {

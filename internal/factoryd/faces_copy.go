@@ -751,15 +751,12 @@ func depLine(f Facts) string {
 	return fmt.Sprintf("#%d, which it waits for, %s.", d.Issue, endedWords(d.Status))
 }
 
-// endedWords says how a card ended.
+// endedWords says how a card ended: failed, or was closed.
 func endedWords(status string) string {
-	switch status {
-	case "failed":
-		return "failed"
-	case "closed":
+	if status == "closed" {
 		return "was closed"
 	}
-	return "ended " + status
+	return status
 }
 
 // waitedFor reads how long a stale wait's question waited.
@@ -809,13 +806,39 @@ func imageWaitLine(f Facts) string {
 // much as its line holds. CaseFace alone adds them, to the story the
 // register composed.
 func writerLines(s Story, c Case) Story {
-	if h := line(c.Brief); h != "" {
+	// a line the story holds already, as a row stored it, stands once
+	if h := line(c.Brief); h != "" && !strings.Contains(s.Happened, h) {
 		s.Happened = both(firstSentence(s.Happened), h)
 	}
-	if l := line(c.BriefDetail); l != "" {
-		s.Left = cmp.Or(line(l+" "+s.Left), l)
+	if l := line(c.BriefDetail); l != "" && !strings.Contains(s.Left, l) {
+		if s.Left == "" {
+			s.Left = l
+		} else {
+			// the writer's words give way to the findings and the price
+			s.Left = strings.TrimSpace(clipWords(l, storyMax-utf8.RuneCountInString(s.Left)-1) + " " + s.Left)
+		}
 	}
 	return s
+}
+
+// clipWords is s cut after a word to at most n runes, marked "…" when cut;
+// "" when no word fits.
+func clipWords(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	var out string
+	for _, w := range strings.Fields(s) {
+		next := strings.TrimSpace(out + " " + w)
+		if utf8.RuneCountInString(next)+1 > n {
+			break
+		}
+		out = next
+	}
+	if out == "" {
+		return ""
+	}
+	return out + "…"
 }
 
 func spentLine(f Facts) string {

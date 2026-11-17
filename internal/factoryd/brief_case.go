@@ -164,7 +164,8 @@ func parseCaseBrief(content string) (happened, left string, err error) {
 }
 
 // writerMax bounds each line the writer writes, in runes: the card adds the
-// numbers beside it within the story's bound.
+// numbers beside it, and cuts the writer's words where both pass the
+// story's bound (writerLines).
 const writerMax = 160
 
 // storyWriterKinds are the case kinds whose stop a model's judgment holds
