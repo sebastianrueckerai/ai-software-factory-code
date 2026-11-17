@@ -1467,7 +1467,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 	}
 	g, err := planGateOf(ctx, r.store, parent, integration)
 	if err != nil {
-		log.Printf("plan %s: the close check: %s", parent, r.Scrub.String(err.Error()))
+		log.Printf("plan %s: the criteria gate: %s", parent, r.Scrub.String(err.Error()))
 		return
 	}
 	rows = g.settling(rows)
@@ -1509,7 +1509,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 	if len(never) > 0 && (r.planClosed(ctx, parent) || !r.planAtRest(ctx, t)) {
 		return
 	}
-	wanted, err := r.gateWanted(ctx, t, integration, never, g)
+	wanted, err := r.gateWanted(ctx, t, never, g)
 	switch {
 	case err != nil:
 		log.Printf("plan %s: the criteria gate: %s", parent, r.Scrub.String(err.Error()))
@@ -1526,7 +1526,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		unmet := slices.DeleteFunc(open, func(c PlanCriterion) bool {
 			return slices.ContainsFunc(never, func(n PlanCriterion) bool { return n.ID == c.ID })
 		})
-		r.askRerun(ctx, t, repo, never, unmet, integration)
+		r.askRerun(ctx, t, repo, never, unmet, integration, g.runs)
 		return
 	}
 	// a waiver or a confirmation judged what a rerun ask named: it has
@@ -1625,31 +1625,22 @@ func gatePendingSince(runs []Event) time.Time {
 	return time.Time{}
 }
 
-// gateDue tells whether the criteria gate is still to run for plan id on
-// its integration card: no attempt ran or found no room, and fewer than
-// two were cut. A record that cannot be read is an error: the gate waits.
-func (r *Runner) gateDue(ctx context.Context, id string, integration Task) (bool, error) {
-	runs, err := r.gateRuns(ctx, id, integration.ID)
-	if err != nil {
-		return false, err
-	}
-	return !gateRan(runs, gateDone) && !gateRan(runs, gateNoRoom) && gateAttempts(runs) < 2, nil
+// due tells whether the criteria gate is still to run for the plan's
+// cards as they stand: no attempt for them ran or found no room, and fewer
+// than two were cut. A card that ends since makes it due again.
+func (g planGate) due() bool {
+	return !gateRan(g.runs, gateDone) && !gateRan(g.runs, gateNoRoom) && gateAttempts(g.runs) < 2
 }
 
 // gateWanted tells whether plan's criteria gate runs now: gate-judged
 // criteria hold no row that settles them (never), the plan is at rest and
-// not closed, every card of the plan is final (g), the integration card's
-// end is not failed, and the gate is due. A failed integration card stays
-// with the human's ask. A read that fails is an error: the gate waits and
-// no ask opens.
-func (r *Runner) gateWanted(ctx context.Context, plan, integration Task, never []PlanCriterion, g planGate) (bool, error) {
+// not closed, every card of the plan is final (g), a failed one too, and
+// the gate is due. A read that fails is an error: the gate waits and no
+// ask opens.
+func (r *Runner) gateWanted(ctx context.Context, plan Task, never []PlanCriterion, g planGate) (bool, error) {
 	gate, _ := judgeIDs(never)
-	if len(gate) == 0 || plan.Status == "closed" || !Final(plan.Status) {
-		return false, nil
-	}
-	if slices.ContainsFunc(g.cards, func(c Task) bool {
-		return !Final(c.Status) || c.PlanKey == integration.PlanKey && c.Status == "failed"
-	}) {
+	if len(gate) == 0 || plan.Status == "closed" || !Final(plan.Status) ||
+		slices.ContainsFunc(g.cards, func(c Task) bool { return !Final(c.Status) }) {
 		return false, nil
 	}
 	if _, closed, err := r.store.PlanClosed(ctx, plan.ID); err != nil || closed {
@@ -1658,7 +1649,7 @@ func (r *Runner) gateWanted(ctx context.Context, plan, integration Task, never [
 	if _, pending, err := r.pendingReplan(ctx, plan); err != nil || pending {
 		return false, err
 	}
-	return r.gateDue(ctx, plan.ID, integration)
+	return g.due(), nil
 }
 
 // gateRunning tells whether plan id's criteria gate runs in this process.
@@ -1725,7 +1716,7 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 					var g planGate
 					if g, err = planGateOf(ctx, r.store, id, integration); err == nil {
 						var want bool
-						if want, err = r.gateWanted(ctx, plan, integration, neverJudged(p, g.settling(rows)), g); err == nil {
+						if want, err = r.gateWanted(ctx, plan, neverJudged(p, g.settling(rows)), g); err == nil {
 							return plan, repo, integration, g, want
 						}
 					}
@@ -1745,11 +1736,7 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 			return
 		}
 	}
-	runs, err := r.gateRuns(rctx, id, integration.ID)
-	if err != nil {
-		log.Printf("plan %s: the criteria gate's record: %s", id, r.Scrub.String(err.Error()))
-		return
-	}
+	runs := g.runs
 	attempt := fmt.Sprint(gateAttempts(runs) + 1)
 	pr, mark := g.pr, g.mark
 	detail := func(outcome, commit string) map[string]any {
@@ -1759,6 +1746,7 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 		r.timeline.recordEvent(rctx, id, EventCriteriaGateRun, detail(outcome, commit))
 	}
 	var head string
+	var err error
 	if pr != 0 {
 		var ref PullRequestRef
 		ref, err = r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
@@ -1942,10 +1930,11 @@ func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, open []PlanCrit
 }
 
 // askRerun opens the plan's criteria_rerun approval once per shape, while
-// the plan is at rest: never are criteria no row holds, the gate's named
+// the plan is at rest: never are criteria no row settles, the gate's named
 // as the criteria gate's to settle, the human ones as the human's; unmet
-// those whose rows say not met, named beside them.
-func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet []PlanCriterion, integration Task) {
+// those whose rows say not met, named beside them; runs the gate's runs
+// for the plan's cards as they stand.
+func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet []PlanCriterion, integration Task, runs []Event) {
 	gate, human := byJudge(never)
 	var parts []string
 	if gate != "" {
@@ -1959,11 +1948,6 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 		parts = append(parts, human+" "+verb+" yours to settle on this card")
 	}
 	if gate != "" {
-		runs, err := r.gateRuns(ctx, t.ID, integration.ID)
-		if err != nil {
-			log.Printf("plan %s: the criteria gate's record: %s", t.ID, r.Scrub.String(err.Error()))
-			return
-		}
 		if gateRan(runs, gateNoRoom) {
 			parts = append(parts, "the card's ceiling left no room for the gate")
 		}

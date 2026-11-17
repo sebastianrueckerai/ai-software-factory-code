@@ -207,7 +207,9 @@ activities, each with a timeline step and a comment on the pull request:
    request's head when its rows judge main, else at main's head, the commit
    fetched by itself, with no comment, after it withdraws every row but the
    approver's (`criteria_rows_withdrawn` on the plan's timeline). A failed
-   integration card leaves the criteria to the human's ask.
+   card is final as any other. Each state of the plan's cards gets at most
+   two attempts; a card that ends after the last run makes the gate due
+   again.
 6. `AutoMerge` decides:
    the project's merge rule is `auto` (`projects.merge_rule`, read by
    `GatePolicy`; the factory's own repositories are `human`), the risk

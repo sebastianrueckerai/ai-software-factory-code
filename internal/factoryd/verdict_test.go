@@ -1964,10 +1964,76 @@ func TestCriteriaGateOnMainCutAfterItsRowsDoesNotHang(t *testing.T) {
 	})
 }
 
+// A card of the plan that ends after the gate's last run makes the gate due
+// again on main: a delta card done with nothing pushed (its proofs met at
+// main), or the failed integration card retried and closed. The first run
+// on main finds c1 red and the gap ask opens; once the card ends, a second
+// run finds c1 green and the plan closes. Each state of the cards keeps
+// the attempt bound: a gate that errors after the card ends runs twice for
+// that state and then asks, however many passes follow.
+func TestCriteriaGateRunsAgainWhenACardEndsAfterIt(t *testing.T) {
+	ctx := context.Background()
+	redThenGreen := func(call int, s *fakeStore, taskID string) (CriteriaResult, error) {
+		if call == 1 {
+			return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+				{Criterion: "c1", Verdict: "unmet", Evidence: "red on main", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}})
+		}
+		return CriteriaResult{}, gateMet(ctx, s, taskID)
+	}
+	redThenError := func(call int, s *fakeStore, taskID string) (CriteriaResult, error) {
+		if call == 1 {
+			return redThenGreen(call, s, taskID)
+		}
+		return CriteriaResult{}, errors.New("the sandbox went away")
+	}
+	key := deltaKey("t-plan", 1, []PlanCatch{{Detail: "c1 grant 1"}})
+	deltaCard := func(status string) func(*fakeStore) {
+		return func(s *fakeStore) {
+			s.tasks["t-delta"] = Task{ID: "t-delta", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: key, Status: status}
+		}
+	}
+	for _, c := range []struct {
+		name          string
+		card          func(*fakeStore)
+		answer        func(int, *fakeStore, string) (CriteriaResult, error)
+		running, ends func(*fakeStore)
+		calls, closes int
+		outcomes      []string
+	}{
+		{"a delta card done with nothing pushed", integrationAs("closed", 0, ""), redThenGreen,
+			deltaCard("running"), deltaCard("done"), 2, 1, []string{"ran#1", "ran#1"}},
+		{"the failed integration card retried", integrationAs("failed", 0, ""), redThenGreen,
+			integrationAs("running", 0, ""), integrationAs("closed", 0, ""), 2, 1, []string{"ran#1", "ran#1"}},
+		{"bounded per state", integrationAs("closed", 0, ""), redThenError,
+			deltaCard("running"), deltaCard("done"), 3, 0, []string{"ran#1", "cut#1", "cut#2"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, s, calls := mainGatePlan(t, nil, c.card, c.answer)
+			sweep(ctx, r)
+			r.CriteriaPass(ctx)
+			if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c1" {
+				t.Fatalf("after the first run: pending %+v, want the gap ask on c1", pending)
+			}
+			c.running(s)
+			r.CriteriaPass(ctx)
+			c.ends(s)
+			for range 4 {
+				sweep(ctx, r)
+			}
+			r.CriteriaPass(ctx)
+			if len(*calls) != c.calls || closeRows(s) != c.closes || !slices.Equal(gateOutcomes(s), c.outcomes) {
+				t.Fatalf("calls %v, closes %d, outcomes %v; want %d calls, %d closes and %v", *calls, closeRows(s), gateOutcomes(s), c.calls, c.closes, c.outcomes)
+			}
+		})
+	}
+}
+
 // The gate on main judged c1 unmet and the gap ask opened; a card granted
 // for it wrote met rows at its own pull request's head and closed
-// unmerged. Those rows judged no head on main: the plan does not close,
-// and c1 and c3 stand as never judged on main.
+// unmerged. Those rows judged no head on main: the plan does not close on
+// them. The card's end makes the gate due again: it runs on main a second
+// time, withdraws the card's rows, finds c1 still red, and the gap ask
+// on c1 opens again.
 func TestPlanCloseIgnoresTheRowsOfADeltaCardThatNeverMerged(t *testing.T) {
 	ctx := context.Background()
 	r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 0, ""), func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
@@ -1994,9 +2060,10 @@ func TestPlanCloseIgnoresTheRowsOfADeltaCardThatNeverMerged(t *testing.T) {
 		t.Fatal("the plan closed on the rows of a card that never merged")
 	}
 	pending, _ := s.ApprovalRequests(ctx, "pending")
-	if len(*calls) != 1 || len(pending) != 1 || pending[0].Kind != ApprovalCriteriaRerun ||
-		pending[0].Reason != "criteria never judged: the criteria gate has not settled c1, c3" {
-		t.Fatalf("calls %v, pending %+v; want the one run and the rerun ask on c1 and c3", *calls, pending)
+	rows, _ := s.CriteriaVerdicts(ctx, "t-int")
+	c1, _ := StandingRow(rows, PlanCriterion{ID: "c1", Kind: CriterionTest})
+	if len(*calls) != 2 || c1.Evidence != "red on main" || len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c1" {
+		t.Fatalf("calls %v, c1 %+v, pending %+v; want a second run on main, c1 red there and the gap ask on c1", *calls, c1, pending)
 	}
 }
 
@@ -2288,10 +2355,8 @@ func TestCriteriaGatePassRecordsTheOutcomeAfterThePassEnds(t *testing.T) {
 	}
 }
 
-// The gate runs for a done plan at rest whose integration card reached
-// main, and only then: not under a replan, not once a person closed the
-// plan after it was queued, not on a failed integration card with an open
-// pull request, which keeps the criteria_rerun ask.
+// The gate runs for a done plan at rest, and only then: not under a
+// replan, not once a person closed the plan after it was queued.
 func TestCriteriaGatePassRunsOnlyForADonePlanAtRest(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
@@ -2310,11 +2375,6 @@ func TestCriteriaGatePassRunsOnlyForADonePlanAtRest(t *testing.T) {
 			p.Status = "closed"
 			s.tasks["t-plan"] = p
 		}, 0},
-		{"a failed integration card", func(_ *Runner, s *fakeStore) {
-			c := s.tasks["t-int"]
-			c.Status, c.MergeCommit = "failed", ""
-			s.tasks["t-int"] = c
-		}, nil, 1},
 	} {
 		calls := 0
 		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
@@ -2371,11 +2431,11 @@ func integrationAs(status string, pr int64, merge string) func(*fakeStore) {
 // its own leaves the gate criteria to the criteria gate on main's head: a
 // card closed with no pull request (it proved and pushed nothing), one
 // closed with its pull request unmerged, a done one with no pull request,
-// and one failed into a successor that is done. The gate runs once on m1
-// with pr 0, its ran record carries pr 0, its rows close the plan, and no
-// ask opens. A done card whose pull request merged keeps the gate on that
-// head, h9; an integration card still running, or failed with no
-// successor, runs no gate.
+// one failed into a successor that is done, and one failed with none. The
+// gate runs once on m1 with pr 0, its ran record carries pr 0, its rows
+// close the plan, and no ask opens. A done card whose pull request merged
+// keeps the gate on that head, h9; an integration card still running runs
+// no gate.
 func TestPlanCloseRunsTheGateAtMainWhenTheIntegrationCardPushedNothing(t *testing.T) {
 	ctx := context.Background()
 	failedIntoDone := func(s *fakeStore) {
@@ -2397,7 +2457,7 @@ func TestPlanCloseRunsTheGateAtMainWhenTheIntegrationCardPushedNothing(t *testin
 		{"failed into a done successor", failedIntoDone, []string{"t-int#0@m1:"}, 0, 1, 0},
 		{"done, its pull request merged", integrationAs("done", 9, "abc"), []string{"t-int#9@h9:"}, 9, 1, 0},
 		{"running", integrationAs("running", 0, ""), nil, 0, 0, 0},
-		{"failed, no successor", integrationAs("failed", 0, ""), nil, 0, 0, 1},
+		{"failed, no successor", integrationAs("failed", 0, ""), []string{"t-int#0@m1:"}, 0, 1, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r, s, calls := mainGatePlan(t, nil, c.card, func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
@@ -2721,7 +2781,7 @@ func TestPlanCloseCheckScrubsTheGatesReadErrors(t *testing.T) {
 		set  func(*Runner, *leakyStore)
 	}{
 		{"the close row read", func(_ *Runner, s *leakyStore) { s.closed = errors.New(leak) }},
-		{"the record read", func(_ *Runner, s *leakyStore) { s.events = errors.New(leak) }},
+		{"the record read", func(_ *Runner, s *leakyStore) { s.events, s.in = errors.New(leak), "planGateOf" }},
 		{"the replan read", func(r *Runner, _ *leakyStore) {
 			r.timeline.Objects = &failingObjects{in: "gateWanted", err: errors.New(leak)}
 		}},
@@ -2858,8 +2918,8 @@ func TestCriteriaGateOnceGuardReadsTheEventsRow(t *testing.T) {
 		t.Fatalf("with the mirror lost: gate calls %d, pending %+v, want one run and the ask", calls, pending)
 	}
 	r.timeline.Objects = &failingObjects{}
-	if due, err := r.gateDue(ctx, "t-plan", s.tasks["t-int"]); due || err != nil {
-		t.Errorf("S3 unreadable, the row present: due %t, %v, want not due", due, err)
+	if g, err := planGateOf(ctx, s, "t-plan", s.tasks["t-int"]); err != nil || g.due() {
+		t.Errorf("S3 unreadable, the row present: due %t, %v, want not due", g.due(), err)
 	}
 }
 
@@ -3072,7 +3132,7 @@ func TestCriteriaGateStartedDuringTheCloseCheck(t *testing.T) {
 	row := func(outcome, attempt string) {
 		t.Helper()
 		if _, err := s.Record(ctx, Event{Repository: "sf/code", TaskID: "t-plan", Kind: EventCriteriaGateRun, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"task": "t-int", "pr": 9, "commit": "h9", "outcome": outcome, "attempt": attempt}}); err != nil {
+			Detail: map[string]any{"task": "t-int", "pr": 9, "commit": "h9", "outcome": outcome, "attempt": attempt, "cards": "card-foundation:done t-int:done"}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -3114,8 +3174,8 @@ func asksRequested(s *fakeStore) int {
 	return n
 }
 
-// The ask's own read of the gate's record fails after a run that wrote no
-// rows: no ask that pass. The next pass reads it and asks.
+// The read of the gate's record fails after a run that wrote no rows: no
+// ask that pass. The next pass reads it and asks.
 func TestCriteriaGateAskWaitsOnItsRecordRead(t *testing.T) {
 	ctx := context.Background()
 	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
@@ -3124,7 +3184,7 @@ func TestCriteriaGateAskWaitsOnItsRecordRead(t *testing.T) {
 		}
 	})
 	sweep(ctx, r)
-	r.store = &leakyStore{fakeStore: s, events: errors.New("db down"), in: "askRerun"}
+	r.store = &leakyStore{fakeStore: s, events: errors.New("db down"), in: "planGateOf"}
 	r.CriteriaPass(ctx)
 	if p, _ := s.ApprovalRequests(ctx, "pending"); len(p) != 0 {
 		t.Fatalf("pending %+v, want no ask while the ask's read fails", p)
