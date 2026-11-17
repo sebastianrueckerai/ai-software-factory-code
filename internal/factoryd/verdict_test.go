@@ -1719,6 +1719,14 @@ func TestConfirmDeliveredCriteria(t *testing.T) {
 	if rows, _ := s2.CriteriaVerdicts(ctx, "t-open-int"); len(rows) != 0 {
 		t.Errorf("a refused confirm wrote rows: %+v", rows)
 	}
+	// a child that waits on the human names the answer as the way on
+	for _, status := range []string{"in-review", "waiting-human"} {
+		s := seedVerdictPlan(t, "t-open", "t-open-int", status)
+		want := "t-open-int is " + status + ": a card of the plan is still open or failed: answer it, then confirm again"
+		if _, err := ConfirmDeliveredCriteria(ctx, s, "t-open", "sebastian", "they are done"); !errors.Is(err, ErrChildOpen) || err.Error() != want {
+			t.Fatalf("confirm with a child %s = %v, want %q", status, err, want)
+		}
+	}
 
 	// a card cut into a successor that is merged counts as delivered; the
 	// confirmation stands and meets every open criterion.
