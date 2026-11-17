@@ -26,6 +26,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/http/cgi"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -1667,6 +1668,126 @@ func TestGitConfigHoldsTheCapSettings(t *testing.T) {
 	}
 }
 
+// forgejoGit serves the rig's repositories over git's smart HTTP as Forgejo
+// serves them, and points the runner's git at it: the bot's private fork
+// answers the Authorization forkLogin alone ("" refuses every login), the
+// task's repository every login, and a refused login gets the 404 git
+// prints as "remote: Repository not found". paths are the requests' paths.
+// The projects user has a login of its own, which the fork refuses.
+type forgejoGit struct {
+	mu    sync.Mutex
+	paths []string
+}
+
+func serveForgejoGit(t *testing.T, runner *Runner, serve *wipServe, forkLogin string) *forgejoGit {
+	t.Helper()
+	exe, err := exec.Command("git", "--exec-path").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &cgi.Handler{Path: filepath.Join(strings.TrimSpace(string(exe)), "git-http-backend"),
+		Env: []string{"GIT_PROJECT_ROOT=" + filepath.Dir(filepath.Dir(serve.fork)), "GIT_HTTP_EXPORT_ALL=1", "REMOTE_USER=factory-agent"}}
+	g := &forgejoGit{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		g.mu.Lock()
+		g.paths = append(g.paths, r.URL.Path)
+		g.mu.Unlock()
+		if strings.HasPrefix(r.URL.Path, "/factory-agent/") && (forkLogin == "" || r.Header.Get("Authorization") != forkLogin) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, "Repository not found")
+			return
+		}
+		backend.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	runner.cfg.GitBaseURL = srv.URL
+	runner.cfg.ProjectsUser, runner.forgejo.ProjectsToken = "factory-projects", "projects-tok"
+	return g
+}
+
+// botLogin is the test runner's bot login, factory-agent:bot-pw, as git
+// sends it.
+const botLogin = "Basic ZmFjdG9yeS1hZ2VudDpib3QtcHc="
+
+// The interim push logs in to the bot's private fork as the bot: on a fork
+// that answers no other login, it lands, and the timeline holds the landed
+// commit and no failure.
+func TestInterimPushLogsInToTheForkAsTheBot(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	serveForgejoGit(t, runner, serve, botLogin)
+	runner.Checkin = &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2")
+	if step := timelineStep(t, objects, "t2", "wip_pushed"); tip == serve.base || step["commit"] != tip {
+		t.Fatalf("the wip_pushed step = %v, task branch = %s; want the landed head past the base %s; timeline %s", step, tip, serve.base, objGet(objects, "sessions/t2/timeline.jsonl"))
+	}
+	if n := wipSteps(t, objects, "t2", "wip_push_failed"); n != 0 {
+		t.Fatalf("wip_push_failed steps = %d, want none; timeline %s", n, objGet(objects, "sessions/t2/timeline.jsonl"))
+	}
+}
+
+// A fork that answers the task branch's fetch with "Repository not found"
+// fails the push with that fetch's own failure: an access refusal is no
+// first push, and main is never fetched in its place.
+func TestInterimPushFailsOnAForkItCannotRead(t *testing.T) {
+	runner, _, serve := wipRig(t, nil)
+	g := serveForgejoGit(t, runner, serve, "")
+
+	_, _, err := runner.pushWip(context.Background(), supervisedTask("t2"), sessionSpec{repo: Repo{Owner: "sf", Name: "repo"}, startRef: serve.base},
+		serve.base, filepath.Join(t.TempDir(), "never-read.bundle"))
+	if err == nil || !strings.HasPrefix(err.Error(), "fetch the task branch:") || !strings.Contains(err.Error(), "Repository not found") {
+		t.Fatalf("pushWip = %v, want the task branch's fetch failure", err)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !slices.ContainsFunc(g.paths, func(p string) bool { return strings.HasPrefix(p, "/factory-agent/") }) ||
+		slices.ContainsFunc(g.paths, func(p string) bool { return strings.HasPrefix(p, "/sf/") }) {
+		t.Fatalf("requests = %q, want the fork's fetch alone, no fetch of main", g.paths)
+	}
+}
+
+// A session that starts from a predecessor's branch has its start only on
+// the fork's task branch: the interim push reads it there, and lands on it.
+func TestInterimPushLandsOnACarriedStart(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	os.WriteFile(filepath.Join(serve.seed, "carried.txt"), []byte("carried\n"), 0o644)
+	carried := wipCommit(t, serve.seed, "the predecessor's work")
+	wipRun(t, "-C", serve.seed, "push", "-q", "-f", serve.fork, carried+":refs/heads/factory/t2")
+	serve.hub.mu.Lock()
+	serve.hub.branches = map[string]string{"factory/t2": carried}
+	serve.hub.mu.Unlock()
+	serve.base = carried
+	serveForgejoGit(t, runner, serve, botLogin)
+	runner.Checkin = &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	if n := wipSteps(t, objects, "t2", "wip_push_failed"); n != 0 {
+		t.Fatalf("wip_push_failed steps = %d, want none; timeline %s", n, objGet(objects, "sessions/t2/timeline.jsonl"))
+	}
+	tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2")
+	if got := wipRun(t, "-C", serve.fork, "rev-list", "--parents", "-n", "1", tip); got != tip+" "+carried {
+		t.Fatalf("the landed head and its parents = %q, want %s on the carried start %s", got, tip, carried)
+	}
+	if got := wipRun(t, "-C", serve.fork, "ls-tree", "--name-only", tip); got != "README.md\nb.txt\ncarried.txt" {
+		t.Fatalf("the landed head's files = %q, want the carried work and the session's", got)
+	}
+	if step := timelineStep(t, objects, "t2", "wip_pushed"); step["commit"] != tip {
+		t.Fatalf("the wip_pushed step = %v, want the landed head %s", step, tip)
+	}
+}
+
 // A first push, when the fork has no task branch yet, falls back to main
 // as the start and creates the branch.
 func TestInterimPushFallsBackToMainWhenTheForkHasNoBranch(t *testing.T) {
@@ -1674,6 +1795,7 @@ func TestInterimPushFallsBackToMainWhenTheForkHasNoBranch(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
 	})
 	wipRun(t, "-C", serve.fork, "update-ref", "-d", "refs/heads/factory/t2")
+	serveForgejoGit(t, runner, serve, botLogin)
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
 	runner.Checkin = chat
 
