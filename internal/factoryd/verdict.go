@@ -967,7 +967,7 @@ func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, repo Repo, p Pl
 // deltaSystem is the delta round's system prompt: one card under the open
 // plan that closes the named criteria; %s is the card's image field
 // (imageField).
-const deltaSystem = `You are the planner of a software factory. A plan's criteria are not met after its cards ran. You draft one more bounded card — a delta card — under the open plan, which closes the gap the criteria name. Answer with one JSON object and nothing else: {"card": {"title": "...", "brief": "...", "directories": ["..."], "depends_on": ["keys of the plan's existing cards"], "acceptance": [{"criterion": "the criterion id", "text": "what the card's tests prove, with the inputs and the numbers they expect"}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "..."%s}}. directories are the directories the card may change. depends_on names only keys the plan holds. acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers. Keep the card small: it closes the gap, nothing else. refused, when set, holds your earlier answers of this round and the plan rule each broke: answer again with a card that keeps every rule.`
+const deltaSystem = `You are the planner of a software factory. A plan's criteria are not met or were never judged after its cards ran: each criterion carries its state, unmet or never_judged, and the reason the criteria gate gave when it holds one. You draft one more bounded card — a delta card — under the open plan, which closes the gap the criteria name. Answer with one JSON object and nothing else: {"card": {"title": "...", "brief": "...", "directories": ["..."], "depends_on": ["keys of the plan's existing cards"], "acceptance": [{"criterion": "the criterion id", "text": "what the card's tests prove, with the inputs and the numbers they expect"}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "..."%s}}. directories are the directories the card may change. depends_on names only keys the plan holds. acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers. Keep the card small: it closes the gap, nothing else. refused, when set, holds your earlier answers of this round and the plan rule each broke: answer again with a card that keeps every rule.`
 
 // deltaPrompt is the delta round's system prompt for a project pinning
 // pins.
@@ -986,11 +986,20 @@ type deltaInput struct {
 	Refused  []deltaRefusal     `json:"refused,omitempty"`
 }
 
-// deltaCriterion is one open criterion as the delta round reads it.
+// deltaCriterion is one open criterion as the delta round reads it: its
+// state, unmet or never judged, and the reason the criteria gate never
+// judged it, when it gave one.
 type deltaCriterion struct {
 	PlanCriterion
+	State    string `json:"state"`
 	Evidence string `json:"evidence"`
+	Reason   string `json:"reason,omitempty"`
 }
+
+const (
+	deltaUnmet       = "unmet"
+	deltaNeverJudged = "never_judged"
+)
 
 // draftDelta runs one delta round on plan t (up to deltaAttempts planner
 // calls) and files the card it answers: a feature card, which joins the
@@ -1018,9 +1027,24 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 		return
 	}
 	open := openCriteria(p, verdicts)
+	runs, err := r.gateRuns(ctx, t.ID, integration.ID)
+	if err != nil {
+		log.Printf("plan %s: the delta round: %v", t.ID, err)
+		return
+	}
+	var gateReason string
+	if len(runs) > 0 {
+		gateReason, _ = runs[0].Detail["reason"].(string)
+	}
 	var criteria []deltaCriterion
 	for _, c := range open {
-		dc := deltaCriterion{PlanCriterion: c}
+		dc := deltaCriterion{PlanCriterion: c, State: deltaUnmet}
+		if _, ok := StandingRow(verdicts, c); !ok {
+			dc.State = deltaNeverJudged
+			if gateJudged(c.Kind) {
+				dc.Reason = gateReason
+			}
+		}
 		for _, v := range verdicts {
 			if v.Criterion == c.ID && v.Kind == c.Kind && v.Evidence != "" {
 				dc.Evidence = v.Evidence
@@ -1119,8 +1143,13 @@ func deltaKey(plan string, revision int, dues []PlanCatch) string {
 	for _, d := range dues {
 		fmt.Fprintf(h, "\n%s", d.Detail)
 	}
-	return "delta-" + hex.EncodeToString(h.Sum(nil))[:8]
+	return deltaKeyPrefix + hex.EncodeToString(h.Sum(nil))[:8]
 }
+
+const deltaKeyPrefix = "delta-"
+
+// isDeltaKey says whether a card's plan key is one deltaKey made.
+func isDeltaKey(key string) bool { return strings.HasPrefix(key, deltaKeyPrefix) }
 
 // deltaRefusal is an answer of the round the plan rules refused, and why.
 type deltaRefusal struct {
@@ -1322,7 +1351,16 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		return
 	}
 	if len(openCriteria(p, rows)) == 0 {
-		reached := integration.Status == "merged" || integration.Status == "done"
+		planCards, err := r.store.PlanCards(ctx, parent)
+		if err != nil {
+			log.Printf("plan %s: the close check: %v", parent, err)
+			return
+		}
+		delivered := func(c Task) bool { return c.Status == "merged" || c.Status == "done" }
+		// a delta card's gate judges a head that reached main and writes every row anew
+		reached := delivered(integration) || slices.ContainsFunc(planCards, func(c Task) bool {
+			return c.ID != integration.ID && c.Source == SourcePlan && isDeltaKey(c.PlanKey) && delivered(c)
+		})
 		if r.planClosed(ctx, parent) || !reached && !(Final(integration.Status) && judgedByPerson(p, rows)) || !r.planAtRest(ctx, t) {
 			return
 		}
@@ -1401,11 +1439,16 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 // The outcomes of a done plan's criteria gate run (EventCriteriaGateRun):
 // ran wrote what it could, cut ended without a verdict (timed out, the
 // sandbox lost or never started), no_room found the card's ceiling too
-// low to hold the gate reserve free.
+// low to hold the gate reserve free, pending left an invariant's required
+// checks still running: no attempt is spent, and while the newest record is
+// pending and the checks wait's bound has not passed since its since, a pass
+// reads only the head's checks and runs the gate when they conclude. Past
+// the bound the gate runs once more, and checks still running end it as ran.
 const (
-	gateDone   = "ran"
-	gateCut    = "cut"
-	gateNoRoom = "no_room"
+	gateDone    = "ran"
+	gateCut     = "cut"
+	gateNoRoom  = "no_room"
+	gatePending = "pending"
 	// gateStarted is the row written before a run; with no outcome after
 	// it and no run of the plan in this process, a restart or a lost
 	// write cut the attempt.
@@ -1434,13 +1477,45 @@ func gateRan(runs []Event, outcome string) bool {
 }
 
 // gateAttempts counts the attempts runs record: a run that started and
-// recorded no outcome, a restart's or a lost write's, was cut.
+// recorded no outcome, a restart's or a lost write's, was cut. An attempt
+// that is pending and has no other outcome is not spent.
 func gateAttempts(runs []Event) int {
-	seen := map[any]bool{}
+	seen, pending, ended := map[any]bool{}, map[any]bool{}, map[any]bool{}
 	for _, e := range runs {
-		seen[e.Detail["attempt"]] = true
+		a := e.Detail["attempt"]
+		seen[a] = true
+		switch e.Detail["outcome"] {
+		case gatePending:
+			pending[a] = true
+		case gateDone, gateCut, gateNoRoom:
+			ended[a] = true
+		}
 	}
-	return len(seen)
+	n := 0
+	for a := range seen {
+		if !pending[a] || ended[a] {
+			n++
+		}
+	}
+	return n
+}
+
+// gatePendingSince is when the checks first read pending: the since of the
+// newest pending record of runs, zero when a record of an outcome (ran, cut
+// or no_room) is newer or there is none. A started record after it, a
+// restart's, does not renew it.
+func gatePendingSince(runs []Event) time.Time {
+	for _, e := range runs {
+		switch e.Detail["outcome"] {
+		case gatePending:
+			since, _ := e.Detail["since"].(string)
+			t, _ := time.Parse(time.RFC3339, since)
+			return t
+		case gateDone, gateCut, gateNoRoom:
+			return time.Time{}
+		}
+	}
+	return time.Time{}
 }
 
 // gateDue tells whether the criteria gate is still to run for plan id on
@@ -1575,6 +1650,18 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 		return
 	}
 	v := r.cfg.Policy()
+	since := gatePendingSince(runs)
+	expired := !since.IsZero() && r.Clock().Sub(since) > v.ChecksBound(plan.Repository)
+	if !since.IsZero() && !expired {
+		checks, err := r.HeadChecks(ctx, integration.ID, pr.HeadSHA)
+		if err != nil {
+			log.Printf("plan %s: the criteria gate's checks: %s", id, r.Scrub.String(err.Error()))
+			return
+		}
+		if checks.State == ChecksPending {
+			return
+		}
+	}
 	_, project, _ := v.ProjectOf(plan.Repository)
 	if raise := policy.CeilMicro(v.Document.Limits.GateReserve() - integration.Left()); raise > 0 {
 		_, _, err := r.store.FundCard(ctx, integration.ID, raise, CardCeiling(v.Document, project), Event{Repository: integration.Repository, TaskID: integration.ID, IssueNumber: integration.IssueNumber,
@@ -1613,12 +1700,24 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 	}
 	gctx, cancel := context.WithTimeout(rctx, criteriaGateBound)
 	defer cancel()
-	res, err := gate(gctx, integration.ID, integration.PRNumber, pr.HeadSHA)
+	res, err := gate(gctx, integration.ID, integration.PRNumber, pr.HeadSHA, "")
 	if err != nil {
 		log.Printf("plan %s: the criteria gate: %s", id, r.Scrub.String(err.Error()))
 	}
 	if err != nil || res.Escalate != "" {
 		record(gateCut, pr.HeadSHA)
+		return
+	}
+	if res.Pending {
+		var d map[string]any
+		if expired {
+			d = detail(gateDone, pr.HeadSHA)
+			d["reason"] = "The required checks were still running on " + pr.HeadSHA[:min(8, len(pr.HeadSHA))] + " after " + minutesWord(v.ChecksBound(plan.Repository))
+		} else {
+			d = detail(gatePending, pr.HeadSHA)
+			d["since"] = cmp.Or(since, r.Clock()).UTC().Format(time.RFC3339)
+		}
+		r.timeline.recordEvent(rctx, id, EventCriteriaGateRun, d)
 		return
 	}
 	record(gateDone, pr.HeadSHA)
@@ -1741,6 +1840,11 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 		if gateRan(runs, gateNoRoom) {
 			parts = append(parts, "the card's ceiling left no room for the gate")
 		}
+		if len(runs) > 0 {
+			if reason, _ := runs[0].Detail["reason"].(string); reason != "" {
+				parts = append(parts, reason)
+			}
+		}
 	}
 	why := strings.Join(parts, ". ")
 	ids, lines := criteriaLines(never, " — never judged")
@@ -1752,7 +1856,7 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 	}
 	r.openPlanAsk(ctx, t, repo, ApprovalCriteriaRerun, reason,
 		"factoryd: the plan's cards are done, and criteria were never judged: "+why+".\n\n"+
-			strings.Join(lines, "\n")+"\n\nWaive a criterion with your reason, or confirm the delivered cards meet them.", ids, integration)
+			strings.Join(lines, "\n")+"\n\nGrant one more bounded card, waive a criterion with your reason, or confirm the delivered cards meet them.", ids, integration)
 }
 
 // criteriaLines are cs's ids and one comment line each, tail after it.

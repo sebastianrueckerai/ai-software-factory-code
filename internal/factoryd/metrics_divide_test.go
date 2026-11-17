@@ -30,7 +30,7 @@ func dcCard(t *testing.T, s *PGStore, id, repository, size, source string, issue
 	if size != "" {
 		task.Size = size
 	}
-	if err := s.insertTask(context.Background(), task, ""); err != nil {
+	if err := s.InsertTask(context.Background(), task, ""); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -63,7 +63,7 @@ func dcLegacyGateHead(t *testing.T, s *PGStore, card, repository, head string, k
 	t.Helper()
 	e := Event{Repository: repository, TaskID: card, Kind: EventGateHead, Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail}
 	if keyed {
-		e.IdentityKey = identityKey(EventGateHead, card, head)
+		e.IdentityKey = IdentityKey(EventGateHead, card, head)
 	}
 	return dcRecord(t, s, e, at)
 }
@@ -104,7 +104,7 @@ func dcDoneCard(t *testing.T, s *PGStore, id, repository, size, sha string, issu
 	if size != "" {
 		task.Size = size
 	}
-	if err := s.insertTask(context.Background(), task, ""); err != nil {
+	if err := s.InsertTask(context.Background(), task, ""); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -332,7 +332,7 @@ func dcHeadCard(t *testing.T, s *PGStore, id, repository, size, head string, iss
 	if size != "" {
 		task.Size = size
 	}
-	if err := s.insertTask(context.Background(), task, ""); err != nil {
+	if err := s.InsertTask(context.Background(), task, ""); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -723,7 +723,7 @@ func dcLegacyReview(t *testing.T, s *PGStore, card, repository, commit, round st
 	t.Helper()
 	e := Event{Repository: repository, TaskID: card, Kind: EventModelReview, Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail}
 	if keyed {
-		e.IdentityKey = identityKey(EventModelReview, commit, round)
+		e.IdentityKey = IdentityKey(EventModelReview, commit, round)
 	}
 	return dcRecord(t, s, e, at)
 }
@@ -888,7 +888,7 @@ func TestDivideConquerFlowWindowsSQL(t *testing.T) {
 	done := Task{ID: "c-done", Status: "done", Objective: "the deck's figure", Repository: "sf/dc4", Kind: "agent",
 		Source: "api", Track: "direct", BudgetEUR: 5, IssueNumber: 83, Size: "small",
 		CreatedAt: from.AddDate(0, 0, 8)}
-	if err := s.insertTask(context.Background(), done, ""); err != nil {
+	if err := s.InsertTask(context.Background(), done, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1115,7 +1115,7 @@ func TestDivideConquerCombinedReportSQL(t *testing.T) {
 // closed plan's row stands.
 func dcPlan(t *testing.T, s *PGStore, id, repository string, issue int64) {
 	t.Helper()
-	if err := s.insertTask(context.Background(), Task{ID: id, Status: "done", Objective: "the divide panels' fixture",
+	if err := s.InsertTask(context.Background(), Task{ID: id, Status: "done", Objective: "the divide panels' fixture",
 		Repository: repository, Kind: "agent", Source: "api", Track: policy.TrackPlan, BudgetEUR: 5, IssueNumber: issue}, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -1125,7 +1125,7 @@ func dcPlan(t *testing.T, s *PGStore, id, repository string, issue int64) {
 // plan's id, so GroupOf names the plan — on its own issue.
 func dcPlanChild(t *testing.T, s *PGStore, id, plan, repository string, issue int64) {
 	t.Helper()
-	if err := s.insertTask(context.Background(), Task{ID: id, Status: "done", Objective: "the divide panels' fixture",
+	if err := s.InsertTask(context.Background(), Task{ID: id, Status: "done", Objective: "the divide panels' fixture",
 		Repository: repository, Kind: "agent", Source: SourcePlan, Parent: plan, Track: "direct", BudgetEUR: 5, IssueNumber: issue}, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -1445,7 +1445,7 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 		if id := dcRecord(t, s, Event{Repository: "sf/other9", TaskID: "t-plan-10", IssueNumber: 260,
 			Kind: EventPlanReplanned, Actor: FactoryDecider, Via: ViaFactoryd,
 			Detail:      map[string]any{"revision": 2, "origin": ReplanRound},
-			IdentityKey: identityKey(EventPlanReplanned, "t-plan-10", "2")}, from.AddDate(0, 0, 6)); id == 0 {
+			IdentityKey: IdentityKey(EventPlanReplanned, "t-plan-10", "2")}, from.AddDate(0, 0, 6)); id == 0 {
 			t.Fatal("the other repository's replacement recorded no row")
 		}
 		dcClosed(t, s, "t-plan-10", "sf/dc9", from.AddDate(0, 0, 9))
@@ -1731,7 +1731,7 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 	if id := dcRecord(t, s, Event{Repository: "sf/other-origin", TaskID: "op-unknown", IssueNumber: 438,
 		Kind: EventPlanReplanned, Actor: FactoryDecider, Via: ViaFactoryd,
 		Detail:      map[string]any{"revision": 2, "origin": ReplanPerson},
-		IdentityKey: identityKey(EventPlanReplanned, "op-unknown", "2")}, from.AddDate(0, 0, 13)); id == 0 {
+		IdentityKey: IdentityKey(EventPlanReplanned, "op-unknown", "2")}, from.AddDate(0, 0, 13)); id == 0 {
 		t.Fatal("the other repository's replacement recorded no row")
 	}
 	// the canonical replacement of t-plan-6's revision 3 arrives after
@@ -1800,7 +1800,7 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 // source plan, its parent the plan's id and its plan key beside both.
 func dcGroupChild(t *testing.T, s *PGStore, id, plan, repository string, issue int64) {
 	t.Helper()
-	if err := s.insertTask(context.Background(), Task{ID: id, Status: "done", Objective: "the group hours' fixture",
+	if err := s.InsertTask(context.Background(), Task{ID: id, Status: "done", Objective: "the group hours' fixture",
 		Repository: repository, Kind: "agent", Source: SourcePlan, Parent: plan, PlanKey: id, Track: "direct", BudgetEUR: 5, IssueNumber: issue}, ""); err != nil {
 		t.Fatal(err)
 	}

@@ -97,7 +97,7 @@ func TestAMergeRequestWhoseCaseWasAnsweredGetsItsCaseAgain(t *testing.T) {
 // offers stored and leaves them.
 func TestAnAskStoresItsRefusalsAsAList(t *testing.T) {
 	g := newTripRig(t, "success")
-	if _, err := g.r.faceStop(context.Background(), "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.FaceStop(context.Background(), "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	got, ok := g.asks(t)[0].Detail["refusals"].([]any)
@@ -159,16 +159,22 @@ func TestTheRedChecksRefusalNamesTheCardsOwnRemedies(t *testing.T) {
 	}
 }
 
-// grant_criteria is refused on a criteria request that never judged them.
-func TestActRefusesAGrantOnCriteriaNeverJudged(t *testing.T) {
+// grant_criteria on a criteria request that never judged them resolves its
+// case as a grant, as on a gap's request: the work runs once.
+func TestActGrantsCriteriaNeverJudged(t *testing.T) {
 	g, stub, c := criteriaRig(t)
 	ctx := context.Background()
 	if _, err := g.s.db.ExecContext(ctx, `UPDATE cases SET facts = facts || '{"approval_kind": "criteria_rerun"}'::jsonb WHERE id = $1`, c.ID); err != nil {
 		t.Fatal(err)
 	}
-	_, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActGrantCriteria}})
-	if err == nil || !strings.HasPrefix(err.Error(), "this plan's ask is criteria never judged: grant_criteria grants no card") || len(stub.calls) != 0 {
-		t.Fatalf("grant on criteria never judged = %v, work ran %d; want Act's refusal and no work", err, len(stub.calls))
+	if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActGrantCriteria}}); err != nil {
+		t.Fatalf("grant on criteria never judged = %v, want Act to take it", err)
+	}
+	if len(stub.calls) != 1 {
+		t.Fatalf("work ran %d times, want once", len(stub.calls))
+	}
+	if got := caseByID(t, g.s, c.ID); got.Status != CaseResolved || got.Resolution.Action != ActGrantCriteria {
+		t.Errorf("case = %+v, want it resolved by the grant", got)
 	}
 }
 
@@ -176,11 +182,11 @@ func TestActRefusesAGrantOnCriteriaNeverJudged(t *testing.T) {
 func TestSetCaseOffersTakesTheNewestAsk(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.faceStop(ctx, "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.FaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")
-	if _, err := g.r.faceStop(ctx, "t1", healedReason, nil); err != nil {
+	if _, err := g.r.FaceStop(ctx, "t1", HealedReason, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.s.SetCaseOffers(ctx, cases[0].ID, []AskOffer{{Value: ActNote, Label: "Note", Effect: "marker"}}, nil); err != nil {

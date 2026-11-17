@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"maps"
 	"reflect"
@@ -38,7 +39,7 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		{"rung 1's close with no case", ActInput{By: "factory-checkin", Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
 			"rung 1 may not pick close: rung 2 and the human may, and rung 1 may take replan"},
 		{"a successor with no case", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActSuccessor}},
-			"no case is open on card #12, so successor has nothing to answer, and the human may take raise_ceiling, replan and close"},
+			"no case is open on card #12, so successor has nothing to answer, and the human may take confirm_audit, raise_ceiling, replan and close"},
 	} {
 		c.in.TaskID = "t1"
 		var refused ErrActRefused
@@ -55,7 +56,7 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		{"rung 1's close", ActInput{CaseID: 7, By: "factory-checkin", Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
 			"rung 1 may not pick close: rung 2 and the human may, and rung 1 may take route_approval, reverify, successor and replan"},
 		{"the human's approve", ActInput{CaseID: 7, By: "sebastian", Rung: 3, Res: Resolution{Action: "approve"}},
-			"there is no action approve, and the human may take reverify, raise_ceiling, successor, replan, close and note"},
+			"there is no action approve, and the human may take reverify, confirm_audit, raise_ceiling, successor, replan, close and note"},
 		{"a fund with no case while case 7 waits", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},
 			"card #12 waits on the session cap: answer that case, not the card"},
 		{"a fund with no case via the chat while case 7 waits", ActInput{By: "sebastian", Via: ViaChat, Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},
@@ -344,7 +345,7 @@ func TestRecordGrantDrawsAgainstThePool(t *testing.T) {
 	ctx := context.Background()
 	before := g.store.tasks["t1"].Usage
 	drawnBefore, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
-	if err := g.r.RecordGrant(ctx, "t1", "sebastian", policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "run-1", "3")); err != nil {
+	if err := g.r.RecordGrant(ctx, "t1", "sebastian", policy.Draw{Sessions: 1}, IdentityKey(EventCardExtended, "run-1", "3")); err != nil {
 		t.Fatal(err)
 	}
 	drawn, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
@@ -369,7 +370,7 @@ func TestAuditDrawIsTheFactoryRungZeroDraw(t *testing.T) {
 	ctx := context.Background()
 	before := g.store.tasks["t1"].Usage
 	drawnBefore, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
-	if err := g.r.AuditDraw(ctx, "t1", policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
+	if err := g.r.AuditDraw(ctx, "t1", policy.Draw{Sessions: 1}, IdentityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
 		t.Fatal(err)
 	}
 	drawn, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
@@ -384,7 +385,7 @@ func TestAuditDrawIsTheFactoryRungZeroDraw(t *testing.T) {
 		t.Fatalf("usage = %+v, want the raises of %+v", u, before)
 	}
 	var app *temporal.ApplicationError
-	if err := g.r.AuditDraw(ctx, "t1", policy.Draw{Sessions: 99}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != errDrawRefused {
+	if err := g.r.AuditDraw(ctx, "t1", policy.Draw{Sessions: 99}, IdentityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != ErrDrawRefused {
 		t.Fatalf("past the bound = %v, want a typed draw-refused", err)
 	}
 }
@@ -398,7 +399,7 @@ func TestAgentDrawIsRungTwosDrawAgainstThePool(t *testing.T) {
 	ctx := context.Background()
 	before := g.store.tasks["t1"].Usage
 	drawnBefore, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
-	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 1}, IdentityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
 		t.Fatal(err)
 	}
 	drawn, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
@@ -414,7 +415,7 @@ func TestAgentDrawIsRungTwosDrawAgainstThePool(t *testing.T) {
 	}
 	rows := len(g.store.events)
 	var app *temporal.ApplicationError
-	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 99}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != errDrawRefused {
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 99}, IdentityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != ErrDrawRefused {
 		t.Fatalf("past the pool = %v, want a typed draw-refused", err)
 	}
 	if len(g.store.events) != rows {
@@ -457,7 +458,7 @@ func TestFakeResolveCaseTakesOverTheWebhooksCopy(t *testing.T) {
 	store := newFakeStore()
 	at := time.Now()
 	store.cases = []Case{{ID: 3, TaskID: "t1", Status: CaseResolved, ResolvedAt: &at,
-		Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: caseAnswer, Args: map[string]any{"answer": "go on", "comment": 77}}}}
+		Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: CaseAnswer, Args: map[string]any{"answer": "go on", "comment": 77}}}}
 	if err := store.ResolveCase(ctx, 3, CaseResolution{By: "ana", Rung: 3, Action: ActContinue, Args: map[string]any{"comment": int64(78)}}, nil, nil, nil); !errors.As(err, new(ErrCaseEnded)) {
 		t.Fatalf("an answer on comment 78 = %v, want the case ended", err)
 	}
@@ -512,5 +513,155 @@ func TestHumanChoiceTakesNoFundAndNoArgs(t *testing.T) {
 		if !strings.Contains(why, "card #12 is a human card") {
 			t.Errorf("%s: refusal %q; want a human card's refusal", name, why)
 		}
+	}
+}
+
+// A park settles the case it answers, on both of its cards. The agent
+// card's press reaches Act as a settle with its choice as the park arg:
+// the case resolves, the ruling is the answer's row, and the run hears
+// case_resolved. The human card's own value settles its choice case the
+// same way, the card keeping its wait with no open case and no run
+// signalled, while the chain stall's rerun_again alone keeps its case
+// live.
+func TestAParkSettlesTheCaseItAnswers(t *testing.T) {
+	g := newFactsRig(t)
+	g.card()
+	g.timeline(t)
+	g.r.timeline = &Timeline{Events: g.store, Store: g.store}
+	ctx := context.Background()
+	g.store.cases = append(g.store.cases, Case{ID: 7, TaskID: "t1", Kind: CaseSessionCap, Status: CaseAtHuman})
+	got, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 7, By: "sebastian", Via: ViaChat, Rung: 3,
+		Res:  Resolution{Action: ActSettle, Args: map[string]any{"park": AnswerPark}, Note: "Park it"},
+		Post: func(context.Context) (int64, error) { return 5, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Case.Status != CaseResolved || got.Comment != 5 || !slices.Equal(g.store.resolved, []int64{7}) || !strings.Contains(got.Text, "resolved with settle") {
+		t.Fatalf("result = %+v, resolved %v; want case 7 settled by the park, the member's comment its own", got, g.store.resolved)
+	}
+	answered := 0
+	for _, e := range g.store.events {
+		if e.Kind == EventQuestionAnswered {
+			answered++
+			if e.TaskID != "t1" || e.Actor != "sebastian" || e.Via != ViaChat || e.Detail["case_id"] != int64(7) ||
+				e.Detail["action"] != ActSettle || e.Detail["comment"] != int64(5) {
+				t.Fatalf("the ruling's row = %+v, want sebastian's settle of case 7 via chat", e)
+			}
+		}
+	}
+	if answered != 1 {
+		t.Fatalf("%d answer rows, want the park's alone", answered)
+	}
+	if !slices.ContainsFunc(g.r.cfg.Workflows.(*fakeWorkflows).signals, func(s string) bool {
+		return strings.HasPrefix(s, "t1 "+SignalCaseResolved+" sebastian")
+	}) {
+		t.Fatalf("signals = %q, want case_resolved to t1's run", g.r.cfg.Workflows.(*fakeWorkflows).signals)
+	}
+
+	g.store.tasks["h1"] = Task{ID: "h1", Kind: "human", Repository: "demo-app/demo-app", IssueNumber: 14, Status: "waiting-human"}
+	for id, tc := range map[int64]struct {
+		value, want string
+	}{9: {AnswerPark, CaseResolved}, 10: {AnswerRerunAgain, CaseAtHuman}} {
+		g.store.cases = append(g.store.cases, Case{ID: id, TaskID: "h1", Kind: CaseHumanCard, Status: CaseAtHuman})
+		g.event("h1", factsNow, EventQuestionAsked, map[string]any{"case_id": int64(id),
+			"offers": []AskOffer{{Value: tc.value, Label: "the choice"}}})
+		got, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: id, By: "sebastian", Rung: 3, Res: Resolution{Action: tc.value, Note: "the choice"}})
+		if err != nil {
+			t.Fatalf("the choice %s: %v", tc.value, err)
+		}
+		if got.Case.Status != tc.want {
+			t.Fatalf("after %s the case is %s, want %s", tc.value, got.Case.Status, tc.want)
+		}
+		if s := g.store.tasks["h1"].Status; s != "waiting-human" {
+			t.Fatalf("after %s the card is %s, want it parked in waiting-human", tc.value, s)
+		}
+	}
+	// the settled park alone recorded its ruling, and no run was signalled
+	answered = 0
+	for _, e := range g.store.events {
+		if e.Kind == EventQuestionAnswered && e.TaskID == "h1" {
+			answered++
+			if e.Actor != "sebastian" || e.Detail["value"] != AnswerPark {
+				t.Fatalf("the ruling's row = %+v, want sebastian's park of the human card's case", e)
+			}
+		}
+	}
+	if answered != 1 || slices.ContainsFunc(g.r.cfg.Workflows.(*fakeWorkflows).signals, func(s string) bool {
+		return strings.HasPrefix(s, "h1 ")
+	}) {
+		t.Fatalf("%d answer rows, signals %q; want the park's alone and none for the human card", answered, g.r.cfg.Workflows.(*fakeWorkflows).signals)
+	}
+}
+
+// The human's confirm_audit on the gate stop's case records the audit
+// findings it names, all of them when it names none, as
+// audit_finding_confirmed steps with who and why, and ends the case; a
+// second one under a recorded prefix records nothing again. The project
+// agent's press, a press without a reason and one naming a finding the
+// audit does not hold are refused, and write nothing.
+func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
+	g := newFactsRig(t)
+	g.card()
+	g.timeline(t)
+	g.r.timeline = g.tl
+	t1 := g.store.tasks["t1"]
+	t1.IssueNumber = 0 // the answer's factoryd comment needs no issue here
+	g.store.tasks["t1"] = t1
+	g.store.cases = append(g.store.cases, Case{ID: 9, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
+		Facts: map[string]any{"head": "h2", "gate": "GateCriteria"}})
+	ctx := context.Background()
+	steps := func() []map[string]any {
+		b, _ := g.tl.Objects.Get(ctx, "sessions/t1/timeline.jsonl")
+		var out []map[string]any
+		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			var m map[string]any
+			if json.Unmarshal([]byte(line), &m) == nil && m["step"] == stepAuditConfirmed {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name string
+		in   ActInput
+		want string // a refusal's prefix, "" for a confirmation
+	}{
+		{"without a reason", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
+			Res: Resolution{Action: ActConfirmAudit}}, "a one-line reason is required"},
+		{"by the project agent", ActInput{TaskID: "t1", CaseID: 9, By: ChatUser, Rung: 2,
+			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures"}}, "rung 2 may not pick confirm_audit: the human may"},
+		{"naming an unknown finding", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
+			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures",
+				Args: map[string]any{"findings": "secrets at acceptance/rig_test.go:118"}}},
+			`the head's audit holds no finding "secrets at acceptance/rig_test.go:118" names`},
+	} {
+		var refused ErrActRefused
+		if _, err := g.r.Act(ctx, tc.in); !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), tc.want) {
+			t.Errorf("%s = %v, want the refusal %q", tc.name, err, tc.want)
+		}
+	}
+	if got := steps(); len(got) != 0 {
+		t.Fatalf("the refusals wrote %v, want nothing", got)
+	}
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
+		Res: Resolution{Action: ActConfirmAudit, Note: "the rig's fakes, not secrets"}}); err != nil {
+		t.Fatal(err)
+	}
+	got := steps()
+	if len(got) != 1 || got[0]["finding"] != findingB || got[0]["by"] != "sebastian" || got[0]["why"] != "the rig's fakes, not secrets" {
+		t.Fatalf("confirmations = %v, want %q confirmed by sebastian with the reason", got, findingB)
+	}
+	if c, err := g.r.store.CaseByID(ctx, 9); err != nil || c.Status != CaseResolved {
+		t.Fatalf("the case is %s (%v), want it resolved", c.Status, err)
+	}
+	// a finding named as its text, already recorded: the case answers, nothing records again
+	g.store.cases = append(g.store.cases, Case{ID: 10, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
+		Facts: map[string]any{"head": "h2", "gate": "GateCriteria"}})
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 10, By: "sebastian", Rung: 3,
+		Res: Resolution{Action: ActConfirmAudit, Note: "again", Args: map[string]any{"findings": findingB}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := steps(); len(got) != 1 {
+		t.Fatalf("confirmations = %v, want the one standing, the second press recording nothing again", got)
 	}
 }

@@ -144,6 +144,102 @@ func TestGateAuditFindsAPlantedSecret(t *testing.T) {
 	startedWithin(t, objects, "audit", from)
 }
 
+// A person's confirmations (audit_finding_confirmed steps on the
+// timeline, who, why and when each) settle the audit's verdict past the
+// findings they cover: the two findings here, the pre-check hit and the
+// model's, stand covered and the verdict is clear, the confirmations
+// beside it on the step.
+func TestGateAuditSettlesPastAPersonsConfirmations(t *testing.T) {
+	fj := &gateForgejo{diff: secretTestDiff}
+	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[{"item":"secrets","file":"internal/x/x_test.go","line":4,"why":"a password literal in a test"}]}`}
+	r, objects := newAuditRunner(t, fj, ll, true)
+	ctx := context.Background()
+	from := time.Now()
+	for _, c := range []struct{ finding, why string }{
+		{"secret in the diff: password, secret or token assigned a literal at internal/x/x_test.go:4", "the rig's fake, not a real credential"},
+		{"secrets at internal/x/x_test.go:4", "test rig fixture"},
+	} {
+		if err := r.timeline.Append(ctx, "t1", stepAuditConfirmed, map[string]any{"finding": c.finding, "by": "sebastian", "why": c.why}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	res := getInto[AuditResult](t, val, err)
+	if res.Verdict != AuditClear || len(res.Findings) != 0 {
+		t.Fatalf("audit = %+v, want a clear verdict past the two confirmations", res)
+	}
+	if len(res.Confirmed) != 2 {
+		t.Fatalf("confirmed = %+v, want both confirmations", res.Confirmed)
+	}
+	adj := res.Confirmed["secrets at internal/x/x_test.go:4"]
+	if adj.By != "sebastian" || adj.Why != "test rig fixture" || adj.When.IsZero() || adj.When.Before(from) {
+		t.Fatalf("the model finding's confirmation = %+v, want sebastian's, recorded with the step's time since %s", adj, from)
+	}
+	step := timelineStep(t, objects, "t1", "audit")
+	if step["verdict"] != AuditClear {
+		t.Fatalf("audit step = %v, want the settled clear verdict", step)
+	}
+	confirmed, _ := step["confirmed"].(map[string]any)
+	by, _ := confirmed["secrets at internal/x/x_test.go:4"].(map[string]any)
+	if by["by"] != "sebastian" || by["why"] != "test rig fixture" {
+		t.Fatalf("the step's confirmations = %v, want sebastian's beside the verdict", confirmed)
+	}
+}
+
+// A confirmation that covers one finding of two leaves the other to hold
+// the verdict: the fixtures' clearance clears the fixtures alone.
+func TestGateAuditKeepsAFindingItsConfirmationDoesNotCover(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n--- a/Makefile\n+++ b/Makefile\n@@ -1 +1,2 @@\n all:\n+check:\n"}
+	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[` +
+		`{"item":"secrets","file":"internal/x/x_test.go","line":4,"why":"a rig literal"},` +
+		`{"item":"secrets","file":"internal/y/y.go","line":9,"why":"a real credential"}]}`}
+	r, _ := newAuditRunner(t, fj, ll, true)
+	at := time.Now().UTC().Round(time.Second)
+	if err := r.timeline.Append(context.Background(), "t1", stepAuditConfirmed,
+		map[string]any{"finding": "secrets at internal/x/x_test.go:4", "by": "sebastian", "why": "test rig fixture", "time": at}); err != nil {
+		t.Fatal(err)
+	}
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	res := getInto[AuditResult](t, val, err)
+	want := []AuditFinding{{Item: "secrets", File: "internal/y/y.go", Line: 9, Why: "a real credential"}}
+	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) {
+		t.Fatalf("audit = %+v, want the uncovered finding %+v holding the verdict", res, want)
+	}
+	if len(res.Confirmed) != 1 || res.Confirmed["secrets at internal/x/x_test.go:4"].By != "sebastian" {
+		t.Fatalf("confirmed = %+v, want the one confirmation beside the verdict", res.Confirmed)
+	}
+}
+
+// A finding that names no verdict is no person's to confirm: the
+// audit that did not run still holds the verdict, whatever stands
+// confirmed.
+func TestGateAuditNeverSettlesItsNoVerdictFinding(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n--- a/Makefile\n+++ b/Makefile\n@@ -1 +1,2 @@\n all:\n+check:\n"}
+	r, _ := newAuditRunner(t, fj, &fakeLiteLLM{content: "LGTM"}, true)
+	if err := r.timeline.Append(context.Background(), "t1", stepAuditConfirmed,
+		map[string]any{"finding": "the audit gave no verdict", "by": "sebastian", "why": "it was fine last time", "time": time.Now().UTC().Round(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	res := getInto[AuditResult](t, val, err)
+	if res.Verdict != AuditFindings || len(res.Findings) != 1 || res.Findings[0].Item != auditNoVerdict {
+		t.Fatalf("audit = %+v, want the no-verdict finding holding the verdict", res)
+	}
+}
+
+// No confirmation on the timeline, the audit holds as before: both
+// findings stand.
+func TestGateAuditWithoutAConfirmationHoldsAsBefore(t *testing.T) {
+	fj := &gateForgejo{diff: secretTestDiff}
+	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[{"item":"secrets","file":"internal/x/x_test.go","line":4,"why":"a password literal in a test"}]}`}
+	r, _ := newAuditRunner(t, fj, ll, true)
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	res := getInto[AuditResult](t, val, err)
+	if res.Verdict != AuditFindings || len(res.Findings) != 2 {
+		t.Fatalf("audit = %+v, want both findings holding the verdict as before", res)
+	}
+}
+
 // An audit beside the checks wait leaves the task's row in gate checks,
 // which the wait holds; its step starts at its own schedule.
 func TestGateAuditBesideTheChecksStartsAtItsSchedule(t *testing.T) {

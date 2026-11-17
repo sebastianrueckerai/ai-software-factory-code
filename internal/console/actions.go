@@ -1359,7 +1359,8 @@ const overruleNeedsReason = "An overrule of the review needs your reason: write 
 // (grantOf), else goes on, fund and fund:N fund eur, go resumes, close
 // and successor are their own, extend takes the Extend form's amounts,
 // keep checking (and keep waiting on a checks-wait stop) runs the stopped
-// checks wait again, park and keep waiting are a note that ends nothing,
+// checks wait again, park and keep waiting settle the ask — the case
+// ends and the card goes on waiting, its choice the settle's park arg,
 // overrule re-verifies with the reason as its note and a drop verdict on
 // each finding of the review (overruled), and words alone continue. agentTime is the card draw's agent time, the grant at an agent
 // time cap.
@@ -1379,7 +1380,7 @@ func answerAction(value, text string, eur float64, k factoryd.Case, agentTime ti
 	case value == factoryd.AnswerKeepChecking, value == factoryd.AnswerKeepWaiting && k.Kind == factoryd.CaseGateStop && k.Facts["gate"] == factoryd.ActivityWaitChecks:
 		res.Action = factoryd.ActWaitChecks
 	case value == factoryd.AnswerPark, value == factoryd.AnswerKeepWaiting:
-		res.Action = factoryd.ActNote
+		res.Action, res.Args = factoryd.ActSettle, map[string]any{"park": value}
 	case value == factoryd.AnswerRetry:
 		// the plan's wait: the retry of the failed card its case keys
 		res.Action, res.Args = factoryd.ActRetry, map[string]any{"task_id": k.StateKey}
@@ -1529,8 +1530,8 @@ func choiceCard(t factoryd.Task) bool {
 // commit, or concluded, refuses the re-run and the dismissal with its own
 // line; check again closes the card all the same. The failed roll card's
 // retry resets the failed rolls and closes the card as factoryd's own; the
-// roller's next poll files the new roll. park and keep waiting leave the case open with a note,
-// nothing posted; go hands the card to the factory; every other choice
+// roller's next poll files the new roll. park and keep waiting settle the
+// case, nothing posted, and the card keeps its wait with none open; go hands the card to the factory; every other choice
 // closes the card on its label. The held-production ask's Deploy anyway is
 // Act's deploy_now, which the chat's agent may press too; its replans are
 // phase 4's doReplan of the plan the value names, and the card closes once
@@ -1645,7 +1646,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		}
 		note = fmt.Sprintf("Answered #%d: the failed rolls are reset, the card is closed and the roller starts the roll again.", t.IssueNumber)
 	case value == factoryd.AnswerPark || value == factoryd.AnswerKeepWaiting:
-		note = fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber)
+		note = fmt.Sprintf("The ask is settled: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber)
 	case value == factoryd.AnswerGo:
 		// the agent card is filed with the hand-over: a client that leaves now must not leave the old card waiting
 		var stop context.CancelFunc
@@ -2057,6 +2058,20 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	}
 	if factoryd.ClosablePlan(t) {
 		return c.closePlan(ctx, a, t, note)
+	}
+	// A criteria card does not close before its pull request merges: the
+	// merge press is what records the plan's criteria verdicts, so a close
+	// while the request is open would end the card unproven. Only plans
+	// that hold criteria carry that duty.
+	if t.Source == factoryd.SourcePlan && t.PlanKey != "" && t.PRNumber != 0 &&
+		t.MergeCommit == "" && !factoryd.Final(t.Status) {
+		_, p, ok, err := c.planTable(ctx, t.Parent, 0)
+		if err != nil {
+			return "", err
+		}
+		if ok && len(p.Criteria) > 0 {
+			return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's pull request is open and unmerged: the merge records the plan's criteria, so the card stays open until it has merged.", t.IssueNumber))
+		}
 	}
 	if factoryd.Final(t.Status) && t.Status != "failed" {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d %s, so there is nothing to close: %s.", t.IssueNumber, factoryd.StatusMeaning(t.Status), fitting(t, capFacts{})))

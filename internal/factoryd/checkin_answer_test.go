@@ -47,7 +47,7 @@ func TestCheckinRepeatNamesTheBranchHead(t *testing.T) {
 	}
 	head := "c2"
 	if len(h.sessions) != 3 || h.sessions[2].StartRef != head || len(h.escalated) != 2 ||
-		!strings.Contains(h.escalated[1], deadlockAskMark+": the head "+head) {
+		!strings.Contains(h.escalated[1], DeadlockAskMark+": the head "+head) {
 		t.Fatalf("s3 starts from %q, escalations %q; want %s named", h.sessions[2].StartRef, h.escalated, head)
 	}
 }
@@ -83,7 +83,7 @@ func TestARestartedRunFormsTheDeadlockAskAtTheSecondEqualStop(t *testing.T) {
 			if err := json.Unmarshal(b, &facts); err != nil {
 				t.Fatal(err)
 			}
-			mark := checkinMarkOf([]Case{{ID: 3, Facts: map[string]any{"head": "c0"}}, {ID: 4, Facts: facts}, {ID: 5, Facts: map[string]any{"head": "c1"}}})
+			mark := CheckinMarkOf([]Case{{ID: 3, Facts: map[string]any{"head": "c0"}}, {ID: 4, Facts: facts}, {ID: 5, Facts: map[string]any{"head": "c1"}}})
 			if before != (mark == nil) {
 				t.Fatalf("the stored mark = %+v, want one only after the change", mark)
 			}
@@ -100,7 +100,7 @@ func TestARestartedRunFormsTheDeadlockAskAtTheSecondEqualStop(t *testing.T) {
 				t.Fatalf("the restarted run = %q, sessions %d, escalations %q", final, len(second.sessions), second.escalated)
 			}
 			last := second.escalated[len(second.escalated)-1]
-			if deadlock := strings.Contains(last, deadlockAskMark+": the head c1"); deadlock == before {
+			if deadlock := strings.Contains(last, DeadlockAskMark+": the head c1"); deadlock == before {
 				t.Fatalf("the second stop asks %q; want the deadlock ask only after the change", last)
 			}
 		})
@@ -114,12 +114,12 @@ func TestARestartedRunFormsTheDeadlockAskAtTheSecondEqualStop(t *testing.T) {
 // new commit.
 func TestARestartAfterACallCapGrantNamesTheUnchangedCommit(t *testing.T) {
 	mark := map[string]any{"Kind": CheckSpend, "Tip": "c1", "ExtraLines": 0, "RaisedSessions": 0}
-	kept := func(status, action string) *checkinStopMark {
-		c := Case{ID: 4, Status: status, Facts: map[string]any{factCheckinMark: mark, "checkin_stop": CheckinStopCallCap}}
+	kept := func(status, action string) *CheckinStopMark {
+		c := Case{ID: 4, Status: status, Facts: map[string]any{FactCheckinMark: mark, "checkin_stop": CheckinStopCallCap}}
 		if action != "" {
 			c.Resolution = &CaseResolution{By: "sebastian", Rung: 3, Action: action}
 		}
-		return checkinMarkOf([]Case{c})
+		return CheckinMarkOf([]Case{c})
 	}
 	for name, tc := range map[string]struct {
 		status  string
@@ -135,7 +135,7 @@ func TestARestartAfterACallCapGrantNamesTheUnchangedCommit(t *testing.T) {
 			t.Errorf("%s: the kept mark = %+v, want Granted %v", name, got, tc.granted)
 		}
 	}
-	if got := checkinMarkOf([]Case{{ID: 4, Status: CaseResolved, Resolution: &CaseResolution{Action: ActExtend}, Facts: map[string]any{factCheckinMark: mark}}}); got == nil || got.Granted {
+	if got := CheckinMarkOf([]Case{{ID: 4, Status: CaseResolved, Resolution: &CaseResolution{Action: ActExtend}, Facts: map[string]any{FactCheckinMark: mark}}}); got == nil || got.Granted {
 		t.Errorf("a stop of no cap: the kept mark = %+v, want no Granted", got)
 	}
 
@@ -195,7 +195,7 @@ func TestCheckinRepeatGuardSeesARaise(t *testing.T) {
 		if len(h.escalated) != 2 {
 			t.Fatalf("%s: escalations = %q, want the stop and its repeat", name, h.escalated)
 		}
-		if got := strings.Contains(h.escalated[1], deadlockAskMark); got != tc.deadlock {
+		if got := strings.Contains(h.escalated[1], DeadlockAskMark); got != tc.deadlock {
 			t.Errorf("%s: the repeat %q says no reply can change it: %v, want %v", name, h.escalated[1], got, tc.deadlock)
 		}
 	}

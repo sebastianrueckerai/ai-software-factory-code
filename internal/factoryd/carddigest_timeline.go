@@ -157,7 +157,7 @@ func lineSteps(scrub *redact.Scrubber, tl []byte) ([]DigestStep, []*digestSessio
 			_ = json.Unmarshal(l.Findings, &found)
 			items := make([]string, len(found))
 			for k, f := range found {
-				items[k] = f.Item
+				items[k] = f.Text()
 			}
 			step.Kind, step.Findings, step.texts = "audit", textIDs(items), items
 			step.Outcome = cmp.Or(l.Verdict, "no verdict")
@@ -205,7 +205,7 @@ func (r *Runner) sessionStep(ctx context.Context, taskID string, s, next *digest
 	case next != nil:
 		end, outcome = next.start, "no end"
 	default:
-		end, outcome = r.clock(), "running"
+		end, outcome = r.Clock(), "running"
 	}
 	cost, calls, err := r.store.SpendAndCallsBetween(ctx, taskID, s.start, end)
 	if err != nil {
@@ -248,7 +248,7 @@ func checkinStep(scrub *redact.Scrubber, step DigestStep, l timelineLine) Digest
 	}
 	byState := map[string][]string{}
 	for text, v := range l.Verdicts {
-		byState[v.State] = append(byState[v.State], findingID(text))
+		byState[v.State] = append(byState[v.State], FindingID(text))
 	}
 	var parts []string
 	for _, state := range []string{CheckConfirmed, CheckDropped, CheckRemark} {
@@ -266,7 +266,7 @@ func checkinStep(scrub *redact.Scrubber, step DigestStep, l timelineLine) Digest
 	if l.Record != nil {
 		reason = cmp.Or(l.Record.Reason, reason)
 	}
-	step.refused = strings.HasPrefix(reason, checkinRefusedReason)
+	step.refused = strings.HasPrefix(reason, CheckinRefusedReason)
 	step.Message = messageText(scrub, l.Guidance)
 	step.Outcome = strings.Join(append(parts, shown), ", ")
 	return step
@@ -419,7 +419,7 @@ func findingList(raw json.RawMessage) []string {
 func textIDs(texts []string) []string {
 	var out []string
 	for _, t := range texts {
-		out = append(out, findingID(t))
+		out = append(out, FindingID(t))
 	}
 	slices.Sort(out)
 	return out

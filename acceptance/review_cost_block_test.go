@@ -36,7 +36,7 @@ func TestModelReviewInputCarriesTheCostState(t *testing.T) {
 	fj, gw := &accForgejo{}, &accGateway{}
 	fj.setHead("c1")
 	gw.answer(accReply{content: `{"verdict":"approve","summary":"fine"}`})
-	r := newLedgerRunner(t, &accLedger{PGStore: s}, serve(t, fj), serve(t, gw))
+	r := newLedgerRunner(t, &accLedger{PGStore: s}, serve(t, fj), serve(t, gw), accKube{})
 	if _, err := r.ModelReview(ctx, "t-cost", factoryd.PullRequest{Number: 9}, "c1", factoryd.GateResults{}, nil, 1); err != nil {
 		t.Fatal(err)
 	}

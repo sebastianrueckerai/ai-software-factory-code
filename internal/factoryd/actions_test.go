@@ -159,8 +159,8 @@ func TestRerunChecksOnceOnAHead(t *testing.T) {
 func TestExtendRefusesWhenTheLastDrawBoughtNothing(t *testing.T) {
 	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
 	stuck := CaseFacts{Head: "h1", PR: 9, PROpen: true, Checks: "red", Findings: []string{idA}, LastDrawAt: &at, DrawHead: "h1", DrawChecks: "red",
-		DrawFindings: []string{idA},
-		PoolLeft:     policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 20}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4},
+		DrawFindings: []string{idA}, Attempts: 2,
+		PoolLeft: policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 20}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4},
 		BudgetEUR: 5, CeilingEUR: 10}
 	const refused = "the last draw at 10:04 UTC bought nothing, with no push since and the head, the checks and the findings unchanged: " +
 		"hand over, start a successor, replan or close"
@@ -384,7 +384,7 @@ func TestRefusalBoundsEveryMoneyPart(t *testing.T) {
 func TestRaiseCeilingIsNoDrawThatBuys(t *testing.T) {
 	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
 	stuck := CaseFacts{Head: "h1", Checks: "red", Findings: []string{idA}, LastDrawAt: &at, DrawHead: "h1", DrawChecks: "red",
-		DrawFindings: []string{idA}, PoolLeft: policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 20}, BudgetEUR: 5, CeilingEUR: 6}
+		DrawFindings: []string{idA}, Attempts: 2, PoolLeft: policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 20}, BudgetEUR: 5, CeilingEUR: 6}
 	raise, _ := ActionByName(ActRaiseCeiling)
 	byTwo := Resolution{Action: ActRaiseCeiling, Args: map[string]any{"eur": 2.0}}
 	beside := byTwo
@@ -411,7 +411,7 @@ func TestRaiseCeilingIsNoDrawThatBuys(t *testing.T) {
 // head and the checks alone, never taken as one whose findings went.
 func TestBoughtNothingWeighsHeadAndChecksWhenTheTimelineIsUnread(t *testing.T) {
 	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
-	f := CaseFacts{Head: "h1", Checks: "red", LastDrawAt: &at, DrawHead: "h1", DrawChecks: "red", DrawFindings: []string{idA}}
+	f := CaseFacts{Head: "h1", Checks: "red", LastDrawAt: &at, DrawHead: "h1", DrawChecks: "red", DrawFindings: []string{idA}, Attempts: 1}
 	if boughtNothing(f) {
 		t.Error("the timeline read with no findings against idA at the draw: the draw bought something")
 	}
@@ -451,7 +451,7 @@ func TestExtendRefusesLinesBelowZero(t *testing.T) {
 // every part it may take.
 func TestExtendOfLinesAloneApplies(t *testing.T) {
 	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
-	stuck := CaseFacts{Head: "h1", Checks: "red", LastDrawAt: &at, DrawHead: "h1", DrawChecks: "red"}
+	stuck := CaseFacts{Head: "h1", Checks: "red", LastDrawAt: &at, DrawHead: "h1", DrawChecks: "red", Attempts: 1}
 	lines := Resolution{Action: ActExtend, Args: map[string]any{"lines": 200}}
 	if got := applies(t, ActExtend, stuck, lines); got != "" {
 		t.Errorf("an extend of 200 lines after a draw that bought nothing = %q, want it to apply", got)
@@ -631,7 +631,7 @@ func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 		t.Errorf("a close of an ended card's monitor case = %q, want it taken", got)
 	}
 	if got, want := applies(t, ActSettle, CaseFacts{Kind: CaseSessionCap}, Resolution{}),
-		"settle ends a monitor flag's case alone, and this case is no monitor flag's"; got != want {
+		"settle ends a monitor flag's case alone or the ask a park settles, and this case is neither"; got != want {
 		t.Errorf("a settle of a cap case = %q, want %q", got, want)
 	}
 }
@@ -662,7 +662,7 @@ func TestTripMoneyRoundsTheNeedUp(t *testing.T) {
 // nothing the stop names.
 func TestBoughtNothingWeighsAPlannerOnItsRevision(t *testing.T) {
 	at := time.Date(2026, 11, 10, 11, 29, 0, 0, time.UTC)
-	f := CaseFacts{Kind: CaseAgentTimeCap, TimeDraw: &DrawFacts{At: at}}
+	f := CaseFacts{Kind: CaseAgentTimeCap, Attempts: 1, TimeDraw: &DrawFacts{At: at}}
 	if !boughtNothing(f) {
 		t.Error("a draw of agent time, no push and no revision since: want bought nothing")
 	}
@@ -696,7 +696,7 @@ func TestEventFactsWeighTheTimeDrawBesideAFund(t *testing.T) {
 	revision := Event{At: factsAt(11, 40), Kind: EventPlanRevision}
 	var f CaseFacts
 	f.eventFacts([]Event{fund, extend})
-	f.Kind = CaseAgentTimeCap
+	f.Kind, f.Attempts = CaseAgentTimeCap, 1
 	if f.LastDrawAt == nil || f.TimeDraw == nil || f.TimeDraw.Revised || !boughtNothing(f) {
 		t.Fatalf("facts %+v; want the extend's time draw weighed and bought nothing", f)
 	}
@@ -706,7 +706,7 @@ func TestEventFactsWeighTheTimeDrawBesideAFund(t *testing.T) {
 	}
 	var after CaseFacts
 	after.eventFacts([]Event{revision, fund, extend})
-	after.Kind = CaseAgentTimeCap
+	after.Kind, after.Attempts = CaseAgentTimeCap, 1
 	if !after.TimeDraw.Revised || boughtNothing(after) {
 		t.Errorf("a revision filed after both rows: facts %+v, want the draw bought", after)
 	}
@@ -742,11 +742,11 @@ func TestBoughtNothingTextNamesTheDrawAndWhatItWasMeasuredOn(t *testing.T) {
 		f    CaseFacts
 		want string
 	}{
-		{"planner at a time stop", CaseFacts{Kind: CaseAgentTimeCap, Planner: true, TimeDraw: &DrawFacts{At: at}},
+		{"planner at a time stop", CaseFacts{Kind: CaseAgentTimeCap, Planner: true, Attempts: 1, TimeDraw: &DrawFacts{At: at}},
 			"the last agent-time draw at 11:29" + fmt.Sprintf(tail, "plan revision")},
-		{"agent at a time stop", CaseFacts{Kind: CaseAgentTimeCap, TimeDraw: &DrawFacts{At: at}},
+		{"agent at a time stop", CaseFacts{Kind: CaseAgentTimeCap, Attempts: 1, TimeDraw: &DrawFacts{At: at}},
 			"the last agent-time draw at 11:29" + fmt.Sprintf(tail, "push")},
-		{"agent at a session cap", CaseFacts{Kind: CaseSessionCap, LastDrawAt: &at},
+		{"agent at a session cap", CaseFacts{Kind: CaseSessionCap, Attempts: 1, LastDrawAt: &at},
 			"the last draw at 11:29" + fmt.Sprintf(tail, "push")},
 	} {
 		if got := boughtNothingText(tc.f); got != tc.want {

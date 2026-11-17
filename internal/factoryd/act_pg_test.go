@@ -390,6 +390,56 @@ func TestActRaisesTheCeilingThenFundsInOneTransaction(t *testing.T) {
 	}
 }
 
+// A fund press is never the evidence of its own failure. The rig's card
+// ran no session ever, so its first fund writes the card's only event: a
+// pool draw of rung 3 on the empty head and checks. The guard weighs no
+// draw on a card with no session (boughtNothing false on the facts), so
+// the second fund of 1.00 EUR is taken with no bought-nothing refusal,
+// and the card funds on toward its ceiling without running once.
+func TestAFundPressIsNotBoughtNothing(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	if card := g.card(t); card.Usage.Attempts != 0 {
+		t.Fatalf("the rig's card ran %d sessions, want none ever", card.Usage.Attempts)
+	}
+	fund := ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Via: ViaConsole, Rung: 3,
+		Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 1.0}}}
+	if _, err := g.r.Act(ctx, fund); err != nil {
+		t.Fatalf("the first fund on the never-ran card: %v", err)
+	}
+	rows := g.rows(t, EventCardFunded)
+	if len(rows) != 1 {
+		t.Fatalf("card_funded rows = %+v, want the one fund press", rows)
+	}
+	if d := rows[0].Detail; d["pool"] != true || d["rung"] != 3.0 || d["head"] != "" || d["checks"] != "" || d["amount_eur"] != 1.0 {
+		t.Fatalf("the fund's row = %+v, want a rung-3 pool draw of 1 EUR on the empty head and checks", rows[0])
+	}
+	f, err := g.r.FactsAtCase(ctx, g.card(t), Case{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Attempts != 0 || f.LastDrawAt == nil || f.Head != "" || f.Checks != "" {
+		t.Fatalf("facts = %+v, want no session ever and the fund press the newest draw, on an empty head and checks", f)
+	}
+	if boughtNothing(f) {
+		t.Error("the fund press of a card that ran no session: the guard weighs no draw")
+	}
+	fund.CaseID = 0 // the first fund ended the case, so the second answers the card
+	got, err := g.r.Act(ctx, fund)
+	if err != nil {
+		t.Fatalf("the second fund of 1.00 EUR = %v, want it taken with no bought-nothing refusal", err)
+	}
+	if got.Drawn != (policy.Draw{EUR: 1}) {
+		t.Fatalf("drawn = %+v, want the 1 EUR", got.Drawn)
+	}
+	if card := g.card(t); card.BudgetEUR != 5 || card.Usage.Attempts != 0 {
+		t.Fatalf("after the second fund: budget %v after %d sessions, want 5 EUR and the card still never run", card.BudgetEUR, card.Usage.Attempts)
+	}
+	if funded := g.rows(t, EventCardFunded); len(funded) != 2 {
+		t.Fatalf("card_funded rows = %+v, want the two presses", funded)
+	}
+}
+
 // The human's close of a card with an issue posts the note and closes the
 // issue as factoryd's recorded close, which the webhook then ends the card
 // on. The case reads resolved with close.
@@ -491,10 +541,10 @@ func TestActTakesOverTheWebhooksCopyOfItsComment(t *testing.T) {
 	cont := Resolution{Action: ActContinue, Note: "the one under cmd"}
 	_, err = g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: second.ID, By: "sebastian", Rung: 3, Post: posting(79, webhook(78)), Res: cont})
 	var ended ErrCaseEnded
-	if !errors.As(err, &ended) || ended.Case.Resolution.Action != caseAnswer {
+	if !errors.As(err, &ended) || ended.Case.Resolution.Action != CaseAnswer {
 		t.Fatalf("an answer on comment 79 after the copy of 78 resolved its case = %v, want the case ended with answer", err)
 	}
-	if c := caseByID(t, g.s, second.ID); c.Resolution.Action != caseAnswer || len(g.signals.got) != 2 {
+	if c := caseByID(t, g.s, second.ID); c.Resolution.Action != CaseAnswer || len(g.signals.got) != 2 {
 		t.Fatalf("the second case = %+v, signals %+v; want the webhook copy's answer kept and only the first answer's two signals", c.Resolution, g.signals.got)
 	}
 }
@@ -893,7 +943,7 @@ func TestActStepNamesEveryPartOfAnExtend(t *testing.T) {
 // no cap, still opens as the call cap's.
 func TestTripCaseKeepsTheCheckinStop(t *testing.T) {
 	g := newActRig(t)
-	repeat := checkinSpendAsk + "The restart produced no new commit, the head is still c1. What should the agent do?"
+	repeat := CheckinSpendAsk + "The restart produced no new commit, the head is still c1. What should the agent do?"
 	c, _, err := g.r.tripCase(context.Background(), g.card(t), CaseFacts{}, TripInput{TaskID: "t1", Reason: repeat, CheckinStop: CheckinStopCallCap})
 	if err != nil {
 		t.Fatal(err)
@@ -973,7 +1023,7 @@ func TestRecordGrantIsOnceByItsIdentity(t *testing.T) {
 	g.s.SetBus(bus)
 	ch := make(chan Event, 4)
 	defer bus.Subscribe("demo-app/demo-app", ch)()
-	key := identityKey(EventCardExtended, "run-1", "3")
+	key := IdentityKey(EventCardExtended, "run-1", "3")
 	for range 2 {
 		if err := g.r.RecordGrant(ctx, "t1", "sebastian", policy.Draw{Sessions: 1}, key); err != nil {
 			t.Fatal(err)
@@ -1000,7 +1050,7 @@ func TestRecordGrantIsOnceByItsIdentity(t *testing.T) {
 func TestAgentDrawIsBoundedByThePool(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
-	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 1}, IdentityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
 		t.Fatal(err)
 	}
 	if rows := g.rows(t, EventCardExtended); len(rows) != 1 || rows[0].Actor != ChatUser || rows[0].Detail["rung"] != 2.0 || rows[0].Detail["pool"] != true {
@@ -1010,7 +1060,7 @@ func TestAgentDrawIsBoundedByThePool(t *testing.T) {
 		t.Fatalf("the pool drew %+v, %v; want 1 session", drawn, err)
 	}
 	var app *temporal.ApplicationError
-	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 999}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != errDrawRefused {
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 999}, IdentityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != ErrDrawRefused {
 		t.Fatalf("past the pool = %v, want a typed draw-refused", err)
 	}
 	if rows := g.rows(t, EventCardExtended); len(rows) != 1 {
@@ -1024,7 +1074,7 @@ func TestAgentDrawIsBoundedByThePool(t *testing.T) {
 // draw of 30 sessions fills the default pool of 30; the audit's rung 0 draw
 // of 3 fills the large card's draw bound of 3.
 func TestARetriedDrawThatFilledItsBoundPasses(t *testing.T) {
-	key := identityKey(EventCardExtended, "run-1", "1", "0s")
+	key := IdentityKey(EventCardExtended, "run-1", "1", "0s")
 	for _, c := range []struct {
 		name string
 		d    policy.Draw
@@ -1062,7 +1112,7 @@ func TestRecordGrantCountsItsInterventionOnce(t *testing.T) {
 	g := newActRig(t)
 	m, reader := testMetrics(t)
 	g.r.cfg.Metrics = m
-	key := identityKey(EventCardExtended, "run-1", "3")
+	key := IdentityKey(EventCardExtended, "run-1", "3")
 	for range 2 {
 		if err := g.r.RecordGrant(context.Background(), "t1", "sebastian", policy.Draw{Sessions: 1, AgentTime: 9 * time.Minute}, key); err != nil {
 			t.Fatal(err)
@@ -1103,7 +1153,7 @@ func TestRecordGrantKeysEachGrant(t *testing.T) {
 		d policy.Draw
 		u TaskUsage
 	}{{policy.Draw{Sessions: 1}, first}, {policy.Draw{AgentTime: 5 * time.Minute}, second}, {policy.Draw{AgentTime: 5 * time.Minute}, second}} {
-		if err := g.r.RecordGrant(ctx, "t1", "sebastian", grant.d, grantKey("run-1", grant.u)); err != nil {
+		if err := g.r.RecordGrant(ctx, "t1", "sebastian", grant.d, GrantKey("run-1", grant.u)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1124,7 +1174,7 @@ func TestActTakesTheJudgmentBudgetCardsClose(t *testing.T) {
 		IssueNumber: 13}); err != nil {
 		t.Fatal(err)
 	}
-	q := chatBudgetQuestion(Task{ID: "t-chat-demo-app-2026-11", BudgetEUR: 10})
+	q := ChatBudgetQuestion(Task{ID: "t-chat-demo-app-2026-11", BudgetEUR: 10})
 	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "h1", Repository: "demo-app/demo-app", Kind: CaseJudgmentBudget, StateKey: "budget", Status: CaseAtHuman, Problem: q.Ask})
 	if err != nil {
 		t.Fatal(err)

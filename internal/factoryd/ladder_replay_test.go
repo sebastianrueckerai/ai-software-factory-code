@@ -171,7 +171,7 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 	// below it.
 	t.Run("#853_change_request_reaches_the_session", func(t *testing.T) {
 		change := "reviewer sebastian requested changes: the four findings the lab run named"
-		old := "sebastian, to \"" + capReached + "\": change nothing and end the session"
+		old := "sebastian, to \"" + CapReached + "\": change nothing and end the session"
 		g := newGateHarness(t, func(g *gateHarness) {
 			g.taskConfig = askTaskConfig()
 			g.state = RunState{Status: "running", Answers: []string{old}}
@@ -337,7 +337,7 @@ func newLiveGateHarness(t *testing.T) *liveGateHarness {
 	l.worker = &fakeWorkerEndpoint{status: http.StatusNoContent}
 	l.worker.start(t, l.runner)
 	l.chat = &scriptedChat{}
-	l.runner.checkin = l.chat
+	l.runner.Checkin = l.chat
 	l.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, in SessionInput) (SessionResult, error) {
 			l.sessions = append(l.sessions, in)

@@ -620,7 +620,7 @@ func (s *accBatchStore) SetAgentSummary(ctx context.Context, id, summary string)
 func (s *accBatchStore) CapRefusal(ctx context.Context, taskID string, since time.Time) (*factoryd.CapRefusal, error) {
 	panic("unused")
 }
-func (s *accBatchStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (reason string, ok bool, err error) {
+func (s *accBatchStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (decision, reason string, ok bool, err error) {
 	panic("unused")
 }
 func (s *accBatchStore) ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error) {
@@ -1071,6 +1071,9 @@ func (s *accBatchStore) RebaseRolls(ctx context.Context, taskID, head string) (b
 }
 func (s *accBatchStore) SetTaskSHA(ctx context.Context, id, sha string) error { panic("unused") }
 func (s *accBatchStore) EnterQueue(ctx context.Context, project, taskID string) (factoryd.QueueSpot, error) {
+	panic("unused")
+}
+func (s *accBatchStore) MergeQueuePlaces(ctx context.Context) (map[string]factoryd.QueuePlace, error) {
 	panic("unused")
 }
 func (s *accBatchStore) QueueHead(ctx context.Context, project string) (string, bool, error) {
@@ -1638,7 +1641,7 @@ func newBatchRig(t *testing.T) *batchRig {
 			return factoryd.AnswerPlanQuestions(ctx, store, wf, taskID, revision, answers, by)
 		},
 	}
-	cardReads(&cfg, tasks)
+	cardReads(&cfg, nil, tasks)
 	c, err := console.New(cfg)
 	if err != nil {
 		t.Fatal(err)

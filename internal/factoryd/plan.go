@@ -1330,7 +1330,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
 		"Each criterion has an id in snake_case and a kind naming the fields it uses, and states what the feature does for a caller at a surface that stays put while the cards are built: " +
 		"its HTTP API, its command line, its store as a test seeds and reads it, or the files and output it writes; never how it is built inside. " +
-		"kind test names its claim, its inputs and the numbers it expects, and its suite and its test's name: a card whose directories hold the suite writes its test, which runs in the sandbox bash check runs, " +
+		"kind test names its claim, its inputs and the numbers it expects, and its suite and its test's name: the citing card - or a proof card the planner files - lands the test, a card whose directories hold the suite writes its test, which runs in the sandbox bash check runs, " +
 		"so no browser, no device and no outside service; a want beyond the sandbox becomes a human criterion or waits as a note; " +
 		"kind invariant names its suite, a package path such as ./..., whose tests stay green, and nothing else; " +
 		"kind judgement names the claim a model judges, in inputs what the artifact a test writes must show, and the pinned prompt; " +
@@ -1372,6 +1372,8 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"questions: open points the spec leaves to the human; their answers come back to you with your last plan, " +
 		"and a plan with open questions waits for their answers, while a plan with none files its cards at once. " +
 		"Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. " +
+		"A card whose round lands no changes names bash check static in its brief, not bash check changed, and every brief keeps the shell tool's bounds: " +
+		"no command and no timeout it names may exceed the shell tool's 600000 ms maximum. " +
 		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: " +
 		"answer it again."
 }
@@ -1874,7 +1876,7 @@ func (s *PGStore) OpenPlanQuestions(ctx context.Context, id string, revision int
 }
 
 func (s *PGStore) CreatePlanCard(ctx context.Context, t Task) (Task, error) {
-	if err := s.insertTask(ctx, t, `ON CONFLICT (parent_task, plan_key) WHERE source = 'plan' DO NOTHING`); err != nil {
+	if err := s.InsertTask(ctx, t, `ON CONFLICT (parent_task, plan_key) WHERE source = 'plan' DO NOTHING`); err != nil {
 		return Task{}, err
 	}
 	got, ok, err := s.oneTask(ctx, `parent_task = $1 AND source = $2 AND plan_key = $3`, t.Parent, SourcePlan, t.PlanKey)
@@ -2098,7 +2100,7 @@ func (t *taskRun) planLoop() (string, error) {
 	// wait's branch below takes the time the answer bought
 	if healed && !wait {
 		if short, retry := t.plannerTime(u); short && !retry {
-			ask = healedReason
+			ask = HealedReason
 		}
 	}
 	if healed && st.Cap != "" && workflow.Now(t.ctx).Before(st.CapUntil) {
@@ -2125,11 +2127,11 @@ func (t *taskRun) planLoop() (string, error) {
 		if !wait && ask == "" && u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() {
 			ask = t.sessionCapCard(t.capHead(), reason, findings)
 			if healed {
-				ask = healedReason
+				ask = HealedReason
 			}
 		}
 		if ask != "" {
-			if err := t.ask(ask, escalationQuestion(ask), nil); err != nil {
+			if err := t.ask(ask, EscalationQuestion(ask), nil); err != nil {
 				return t.finish("failed", escalateFailed+errMessage(err))
 			}
 			ask, wait = "", true
@@ -2223,7 +2225,7 @@ func (t *taskRun) planLoop() (string, error) {
 		var res PlanResult
 		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunPlan, t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings)
 		if err == nil && !decided && res.Refused.Status != 0 {
-			ask = t.providerRefused(&refusals, res.Refused)
+			ask = t.providerRefused(&refusals, res.Refused, t.cfg.Models.Stronger)
 			if final, why, ok := t.decided(); ok {
 				final, why, _ = closedBeforeStart(final, why)
 				return t.finish(final, why)
@@ -3311,10 +3313,10 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int, p
 			return PlanRef{}, err
 		}
 	}
-	if err := r.askQuestions(ctx, t, rev.Revision, p.Questions); err != nil {
+	if err := r.AskQuestions(ctx, t, rev.Revision, p.Questions); err != nil {
 		return PlanRef{}, err
 	}
-	if err := r.askConfirmation(ctx, t, rev.Revision, p); err != nil {
+	if err := r.AskConfirmation(ctx, t, rev.Revision, p); err != nil {
 		return PlanRef{}, err
 	}
 	ref := PlanRef{Revision: rev.Revision, SHA256: rev.SHA256}
@@ -3387,7 +3389,7 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int, p
 // comment), records one question_asked row each when it stored them, and
 // writes them to the recording rule's ledger as the planner's catches: a
 // self-attack question's catch carries the attack's kind (piece 5).
-func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []PlanQuestion) error {
+func (r *Runner) AskQuestions(ctx context.Context, t Task, revision int, qs []PlanQuestion) error {
 	if len(qs) == 0 {
 		return nil
 	}
@@ -3448,7 +3450,7 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 // the newest confirmed one (an identical re-file) is asked too, and the
 // factory answers it at once in the same filing: its ask row says so,
 // which pokes no one, and its answer resolves the ask's case.
-func (r *Runner) askConfirmation(ctx context.Context, t Task, revision int, p Plan) error {
+func (r *Runner) AskConfirmation(ctx context.Context, t Task, revision int, p Plan) error {
 	ask, same, err := r.confirms(ctx, t, p)
 	switch {
 	case err != nil:
@@ -3506,7 +3508,7 @@ func (r *Runner) confirmedRow(ctx context.Context, t Task, revision int) error {
 	}
 	return r.timeline.RecordFactRow(ctx, Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Kind: EventPlanQuestionAnswered,
 		Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"revision": revision, "index": idx, "answer": qs[idx-1].Answer, "decision": DecisionConfirm},
-		IdentityKey: identityKey(EventPlanQuestionAnswered, t.ID, strconv.Itoa(revision), strconv.Itoa(idx))})
+		IdentityKey: IdentityKey(EventPlanQuestionAnswered, t.ID, strconv.Itoa(revision), strconv.Itoa(idx))})
 }
 
 // confirms reports whether plan p of task t asks the confirmation: it

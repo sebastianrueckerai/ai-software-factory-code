@@ -216,7 +216,7 @@ func TestDependencyClosedGoesToRung2WithTheClosersReason(t *testing.T) {
 		Detail: map[string]any{"reason": "issue closed by sebastian"}}); err != nil {
 		t.Fatal(err)
 	}
-	out := g.trip(t, depEndedReason(Dependency{TaskID: "dep1", Issue: 1451, Key: "api", Status: "closed"}))
+	out := g.trip(t, DepEndedReason(Dependency{TaskID: "dep1", Issue: 1451, Key: "api", Status: "closed"}))
 	g.settle()
 	c := caseByID(t, g.s, out.CaseID)
 	if out.Rung != 2 || c.Kind != CaseDependencyClosed || len(g.rows(t, EventCaseClimbed)) != 1 || g.chat.calls != 0 || len(g.stepsOfRung(t, out.CaseID, 1)) != 0 {
@@ -245,7 +245,7 @@ func TestClosedWhyIsMaskedInTheStatement(t *testing.T) {
 		Detail: map[string]any{"reason": "issue closed, " + leaky}}); err != nil {
 		t.Fatal(err)
 	}
-	out := g.trip(t, depEndedReason(Dependency{TaskID: "dep1", Issue: 1451, Key: "api", Status: "closed"}))
+	out := g.trip(t, DepEndedReason(Dependency{TaskID: "dep1", Issue: 1451, Key: "api", Status: "closed"}))
 	g.settle()
 	text, err := g.r.RungTwoStatement(ctx, out.CaseID)
 	if err != nil || !strings.Contains(text, "issue closed") || strings.Contains(text, "user:pass") || strings.Contains(text, "abc123def456") {
@@ -280,7 +280,7 @@ func TestSkippedRung1KindsMeetTheSpentJudgmentBudget(t *testing.T) {
 		reason string
 		judged bool
 	}{
-		"a closed dependency": {depEndedReason(Dependency{TaskID: "dep1", Issue: 1451, Key: "api", Status: "closed"}), false},
+		"a closed dependency": {DepEndedReason(Dependency{TaskID: "dep1", Issue: 1451, Key: "api", Status: "closed"}), false},
 		"a policy class":      {policyClassReason, true},
 	} {
 		reason := tc.reason

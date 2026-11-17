@@ -171,7 +171,7 @@ func TestHandedUpByReadsAMomentsHandUpStepAsTheHandUp(t *testing.T) {
 		{Rung: 0, Outcome: StepHandedUp, Found: "no resolver fits"},
 		{Rung: 1, Outcome: StepHandedUp, Decision: RungHandUp, Grounds: "a goal conflict: the objective contradicts the review"},
 	}
-	up := handedUpBy(steps, 0, "")
+	up := HandedUpBy(steps, 0, "")
 	if up == nil || up.Action != "" || up.Grounds != "" || up.Found != "a goal conflict: the objective contradicts the review" || up.Rung != 1 {
 		t.Fatalf("hand-up = %+v, want the moment's grounds found, no action, rung 1", up)
 	}
@@ -246,7 +246,7 @@ func TestRungZeroTakesNothingOnFactsReadPartly(t *testing.T) {
 		if unread {
 			g.r.objects = unreadable{ObjectStore: g.r.objects, key: "sessions/t1/timeline.jsonl"}
 		}
-		out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: capReached + "\nlast: no session produced a result", Head: "h2"}, tripAttempt{N: 1})
+		out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: CapReached + "\nlast: no session produced a result", Head: "h2"}, tripAttempt{N: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -279,14 +279,14 @@ func TestFindingsLead(t *testing.T) {
 	f := CaseFacts{Head: "h2", Findings: []string{"r1", "a1", "c1"},
 		FindingTexts: map[string]string{"r1": "the review's finding", "a1": "the audit's finding", "c1": "the checks' finding"},
 		FindingOrder: []string{"c1", "r1", "a1"}, ReviewFindings: []string{"r1"}, AuditFindings: []string{"a1"}}
-	if got := findingsLead(CaseSessionCap, f); got != `The review or the audit left 2 findings unresolved on the head h2: "the review's finding"; "the audit's finding".` {
+	if got := FindingsLead(CaseSessionCap, f); got != `The review or the audit left 2 findings unresolved on the head h2: "the review's finding"; "the audit's finding".` {
 		t.Fatalf("lead = %q", got)
 	}
-	if got := findingsLead(CaseGateStop, f); got != "" {
+	if got := FindingsLead(CaseGateStop, f); got != "" {
 		t.Fatalf("a gate stop leads %q, want nothing", got)
 	}
 	f.ReviewFindings, f.AuditFindings = nil, nil
-	if got := findingsLead(CaseBudgetFloor, f); got != "" {
+	if got := FindingsLead(CaseBudgetFloor, f); got != "" {
 		t.Fatalf("the checks' findings alone lead %q, want nothing", got)
 	}
 	f.ReviewFindings, f.AuditFindings = []string{"r1"}, []string{"a1"}
@@ -296,7 +296,7 @@ func TestFindingsLead(t *testing.T) {
 		f.FindingTexts[id] = text
 		f.ReviewFindings = append(f.ReviewFindings, id)
 	}
-	if got := findingsLead(CaseAgentTimeCap, f); !strings.HasSuffix(got, `"five"; and 2 more.`) || !strings.HasPrefix(got, "The review or the audit left 7 findings unresolved on the head h2:") {
+	if got := FindingsLead(CaseAgentTimeCap, f); !strings.HasSuffix(got, `"five"; and 2 more.`) || !strings.HasPrefix(got, "The review or the audit left 7 findings unresolved on the head h2:") {
 		t.Fatalf("lead = %q, want the findings cut past the fifth", got)
 	}
 }

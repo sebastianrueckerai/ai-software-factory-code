@@ -1,0 +1,30 @@
+{
+ "card": {
+  "issue": 1505,
+  "task_id": "t-board-criteria-rerun",
+  "repository": "sf/code",
+  "kind": "criteria-rerun",
+  "track": "direct",
+  "source": "webhook",
+  "size": "",
+  "rung": "",
+  "budget_eur": 10,
+  "ceiling_eur": 14,
+  "objective": "Re-judge the criteria of plan #61",
+  "plan": null,
+  "depends_on": [],
+  "autonomy": "",
+  "merge_rule": ""
+ },
+ "sessions": [],
+ "gates": [],
+ "checks": [],
+ "asks": [],
+ "answers": [],
+ "cases": [],
+ "script": {
+  "rung1": [],
+  "rung2": []
+ },
+ "expect": null
+}

@@ -614,6 +614,10 @@ type forgejoHub struct {
 	branches map[string]string
 	// files are the raw files by "<ref>:<path>", unlisted: 404
 	files map[string]string
+	// statuses are combined-status bodies by commit, unlisted: no check
+	// reported; statusReads are the commits read, in order
+	statuses    map[string]string
+	statusReads []string
 }
 
 func (h *forgejoHub) minted() []string {
@@ -659,6 +663,11 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 				return
 			}
 			io.WriteString(w, body)
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/commits/") && strings.HasSuffix(r.URL.Path, "/status"):
+			_, sha, _ := strings.Cut(r.URL.Path, "/commits/")
+			sha = strings.TrimSuffix(sha, "/status")
+			h.statusReads = append(h.statusReads, sha)
+			io.WriteString(w, cmp.Or(h.statuses[sha], statusBody("")))
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/") && strings.Count(r.URL.Path, "/") == 5:
 			fmt.Fprint(w, `{"default_branch":"main"}`)
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/") && strings.Count(r.URL.Path, "/") == 5:
@@ -965,7 +974,7 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	}
 	// read on the base repository and the fork to clone, write on the fork at the push: nothing else
 	if !slices.Contains(hub.calls, "mint task-t1-base read:repository sf/ai-software-factory-code,factory-agent/ai-software-factory-code") ||
-		!slices.Contains(hub.calls, "mint task-t1-push-own write:repository factory-agent/ai-software-factory-code") || len(hub.minted()) != 2 {
+		!slices.Contains(hub.calls, "mint task-t1-push-own-1 write:repository factory-agent/ai-software-factory-code") || len(hub.minted()) != 2 {
 		t.Fatalf("forgejo calls = %v, want a read token on sf and a write token on the fork", hub.calls)
 	}
 	if !slices.Equal(hub.revoked, []int64{101, 102}) {
@@ -2239,7 +2248,7 @@ func TestRunSessionThatCannotStartEscalatesAtOnce(t *testing.T) {
 			if len(res.Findings) != 0 || res.Model != "factory/small" || res.Trip != "" {
 				t.Fatalf("findings %q, trip %q on %s, want none of its own on its model", res.Findings, res.Trip, res.Model)
 			}
-			if got := escalationSource(res.Reason); got != "start" {
+			if got := EscalationSource(res.Reason); got != "start" {
 				t.Fatalf("escalation source = %q, want start", got)
 			}
 			if end := timelineStep(t, objects, "t4i", "session_end"); end["outcome"] != string(OutcomeEscalate) || end["summary"] != tc.summary {
@@ -2275,7 +2284,7 @@ func TestRunSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	if !strings.Contains(res.Reason, "(Fund on the board) and answer") {
 		t.Fatalf("reason = %q, want the Fund action", res.Reason)
 	}
-	if got := escalationSource(res.Reason); got != "budget" {
+	if got := EscalationSource(res.Reason); got != "budget" {
 		t.Fatalf("escalation source = %q, want budget", got)
 	}
 	if len(store.sessions) != 0 || len(kube.podOrder) != 0 || slices.ContainsFunc(hub.calls, func(c string) bool { return strings.HasPrefix(c, "mint ") }) {
@@ -3301,7 +3310,7 @@ func TestContentFilterRefusalGoesToAHuman(t *testing.T) {
 	if res.Outcome != OutcomeEscalate || res.Reason != prefix+zaiFilterSummary+suffix {
 		t.Fatalf("content-filter refusal: %+v", res)
 	}
-	if got := escalationSource(res.Reason); got != "content_filter" {
+	if got := EscalationSource(res.Reason); got != "content_filter" {
 		t.Fatalf("escalation source = %q, want content_filter", got)
 	}
 	for name, summary := range map[string]string{
@@ -3311,7 +3320,7 @@ func TestContentFilterRefusalGoesToAHuman(t *testing.T) {
 		"z.ai's rate limit":     `ZaiException - {"error":{"code":"1302","message":"rate limit"}} (status 429)`,
 	} {
 		res = sessionResult(sessionSpec{id: "s1"}, sessionOutcome{result: &harness.Result{Success: false, Summary: summary}})
-		if res.Outcome != OutcomeNoPush || strings.HasPrefix(res.Reason, contentFilterRefusal) {
+		if res.Outcome != OutcomeNoPush || strings.HasPrefix(res.Reason, ContentFilterRefusal) {
 			t.Errorf("%s opens a content-filter case: %+v", name, res)
 		}
 	}
@@ -4391,7 +4400,7 @@ func TestRunSessionOfAReportNeverTripsSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","reason":"r"}`}}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	done := make(chan error)
 	go func() {
 		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
@@ -4954,7 +4963,7 @@ func TestRunSessionOfAReportStatesNoPace(t *testing.T) {
 		t.Fatal(err)
 	}
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","reason":"one failing command"}`}}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	done := make(chan error)
 	go func() {
 		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
@@ -5014,7 +5023,7 @@ func liveRig(t *testing.T, answers ...CheckinResponse) (*Runner, *forgejoHub, *f
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 	chat := &scriptedChat{answers: answers}
-	runner.checkin = chat
+	runner.Checkin = chat
 	return runner, hub, kube, worker, chat, store, objects
 }
 
@@ -5277,21 +5286,17 @@ func TestRunSessionPushesAnEmptyBriefWithoutACheckin(t *testing.T) {
 }
 
 // The gates tool shows what the review's claim runs settled: the findings
-// a run dropped with its evidence, and the claims no run settled, the
-// unsettled ones carried as pending claims.
+// a run dropped with its evidence, and the claims no run settled.
 func TestRunnerToolsGatesShowTheClaimRuns(t *testing.T) {
 	r := &Runner{}
 	tools := &runnerTools{r: r, ask: &CheckInAsk{Gates: &GateResults{Pin: 7},
 		Review: &Review{
 			Dropped:   []Dropped{{Finding: "TestA fails", Evidence: "go test -run TestA ./p at main: exit 0"}},
 			Unsettled: []string{"TestB in ./p at head was not run"},
-			Pending:   []PendingClaim{{Claim: testClaim(0, "TestB", "./p", RefHead, OutcomeFail), Finding: "TestB fails at head"}},
 			Upheld:    []string{"TestC fails: go test -run TestC ./p at head (abc): exit 1, the test did fail as claimed:\nFAIL"},
 		}}}
 	out, _, err := tools.Tool(t.Context(), "gates", nil)
-	for _, want := range []string{`"Pin":7`, `"review_dropped":[{`, "TestA fails", "exit 0", `"review_unsettled":["TestB in ./p at head was not run"]`,
-		`"review_pending":[{"claim":{"finding":0,"kind":"test","symbol":"TestB","package":"./p","ref":"head","outcome":"fail"},"finding":"TestB fails at head"}]`,
-		`"review_upheld":["TestC fails: go test -run TestC ./p at head (abc): exit 1, the test did fail as claimed:\nFAIL"]`} {
+	for _, want := range []string{`"Pin":7`, `"review_dropped":[{`, "TestA fails", "exit 0", `"review_unsettled":["TestB in ./p at head was not run"]`, `"review_upheld":["TestC fails: go test -run TestC ./p at head (abc): exit 1, the test did fail as claimed:\nFAIL"]`} {
 		if err != nil || !strings.Contains(out, want) {
 			t.Fatalf("gates = (%q, %v), want %q", out, err, want)
 		}
@@ -5826,7 +5831,7 @@ func (c *takingChat) Call(ctx context.Context, _, _ string, _ CheckinRequest) (C
 func TestStaleAttemptTakenOverDuringACheckinStopsNothing(t *testing.T) {
 	runner, hub, kube, _, _, store, objects := liveRig(t)
 	chat := &takingChat{store: store}
-	runner.checkin = chat
+	runner.Checkin = chat
 	_, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil, commands(0, 24)+hangLogs)
 	var app *temporal.ApplicationError
 	if chat.calls.Load() != 1 || !errors.As(err, &app) || app.Message() != errSuperseded.Error() {

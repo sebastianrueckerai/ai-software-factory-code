@@ -60,12 +60,12 @@ func TestAConfirmedCriteriaRequestGetsNoCaseFromTheHeal(t *testing.T) {
 
 // A month cap's human card keeps its kind, and its question's choices answer
 // it through the real Act: "Decided, close" closes the card, "Let it stand"
-// leaves its case at the human.
+// settles its case and the card keeps its wait.
 func TestAMonthCapHumanCardIsAnsweredByItsChoices(t *testing.T) {
 	for _, tc := range []struct {
 		value  string
 		status string
-	}{{AnswerClose, CaseResolved}, {AnswerPark, CaseAtHuman}} {
+	}{{AnswerClose, CaseResolved}, {AnswerPark, CaseResolved}} {
 		t.Run(tc.value, func(t *testing.T) {
 			g := newTripRig(t, "success")
 			ctx := context.Background()
@@ -95,7 +95,7 @@ func TestAMonthCapHumanCardIsAnsweredByItsChoices(t *testing.T) {
 func TestAnAskStoresTheOffersOfTheLiveFacts(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.faceStop(ctx, "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.FaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")
@@ -105,7 +105,7 @@ func TestAnAskStoresTheOffersOfTheLiveFacts(t *testing.T) {
 	stale := cases[0]
 	stale.Facts = nil
 	task, _, _ := g.r.task(ctx, "t1")
-	live, err := g.r.factsAtCase(ctx, task, cases[0])
+	live, err := g.r.FactsAtCase(ctx, task, cases[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestAnAskStoresTheOffersOfTheLiveFacts(t *testing.T) {
 	if slices.Equal(offerValues(liveOffers), offerValues(staleOffers)) {
 		t.Fatalf("the live facts and the case's own offer the same %v: the test cannot tell them apart", offerValues(liveOffers))
 	}
-	if _, err := g.r.askHuman(ctx, task, stale, capReached, "next", nil, nil); err != nil {
+	if _, err := g.r.AskHuman(ctx, task, stale, CapReached, "next", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	asks := g.asks(t)
@@ -128,7 +128,7 @@ func TestAnAskStoresTheOffersOfTheLiveFacts(t *testing.T) {
 func TestAFailedWorkRefreshesTheStoredOffers(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.faceStop(ctx, "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.FaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")

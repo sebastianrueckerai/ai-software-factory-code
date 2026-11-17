@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -30,7 +31,7 @@ func TestRunSessionAgentEscalation(t *testing.T) {
 	objects := &fakeObjectStore{}
 	runner, hub, store := newTestRunner(t, supervisedTask("t2"), kube, objects)
 	chat := &scriptedChat{}
-	runner.checkin = chat
+	runner.Checkin = chat
 	runner.stopWait = 200 * time.Millisecond
 
 	delivered := make(chan error, 1)
@@ -96,7 +97,7 @@ func TestRunSessionAgentEscalationBeatsCheckin(t *testing.T) {
 	var once sync.Once
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","guidance":"try another way"}`}}, delay: 20 * time.Second}
 	chat.onCall = func() { once.Do(func() { close(inFlight) }) }
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	delivered := make(chan error, 1)
 	go func() {
@@ -553,7 +554,7 @@ func TestRunSessionParksAtTheMonthCap(t *testing.T) {
 	if res.Capped == nil || res.Capped.Decision != policy.RefusedMonthCap || res.Capped.Reason != refusal {
 		t.Fatalf("capped = %+v, want the month cap's refusal", res.Capped)
 	}
-	if got := escalationSource(res.Reason); got != "month_cap" {
+	if got := EscalationSource(res.Reason); got != "month_cap" {
 		t.Fatalf("escalation source = %q, want month_cap", got)
 	}
 	// a session the month cap did not refuse ends as before
@@ -590,10 +591,10 @@ func TestRunSessionWaitsForTheDayCap(t *testing.T) {
 	if want := question + "\nthe gateway refused this task's spend (refused_day_cap): " + refusal; reason != want || !until.Equal(time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("reason %q until %v, want %q until 2026-10-15 00:00 UTC", reason, until, want)
 	}
-	if got := escalationQuestion(reason); got != question {
+	if got := EscalationQuestion(reason); got != question {
 		t.Fatalf("question row = %q, want %q", got, question)
 	}
-	if got := escalationSource(reason); got != "day_cap" {
+	if got := EscalationSource(reason); got != "day_cap" {
 		t.Fatalf("escalation source = %q, want day_cap", got)
 	}
 }
@@ -638,6 +639,46 @@ func TestRunSessionNamesAProviderRefusal(t *testing.T) {
 	store.capRefusals = map[string]CapRefusal{"t1": {Refusal: policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "spent"}}}
 	if res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil, resultLine(false, said)); err != nil || res.Outcome != OutcomeEscalate {
 		t.Fatalf("month cap and a provider refusal = %+v, %v, want escalate", res, err)
+	}
+}
+
+// A session whose first call the gateway refused with a named provider
+// limit ends provider_refused carrying the reset and the provider's
+// words: the card holds to the reset (versionProviderFreeze), the status
+// the gateway answered with. A reason whose reset does not read names a
+// refusal with no moment, which keeps today's ladder: the card backs off
+// 2, 4, 8, 16 and 30 minutes rather than holding to nothing.
+func TestRunSessionNamesAProviderLimitRefusal(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix the slug", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
+	const said = "Rate limit reached (status 429)"
+	audit := "provider limit for class big: reset %s: %s"
+	for name, tc := range map[string]struct {
+		reason  string
+		outcome SessionOutcome
+		until   time.Time
+		words   string
+	}{
+		"named with an offset": {
+			fmt.Sprintf(audit, "2026-10-14T18:04:50Z", "five-hour limit resets at 2026-11-15 01:04:50 (GMT+8)"),
+			OutcomeProviderRefused,
+			time.Date(2026, 10, 14, 18, 4, 50, 0, time.UTC), "five-hour limit resets at 2026-11-15 01:04:50 (GMT+8)"},
+		"an unreadable reset": {fmt.Sprintf(audit, "six o'clock", "soon"), OutcomeProviderRefused, time.Time{}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+			store.providerRefusals = map[string]string{"t1": tc.reason}
+			store.providerDecisions = map[string]string{"t1": gateway.RefusedProviderLimit}
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil, resultLine(false, said))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Outcome != tc.outcome || !res.Until.Equal(tc.until) || res.Words != tc.words {
+				t.Fatalf("result = %+v, want %s, the reset %v and the words %q", res, tc.outcome, tc.until, tc.words)
+			}
+			if tc.outcome == OutcomeProviderRefused && (res.Status != 429 || res.Reason != said) {
+				t.Fatalf("result = %+v, want provider_refused at 429 with the worker's message", res)
+			}
+		})
 	}
 }
 
@@ -710,7 +751,7 @@ func TestRunSessionNamesACostHoldCrossing(t *testing.T) {
 			}
 			var run taskRun
 			run.remember("session", 13, res.Findings)
-			card := run.sessionCapCard(capReached, res.Summary, nil)
+			card := run.sessionCapCard(CapReached, res.Summary, nil)
 			if !strings.Contains(card, "\nlast: "+tc.want+"\n") || !strings.HasSuffix(card, "\n- session, attempt 13: "+line) {
 				t.Fatalf("card = %q, want the state as its last line and its newest finding", card)
 			}
@@ -737,7 +778,7 @@ func TestProjectCapRefusalEscalates(t *testing.T) {
 	if res.Capped == nil || res.Capped.Decision != policy.RefusedProjectCap || res.Capped.Reason != refusal {
 		t.Fatalf("capped = %+v, want the project cap's refusal", res.Capped)
 	}
-	if got := escalationSource(res.Reason); got != "project_cap" {
+	if got := EscalationSource(res.Reason); got != "project_cap" {
 		t.Fatalf("escalation source = %q, want project_cap", got)
 	}
 }

@@ -213,6 +213,17 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		ap.Asks = slotless
 		if own {
 			ap.Hosted = true // its case's parts div shows the ask
+			if d := ap.Decide; d != nil {
+				// the case's parts div shows the approval's own five
+				// parts — the ask with its numbers, the why of the ask —
+				// keeping what the case itself wrote: its brief as the
+				// info, its recommendation with its writer
+				row.Face.Ask, row.Face.Why = d.Ask, d.Why
+				row.Face.Money, row.Face.Info = cmp.Or(row.Face.Money, d.Money), cmp.Or(row.Face.Info, d.Info)
+				if row.Face.Recommendation == "" {
+					row.Face.Recommendation, row.Face.Source = d.Recommendation, d.Source
+				}
+			}
 			row.Approval = &ap
 		} else {
 			row.Extras = append(row.Extras, ap)
@@ -291,13 +302,17 @@ func casesInView(r *http.Request) map[string]int64 {
 }
 
 // approvalOf says whether approval request a is the body of case k: a
-// merge request of the merge case that names it, a plan's of its plan
-// question or confirmation, which the case's own form answers.
+// merge request of the merge case that names it, a resource request of
+// its case of the resource kind — the export's shape, as the store opens
+// no case of its own for one — a plan's of its plan question or
+// confirmation, which the case's own form answers.
 func approvalOf(a factoryd.ApprovalRequest, k factoryd.Case) bool {
 	switch k.Kind {
 	case factoryd.CaseMergeApproval:
 		id, _ := json.Marshal(k.Facts["approval"])
 		return a.Kind == factoryd.ApprovalMerge && string(id) == strconv.FormatInt(a.ID, 10)
+	case factoryd.CaseKind(factoryd.ApprovalResource):
+		return a.Kind == factoryd.ApprovalResource
 	case factoryd.CasePlanCriteria:
 		id, _ := json.Marshal(k.Facts["approval"])
 		return slices.Contains([]string{factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun}, a.Kind) && string(id) == strconv.FormatInt(a.ID, 10)

@@ -412,7 +412,7 @@ func TestAnUnreadablePinnedPolicyRefusesRung2ApproveAndLeavesTheHumanTheirs(t *t
 	unread := func(c Case, entry string) {
 		t.Helper()
 		task, _, _ := g.s.Task(context.Background(), "t1")
-		f, err := g.r.factsAtCase(context.Background(), task, c)
+		f, err := g.r.FactsAtCase(context.Background(), task, c)
 		if err != nil || !slices.Equal(f.Partial, []string{entry}) {
 			t.Fatalf("facts: Partial %q, %v; want [%q]", f.Partial, err, entry)
 		}

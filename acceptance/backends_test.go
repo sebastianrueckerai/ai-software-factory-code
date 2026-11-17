@@ -605,8 +605,8 @@ func (s *acceptanceStore) CapRefusal(context.Context, string, time.Time) (*facto
 	return nil, nil
 }
 
-func (s *acceptanceStore) ProviderRefusal(context.Context, string, time.Time) (string, bool, error) {
-	return "", false, nil
+func (s *acceptanceStore) ProviderRefusal(context.Context, string, time.Time) (string, string, bool, error) {
+	return "", "", false, nil
 }
 
 func (s *acceptanceStore) ModelAnswered(context.Context, string, time.Time) (bool, error) {
@@ -1494,6 +1494,16 @@ func (s *acceptanceStore) LeaveQueue(_ context.Context, taskID string) (string, 
 	}
 	s.queue = slices.Delete(s.queue, i, i+1)
 	return "demo-app/demo-app", true, nil
+}
+
+func (s *acceptanceStore) MergeQueuePlaces(context.Context) (map[string]factoryd.QueuePlace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]factoryd.QueuePlace{}
+	for i, id := range s.queue {
+		out[id] = factoryd.QueuePlace{Ahead: i, HeadTask: s.queue[0], HeadIssue: s.tasks[s.queue[0]].IssueNumber}
+	}
+	return out, nil
 }
 
 func (s *acceptanceStore) WaitingQueueHeads(context.Context) ([]string, error) { return nil, nil }

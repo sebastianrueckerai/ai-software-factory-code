@@ -36,6 +36,11 @@ type AuditResult struct {
 	// MovedTo is the head the pull request held instead of the audited
 	// commit, when the audit did not run for it
 	MovedTo string `json:"moved_to,omitempty"`
+	// Confirmed are the findings a person confirmed (audit confirm),
+	// keyed by the finding's text prefix, each with who, why and when.
+	// The verdict settles past them; the audit model neither sees nor
+	// answers them.
+	Confirmed map[string]Adjudication `json:"confirmed,omitempty"`
 }
 
 // AuditFinding is one checklist item a change touches; Line is in the new
@@ -45,6 +50,19 @@ type AuditFinding struct {
 	File string `json:"file,omitempty"`
 	Line int    `json:"line,omitempty"`
 	Why  string `json:"why"`
+}
+
+// Text is the finding's identity a person's confirmation names: its item,
+// where a file and line name one, with no word of the model's why, so a
+// confirmation still matches the next audit's wording of the same spot.
+func (f AuditFinding) Text() string {
+	switch {
+	case f.File == "":
+		return f.Item
+	case f.Line == 0:
+		return f.Item + " at " + f.File
+	}
+	return f.Item + " at " + f.File + ":" + strconv.Itoa(f.Line)
 }
 
 const (
@@ -125,6 +143,50 @@ func parseAudit(content string) ([]AuditFinding, string) {
 	return out, ""
 }
 
+// auditConfirmedOf is the confirmation that covers finding f: the key of
+// confirmed that prefixes f's text, the longest such key winning. A
+// finding that names no verdict (the audit did not run) is no person's to
+// confirm: never covered. false: none.
+func auditConfirmedOf(f AuditFinding, confirmed map[string]Adjudication) (string, Adjudication, bool) {
+	if f.Item == auditNoVerdict {
+		return "", Adjudication{}, false
+	}
+	text, key, adj, found := f.Text(), "", Adjudication{}, false
+	for k, got := range confirmed {
+		if !strings.HasPrefix(text, k) {
+			continue
+		}
+		if !found || len(k) > len(key) {
+			key, adj, found = k, got, true
+		}
+	}
+	return key, adj, found
+}
+
+// auditConfirmations reads the audit findings a person confirmed on the
+// task (audit-confirm): the audit_finding_confirmed steps, each the
+// finding's text prefix a person judged a fixture, with who, why and
+// when; a later step's over an earlier one's prefix. A card with no
+// timeline confirmed none.
+func (r *Runner) auditConfirmations(ctx context.Context, taskID string) (map[string]Adjudication, error) {
+	b, err := r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]Adjudication{}
+	for line := range strings.SplitSeq(string(b), "\n") {
+		var step struct {
+			Step, By, Finding, Why string
+			Time                   time.Time
+		}
+		if json.Unmarshal([]byte(line), &step) != nil || step.Step != stepAuditConfirmed {
+			continue
+		}
+		out[step.Finding] = Adjudication{By: step.By, Why: step.Why, When: step.Time}
+	}
+	return out, nil
+}
+
 // GateAudit is the audit stage on the pull request's head,
 // for a project that switches it on under the task's pinned version: a
 // deterministic scan of the added lines for secret shapes, then the audit
@@ -136,7 +198,10 @@ func parseAudit(content string) ([]AuditFinding, string) {
 // parts; the parts' findings keep the first maxJoinedFindings. A diff the
 // card cannot pay for, or past maxDiffRead, is one finding and no call.
 // The findings go to the card and the timeline, never to the
-// pull request, which the agent reads. An audit beside the checks wait
+// pull request, which the agent reads. The findings a person confirmed
+// (audit-confirm) hold no verdict: the audit reads their steps off the
+// timeline and settles past them, theirs the who, why and when beside the
+// verdict. An audit beside the checks wait
 // (gates.Beside) starts its gate at its own schedule. round is the
 // stages' pass that runs it, which keys its fact row with the head; 0 is
 // an activity scheduled before the workflow passed it.
@@ -158,7 +223,11 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		r.record(ctx, t.ID, StepStageSkipped, map[string]any{"stage": policy.StageAudit, "reason": auditNotSwitchedOn})
 		return AuditResult{Skipped: auditNotSwitchedOn}, nil
 	}
-	res := AuditResult{Model: r.callModel(t, policy.PurposeAudit)}
+	confirmed, err := r.auditConfirmations(ctx, taskID)
+	if err != nil {
+		return AuditResult{}, err
+	}
+	res := AuditResult{Model: r.callModel(t, policy.PurposeAudit), Confirmed: confirmed}
 	noVerdict := func(why string) {
 		res.Findings = append(res.Findings, AuditFinding{Item: auditNoVerdict, Why: why})
 	}
@@ -287,18 +356,31 @@ var failedStatus = regexp.MustCompile(`^status \d+`)
 // model's file is scrubbed where it is read, a pre-check hit's path is
 // the diff's own), settles its verdict and puts it on the timeline and
 // in its fact row (auditFact); beside: the audit ran beside the checks
-// wait (besideEnd).
+// wait (besideEnd). The findings a person confirmed hold no verdict: each
+// covered one leaves the findings for the confirmation that covers it,
+// whose who and why are scrubbed the same way.
 func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit string, round int, beside bool, res AuditResult, scrub *redact.Scrubber) (AuditResult, error) {
 	for i, f := range res.Findings {
 		res.Findings[i] = AuditFinding{Item: textutil.Truncate(scrub.String(f.Item), maxAuditField), File: textutil.Truncate(f.File, maxAuditField),
 			Line: f.Line, Why: textutil.Truncate(scrub.String(f.Why), maxAuditField)}
+	}
+	var kept []AuditFinding
+	for _, f := range res.Findings {
+		if _, _, ok := auditConfirmedOf(f, res.Confirmed); ok {
+			continue
+		}
+		kept = append(kept, f)
+	}
+	res.Findings = kept
+	for k, adj := range res.Confirmed {
+		res.Confirmed[k] = Adjudication{By: adj.By, Why: textutil.Truncate(scrub.String(adj.Why), maxAuditField), When: adj.When}
 	}
 	res.Verdict = AuditClear
 	if len(res.Findings) > 0 {
 		res.Verdict = AuditFindings
 	}
 	r.record(ctx, t.ID, "audit", besideEnd(ctx, t, GateAudit, beside, map[string]any{"pr": pr.Number, "commit": commit, "model": res.Model,
-		"deployment": res.Deployment, "verdict": res.Verdict, "findings": res.Findings}))
+		"deployment": res.Deployment, "verdict": res.Verdict, "findings": res.Findings, "confirmed": res.Confirmed}))
 	return res, r.auditFact(ctx, t, pr, commit, round, res)
 }
 
@@ -312,5 +394,5 @@ func (r *Runner) auditFact(ctx context.Context, t Task, pr PullRequest, commit s
 		detail["ran"], detail["verdict"], detail["reason"] = false, "", textutil.Truncate(res.Findings[i].Why, maxFactReason)
 	}
 	return r.timeline.RecordFactRow(ctx, Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Kind: EventGateAudit,
-		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail, IdentityKey: identityKey(EventGateAudit, t.ID, commit, strconv.Itoa(round))})
+		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail, IdentityKey: IdentityKey(EventGateAudit, t.ID, commit, strconv.Itoa(round))})
 }

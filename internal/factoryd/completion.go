@@ -33,9 +33,13 @@ type Completion struct {
 func TokenName(taskID string) string     { return "task-" + taskID }
 func BaseTokenName(taskID string) string { return TokenName(taskID) + "-base" }
 
-// PushTokenName names the write token of the RunSession attempt owner: a
-// reattached attempt mints its own while the attempt it replaced still
-// holds one, and reconcile revokes both with the card's other tokens.
+// PushTokenName names the session's write token on the fork at the ask's
+// own ordinal: the first ask mints task-<id>-push-own-1, a push refused as
+// a dead credential re-asks and mints task-<id>-push-own-2, and so on — a
+// fresh name per ask, so a retry after a refusal always carries a live
+// token even when a concurrent cleanup revoked the refused one (issue
+// 1836), and reconcile still revokes every one of the card's tokens by its
+// task-<id>- prefix.
 func PushTokenName(taskID, owner string) string { return TokenName(taskID) + "-push-" + owner }
 
 // isTaskToken: name is one of the card's tokens, TokenName's own or one

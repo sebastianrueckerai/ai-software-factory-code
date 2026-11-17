@@ -719,7 +719,7 @@ func (s *PGStore) CalibrateEstimate(ctx context.Context, r policy.HoldRequest) (
 	return policy.CalibrateEstimate(ctx, s.db, r)
 }
 
-// Opening is how the newest sessions opened on ref, read for the task
+// Opening is how the task's own newest sessions opened on ref
 // (policy.ReadOpening).
 func (s *PGStore) Opening(ctx context.Context, taskID, ref string) (policy.Opening, error) {
 	return policy.ReadOpening(ctx, s.db, taskID, ref)

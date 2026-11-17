@@ -36,7 +36,7 @@ func (g rungRig) askedOf(t *testing.T, id int64, key string) string {
 func (g rungRig) spendChat(t *testing.T) Task {
 	t.Helper()
 	ctx := context.Background()
-	chat, err := g.r.judgmentTask(ctx, Task{Repository: "demo-app/demo-app"})
+	chat, err := g.r.JudgmentTask(ctx, Task{Repository: "demo-app/demo-app"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestJudgedCaseIsNotMarkedUnjudged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.r.climb(ctx, task, c, CaseFacts{}, 1, "the stop reads as gate_stop"); err != nil {
+	if _, err := g.r.Climb(ctx, task, c, CaseFacts{}, 1, "the stop reads as gate_stop"); err != nil {
 		t.Fatal(err)
 	}
 	if got := caseByID(t, g.s, c.ID); got.Problem != "stuck" || got.Status != CaseAtHuman {
@@ -354,7 +354,7 @@ func TestFailedMoneyCardRecordsTheConsolesSuggestion(t *testing.T) {
 	g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: dead, Timeline: g.r.timeline}
 	chat := g.spendChat(t)
 	task, _, _ := g.r.task(ctx, "t1")
-	g.r.fileJudgmentCard(ctx, task, chat)
+	g.r.FileJudgmentCard(ctx, task, chat)
 	stops, err := g.s.TaskEventsOfKind(ctx, chat.ID, EventChatBudgetSpent, 1)
 	if err != nil || len(stops) != 1 {
 		t.Fatalf("stops %+v, %v", stops, err)
@@ -403,7 +403,7 @@ func TestCountReachedAddsOneStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if _, err := g.r.countReached(ctx, c, 6); err != nil {
+		if _, err := g.r.CountReached(ctx, c, 6); err != nil {
 			t.Fatal(err)
 		}
 	}

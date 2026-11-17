@@ -298,8 +298,8 @@ func TestCaseFaceMasksEveryTextItReads(t *testing.T) {
 	}
 }
 
-// The face's info is the ask's, with the last answer's time under it, and
-// the card's life loads on demand behind a fold.
+// The face's info is the ask's, without a processed-at line, and the
+// card's life loads on demand behind a fold.
 func TestCaseFaceInfoIsTheAsksAndTheLifeLoadsOnDemand(t *testing.T) {
 	r := newRig(t)
 	seatCases(r)
@@ -307,11 +307,14 @@ func TestCaseFaceInfoIsTheAsksAndTheLifeLoadsOnDemand(t *testing.T) {
 	r.caseAnswered = map[string]time.Time{"t-a": time.Date(2026, 11, 1, 21, 40, 0, 0, time.UTC)}
 	ck, _ := r.loggedIn(t)
 	needs := needsOf(t, r, ck, "/")
-	for _, want := range []string{"Postgres is shared.", "Last answer processed: 2026-11-01 21:40 UTC",
+	for _, want := range []string{"Postgres is shared.",
 		`<details class="fold" hx-get="/tasks/t-a/digest" hx-trigger="toggle once"`, "◷ 1 h 0 min"} {
 		if !strings.Contains(needs, want) {
 			t.Errorf("the face lacks %q:\n%s", want, needs)
 		}
+	}
+	if strings.Contains(needs, "Last answer processed:") {
+		t.Errorf("the face carries a processed-at line:\n%s", needs)
 	}
 }
 

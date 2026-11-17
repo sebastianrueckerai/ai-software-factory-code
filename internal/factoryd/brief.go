@@ -32,7 +32,7 @@ const briefBatch = 20
 
 // briefTerminal prefixes a brief_error a terminal failure wrote: no retry
 // can fix it, so a pass takes the row no more.
-const briefTerminal = "terminal: "
+const BriefTerminal = "terminal: "
 
 // briefChars and detailChars bound what a card shows of the writer's
 // answer, marked when cut.
@@ -234,12 +234,12 @@ func (b *BriefWriter) failed(ctx context.Context, t Task, err error, prev string
 	case errors.As(err, &refusal):
 		text = b.scrub(refusal.Decision + ": " + refusal.Reason)
 	case errors.As(err, &noBrief) && strings.HasPrefix(prev, noBriefMark):
-		text = briefTerminal + text
+		text = BriefTerminal + text
 	case errors.As(err, &noBrief):
 		text = noBriefMark + text
 	}
 	if isTerminal(err) {
-		text = briefTerminal + text
+		text = BriefTerminal + text
 	}
 	text = textutil.Truncate(text, 500)
 	if prev == text {
@@ -477,9 +477,6 @@ func briefFacts(a ApprovalRequest, t Task, criteria []criterionFact, life string
 		m["verdict_rows_of"] = s.Task
 		m["criteria"] = criteria
 		acts = "Waive ends one criterion with your one-line reason; Approve grants one more bounded card, which the planner drafts for the criteria still open; Confirm records the delivered cards as meeting every criterion, offered once every child card is done. Every criterion met or waived ends the request on the next sweep; no final press."
-		if a.Kind == ApprovalCriteriaRerun {
-			acts = "Waive ends one criterion with your one-line reason; Confirm records the delivered cards as meeting every criterion; Deny ends the request with your reason. No button runs the review that never judged them. Every criterion met or waived ends the request on the next sweep."
-		}
 	default:
 		return nil, "", terminalError("kind %q carries no brief", a.Kind)
 	}
@@ -558,7 +555,7 @@ func (s *PGStore) BrieflessApprovals(ctx context.Context, perProject int) ([]App
 		 FROM (SELECT *, row_number() OVER (PARTITION BY project ORDER BY id) AS n FROM approval_requests
 		       WHERE status = 'pending' AND brief = '' AND kind IN ($3, $4)
 		       AND (brief_error = '' OR brief_error NOT LIKE $2)) a
-		 WHERE n <= $1 ORDER BY id`, perProject, briefTerminal+"%", ApprovalResource, ApprovalPlan)
+		 WHERE n <= $1 ORDER BY id`, perProject, BriefTerminal+"%", ApprovalResource, ApprovalPlan)
 	if err != nil {
 		return nil, err
 	}

@@ -310,7 +310,7 @@ func askedReason(t *testing.T) (asked string) {
 	g.r.Scrub = redact.New("hunter2-configured-secret")
 	g.r.forgejo = &Forgejo{}
 	reason := AgentAsks + "Which file?\nWhy: " + strings.Repeat("x", 250) + " hunter2-configured-secret"
-	if _, err := g.r.askHuman(context.Background(), g.store.tasks["t1410"], Case{}, reason, "next", nil, nil); err != nil {
+	if _, err := g.r.AskHuman(context.Background(), g.store.tasks["t1410"], Case{}, reason, "next", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, e := range g.store.events {
@@ -365,7 +365,7 @@ func TestFlagCaseOpensForARefusedCheckin(t *testing.T) {
 // which the trip reads as a provider_refused case. No flag is needed.
 func TestAPlannersRefusedSessionsOpenAProviderRefusedCase(t *testing.T) {
 	ask := "the model provider refused the first call of 6 sessions in a row (status 429): " + refusedSession.Reason
-	if kind, _ := caseKindOf(escalationSource(ask), ask); kind != CaseProviderRefused {
+	if kind, _ := CaseKindOf(EscalationSource(ask), ask); kind != CaseProviderRefused {
 		t.Fatalf("the plan loop's ask opens a %s case, want provider_refused", kind)
 	}
 }

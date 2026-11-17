@@ -677,7 +677,7 @@ func TestPlanGuideCriteria(t *testing.T) {
 		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
 			"Each criterion has an id in snake_case and a kind naming the fields it uses, and states what the feature does for a caller at a surface that stays put while the cards are built: " +
 			"its HTTP API, its command line, its store as a test seeds and reads it, or the files and output it writes; never how it is built inside. " +
-			"kind test names its claim, its inputs and the numbers it expects, and its suite and its test's name: a card whose directories hold the suite writes its test, which runs in the sandbox bash check runs, " +
+			"kind test names its claim, its inputs and the numbers it expects, and its suite and its test's name: the citing card - or a proof card the planner files - lands the test, a card whose directories hold the suite writes its test, which runs in the sandbox bash check runs, " +
 			"so no browser, no device and no outside service; a want beyond the sandbox becomes a human criterion or waits as a note; " +
 			"kind invariant names its suite, a package path such as ./..., whose tests stay green, and nothing else; " +
 			"kind judgement names the claim a model judges, in inputs what the artifact a test writes must show, and the pinned prompt; " +
@@ -2375,14 +2375,14 @@ func TestIdenticalPlanRefileAnswerRowSurvivesARetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.store = &sweepFails{fakeStore: store, fails: 1}
-	if err := r.askConfirmation(ctx, store.tasks["t-plan"], 2, testPlan()); err == nil || !strings.Contains(err.Error(), "the store is down") {
+	if err := r.AskConfirmation(ctx, store.tasks["t-plan"], 2, testPlan()); err == nil || !strings.Contains(err.Error(), "the store is down") {
 		t.Fatalf("the first filing: %v, want the sweep's failure", err)
 	}
 	if rows := eventsOfKind(store, EventPlanQuestionAnswered); len(rows) != 0 {
 		t.Fatalf("answer rows %+v after the failed filing, want none yet", rows)
 	}
 	for range 2 {
-		if err := r.askConfirmation(ctx, store.tasks["t-plan"], 2, testPlan()); err != nil {
+		if err := r.AskConfirmation(ctx, store.tasks["t-plan"], 2, testPlan()); err != nil {
 			t.Fatalf("the retry: %v", err)
 		}
 	}
@@ -2422,7 +2422,7 @@ func TestIdenticalPlanRefileLeavesAHumansAnswer(t *testing.T) {
 	if err := store.AnswerPlanQuestion(ctx, "t-plan", 2, 1, DecisionRevise, "split the web card", "alice"); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.askConfirmation(ctx, store.tasks["t-plan"], 2, testPlan()); err != nil {
+	if err := r.AskConfirmation(ctx, store.tasks["t-plan"], 2, testPlan()); err != nil {
 		t.Fatalf("the retry: %v", err)
 	}
 	qs, _ := store.PlanQuestions(ctx, "t-plan", 2)
@@ -4599,7 +4599,7 @@ func TestPlanLoopSixProviderRefusalsAskAHuman(t *testing.T) {
 	h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 	want := "the model provider refused the first call of 6 sessions in a row (status 429): " + refusedSession.Reason
 	if final := h.run(t); final != "closed" || len(h.plans) != 6 || !slices.Equal(*backoffs, []int{120, 240, 480, 960, 1800}) ||
-		!slices.Equal(h.escalated, []string{want}) || escalationSource(want) != "provider" || len(h.usage) != 0 {
+		!slices.Equal(h.escalated, []string{want}) || EscalationSource(want) != "provider" || len(h.usage) != 0 {
 		t.Fatalf("final %q after %d sessions, backoffs %v, escalations %q, usage %+v; want %q, no attempt", final, len(h.plans), *backoffs, h.escalated, h.usage, want)
 	}
 }
@@ -4877,7 +4877,7 @@ func TestPlanLoopHealedOnTheTimeQuestionUnderCases(t *testing.T) {
 	})
 	budgets := planBudgets(h)
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "plan the API alone", Comment: 801})
-	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{healedReason}) {
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{HealedReason}) {
 		t.Fatalf("final %q, finals %v, escalated %q; want done after the healed re-ask alone", final, h.finals, h.escalated)
 	}
 	if len(h.plans) != 1 || !slices.Equal(h.plans[0], []string{"writer sebastian asked for changes to the plan: plan the API alone"}) ||

@@ -953,7 +953,7 @@ func TestOpenTripWithAKindTakesNoHealedPath(t *testing.T) {
 	g := newMonitorRig(t)
 	ctx := context.Background()
 	g.card(t, "t1", 12, "waiting-human")
-	out, err := g.m.Runner.OpenTrip(ctx, TripInput{TaskID: "t1", Reason: healedReason, Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20"}, tripAttempt{})
+	out, err := g.m.Runner.OpenTrip(ctx, TripInput{TaskID: "t1", Reason: HealedReason, Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20"}, tripAttempt{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1082,7 +1082,7 @@ func TestAPlanRowWithNoIssueAgesIntoOneQueuedOverBoundCaseThatRung2Closes(t *tes
 		if err != nil {
 			t.Fatal(err)
 		}
-		f, err := g.m.Runner.factsAtCase(ctx, task, c)
+		f, err := g.m.Runner.FactsAtCase(ctx, task, c)
 		if err != nil {
 			t.Fatal(err)
 		}

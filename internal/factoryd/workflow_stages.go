@@ -55,11 +55,16 @@ const noVerdict = "the review gave no verdict: "
 // (roadmap 192).
 const stepAdjudicated = "finding_adjudicated"
 
+// stepAuditConfirmed records a person's confirmation of one audit finding
+// (audit-confirm): the finding's text prefix a person judged a fixture,
+// with who, why and when, which the audit's verdict settles past.
+const stepAuditConfirmed = "audit_finding_confirmed"
+
 // reviewHistory opens the history lines of the review stage's findings.
 const reviewHistory = policy.StageReview + ", round "
 
 // capReached heads the card of a task at its session cap.
-const capReached = "the session cap is reached: every finding sent to the agent so far goes to a human"
+const CapReached = "the session cap is reached: every finding sent to the agent so far goes to a human"
 
 // capReachedLadder heads the card of a run at its session cap from
 // versionLastRoundFindings on: the findings go back to the loop and the
@@ -81,7 +86,7 @@ const timeCapReachedLadder = "the agent time is used up: the ladder judges this 
 // AtSessionCap: escalation is the card of a task at its session cap or its
 // agent-time cap, the stops whose answer buys the next session.
 func AtSessionCap(escalation string) bool {
-	return strings.HasPrefix(escalation, capReached) || strings.HasPrefix(escalation, capReachedLadder) || AtTimeCap(escalation)
+	return strings.HasPrefix(escalation, CapReached) || strings.HasPrefix(escalation, capReachedLadder) || AtTimeCap(escalation)
 }
 
 // AtTimeCap: escalation is the card of a task at its agent-time cap.
@@ -102,12 +107,12 @@ const MaxExtendMinutes = 600
 // verification's gates (actOnGate), not of a session or the screening.
 func atGateStop(escalation string) bool {
 	return slices.ContainsFunc([]string{ActivityWaitChecks, ActivityGateReproduction, ActivityModelReview, ActivityGateAudit, ActivityMerge},
-		func(gate string) bool { return strings.HasPrefix(escalation, gateStopped+gate+" ") })
+		func(gate string) bool { return strings.HasPrefix(escalation, GateStopped+gate+" ") })
 }
 
 // atScreenStop: escalation is the gate supervisor's stop of the screening.
 func atScreenStop(escalation string) bool {
-	return strings.HasPrefix(escalation, gateStopped+ActivityScreen+" ")
+	return strings.HasPrefix(escalation, GateStopped+ActivityScreen+" ")
 }
 
 // atQueueLeft: escalation is a red head's leaving the merge queue (leaveRed).
@@ -119,9 +124,9 @@ func atReproStart(escalation string) bool {
 	return strings.HasPrefix(escalation, startRefused) && strings.Contains(escalation, thenRepro)
 }
 
-// checkinSpendAsk opens the question a check-in stopped at its spent
+// CheckinSpendAsk opens the question a check-in stopped at its spent
 // budget asks (checkinBlock in the runner).
-const checkinSpendAsk = "check-in: " + CheckSpend + ": "
+const CheckinSpendAsk = "check-in: " + CheckSpend + ": "
 
 // checkinCallCapStop is the reason a check-in gave no answer within its
 // calls.
@@ -156,7 +161,7 @@ func atCheckinSpend(escalation string) bool {
 // checkinStopAsks open the ask of every check-in spend stop: the repeat's under the
 // spend kind, a cap's under its own, and a cap's of a
 // run from before the caps had kinds of their own under spend.
-var checkinStopAsks = []string{checkinSpendAsk, "check-in: " + CheckCallCap + ": ", "check-in: " + CheckTimeCap + ": "}
+var checkinStopAsks = []string{CheckinSpendAsk, "check-in: " + CheckCallCap + ": ", "check-in: " + CheckTimeCap + ": "}
 
 // checkinCapStopOf is the check-in cap stop reason names, checkinCallCapStop
 // or checkinTimeCapStop, "" when it names none. The stop opens the reason,
@@ -233,6 +238,11 @@ func (t *taskRun) runStages(commit string) verdict {
 				return t.approval(commit, g, review, reviewed, capped, card, covered)
 			}
 			findings, v, stop := t.queueTurn(&commit, &g, &review)
+			for !stop && len(findings) == 0 && t.turnLost {
+				// a gate of the turn's checks asked a human, which left
+				// the queue: a new turn before the approval
+				findings, v, stop = t.queueTurn(&commit, &g, &review)
+			}
 			if !stop && len(findings) > 0 {
 				i := slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == policy.StageChecks })
 				v, stop = t.onFindings(t.cfg.Stages[i], g, findings, &capped, &card)
@@ -401,7 +411,7 @@ func (t *taskRun) adjudicate(covered []string, sig TaskSignal) {
 	if len(covered) == 0 {
 		return
 	}
-	adj := Adjudication{By: sig.Author, Why: cmp.Or(strings.TrimSpace(sig.Body), consoleApproved), When: workflow.Now(t.ctx)}
+	adj := Adjudication{By: sig.Author, Why: cmp.Or(strings.TrimSpace(sig.Body), ConsoleApproved), When: workflow.Now(t.ctx)}
 	for _, f := range covered {
 		if !slices.ContainsFunc(t.reviews, func(r Review) bool { return slices.Contains(r.Findings, f) }) {
 			continue
@@ -444,7 +454,7 @@ func (t *taskRun) onFindings(s policy.Stage, g GateResults, findings []string, c
 		case t.orphanPR:
 			limit = noAgent
 		case t.lastRound && t.lastRoundFindings < versionLastRoundFindings:
-			limit = capReached
+			limit = CapReached
 		case s.MaxReturns != nil && t.returns[s.Name] >= *s.MaxReturns:
 			limit = fmt.Sprintf("%s reached its max_returns of %d: its findings go to a human", s.Name, *s.MaxReturns)
 		}
@@ -546,7 +556,7 @@ func (t *taskRun) capHead() string {
 	if t.lastRoundFindings >= versionLastRoundFindings {
 		return capReachedLadder
 	}
-	return capReached
+	return CapReached
 }
 
 // timeCapHead is capHead for the agent-time cap.
@@ -975,7 +985,7 @@ func (t *taskRun) askBeside(run *gateRun, reason string) (verdict, bool) {
 	_ = run.future.Get(t.ctx, nil)
 	t.dropTrips(run.trips...)
 	run.trips = nil
-	if err := t.ask(reason, escalationQuestion(reason), nil); err != nil {
+	if err := t.ask(reason, EscalationQuestion(reason), nil); err != nil {
 		return verdict{final: "failed", reason: escalateFailed + errMessage(err)}, true
 	}
 	if res := t.takeResolution(); res != nil {
@@ -1003,7 +1013,7 @@ func (t *taskRun) besideAnswered(f *besideRun) (verdict, bool) {
 	case f.comment != t.escalation:
 		return t.gateEscalated(f.asked)
 	}
-	return t.gateAnswered(t.awaitAnswer(escalationQuestion(f.asked), nil))
+	return t.gateAnswered(t.awaitAnswer(EscalationQuestion(f.asked), nil))
 }
 
 // fileAnswer files sig, a human comment, under the escalation it answers
@@ -1265,7 +1275,7 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		return v
 	}
 	whyHuman := card
-	autoMoved := false // the auto merge's update moved the head: no human is asked
+	autoMoved := false // the auto merge's update or turn moved the head: no human is asked
 	if len(card) == 0 || mechanicalSource(t.source) && g.Policy.MergeRule == policy.MergeAuto {
 		auto, met, unmet := AutoMerge(g, review, t.source)
 		if !auto {
@@ -1274,12 +1284,17 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 			var done bool
 			var failed string
 			v, done, failed = t.autoMerge(commit, g, review, met)
-			if done && !v.moved {
+			if done && !v.moved && !v.synced {
 				return v
 			}
 			autoMoved = done
 			if !done {
 				whyHuman = slices.Concat(card, []string{failed})
+				if t.humanWaitQueue >= versionHumanWaitQueue {
+					// the head the auto merge's turn made: the request
+					// names the pull request's head
+					commit = t.head
+				}
 			}
 		}
 	}
@@ -1298,7 +1313,7 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		t.asked, t.askedCard = in, card
 		t.approvalRequested = workflow.Now(t.ctx)
 		if t.waitsOutOfQueue() {
-			t.leaveQueue(approvalWaitLeft)
+			t.leaveForHuman(approvalWaitLeft)
 		}
 		v = t.awaitApproval(commit, g, covered)
 		if t.waitsOutOfQueue() {
@@ -1319,10 +1334,10 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		return t.verify(commit)
 	}
 	if v.synced {
-		// the approval's turn merged in main's commits, which change a file
-		// of the pull request, so Forgejo dismissed the approval: the head
+		// the merge's turn merged in main's commits, which change a file
+		// of the pull request, so Forgejo dismissed an approval: the head
 		// the sync made runs its checks, holding the turn as before the
-		// first request, and asks again (versionQueueWaits)
+		// first request, and comes back here (versionQueueWaits)
 		commit, t.rerunHead, t.syncedHead, t.checkedHead, g.ChecksPassed = v.head, v.head, v.head, "", false
 		if _, v, stop := t.runStage(policy.StageChecks, &commit, &g, &review); stop {
 			return v
@@ -1646,7 +1661,7 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		}
 		return t.report(stronger, refusals)
 	case res.Refused.Status != 0:
-		if ask := t.providerRefused(&refusals, res.Refused); ask != "" {
+		if ask := t.providerRefused(&refusals, res.Refused, model); ask != "" {
 			if final, why, _ := t.awaitHuman(ask, nil); final != "" {
 				return t.finish(final, why)
 			}

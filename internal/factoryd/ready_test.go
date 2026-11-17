@@ -106,7 +106,7 @@ func TestCountQueue(t *testing.T) {
 		{"t-human", "waiting-human", "human", "", "webhook", false},
 		{"t-roll", "queued", "agent", "direct", SourceRoll, false},
 	} {
-		if err := s.insertTask(ctx, Task{ID: tt.id, Repository: "o/r", Kind: tt.kind, Track: tt.track, Source: tt.source, Status: tt.status, Objective: "b"}, ""); err != nil {
+		if err := s.InsertTask(ctx, Task{ID: tt.id, Repository: "o/r", Kind: tt.kind, Track: tt.track, Source: tt.source, Status: tt.status, Objective: "b"}, ""); err != nil {
 			t.Fatal(err)
 		}
 		if tt.admitted {

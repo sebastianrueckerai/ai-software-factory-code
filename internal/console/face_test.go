@@ -1252,10 +1252,10 @@ func TestNeedsYouCardOpensItsDrawerFromAnywhere(t *testing.T) {
 	}
 }
 
-// The shaped buttons route by value: a park or keep waiting is a note on
-// the card's case that leaves the card waiting, nothing posted on the
-// issue, and a typed answer that repeats a button's words takes that
-// button's route.
+// The shaped buttons route by value: a park or keep waiting settles the
+// card's case, its choice riding as the settle's park arg and the label
+// posted as the answer on the issue, and a typed answer that repeats a
+// button's words takes that button's route.
 func TestNeedsYouCardRoutesTheValue(t *testing.T) {
 	question := func() *factoryd.HumanQuestion {
 		return &factoryd.HumanQuestion{
@@ -1284,12 +1284,13 @@ func TestNeedsYouCardRoutesTheValue(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("the park = %d %q, want 303", rec.Code, rec.Body.String())
 	}
-	if got := r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"]; got != "" {
-		t.Fatalf("the park posted %q, want no comment", got)
+	if got := r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"]; got != "Park it" {
+		t.Fatalf("the park posted %q, want the label as the answer", got)
 	}
-	checkRows(t, ev, before)
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q",
+		detail: map[string]any{"action": factoryd.ActSettle, "answer": "Park it", "case_id": int64(1), "comment": int64(1)}})
 	got, _ := actedOnce(t, r)
-	equal(t, "the park", got.Res, factoryd.Resolution{Action: factoryd.ActNote, Note: "Park it"})
+	equal(t, "the park", got.Res, factoryd.Resolution{Action: factoryd.ActSettle, Args: map[string]any{"park": factoryd.AnswerPark}, Note: "Park it"})
 
 	r, ev, ck, s = setup(t)
 	before = ev.count()
@@ -1297,12 +1298,13 @@ func TestNeedsYouCardRoutesTheValue(t *testing.T) {
 		"answer": {"Wait for the window"}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("the typed label = %d %q, want 303", rec.Code, rec.Body.String())
 	}
-	if got := r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"]; got != "" {
-		t.Fatalf("the typed label posted %q, want no comment", got)
+	if got := r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"]; got != "Wait for the window" {
+		t.Fatalf("the typed label posted %q, want the label as the answer", got)
 	}
-	checkRows(t, ev, before)
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q",
+		detail: map[string]any{"action": factoryd.ActSettle, "answer": "Wait for the window", "case_id": int64(1), "comment": int64(1)}})
 	got, _ = actedOnce(t, r)
-	equal(t, "the typed label", got.Res, factoryd.Resolution{Action: factoryd.ActNote, Note: "Wait for the window"})
+	equal(t, "the typed label", got.Res, factoryd.Resolution{Action: factoryd.ActSettle, Args: map[string]any{"park": factoryd.AnswerKeepWaiting}, Note: "Wait for the window"})
 
 	r, ev, ck, s = setup(t)
 	before = ev.count()
@@ -1335,7 +1337,7 @@ func TestNeedsYouCardRoutesTheValue(t *testing.T) {
 // answer field, so doAnswerValue takes the choice's own label as the
 // answer text: fund, with no budget refusal left, is the label's sentence
 // on the issue as the human with Act's answer row, and park and keep
-// waiting are a note on the case, nothing posted.
+// waiting settle the case, their label the answer on the issue.
 func TestNeedsYouCardAnswersAChoiceWithoutText(t *testing.T) {
 	question := func() *factoryd.HumanQuestion {
 		return &factoryd.HumanQuestion{
@@ -1357,12 +1359,11 @@ func TestNeedsYouCardAnswersAChoiceWithoutText(t *testing.T) {
 		return r, ev, ck, s
 	}
 	for _, tc := range []struct {
-		value, label string
-		posted       bool
+		value, label, action string
 	}{
-		{"fund", "Fund the card", true},
-		{"park", "Park it", false},
-		{"keep_waiting", "Wait for the window", false},
+		{"fund", "Fund the card", factoryd.ActContinue},
+		{"park", "Park it", factoryd.ActSettle},
+		{"keep_waiting", "Wait for the window", factoryd.ActSettle},
 	} {
 		r, ev, ck, s := setup(t)
 		before := ev.count()
@@ -1371,19 +1372,11 @@ func TestNeedsYouCardAnswersAChoiceWithoutText(t *testing.T) {
 		if rec.Code != http.StatusSeeOther {
 			t.Fatalf("the %s click = %d %q, want 303", tc.value, rec.Code, rec.Body.String())
 		}
-		got := r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"]
-		if tc.posted && got != tc.label {
+		if got := r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"]; got != tc.label {
 			t.Fatalf("the %s click posted %q, want the label %q", tc.value, got, tc.label)
 		}
-		if !tc.posted && got != "" {
-			t.Fatalf("the %s click posted %q, want no comment", tc.value, got)
-		}
-		if !tc.posted {
-			checkRows(t, ev, before)
-			continue
-		}
 		checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q",
-			detail: map[string]any{"action": factoryd.ActContinue, "answer": tc.label, "case_id": int64(1), "comment": int64(1)}})
+			detail: map[string]any{"action": tc.action, "answer": tc.label, "case_id": int64(1), "comment": int64(1)}})
 	}
 }
 
@@ -1447,12 +1440,15 @@ func TestNeedsYouFreeAnswerByHtmxLandsOnTheChat(t *testing.T) {
 	}
 }
 
-// The merge approval's face stays as small as a question's (the
-// 2026-10-17 issue): the title row with the risk and migration chips,
-// the Approve and Deny controls and the foot links. A five-part ask
-// of any length — here a recommendation over three lines — waits in
-// the drawer, which the face's Details link opens. The brief clamps
-// to its first line on the face, and shows whole in the drawer.
+// The merge approval's face stays as small as a question's while it
+// decides through the one face (the 2026-10-17 issue, restated to the
+// one-face plan): a face that carries its open case hosts the approval
+// inside the case's card, and the approval's copy holds the decide
+// alone — its two offers at a line of effect each, the fund and the
+// note that apply with the choice in one send. No part's later lines,
+// the case brief's tail, the facts wall or the review's criterion grow
+// the column's copy; the parts' whole text and the case's brief wait in
+// the drawer, which the face's Details link opens.
 func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
 	r := newRig(t)
 	long := "line one of the recommendation\nline two weighs the risk\nline three names the migration order"
@@ -1470,18 +1466,36 @@ func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	start := strings.Index(body, `aria-labelledby="approval-6"`)
-	face := body[start : start+strings.Index(body[start:], "</article>")]
-	for _, bulky := range []string{"line one of the recommendation", "first why", "adds the column",
-		"second line of the merge brief", "0018_x.sql: add a default", "yours to judge at this merge",
-		`<p class="why">`, `<p class="info">`, `<p class="finding">`, `<p class="recommendation">`} {
-		if strings.Contains(face, bulky) {
-			t.Errorf("the merge face carries %q, which belongs to the drawer:\n%s", bulky, face)
-		}
+	if start < 0 {
+		t.Fatal("the board shows no card of the open case's merge approval")
 	}
-	for _, want := range []string{`action="/approvals/6/approve"`,
-		fmt.Sprintf(`<a href="#card=%s:reviews" class="details">Details</a>`, "t-m2")} {
+	face := body[start : start+strings.Index(body[start:], "</article>")]
+	// the decide the face carries: the two offers at a line of effect
+	// each, the recommendation's source, the drawer's door
+	for _, want := range []string{
+		`<span class="effect">merges PR #12: factoryd merges it</span>`,
+		`<span class="effect">sends the pull request back to its agent with your note</span>`,
+		`<span class="by">Recommended by the model review</span>`,
+		fmt.Sprintf(`<a href="#card=%s:reviews" class="details">Details</a>`, "t-m2"),
+	} {
 		if !strings.Contains(face, want) {
 			t.Errorf("the merge face lacks %q:\n%s", want, face)
+		}
+	}
+	// the bound holds on a face carrying its open case: no part's later
+	// lines, the case brief's tail, the facts wall or the review's
+	// criterion grow the column's copy
+	for _, tail := range []string{"line two weighs the risk", "line three names the migration order",
+		"second line of the merge brief", "0018_x.sql: add a default", "yours to judge at this merge"} {
+		if strings.Contains(face, tail) {
+			t.Errorf("the merge face carries %q beyond its one line:\n%s", tail, face)
+		}
+	}
+	// the one decide: one send whose fund and note apply with the choice
+	for what, want := range map[string]int{`class="decide resolve"`: 1, `action="/approvals/6/approve"`: 1,
+		`name="fund_eur"`: 1, `<textarea`: 1} {
+		if got := strings.Count(face, what); got != want {
+			t.Errorf("the merge face carries %s %d times, want %d:\n%s", what, got, want, face)
 		}
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m2/drawer?tab=overview", nil), ck).Body.String()
@@ -1674,25 +1688,40 @@ func TestHumanCardOffersTheAnswerBoxOnlyWithoutChoices(t *testing.T) {
 	}
 }
 
-// A card's forms say where a note goes. On a card with an issue it is
-// posted on the issue as the human. A report card has no issue, so its
-// note is kept on the card: the case form's label and the wide face's
-// Close-with-note field say so, and no text of its own speaks of its
-// issue. The Close offer's effect closes the issue only if the card has
-// one. Other cards on the board — an approval face whose task has no
-// issue — keep their own honest wording.
+// A card's one decide says where its note goes, and its face states the
+// ask it answers: the case's five parts — the ask with its money line,
+// the why, what the call needs, the recommendation with its source — at
+// the first line each, the offers' effects one line. On a card with an
+// issue the note is posted on the issue as the human; a report card has
+// no issue, so its note is kept on the card: the note box's label says
+// so, and no text of its own speaks of its issue. The Close offer's
+// effect closes the issue only if the card has one. The one send
+// carries the action, the fund and the note in one POST, which lands
+// the three as one row, the note the row's answer — the issue's comment
+// only where the card has an issue.
 func TestTheNoteGoesWhereTheCardSays(t *testing.T) {
 	for _, tc := range []struct {
 		id         string
+		caseID     int64
 		card       func(*rig)
+		why        string
 		goes, gone string
+		posts      bool
 	}{
-		{id: "t-e", card: caseCard, goes: "posted on the issue as you", gone: "kept on the card"},
-		{id: "t-r", card: reportCard, goes: "kept on the card", gone: "posted on the issue"},
+		{id: "t-e", caseID: 5, card: caseCard, why: "The case is the agent&#39;s escalation.", goes: "posted on the issue as you", gone: "kept on the card", posts: true},
+		{id: "t-r", caseID: 7, card: reportCard, why: "The case is the gate stop.", goes: "kept on the card", gone: "posted on the issue"},
 	} {
-		r := newRig(t)
-		ck, _ := r.loggedIn(t)
+		r, ev := newRigWithEvents(t)
+		ck, s := r.loggedIn(t)
 		tc.card(r)
+		// the case's five-part ask, seated on the case itself: the ask with
+		// its money line, what the call needs, the recommendation and its
+		// source on the ask
+		k := r.openCases[tc.id][0]
+		k.Problem, k.Money, k.Brief = "Go on with the replica?", &factoryd.CaseMoney{Kind: "budget", BudgetEUR: 6, SpentEUR: 2}, "The reads outgrow the single node."
+		r.openCases[tc.id][0] = k
+		r.caseAsks = map[int64]factoryd.CaseAsk{tc.caseID: {At: time.Now(),
+			Detail: map[string]any{"recommendation": "Take the replica; it holds the reads.", "recommended_by": "the factory agent"}}}
 		board := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
 		start := strings.Index(board, `data-card="`+tc.id+`"`)
 		if start < 0 {
@@ -1701,8 +1730,16 @@ func TestTheNoteGoesWhereTheCardSays(t *testing.T) {
 		start = strings.LastIndex(board[:start], "<article")
 		face := board[start : start+strings.Index(board[start:], "</article>")]
 		for _, want := range []string{
-			`<label for="note-` + tc.id + `">Note, ` + tc.goes + `; the actions marked "stays on the step" keep it there</label>`,
+			// the five parts at their first lines
+			`<p class="ask">Go on with the replica?</p>`,
+			`<p class="money">2.00 of 6.00 EUR spent</p>`,
+			`<p class="why">` + tc.why + `</p>`,
+			`<div class="info"><p>The reads outgrow the single node.</p>`,
+			`<p class="recommendation">Recommendation (the factory agent): Take the replica; it holds the reads.</p>`,
+			// the offers' one-line effects, the note's destination said
 			`<span class="effect">End the card and close its issue, if it has one.</span>`,
+			`<span class="effect">Record your note and keep the case open.</span>`,
+			`<label for="note-` + tc.id + `">Note, ` + tc.goes + `; the actions marked "stays on the step" keep it there</label>`,
 		} {
 			if !strings.Contains(face, want) {
 				t.Errorf("%s: the card lacks %s:\n%s", tc.id, want, face)
@@ -1711,6 +1748,38 @@ func TestTheNoteGoesWhereTheCardSays(t *testing.T) {
 		if strings.Contains(face, tc.gone) || strings.Contains(face, "close its issue.") {
 			t.Errorf("%s: the card says %q or %q:\n%s", tc.id, tc.gone, "close its issue.", face)
 		}
+		// the one decide: one send whose fund and note apply with the action
+		for what, want := range map[string]int{`<form`: 1, `class="decide resolve"`: 1, `action="/tasks/` + tc.id + `/resolve"`: 1,
+			`name="fund_eur"`: 1, `<textarea`: 1} {
+			if got := strings.Count(face, what); got != want {
+				t.Errorf("%s: the card carries %s %d times, want %d:\n%s", tc.id, what, got, want, face)
+			}
+		}
+		// the one send: the action, the fund and the note ride one POST,
+		// which lands the three as one row, the note the row's answer —
+		// on the issue as the human where the card has one, kept on the
+		// card where it has none
+		before := ev.count()
+		note := "the replica holds"
+		if rec := r.do(post("/tasks/"+tc.id+"/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+			"case_id": {fmt.Sprintf("%d", tc.caseID)}, "action": {factoryd.ActReplan}, "fund_eur": {"1.50"}, "note": {note}}), ck); rec.Code != http.StatusSeeOther {
+			t.Fatalf("%s: the one send = %d: %s", tc.id, rec.Code, rec.Body)
+		}
+		in, posts := actedOnce(t, r)
+		if in.Res.Action != factoryd.ActReplan || in.Res.Note != note || in.Res.Fund == nil || in.Res.Fund.EUR != 1.5 {
+			t.Errorf("%s: the one send answered with %+v, want replan with the note and the 1.50 draw", tc.id, in.Res)
+		}
+		if posts != tc.posts {
+			t.Errorf("%s: the send posts its note on the issue = %v, want %v", tc.id, posts, tc.posts)
+		}
+		if got, ok := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; ok != tc.posts || tc.posts && got != note {
+			t.Errorf("%s: the note on the issue = %q (posted %v), want the note where the card has an issue", tc.id, got, ok)
+		}
+		detail := map[string]any{"action": factoryd.ActReplan, "case_id": tc.caseID, "answer": note}
+		if tc.posts {
+			detail["comment"] = int64(1)
+		}
+		checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: tc.id, detail: detail})
 	}
 }
 
@@ -1862,6 +1931,68 @@ func TestMergeAndResourceFacesDecideThroughTheSharedPartial(t *testing.T) {
 		}
 		if tc.kind == factoryd.ApprovalMerge && !slices.Contains(r.fg.calls, "POST /api/v1/repos/sf/code/pulls/31/reviews Bearer access-1") {
 			t.Errorf("%s: the approval posted no review: %q", tc.name, r.fg.calls)
+		}
+	}
+
+	// The same two kinds on the board's case path, seated as production
+	// holds them: a merge request's case at the human — kind
+	// merge_approval, an empty problem, its facts the request's id —
+	// hosts its pending request, while the store opens no case of its
+	// own for a resource request, so the resource fixture's exported
+	// case stands at the human beside the request riding its card.
+	// Whatever holds the ask, the face renders the approval's own five
+	// parts: the ask with its numbers and the why, never the case's
+	// empty problem or its kind's placeholder — so the hosted merge face
+	// fails before the fix — keeping the case's own info and
+	// recommendation.
+	for _, tc := range []struct {
+		name string
+		kind string
+	}{
+		{"board-merge.json", factoryd.ApprovalMerge},
+		{"board-resource.json", factoryd.ApprovalResource},
+	} {
+		r := newRig(t)
+		fx := seatApprovalFixture(t, r, tc.name)
+		id := fx.Card.TaskID
+		kc := factoryd.Case{ID: 1, TaskID: id, Repository: fx.Card.Repository, Status: factoryd.CaseAtHuman,
+			OpenedAt: time.Now().Add(-70 * time.Second)}
+		if tc.kind == factoryd.ApprovalMerge {
+			// the card stays in review while its merge request pends
+			// (seatApprovalFixture seats it so); the case at the human
+			// is the request's own, as openRequestCase opens it
+			kc.Kind, kc.Facts = factoryd.CaseMergeApproval, map[string]any{"approval": int64(41)}
+		} else {
+			// the fixture's exported case as it gives it: its problem
+			// the ask, its facts the request's spec
+			kc.Kind, kc.Problem, kc.Facts = factoryd.CaseKind(fx.Cases[0].Kind), fx.Cases[0].Problem, fx.Cases[0].Facts
+		}
+		r.openCases = map[string][]factoryd.Case{id: {kc}}
+		ck, _ := r.loggedIn(t)
+		body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+		face := escalationOf(t, body, id) // the case card with the approval riding it
+		for _, want := range []string{
+			`<p class="ask">` + fx.Asks[0].Ask + `</p>`,
+			`<p class="why">` + fx.Asks[0].Why + `</p>`,
+		} {
+			if !strings.Contains(face, want) {
+				t.Errorf("%s: the hosted face lacks %q:\n%s", tc.name, want, face)
+			}
+		}
+		for _, none := range []string{`<p class="ask"></p>`, "The case is the"} {
+			if strings.Contains(face, none) {
+				t.Errorf("%s: the hosted face still shows %q:\n%s", tc.name, none, face)
+			}
+		}
+		for what, want := range map[string]int{
+			`name="fund_eur"`:                1,
+			`<textarea`:                      1,
+			`class="decide resolve"`:         1,
+			`action="/approvals/41/approve"`: 1,
+		} {
+			if got := strings.Count(face, what); got != want {
+				t.Errorf("%s: the hosted face holds %s %d times, want %d", tc.name, what, got, want)
+			}
 		}
 	}
 }

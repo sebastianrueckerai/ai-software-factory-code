@@ -389,7 +389,7 @@ func TestClosedDependencyOpensCard(t *testing.T) {
 		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go ahead", Comment: 700})
 		h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
 		h.run(t)
-		if !slices.Equal(h.escalated, []string{healedReason}) || len(h.sessions) != 1 || !slices.Equal(h.sessions[0].Findings, []string{reason}) {
+		if !slices.Equal(h.escalated, []string{HealedReason}) || len(h.sessions) != 1 || !slices.Equal(h.sessions[0].Findings, []string{reason}) {
 			t.Fatalf("escalated %q, sessions %+v", h.escalated, h.sessions)
 		}
 	})
@@ -409,7 +409,7 @@ func TestClosedDependencyOpensCard(t *testing.T) {
 		if d.Ended == nil || *d.Ended != (Dependency{TaskID: "t-a", Issue: 3, Key: "links-api", Status: "closed"}) {
 			t.Fatalf("Ended = %+v, want #3 closed", d.Ended)
 		}
-		if _, err := r.faceStop(context.Background(), "t-c", "why", nil); err != nil {
+		if _, err := r.FaceStop(context.Background(), "t-c", "why", nil); err != nil {
 			t.Fatalf("waiting-deps to waiting-human: %v", err)
 		}
 	})
@@ -507,7 +507,7 @@ func TestHealSignalsWaitingCards(t *testing.T) {
 	}
 	wf := &fakeWorkflows{}
 	forgejo, _ := resyncForgejoStub(t, "sebastian")
-	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"}, nil, noneCompleted)
+	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"}, nil, noneCompleted, nil)
 	var dep []string
 	for _, s := range wf.signals {
 		if strings.Contains(s, " "+SignalDepEnded+" ") {

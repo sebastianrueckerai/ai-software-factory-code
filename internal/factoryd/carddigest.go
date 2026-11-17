@@ -68,6 +68,9 @@ type DigestHead struct {
 	QueueReason                   string
 	QueueSince                    *time.Time
 	Blind, Criteria               int
+	// MergeQueue is the card's place in its project's merge queue, nil
+	// when it holds no queue row.
+	MergeQueue *QueuePlace
 }
 
 // DigestStep is one step of the card's life. Actor is who acted; for a
@@ -250,7 +253,7 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 	for i := range steps {
 		steps[i].N, steps[i].Offset, steps[i].Count = i+1, steps[i].At.Sub(steps[0].At), 1
 	}
-	d := CardDigest{Head: head, Steps: steps, Waits: r.cfg.Policy().WaitsOf(t.Repository), caseSteps: rows.caseSteps, at: r.clock(), cases: rows.cases,
+	d := CardDigest{Head: head, Steps: steps, Waits: r.cfg.Policy().WaitsOf(t.Repository), caseSteps: rows.caseSteps, at: r.Clock(), cases: rows.cases,
 		issueCloses: finishClosesIssue(t, t.Status, mergedBefore(rows.events)),
 		issueClosed: slices.ContainsFunc(rows.events, func(e Event) bool { return e.Kind == EventIssueClosed })}
 	newest := newestLine(rows.timeline, "")
@@ -276,7 +279,7 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 // digestHead is card t's head. Its events, oldest first, give its
 // status's since.
 func (r *Runner) digestHead(ctx context.Context, t Task, events []Event) (DigestHead, error) {
-	h := DigestHead{Issue: int(t.IssueNumber), BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, SlotHeld: holdsSlot(t),
+	h := DigestHead{Issue: int(t.IssueNumber), BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, SlotHeld: HoldsSlot(t),
 		Status: t.Status, Gate: t.Gate, StatusSince: t.CreatedAt, QueueReason: t.QueueReason, QueueSince: t.QueueSince}
 	if t.GateSince != nil {
 		h.Since = *t.GateSince
@@ -303,11 +306,18 @@ func (r *Runner) digestHead(ctx context.Context, t Task, events []Event) (Digest
 		return DigestHead{}, err
 	}
 	h.HoldsEUR = own.Held
+	places, err := r.store.MergeQueuePlaces(ctx)
+	if err != nil {
+		return DigestHead{}, err
+	}
+	if p, ok := places[t.ID]; ok {
+		h.MergeQueue = &p
+	}
 	return h, nil
 }
 
-// holdsSlot is CountAdmitted's rule for one card.
-func holdsSlot(t Task) bool {
+// HoldsSlot is CountAdmitted's rule for one card.
+func HoldsSlot(t Task) bool {
 	if defaultKind(t.Kind) != "agent" || t.TakesNoSlot() {
 		return false
 	}
@@ -575,7 +585,7 @@ func proofsEventStep(s DigestStep, e Event) DigestStep {
 // askOutcome is an ask's case kind and words, as the events writer files
 // its case (caseFromAsk).
 func askOutcome(scrub *redact.Scrubber, t Task, e Event) string {
-	c, err := caseFromAsk(t, e, "")
+	c, err := CaseFromAsk(t, e, "")
 	if err != nil {
 		return "an ask with no words"
 	}
@@ -594,7 +604,7 @@ func askCaseIndex(t Task, e Event, cases []Case) int {
 	if comment, _ := toInt(e.Detail["comment"]); comment > 0 {
 		return slices.IndexFunc(cases, func(c Case) bool { return c.CommentID == int64(comment) })
 	}
-	want, err := caseFromAsk(t, e, "")
+	want, err := CaseFromAsk(t, e, "")
 	if err != nil {
 		return -1
 	}
@@ -655,10 +665,10 @@ func digestText(scrub *redact.Scrubber, s string) string { return firstLineCut(s
 // already scrubbed.
 func firstLineCut(s string) string { return textutil.Truncate(FirstLine(s), 120) }
 
-// findingID names a finding by its words alone: the first 12 hex of the
+// FindingID names a finding by its words alone: the first 12 hex of the
 // sha256 of its text lowercased, runs of white space one space, trimmed.
 // A review's finding and a check-in's verdict on it get the same id.
-func findingID(text string) string {
+func FindingID(text string) string {
 	sum := sha256.Sum256([]byte(strings.Join(strings.Fields(strings.ToLower(text)), " ")))
 	return hex.EncodeToString(sum[:])[:12]
 }

@@ -8,7 +8,7 @@ import (
 )
 
 // Waits are the bounds of the waits the AI owns: a wait past its bound
-// opens a case. A wait at the human has no bound here.
+// opens a case. A wait at the human is bounded by AtHuman alone.
 type Waits struct {
 	// Queued is how long a card may stay queued with its admission
 	// reason. Default 2h.
@@ -31,10 +31,20 @@ type Waits struct {
 	// RungAnswer is how long a rung may take to answer a case step.
 	// Default 35m.
 	RungAnswer time.Duration `yaml:"rung_answer,omitempty" json:"rung_answer,omitempty"`
+	// ProviderRecheck is how long the gateway's provider-limit hold may
+	// hold the class before a call must probe the provider again.
+	// Default 15m.
+	ProviderRecheck time.Duration `yaml:"provider_recheck,omitempty" json:"provider_recheck,omitempty"`
+	// ProviderLimit is how long a provider-limit freeze may hold a card
+	// before it speaks up. Default 24h.
+	ProviderLimit time.Duration `yaml:"provider_limit,omitempty" json:"provider_limit,omitempty"`
 	// Checks is how long a card may wait on its pull request's checks:
 	// CI's own bound, the longest job's timeout plus a margin. Default
 	// 50m.
 	Checks time.Duration `yaml:"checks,omitempty" json:"checks,omitempty"`
+	// AtHuman is how long a card may wait at the human with no live ask
+	// before the heal pass asks again. Default 5m.
+	AtHuman time.Duration `yaml:"at_human,omitempty" json:"at_human,omitempty"`
 	// NoPushSessions is how many sessions in a row may end without a push.
 	// Default 3.
 	NoPushSessions int `yaml:"no_push_sessions,omitempty" json:"no_push_sessions,omitempty"`
@@ -42,7 +52,8 @@ type Waits struct {
 
 // DefaultWaits fills what the files leave out, bound by bound.
 var DefaultWaits = Waits{Queued: 2 * time.Hour, Dependency: 48 * time.Hour, Gate: 6 * time.Hour, MergeRetry: time.Hour,
-	ProviderBackoff: 30 * time.Minute, RunQuiet: 30 * time.Minute, RungAnswer: 35 * time.Minute, Checks: 50 * time.Minute, NoPushSessions: 3}
+	ProviderBackoff: 30 * time.Minute, ProviderRecheck: 15 * time.Minute, ProviderLimit: 24 * time.Hour,
+	RunQuiet: 30 * time.Minute, RungAnswer: 35 * time.Minute, Checks: 50 * time.Minute, AtHuman: 5 * time.Minute, NoPushSessions: 3}
 
 // maxWait is the longest bound a file may give a wait.
 const maxWait = 7 * 24 * time.Hour
@@ -54,9 +65,10 @@ type waitBound struct {
 }
 
 // bounds are w's timed bounds by their keys.
-func (w *Waits) bounds() [8]waitBound {
-	return [8]waitBound{{"queued", &w.Queued}, {"dependency", &w.Dependency}, {"gate", &w.Gate}, {"merge_retry", &w.MergeRetry},
-		{"provider_backoff", &w.ProviderBackoff}, {"run_quiet", &w.RunQuiet}, {"rung_answer", &w.RungAnswer}, {"checks", &w.Checks}}
+func (w *Waits) bounds() [11]waitBound {
+	return [11]waitBound{{"queued", &w.Queued}, {"dependency", &w.Dependency}, {"gate", &w.Gate}, {"merge_retry", &w.MergeRetry},
+		{"provider_backoff", &w.ProviderBackoff}, {"provider_recheck", &w.ProviderRecheck}, {"provider_limit", &w.ProviderLimit},
+		{"run_quiet", &w.RunQuiet}, {"rung_answer", &w.RungAnswer}, {"checks", &w.Checks}, {"at_human", &w.AtHuman}}
 }
 
 // Bound is the bound of one wait kind by its key, such as "queued" or
@@ -124,15 +136,19 @@ type waitsJSON struct {
 	Gate            string `json:"gate,omitempty"`
 	MergeRetry      string `json:"merge_retry,omitempty"`
 	ProviderBackoff string `json:"provider_backoff,omitempty"`
+	ProviderRecheck string `json:"provider_recheck,omitempty"`
+	ProviderLimit   string `json:"provider_limit,omitempty"`
 	RunQuiet        string `json:"run_quiet,omitempty"`
 	RungAnswer      string `json:"rung_answer,omitempty"`
 	Checks          string `json:"checks,omitempty"`
+	AtHuman         string `json:"at_human,omitempty"`
 	NoPushSessions  int    `json:"no_push_sessions,omitempty"`
 }
 
 // strings are j's bounds in the order of Waits.bounds.
-func (j *waitsJSON) strings() [8]*string {
-	return [8]*string{&j.Queued, &j.Dependency, &j.Gate, &j.MergeRetry, &j.ProviderBackoff, &j.RunQuiet, &j.RungAnswer, &j.Checks}
+func (j *waitsJSON) strings() [11]*string {
+	return [11]*string{&j.Queued, &j.Dependency, &j.Gate, &j.MergeRetry, &j.ProviderBackoff, &j.ProviderRecheck, &j.ProviderLimit,
+		&j.RunQuiet, &j.RungAnswer, &j.Checks, &j.AtHuman}
 }
 
 // MarshalJSON is Waits as waitsJSON, its bounds strings, as Limits'.

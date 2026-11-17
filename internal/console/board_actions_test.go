@@ -52,8 +52,9 @@ func equalInput(a, b factoryd.ActInput) bool {
 }
 
 // The escalation face's one send answers the card in one request: the
-// choice its button names, the fund beside it and the note land in one
-// answer, the single call Act takes for the card.
+// choice its button names settles the card's ask with the choice as the
+// settle's park arg, the fund beside it and the note land in one answer,
+// the single call Act takes for the card.
 func TestEscalationFaceSendLandsChoiceFundNoteInOneAnswer(t *testing.T) {
 	r := newRig(t)
 	seatBoardFixture(t, r, "board-agent-escalate.json")
@@ -65,7 +66,8 @@ func TestEscalationFaceSendLandsChoiceFundNoteInOneAnswer(t *testing.T) {
 	}
 	got, _ := actedOnce(t, r)
 	want := factoryd.ActInput{TaskID: "t-board-escalate", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActNote, Note: "the schema change is mine to make", Fund: &policy.Draw{EUR: 1.5}}, Detail: got.Detail}
+		Res: factoryd.Resolution{Action: factoryd.ActSettle, Args: map[string]any{"park": factoryd.AnswerPark},
+			Note: "the schema change is mine to make", Fund: &policy.Draw{EUR: 1.5}}, Detail: got.Detail}
 	if !equalInput(got, want) {
 		t.Fatalf("Act took %+v, want the choice, its note and the fund in one answer: %+v", got, want)
 	}

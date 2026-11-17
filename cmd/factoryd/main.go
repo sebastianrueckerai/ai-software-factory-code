@@ -314,7 +314,7 @@ func main() {
 		Store: store, Forgejo: forgejo, Workflows: workflows, BotUser: forgejo.BotUser,
 		Secret: webhookSecret, Policy: func() policy.Tree { return policyLoader.Current().Tree }, Projects: store, Metrics: metrics,
 		Timeline: runner.Timeline(), CloseMerged: runner.CloseMerged, ProjectsUser: projectsUser(), Filings: store, Scrub: scrub,
-		MergeReceipt: runner.RecordMergeReceipt,
+		MergeReceipt: runner.RecordMergeReceiptAndComment,
 	}
 	runner.Writes = webhookIntake.Writes
 	// the factory's own project deploys into factoryd's namespace: its CI
@@ -412,7 +412,7 @@ func main() {
 	// the minute passes, each on its own goroutine under its bound: a pass
 	// that hangs is flagged and holds none of the others
 	passes.Run(ctx, "heal", time.Minute, 4*time.Minute, func(ctx context.Context) error {
-		factoryd.HealPass(ctx, store, workflows, webhookIntake, completion, inner.Completed)
+		factoryd.HealPass(ctx, store, workflows, webhookIntake, completion, inner.Completed, runner)
 		runner.StoreMissedOffers(ctx)
 		return nil
 	})

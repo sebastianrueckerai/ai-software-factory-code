@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -24,10 +24,10 @@ func TestTheFirstRaiseOpensTheSessionOnEveryCent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, holds, ledger, audit CASCADE`); err != nil {
+	if _, err := s.DB().ExecContext(ctx, `TRUNCATE tasks, holds, ledger, audit CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.insertTask(ctx, Task{ID: "t-grid", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 1, Objective: "b", Track: "direct"}, ""); err != nil {
+	if err := s.PgInsertTask(ctx, Task{ID: "t-grid", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 1, Objective: "b", Track: "direct"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	v := testPolicyVersion()
@@ -35,21 +35,21 @@ func TestTheFirstRaiseOpensTheSessionOnEveryCent(t *testing.T) {
 	v.Tree.Document.Budget.SessionFloorFrontierEUR = 0.6
 	prices := aliasPrices{"big": {In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768},
 		"small": {In: 1e-6, CacheRead: 1e-7, Out: 4e-6, MaxOutput: 32768}}
-	r := &Runner{store: s, cfg: RunnerConfig{Prices: prices, Policy: func() policy.Version { return v },
-		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
+	r := PgRunner(s, nil, RunnerConfig{Prices: prices, Policy: func() policy.Version { return v },
+		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}})
 	set := func(budgetCents, spentCents int) {
 		t.Helper()
-		if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET budget_eur = $1::numeric / 100, spent_eur = $2::numeric / 100 WHERE id = 't-grid'`, budgetCents, spentCents); err != nil {
+		if _, err := s.DB().ExecContext(ctx, `UPDATE tasks SET budget_eur = $1::numeric / 100, spent_eur = $2::numeric / 100 WHERE id = 't-grid'`, budgetCents, spentCents); err != nil {
 			t.Fatal(err)
 		}
 	}
 	refused, failed := 0, 0
 	for _, hold := range []bool{false, true} {
-		if _, err := s.db.ExecContext(ctx, `DELETE FROM holds`); err != nil {
+		if _, err := s.DB().ExecContext(ctx, `DELETE FROM holds`); err != nil {
 			t.Fatal(err)
 		}
 		if hold {
-			if _, err := s.db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('t-grid', 'model', 'small', 0.10, now() + interval '1 hour')`); err != nil {
+			if _, err := s.DB().ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('t-grid', 'model', 'small', 0.10, now() + interval '1 hour')`); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -72,7 +72,7 @@ func TestTheFirstRaiseOpensTheSessionOnEveryCent(t *testing.T) {
 					if own, _, err := s.Free(ctx, policy.HoldRequest{TaskID: "t-grid"}); err != nil || own.Free() != card.Left() {
 						t.Fatalf("%s budget %d spent %d hold %v: the floor reads %v free, the ask %v: %v", model, budget, spent, hold, own.Free(), card.Left(), err)
 					}
-					q := budgetQuestion(why, r.questionFacts(ctx, card, why))
+					q := BudgetQuestion(why, r.PgQuestionFacts(ctx, card, why))
 					raise, err := strconv.ParseFloat(strings.TrimPrefix(q.Choices[0].Value, AnswerFund+":"), 64)
 					if err != nil || !strings.HasPrefix(q.Choices[0].Value, AnswerFund+":") {
 						t.Fatalf("%s budget %d spent %d hold %v: first choice %v", model, budget, spent, hold, q.Choices)
@@ -116,8 +116,8 @@ func TestTheFirstRaiseOpensTheSessionOffTheCentGrid(t *testing.T) {
 	v := testPolicyVersion()
 	prices := aliasPrices{"big": {In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768},
 		"small": {In: 1e-6, CacheRead: 1e-7, Out: 4e-6, MaxOutput: 32768}}
-	r := &Runner{store: s, cfg: RunnerConfig{Prices: prices, Policy: func() policy.Version { return v },
-		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
+	r := PgRunner(s, nil, RunnerConfig{Prices: prices, Policy: func() policy.Version { return v },
+		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}})
 	for _, tc := range []struct {
 		budget, spent, held string
 		left, floor         float64
@@ -125,18 +125,18 @@ func TestTheFirstRaiseOpensTheSessionOffTheCentGrid(t *testing.T) {
 		{"1.23", "0.6915512", "0.0176213", 0.520828, 0.300828},
 		{"1.00", "0.3000225", "0.10", 0.599977, 0.3},
 	} {
-		if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, holds, ledger, audit CASCADE`); err != nil {
+		if _, err := s.DB().ExecContext(ctx, `TRUNCATE tasks, holds, ledger, audit CASCADE`); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.insertTask(ctx, Task{ID: "t-off", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 1, Objective: "b", Track: "direct"}, ""); err != nil {
+		if err := s.PgInsertTask(ctx, Task{ID: "t-off", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 1, Objective: "b", Track: "direct"}, ""); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('t-off', 'model', 'small', $1::numeric, now() + interval '1 hour')`, tc.held); err != nil {
+		if _, err := s.DB().ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('t-off', 'model', 'small', $1::numeric, now() + interval '1 hour')`, tc.held); err != nil {
 			t.Fatal(err)
 		}
 		set := func(budget string) {
 			t.Helper()
-			if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET budget_eur = $1::numeric, spent_eur = $2::numeric WHERE id = 't-off'`, budget, tc.spent); err != nil {
+			if _, err := s.DB().ExecContext(ctx, `UPDATE tasks SET budget_eur = $1::numeric, spent_eur = $2::numeric WHERE id = 't-off'`, budget, tc.spent); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -154,12 +154,12 @@ func TestTheFirstRaiseOpensTheSessionOffTheCentGrid(t *testing.T) {
 		if err != nil || why == "" {
 			t.Fatalf("%+v: the session is not refused at the floor: (%q, %v)", tc, why, err)
 		}
-		q := budgetQuestion(why, r.questionFacts(ctx, card, why))
+		q := BudgetQuestion(why, r.PgQuestionFacts(ctx, card, why))
 		raise, err := strconv.ParseFloat(strings.TrimPrefix(q.Choices[0].Value, AnswerFund+":"), 64)
 		if err != nil {
 			t.Fatalf("%+v: first choice %v", tc, q.Choices)
 		}
-		if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET budget_eur = budget_eur + $1::numeric WHERE id = 't-off'`, strconv.FormatFloat(raise, 'f', 2, 64)); err != nil {
+		if _, err := s.DB().ExecContext(ctx, `UPDATE tasks SET budget_eur = budget_eur + $1::numeric WHERE id = 't-off'`, strconv.FormatFloat(raise, 'f', 2, 64)); err != nil {
 			t.Fatal(err)
 		}
 		if again, err := r.SessionFunded(ctx, "t-off", "factory/small"); err != nil || again != "" {

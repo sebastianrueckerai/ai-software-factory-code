@@ -41,10 +41,10 @@ const (
 	RefBase, RefHead         = "base", "head"
 	OutcomePass, OutcomeFail = "pass", "fail"
 
-	// maxKeptTestClaims is the parse bound on one answer's kept test
-	// claims: every kept claim runs, so the bound alone keeps a reviewer
-	// from spending unbounded pods. Sixteen covers well past the eight
-	// named tests a review's ten findings carry.
+	// maxKeptTestClaims is how many test-outcome claims one review's
+	// parse keeps: every kept claim runs this round, so the bound keeps
+	// a reviewer from spending unbounded pods (the issue's bundled
+	// findings alone reach eight claims)
 	maxKeptTestClaims = 16
 )
 
@@ -63,6 +63,30 @@ func validClaim(c Claim) bool {
 	}
 	return (c.Kind == ClaimUndefined || c.Kind == ClaimUncalled) && symbolName.MatchString(c.Symbol) &&
 		c.Package == "" && c.Ref == "" && c.Outcome == ""
+}
+
+// PendingClaim is a test-outcome claim no run settled, carried on the
+// review to the next round: the claim itself and its finding's text,
+// the one a re-filed finding is matched by.
+type PendingClaim struct {
+	Claim   Claim  `json:"claim"`
+	Finding string `json:"finding"`
+}
+
+// claimKey is c's substance without its finding index: an index the
+// next review's answer names is that answer's own, the substance the
+// claim's, so a run settles the re-filed claim's key.
+func claimKey(c Claim) Claim {
+	c.Finding = 0
+	return c
+}
+
+// claimOutcome is what one run showed of one claim's substance: the run
+// itself when it answered, or why it could not — cached, so an
+// identical re-filed claim does not run twice.
+type claimOutcome struct {
+	run claimRun
+	err error
 }
 
 // testArgv is the fixed command that settles a valid test-outcome claim:
@@ -110,29 +134,6 @@ type Dropped struct {
 	Kind     string `json:"kind"`
 	Symbol   string `json:"symbol"`
 	Evidence string `json:"evidence"`
-}
-
-// PendingClaim is a test-outcome claim no run settled, carried to the
-// next round's review: the claim itself, plus the finding's text so a
-// re-filed finding is matched by what it says.
-type PendingClaim struct {
-	Claim   Claim  `json:"claim"`
-	Finding string `json:"finding"`
-}
-
-// claimKey identifies a test-outcome claim apart from the finding it
-// indexes: a re-filed claim indexes a new finding but is the same run.
-type claimKey struct{ kind, symbol, pkg, ref, outcome string }
-
-func keyOf(c Claim) claimKey {
-	return claimKey{c.Kind, c.Symbol, c.Package, c.Ref, c.Outcome}
-}
-
-// settledClaim is a carried claim's run on the head under review, cached
-// so a re-filed copy of the claim never runs twice.
-type settledClaim struct {
-	run claimRun
-	err error
 }
 
 type grepHit struct {
@@ -184,21 +185,13 @@ func contradiction(c Claim, hits []grepHit, removed bool) (evidence string, ok b
 	return "", false
 }
 
-// turnVerdict turns a concerns verdict whose every finding was dropped by
-// the loop's own evidence — a run or a repository search: approve, with
-// Turned keeping the model's own answer beside the turn.
-func turnVerdict(rv *Review) {
-	if rv.Verdict == "concerns" && len(rv.Dropped) > 0 && len(rv.Findings) == 0 {
-		rv.Verdict, rv.Turned = "approve", "concerns"
-	}
-}
-
 // applyClaims moves every finding that all its claims contradict from
 // rv.Findings to rv.Dropped: grep names a symbol's hits, settle runs a
-// test-outcome claim (nil: none runs). A failed grep or run contradicts
-// nothing; a run that settles nothing leaves rv.Unsettled a line and the
-// claim a pending claim carried to the next round. The claims are spent
-// either way.
+// test-outcome claim (nil: none runs, and no claim settles). A failed
+// grep or run contradicts nothing; a run that settles nothing carries
+// its claim to the next round on rv.Pending. A concerns review whose
+// every finding was dropped turns approve (turnVerdict). The claims are
+// spent either way.
 func applyClaims(rv Review, files []fileDiff, grep func(symbol string) ([]grepHit, error), settle func(Claim) (claimRun, error)) Review {
 	total, refuted := map[int]int{}, map[int]Dropped{}
 	counted := map[int]int{}
@@ -210,11 +203,9 @@ func applyClaims(rv Review, files []fileDiff, grep func(symbol string) ([]grepHi
 				refuted[c.Finding] = Dropped{Finding: rv.Findings[c.Finding], Kind: c.Kind, Symbol: c.Symbol, Evidence: ev}
 			} else if upheld != "" {
 				rv.Upheld = append(rv.Upheld, fmt.Sprintf("%s: %s", rv.Findings[c.Finding], upheld))
-			} else if why != "" {
+			} else {
 				rv.Unsettled = append(rv.Unsettled, fmt.Sprintf("%s: %s", rv.Findings[c.Finding], why))
-				if p := (PendingClaim{Claim: c, Finding: rv.Findings[c.Finding]}); !slices.Contains(rv.Pending, p) {
-					rv.Pending = append(rv.Pending, p)
-				}
+				rv.Pending = append(rv.Pending, PendingClaim{Claim: c, Finding: rv.Findings[c.Finding]})
 			}
 			continue
 		}
@@ -240,6 +231,19 @@ func applyClaims(rv Review, files []fileDiff, grep func(symbol string) ([]grepHi
 	rv.Findings, rv.Claims = kept, nil
 	turnVerdict(&rv)
 	return rv
+}
+
+// turnVerdict turns a concerns review whose every finding was dropped —
+// by a run, a grep or a carried claim — to approve: the loop's own
+// evidence settled everything the model held against the head. The
+// record keeps what the model said: TurnedFrom names its verdict beside
+// the turned one, and the drops and the summary stay. A review with a
+// finding standing, or none it ever held, is not turned.
+func turnVerdict(rv *Review) {
+	if rv.Verdict != "concerns" || len(rv.Findings) > 0 || len(rv.Dropped) == 0 || rv.TurnedFrom != "" {
+		return
+	}
+	rv.Verdict, rv.TurnedFrom = "approve", rv.Verdict
 }
 
 // settleTest runs c through settle and compares its outcome with the one
@@ -312,11 +316,11 @@ func gitGrep(ctx context.Context, dir string, refs []namedRef, symbol string) ([
 	return hits, nil
 }
 
-// checkoutRefs fetches main and the pull request's head, both at depth
+// CheckoutRefs fetches main and the pull request's head, both at depth
 // 1 without a working tree, into a temporary directory and names the two
 // refs to search; with no pull request (pr 0) it fetches main alone. A
 // test substitutes it, git being no fake's. The head must still be commit.
-var checkoutRefs = func(ctx context.Context, f *Forgejo, repo Repo, pr int64, commit string) (dir string, refs []namedRef, cleanup func(), err error) {
+var CheckoutRefs = func(ctx context.Context, f *Forgejo, repo Repo, pr int64, commit string) (dir string, refs []namedRef, cleanup func(), err error) {
 	tmp, err := os.MkdirTemp("", "claims-")
 	if err != nil {
 		return "", nil, nil, err
@@ -343,31 +347,19 @@ var checkoutRefs = func(ctx context.Context, f *Forgejo, repo Repo, pr int64, co
 	return src, refs, cleanup, nil
 }
 
-// settleWaves bounds the runs a settle makes — one pod a run, each a
-// start and the command, after one sandbox setup — tells the gate watch
-// the waves told so far (at least its first bound's) and the waves the
-// runs add, in the call's own unit, and answers the budget.
-func (r *Runner) settleWaves(ctx context.Context, runs int, call time.Duration, told int) time.Duration {
-	budget := time.Duration(runs)*(podStartWait+r.cfg.ReproTimeout) + podStartWait
-	call = max(call, time.Second)
-	boundByParts(ctx, max(policy.ReviewParts, told)+int((budget+call-1)/call))
-	return budget
-}
-
 // dropContradicted checks rv's claims and drops the findings they contradict:
 // a name's claims against the repository at the head and at main (no such
 // claim, no checkout: a checkout that fails drops nothing), a test's against
-// a run in the task's sandbox at its ref, every kept claim run. carried
-// holds the runs this round already made of the last review's carried
-// claims, keyed by claim: a re-filed claim settles from its carried run
-// and never runs twice.
-func (r *Runner) dropContradicted(ctx context.Context, t Task, repo Repo, pr int64, commit string, call time.Duration, told int, rv Review, files []fileDiff, carried map[claimKey]settledClaim) Review {
+// a run in the task's sandbox at its ref. cache answers a claim whose
+// substance an earlier run this round settled (a carried claim's) without a
+// second run.
+func (r *Runner) dropContradicted(ctx context.Context, t Task, repo Repo, pr int64, commit string, call time.Duration, told int, rv Review, files []fileDiff, cache map[Claim]claimOutcome) Review {
 	if len(rv.Claims) == 0 {
 		return rv
 	}
 	grep := func(string) ([]grepHit, error) { return nil, errors.New("no checkout") }
 	if slices.ContainsFunc(rv.Claims, func(c Claim) bool { return c.Kind != ClaimTestOutcome }) {
-		if dir, refs, cleanup, err := checkoutRefs(ctx, r.forgejo, repo, pr, commit); err != nil {
+		if dir, refs, cleanup, err := CheckoutRefs(ctx, r.forgejo, repo, pr, commit); err != nil {
 			log.Printf("review claims of pull request %d: %v", pr, err)
 		} else {
 			defer cleanup()
@@ -381,79 +373,112 @@ func (r *Runner) dropContradicted(ctx context.Context, t Task, repo Repo, pr int
 		}
 	}
 	var settle func(Claim) (claimRun, error)
-	runs := 0
+	testClaims := 0
 	for _, c := range rv.Claims {
 		if c.Kind == ClaimTestOutcome {
-			if _, ran := carried[keyOf(c)]; !ran {
-				runs++
-			}
+			testClaims++
 		}
 	}
-	if runs > 0 {
+	if testClaims > 0 {
+		// one pod a kept claim runs, each a start and the command, after
+		// one sandbox setup. The gate watch's bound counts a review's
+		// waves of model calls: it is told the waves told so far (at
+		// least its first bound's) and the waves the runs add.
+		budget := time.Duration(testClaims)*(podStartWait+r.cfg.ReproTimeout) + podStartWait
+		call = max(call, time.Second)
+		boundByParts(ctx, max(policy.ReviewParts, told)+int((budget+call-1)/call))
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, r.settleWaves(ctx, runs, call, told))
+		ctx, cancel = context.WithTimeout(ctx, budget)
 		defer cancel()
 		var done func()
 		settle, done = r.testSettler(ctx, t, repo, pr, commit)
 		defer done()
 	}
-	if len(carried) > 0 {
+	if cache != nil && settle != nil {
 		base := settle
 		settle = func(c Claim) (claimRun, error) {
-			if s, ran := carried[keyOf(c)]; ran {
-				return s.run, s.err
+			if o, ok := cache[claimKey(c)]; ok {
+				return o.run, o.err
 			}
-			if base == nil {
-				return claimRun{}, errors.New("no run made of the claim")
-			}
-			return base(c)
+			run, err := base(c)
+			cache[claimKey(c)] = claimOutcome{run, err}
+			return run, err
 		}
 	}
 	return applyClaims(rv, files, grep, settle)
 }
 
-// settleCarried runs the last verdict-bearing review's carried claims —
-// the test-outcome claims no run settled last round — on this head,
-// before the model call: a claim a run refutes drops the re-filed
-// finding it matches by text, and one no run settles again rides as a
-// pending claim. It answers the runs as the review input's facts, each
-// with its outcome; the refuted ones as drops keyed by finding text; the
-// still-unsettled claims; and every run by claim for dropContradicted to
-// reuse, so a re-filed copy of a carried claim never runs twice.
-func (r *Runner) settleCarried(ctx context.Context, t Task, repo Repo, pr int64, commit string, call time.Duration, told int, earlier []Review) (facts []carriedRun, drops []Dropped, pending []PendingClaim, carried map[claimKey]settledClaim) {
-	last := lastVerdict(earlier)
-	if len(last) == 0 || len(last[0].Pending) == 0 {
-		return nil, nil, nil, nil
+// carriedRun is one carried claim's run on the head the next review
+// reads: the pending claim and what the run showed — the evidence that
+// refutes it, the run's own words upholding it, or why no run settled
+// it (refuted names the first).
+type carriedRun struct {
+	pending PendingClaim
+	shown   string
+	refuted bool
+}
+
+// settleCarried runs the claims the last verdict-bearing review of
+// earlier carried — the ones no run settled — on the head this review
+// reads, each once in the task's sandbox, before the review's model
+// call. The cache it answers an identical re-filed claim without a
+// second run (dropContradicted reads it).
+func (r *Runner) settleCarried(ctx context.Context, t Task, repo Repo, pr int64, commit string, call time.Duration, told int, earlier []Review) ([]carriedRun, map[Claim]claimOutcome) {
+	found := lastVerdict(earlier)
+	if found == nil || len(found[0].Pending) == 0 {
+		return nil, nil
 	}
-	carried = map[claimKey]settledClaim{}
-	for _, p := range last[0].Pending {
-		carried[keyOf(p.Claim)] = settledClaim{}
-	}
-	budget := r.settleWaves(ctx, len(carried), call, told)
+	pending := found[0].Pending
+	// one pod a carried claim runs, each a start and the command, after
+	// one sandbox setup — the settle's own bound (dropContradicted's)
+	budget := time.Duration(len(pending))*(podStartWait+r.cfg.ReproTimeout) + podStartWait
+	call = max(call, time.Second)
+	boundByParts(ctx, max(policy.ReviewParts, told)+int((budget+call-1)/call))
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithTimeout(ctx, budget)
 	defer cancel()
-	settle, done := r.testSettler(ctx, t, repo, pr, commit)
+	base, done := r.testSettler(ctx, t, repo, pr, commit)
 	defer done()
-	for _, p := range last[0].Pending {
-		k := keyOf(p.Claim)
-		if s := carried[k]; s.err == nil && s.run == (claimRun{}) {
-			s.run, s.err = settle(p.Claim)
-			carried[k] = s
+	cache := map[Claim]claimOutcome{}
+	settle := func(c Claim) (claimRun, error) {
+		if o, ok := cache[claimKey(c)]; ok {
+			return o.run, o.err
 		}
-		run, err := carried[k].run, carried[k].err
-		name := fmt.Sprintf("%s in %s at %s", p.Claim.Symbol, p.Claim.Package, p.Claim.Ref)
-		if ev, ok, upheld, why := settleTest(p.Claim, func(Claim) (claimRun, error) { return run, err }); ok {
-			facts = append(facts, carriedRun{Claim: name, Outcome: "refuted", Evidence: ev})
-			drops = append(drops, Dropped{Finding: p.Finding, Kind: p.Claim.Kind, Symbol: p.Claim.Symbol, Evidence: ev})
-		} else if upheld != "" {
-			facts = append(facts, carriedRun{Claim: name, Outcome: "upheld", Evidence: upheld})
-		} else if why != "" {
-			facts = append(facts, carriedRun{Claim: name, Outcome: "unsettled", Evidence: why})
-			pending = append(pending, p)
+		run, err := base(c)
+		cache[claimKey(c)] = claimOutcome{run, err}
+		return run, err
+	}
+	var carried []carriedRun
+	for _, p := range pending {
+		evidence, ok, upheld, why := settleTest(p.Claim, settle)
+		switch {
+		case ok:
+			carried = append(carried, carriedRun{pending: p, shown: evidence, refuted: true})
+		case upheld != "":
+			carried = append(carried, carriedRun{pending: p, shown: upheld})
+		default:
+			carried = append(carried, carriedRun{pending: p, shown: why})
 		}
 	}
-	return facts, drops, pending, carried
+	return carried, cache
+}
+
+// dropCarried drops a re-filed finding whose carried claim a run on this
+// head refuted, matched by the finding's text, with the run's evidence:
+// the one the model re-filed without its claim — a re-filed claim is
+// dropped by its own run (dropContradicted, the cache answering it).
+func dropCarried(rv Review, carried []carriedRun) Review {
+	for _, c := range carried {
+		if !c.refuted {
+			continue
+		}
+		if i := slices.Index(rv.Findings, c.pending.Finding); i >= 0 {
+			rv.Findings = slices.Delete(rv.Findings, i, i+1)
+			rv.Dropped = append(rv.Dropped, Dropped{Finding: c.pending.Finding,
+				Kind: c.pending.Claim.Kind, Symbol: c.pending.Claim.Symbol, Evidence: c.shown})
+		}
+	}
+	return rv
 }
 
 // testSettler runs a test-outcome claim's fixed argv in the task's

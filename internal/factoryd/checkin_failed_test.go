@@ -138,7 +138,7 @@ func TestCheckinStopLabelsAndCases(t *testing.T) {
 		"call cap, recorded": {"check-in: " + CheckSpend + ": check-in call cap reached after 3 calls", CaseCheckinFailed, map[string]any{"reason_kind": CheckCallCap}},
 		"human only":         {"check-in: " + CheckPolicyClass + ": the change touches a migration", CasePolicyClass, map[string]any{"reason_kind": CheckPolicyClass}},
 	} {
-		kind, facts := caseKindOf(escalationSource(tc.reason), tc.reason)
+		kind, facts := CaseKindOf(EscalationSource(tc.reason), tc.reason)
 		if kind != tc.kind || len(facts) != len(tc.facts) || facts["reason_kind"] != tc.facts["reason_kind"] {
 			t.Errorf("%s: caseKindOf = %s %v, want %s %v", name, kind, facts, tc.kind, tc.facts)
 		}
@@ -269,7 +269,7 @@ func TestWorkflowRepeatedFailedCheckinKeepsItsLabel(t *testing.T) {
 			if tc.restart && !strings.Contains(second, "no new commit") {
 				t.Fatalf("the repeat ask = %q, want the restart that pushed nothing named", second)
 			}
-			if kind, facts := caseKindOf(escalationSource(second), second); kind != CaseCheckinFailed || facts["reason_kind"] != tc.kind {
+			if kind, facts := CaseKindOf(EscalationSource(second), second); kind != CaseCheckinFailed || facts["reason_kind"] != tc.kind {
 				t.Fatalf("the repeat's case = %s %v, want checkin_failed under %s", kind, facts, tc.kind)
 			}
 		})
@@ -293,7 +293,7 @@ func TestStopFamilySpansTheLabelsOfTheRoll(t *testing.T) {
 // check-in's case too, with the same fact.
 func TestCaseKindOfReadsAnUnreadableStopRecordedBeforeTheRoll(t *testing.T) {
 	reason := "check-in: gate: check-in answer unreadable: not one JSON object"
-	kind, facts := caseKindOf(escalationSource(reason), reason)
+	kind, facts := CaseKindOf(EscalationSource(reason), reason)
 	if kind != CaseCheckinFailed || facts["reason_kind"] != CheckUnreadable {
 		t.Fatalf("case = %s %v, want checkin_failed unreadable", kind, facts)
 	}
@@ -316,7 +316,7 @@ func TestCheckinFailedCaseBuysNoAgentTime(t *testing.T) {
 		}
 	}
 	task := Task{ID: "t1", Repository: "o/r", BudgetEUR: 5, SpentEUR: 1.5}
-	c, err := caseFromAsk(task, Event{Kind: EventQuestionAsked, Detail: map[string]any{"source": "supervisor", "question": "gave no answer",
+	c, err := CaseFromAsk(task, Event{Kind: EventQuestionAsked, Detail: map[string]any{"source": "supervisor", "question": "gave no answer",
 		"reason": "check-in: " + CheckTimeCap + ": check-in time cap reached after 10m0s"}}, "")
 	if err != nil {
 		t.Fatal(err)
@@ -330,10 +330,10 @@ func TestCheckinFailedCaseBuysNoAgentTime(t *testing.T) {
 // before: only the three failure kinds keep their own.
 func TestRepeatAskKeepsTheSpendLabelForTheOtherKinds(t *testing.T) {
 	for _, kind := range []string{CheckGoalConflict, CheckPolicyClass, CheckAccess, CheckSpend, ""} {
-		prev := checkinStopMark{Kind: kind, Tip: "c1", Granted: true}
-		got := repeatAsk(prev, checkinStopMark{Kind: kind, Tip: "c1"})
-		if !strings.HasPrefix(got, checkinSpendAsk) {
-			t.Errorf("kind %q: repeat ask %q, want it under %q", kind, got, checkinSpendAsk)
+		prev := CheckinStopMark{Kind: kind, Tip: "c1", Granted: true}
+		got := repeatAsk(prev, CheckinStopMark{Kind: kind, Tip: "c1"})
+		if !strings.HasPrefix(got, CheckinSpendAsk) {
+			t.Errorf("kind %q: repeat ask %q, want it under %q", kind, got, CheckinSpendAsk)
 		}
 	}
 }
@@ -468,14 +468,14 @@ func TestCapWaitReplyByAgentTime(t *testing.T) {
 			"time left":     {10 * time.Minute, 0, 2, "", ""},
 			"time spent":    {20 * time.Minute, 0, 1, "agent-time cap", timeCapReachedLadder},
 			"session limit": {10 * time.Minute, testWorkflowConfig.MaxSessions - 1, 1, "session cap", capReachedLadder},
-			"budget short":  {10 * time.Minute, 0, 1, "budget floor", budgetRefused},
+			"budget short":  {10 * time.Minute, 0, 1, "budget floor", BudgetRefused},
 		} {
 			t.Run(capName+" cap with "+name, func(t *testing.T) {
 				h, _ := capHarness(t, tc.took, capped, pushed("s2", "c1"))
 				h.env.SetStartTime(worked.At)
 				h.state = RunState{Usage: TaskUsage{Attempts: tc.before}}
 				money := fundedMoney
-				if tc.asked == budgetRefused {
+				if tc.asked == BudgetRefused {
 					fundUntilAsked(h)
 					money = shortMoney
 				}
@@ -526,7 +526,7 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		return f
 	}
 	open := map[string]any{"pr_open": true, "head": "c1"}
-	dayFirst, _, _ := strings.Cut(capWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), "x", time.Now().Add(time.Hour)), "\n")
+	dayFirst, _, _ := strings.Cut(CapWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), "x", time.Now().Add(time.Hour)), "\n")
 	capped := map[string]any{"cap_wait": dayFirst}
 	// a plan's automatic second session tops its spent time up
 	planRetry, planSpent := map[string]any{"planner": true, "planner_retry": true}, map[string]any{"planner": true}
@@ -538,10 +538,10 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 			}
 		}
 	}()
-	dayWait := capWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), "x", time.Now().Add(time.Hour))
-	monthWait := capWaitReason(policy.RefusedMonthCap, capFloor(policy.RefusedMonthCap), "x", time.Now().Add(time.Hour))
-	projectWait := capWaitReason(policy.RefusedProjectCap, capFloor(policy.RefusedProjectCap), "x", time.Now().Add(time.Hour))
-	gate := gateStopped + ActivityModelReview + " after 3 tries"
+	dayWait := CapWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), "x", time.Now().Add(time.Hour))
+	monthWait := CapWaitReason(policy.RefusedMonthCap, capFloor(policy.RefusedMonthCap), "x", time.Now().Add(time.Hour))
+	projectWait := CapWaitReason(policy.RefusedProjectCap, capFloor(policy.RefusedProjectCap), "x", time.Now().Add(time.Hour))
+	gate := GateStopped + ActivityModelReview + " after 3 tries"
 	for _, tc := range []struct {
 		kind      CaseKind
 		reason    string
@@ -578,15 +578,15 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseNoAnswer, noModelAnswer, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseNoAnswer, noModelAnswer, spent, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseNoAnswer, noModelAnswer, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
-		{CaseImageWait, imageWaited, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
-		{CaseImageWait, imageWaited, spent, reply, none, TestReplyAtStopsThatBuyASession, ""},
-		{CaseImageWait, imageWaited, limit, reply, none, TestReplyAtStopsThatBuyASession, ""},
-		{CaseImageWait, imageWaited, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
-		{CaseContentFilter, contentFilterRefusal, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
-		{CaseContentFilter, contentFilterRefusal, spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
-		{CaseContentFilter, contentFilterRefusal, limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
-		{CaseContentFilter, contentFilterRefusal, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
-		{CaseContentFilter, contentFilterRefusal, with(short, capped), "The day cap is reached", reply, TestReplyWhileADayCapBindsBeforeTheBudget, ""},
+		{CaseImageWait, ImageWaited, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
+		{CaseImageWait, ImageWaited, spent, reply, none, TestReplyAtStopsThatBuyASession, ""},
+		{CaseImageWait, ImageWaited, limit, reply, none, TestReplyAtStopsThatBuyASession, ""},
+		{CaseImageWait, ImageWaited, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseContentFilter, ContentFilterRefusal, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
+		{CaseContentFilter, ContentFilterRefusal, spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseContentFilter, ContentFilterRefusal, limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseContentFilter, ContentFilterRefusal, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseContentFilter, ContentFilterRefusal, with(short, capped), "The day cap is reached", reply, TestReplyWhileADayCapBindsBeforeTheBudget, ""},
 		{CaseDayCap, dayWait, with(short, capped), "the budget floor next", "The day cap is reached", TestReplyWhileADayCapBindsBeforeTheBudget, ""},
 		{CaseAgentEscalate, AgentAsks, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseAgentEscalate, AgentAsks, spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
@@ -623,10 +623,10 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseDependencyFailed, depFailed + "#1", spent, "start the card anyway", "new attempt", TestReplyAtADependencyStop, ""},
 		{CaseSessionCap, capReachedLadder, limit, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
 		{CaseAgentTimeCap, timeCapReached, spent, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
-		{CaseBudgetFloor, budgetRefused, room, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
+		{CaseBudgetFloor, BudgetRefused, room, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
 		{CaseMonitorFlag, "x", room, "The card goes on meanwhile", reply, TestMonitorFacesAQuietRunBesideIt, ""},
-		{CaseFindingsRepeated, deadlockAskMark, room, "A reply alone changes nothing", reply, TestReplyAtTheDeadlock, ""},
-		{CaseFindingsRepeated, deadlockAskMark, limit, none, "changes nothing", TestReplyAtTheDeadlock, ""},
+		{CaseFindingsRepeated, DeadlockAskMark, room, "A reply alone changes nothing", reply, TestReplyAtTheDeadlock, ""},
+		{CaseFindingsRepeated, DeadlockAskMark, limit, none, "changes nothing", TestReplyAtTheDeadlock, ""},
 	} {
 		covered[tc.kind] = true
 		if (tc.drive == nil) == (tc.unreached == "") {

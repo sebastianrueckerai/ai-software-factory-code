@@ -151,15 +151,15 @@ func TestBoundedStartTakesNoSlotFromAFixForwardCard(t *testing.T) {
 		t.Fatalf("starts = %v, want the fix-forward card started past the full bound", rec.starts)
 	}
 	fix, _, _ := store.Task(ctx, "t-fix")
-	if fix.AdmittedAt == nil || waitsForSlot(fix) || holdsSlot(fix) || fix.Unbound() {
+	if fix.AdmittedAt == nil || waitsForSlot(fix) || HoldsSlot(fix) || fix.Unbound() {
 		t.Errorf("admitted at %v, waitsForSlot = %v, holdsSlot = %v, Unbound = %v, want a stamp, false, false, false: it is admitted like every started card, takes no slot and stays a card of every other rule of the bound",
-			fix.AdmittedAt, waitsForSlot(fix), holdsSlot(fix), fix.Unbound())
+			fix.AdmittedAt, waitsForSlot(fix), HoldsSlot(fix), fix.Unbound())
 	}
 	if n, err := store.CountQueue(ctx, "demo/app"); err != nil || n != 0 {
 		t.Errorf("CountQueue after the start = %d (%v), want 0: a started card is in no queue", n, err)
 	}
 	fix.Status = "running"
-	if holdsSlot(fix) {
+	if HoldsSlot(fix) {
 		t.Error("a running fix-forward card holds a slot")
 	}
 }
@@ -487,7 +487,7 @@ func TestBoundedStartAdmitsNothingAtTheProjectBudget(t *testing.T) {
 func TestParkingOnAPersonPullsTheNextQueuedCard(t *testing.T) {
 	for name, park := range map[string]func(*testing.T, *Runner) error{
 		"escalation": func(_ *testing.T, r *Runner) error {
-			_, err := r.faceStop(context.Background(), "t1", "a question", nil)
+			_, err := r.FaceStop(context.Background(), "t1", "a question", nil)
 			return err
 		},
 		"question to the author": func(t *testing.T, r *Runner) error {

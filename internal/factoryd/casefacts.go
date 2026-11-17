@@ -114,9 +114,7 @@ type CaseFacts struct {
 	Report bool `json:"report,omitempty"`
 	// Criteria: the card is the integration or a delta card of a plan whose
 	// criteria a human judges on its merge
-	Criteria bool `json:"criteria,omitempty"`
-	// ApprovalKind is the kind of the approval request a case of a plan's criteria or a merge holds
-	ApprovalKind string    `json:"approval_kind,omitempty"`
+	Criteria     bool      `json:"criteria,omitempty"`
 	Pushed       bool      `json:"pushed,omitempty"` // a session pushed a branch head
 	Dependencies []DepFact `json:"dependencies,omitempty"`
 	Planner      bool      `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
@@ -212,7 +210,6 @@ func (f CaseFacts) noSession(refund, waiting bool) (asked CaseKind, read bool) {
 // atCase weighs f for case c: its kind, and the gate a gate stop names.
 func (f *CaseFacts) atCase(c Case) {
 	f.Kind, f.Gate = c.Kind, ""
-	f.ApprovalKind, _ = c.Facts["approval_kind"].(string)
 	f.RiskClass, _ = c.Facts["class"].(string)
 	f.Factory, _ = c.Facts["factory"].(bool)
 	if f.Killed == nil && c.Facts["killed"] != nil {
@@ -399,11 +396,14 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				f.FloorEUR, f.FloorFree = v.Document.Budget.SessionFloor(f.Model != "" && r.frontier(f.Model)), true
 				return nil
 			}
-			if f.Model == "" {
+			// the model the next session opens on, resolved as the run
+			// resolves it; only none at all falls back to the policy's floor
+			m := sessionModel(v.Document, t, cmp.Or(model, t.ModelAlias))
+			if m == "" {
 				f.FloorEUR = v.Document.Budget.SessionFloor(false)
 				return nil
 			}
-			n, err := r.needOf(ctx, v, t, f.Model, true)
+			n, err := r.needOf(ctx, v, t, m, true)
 			if err == nil && n.unread != "" {
 				err = errors.New(n.unread)
 			}
@@ -412,10 +412,10 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				return err
 			}
 			// the run's own floor, whose caps bind before the card's budget
-			why, err := r.SessionFunded(ctx, t.ID, f.Model)
+			why, err := r.SessionFunded(ctx, t.ID, m)
 			if d, ok := CapDecision(why); ok && err == nil {
 				_, state, _ := strings.Cut(why, "\n")
-				f.CapWait, _, _ = strings.Cut(capWaitReason(d, capFloor(d), state, capTurn(d, r.clock())), "\n")
+				f.CapWait, _, _ = strings.Cut(CapWaitReason(d, capFloor(d), state, capTurn(d, r.Clock())), "\n")
 			}
 			return err
 		}},
@@ -484,7 +484,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			return nil
 		}},
 		{"pool", func() error {
-			drawn, err := r.store.PoolDrawn(ctx, t.Repository, r.clock())
+			drawn, err := r.store.PoolDrawn(ctx, t.Repository, r.Clock())
 			if err == nil {
 				f.PoolLeft = esc.Pool.Minus(drawn)
 			}
@@ -592,7 +592,7 @@ func headFindingTexts(steps []DigestStep, head string, ids []string) (map[string
 	texts, order := map[string]string{}, []string{}
 	for _, s := range slices.Backward(newest) {
 		for _, text := range s.texts {
-			if id := findingID(text); slices.Contains(ids, id) && texts[id] == "" {
+			if id := FindingID(text); slices.Contains(ids, id) && texts[id] == "" {
 				texts[id] = text
 				order = append(order, id)
 			}
@@ -793,10 +793,10 @@ func (r *Runner) depFactOf(ctx context.Context, id string) (DepFact, error) {
 	return fact, nil
 }
 
-// factsAtCase are the facts Act judges case c of card t on: the card's facts
+// FactsAtCase are the facts Act judges case c of card t on: the card's facts
 // read now, at the case's head and model, with the case's kind. c may be the
 // zero Case, an answer with none.
-func (r *Runner) factsAtCase(ctx context.Context, t Task, c Case) (CaseFacts, error) {
+func (r *Runner) FactsAtCase(ctx context.Context, t Task, c Case) (CaseFacts, error) {
 	head, _ := c.Facts["head"].(string)
 	model, _ := c.Facts["model"].(string)
 	f, err := r.tripFacts(ctx, t, head, model)

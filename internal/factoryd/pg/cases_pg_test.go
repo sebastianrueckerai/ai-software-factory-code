@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -12,12 +12,12 @@ import (
 
 func caseStore(t *testing.T) *PGStore {
 	t.Helper()
-	s, err := OpenStore(context.Background(), schematest.DSN(t, "cases"))
+	s, err := OpenStore(context.Background(), schematest.DSN(t, "pg_cases"))
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
-	t.Cleanup(func() { s.db.Close() })
-	if _, err := s.db.ExecContext(context.Background(), `TRUNCATE cases CASCADE`); err != nil {
+	t.Cleanup(func() { s.DB().Close() })
+	if _, err := s.DB().ExecContext(context.Background(), `TRUNCATE cases CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	return s
@@ -262,7 +262,7 @@ func TestBrieflessCasesAndTheLastAnswer(t *testing.T) {
 	}
 	fresh, open := mk("fresh", CaseAtHuman), mk("open", CaseOpen)
 	budget, terminal, briefed, answered := mk("budget", CaseAtHuman), mk("terminal", CaseAtHuman), mk("briefed", CaseAtHuman), mk("answered", CaseAtHuman)
-	for id, mark := range map[int64]string{budget: "refused_budget: spent", terminal: briefTerminal + "no brief"} {
+	for id, mark := range map[int64]string{budget: "refused_budget: spent", terminal: BriefTerminal + "no brief"} {
 		if err := s.SetCaseBriefError(ctx, id, mark); err != nil {
 			t.Fatal(err)
 		}

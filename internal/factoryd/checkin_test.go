@@ -303,15 +303,15 @@ type scriptedTools struct{ out map[string]string }
 func TestCheckinTimeCapIsTheFailedCheckinsStop(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9"}
 	chat := &scriptedChat{delay: time.Second, answers: []CheckinResponse{{ToolName: "grep", ToolArgs: map[string]any{"pattern": "x"}}}}
-	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, 20*time.Millisecond)
-	const reason = "check-in time cap reached after 20ms"
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, 400*time.Millisecond)
+	const reason = "check-in time cap reached after 400ms"
 	if out.Decision != RungHandUp || out.ReasonKind != CheckTimeCap || out.Reason != reason {
 		t.Fatalf("decision = %q, kind %q, reason %q; want the time cap's stop under its own kind", out.Decision, out.ReasonKind, out.Reason)
 	}
 	if chat.calls != 2 || out.Record.Reason != reason || len(out.Record.Calls) != 2 {
 		t.Fatalf("calls = %d, record %+v; want the evidence call the reserve cut and the answer call the cap cut", chat.calls, out.Record)
 	}
-	if tools, choice := chat.gots[1].Tools, chat.gots[1].ToolChoice; len(tools) != 1 || tools[0].Name != checkinAnswerTool || choice == nil {
+	if tools, choice := chat.gots[1].Tools, chat.gots[1].ToolChoice; len(tools) != 1 || tools[0].Name != CheckinAnswerTool || choice == nil {
 		t.Fatalf("the answer call posts tools %+v with choice %+v, want only the answer tool forced", tools, choice)
 	}
 }
@@ -332,27 +332,27 @@ func (c *toolsUntilLast) Call(ctx context.Context, _, _ string, in CheckinReques
 		return CheckinResponse{}, ctx.Err()
 	}
 	if in.ToolChoice != nil {
-		return CheckinResponse{ToolName: checkinAnswerTool, ToolArgs: map[string]any{"decision": "handover", "handover": "go on"}}, nil
+		return CheckinResponse{ToolName: CheckinAnswerTool, ToolArgs: map[string]any{"decision": "handover", "handover": "go on"}}, nil
 	}
 	return CheckinResponse{ToolName: "grep", ToolArgs: map[string]any{"pattern": "x"}}, nil
 }
 
 // A model that would read until its calls run out still answers within
-// the time cap, long before the call cap. The answer is due at 400ms, the
+// the time cap, long before the call cap. The answer is due at 700ms, the
 // cap less half of it, the policy's per-call time being longer; calls
-// take 120ms. Evidence calls start at 0, 120ms and 240ms, when one more
-// still ends before 400ms; at 360ms none would, so the fourth call is
+// take 180ms. Evidence calls start at 0, 180ms and 360ms, when one more
+// still ends before 700ms; at 540ms none would, so the fourth call is
 // the forced answer call, and no evidence call is started only to be
 // cut.
 func TestCheckinTimeCapLeavesTheAnswerCall(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9"}
-	chat := &toolsUntilLast{delay: 120 * time.Millisecond}
-	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 20, 1.5, 1, 2000, 800*time.Millisecond)
+	chat := &toolsUntilLast{delay: 180 * time.Millisecond}
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 20, 1.5, 1, 2000, 1400*time.Millisecond)
 	if out.Decision != CheckHandover || out.Handover != "go on" {
 		t.Fatalf("outcome = %+v, want the answer's handover", out)
 	}
 	last := chat.reqs[len(chat.reqs)-1]
-	if len(last.Tools) != 1 || last.Tools[0].Name != checkinAnswerTool || last.ToolChoice == nil || !strings.Contains(last.Input, "This is your last call") {
+	if len(last.Tools) != 1 || last.Tools[0].Name != CheckinAnswerTool || last.ToolChoice == nil || !strings.Contains(last.Input, "This is your last call") {
 		t.Fatalf("the last call posts tools %+v with choice %+v, want only the answer tool forced after the ask for the answer", last.Tools, last.ToolChoice)
 	}
 	if n := len(chat.reqs); n != 4 {
@@ -617,7 +617,7 @@ func TestCheckinLastCallForcesTheAnswerTool(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
 	chat := &scriptedChat{answers: []CheckinResponse{
 		{ToolName: "card_facts"},
-		{ToolName: checkinAnswerTool, ToolArgs: map[string]any{"decision": "continue", "reason": "research"}},
+		{ToolName: CheckinAnswerTool, ToolArgs: map[string]any{"decision": "continue", "reason": "research"}},
 	}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat,
 		scriptedTools{out: map[string]string{"card_facts": "budget 2 EUR"}}, 2, 1.5, 1, 2000, time.Hour)
@@ -625,11 +625,11 @@ func TestCheckinLastCallForcesTheAnswerTool(t *testing.T) {
 		t.Fatalf("calls = %d, want the tool round and the answer", len(chat.gots))
 	}
 	evidence := chat.gots[0].Tools
-	if len(evidence) != len(checkinTools)+1 || evidence[len(evidence)-1].Name != checkinAnswerTool || chat.gots[0].ToolChoice != nil {
+	if len(evidence) != len(checkinTools)+1 || evidence[len(evidence)-1].Name != CheckinAnswerTool || chat.gots[0].ToolChoice != nil {
 		t.Fatalf("the evidence call posts %+v with choice %+v, want the evidence tools with the answer tool appended, unforced", evidence, chat.gots[0].ToolChoice)
 	}
 	last := chat.gots[1]
-	if len(last.Tools) != 1 || last.Tools[0].Name != checkinAnswerTool {
+	if len(last.Tools) != 1 || last.Tools[0].Name != CheckinAnswerTool {
 		t.Fatalf("the last call posts tools %+v, want only the answer tool", last.Tools)
 	}
 	if !reflect.DeepEqual(last.Tools[0], momentAnswerTool(ask)) {
@@ -642,7 +642,7 @@ func TestCheckinLastCallForcesTheAnswerTool(t *testing.T) {
 	if got, want := last.Tools[0].Parameters.(map[string]any)["required"], any([]string{"decision"}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the answer schema requires %v, want %v", got, want)
 	}
-	if !reflect.DeepEqual(last.ToolChoice, forcedToolChoice(checkinAnswerTool)) {
+	if !reflect.DeepEqual(last.ToolChoice, ForcedToolChoice(CheckinAnswerTool)) {
 		t.Errorf("the last call's tool_choice = %+v, want the named answer tool", last.ToolChoice)
 	}
 	if !strings.HasSuffix(last.Input, "\n\nThis is your last call: answer now through the answer tool.") {
@@ -672,7 +672,7 @@ func TestCheckinAnswerToolCallParsesNeverRuns(t *testing.T) {
 	asText := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil,
 		&scriptedChat{answers: []CheckinResponse{{Text: answerJSON}}}, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
 	asTool := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil,
-		&scriptedChat{answers: []CheckinResponse{{ToolName: checkinAnswerTool, ToolArgs: args}}}, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
+		&scriptedChat{answers: []CheckinResponse{{ToolName: CheckinAnswerTool, ToolArgs: args}}}, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
 	if asTool.Decision != asText.Decision || asTool.Handover != asText.Handover ||
 		!reflect.DeepEqual(asTool.Verdicts, asText.Verdicts) || !reflect.DeepEqual(asTool.Remarks, asText.Remarks) {
 		t.Fatalf("the tool answer's outcome = %+v, want the text answer's %+v", asTool, asText)
@@ -1002,6 +1002,36 @@ func TestCheckinStatementNamesTheStuckRule(t *testing.T) {
 	}
 }
 
+// The session check-in's guidance stays inside what the agent's shell tool
+// runs: the persona bounds it (no timeout past the 600000 ms maximum, bash
+// check static where nothing changed), and the parser's guard clamps any
+// timeout the guidance names past the ceiling.
+func TestCheckinGuidanceStaysInToolBounds(t *testing.T) {
+	session := checkinSystemFor(CheckInSession, false)
+	if !strings.Contains(session, "600000 ms") || !strings.Contains(session, "bash check static") {
+		t.Fatalf("session persona lacks the shell tool's bounds:\n%s", session)
+	}
+	gate, dead := checkinSystemFor(CheckInGate, false), checkinSystemFor(CheckInDead, false)
+	for name, persona := range map[string]string{"gate": gate, "dead": dead} {
+		if strings.Contains(persona, "bash check static") || strings.Contains(persona, "600000 ms") {
+			t.Errorf("the %s persona carries the session guidance's bounds:\n%s", name, persona)
+		}
+	}
+	a, err := parseCheckinAnswer(`{"decision":"continue","guidance":"run bash check with a timeout of 1800000 ms"}`,
+		&CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1"})
+	if err != nil {
+		t.Fatalf("parse = %v, want the answer to land", err)
+	}
+	if a.Guidance != "run bash check with a timeout of 600000 ms" {
+		t.Fatalf("guidance = %q, want its timeout clamped to 600000 ms", a.Guidance)
+	}
+	a, _ = parseCheckinAnswer(`{"decision":"continue","guidance":"a timeout of 600000 ms stays"}`,
+		&CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1"})
+	if a.Guidance != "a timeout of 600000 ms stays" {
+		t.Fatalf("guidance = %q, want a timeout within the cap kept", a.Guidance)
+	}
+}
+
 // The gate persona is today's constant; the session and dead personas name
 // the rungs' action names, the session's continue carrying the message's
 // guidance, and none names the gate's verdict vocabulary.
@@ -1140,6 +1170,74 @@ func TestParseCheckinAnswerRefusesOutsideItsEnums(t *testing.T) {
 	}
 }
 
+// A replan on a card holding the gate-trigger PR is refused unless its
+// reason names the pull request and the gate consequence; a compliant
+// reason passes; continue, handover and hand_up pass the guard unchanged;
+// a card with no open PR is unaffected. A refusal quotes the rule so the
+// model answers again — never a silent flip to continue.
+func TestReplanAnswerNamesPRAndGate(t *testing.T) {
+	gateAsk := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-9", Replan: true,
+		Trip: &TripReport{Detector: "session_end", Detail: "the session's turn ended"},
+		PR:   &CheckInPRFacts{Number: 1946, Checks: ChecksSuccess, GateTrigger: true}}
+	noPRAsk := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-10", Replan: true,
+		PR: &CheckInPRFacts{Number: 12, Checks: ChecksSuccess}}
+
+	t.Run("a reason omitting the PR is refused with the rule named", func(t *testing.T) {
+		answer := `{"decision":"replan","reason":"the plan needs a smaller change"}`
+		_, err := parseCheckinAnswer(answer, gateAsk)
+		if err == nil || !strings.Contains(err.Error(), "must name the pull request and that the criteria gate runs at the merge press") {
+			t.Fatalf("the omitting replan = %v, want the rule quoted", err)
+		}
+		if !strings.Contains(err.Error(), "#1946") {
+			t.Fatalf("the refusal %v, want the PR named", err)
+		}
+	})
+	t.Run("a reason omitting the gate consequence is refused", func(t *testing.T) {
+		answer := `{"decision":"replan","reason":"split the work; see PR #1946"}`
+		if _, err := parseCheckinAnswer(answer, gateAsk); err == nil ||
+			!strings.Contains(err.Error(), "must name the pull request and that the criteria gate runs at the merge press") {
+			t.Fatalf("the PR-only replan = %v, want the rule quoted", err)
+		}
+	})
+	t.Run("a compliant reason passes", func(t *testing.T) {
+		answer := `{"decision":"replan","reason":"PR #1946 is the criteria-gate trigger and the criteria gate runs at its merge press; the change must be cut smaller first"}`
+		a, err := parseCheckinAnswer(answer, gateAsk)
+		if err != nil || a.Decision != CheckReplan {
+			t.Fatalf("the compliant replan = (%+v, %v), want it to parse", a, err)
+		}
+	})
+	t.Run("a no-PR card passes unchanged", func(t *testing.T) {
+		a, err := parseCheckinAnswer(`{"decision":"replan","reason":"the plan needs a smaller change"}`, noPRAsk)
+		if err != nil || a.Decision != CheckReplan {
+			t.Fatalf("the no-PR replan = (%+v, %v), want it to pass unchanged", a, err)
+		}
+	})
+	t.Run("continue, handover and hand_up pass the guard unchanged", func(t *testing.T) {
+		for _, answer := range []string{
+			`{"decision":"continue","guidance":"keep going"}`,
+			`{"decision":"handover","handover":"the state is on the branch"}`,
+			`{"decision":"hand_up","reason_kind":"policy_class","reason":"r"}`,
+		} {
+			if _, err := parseCheckinAnswer(answer, gateAsk); err != nil {
+				t.Errorf("the gate-trigger ask refused %s: %v", answer, err)
+			}
+		}
+	})
+	t.Run("a refusal makes the check-in answer again with the rule quoted", func(t *testing.T) {
+		chat := &scriptedChat{answers: []CheckinResponse{
+			{Text: `{"decision":"replan","reason":"the plan needs a smaller change"}`},
+			{Text: `{"decision":"replan","reason":"PR #1946 is the criteria-gate trigger and the criteria gate runs at its merge press; the change must be cut smaller first"}`},
+		}}
+		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", gateAsk, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
+		if out.Decision != CheckReplan || chat.calls != 2 {
+			t.Fatalf("outcome %q after %d calls, want the replan read after the rule was quoted", out.Decision, chat.calls)
+		}
+		if !strings.Contains(chat.gots[len(chat.gots)-1].Input, "must name the pull request and that the criteria gate runs at the merge press") {
+			t.Fatal("the repair round did not carry the rule")
+		}
+	})
+}
+
 // No moment's check-in has a tool that runs a command: a judge needs no
 // shell, and the pod's token is readable from one.
 func TestCheckinToolsHoldNoRun(t *testing.T) {
@@ -1169,7 +1267,7 @@ func TestCheckinGatewayPostsToolChoice(t *testing.T) {
 	if _, err := g.Call(context.Background(), "t-1", "checkin", CheckinRequest{
 		System: "s", Input: "i",
 		Tools:      []CheckinTool{momentAnswerTool(&CheckInAsk{Moment: CheckInGate})},
-		ToolChoice: forcedToolChoice(checkinAnswerTool),
+		ToolChoice: ForcedToolChoice(CheckinAnswerTool),
 	}); err != nil {
 		t.Fatalf("the forced call = %v", err)
 	}
@@ -1185,7 +1283,7 @@ func TestCheckinGatewayPostsToolChoice(t *testing.T) {
 		t.Fatalf("tool_choice = %v, want the named-function form", forced["tool_choice"])
 	}
 	fn, _ := choice["function"].(map[string]any)
-	if fn["name"] != checkinAnswerTool {
+	if fn["name"] != CheckinAnswerTool {
 		t.Fatalf("tool_choice names %q, want the answer tool", fn["name"])
 	}
 	var unforced map[string]any
@@ -1365,7 +1463,7 @@ func TestCheckinGatewayPostsNoOutputLimit(t *testing.T) {
 	}))
 	defer srv.Close()
 	g := &checkinGateway{URL: srv.URL, Token: "b"}
-	if _, err := g.Call(context.Background(), "t-1", "checkin", CheckinRequest{System: "s", Input: "i", ToolChoice: forcedToolChoice(checkinAnswerTool)}); err != nil {
+	if _, err := g.Call(context.Background(), "t-1", "checkin", CheckinRequest{System: "s", Input: "i", ToolChoice: ForcedToolChoice(CheckinAnswerTool)}); err != nil {
 		t.Fatal(err)
 	}
 	for _, k := range []string{"max_tokens", "max_completion_tokens"} {
@@ -1425,7 +1523,7 @@ func TestCheckinMalformedCallExcerptIsScrubbedBeforeItIsCut(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
 	chat := &scriptedChat{answers: []CheckinResponse{
 		{ToolName: "read_file", ToolErr: "unexpected end of JSON input", ToolRaw: raw},
-		{ToolName: checkinAnswerTool, ToolArgs: map[string]any{"decision": "handover", "handover": "n"}},
+		{ToolName: CheckinAnswerTool, ToolArgs: map[string]any{"decision": "handover", "handover": "n"}},
 	}}
 	r := &Runner{Scrub: redact.New()}
 	out := r.runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
@@ -1663,17 +1761,14 @@ func TestCheckinToolBoundsNestWorkerUnderRunner(t *testing.T) {
 
 // A run restarted from the timeline keeps the claim results of each review:
 // the dropped findings with their evidence, the unsettled claims and the
-// upheld runs ride the review's timeline row, the unsettled ones as
-// pending claims too.
+// upheld runs ride the review's timeline row.
 func TestStageMemoryKeepsTheReviewsClaimResults(t *testing.T) {
 	tl := `{"step":"model_review","verdict":"concerns","summary":"s","findings":["a"],"round":1,` +
-		`"dropped":[{"finding":"c","kind":"test_outcome","symbol":"TestC","evidence":"ev"}],"unsettled":["u"],"upheld":["a: run"],` +
-		`"pending":[{"claim":{"finding":0,"kind":"test","symbol":"TestU","package":"p","ref":"head","outcome":"fail"},"finding":"a"}],"turned_from":"concerns"}`
+		`"dropped":[{"finding":"c","kind":"test_outcome","symbol":"TestC","evidence":"ev"}],"unsettled":["u"],"upheld":["a: run"]}`
 	var st RunState
 	stageMemoryOf([]byte(tl), &st)
 	want := Review{Verdict: "concerns", Summary: "s", Findings: []string{"a"},
-		Dropped: []Dropped{{Finding: "c", Kind: "test_outcome", Symbol: "TestC", Evidence: "ev"}}, Unsettled: []string{"u"}, Upheld: []string{"a: run"},
-		Pending: []PendingClaim{{Claim: testClaim(0, "TestU", "p", RefHead, OutcomeFail), Finding: "a"}}, Turned: "concerns"}
+		Dropped: []Dropped{{Finding: "c", Kind: "test_outcome", Symbol: "TestC", Evidence: "ev"}}, Unsettled: []string{"u"}, Upheld: []string{"a: run"}}
 	if len(st.Reviews) != 1 || !reflect.DeepEqual(st.Reviews[0], want) {
 		t.Fatalf("reviews = %+v, want %+v", st.Reviews, want)
 	}

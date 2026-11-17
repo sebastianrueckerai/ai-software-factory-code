@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -1303,7 +1304,7 @@ func TestGuideEndNoLongerForbidsRace(t *testing.T) {
 // finding, not this prose (roadmap 186). The harness reads AGENTS.md into
 // the session itself, so no guide asks for it.
 func TestGuidesEndWithTheOneCheckSentence(t *testing.T) {
-	want := "If the repository has a check file at its root, run bash check changed in the foreground with a timeout of 600000 ms: the repository's checks of what you changed, where CI runs all of them. When it passes, end the session at once with your last message: no further tests, re-runs or reading of library sources to confirm."
+	want := "If the repository has a check file at its root, run bash check changed in the foreground with a timeout of 600000 ms: the repository's checks of what you changed, where CI runs all of them. When it passes, end the session at once with your last message: \tno further tests, re-runs or reading of library sources to confirm. When your round landed no changes, bash check static stops before the tests and answers faster."
 	if !strings.HasPrefix(guideEnd(nil, nil), want) {
 		t.Fatalf("guideEnd = %q, want it to open with %q", guideEnd(nil, nil), want)
 	}
@@ -1313,10 +1314,41 @@ func TestGuidesEndWithTheOneCheckSentence(t *testing.T) {
 		t.Errorf("guideEnd = %q, want no background wait", guideEnd(nil, nil))
 	}
 	for name, g := range map[string]string{"work": workGuide([]string{policy.ToolDelegate}, nil), "feature": featureGuide(RoleFeature, nil, nil), "integration": featureGuide(RoleIntegration, nil, nil)} {
-		if !strings.HasSuffix(g, guideEnd(nil, nil)) || strings.Count(g, "bash check") != 1 || strings.Contains(g, "AGENTS.md") {
-			t.Errorf("%s guide = %q, want it to end with guideEnd, bash check once and no AGENTS.md", name, g)
+		if !strings.HasSuffix(g, guideEnd(nil, nil)) || strings.Count(g, "bash check") != 2 || strings.Contains(g, "AGENTS.md") {
+			t.Errorf("%s guide = %q, want it to end with guideEnd, bash check twice (changed and static) and no AGENTS.md", name, g)
 		}
 	}
+}
+
+// The guides factoryd writes name verify commands the sandbox's shell tool
+// can run: a changeless round's brief names bash check static, and no
+// guide names a shell timeout past the tool's 600000 ms maximum.
+func TestGuidesNameRunnableChecks(t *testing.T) {
+	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, "bash check static") || !strings.Contains(got, "600000 ms maximum") {
+		t.Fatalf("planGuide = %q, want the changeless round's bash check static and the 600000 ms cap", got)
+	}
+	end := guideEnd(nil, nil)
+	if !strings.Contains(end, "bash check static") {
+		t.Fatalf("guideEnd = %q, want bash check static beside bash check changed", end)
+	}
+	if over := timeoutOverShellCap(end); over != "" {
+		t.Errorf("guideEnd names a timeout past the shell tool's cap: %s", over)
+	}
+	if over := timeoutOverShellCap(codingWrapUp); over != "" {
+		t.Errorf("codingWrapUp names a timeout past the shell tool's cap: %s", over)
+	}
+}
+
+// timeoutOverShellCap returns the first "N ms" span in s whose N exceeds
+// the shell tool's 600000 ms maximum, "" with none.
+func timeoutOverShellCap(s string) string {
+	m := regexp.MustCompile(`(\d+)\s*ms`).FindAllStringSubmatch(s, -1)
+	for _, g := range m {
+		if n, err := strconv.Atoi(g[1]); err == nil && n > maxShellTimeoutMS {
+			return g[0]
+		}
+	}
+	return ""
 }
 
 // featureGuide's card writes tests for its acceptance items, which name

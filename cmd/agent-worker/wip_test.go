@@ -255,11 +255,11 @@ func TestWipPushTokenAbsentUntilEnd(t *testing.T) {
 	var out bytes.Buffer
 	emit := s.emitter(&out)
 	var asks int
-	commit, err := commitAndPush(dir, e, base, mainHead, func() error { return nil }, func(commit string) (string, error) {
+	commit, err := commitAndPush(dir, e, base, mainHead, func() error { return nil }, func(commit string) (pushCred, error) {
 		asks++
 		return gate.ask(commit, time.Second, writerFunc(func(p []byte) (int, error) {
 			// factoryd reads the ask and answers it
-			if !gate.take(tok) {
+			if !gate.take(pushCred{token: tok}) {
 				t.Error("no ask waited for factoryd's token")
 			}
 			return len(p), nil

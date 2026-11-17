@@ -16,9 +16,14 @@ type WorkerEnvelope struct {
 
 // PushRequest is the worker asking for its push token once every agent
 // process is dead and Commit is made: factoryd mints the token then and
-// posts it to the worker's POST /push on MessagePort.
+// posts it to the worker's POST /push on MessagePort. Own is the ask's
+// ordinal, the first ask's 1: the worker raises it when git refused its
+// push as a dead credential and it asks for a fresh token, and the answer
+// to each ordinal is a token minted under a fresh name (task-<id>-push-own-
+// <Own>), so a refused push retries the push, not the work.
 type PushRequest struct {
 	Commit string `json:"commit"`
+	Own    int    `json:"own,omitempty"`
 }
 
 // Repro is the worker's reproduction mode's report: the command's exit

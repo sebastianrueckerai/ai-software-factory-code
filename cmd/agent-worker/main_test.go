@@ -1898,7 +1898,7 @@ func TestDeliverOnAnInterimHeadLandsOnlyAFinishedSession(t *testing.T) {
 			}
 			gate := newPushGate()
 			s := &session{env: e, repoDir: dir, base: base, mainHead: mainHead, gate: gate, tel: tel}
-			answer := writerFunc(func(p []byte) (int, error) { gate.take("t"); return len(p), nil })
+			answer := writerFunc(func(p []byte) (int, error) { gate.take(pushCred{token: "t"}); return len(p), nil })
 			var failedPush bool
 			res := deliver(tc.res, tc.stopped, e, s.endPush(answer, func() error { return nil }), func(ev harness.Event) {
 				failedPush = failedPush || ev.Kind == harness.EventPushFailed
@@ -1981,8 +1981,8 @@ func TestLoadEnvReportModeHasNoPushCredentials(t *testing.T) {
 }
 
 // fixedToken is factoryd answering every push request with tok at once.
-func fixedToken(tok string) func(string) (string, error) {
-	return func(string) (string, error) { return tok, nil }
+func fixedToken(tok string) func(string) (pushCred, error) {
+	return func(string) (pushCred, error) { return pushCred{token: tok, name: "task-t1-push-own-1"}, nil }
 }
 
 // changedSession is a session's clone with one new file in the work tree,
@@ -2039,7 +2039,7 @@ func TestNoPushTokenNoPush(t *testing.T) {
 	var request bytes.Buffer
 	var events []harness.Event
 	res := deliver(harness.Result{Success: true, Summary: "done"}, false, e, func(e workerEnv) (string, error) {
-		return commitAndPush(dir, e, base, mainHead, func() error { return nil }, func(commit string) (string, error) {
+		return commitAndPush(dir, e, base, mainHead, func() error { return nil }, func(commit string) (pushCred, error) {
 			return gate.ask(commit, 50*time.Millisecond, &request)
 		})
 	}, func(ev harness.Event) { events = append(events, ev) })
@@ -2182,7 +2182,7 @@ func TestSessionLinesMaskTheSessionsOwnTokens(t *testing.T) {
 	emit := s.emitter(&out)
 	emit(harness.Event{Kind: harness.EventCommand, Detail: map[string]any{"command": "git fetch", "output": "auth " + read + " refused"}})
 	s.gate.asking = true
-	if !s.gate.take(push) {
+	if !s.gate.take(pushCred{token: push}) {
 		t.Fatal("the gate took no token")
 	}
 	emit(harness.Event{Kind: harness.EventFileChange, Detail: map[string]any{"path": "a.go", "sha256": hash, "note": "token " + push}})

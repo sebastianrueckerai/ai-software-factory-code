@@ -911,11 +911,11 @@ func TestExportFixtureMasksRulingCitationsAndKeepsIdsOfTheMaskedText(t *testing.
 	if len(got.Gates) != 1 || len(got.Gates[0].Findings) != 1 {
 		t.Fatalf("gates = %+v, want one review with one finding", got.Gates)
 	}
-	if f := got.Gates[0].Findings[0]; f.Text != masked || f.ID != findingID(masked) {
-		t.Errorf("finding = %+v, want text %q with the id of that text, %s", f, masked, findingID(masked))
+	if f := got.Gates[0].Findings[0]; f.Text != masked || f.ID != FindingID(masked) {
+		t.Errorf("finding = %+v, want text %q with the id of that text, %s", f, masked, FindingID(masked))
 	}
-	if v := got.Sessions[0].CheckIn.Verdicts; len(v) != 1 || v[findingID(masked)] != "confirmed" {
-		t.Errorf("verdicts = %v, want one on %s", v, findingID(masked))
+	if v := got.Sessions[0].CheckIn.Verdicts; len(v) != 1 || v[FindingID(masked)] != "confirmed" {
+		t.Errorf("verdicts = %v, want one on %s", v, FindingID(masked))
 	}
 }
 
@@ -928,8 +928,8 @@ func TestExportFixtureRefusesFindingsThatMaskToOneText(t *testing.T) {
 	g.line(t, "t-cl", 12, "model_review", map[string]any{"commit": "1111111", "verdict": "concerns", "findings": []string{a, b}, "round": 1})
 	g.event(t, "t-cl", 1563, 12, EventModelReview, FactoryDecider, ViaFactoryd, map[string]any{"commit": "1111111", "round": 1, "reviewed": true, "verdict": "concerns"})
 	_, err := g.ex.Export(context.Background(), "sf/r", 1563)
-	if err == nil || !strings.Contains(err.Error(), findingID(a)) || !strings.Contains(err.Error(), findingID(b)) {
-		t.Fatalf("Export = %v, want a refusal naming %s and %s", err, findingID(a), findingID(b))
+	if err == nil || !strings.Contains(err.Error(), FindingID(a)) || !strings.Contains(err.Error(), FindingID(b)) {
+		t.Fatalf("Export = %v, want a refusal naming %s and %s", err, FindingID(a), FindingID(b))
 	}
 }
 

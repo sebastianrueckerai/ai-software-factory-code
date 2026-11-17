@@ -88,7 +88,10 @@ type fakeStore struct {
 	budgetRefused map[string]bool
 	// providerRefusals are ProviderRefusal's answers by task
 	providerRefusals map[string]string
-	answered         map[string]bool // ModelAnswered's answer by task
+	// providerDecisions are those answers' decisions, by task; "" the
+	// fake reads as error_upstream
+	providerDecisions map[string]string
+	answered          map[string]bool // ModelAnswered's answer by task
 	// chatErr is EnsureChatTask's error
 	chatErr error
 	// chatSpent is the spend EnsureChatTask's task shows
@@ -1190,7 +1193,7 @@ func (s *fakeStore) ResumeWaiters(ctx context.Context, repository string) ([]Tas
 func (s *fakeStore) CountAdmitted(ctx context.Context, repository string) (int, error) {
 	n := 0
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.Kind == "agent" && holdsSlot(t) {
+		if t.Repository == repository && t.Kind == "agent" && HoldsSlot(t) {
 			n++
 		}
 	}
@@ -1448,7 +1451,7 @@ func (s *fakeStore) askOpensCase(e Event) int64 {
 	if !ok {
 		return 0
 	}
-	c, err := caseFromAsk(t, e, "")
+	c, err := CaseFromAsk(t, e, "")
 	if err != nil {
 		return 0
 	}
@@ -1868,7 +1871,7 @@ func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution,
 	}
 	comment, _ := toInt(r.Args["comment"])
 	copied := func(c Case) bool {
-		if comment == 0 || c.Status != CaseResolved || c.Resolution == nil || c.Resolution.Action != caseAnswer {
+		if comment == 0 || c.Status != CaseResolved || c.Resolution == nil || c.Resolution.Action != CaseAnswer {
 			return false
 		}
 		answered, _ := toInt(c.Resolution.Args["comment"])
@@ -2330,9 +2333,9 @@ func (s *fakeStore) TaskCallTotals(ctx context.Context, taskID string) (TaskCall
 	return TaskCallTotals{}, nil
 }
 
-func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
+func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, string, bool, error) {
 	r, ok := s.providerRefusals[taskID]
-	return r, ok, nil
+	return s.providerDecisions[taskID], r, ok, nil
 }
 
 func (s *fakeStore) Free(ctx context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
@@ -4867,8 +4870,9 @@ func TestPGStoreModelAnswered(t *testing.T) {
 }
 
 // A provider refusal is the first model call an agent made since the
-// session began refused upstream, with no call of it allowed since: a call
-// before the session, a tool's call and factoryd's own calls count not.
+// session began refused upstream or at a named provider limit, with no
+// call of it allowed since: a call before the session, a tool's call and
+// factoryd's own calls count not.
 func TestPGStoreProviderRefusal(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
@@ -4889,14 +4893,23 @@ func TestPGStoreProviderRefusal(t *testing.T) {
 			('e', 'allowed', '', 'web_search', 'agent', '2026-10-11 05:00:02Z'),
 			('e', 'allowed', '', '', 'supervisor', '2026-10-11 05:00:03Z'),
 			('f', 'error_upstream', 'upstream 429', '', 'agent', '2026-10-11 05:00:01Z'),
-			('f', 'allowed', '', '', 'agent', '2026-10-11 05:00:02Z')`); err != nil {
+			('f', 'allowed', '', '', 'agent', '2026-10-11 05:00:02Z'),
+			('g', 'refused_provider_limit', 'provider limit for class big: reset 2026-10-11T06:04:50Z: five hours', '', 'agent', '2026-10-11 05:00:01Z')`); err != nil {
 		t.Fatal(err)
 	}
 	since := time.Date(2026, 10, 11, 5, 0, 0, 0, time.UTC)
-	for task, want := range map[string]string{"a": "upstream 429", "b": "", "c": "", "d": "", "e": "upstream 503", "f": ""} {
-		reason, ok, err := s.ProviderRefusal(ctx, task, since)
-		if err != nil || ok != (want != "") || reason != want {
-			t.Errorf("ProviderRefusal(%s) = %q, %v, %v; want %q", task, reason, ok, err, want)
+	for _, want := range []struct{ task, decision, reason string }{
+		{"a", "error_upstream", "upstream 429"},
+		{"b", "", ""},
+		{"c", "", ""},
+		{"d", "", ""},
+		{"e", "error_upstream", "upstream 503"},
+		{"f", "", ""},
+		{"g", "refused_provider_limit", "provider limit for class big: reset 2026-10-11T06:04:50Z: five hours"},
+	} {
+		decision, reason, ok, err := s.ProviderRefusal(ctx, want.task, since)
+		if err != nil || ok != (want.reason != "") || decision != want.decision || reason != want.reason {
+			t.Errorf("ProviderRefusal(%s) = %q, %q, %v, %v; want %q, %q", want.task, decision, reason, ok, err, want.decision, want.reason)
 		}
 	}
 }

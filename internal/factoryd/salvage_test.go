@@ -60,7 +60,7 @@ func TestSalvageEndsTheStuckRunAndFilesTheSuccessor(t *testing.T) {
 	if slices.ContainsFunc(wf.signals, func(s string) bool { return strings.Contains(s, SignalCaseResolved) }) {
 		t.Errorf("signals %q: a salvaged card's run hears no case_resolved", wf.signals)
 	}
-	f, err := r.factsAtCase(ctx, store.tasks["t-b"], quietFlag())
+	f, err := r.FactsAtCase(ctx, store.tasks["t-b"], quietFlag())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestAnAliveReadThatFailsLeavesTheFactsWholeAndOffersNoSalvage(t *testing.T)
 	r, store, _, _, wf := newRetryRig(t)
 	wf.aliveErr = errors.New("frontend down https://user:pass@host/x")
 	c := Case{ID: 4, TaskID: "t-b", Kind: CaseSessionCap, Status: CaseAtHuman}
-	f, err := r.factsAtCase(ctx, store.tasks["t-b"], c)
+	f, err := r.FactsAtCase(ctx, store.tasks["t-b"], c)
 	if err != nil {
 		t.Fatal(err)
 	}

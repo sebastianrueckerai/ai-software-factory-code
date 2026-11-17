@@ -248,9 +248,11 @@ func TestAFiledRollCardIsQueued(t *testing.T) {
 
 // A card's press moves the card at once (C31): every column names the
 // statuses it holds, in the four columns and the wide view, and the
-// approval's forms the status of its task, whose card the decided request
-// leaves standing. The press sent by htmx answers with the board's refresh
-// alone; a browser's form keeps its redirect.
+// approval's one decide form the status of its task, whose card the
+// decided request leaves standing. The press is the decide's one send —
+// the answer, the fund and the note ride one POST, landing together in
+// one row — and it answers with the board's refresh alone when htmx
+// sends it; a browser's form keeps its redirect.
 func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 	r := newRig(t)
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-card", Kind: "agent", Status: "in-review",
@@ -277,7 +279,10 @@ func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 			}
 		}
 	}
-	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}
+	// the one send: the answer, the fund and the note ride one POST
+	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"action": {"approve"}, "fund_eur": {"1.50"}, "note": {"the board alone answers"}}
+	before := r.events.count()
 	rec := r.do(htmxPost("/approvals/31/approve", form), ck)
 	if body := rec.Body.String(); rec.Code != http.StatusNoContent || body != "" || rec.Header().Get("HX-Trigger") != "board-refresh" {
 		t.Fatalf("the htmx approve = %d (%q):\n%s", rec.Code, rec.Header().Get("HX-Trigger"), body)
@@ -285,6 +290,13 @@ func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 	if !slices.Equal(approved, []string{"t-card #9 by sebastian"}) {
 		t.Fatalf("the htmx approve merged %v, want t-card #9 by sebastian", approved)
 	}
+	// the one send landed the fund and the note with the answer, one row
+	if k, ok, _ := r.tasks.Task(t.Context(), "t-card"); !ok || k.BudgetEUR != 1.5 {
+		t.Errorf("t-card's budget = %v (ok %v), want the 1.50 the one send carried", k.BudgetEUR, ok)
+	}
+	checkRows(t, r.events, before,
+		wantRow{kind: factoryd.EventMergeApproved, repo: "sf/code", taskID: "t-card",
+			detail: map[string]any{"pr": int64(9), "approval": int64(31), "fund_eur": 1.5, "reason": "the board alone answers"}})
 	if rec := r.do(post("/approvals/31/approve", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code" {
 		t.Fatalf("the browser's approve = %d to %q", rec.Code, rec.Header().Get("Location"))
 	}

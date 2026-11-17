@@ -2446,7 +2446,7 @@ func TestIntakePosterCommentIsSignalledAsInformation(t *testing.T) {
 		t.Fatalf("events = %q, want %q", kinds, wantKinds)
 	}
 	// the author's comment never counts as an ask's answer
-	if answers, _, _ := answersFrom(store.intakeEvents, []AskAnchor{{Comment: 1}}, nil); len(answers) != 1 || !strings.Contains(answers[0], "sebastian") {
+	if answers, _, _ := AnswersFrom(store.intakeEvents, []AskAnchor{{Comment: 1}}, nil); len(answers) != 1 || !strings.Contains(answers[0], "sebastian") {
 		t.Fatalf("answers = %q, want only the writer's", answers)
 	}
 }
@@ -2600,7 +2600,7 @@ func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 			}
 		} else {
 			in.Projects = projectList{none}
-			HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store}, noneCompleted)
+			HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store}, noneCompleted, nil)
 		}
 		if got := store.tasks["t-q"]; got.Kind != "human" || got.Status != "waiting-human" || slices.Contains(workflowsOf(in).started, "t-q") {
 			t.Fatalf("%s: task %+v, started %v", via, got, workflowsOf(in).started)

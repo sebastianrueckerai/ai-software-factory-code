@@ -96,7 +96,7 @@ func accReceiptRunner(t *testing.T, s *factoryd.PGStore, fj string, objects *acc
 		Leases:        accLeases{}, Gates: &factoryd.GateWatch{}, Workflows: accWorkflows{},
 		LastFailure: func(context.Context, string, string) (string, error) { return "", nil },
 	}
-	r, err := factoryd.NewRunner(cfg, s, &accKube{}, &factoryd.Forgejo{BaseURL: fj, BotUser: "factory-agent", BotPassword: "bot-pw"},
+	r, err := factoryd.NewRunner(cfg, s, accKube{}, &factoryd.Forgejo{BaseURL: fj, BotUser: "factory-agent", BotPassword: "bot-pw"},
 		nil, objects, &factoryd.SupervisorModel{GatewayURL: "http://127.0.0.1:1", Token: "gw-token",
 			Budget: factoryd.TokenBudget{AnswerTokens: 1000, HeadroomTokens: 8000}})
 	if err != nil {

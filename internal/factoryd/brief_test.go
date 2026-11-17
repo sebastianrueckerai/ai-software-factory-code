@@ -491,8 +491,7 @@ func TestBriefFactsCarryTheCriteriaGap(t *testing.T) {
 }
 
 // A criteria_rerun request's brief reads the same criteria facts, the
-// writer fetching them itself, and names its answers, none of which runs
-// the review.
+// writer fetching them itself, and names its answers, the grant among them.
 func TestBriefOfCriteriaNeverJudged(t *testing.T) {
 	spec, _ := json.Marshal(CriteriaSpec{Task: "t-int"})
 	a := ApprovalRequest{Kind: ApprovalCriteriaRerun, TaskID: "t-plan", Project: "sf/code", Spec: spec,
@@ -505,7 +504,7 @@ func TestBriefOfCriteriaNeverJudged(t *testing.T) {
 	if m := facts.(map[string]any); fmt.Sprint(m["criteria"]) != fmt.Sprint(criteria) || m["verdict_rows_of"] != "t-int" {
 		t.Errorf("facts = %v, want the criteria and their rows' card", m)
 	}
-	for _, want := range []string{"Waive", "Confirm", "Deny", "No button runs the review"} {
+	for _, want := range []string{"Waive", "Approve grants one more bounded card", "Confirm"} {
 		if !strings.Contains(acts, want) {
 			t.Errorf("acts %q lack %q", acts, want)
 		}
@@ -606,7 +605,7 @@ func TestTheMergeBriefCarriesThePlansRows(t *testing.T) {
 		for _, m := range req.Messages {
 			if m.Role == "user" {
 				var facts map[string]any
-				_ = json.Unmarshal([]byte(strings.TrimPrefix(m.Content, chatInputLead)), &facts)
+				_ = json.Unmarshal([]byte(strings.TrimPrefix(m.Content, ChatInputLead)), &facts)
 				sent = append(sent, facts)
 			}
 		}
@@ -844,11 +843,11 @@ func TestBriefWriterRetriesANoBriefAnswerOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 		marks = append(marks, store.caseFailed[5])
-		if strings.HasPrefix(store.caseFailed[5], briefTerminal) {
+		if strings.HasPrefix(store.caseFailed[5], BriefTerminal) {
 			store.cases = nil
 		}
 	}
-	if calls != 2 || !strings.HasPrefix(marks[0], noBriefMark) || !strings.HasPrefix(marks[1], briefTerminal) {
+	if calls != 2 || !strings.HasPrefix(marks[0], noBriefMark) || !strings.HasPrefix(marks[1], BriefTerminal) {
 		t.Fatalf("calls %d, marks %q; want two calls, the first mark %q and the second terminal", calls, marks, noBriefMark)
 	}
 }
@@ -885,7 +884,7 @@ func TestBriefWriterMasksLineStartTokensAndQuotedHeaders(t *testing.T) {
 	if store.caseBrief[5][0] != "ok" || len(store.caseFailed) != 0 {
 		t.Fatalf("brief %v, marks %v; want the brief filed", store.caseBrief[5], store.caseFailed)
 	}
-	if !json.Valid([]byte(strings.TrimPrefix(user, chatInputLead))) {
+	if !json.Valid([]byte(strings.TrimPrefix(user, ChatInputLead))) {
 		t.Fatalf("the facts are no JSON: %s", user)
 	}
 	for _, leak := range []string{token, bearer} {

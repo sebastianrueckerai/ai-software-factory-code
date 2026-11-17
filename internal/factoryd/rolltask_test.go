@@ -564,7 +564,7 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			f.rawReads = append(f.rawReads, path+"@"+ref)
 			content, ok := f.files[repo+"@"+ref][path]
 			// a commit the test names no files for holds main's
-			mainsPins := repo == codeRepo && (ref == "main" || !ok && fullSHA.MatchString(ref))
+			mainsPins := repo == codeRepo && (ref == "main" || !ok && FullSHA.MatchString(ref))
 			if mainsPins && !ok {
 				content, ok = f.files[codeRepo+"@main"][path]
 			}

@@ -117,8 +117,9 @@ func lockWithin(ctx context.Context, mu *sync.Mutex) error {
 }
 
 // keepsWaiting are the choices of a human card that answer it and leave its
-// case live: the card goes on waiting.
-var keepsWaiting = []string{AnswerRerunAgain, AnswerPark, AnswerKeepWaiting}
+// case live: the card goes on waiting. A park and a keep waiting settle
+// their case instead: the card keeps its wait with none open.
+var keepsWaiting = []string{AnswerRerunAgain}
 
 // keepsOpen says answer res leaves case c live: a note, a criterion's verdict
 // or a filed card, a decision whose request ended the case already, or a
@@ -219,7 +220,7 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 			return ActResult{}, ErrActRefused(why)
 		}
 	} else {
-		if f, err = r.factsAtCase(ctx, t, c); err != nil {
+		if f, err = r.FactsAtCase(ctx, t, c); err != nil {
 			return ActResult{}, err
 		}
 		if planAsk(c) && in.Rung != 3 {
@@ -333,6 +334,11 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	if err := r.actWrite(ctx, t, c, in, own, slices.Concat(in.Did, out.Did, drew), out.Comment, draw, ends); err != nil {
 		return out, ranErr(out.Did, err)
 	}
+	if res.Action == ActConfirmAudit && in.Rung == 3 {
+		if err := r.confirmAudit(ctx, t, f, in); err != nil {
+			return out, err
+		}
+	}
 	out.Did = append(out.Did, drew...)
 	if draw != nil {
 		out.Drawn = draw.Extend.Plus(policy.Draw{EUR: draw.FundEUR})
@@ -406,11 +412,11 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 			if c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
 				continue
 			}
-			ask, found := r.caseAsk(ctx, c)
+			ask, found := r.CaseAsk(ctx, c)
 			if !found || ask.Detail["refusals"] != nil {
 				continue
 			}
-			f, err := r.factsAtCase(ctx, t, c)
+			f, err := r.FactsAtCase(ctx, t, c)
 			if err != nil {
 				log.Printf("offers pass: case %d: %v", c.ID, err)
 				continue
@@ -440,7 +446,7 @@ func (r *Runner) refreshOffersOf(ctx context.Context, taskID string, caseID int6
 	if err != nil || c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
 		return
 	}
-	if f, err := r.factsAtCase(ctx, t, c); err == nil {
+	if f, err := r.FactsAtCase(ctx, t, c); err == nil {
 		r.refreshOffers(ctx, t, c, f)
 	}
 }
@@ -502,14 +508,14 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 		return ActResult{}, err
 	}
 	if c.Status == CaseAtHuman {
-		err = r.proposeAtHuman(ctx, t, c, handUp{Action: res.Action, Grounds: grounds, Rung: 2, ActionRung: 2, Preselected: &step.Did[0]})
+		err = r.proposeAtHuman(ctx, t, c, HandUp{Action: res.Action, Grounds: grounds, Rung: 2, ActionRung: 2, Preselected: &step.Did[0]})
 	} else {
 		var f CaseFacts
 		head, _ := c.Facts["head"].(string)
 		model, _ := c.Facts["model"].(string)
 		if f, err = r.tripFacts(ctx, t, head, model); err == nil {
 			r.atCaseOf(ctx, &f, t, c)
-			_, err = r.climb(ctx, t, c, f, 2, found)
+			_, err = r.Climb(ctx, t, c, f, 2, found)
 		}
 	}
 	if err != nil {
@@ -525,7 +531,7 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 // proposeAtHuman puts rung 2's proposal on the face card t's case already
 // has at the human: the face of that case carries the recommendation and
 // the preselected action, and one comment on the issue names the proposal.
-func (r *Runner) proposeAtHuman(ctx context.Context, t Task, c Case, up handUp) error {
+func (r *Runner) proposeAtHuman(ctx context.Context, t Task, c Case, up HandUp) error {
 	if err := r.store.SetQuestionProposal(ctx, t.ID, c.ID, r.recommendation(t, &up), recommendedBy(&up), up.Preselected.preselected()); err != nil {
 		return err
 	}
@@ -755,6 +761,39 @@ func answersACase(a Action) bool {
 	return a.InRun && a.Name != ActExtend && a.Name != ActFund || a.Name == ActWithdraw || a.Name == ActNote || a.Name == ActSettle
 }
 
+// confirmAudit records the audit findings a person's confirm_audit marks
+// fixtures (audit-confirm): each finding text prefix they named, or every
+// finding the head's newest audit holds when none, as an
+// audit_finding_confirmed step with who, why and when. Every GateAudit of
+// the task reads the steps off the timeline and settles its verdict past
+// them, on this attempt and a fresh one alike, until the head's audit
+// clears on its own. A confirmation stands once: one already recorded
+// under the same prefix is not recorded again.
+func (r *Runner) confirmAudit(ctx context.Context, t Task, f CaseFacts, in ActInput) error {
+	named := confirmAuditFindings(in.Res.Args)
+	if len(named) == 0 {
+		for _, id := range f.AuditFindings {
+			if text := f.FindingTexts[id]; text != "" {
+				named = append(named, text)
+			}
+		}
+	}
+	seen, err := r.auditConfirmations(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	for _, prefix := range named {
+		if _, done := seen[prefix]; done {
+			continue
+		}
+		detail := map[string]any{"finding": prefix, "by": in.By, "why": strings.TrimSpace(in.Res.Note)}
+		if err := r.timeline.Append(ctx, t.ID, stepAuditConfirmed, detail); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // actRefusal is why in may not answer the facts f of card, "" when it
 // may: no such rung, an action the table does not hold, an action that
 // answers a case on a card with none open, or the table's refusal, with
@@ -813,8 +852,8 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) s
 	case in.Res.Action == ActClose:
 		return "" // a human card closes whatever it asks, as its Close button does
 	}
-	ask, _ := r.caseAsk(ctx, c)
-	offers := askOffers(ask.Detail)
+	ask, _ := r.CaseAsk(ctx, c)
+	offers := AskOffers(ask.Detail)
 	switch {
 	case len(offers) == 0:
 		return fmt.Sprintf("card %s asks no question with choices: answer it with a note", cardName(t))
@@ -836,8 +875,8 @@ func choiceRefusal(t Task, offers []QuestionChoice) string {
 // wordsRefusal is why free words alone answer no human card whose question
 // offers choices: the answer is a choice, and a note rides with it.
 func (r *Runner) wordsRefusal(ctx context.Context, t Task, c Case) string {
-	ask, _ := r.caseAsk(ctx, c)
-	offers := askOffers(ask.Detail)
+	ask, _ := r.CaseAsk(ctx, c)
+	offers := AskOffers(ask.Detail)
 	if len(offers) == 0 {
 		return ""
 	}
@@ -1155,7 +1194,7 @@ func (r *Runner) grantDraw(ctx context.Context, taskID string, rung int, by stri
 func refusedDraw(err error) error {
 	var refused *DrawBoundError
 	if errors.As(err, &refused) {
-		return temporal.NewNonRetryableApplicationError(err.Error(), errDrawRefused, nil)
+		return temporal.NewNonRetryableApplicationError(err.Error(), ErrDrawRefused, nil)
 	}
 	return err
 }

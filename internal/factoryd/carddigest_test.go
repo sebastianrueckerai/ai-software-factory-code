@@ -154,7 +154,7 @@ func TestCardDigestRendersTheSkeleton(t *testing.T) {
 	if got := d.Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
 	}
-	if got := findingID("  MetricDivideReplans\tLACKS   e.repository = $1 "); got != idA {
+	if got := FindingID("  MetricDivideReplans\tLACKS   e.repository = $1 "); got != idA {
 		t.Fatalf("findingID of the spaced, upper-case text = %s, want %s", got, idA)
 	}
 	ask := d.Steps[4]
@@ -1491,5 +1491,51 @@ func TestQueuedOverBoundNamesAResumedWait(t *testing.T) {
 	want := []DigestFlag{{"queued_over_bound", "resumed: work bound 7 of 7 live, 1 ahead for 3h"}, {"wait_over_bound", "queued since +1:00"}}
 	if got := g.digest(t).Flags; !slices.Equal(got, want) {
 		t.Fatalf("Flags = %v, want %v", got, want)
+	}
+}
+
+// mergeQueueRig is a card in gate merge-queue since minute 30, with the
+// fake merge queue holding queue's tasks in order; "t1410" is the card.
+func mergeQueueRig(t *testing.T, queue ...string) digestRig {
+	g := newDigestRig(func(c *Task) { c.Status, c.Gate = "in-review", GateMergeQueue })
+	g.store.tasks["t1949"] = Task{ID: "t1949", Kind: "agent", Repository: "sf/app", IssueNumber: 1949, Status: "in-review", Gate: GateMergeQueue}
+	g.event(30, EventTaskStatus, FactoryDecider, map[string]any{"status": "in-review", "gate": GateMergeQueue})
+	for i, id := range queue {
+		g.store.queue = append(g.store.queue, queueEntry{"sf/app", id, digestAt(i)})
+	}
+	g.at(6*60 + 31)
+	return g
+}
+
+func TestWaitBehindAnotherCardInTheMergeQueueRaisesNoFlag(t *testing.T) {
+	g := mergeQueueRig(t, "t1949", "t1410")
+	d := g.digest(t)
+	if len(d.Flags) != 0 {
+		t.Fatalf("Flags = %v, want none for a card that waits behind #1949", d.Flags)
+	}
+	if got, want := d.Head.MergeQueue, (&QueuePlace{Ahead: 1, HeadTask: "t1949", HeadIssue: 1949}); *got != *want {
+		t.Fatalf("MergeQueue = %+v, want %+v", got, want)
+	}
+	if line, _, _ := strings.Cut(d.Render(), "\n"); !strings.HasSuffix(line, "in-review, merge-queue · waits to merge behind #1949") {
+		t.Fatalf("head line = %q, want it to end with the card ahead named", line)
+	}
+}
+
+func TestTheMergeQueueHeadStillOwnsItsGateWait(t *testing.T) {
+	g := mergeQueueRig(t, "t1410", "t1949")
+	d := g.digest(t)
+	if want := []DigestFlag{{"wait_over_bound", "gate since +0:30"}}; !slices.Equal(d.Flags, want) {
+		t.Fatalf("Flags = %v, want %v", d.Flags, want)
+	}
+	if line, _, _ := strings.Cut(d.Render(), "\n"); strings.Contains(line, "waits to merge behind") {
+		t.Fatalf("head line = %q, the front waits behind no card", line)
+	}
+}
+
+func TestAHeldPlanCardRaisesNoFlag(t *testing.T) {
+	g := mergeQueueRig(t)
+	d := g.digest(t)
+	if len(d.Flags) != 0 || d.Head.MergeQueue != nil {
+		t.Fatalf("Flags = %v, MergeQueue = %+v, want none and nil for a card with no queue row", d.Flags, d.Head.MergeQueue)
 	}
 }
