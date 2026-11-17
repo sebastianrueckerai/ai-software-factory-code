@@ -1458,15 +1458,22 @@ func (r *Runner) holdPlan(ctx context.Context, t Task, repo Repo, open []PlanCri
 	if slices.ContainsFunc(cases, func(c Case) bool { return c.Kind == CasePlanHeld && c.StateKey == key }) {
 		return
 	}
-	c, _, err := r.store.OpenCase(ctx, Case{TaskID: t.ID, Repository: t.Repository, Kind: CasePlanHeld, StateKey: key, Status: CaseAtHuman,
+	c, opened, err := r.store.OpenCase(ctx, Case{TaskID: t.ID, Repository: t.Repository, Kind: CasePlanHeld, StateKey: key, Status: CaseAtHuman,
 		Problem: "the plan holds production with open promises", Facts: map[string]any{"open": ids, "promises": promises}})
-	if err != nil {
-		log.Printf("plan %s: the hold's ask: %v", t.ID, err)
+	if err != nil || !opened {
+		if err != nil {
+			log.Printf("plan %s: the hold's ask: %v", t.ID, err)
+		}
 		return
 	}
 	if t.IssueNumber != 0 {
 		r.commentOnce(ctx, t, repo, t.IssueNumber, HeldPlanComment(c, t))
 	}
+	// its ask row brings it to the inbox and the agent's wake, as every
+	// case at the human
+	face := FaceRow(c, t, FactsOf(c), "", nil, func(s string) string { return r.untrusted(t, s) }, r.scrub)
+	ask, _ := face["ask"].(string)
+	r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, AskRow(c, t, c.Problem, ask, 0, face, nil, nil, r.Scrub.String))
 }
 
 // The outcomes of a done plan's criteria gate run (EventCriteriaGateRun):

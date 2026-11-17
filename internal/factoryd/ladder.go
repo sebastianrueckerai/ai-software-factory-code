@@ -1473,15 +1473,16 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 // that asks, the source and the reason, scrubbed by scrub, the case, the
 // face the register wrote (none for a healed or screened ask), the
 // question, the agent's choices and the answer a rung preselected. A case
-// beside the run names its kind and flag: the card's own ask stays the
-// card's, its thread seeds from that, and the flag tells the settle the
-// ask of an ended card's open issue.
+// beside the run, and a closed plan's ask, names its kind and flag: the
+// card's own ask stays the card's, its thread seeds from that, and the
+// settle reads the ask of an ended card's open issue and the closed
+// plan's as open.
 func AskRow(c Case, t Task, reason, question string, comment int64, face map[string]any, choices []string, up *HandUp, scrub func(string) string) map[string]any {
 	asked := map[string]any{"comment": comment, "source": EscalationSource(reason), "reason": textutil.Truncate(scrub(reason), 300)}
 	if c.ID != 0 {
 		asked["case_id"] = c.ID
 	}
-	if c.Kind == CaseMonitorFlag || PlanWaitCase(c, t) {
+	if c.Kind == CaseMonitorFlag || PlanWaitCase(c, t) || c.Kind == CasePlanHeld {
 		asked["case_kind"], asked["flag"] = string(c.Kind), c.Facts["flag"]
 	}
 	maps.Copy(asked, face)

@@ -496,3 +496,52 @@ func TestCheckClosePlanAgreesWithCloseHeldPlan(t *testing.T) {
 		}
 	}
 }
+
+// A closed plan's ask reaches the inbox as every case at the human does:
+// one ask row naming its case, whose message says the card's why, and
+// open on the closed card until the plan's close answers it.
+func TestAHeldPlansAskReachesTheInbox(t *testing.T) {
+	ctx := context.Background()
+	r, s, _ := tenCriteriaPlan(t, "done")
+	setStatus(s, "t-plan", "closed")
+	for range 2 {
+		r.planCloseCheck(ctx, "t-plan")
+	}
+	var asks []Event
+	for _, e := range s.events {
+		if e.TaskID == "t-plan" && e.Kind == EventQuestionAsked {
+			asks = append(asks, e)
+		}
+	}
+	if len(asks) != 1 || asks[0].Detail["case_kind"] != string(CasePlanHeld) {
+		t.Fatalf("the plan's ask rows %+v, want one naming the held plan's case", asks)
+	}
+	plan := s.tasks["t-plan"]
+	m, ok := PokeOf(asks[0], plan)
+	if !ok || m.Content != "#1 needs you. Until it closes, the plan holds production deploys." {
+		t.Fatalf("the inbox's message = %q, %v", m.Content, ok)
+	}
+	// the plan's events as the store reads them: numbered, a minute apart
+	at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	read := func() []Event {
+		var out []Event
+		for i, e := range s.events {
+			if e.TaskID == "t-plan" {
+				e.ID, e.At = int64(i+1), at.Add(time.Duration(i)*time.Minute)
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+	events := read()
+	m.At = events[len(events)-1].At.Add(time.Second)
+	if st := SettleOf(m, events, plan.Status, false); !st.Open {
+		t.Fatalf("the message on the closed plan reads %+v, want it open", st)
+	}
+	if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil {
+		t.Fatal(err)
+	}
+	if st := SettleOf(m, read(), plan.Status, false); st.Open || st.Word != "answered" || st.By != "sebastian" {
+		t.Fatalf("after the Close the message reads %+v, want it answered by sebastian", st)
+	}
+}

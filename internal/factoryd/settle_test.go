@@ -222,3 +222,24 @@ func TestAPlansWaitAskStaysOpenUntilItsCaseEnds(t *testing.T) {
 		t.Fatalf("the direct card's ask on its wait = %+v, want it moved on", s)
 	}
 }
+
+// A card's message holds its ask's why, not its question (askMessage):
+// the row finds its own ask by that why, though a monitor's ask on the
+// same card came after it, and stays open on its case while the card
+// runs, until a row names that case.
+func TestAMessageFindsItsAskByItsWhy(t *testing.T) {
+	at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	flag := Event{ID: 1, Kind: EventQuestionAsked, TaskID: "t-1", At: at, Actor: FactoryDecider,
+		Detail: map[string]any{"question": "Close the card's issue?", "why": "the card ended while its issue stays open", "case_id": float64(7),
+			"case_kind": string(CaseMonitorFlag), "flag": "issue_open_after_end"}}
+	own := Event{ID: 2, Kind: EventQuestionAsked, TaskID: "t-1", At: at, Actor: FactoryDecider,
+		Detail: map[string]any{"question": "Allow more sessions?", "why": "its work is not done, and it has no session left", "case_id": float64(8)}}
+	m, ok := PokeOf(flag, Task{ID: "t-1", IssueNumber: 4})
+	if !ok || m.Content != "#4 needs you. The card ended while its issue stays open." {
+		t.Fatalf("the flag's message = %q, %v", m.Content, ok)
+	}
+	m.At = at.Add(time.Second)
+	if s := SettleOf(m, []Event{flag, own}, "running", false); !s.Open {
+		t.Fatalf("the flag's message while the card runs = %+v, want it open on its case", s)
+	}
+}

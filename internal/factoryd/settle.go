@@ -17,7 +17,7 @@ import (
 // venue, or factoryd's withdrawal of the question. The first one after
 // the escalation wins.
 var answerKinds = []string{EventQuestionAnswered, EventSessionGranted, EventMergeApproved, EventMergeDenied,
-	EventPlanChangesRequested, EventCardClosed, EventQuestionWithdrawn}
+	EventPlanChangesRequested, EventCardClosed, EventQuestionWithdrawn, EventPlanClosed}
 
 // PokeSettle is an ask row's derived state: open, or settled with the
 // word, actor and time of the event that settled it (the
@@ -67,7 +67,7 @@ func settles(kind, family string) bool {
 
 // settleWords are a settling event's reason word (the concept's table).
 var settleWords = map[string]string{
-	EventQuestionAnswered: "answered", EventSessionGranted: "answered", EventCardClosed: "answered",
+	EventQuestionAnswered: "answered", EventSessionGranted: "answered", EventCardClosed: "answered", EventPlanClosed: "answered",
 	EventPlanQuestionAnswered: "answered", EventQuestionWithdrawn: "withdrawn",
 	EventMergeApproved: "approved",
 	EventMergeDenied:   "rejected", EventPlanChangesRequested: "rejected",
@@ -89,7 +89,8 @@ func SettleWord(kind string) string { return cmp.Or(settleWords[kind], "moved on
 // monitor's ask waits on its case alone, which only a row naming it ends,
 // until its card ends, and the ask of an ended card's open issue past
 // that, until the issue closes. A plan's ask beside it on its failed card
-// (PlanWaitCase) waits on its case alone too. A row's repeats move its time, so a
+// (PlanWaitCase) and a closed plan's ask to close it (CasePlanHeld) wait
+// on their case alone too, which the plan's close answers. A row's repeats move its time, so a
 // bumped row asks again after an answer that preceded it.
 // PlanWaitAsk says ask row m on card t is a plan's wait on its failed card
 // (PlanWaitCase): an open ask beside the ended plan, answered on the failed
@@ -138,7 +139,7 @@ func SettleOf(m ChatMessage, events []Event, status string, approvalWaits bool) 
 		return PokeSettle{Word: settleWords[first.Kind], By: first.Actor, At: first.At, Event: first}
 	}
 	if monitor && (!Final(status) || birth.Detail["flag"] == "issue_open_after_end") ||
-		birth.Detail["case_kind"] == string(CaseDependencyFailed) && Final(status) {
+		(birth.Detail["case_kind"] == string(CaseDependencyFailed) || birth.Detail["case_kind"] == string(CasePlanHeld)) && Final(status) {
 		return PokeSettle{Open: true}
 	}
 	if cardWaits && (family == "question" || family == "" && m.Kind == MessagePoke) || approvalWaits && family == "approval" {
@@ -153,21 +154,38 @@ func SettleOf(m ChatMessage, events []Event, status string, approvalWaits bool) 
 
 // birthOf is the question_asked event that wrote ask row m, zero when none
 // is among events: the newest at or before the row, which the Poker
-// writes after its event, whose question the row's words hold when it has
-// words, so two asks of a card written in one pass each find their own.
+// writes after its event, whose question or why the row's words hold when
+// they hold one, so two asks of a card written in one pass each find
+// their own.
 func birthOf(m ChatMessage, events []Event) Event {
-	var birth Event
+	var newest, said Event
 	if m.BirthKind != EventQuestionAsked {
-		return birth
+		return newest
 	}
 	for _, e := range events {
-		q, _ := e.Detail["question"].(string)
-		if e.Kind == EventQuestionAsked && !e.At.After(m.At) && e.ID > birth.ID &&
-			(m.Content == "" || strings.Contains(m.Content, strings.TrimSuffix(q, "…"))) {
-			birth = e
+		if e.Kind != EventQuestionAsked || e.At.After(m.At) {
+			continue
+		}
+		if e.ID > newest.ID {
+			newest = e
+		}
+		if e.ID > said.ID && saysAsk(m.Content, e) {
+			said = e
 		}
 	}
-	return birth
+	if said.ID != 0 || m.Content == "" {
+		return said
+	}
+	return newest
+}
+
+// saysAsk reports whether a row's content holds ask row e's words: its
+// question, or its why as the message says it (askMessage).
+func saysAsk(content string, e Event) bool {
+	q, _ := e.Detail["question"].(string)
+	why, _ := e.Detail["why"].(string)
+	why = strings.TrimRight(capitalize(why), ".")
+	return content == "" || q != "" && strings.Contains(content, strings.TrimSuffix(q, "…")) || why != "" && strings.Contains(content, why)
 }
 
 // movesOn reports whether question_asked e, newer than ask, is ask's next
