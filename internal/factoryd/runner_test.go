@@ -2273,15 +2273,15 @@ func TestRunSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	runner.cfg.Policy = func() policy.Version { return v }
 	runner.cfg.Prices = stubPrices{price: policy.Price{In: 4e-6, CacheRead: 4e-7, Out: 4e-6, MaxOutput: 32768}}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4k", Attempt: 1, Model: "factory/small"}, nil, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
-	why := "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
+	why := "the remaining budget cannot fund a call: Raise the budget and answer, or close the card.\n" +
 		"The card spent 1.90 EUR of its 2.00 EUR budget; 0.10 EUR is held for the review and the audit, which need 0.40 EUR" +
 		", and a session on factory/small needs 0.300000 EUR " +
 		"(the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would run out of money before its work is done."
 	if err != nil || res.Outcome != OutcomeEscalate || !res.StartFailed || res.Summary != why || res.Reason != why || res.Model != "factory/small" {
 		t.Fatalf("result = (%+v, %v), want the money ask:\n%s", res, err, why)
 	}
-	if !strings.Contains(res.Reason, "(Fund on the board) and answer") {
-		t.Fatalf("reason = %q, want the Fund action", res.Reason)
+	if !strings.Contains(res.Reason, "Raise the budget and answer") {
+		t.Fatalf("reason = %q, want the raise of the budget", res.Reason)
 	}
 	if got := EscalationSource(res.Reason); got != "budget" {
 		t.Fatalf("escalation source = %q, want budget", got)

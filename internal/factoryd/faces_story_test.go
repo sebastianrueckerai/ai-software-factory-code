@@ -3,6 +3,7 @@ package factoryd_test
 import (
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -303,5 +304,38 @@ func TestTheWritersLeftStandsWholeBesideTheNumbers(t *testing.T) {
 	stored["story"] = factoryd.Story{Planned: "This card builds “Keep the nightly snapshots”.", Happened: h, Left: l}
 	if s := factoryd.CaseFace(c, f.Card, factoryd.CaseAsk{Detail: stored}).Story; s.Happened != h || s.Left != l {
 		t.Errorf("a base row shows %q / %q, want %q / %q", s.Happened, s.Left, h, l)
+	}
+}
+
+// An issue line that says what to press names only answers the board shows
+// for the case, by their labels, as the face composes them: every quoted
+// answer of every case fixture's line is one of its face's answers. No line
+// names the old forms.
+func TestTheIssueNamesOnlyTheBoardsAnswers(t *testing.T) {
+	quoted := regexp.MustCompile(`“([^”]+)”`)
+	named := map[string]bool{}
+	for _, x := range facedFixtures(t) {
+		reason, _ := x.c.Facts["reason"].(string)
+		line := factoryd.TripNext(x.c, reason)
+		var labels []string
+		for _, a := range slices.Concat(x.face.Answers, x.face.More) {
+			labels = append(labels, a.Label)
+		}
+		for _, m := range quoted.FindAllStringSubmatch(line, -1) {
+			named[m[1]] = true
+			if !slices.Contains(labels, m[1]) {
+				t.Errorf("%s/%s: the issue names %q, which its face %v does not show:\n%s", x.fx.Group, x.fx.Kind, m[1], labels, line)
+			}
+		}
+		for _, old := range []string{"Fund form", "Fund on the board", "Extend"} {
+			if strings.Contains(line, old) {
+				t.Errorf("%s/%s: the issue names %q:\n%s", x.fx.Group, x.fx.Kind, old, line)
+			}
+		}
+	}
+	for _, label := range []string{"Allow more sessions", "Add money", "Raise the spend limit"} {
+		if !named[label] {
+			t.Errorf("no fixture's issue line names %q", label)
+		}
 	}
 }

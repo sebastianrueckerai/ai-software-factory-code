@@ -911,7 +911,7 @@ func (b *builder) variants() {
 		func(_ *builder, t *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
 			t.Usage.Attempts, t.SpentEUR, f.SpentEUR, f.LeftEUR = 1, 1.9, 1.9, 0.1
 			return factoryd.TripInput{Kind: factoryd.CaseBudgetFloor, StateKey: "floor",
-				Reason: factoryd.BudgetRefused + ": raise the budget (Fund on the board) and answer.\nThe card spent 1.90 EUR of its 2.00 EUR budget"}
+				Reason: factoryd.BudgetRefused + ": raise the budget and answer.\nThe card spent 1.90 EUR of its 2.00 EUR budget"}
 		}}
 	concerns := caseStop{"Drawer: the Activity tab's durations", "Show how long each gate and step took in the drawer's Activity tab.",
 		func(_ *builder, t *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {

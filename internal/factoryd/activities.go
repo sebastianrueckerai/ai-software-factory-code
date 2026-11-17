@@ -824,7 +824,7 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 	if free.Reserve > 0 {
 		state = fmt.Sprintf("The card spent %.2f EUR of its %.2f EUR budget", own.Spent, t.BudgetEUR)
 	}
-	act := "Raise the budget (Fund on the board) and answer, or close the card."
+	act := "Raise the budget and answer, or close the card."
 	switch refused.Decision {
 	case policy.RefusedDayCap:
 		state = fmt.Sprintf("%.6f EUR of the day's %.2f EUR (budget.day_eur) is free", max(free.Day, 0), req.DayEUR)
@@ -843,7 +843,7 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 			} else {
 				state += fmt.Sprintf(" after outstanding holds of %.3f EUR (%d, the earliest expiring %s)", own.Held, own.Holds, stamp(own.Expires))
 			}
-			act = "Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget (Fund on the board) and answer."
+			act = "Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget and answer."
 		}
 		if free.Reserve > 0 {
 			// the money stop: a session that reached its ceiling says

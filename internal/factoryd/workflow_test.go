@@ -821,7 +821,7 @@ func (h *workflowHarness) refusedThenFunded(refusing ...int) map[string]int {
 			calls++
 			reads[activity]++
 			if slices.Contains(refusing, calls) {
-				return fmt.Sprintf("%s: Raise the budget (Fund on the board) and answer, or close the card.\n%.3f EUR of the 2.000 EUR budget remains, and a session on %s needs 0.300000 EUR",
+				return fmt.Sprintf("%s: Raise the budget and answer, or close the card.\n%.3f EUR of the 2.000 EUR budget remains, and a session on %s needs 0.300000 EUR",
 					BudgetRefused, float64(calls)/10, model), nil
 			}
 			return "", nil

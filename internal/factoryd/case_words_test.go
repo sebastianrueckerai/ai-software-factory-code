@@ -2,6 +2,9 @@ package factoryd
 
 import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"strings"
 	"testing"
 	"time"
@@ -82,5 +85,27 @@ func TestMonitorFaceMasksASecretAndNeutralisesAMention(t *testing.T) {
 	}
 	if c.Problem != face.Ask || face.Ask != FlagFaces["wait_over_bound"].Ask(Facts{CaseFacts: FactsOf(c), Card: card, Case: c}) {
 		t.Errorf("the problem %q and the ask %q are not the flag's own", c.Problem, face.Ask)
+	}
+}
+
+// No line the issue gets names a control by hand: the words of the issue's
+// lines (ladder.go) and of the stop reasons it posts (activities.go) hold
+// no form's name; the face's answers name what to press (boardAnswers).
+func TestNoIssueLineNamesAControlByHand(t *testing.T) {
+	for _, file := range []string{"ladder.go", "activities.go"} {
+		f, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+				for _, old := range []string{"Fund form", "Fund on the board", "Extend"} {
+					if strings.Contains(lit.Value, old) {
+						t.Errorf("%s holds %q in %s", file, old, lit.Value)
+					}
+				}
+			}
+			return true
+		})
 	}
 }

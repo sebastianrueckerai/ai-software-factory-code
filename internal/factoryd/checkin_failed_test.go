@@ -379,7 +379,7 @@ func TestFailedCheckinReplyStartsASession(t *testing.T) {
 }
 
 // The face names what starts the attempt by the card's room: a reply where
-// a session fits, the cap's Extend or the Fund form where none does, for
+// a session fits, the cap or the floor the task asks next where none does, for
 // the stops whose reply buys a session. The facts are the run's rule: a
 // 7200 s cap, 3 sessions, and 300 s a session needs to start; no money
 // facts read as a budget that funds one.
@@ -411,7 +411,7 @@ func TestFailedStopFaceByAgentTime(t *testing.T) {
 		// 0.48 EUR left less the 0.40 reserve is 0.08, under the 0.30 an opening needs
 		short := facts(1, 600)
 		short["left_eur"], short["reserve_eur"], short["floor_eur"] = 0.48, 0.4, 0.3
-		if got := tripNext(Case{Kind: kind, Facts: short}, "x"); !strings.Contains(got, "the budget floor next") || !strings.Contains(got, "the Fund form on the board") {
+		if got := tripNext(Case{Kind: kind, Facts: short}, "x"); !strings.Contains(got, "the budget floor next") {
 			t.Errorf("%s with the budget short: %q", kind, got)
 		}
 		// a plan's loop reads no opening floor: its reply starts the planner
@@ -430,12 +430,12 @@ func TestFailedStopFaceByAgentTime(t *testing.T) {
 		}
 		floorUnread := facts(1, 600)
 		floorUnread["partial"] = []any{"floor"}
-		if got := tripNext(Case{Kind: kind, Facts: floorUnread}, "x"); strings.Contains(got, "Reply on this issue to start") || !strings.Contains(got, "the Fund form") {
+		if got := tripNext(Case{Kind: kind, Facts: floorUnread}, "x"); strings.Contains(got, "Reply on this issue to start") || !strings.Contains(got, "limits could not be read") {
 			t.Errorf("%s with the floor unread: %q", kind, got)
 		}
 		unread := facts(1, 600)
 		delete(unread, "agent_time_cap_s")
-		if got := tripNext(Case{Kind: kind, Facts: unread}, "x"); strings.Contains(got, "Reply on this issue to start") || !strings.Contains(got, "Extend on the board") {
+		if got := tripNext(Case{Kind: kind, Facts: unread}, "x"); strings.Contains(got, "Reply on this issue to start") || !strings.Contains(got, "limits could not be read") {
 			t.Errorf("%s with the cap unread: %q", kind, got)
 		}
 	}

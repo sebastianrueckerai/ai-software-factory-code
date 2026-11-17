@@ -3402,11 +3402,11 @@ func TestReportSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("RunPlan opened a session the budget cannot pay")
 	}
-	want := "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
+	want := "the remaining budget cannot fund a call: Raise the budget and answer, or close the card.\n" +
 		"The card spent 1.90 EUR of its 2.00 EUR budget; 0.10 EUR is held for the review and the audit, which need 0.40 EUR" +
 		", and a session on factory/big needs 0.600000 EUR " +
 		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); a session started now would run out of money before its work is done."
-	if res.Escalate != want || !strings.Contains(res.Escalate, "(Fund on the board) and answer") || !res.StartFailed || len(res.Findings) != 0 || res.Revision != 0 {
+	if res.Escalate != want || !strings.Contains(res.Escalate, "Raise the budget and answer") || !res.StartFailed || len(res.Findings) != 0 || res.Revision != 0 {
 		t.Fatalf("result %+v, want the money ask %q", res, want)
 	}
 	if len(store.sessions) != 0 || len(kube.podOrder) != 0 {

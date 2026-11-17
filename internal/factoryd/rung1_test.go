@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -161,8 +162,9 @@ func TestHumanOnly(t *testing.T) {
 // comment name one amount on a budget floor: the board's ask, the price of
 // a session like the last one past what the card may spend, 2.62 + 0.40 -
 // 0.34 = 2.68 EUR. The rungs read it from the live facts, whatever the case
-// stored when it opened; the issue comment, written as the case opens,
-// from the money the case stores.
+// stored when it opened; the issue comment from the face of the case's
+// facts, by the board's label. At the spend limit the face asks to raise
+// it, and so does the issue: by the 2.68 EUR the limit lacks.
 func TestTheRungsWeighTheBoardsAmount(t *testing.T) {
 	c := Case{Kind: CaseBudgetFloor, Money: &CaseMoney{Kind: "budget", NeedEUR: 0.66}}
 	f := CaseFacts{Kind: CaseBudgetFloor, BudgetEUR: 5.7, SpentEUR: 5.36, LeftEUR: 0.34, ReserveEUR: 0.4, FloorEUR: 0.6, CeilingEUR: 18,
@@ -176,9 +178,20 @@ func TestTheRungsWeighTheBoardsAmount(t *testing.T) {
 	if ask := FaceOf(c, Facts{CaseFacts: f}).Ask; !strings.Contains(ask, "Add 2.68 EUR") {
 		t.Errorf("the face asks %q, want 2.68 EUR", ask)
 	}
-	opened := Case{Kind: CaseBudgetFloor, Money: tripMoney(CaseBudgetFloor, f)}
-	if next := tripNext(opened, BudgetRefused+": the card spent its budget"); !strings.HasPrefix(next, "Add 2.68 EUR with the Fund form on the board") {
-		t.Errorf("the issue's last line = %q, want it naming 2.68 EUR", next)
+	opened := func(f CaseFacts) Case {
+		var facts map[string]any
+		b, _ := json.Marshal(f)
+		_ = json.Unmarshal(b, &facts)
+		return Case{Kind: CaseBudgetFloor, Facts: facts, Money: tripMoney(CaseBudgetFloor, f)}
+	}
+	fund, _ := AnswerOf(ActFund)
+	if next, want := tripNext(opened(f), BudgetRefused+": the card spent its budget"), "Press “"+fund.Label+"” (EUR to add: 2.68) on the board"; !strings.HasPrefix(next, want) {
+		t.Errorf("the issue's last line = %q, want it to start %q", next, want)
+	}
+	f.CeilingEUR = f.BudgetEUR
+	raise, _ := AnswerOf(ActRaiseCeiling)
+	if next, want := tripNext(opened(f), BudgetRefused+": the card spent its budget"), "Press “"+raise.Label+"” (EUR to raise the limit by: 2.68) on the board"; !strings.HasPrefix(next, want) {
+		t.Errorf("at the spend limit the issue's last line = %q, want it to start %q", next, want)
 	}
 }
 

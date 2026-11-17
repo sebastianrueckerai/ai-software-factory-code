@@ -3651,7 +3651,7 @@ func TestSessionFundedPricesASessionsOpening(t *testing.T) {
 	ctx := context.Background()
 
 	why, err := r.SessionFunded(ctx, "t-704", "factory/big")
-	if want := BudgetRefused + ": Raise the budget (Fund on the board) and answer, or close the card.\n" +
+	if want := BudgetRefused + ": Raise the budget and answer, or close the card.\n" +
 		"The card spent 4.89 EUR of its 5.00 EUR budget; 0.11 EUR is held for the review and the audit, which need 0.40 EUR, " +
 		"and a session's opening on factory/big needs 0.607001 EUR " +
 		"(2 calls at once: 44342 bytes on big asking 24576 output tokens, 7031 bytes on small asking 24576 output tokens; " +
@@ -3840,7 +3840,7 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 	store.tasks["t-2"] = k
 	why, err := r.SessionFunded(ctx, "t-2", "factory/big")
 	if want := BudgetRefused + ": Wait for the holds to settle and answer (a released hold books its call's cost, " +
-		"an expired one is booked in full), or raise the budget (Fund on the board) and answer.\n" +
+		"an expired one is booked in full), or raise the budget and answer.\n" +
 		"The card spent 4.50 EUR of its 5.00 EUR budget; 0.400 EUR is held by calls in flight (1, the earliest expiring 2026-10-14T19:35:03Z); " +
 		"0.10 EUR is held for the review and the audit, which need 0.40 EUR, " +
 		"and a session on factory/premium needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); " +
