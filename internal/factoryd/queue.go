@@ -108,7 +108,9 @@ func (s *PGStore) MergeQueuePlaces(ctx context.Context) (map[string]QueuePlace, 
 			CASE WHEN q.paused THEN q.pause_head ELSE first_value(q.task_id) OVER (PARTITION BY q.project ORDER BY q.entered_at, q.task_id) END AS head
 		FROM (SELECT mq.project, mq.task_id, mq.entered_at, p.project IS NOT NULL AS paused,
 			COALESCE(mq.task_id IN (p.fix_task, p.revert_task), false) AS is_pause,
-			CASE WHEN p.fix_task <> '' THEN p.fix_task ELSE COALESCE(p.revert_task, '') END AS pause_head
+			CASE WHEN EXISTS (SELECT 1 FROM merge_queue f WHERE f.task_id = p.fix_task) THEN p.fix_task
+			     WHEN EXISTS (SELECT 1 FROM merge_queue f WHERE f.task_id = p.revert_task) THEN p.revert_task
+			     WHEN p.fix_task <> '' THEN p.fix_task ELSE COALESCE(p.revert_task, '') END AS pause_head
 			FROM merge_queue mq LEFT JOIN queue_pauses p ON p.project = mq.project) q) r
 		LEFT JOIN tasks h ON h.id = r.head`)
 	if err != nil {
