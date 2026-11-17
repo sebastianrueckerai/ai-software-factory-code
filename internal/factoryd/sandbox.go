@@ -57,7 +57,8 @@ var sandboxIncidental = []string{"ca-certificates", "tzdata", "xz-utils", "libc6
 // m's registries. The names are those the sandbox's egress policy and DNS
 // allowlist are built from (sandboxRegistries for the factory's image).
 // How a missing tool comes is request_tool's where the session's tools
-// hold it.
+// hold it; where they hold commission_server, a sentence follows on
+// reaching outside hosts from a throwaway server.
 func SandboxFacts(m *imagegen.Manifest, tools []string) string {
 	noInstall := "A tool those hosts do not serve cannot be installed at runtime."
 	if slices.Contains(tools, policy.ToolRequestTool) {
