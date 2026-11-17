@@ -450,9 +450,10 @@ func TestAttachAnalysisReachesAMergeRow(t *testing.T) {
 	}
 }
 
-// A plan's request stands beside its revision's open question, the ask
-// its card shows: the request is the revision's bookkeeping, so the
-// analysis attaches to the question's case and shows there.
+// A plan's request stands beside its revision's open question and its
+// confirmation, asked after it: the request is the revision's
+// bookkeeping, and the question stands before the confirmation on the
+// card, so the analysis attaches to the question's case and shows there.
 func TestAttachAnalysisOnAPlanTakesItsOpenQuestion(t *testing.T) {
 	s := newAskStore(t)
 	ctx := t.Context()
@@ -464,6 +465,11 @@ func TestAttachAnalysisOnAPlanTakesItsOpenQuestion(t *testing.T) {
 		Changes: []string{"The feed shows the last day.", "The feed shows the last week."}}
 	if _, err := s.Record(ctx, Event{Repository: "sf/wake", TaskID: card.ID, IssueNumber: 42, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
 		Detail: PlanQuestionRow(q, 1, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	confirm := PlanQuestion{Kind: QuestionConfirmation, Text: ConfirmationQuestion(1, Plan{Criteria: []PlanCriterion{{ID: "feed_reads_fast", Kind: CriterionTest}}})}
+	if _, err := s.Record(ctx, Event{Repository: "sf/wake", TaskID: card.ID, IssueNumber: 42, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: ConfirmationRow(confirm, 1, 1)}); err != nil {
 		t.Fatal(err)
 	}
 	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: card.ID, Project: "sf/wake", Spec: []byte(`{"revision":1}`),
@@ -482,10 +488,13 @@ func TestAttachAnalysisOnAPlanTakesItsOpenQuestion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cases) != 1 || cases[0].Kind != CasePlanQuestion {
-		t.Fatalf("the card's live cases = %+v, want its plan question alone", cases)
+	if len(cases) != 2 || cases[0].Kind != CasePlanQuestion || cases[1].Kind != CasePlanConfirmation {
+		t.Fatalf("the card's live cases = %+v, want its plan question and its confirmation", cases)
 	}
 	if got := deskAnalysis(t, s, "sf/wake", cases[0].ID); got != "The project agent found: A week of rows fits one page on a busy day." {
 		t.Fatalf("the question's case shows %q", got)
+	}
+	if got := deskAnalysis(t, s, "sf/wake", cases[1].ID); got != "" {
+		t.Fatalf("the confirmation's case shows %q, want no analysis", got)
 	}
 }

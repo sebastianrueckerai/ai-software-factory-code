@@ -1200,11 +1200,12 @@ func askKind(e Event) string {
 // (CaseDesk), and no inbox row repeats it. The ask is the card's newest
 // open one of either family, a question asked or an approval requested, a
 // monitor's ask and a plan's request aside (the plan's questions are its
-// asks); none open, the newest ask there is refuses as AskSettledError
-// with its kind and state, a card without an ask as ErrNoAsk. The row
-// names the ask's case, a question's by its id, a request's by the
-// approval its case holds; a question whose row names no case refuses as
-// AskUnshownError.
+// asks), and a plan's confirmation after an open question of its
+// revision, which its card shows first; none open, the newest ask there
+// is refuses as AskSettledError with its kind and state, a card without
+// an ask as ErrNoAsk. The row names the ask's case, a question's by its
+// id, a request's by the approval its case holds; a question whose row
+// names no case refuses as AskUnshownError.
 func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendation string, e Event) error {
 	t, ok, err := s.Task(ctx, taskID)
 	if err != nil {
@@ -1221,8 +1222,9 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendat
 	if err != nil {
 		return err
 	}
-	var ask, newest *Event
+	var ask, newest, confirmation *Event
 	var newestState PokeSettle
+	revision := func(e *Event) int { n, _ := toInt(e.Detail["revision"]); return n }
 	for i := range events { // newest first
 		e := &events[i]
 		var family string
@@ -1250,10 +1252,24 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendat
 		if newest == nil {
 			newest, newestState = e, st
 		}
-		if st.Open {
-			ask = e
-			break
+		if !st.Open {
+			continue
 		}
+		switch {
+		case confirmation == nil && family == "question" && e.Detail["kind"] == QuestionConfirmation:
+			// an open question of its revision stands before the
+			// confirmation on the card, and takes the analysis
+			confirmation = e
+			continue
+		case confirmation != nil && family == "question" && e.Detail["kind"] != QuestionConfirmation && revision(e) == revision(confirmation):
+			ask = e
+		default:
+			ask = cmp.Or(confirmation, e)
+		}
+		break
+	}
+	if ask == nil {
+		ask = confirmation
 	}
 	if ask == nil {
 		if newest == nil {
