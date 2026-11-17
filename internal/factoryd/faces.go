@@ -343,11 +343,15 @@ func FaceOf(c Case, f Facts) AskFace {
 	}
 	face.Answers = answers
 	more := moreActions(f)
-	if c.Kind == CaseMergeApproval {
+	switch c.Kind {
+	case CaseMergeApproval:
 		// the merge's answers are its whole say on the merge, on its own page
 		more = slices.DeleteFunc(more, func(a Answer) bool {
 			return a.Action == ActApproveMerge || a.Action == ActDenyMerge || a.Action == ActRerunChecks
 		})
+	case CasePlanHeld:
+		// its answers are its whole say on the plan's close and its hold
+		more = slices.DeleteFunc(more, func(a Answer) bool { return a.Action == ActClose || a.Action == ActSettle })
 	}
 	if spec.More != nil {
 		for _, key := range spec.More(f) {

@@ -318,6 +318,13 @@ func TestAHeldPlanAsksToCloseOrStayOpen(t *testing.T) {
 		!strings.Contains(words, "Until it closes, the plan holds production deploys. The plan promised: The new panels keep the page's window and its old figures. A retried session spends money once. A human closed the plan's card while these promises were open.") {
 		t.Fatalf("the held plan asks %q with %q: %s", ask, answers, words)
 	}
+	// its answers are its whole say on the plan's close and its hold: no
+	// other action closes the plan or settles the ask beside them
+	for _, again := range []string{factoryd.ActClose, factoryd.ActSettle} {
+		if strings.Contains(card, `data-answer="`+again+`"`) {
+			t.Errorf("the held plan's other actions repeat %s beside its answers", again)
+		}
+	}
 	drop := answerForm(t, card, factoryd.AnswerDropAndEnd)
 	if drop.Action != "/tasks/"+fx.Task.ID+"/resolve" || drop.Values.Get("action") != factoryd.ActClose || drop.Values.Has("case_id") {
 		t.Fatalf("Drop them and close posts %s %v, want the plan's own Close", drop.Action, drop.Values)
