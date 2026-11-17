@@ -639,6 +639,88 @@ func TestWorkflowSessionCarriesTheTasksOwnAgentTimeAndCheckIn(t *testing.T) {
 	}
 }
 
+// A session's own agent time is the card's, sized: a class of 2h gives a
+// large card 3h (2h and half of it), a medium one 2h and a small one 1h,
+// the same as its activity's window, so the session's clock does not stop
+// it before the card's cap. Time added to the card rides it too.
+func TestWorkflowSessionRunsOnTheCardsSizedTime(t *testing.T) {
+	for _, c := range []struct {
+		size  string
+		added time.Duration
+		want  time.Duration
+	}{
+		{"large", 0, 3 * time.Hour},
+		{"medium", 0, 2 * time.Hour},
+		{"small", 0, time.Hour},
+		{"", 30 * time.Minute, 2*time.Hour + 30*time.Minute},
+	} {
+		h := newWorkflowHarness(t)
+		h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+			Stages: testStages(), Queue: policy.QueueNone, AgentTime: 2 * time.Hour}
+		h.state = RunState{Size: c.size, Usage: TaskUsage{ExtraTime: c.added}}
+		var windows []time.Duration
+		h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, in SessionInput) (SessionResult, error) {
+				h.sessions = append(h.sessions, in)
+				windows = append(windows, activity.GetInfo(ctx).StartToCloseTimeout)
+				return pushed("s1", "c1"), nil
+			})
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := h.run(t); final != "done" {
+			t.Fatalf("size %q: final = %q, want done", c.size, final)
+		}
+		if len(h.sessions) != 1 || h.sessions[0].AgentTime != c.want || len(windows) != 1 || windows[0] != c.want+sessionGrace {
+			t.Errorf("size %q, %v added: sessions %+v in windows %v; want one of agent time %v in a window of it and the grace", c.size, c.added, h.sessions, windows, c.want)
+		}
+	}
+}
+
+// A run from before versionSessionTime gives a large card's session the
+// class's 2h, in the card's window of 3h.
+func TestWorkflowSessionTimeBeforeKeepsTheClasssTime(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.env.OnGetVersion("session-time", workflow.DefaultVersion, versionSessionTime).Return(workflow.DefaultVersion)
+	h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+		Stages: testStages(), Queue: policy.QueueNone, AgentTime: 2 * time.Hour}
+	h.state = RunState{Size: "large"}
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if len(h.sessions) != 1 || h.sessions[0].AgentTime != 2*time.Hour {
+		t.Fatalf("sessions %+v, want one of the class's 2h", h.sessions)
+	}
+}
+
+// A large card's session that runs its card's whole 3h and stops on the
+// wall clock asks the agent time's cap card, as the card's cap is reached.
+func TestWorkflowWallClockAtTheSizedCapAsksTheCapCard(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+		Stages: testStages(), Queue: policy.QueueNone, AgentTime: 2 * time.Hour}
+	h.state = RunState{Size: "large"}
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(3 * time.Hour).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return wallClock("s1", ""), nil
+		})
+	h.signalAfter(4*time.Hour, SignalCaseResolved, caseResolved(701, Resolution{Action: ActClose}, 0))
+	h.signalAfter(5*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	h.run(t)
+	if len(h.sessions) != 1 || h.sessions[0].AgentTime != 3*time.Hour {
+		t.Fatalf("sessions %+v, want one of the card's 3h", h.sessions)
+	}
+	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], timeCapReachedLadder) || h.tripUsage[0].AgentTime != 3*time.Hour {
+		t.Fatalf("asked %q after usage %+v, want the agent time's card once, after 3h used", h.escalated, h.tripUsage)
+	}
+}
+
 // The next session is told how its parent stopped: the reason, the
 // outcome and the trip ride its input, for the working state's heading.
 func TestSecondSessionInputNamesHowTheFirstStopped(t *testing.T) {

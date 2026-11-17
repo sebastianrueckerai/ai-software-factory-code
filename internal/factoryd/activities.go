@@ -1801,8 +1801,8 @@ func earliest(a, b time.Time) time.Time {
 
 // sessionDeadline is a session's overall deadline: the earlier of
 // activityDeadline (with sessionGrace to record the outcome after) and now
-// plus agentTime, the task's resolved agent time (SessionInput.AgentTime,
-// or the pinned policy's limits when the task carries none).
+// plus agentTime, the card's agent time (SessionInput.AgentTime, or the
+// pinned policy's limits when the input carries none).
 func sessionDeadline(activityDeadline time.Time, agentTime time.Duration) time.Time {
 	return earliest(activityDeadline.Add(-sessionGrace), time.Now().Add(agentTime))
 }

@@ -563,10 +563,10 @@ type sessionSpec struct {
 	planTrack bool
 	// facts is factoryd's FACTS line for the brief
 	facts string
-	// agentTime and checkIn are the task's resolved values (policy.Time,
-	// via TaskConfig for every session kind, RunSession's and
-	// reportSession's alike): supervisorConfig's WallClockCap and
-	// CheckIn, and the session's deadline.
+	// agentTime is RunSession's SessionInput.AgentTime, the card's whole
+	// agent time, and reportSession's the class's time less its reserve
+	// (reportTime); checkIn is TaskConfig's. They are supervisorConfig's
+	// WallClockCap and CheckIn, and the session's deadline.
 	agentTime, checkIn time.Duration
 	// checkinExtra is the time the workflow added to the session's activity
 	// for the check-in that opens it: the deadline moves out by what the
