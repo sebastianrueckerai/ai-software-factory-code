@@ -3165,7 +3165,8 @@ func TestRunPlanFencesTheWorkSoFar(t *testing.T) {
 			&harness.PriorState{Session: "to_plan", Heading: "The work so far on this card, as factoryd copied it when this session started.", Body: work}},
 		"a direct card's cut": {true, cut, []string{"an earlier finding"}, []string{"an earlier finding", "#1 (this card, no key): its work on the branch of #1; its record is card-1.md"},
 			&harness.PriorState{Session: "replan", Heading: "The records of the plan's old cards, as factoryd copied them when this session started.",
-				Body: "One file per card: its review findings, its criteria verdicts, the check-in's notes and the working state of its last session.\n\n" +
+				Body: "One file per card: its review findings, its criteria verdicts, the check-in's notes and the working state of its last session.\n" +
+					"Your clone holds the work of card #N, where it has any, on the branch card/N.\n\n" +
 					"This is the cut of #1 at session 2, 1.50 EUR spent: the rest\n\n" + work}},
 		"plan-track from its filing": {false, nil, []string{"an earlier finding"}, []string{"an earlier finding"}, nil},
 	} {
@@ -3244,7 +3245,8 @@ func TestRunPlanCarriesTheRecord(t *testing.T) {
 		names = append(names, f.Name)
 	}
 	if b.Prior == nil || b.Prior.Session != "replan" || b.Prior.Heading != "The records of the plan's old cards, as factoryd copied them when this session started." ||
-		b.Prior.Body != "One file per card: its review findings, its criteria verdicts, the check-in's notes and the working state of its last session." ||
+		b.Prior.Body != "One file per card: its review findings, its criteria verdicts, the check-in's notes and the working state of its last session.\n"+
+			"Your clone holds the work of card #N, where it has any, on the branch card/N." ||
 		!slices.Equal(names, []string{"card-30.md", "card-33.md", "card-32.md", "card-31.md"}) {
 		t.Fatalf("brief prior %+v, files %q", b.Prior, names)
 	}

@@ -1573,6 +1573,12 @@ type replanRecord struct {
 	work               []string
 }
 
+// recordHead opens the files of a replan record: what each holds, and
+// the branch of the planner's clone that holds a card's work, which
+// replanRecord fetches and the record's lines name by the card alone.
+const recordHead = "One file per card: its review findings, its criteria verdicts, the check-in's notes and the working state of its last session.\n" +
+	"Your clone holds the work of card #N, where it has any, on the branch card/N."
+
 // replanRecord is plan p's record for the planner session of its pending
 // replan, and whether one is pending, from its timeline ptl. A merged card
 // a group revert was to take off main, and that revert ended without

@@ -2940,7 +2940,7 @@ func (r *Runner) planRecord(ctx context.Context, t Task, tl []byte, findings []s
 		extra.branches = rec.branches
 		prior.Session = stepReplan
 		prior.Heading = "The records of the plan's old cards, as factoryd copied them when this session started."
-		fenced = append([]string{"One file per card: its review findings, its criteria verdicts, the check-in's notes and the working state of its last session."}, rec.work...)
+		fenced = append([]string{recordHead}, rec.work...)
 	}
 	if step := lastStep(tl, stepToPlan); step != nil {
 		work, _ := step["work_so_far"].(string)

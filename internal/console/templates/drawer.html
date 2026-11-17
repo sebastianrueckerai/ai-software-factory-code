@@ -98,3 +98,5 @@
 {{define "card-life"}}<pre class="digest">{{.Life}}</pre>
 {{range .Cases}}<h4>Open case: {{words .Kind}}</h4>{{with .Steps}}<ul>{{range .}}<li>rung {{.Rung}} by {{.Actor}} → {{words .Outcome}}{{with .Found}}: {{.}}{{end}}</li>{{end}}</ul>{{else}}<p class="meta">No step yet.</p>{{end}}
 {{end}}{{end}}
+
+{{define "glosses"}}{{with .}}<details class="fold glosses"><summary>What these words mean</summary><dl>{{range .}}<dt>{{.Term}}</dt><dd>{{.Sentence}}</dd>{{end}}</dl></details>{{end}}{{end}}

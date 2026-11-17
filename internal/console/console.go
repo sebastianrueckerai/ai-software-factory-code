@@ -478,6 +478,8 @@ type Console struct {
 	// ended closes as the console's server shuts down (EndStreams)
 	ended  chan struct{}
 	ending sync.Once
+	// faults are when logFault last logged each fault, under mu
+	faults map[string]time.Time
 }
 
 // writerLists are each project's writers by repository and the factory's

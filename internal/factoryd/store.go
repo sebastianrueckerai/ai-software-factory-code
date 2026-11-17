@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -1514,6 +1516,18 @@ func (s *PGStore) TaskStatuses(ctx context.Context, ids []string) (map[string]st
 func (s *PGStore) TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error) {
 	return s.oneTask(ctx, `repository = $1 AND issue_number = $2
 		ORDER BY status IN ('done', 'failed', 'closed'), created_at DESC, id DESC`, repository, issueNumber)
+}
+
+// IssueCardOrder orders the cards of one issue as TaskByIssue picks among
+// them: a live card first, then the newest, then the greater id.
+func IssueCardOrder(a, b Task) int {
+	if fa, fb := Final(a.Status), Final(b.Status); fa != fb {
+		if fa {
+			return 1
+		}
+		return -1
+	}
+	return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(b.ID, a.ID))
 }
 
 // TaskByPR is the newest card whose row links pull request number on

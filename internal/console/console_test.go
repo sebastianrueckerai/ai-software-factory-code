@@ -450,7 +450,9 @@ type fakeTasks struct {
 	tasks []factoryd.BoardTask
 	// marked are the issues MarkChatFiled was asked for, "repo#n why"
 	marked []string
-	plans  map[string][]factoryd.PlanRevision // by task, oldest first
+	// byIssue are the TaskByIssue reads, "repo#n"
+	byIssue []string
+	plans   map[string][]factoryd.PlanRevision // by task, oldest first
 	// questions are the plans' questions by "task revision"
 	questions map[string][]factoryd.PlanQuestion
 	// proofs are the plans' proof rows by task, idx order
@@ -767,21 +769,14 @@ func (s *fakeTasks) RollCarries(_ context.Context, id string) ([]factoryd.Task, 
 func (s *fakeTasks) TaskByIssue(_ context.Context, repository string, issue int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.byIssue = append(s.byIssue, fmt.Sprintf("%s#%d", repository, issue))
 	var held []factoryd.Task
 	for _, t := range s.tasks {
 		if t.Repository == repository && t.IssueNumber == issue {
 			held = append(held, t.Task)
 		}
 	}
-	slices.SortFunc(held, func(a, b factoryd.Task) int {
-		if da, db := factoryd.Final(a.Status), factoryd.Final(b.Status); da != db {
-			if da {
-				return 1
-			}
-			return -1
-		}
-		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(b.ID, a.ID))
-	})
+	slices.SortFunc(held, factoryd.IssueCardOrder)
 	if len(held) == 0 {
 		return factoryd.Task{}, false, nil
 	}

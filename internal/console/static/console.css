@@ -463,10 +463,12 @@ pre.proof { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24em; ov
 /* a human criterion's artifact on its merge card row */
 pre.artifact { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 16em; overflow: auto; }
 /* a reference in a face's text keeps the text's colour (C46); a factory
-   term's first use is underlined, its sentence a quiet line after the text */
+   term's first use is underlined, its sentence in the opened card's fold */
 a.ref-link { color: inherit; }
-dfn.term { font-style: normal; text-decoration: underline dotted; text-underline-offset: 3px; text-decoration-color: var(--text-faint); }
-small.gloss { display: block; margin: 2px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+span.term { text-decoration: underline dotted; text-underline-offset: 3px; text-decoration-color: var(--text-faint); }
+.glosses dl { margin: 4px 0 0; }
+.glosses dt { color: var(--text); font-weight: 600; }
+.glosses dd { margin: 0 0 6px; color: var(--text-muted); line-height: 1.45; }
 .fold { margin: 6px 0 0; font-size: 12px; }
 .fold > summary { cursor: pointer; color: var(--text-faint); }
 .fold > summary:hover, .fold > summary:focus-visible { color: var(--text-muted); }

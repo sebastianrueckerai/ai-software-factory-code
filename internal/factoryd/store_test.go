@@ -893,15 +893,7 @@ func (s *fakeStore) TaskByIssue(ctx context.Context, repository string, issueNum
 			held = append(held, t)
 		}
 	}
-	slices.SortFunc(held, func(a, b Task) int {
-		if da, db := factorydFinal(a.Status), factorydFinal(b.Status); da != db {
-			if da {
-				return 1
-			}
-			return -1
-		}
-		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(b.ID, a.ID))
-	})
+	slices.SortFunc(held, IssueCardOrder)
 	if len(held) == 0 {
 		return Task{}, false, nil
 	}

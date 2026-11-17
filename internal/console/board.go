@@ -1830,7 +1830,7 @@ type boardView struct {
 	planTrack map[string]bool
 	// refs resolve the references of the render's texts by repository,
 	// each read once (linkRefs)
-	refs map[string]*cardRefs
+	refs map[string]renderRefs
 }
 
 // viewOf reads what every card of a render shares, and the projects agents

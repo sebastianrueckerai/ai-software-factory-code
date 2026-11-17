@@ -95,9 +95,18 @@ const (
 	summaryMax = 600
 )
 
-// RefPattern finds a reference #N in a text, the number its second group: no
-// # after a word, an & or a slash, as in an entity, a URL or a path.
-var RefPattern = regexp.MustCompile(`(?:^|[^\w&#/])(#(\d+))\b`)
+// The patterns a card's text is read by, at its door and where the
+// console renders it, so both agree on what is code, a link and a
+// reference: RefPattern a reference #N, the number its second group (no #
+// after a word, an & or a slash, as in an entity, a URL or a path);
+// FencedBlock a fenced block, which quotes a log or a file; CodeSpan a
+// code span; MDLink a markdown link, its words and its target the groups.
+var (
+	RefPattern  = regexp.MustCompile(`(?:^|[^\w&#/])(#(\d+))\b`)
+	FencedBlock = regexp.MustCompile("(?s)```.*?(?:```|$)")
+	CodeSpan    = regexp.MustCompile("`[^`]*`")
+	MDLink      = regexp.MustCompile(`\[([^\]]*)\]\(\s*([^\s)]*)[^)]*\)`)
+)
 
 var (
 	hexID        = regexp.MustCompile(`\b[0-9a-f]{7,}\b`)
@@ -106,13 +115,11 @@ var (
 	snakeCase    = regexp.MustCompile(`\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+\b`)
 	branchName   = regexp.MustCompile(`\b(?:(?:card|pull)/\d+|factory/(?:t-[0-9a-z]+|schema-[\w.-]+|template-update)|salvage/t-[0-9a-z]+|factory-pins/[\w.-]+)\b`)
 	sectionLabel = regexp.MustCompile(`\b(?:(?i:fault|requirement|step|task)\s+\d+[a-z]?(?:\.\d+)*|(?i:phase)\s+(?:\d+[a-z]?(?:\.\d+)*|[A-HJ-Z]))\b`)
-	mdLink       = regexp.MustCompile(`\[[^\]]*\]\(\s*([^\s)]*)[^)]*\)`)
 	linkTarget   = regexp.MustCompile(`\]\([^)]*\)`)
 	linkScheme   = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*:`)
 	sentenceEnd  = regexp.MustCompile(`([.!?]+\s+)\p{Lu}`)
 	osName       = regexp.MustCompile(`^[a-z]+OS$`)
 	abbreviation = regexp.MustCompile(`(?i)\b(?:e\.g|i\.e)$`)
-	fencedBlock  = regexp.MustCompile("(?s)```.*?(?:```|$)")
 )
 
 // CheckBrief is every refusal of b for a card of job, each naming the
@@ -174,9 +181,11 @@ func checkBrief(b BriefText, job BriefJob, refs RefResolver, on [4]bool) []strin
 		if !on[i] {
 			continue
 		}
-		// a fenced block quotes a log or a file: no reference of the text's
-		f = fencedBlock.ReplaceAllString(f, "")
-		for _, m := range RefPattern.FindAllStringSubmatch(linkTarget.ReplaceAllString(f, "]"), -1) {
+		// a fenced block quotes a log or a file: no reference of the text's,
+		// and neither is code
+		f = FencedBlock.ReplaceAllString(f, "")
+		prose := CodeSpan.ReplaceAllString(f, "")
+		for _, m := range RefPattern.FindAllStringSubmatch(linkTarget.ReplaceAllString(prose, "]"), -1) {
 			ok, asked := resolved[m[2]]
 			if !asked {
 				n, err := strconv.Atoi(m[2])
@@ -187,8 +196,8 @@ func checkBrief(b BriefText, job BriefJob, refs RefResolver, on [4]bool) []strin
 				add(m[1] + " is no card or pull request of this project.")
 			}
 		}
-		for _, m := range mdLink.FindAllStringSubmatch(f, -1) {
-			add(linkRefusal(m[1], refs)...)
+		for _, m := range MDLink.FindAllStringSubmatch(prose, -1) {
+			add(linkRefusal(m[2], refs)...)
 		}
 		// a body may number its own steps
 		if i < 3 {
@@ -214,7 +223,7 @@ func checkBrief(b BriefText, job BriefJob, refs RefResolver, on [4]bool) []strin
 // sectionLabels are the bare section labels of text outside its links: a
 // label followed by "times" counts, so "the task 3 times" names none.
 func sectionLabels(text string) []string {
-	text = mdLink.ReplaceAllString(text, "")
+	text = MDLink.ReplaceAllString(text, "")
 	var out []string
 	for _, m := range sectionLabel.FindAllStringIndex(text, -1) {
 		if rest := strings.ToLower(text[m[1]:]); !strings.HasPrefix(rest, " times") && !strings.HasPrefix(rest, " time ") {

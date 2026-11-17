@@ -153,6 +153,9 @@ func TestCheckBriefAccepts(t *testing.T) {
 		{"a log in a fence", with(func(b *BriefText) {
 			b.Body = "The run's log:\n\n```\nFAIL #999 on factory/t-0a1b2c3d4e5f\nsee [x](docs/none.md)\n```\n\nFix it."
 		}), BriefWork},
+		{"code in the text", with(func(b *BriefText) {
+			b.Summary = "It runs `go test -run #999` and keeps `[x](docs/none.md)` as a sample."
+		}), BriefWork},
 		{"a time in the title", with(func(b *BriefText) { b.Title = "Run the backup at 02:00 each night" }), BriefWork},
 		{"an abbreviation in the why line", with(func(b *BriefText) { b.Why = "So the cards show their reason, e.g. in the board." }), BriefWork},
 		{"a brand in the title", with(func(b *BriefText) { b.Title = "Ship the iOS build" }), BriefWork},
