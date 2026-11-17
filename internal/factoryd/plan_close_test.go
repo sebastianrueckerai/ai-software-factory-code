@@ -183,7 +183,7 @@ func TestHoldCommentSaysWhatTheCloseWaives(t *testing.T) {
 				if !slices.Equal(fj.comments, []string{c.comment}) || !slices.Equal(fj.reopened, reopened) || closeRows(s) != 0 {
 					t.Fatalf("comments %q, reopened %v, plan_closed rows %d; want %q, %v, none", fj.comments, fj.reopened, closeRows(s), c.comment, reopened)
 				}
-				if err := r.CheckClosePlan(ctx, "t-plan", "", false); !errors.Is(err, c.writer) || (err == nil) != (c.writer == nil) {
+				if err := r.CheckClosePlan(ctx, "t-plan", "mallory", "", false); !errors.Is(err, c.writer) || (err == nil) != (c.writer == nil) {
 					t.Fatalf("a writer's Close without a note: %v, want %v", err, c.writer)
 				}
 				if n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", c.by, c.note, c.approver); err != nil || n != c.waived || closeRows(s) != 1 {
@@ -263,6 +263,13 @@ func TestCloseHeldPlanInTheLastRoundWithoutAnIntegrationCard(t *testing.T) {
 	}
 	if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", ChatUser, "why", true); !errors.Is(err, ErrNotApprover) {
 		t.Fatalf("the project agent's close: %v, want ErrNotApprover", err)
+	}
+	// the check refuses what the Close refuses, so the console changes nothing before it
+	if err := r.CheckClosePlan(ctx, "t-plan", ChatUser, "why", true); !errors.Is(err, ErrNotApprover) {
+		t.Fatalf("the check of the project agent's close: %v, want ErrNotApprover", err)
+	}
+	if err := r.CheckClosePlan(ctx, "t-plan", "sebastian", "why", true); err != nil {
+		t.Fatalf("the check of an approver's close: %v", err)
 	}
 	if closeRows(s) != 0 {
 		t.Fatalf("a refused close recorded plan_closed")
@@ -433,7 +440,7 @@ func TestPlanMergedByARowAloneHolds(t *testing.T) {
 	if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "why", false); !errors.Is(err, ErrNotApprover) {
 		t.Errorf("a writer's Close: %v, want ErrNotApprover", err)
 	}
-	if err := r.CheckClosePlan(ctx, "t-plan", "why", false); !errors.Is(err, ErrNotApprover) {
+	if err := r.CheckClosePlan(ctx, "t-plan", "mallory", "why", false); !errors.Is(err, ErrNotApprover) {
 		t.Errorf("a writer's check: %v, want ErrNotApprover", err)
 	}
 }
@@ -495,12 +502,14 @@ func TestCheckClosePlanAgreesWithCloseHeldPlan(t *testing.T) {
 			for _, row := range []bool{false, true} {
 				for _, approver := range []bool{false, true} {
 					for _, note := range []string{"", "why", strings.Repeat("x", MaxWaiverNote+1)} {
-						r, _ := shape(status, merge, row)
-						check := r.CheckClosePlan(ctx, "t-plan", note, approver)
-						r, _ = shape(status, merge, row)
-						_, _, _, closeErr := r.CloseHeldPlan(ctx, "t-plan", "mallory", note, approver)
-						if !errors.Is(check, closeErr) && !errors.Is(closeErr, check) {
-							t.Errorf("status %s, merge %s, row %t, approver %t, note %d bytes: check %v, Close %v", status, merge, row, approver, len(note), check, closeErr)
+						for _, by := range []string{"mallory", ChatUser} {
+							r, _ := shape(status, merge, row)
+							check := r.CheckClosePlan(ctx, "t-plan", by, note, approver)
+							r, _ = shape(status, merge, row)
+							_, _, _, closeErr := r.CloseHeldPlan(ctx, "t-plan", by, note, approver)
+							if !errors.Is(check, closeErr) && !errors.Is(closeErr, check) {
+								t.Errorf("status %s, merge %s, row %t, approver %t, note %d bytes, by %s: check %v, Close %v", status, merge, row, approver, len(note), by, check, closeErr)
+							}
 						}
 					}
 				}

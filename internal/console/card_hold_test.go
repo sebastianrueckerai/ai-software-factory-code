@@ -331,7 +331,7 @@ func TestAPlansCloseWaivesOnlyOnTheHumansPress(t *testing.T) {
 		t.Fatalf("plan #51's open criteria = %v, %v; want k2 and k3", open, err)
 	}
 	var closes []string
-	r.c.cfg.CheckClosePlan = func(_ context.Context, id, _ string, approver bool) error {
+	r.c.cfg.CheckClosePlan = func(_ context.Context, id, _, _ string, approver bool) error {
 		if id == "t-lr" && !approver {
 			return factoryd.ErrNotApprover
 		}

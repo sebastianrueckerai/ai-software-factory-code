@@ -538,8 +538,8 @@ func revertedIn(mark string) map[string]bool {
 
 // planCloseOpen reads plan t's newest revision and the criteria open to
 // its close (closeOpen), and refuses a close that needs an approver or a
-// note it lacks.
-func (r *Runner) planCloseOpen(ctx context.Context, t Task, note string, approver bool) (p Plan, open []PlanCriterion, home string, err error) {
+// note it lacks. Only a person who is an approver waives criteria.
+func (r *Runner) planCloseOpen(ctx context.Context, t Task, by, note string, approver bool) (p Plan, open []PlanCriterion, home string, err error) {
 	switch rev, ok, err := r.store.PlanRevision(ctx, t.ID, 0); {
 	case err != nil:
 		return p, nil, "", err
@@ -552,7 +552,7 @@ func (r *Runner) planCloseOpen(ctx context.Context, t Task, note string, approve
 		return p, nil, "", err
 	}
 	switch {
-	case len(open) > 0 && !approver:
+	case len(open) > 0 && (!approver || !isPerson(by)):
 		return p, nil, "", ErrNotApprover
 	case len(open) > 0 && note == "":
 		return p, nil, "", ErrNoReason
@@ -581,8 +581,8 @@ func (r *Runner) closablePlan(ctx context.Context, id, note string) (Task, error
 // closeGate is every refusal of a plan's Close, for the check and the Close
 // alike: the plan is at rest, the note fits, the plan_closed row does not
 // stand (a failed card whose row stands is ended by the Close, endFailed),
-// and an approver with a note answers for open criteria.
-func (r *Runner) closeGate(ctx context.Context, id, note string, approver bool) (t Task, endFailed bool, err error) {
+// and an approver, a person, with a note answers for open criteria.
+func (r *Runner) closeGate(ctx context.Context, id, by, note string, approver bool) (t Task, endFailed bool, err error) {
 	if t, err = r.closablePlan(ctx, id, note); err != nil {
 		return t, false, err
 	}
@@ -595,15 +595,16 @@ func (r *Runner) closeGate(ctx context.Context, id, note string, approver bool) 
 	case closed:
 		return t, false, ErrPlanClosed
 	}
-	_, _, _, err = r.planCloseOpen(ctx, t, note, approver)
+	_, _, _, err = r.planCloseOpen(ctx, t, by, note, approver)
 	return t, false, err
 }
 
-// CheckClosePlan says whether CloseHeldPlan would take plan id now, by the
-// same refusals (closeGate) and without writing: the console asks before it
-// removes the issue's dependencies, so a refused Close changes nothing.
-func (r *Runner) CheckClosePlan(ctx context.Context, id, note string, approver bool) error {
-	_, _, err := r.closeGate(ctx, id, strings.TrimSpace(note), approver)
+// CheckClosePlan says whether CloseHeldPlan would take by's close of plan
+// id now, by the same refusals (closeGate) and without writing: the
+// console asks before it removes the issue's dependencies, so a refused
+// Close changes nothing.
+func (r *Runner) CheckClosePlan(ctx context.Context, id, by, note string, approver bool) error {
+	_, _, err := r.closeGate(ctx, id, by, strings.TrimSpace(note), approver)
 	return err
 }
 
@@ -619,9 +620,8 @@ func (r *Runner) CheckClosePlan(ctx context.Context, id, note string, approver b
 // plan's issue and whether the plan holds a merge. The caller closes the
 // issue afterwards.
 func (r *Runner) CloseHeldPlan(ctx context.Context, id, by, note string, approver bool) (waived int, words string, merged bool, err error) {
-	approver = approver && isPerson(by)
 	note = strings.TrimSpace(note)
-	t, endFailed, err := r.closeGate(ctx, id, note, approver)
+	t, endFailed, err := r.closeGate(ctx, id, by, note, approver)
 	if err != nil {
 		return 0, "", false, err
 	}
@@ -635,7 +635,7 @@ func (r *Runner) CloseHeldPlan(ctx context.Context, id, by, note string, approve
 	criteria := 0
 	recorded := false
 	err = r.store.ClosePlanWithWaivers(ctx, id, by, func(ctx context.Context) (PlanClose, error) {
-		p, open, home, err := r.planCloseOpen(ctx, t, note, approver)
+		p, open, home, err := r.planCloseOpen(ctx, t, by, note, approver)
 		if err != nil {
 			return PlanClose{}, err
 		}

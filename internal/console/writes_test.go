@@ -1236,7 +1236,7 @@ func TestCloseADonePlan(t *testing.T) {
 		}
 		return open, nil
 	}
-	r.c.cfg.CheckClosePlan = func(_ context.Context, id, note string, approver bool) error {
+	r.c.cfg.CheckClosePlan = func(_ context.Context, id, _, note string, approver bool) error {
 		_, err := decide(id, note, approver)
 		return err
 	}
@@ -1327,7 +1327,7 @@ func TestCloseADonePlan(t *testing.T) {
 	// the sweep's finishing step posts the words between factoryd's write
 	// and the console's post: the issue carries them once
 	closeErr = nil
-	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
 	const issue53 = "/api/v1/repos/sf/code/issues/53/comments"
 	words := "closed by sebastian: swept first; its merged cards stay on main"
 	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, bool, error) {
@@ -1360,7 +1360,7 @@ func TestCloseADonePlanNeedsAnApprover(t *testing.T) {
 	r.tasks.mu.Unlock()
 	r.fg.deps = map[string][]map[string]any{"/api/v1/repos/sf/code/issues/51/dependencies": dependsOn(7)}
 	var approvers []bool
-	r.c.cfg.CheckClosePlan = func(_ context.Context, _, _ string, approver bool) error {
+	r.c.cfg.CheckClosePlan = func(_ context.Context, _, _, _ string, approver bool) error {
 		approvers = append(approvers, approver)
 		return factoryd.ErrNotApprover
 	}
@@ -1384,7 +1384,7 @@ func TestClosePlanAnswerNamesMergedCardsOnlyWhenThereAreSome(t *testing.T) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-mm", Kind: "agent", Status: "done", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 71, Objective: "Merged."}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-mm-card", Kind: "agent", Status: "done", MergeCommit: "abc", Source: factoryd.SourcePlan, Parent: "t-mm", PlanKey: "a", Repository: "sf/code", IssueNumber: 72, Objective: "A card."}})
 	r.tasks.mu.Unlock()
-	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
 	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, bool, error) {
 		return 0, factoryd.PlanCloseWords(by, note, id == "t-mm"), id == "t-mm", nil
 	}
@@ -1610,7 +1610,7 @@ func TestClosePlanRemovesItsOwnDependencies(t *testing.T) {
 			Repository: "sf/code", IssueNumber: 62, Objective: "Already closed."}})
 	r.tasks.mu.Unlock()
 	var closes int
-	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
 	r.c.cfg.CloseHeldPlan = func(_ context.Context, _, by, note string, _ bool) (int, string, bool, error) {
 		closes++
 		return 0, factoryd.PlanCloseWords(by, note, false), false, nil

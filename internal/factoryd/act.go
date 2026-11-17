@@ -458,8 +458,13 @@ func (r *Runner) refreshOffersOf(ctx context.Context, taskID string, caseID int6
 	}
 }
 
-// refreshOffers stores the offers of case c anew on facts f.
+// refreshOffers stores the offers of case c anew on facts f; on facts
+// whose timeline could not be read it stores nothing, so the offers pass
+// weighs them again.
 func (r *Runner) refreshOffers(ctx context.Context, t Task, c Case, f CaseFacts) {
+	if slices.Contains(f.Partial, partialTimeline) {
+		return
+	}
 	offers, refusals, ok := storeOffers(c, t, f)
 	if !ok {
 		return
@@ -1124,7 +1129,7 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 	v := r.cfg.Policy()
 	_, project, _ := v.ProjectOf(t.Repository)
 	detail := map[string]any{"pool": true, "rung": in.Rung, "case_id": c.ID, "head": f.Head, "checks": f.Checks}
-	if !slices.Contains(f.Partial, "timeline") {
+	if !slices.Contains(f.Partial, partialTimeline) {
 		detail["findings"] = nonNil(f.Findings)
 	}
 	beside(detail, in.Detail)

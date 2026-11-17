@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1128,5 +1129,60 @@ func TestTripCaseMakesAChatEscalatedHumanCardAHumanCard(t *testing.T) {
 	agent := Task{ID: "a1", Kind: "agent"}
 	if HumanCardKind(CaseAgentEscalate, agent) != CaseAgentEscalate || HumanCardKind(CaseMonthCap, h) != CaseMonthCap || HumanCardKind(CaseOther, h) != CaseHumanCard {
 		t.Error("humanCardKind turns an agent card's ask, or a specialised kind, into a human card")
+	}
+}
+
+// downTimeline is an object store whose read of t1's timeline fails while
+// down is set.
+type downTimeline struct {
+	ObjectStore
+	down bool
+}
+
+func (o *downTimeline) Get(ctx context.Context, key string) ([]byte, error) {
+	if o.down && key == "sessions/t1/timeline.jsonl" {
+		return nil, errors.New("the object store is down")
+	}
+	return o.ObjectStore.Get(ctx, key)
+}
+
+// The human's buttons on a case that reached them while the card's
+// timeline could not be read are no final word: the face stores the
+// offers it could weigh and no refusals, so the offers pass weighs them
+// again, once the timeline reads, and Reverify comes back; a pass while
+// it still fails stores nothing.
+func TestAFaceOnAnUnreadTimelineIsWeighedAgain(t *testing.T) {
+	ctx := context.Background()
+	g := newTripRig(t, "success")
+	g.atHead(t, true)
+	objects := &downTimeline{ObjectStore: g.r.objects, down: true}
+	g.r.objects = objects
+	if _, err := g.r.FaceStop(ctx, "t1", tripCap, nil); err != nil {
+		t.Fatal(err)
+	}
+	offered := func() ([]string, bool) {
+		asks := g.asks(t)
+		detail := asks[len(asks)-1].Detail
+		var names []string
+		offers, _ := detail["offers"].([]any)
+		for _, o := range offers {
+			if m, ok := o.(map[string]any); ok {
+				names = append(names, fmt.Sprint(m["value"]))
+			}
+		}
+		_, refused := detail["refusals"]
+		return names, refused
+	}
+	if names, refused := offered(); refused || slices.Contains(names, ActReverify) {
+		t.Fatalf("the face on an unread timeline offers %v, refusals stored %t; want no reverify and no refusals", names, refused)
+	}
+	g.r.StoreMissedOffers(ctx)
+	if names, refused := offered(); refused || slices.Contains(names, ActReverify) {
+		t.Fatalf("a pass on a still unread timeline stored %v, refusals %t; want nothing stored", names, refused)
+	}
+	objects.down = false
+	g.r.StoreMissedOffers(ctx)
+	if names, refused := offered(); !refused || !slices.Contains(names, ActReverify) {
+		t.Fatalf("the pass on a read timeline stored %v, refusals %t; want reverify and the refusals", names, refused)
 	}
 }

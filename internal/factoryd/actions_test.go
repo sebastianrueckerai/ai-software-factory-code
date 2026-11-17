@@ -1180,22 +1180,27 @@ func TestAMergeConflictRefusesTheAnswersThatRerunTheGates(t *testing.T) {
 // audit unknown: route_approval and reverify, which would run the gates on
 // a head that may not merge, and confirm_audit, which judges the audit's
 // findings, are refused naming the unread timeline and what fits, never a
-// reverify that runs the audit again. Rung 0's route_approval does not
-// fire then; read, it does.
+// reverify that runs the audit again. A rung below the human may hand the
+// case up; the human, with no rung above, tries again. Rung 0's
+// route_approval does not fire then; read, it does.
 func TestAnUnreadTimelineRefusesTheGatesReruns(t *testing.T) {
 	ready := CaseFacts{Kind: CaseSessionCap, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true, Partial: []string{"timeline"}}
 	const unread = "the card's timeline could not be read, so it is unknown whether the pull request still merges into main, which "
 	for _, tc := range []struct {
 		action string
+		rung   int
 		r      Resolution
 		want   string
 	}{
-		{ActRouteApproval, Resolution{}, unread + "route_approval needs: try again in a minute, or hand it up"},
-		{ActReverify, Resolution{}, unread + "reverify needs: try again in a minute, or hand it up"},
-		{ActConfirmAudit, Resolution{Note: "fixtures"}, "the card's timeline could not be read, so the head's audit findings and whether the pull request still merges into main are unknown: try again in a minute"},
+		{ActRouteApproval, 2, Resolution{}, unread + "route_approval needs: try again in a minute, or hand it up"},
+		{ActReverify, 1, Resolution{}, unread + "reverify needs: try again in a minute, or hand it up"},
+		{ActReverify, 3, Resolution{}, unread + "reverify needs: try again in a minute"},
+		{ActConfirmAudit, 3, Resolution{Note: "fixtures"}, "the card's timeline could not be read, so the head's audit findings and whether the pull request still merges into main are unknown: try again in a minute"},
 	} {
-		if got := applies(t, tc.action, ready, tc.r); got != tc.want {
-			t.Errorf("%s applies = %q, want %q", tc.action, got, tc.want)
+		a, _ := ActionByName(tc.action)
+		tc.r.Action = tc.action
+		if got := a.refusal(ready, tc.rung, tc.r); got != tc.want {
+			t.Errorf("rung %d's %s = %q, want %q", tc.rung, tc.action, got, tc.want)
 		}
 	}
 	c := Case{Kind: CaseSessionCap}
@@ -1206,6 +1211,32 @@ func TestAnUnreadTimelineRefusesTheGatesReruns(t *testing.T) {
 	read.Partial = nil
 	if res, _ := rung0[0].Fire(context.Background(), nil, c, read); res == nil || res.Action != ActRouteApproval {
 		t.Errorf("rung 0 fired %+v on a read timeline, want route_approval", res)
+	}
+}
+
+// Rung 0 takes nothing on facts read in part, except where a fact's own
+// actions refuse while it is unread: a hold that could not be read refuses
+// the starts and closes it guards (holdRefusal), so rung 0 goes on to its
+// rows, and an unread timeline stops it.
+func TestRungZeroGoesOnPastAnUnreadHold(t *testing.T) {
+	c := Case{Kind: CaseDependencyFailed}
+	for _, tc := range []struct {
+		partial []string
+		want    string
+	}{
+		{[]string{partialHold, partialPlanHold}, "no resolver fits"},
+		{[]string{partialHold, "timeline"}, "facts read partly: timeline, so rung 0 took nothing"},
+	} {
+		res, found, err := new(Runner).rungZero(context.Background(), Task{ID: "t1"}, c, CaseFacts{Kind: CaseDependencyFailed, Partial: tc.partial}, nil)
+		if err != nil || res != nil || found != tc.want {
+			t.Errorf("partial %v: rung 0 = %+v, %q, %v; want nothing, %q", tc.partial, res, found, err, tc.want)
+		}
+	}
+	// its retry of a failed dependency stands on an unread hold
+	i := slices.IndexFunc(rung0, func(r resolver) bool { return r.Name == "retry_dependency" })
+	failed := CaseFacts{Kind: CaseDependencyFailed, Partial: []string{partialHold, partialPlanHold}, Dependencies: []DepFact{{TaskID: "t-a", Status: "failed"}}}
+	if res, _ := rung0[i].Fire(context.Background(), nil, Case{Kind: CaseDependencyFailed, StateKey: "t-a"}, failed); res == nil || res.Action != ActRetry {
+		t.Errorf("rung 0's retry on an unread hold = %+v, want the retry of t-a", res)
 	}
 }
 

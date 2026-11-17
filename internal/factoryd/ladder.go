@@ -899,7 +899,10 @@ func (r *Runner) ClimbExpired(ctx context.Context, steps []CaseStep) error {
 // found: a row Act refused or failed hands the case up with why, so rung
 // 0 never keeps the human from being asked.
 func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, cases []Case) (*Resolution, string, error) {
-	if partial := slices.DeleteFunc(slices.Clone(f.Partial), func(n string) bool { return n == "siblings" || n == "head_commits" || n == "checks_log" }); len(partial) > 0 {
+	// an unread hold refuses the answers it guards itself (holdRefusal)
+	if partial := slices.DeleteFunc(slices.Clone(f.Partial), func(n string) bool {
+		return slices.Contains([]string{"siblings", "head_commits", "checks_log", partialHold, partialPlanHold}, n)
+	}); len(partial) > 0 {
 		return nil, "facts read partly: " + textutil.AndList(partial) + ", so rung 0 took nothing", nil
 	}
 	if i := slices.IndexFunc(cases, func(e Case) bool {
@@ -1559,7 +1562,11 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 			log.Printf("task %s: the offers of case %d: %v", t.ID, c.ID, err)
 		} else if offers, refusals, ok := storeOffers(c, t, f); ok {
 			asked["offers"] = withTableOffers(asked["offers"], offers)
-			asked["refusals"] = nonNilList(refusals)
+			// with no refusals stored the offers pass weighs them again
+			// once the timeline, whose actions are refused unread, reads
+			if !slices.Contains(f.Partial, partialTimeline) {
+				asked["refusals"] = nonNilList(refusals)
+			}
 		}
 	}
 	// the ask's record comes before the wait: a card that waits on a human

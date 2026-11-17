@@ -2122,7 +2122,7 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 // that fails after the write is finished by the sweep.
 func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
 	approver := c.isApprover(ctx, a.approver(), t.Repository)
-	if err := c.cfg.CheckClosePlan(ctx, t.ID, note, approver); err != nil {
+	if err := c.cfg.CheckClosePlan(ctx, t.ID, a.approver(), note, approver); err != nil {
 		return "", c.planCloseRefusal(ctx, a, t, err)
 	}
 	freed := ""

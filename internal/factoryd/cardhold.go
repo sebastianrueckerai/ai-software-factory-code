@@ -148,10 +148,12 @@ func (r *Runner) holdFact(ctx context.Context, t Task) (string, error) {
 	return fmt.Sprintf("card %s is %s", cardName(t), v.Line), nil
 }
 
-// The readers of the hold facts, as CaseFacts.Partial names them.
+// The readers of the hold facts and of the card's timeline, as
+// CaseFacts.Partial names them.
 const (
 	partialHold     = "hold"
 	partialPlanHold = "plan hold"
+	partialTimeline = "timeline"
 )
 
 // holdStops are the answers that would start or close the card itself.

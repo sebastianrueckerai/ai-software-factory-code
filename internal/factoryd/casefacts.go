@@ -324,7 +324,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			}
 			return err
 		}},
-		{"timeline", func() error {
+		{partialTimeline, func() error {
 			tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 			if err == nil {
 				lines, _ := lineSteps(r.Scrub, tl)

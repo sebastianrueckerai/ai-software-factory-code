@@ -121,8 +121,6 @@ var Actions = []Action{
 	}},
 	{Name: ActRouteApproval, Rungs: rungs(0, 1, 2), InRun: true, Applies: func(f CaseFacts, _ Resolution) string {
 		switch {
-		case slices.Contains(f.Partial, "timeline"):
-			return timelineUnread(ActRouteApproval)
 		case f.MergeConflict != "":
 			return conflictRefusal(f, ActRouteApproval)
 		case f.Kind == CaseGateStop && f.Gate == ActivityWaitChecks:
@@ -138,8 +136,6 @@ var Actions = []Action{
 	}},
 	{Name: ActReverify, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, _ Resolution) string {
 		switch {
-		case slices.Contains(f.Partial, "timeline"):
-			return timelineUnread(ActReverify)
 		case f.MergeConflict != "":
 			return conflictRefusal(f, ActReverify)
 		case !f.PROpen:
@@ -175,7 +171,7 @@ var Actions = []Action{
 	// the human decides whether a finding is a fixture.
 	{Name: ActConfirmAudit, Rungs: rungs(3), Applies: func(f CaseFacts, r Resolution) string {
 		switch {
-		case slices.Contains(f.Partial, "timeline"):
+		case slices.Contains(f.Partial, partialTimeline):
 			return "the card's timeline could not be read, so the head's audit findings and whether the pull request still merges into main are unknown: try again in a minute"
 		case f.MergeConflict != "":
 			return conflictRefusal(f, ActConfirmAudit)
@@ -434,11 +430,19 @@ func conflictRefusal(f CaseFacts, action string) string {
 		"%s, or the card closes as superseded when main already carries its work", short(f.Head), action, conflictFit(f))
 }
 
-// timelineUnread refuses action, which a head that no longer merges into
-// main only runs into the merge queue's refusal, while the card's timeline,
-// which records the conflict, could not be read.
-func timelineUnread(action string) string {
-	return "the card's timeline could not be read, so it is unknown whether the pull request still merges into main, which " + action + " needs: try again in a minute, or hand it up"
+// rerunGates are the answers that run the gates again, which a head that
+// no longer merges into main only runs into the merge queue's refusal.
+var rerunGates = []string{ActRouteApproval, ActReverify}
+
+// timelineUnread refuses rung the action, one of rerunGates, while the
+// card's timeline, which records a merge conflict, could not be read: try
+// again, or a rung below the human hands it up.
+func timelineUnread(action string, rung int) string {
+	why := "the card's timeline could not be read, so it is unknown whether the pull request still merges into main, which " + action + " needs: try again in a minute"
+	if rung < 3 {
+		why += ", or hand it up"
+	}
+	return why
 }
 
 // conflictFit is the answer, by the stop's kind, that starts the session a
@@ -693,6 +697,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 			return a.Name + " would do nothing on a monitor flag's case: the card's run waits on none"
 		}
 	}
+	if slices.Contains(rerunGates, a.Name) && slices.Contains(f.Partial, partialTimeline) {
+		return timelineUnread(a.Name, rung)
+	}
 	if rung == 2 && slices.Contains(humanWordActions, a.Name) && criteriaCaseRefusal(f, a.Name) == "" {
 		return ErrNotPerson.Error()
 	}
@@ -892,7 +899,7 @@ func retryRefusal(d DepFact) string {
 func boughtNothing(f CaseFacts) bool {
 	d, ok := weighedDraw(f)
 	return ok && !d.Pushed && !d.Revised && d.Head == f.Head && d.Checks == f.Checks &&
-		(d.Findings == nil || slices.Contains(f.Partial, "timeline") || slices.Equal(d.Findings, f.Findings))
+		(d.Findings == nil || slices.Contains(f.Partial, partialTimeline) || slices.Equal(d.Findings, f.Findings))
 }
 
 // weighedDraw is the draw the guard weighs on f: none on a card that has

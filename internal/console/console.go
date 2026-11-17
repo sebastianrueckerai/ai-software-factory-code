@@ -240,7 +240,7 @@ type Config struct {
 	DecideCriterion func(ctx context.Context, id, cid, verdict, by, reason string) error
 	// CheckClosePlan refuses a CloseHeldPlan that would be refused, without
 	// writing (Runner.CheckClosePlan).
-	CheckClosePlan func(ctx context.Context, id, note string, approver bool) error
+	CheckClosePlan func(ctx context.Context, id, by, note string, approver bool) error
 	// CloseHeldPlan waives every open criterion of plan id at rest (done,
 	// failed or closed) with the note, ends its criteria asks and, once
 	// every card is final, records its plan_closed, in one write. It answers
