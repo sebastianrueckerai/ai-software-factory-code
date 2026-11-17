@@ -186,6 +186,16 @@ var writeCases = []writeCase{
 		},
 		result: "#21 depends on #22 now.", undo: true, undoResult: "#21 no longer depends on #22.", event: factoryd.EventDependencySet,
 		calls: []string{"issue dependency sf/code#21 on #22 remove false"}, undoCalls: []string{"issue dependency sf/code#21 on #22 remove true"}},
+	{name: "hold_card", tool: "hold_card", args: `{"task_id":"t-m","reason":"after the pg split"}`,
+		result: "#5 is on hold until a human releases it.", event: factoryd.EventCardHeld,
+		calls: []string{`hold t-m on "" by sebastian: after the pg split`}},
+	{name: "release_hold", tool: "release_hold", args: `{"task_id":"t-h"}`,
+		setup: func(r *AcceptanceRig) {
+			r.AddCard(factoryd.Task{ID: "t-h", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Repository: "sf/code", IssueNumber: 32,
+				Objective: "Prove the split.", Hold: &factoryd.CardHold{Reason: "after the pg split", By: "sebastian"}})
+		},
+		result: "#32's hold is released: it queues for a work slot.", event: factoryd.EventCardHoldEnded,
+		calls: []string{"release the hold of t-h"}},
 	{name: "replan", tool: "replan", args: `{"task_id":"t-f","note":"Plan it again."}`, confirm: true,
 		setup: func(r *AcceptanceRig) {
 			r.AddCard(factoryd.Task{ID: "t-f", Kind: "agent", Status: "failed", IssueNumber: 31, Objective: "Add the cache."})
@@ -484,7 +494,7 @@ var (
 	writeTools = []string{"promote_resource", "release_resource", "new_card", "request_image", "answer", "comment",
 		"tell_card", "steer", "retry", "request_changes", "approve_merge", "deny_merge", "rerun_checks", "answer_criteria",
 		"set_summary", "set_accent", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund",
-		"set_dependency", "replan", "set_pool", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run",
+		"set_dependency", "hold_card", "release_hold", "replan", "set_pool", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run",
 		"routine_skip", "notes_write", "escalate", "attach_analysis"}
 	// readTools are the tools that change nothing; with writeTools they
 	// are every tool the policy names.

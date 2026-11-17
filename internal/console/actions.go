@@ -186,6 +186,9 @@ func fitting(t factoryd.Task, f capFacts) string {
 	case "running":
 		return "steer sends its session a message; its pull request comes when the session ends"
 	case "queued", "waiting-deps":
+		if t.Held() {
+			return "it is on hold, and the human's release_hold, or Release on its drawer, lets it start"
+		}
 		return "nothing to do until it starts"
 	case "waiting-image":
 		return "nothing to do until its image is pinned and it restarts; close ends it"
@@ -2076,6 +2079,9 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	if factoryd.Final(t.Status) && t.Status != "failed" {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d %s, so there is nothing to close: %s.", t.IssueNumber, factoryd.StatusMeaning(t.Status), fitting(t, capFacts{})))
 	}
+	if err := c.agentOnHeld(ctx, a, t, "close"); err != nil {
+		return "", err
+	}
 	k, err := c.newestCase(ctx, t)
 	if err != nil {
 		return "", err
@@ -2375,6 +2381,9 @@ func (c *Console) doReplan(ctx context.Context, a actor, id, note string, offMai
 	if err != nil {
 		return "", err
 	}
+	if err := c.agentOnHeld(ctx, a, t, "replan"); err != nil {
+		return "", err
+	}
 	poster, err := c.posterOf(ctx, a, t.Repository)
 	if err != nil {
 		return "", err
@@ -2610,9 +2619,9 @@ func (c *Console) groupPlan(ctx context.Context, t factoryd.Task) int64 {
 	return p.IssueNumber
 }
 
-// crossGroup is the refusal of a dependency across two groups. Its action
-// follows their shape: a card of a plan changes through the plan, and a
-// direct card either waits or joins a plan.
+// crossGroup is the refusal of a dependency across two groups, which names
+// what keeps a card from starting until a card of another group lands: a
+// hold with that card as its release card.
 func (c *Console) crossGroup(ctx context.Context, t, d factoryd.Task) string {
 	label := func(n int64) string {
 		if n == 0 {
@@ -2620,18 +2629,162 @@ func (c *Console) crossGroup(ctx context.Context, t, d factoryd.Task) string {
 		}
 		return fmt.Sprintf("plan #%d", n)
 	}
-	pt, pd := c.groupPlan(ctx, t), c.groupPlan(ctx, d)
-	var action string
-	switch {
-	case pt != 0:
-		action = fmt.Sprintf("Ask for the change in plan #%d.", pt)
-	case pd != 0:
-		action = fmt.Sprintf("Ask for #%d in plan #%d.", t.IssueNumber, pd)
-	default:
-		action = fmt.Sprintf("Wait for #%d to finish and file #%d again after it, or file the work of both as one plan.", d.IssueNumber, t.IssueNumber)
+	return fmt.Sprintf("#%d is in %s and #%d is in %s. A dependency joins cards of one plan only: to keep #%d from starting until #%d is merged or done, hold #%d with #%d as its release card (hold_card, or Hold on its drawer).",
+		t.IssueNumber, label(c.groupPlan(ctx, t)), d.IssueNumber, label(c.groupPlan(ctx, d)), t.IssueNumber, d.IssueNumber, t.IssueNumber, d.IssueNumber)
+}
+
+// maxHoldReason bounds a hold's reason: the board shows it on the card.
+const maxHoldReason = 300
+
+// doHoldCard puts card id, which has not started, on hold for a: it gets no
+// work slot until a human releases it, or until release, any card of its
+// project by task id or issue number ("" for none), is merged or done.
+// reason is what the board shows, on one line. A hold it holds already is
+// replaced.
+func (c *Console) doHoldCard(ctx context.Context, a actor, id, release, reason string) (string, error) {
+	reason = strings.Join(strings.Fields(reason), " ")
+	if reason == "" || len(reason) > maxHoldReason {
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("a reason of up to %d bytes is required: the board shows it on the held card", maxHoldReason))
 	}
-	return fmt.Sprintf("#%d is in %s and #%d is in %s. A dependency joins cards of one plan only. %s",
-		t.IssueNumber, label(pt), d.IssueNumber, label(pd), action)
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	if err := unholdable(t, c.capFactsOf(ctx, t)); err != nil {
+		return "", err
+	}
+	var rel factoryd.Task
+	if release = strings.TrimPrefix(strings.TrimSpace(release), "#"); release != "" {
+		if rel, err = c.releaseCard(ctx, a, t, release); err != nil {
+			return "", err
+		}
+	}
+	ok, err := c.cfg.HoldCard(ctx, t.ID, rel.ID, reason, a.s.user)
+	if err != nil {
+		log.Printf("console: %s holds %s: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusInternalServerError, "The hold could not be stored; hold the card again.")
+	}
+	if !ok {
+		fresh, _, _ := c.cfg.Tasks.Task(ctx, t.ID)
+		if err := unholdable(fresh, c.capFactsOf(ctx, fresh)); err != nil {
+			return "", err
+		}
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's dependencies have all ended, so it starts or asks the human now: a hold comes too late. Close it, or steer it once it runs.", t.IssueNumber))
+	}
+	detail := map[string]any{"reason": reason}
+	said := fmt.Sprintf("#%d is on hold until a human releases it.", t.IssueNumber)
+	if rel.ID != "" {
+		detail["release"] = rel.IssueNumber
+		said = fmt.Sprintf("#%d is on hold until #%d is merged or done, or a human releases it.", t.IssueNumber, rel.IssueNumber)
+	}
+	log.Printf("console: %s held %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardHeld, detail)
+	return said, nil
+}
+
+// unholdable refuses a hold on t unless it has not started (Holdable),
+// naming its state and what fits it.
+func unholdable(t factoryd.Task, f capFacts) error {
+	switch {
+	case t.Holdable():
+		return nil
+	case t.Kind == "human":
+		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d is a human card: no agent starts it, so a hold keeps nothing. Close it, or leave it to its person.", t.IssueNumber))
+	case t.Unbound():
+		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d runs outside the work bound and starts at once, so a hold keeps nothing: close it if it must not run.", t.IssueNumber))
+	case t.Status == "queued" && t.ResumedAt != nil:
+		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d has run and waits for a slot to go on, not a card that has not started: close it, or steer it once it runs.", t.IssueNumber))
+	case t.Status == "queued":
+		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d took a work slot and starts now, not a card that has not started: close it, or steer it once it runs.", t.IssueNumber))
+	}
+	return wrongState(t, f, "a card that has not started")
+}
+
+// releaseCard is the release card name names for a hold on card t: a card
+// of t's project, by task id or issue number, that is not t and has not
+// ended: one merged or done would release the hold at once, one failed or
+// closed never does.
+func (c *Console) releaseCard(ctx context.Context, a actor, t factoryd.Task, name string) (factoryd.Task, error) {
+	var rel factoryd.Task
+	var err error
+	if n, perr := strconv.ParseInt(name, 10, 64); perr == nil && n > 0 {
+		var ok bool
+		rel, ok, err = c.cfg.Tasks.TaskByIssue(ctx, t.Repository, n)
+		if err == nil && (!ok || rel.Kind == factoryd.KindChat) {
+			err = refuse(http.StatusNotFound, fmt.Sprintf("There is no card #%d in this project: a release card is a card of #%d's project.", n, t.IssueNumber))
+		}
+	} else {
+		rel, err = c.cardIn(ctx, a, name)
+		if err == nil && rel.Repository != t.Repository {
+			err = refuse(http.StatusNotFound, fmt.Sprintf("There is no card %s in this project: a release card is a card of #%d's project.", name, t.IssueNumber))
+		}
+	}
+	var no *refusal
+	if err != nil && !errors.As(err, &no) {
+		log.Printf("console: the release card %s: %v", name, err)
+		return rel, refuse(http.StatusInternalServerError, "cannot read the release card")
+	}
+	if err != nil {
+		return rel, err
+	}
+	switch {
+	case rel.ID == t.ID:
+		return rel, refuse(http.StatusBadRequest, fmt.Sprintf("#%d cannot release its own hold: name another card, or hold it with none.", t.IssueNumber))
+	case rel.Status == "merged" || rel.Status == "done":
+		return rel, refuse(http.StatusConflict, fmt.Sprintf("#%d is %s already, so it would release the hold at once: hold #%d with no release card, or name a card that has not ended.",
+			rel.IssueNumber, rel.Status, t.IssueNumber))
+	case factoryd.Final(rel.Status):
+		fit := "name a card that has not ended"
+		for _, next := range []string{factoryd.SuccessorID(rel.ID), factoryd.RetryID(rel.ID)} {
+			if k, ok, _ := c.cfg.Tasks.Task(ctx, next); ok && k.IssueNumber != 0 {
+				fit = fmt.Sprintf("name #%d, which carries its work", k.IssueNumber)
+			}
+		}
+		return rel, refuse(http.StatusConflict, fmt.Sprintf("#%d ended %s, so it would never release the hold: %s, or hold #%d with none.",
+			rel.IssueNumber, rel.Status, fit, t.IssueNumber))
+	}
+	return rel, nil
+}
+
+// doReleaseHold ends card id's hold for a, a human: a queued card queues
+// for a work slot, one in waiting-deps waits on its dependencies alone.
+func (c *Console) doReleaseHold(ctx context.Context, a actor, id string) (string, error) {
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	if t.Hold == nil {
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is not on hold, so there is nothing to release: hold_card, or Hold on its drawer, puts a card that has not started on hold.", t.IssueNumber))
+	}
+	ok, err := c.cfg.ReleaseCardHold(ctx, t.ID)
+	if err != nil {
+		log.Printf("console: %s releases %s: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusInternalServerError, "The hold could not be released; release it again.")
+	}
+	if !ok {
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is not on hold any more: reload the board.", t.IssueNumber))
+	}
+	log.Printf("console: %s released %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardHoldEnded, map[string]any{"reason": t.Hold.Reason})
+	if t.Status == "waiting-deps" {
+		return fmt.Sprintf("#%d's hold is released: it waits on its dependencies alone.", t.IssueNumber), nil
+	}
+	return fmt.Sprintf("#%d's hold is released: it queues for a work slot.", t.IssueNumber), nil
+}
+
+// agentOnHeld refuses the agent's own action on card t, which a human
+// holds: only the human releases, starts or closes a held card, and a turn
+// on no line the human typed decides as the agent.
+func (c *Console) agentOnHeld(ctx context.Context, a actor, t factoryd.Task, action string) error {
+	if !t.Held() || a.decider != "agent" {
+		return nil
+	}
+	line := "on hold: " + t.Hold.Reason
+	if bt, ok, err := c.cfg.Tasks.BoardTask(ctx, t.ID); err == nil && ok && bt.HoldView.Line != "" {
+		line = bt.HoldView.Line
+	}
+	return refuse(http.StatusConflict, fmt.Sprintf("Card #%d is %s. Only the human releases, starts or closes a held card, and this turn runs on no line the human typed, so it takes no %s: ask the human with ask, or let them %s it on its card.",
+		t.IssueNumber, line, action, action))
 }
 
 // reaches: card from depends on card to, through dependencies not done.

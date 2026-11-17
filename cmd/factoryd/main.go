@@ -746,6 +746,8 @@ func main() {
 		SetIssueDependency: forgejo.SetIssueDependency,
 		RerunStall:         chainPoller.RerunStall,
 		DismissStall:       store.DismissChainStall,
+		HoldCard:           runner.HoldCard,
+		ReleaseCardHold:    runner.ReleaseCardHold,
 		RetryRoll: func(ctx context.Context, card factoryd.Task) error {
 			return factoryd.RetryRoll(ctx, store, forgejo, card)
 		},

@@ -654,7 +654,9 @@ in gate `dependencies` (the board reads `waiting on #3, #5`) and waits
 for the signal `dep_ended`, which `task_ended` sends to every card
 waiting on the task, or 10 minutes, then asks again. The heal pass starts
 every waiting card's workflow and signals `dep_ended` to each whose wait
-would end.
+would end. A card a human holds stays in the wait whatever its
+dependencies, none of them asked, until the hold ends; a human's release
+signals `dep_ended` to it.
 
 The planner (`internal/factoryd/plan.go`): a card on
 the plan track runs report-mode sessions of its class (the `planner`) on the

@@ -260,6 +260,13 @@ type Config struct {
 	// returns its issue (factoryd's Runner.Go): the go of a card that
 	// waits on a person. A refusal is factoryd.ErrNoGo.
 	GoCard func(ctx context.Context, taskID, by string) (int64, error)
+	// HoldCard puts card taskID, which has not started, on hold for by
+	// until a human releases it or release ("" for none) ends done or
+	// merged; ReleaseCardHold ends its hold and wakes it (factoryd's
+	// Runner.HoldCard and Runner.ReleaseCardHold). False: the card is in no
+	// state to take a hold, or holds none.
+	HoldCard        func(ctx context.Context, taskID, release, reason, by string) (bool, error)
+	ReleaseCardHold func(ctx context.Context, taskID string) (bool, error)
 	// RequestImage puts by's ask in the chat of repository for tool, for
 	// need, on the tool card of image, else of one named after the tool
 	// (factoryd's Runner.RequestImage): the card, its image and whether
@@ -603,6 +610,8 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/close", http.HandlerFunc(c.closeCard), nil},
 		{"POST /tasks/{id}/steer", http.HandlerFunc(c.steerCard), nil},
 		{"POST /tasks/{id}/replan", http.HandlerFunc(c.replanCard), nil},
+		{"POST /tasks/{id}/hold", http.HandlerFunc(c.holdCard), nil},
+		{"POST /tasks/{id}/release-hold", http.HandlerFunc(c.releaseHold), nil},
 		{"POST /projects/{name}/deploy-now", http.HandlerFunc(c.deployNow), nil},
 		{"POST /approvals/{id}/approve", http.HandlerFunc(c.approve), nil},
 		{"POST /approvals/{id}/deny", http.HandlerFunc(c.deny), nil},
@@ -695,6 +704,8 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no RetryCard")
 	case cfg.GoCard == nil:
 		return nil, errors.New("console: no GoCard")
+	case cfg.HoldCard == nil || cfg.ReleaseCardHold == nil:
+		return nil, errors.New("console: no HoldCard or ReleaseCardHold")
 	case cfg.CloseCard == nil:
 		return nil, errors.New("console: no CloseCard")
 	case cfg.RerunStall == nil:

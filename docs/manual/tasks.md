@@ -76,10 +76,27 @@ process of their own, and run outside the work bound.
 
 The work bound (`BoundedWorkflows`) is the one admission step every start
 passes: a queued card starts only while fewer than its project's
-`work_in_progress` cards hold a slot, every card it depends on is done
-(or one ended closed, which its workflow takes to a person), and its
-project's month budget has headroom. Otherwise it stays queued, holding no
-slot. A card that ends or parks on a person or its image frees its slot,
+`work_in_progress` cards hold a slot, no human's hold keeps it, every
+card it depends on is done (or one ended closed, which its workflow takes
+to a person), and its project's month budget has headroom. Otherwise it
+stays queued, holding no slot.
+
+A human holds a card that has not started (queued and never admitted, or
+in `waiting-deps`) with the drawer's Hold or the chat's `hold_card`: a
+reason the board shows, and an optional release card, any card of the
+same repository of any plan. The held card gets no work slot, and its
+dependency wait asks nothing, until the human releases it (Release,
+`release_hold`) or its release card is `merged` or `done`; the hold
+follows the release card's work into a retry or a successor, as a
+dependency edge does, and a replan that changes the held card carries
+the hold to the card that takes its work. A release card that ends `failed` or `closed`
+releases nothing: the card stays held and its chip turns to the warning
+that names the release card, its plan and how it ended. A held card owns
+no wait, so no queue or dependency flag opens a case on it, and rungs 0
+to 2 neither release, start nor close it: Act refuses their answer on it
+but a note, a settle, a withdrawal, a dependency edge and a filed card,
+naming the hold. The chat sets and ends a hold only on a line the human
+typed in that turn, or on their press. A card that ends or parks on a person or its image frees its slot,
 and the oldest queued card of its project starts (the pull, in filing
 order); the heal pass re-derives the same admission every minute.
 

@@ -29,6 +29,19 @@ func (c *Console) replanCard(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// holdCard is the drawer's Hold (doHoldCard, on the form's release card
+// and reason).
+func (c *Console) holdCard(w http.ResponseWriter, r *http.Request) {
+	c.press(w, r, func(ctx context.Context, a actor, id string) (string, error) {
+		return c.doHoldCard(ctx, a, id, r.PostFormValue("release"), r.PostFormValue("reason"))
+	})
+}
+
+// releaseHold is the drawer's Release (doReleaseHold).
+func (c *Console) releaseHold(w http.ResponseWriter, r *http.Request) {
+	c.press(w, r, c.doReleaseHold)
+}
+
 // planAnswer posts a writer's answer to a question of the plan
 // (doAnswerPlanQuestion): the words are the free text, else the chosen
 // answer, which the form names by its place among the question's choices,

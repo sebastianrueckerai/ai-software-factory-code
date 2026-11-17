@@ -97,6 +97,14 @@ func (w *writeSeams) wire(cfg *console.Config) {
 		w.log("close %s by %s", id, by)
 		return nil
 	}
+	cfg.HoldCard = func(_ context.Context, id, release, reason, by string) (bool, error) {
+		w.log("hold %s on %q by %s: %s", id, release, by, reason)
+		return true, nil
+	}
+	cfg.ReleaseCardHold = func(_ context.Context, id string) (bool, error) {
+		w.log("release the hold of %s", id)
+		return true, nil
+	}
 	cfg.RequestImage = func(_ context.Context, repository, tool, need, image, by string, _ func(string) error) (factoryd.ImageAsk, error) {
 		w.log("image %s %s for %s by %s", repository, tool, need, by)
 		w.mu.Lock()

@@ -96,9 +96,9 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	}
 	// the documents' save is login-only too: its handler judges the
 	// project's sight, as its read does (TestDocsReadAccess).
-	if pages != 46 || !slices.Equal(skipped, []string{"POST /messengers/telegram", "POST /mcp", "POST /notifications/telegram/code",
+	if pages != 48 || !slices.Equal(skipped, []string{"POST /messengers/telegram", "POST /mcp", "POST /notifications/telegram/code",
 		"POST /notifications/disconnect", "POST /notifications/level", "POST /notifications/tokens", "POST /notifications/tokens/revoke", "POST /logout", "POST /projects/{name}/docs/{path...}"}) {
-		t.Fatalf("%d POST routes driven, skipped %v: want 46 driven and only the telegram webhook, /mcp, the notifications' posts, the chat tokens' posts, logout and the documents' save skipped", pages, skipped)
+		t.Fatalf("%d POST routes driven, skipped %v: want 48 driven and only the telegram webhook, /mcp, the notifications' posts, the chat tokens' posts, logout and the documents' save skipped", pages, skipped)
 	}
 
 	// The chat: every write tool by the member its scope refuses — bob on
@@ -143,8 +143,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 36 || len(tools) != 80 {
-		t.Fatalf("%d of %d tools checked as writes: want 36 of 80", writes, len(tools))
+	if writes != 38 || len(tools) != 82 {
+		t.Fatalf("%d of %d tools checked as writes: want 38 of 82", writes, len(tools))
 	}
 
 	// #485's case in the chat's own words: bob, who writes demo, asks for
@@ -279,8 +279,8 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 36 {
-		t.Fatalf("%d write tools driven: want 36", writes)
+	if writes != 38 {
+		t.Fatalf("%d write tools driven: want 38", writes)
 	}
 }
 
