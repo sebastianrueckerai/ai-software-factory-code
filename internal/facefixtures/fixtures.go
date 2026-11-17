@@ -252,17 +252,9 @@ func (b *builder) stop(group, name string, id int64, t factoryd.Task, f factoryd
 	}
 	c := b.atHuman(opened, id, age)
 	f = factoryd.FactsOf(*c)
-	row := factoryd.FaceRow(*c, t, f, "", up, same, same)
-	row["question"], row["source"], row["reason"], row["case_id"] = row["ask"], factoryd.EscalationSource(in.Reason), in.Reason, c.ID
-	if len(in.Choices) > 0 {
-		row["choices"] = in.Choices
-	}
-	if up != nil && up.Preselected != nil {
-		row["preselected"] = map[string]any{"action": up.Preselected.Action, "args": up.Preselected.Args, "fund": up.Preselected.Fund}
-	}
-	if c.Kind == factoryd.CaseMonitorFlag {
-		row["case_kind"], row["flag"] = string(c.Kind), c.Facts["flag"]
-	}
+	face := factoryd.FaceRow(*c, t, f, "", up, same, same)
+	ask, _ := face["ask"].(string)
+	row := factoryd.AskRow(*c, t, in.Reason, ask, 0, face, in.Choices, up, same)
 	return Fixture{Group: group, Kind: name, Task: t, Facts: f, Case: c, Ask: &factoryd.CaseAsk{At: c.OpenedAt, Detail: roundTrip(row)}}
 }
 

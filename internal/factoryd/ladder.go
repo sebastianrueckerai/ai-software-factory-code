@@ -1370,15 +1370,7 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 	}
 	question := EscalationQuestion(reason)
 	step := map[string]any{"reason": reason, "comment": id}
-	asked := map[string]any{"comment": id, "source": EscalationSource(reason), "reason": textutil.Truncate(r.Scrub.String(reason), 300)}
-	if c.ID != 0 {
-		asked["case_id"] = c.ID
-	}
-	if beside {
-		// the card's own ask stays the card's: its thread seeds from that.
-		// The flag tells the settle the ask of an ended card's open issue
-		asked["case_kind"], asked["flag"] = string(c.Kind), c.Facts["flag"]
-	}
+	var face map[string]any
 	whole := reason != HealedReason && !strings.HasPrefix(reason, screeningAsks)
 	if whole {
 		// the register writes the face on the facts Act judges, as the case
@@ -1389,16 +1381,16 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 			f = FactsOf(c)
 		}
 		fence := func(s string) string { return r.untrusted(t, s) }
-		maps.Copy(asked, FaceRow(r.fencedChoices(t, c), t, f, note, up, fence, r.scrub))
-		question, _ = asked["ask"].(string)
+		face = FaceRow(r.fencedChoices(t, c), t, f, note, up, fence, r.scrub)
+		question, _ = face["ask"].(string)
 		// the refusal the newest session ended on rides with the ask,
 		// verbatim: the blocker reaches the human with no agent-side
 		// reporting to lose it (card #1345). A prover's refusals name its
 		// hold-outs, so its ask is factoryd's words alone.
 		if t.Source != SourceProver {
 			if tool, refusal, ok := r.lastToolRefusal(ctx, t.ID); ok {
-				view, _ := asked["info"].(string)
-				asked["info"] = strings.TrimSpace(view + "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal))
+				view, _ := face["info"].(string)
+				face["info"] = strings.TrimSpace(view + "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal))
 			}
 		}
 	}
@@ -1412,14 +1404,10 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 			question = cmp.Or(asks[len(asks)-1].Question, question)
 		}
 	}
-	asked["question"] = textutil.Truncate(question, 300)
 	if len(choices) > 0 {
 		step["choices"] = choices
-		asked["choices"] = choices
 	}
-	if up != nil && up.Preselected != nil {
-		asked["preselected"] = up.Preselected.preselected()
-	}
+	asked := AskRow(c, t, reason, question, id, face, choices, up, r.Scrub.String)
 	if !whole {
 		r.repeatFace(ctx, t, c, asked)
 	}
@@ -1435,6 +1423,32 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		r.record(ctx, t.ID, "escalated", step)
 	}
 	return id, nil
+}
+
+// AskRow is the question_asked row of case c on card t: the comment id
+// that asks, the source and the reason, scrubbed by scrub, the case, the
+// face the register wrote (none for a healed or screened ask), the
+// question, the agent's choices and the answer a rung preselected. A case
+// beside the run names its kind and flag: the card's own ask stays the
+// card's, its thread seeds from that, and the flag tells the settle the
+// ask of an ended card's open issue.
+func AskRow(c Case, t Task, reason, question string, comment int64, face map[string]any, choices []string, up *HandUp, scrub func(string) string) map[string]any {
+	asked := map[string]any{"comment": comment, "source": EscalationSource(reason), "reason": textutil.Truncate(scrub(reason), 300)}
+	if c.ID != 0 {
+		asked["case_id"] = c.ID
+	}
+	if c.Kind == CaseMonitorFlag || PlanWaitCase(c, t) {
+		asked["case_kind"], asked["flag"] = string(c.Kind), c.Facts["flag"]
+	}
+	maps.Copy(asked, face)
+	asked["question"] = textutil.Truncate(question, 300)
+	if len(choices) > 0 {
+		asked["choices"] = choices
+	}
+	if up != nil && up.Preselected != nil {
+		asked["preselected"] = up.Preselected.preselected()
+	}
+	return asked
 }
 
 // FaceRow is the face an ask row of case c on card t stores: the
