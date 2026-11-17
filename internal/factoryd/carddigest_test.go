@@ -1504,6 +1504,28 @@ func TestDigestQuietInsideFreeze(t *testing.T) {
 	}
 }
 
+// A check-in the provider refused before the freeze arms still flags:
+// suppression is scoped to the freeze's interval, and a check-in stands
+// at its moment, not a span. The same life's newest session — no step
+// after it — is emptied by the freeze, and its grant buys nothing
+// without a push flags not: the limit bought the quiet, not the grant.
+func TestCheckinRefusedBeforeTheFreezeFlags(t *testing.T) {
+	g := newDigestRig(nil)
+	g.event(150, EventSessionGranted, "sebastian", map[string]any{"sessions": 1})
+	g.line(t, 160, "checkin", map[string]any{"moment": "gate", "decision": "handover", "reason": CheckinRefusedReason + "overloaded"})
+	g.session(t, 180, 192, 1, string(OutcomeProviderRefused))
+	g.line(t, 192, StepProviderRefused, map[string]any{"status": 429, "reason": "provider limit for class big",
+		"backoff_s": 24480, "words": "rate limit exceeded, resets at 17:04:50 UTC"})
+	g.at(300)
+	d := g.digest(t)
+	if w, ok := d.ownedWait(); !ok || w != (ownedWait{"provider_limit", 0, digestAt(192)}) {
+		t.Fatalf("ownedWait = %+v, %t; want provider_limit since +3:12", w, ok)
+	}
+	if want := []DigestFlag{{"checkin_refused", "+2:40"}}; !slices.Equal(d.Flags, want) {
+		t.Fatalf("Flags = %v, want the check-in before the freeze to flag and the emptied session to flag nothing: %v", d.Flags, want)
+	}
+}
+
 // A skipped stage's timeline line also writes its events row, which the
 // approval rule reads to leave the stage out.
 func TestSkippedStageWritesItsEventRow(t *testing.T) {

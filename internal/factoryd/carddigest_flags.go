@@ -128,10 +128,22 @@ func (d CardDigest) frozen() bool {
 	return d.refusedBackoff > ladderBackoffMax && !d.retryDue.IsZero() && d.at.Before(d.retryDue)
 }
 
-// frozenOver reports whether a freeze covers the moment at — a check-in
-// the limit refused inside its interval — or opens between at and next:
-// a session whose end the refusal froze the card on, though its step
-// stands at its start.
+// frozenAt reports whether a freeze covers the moment at: a check-in the
+// limit refused inside its interval. A check-in stands at its moment, so
+// one a freeze only opens after still flags.
+func (d CardDigest) frozenAt(at time.Time) bool {
+	for _, f := range d.freezes {
+		if !f.since.After(at) && at.Before(f.until) {
+			return true
+		}
+	}
+	return false
+}
+
+// frozenOver reports whether a freeze covers the moment at or opens
+// between at and next: a session whose end the refusal froze the card
+// on, though its step stands at its start. A session with no next runs
+// to now, so a zero next bounds nothing.
 func (d CardDigest) frozenOver(at, next time.Time) bool {
 	for _, f := range d.freezes {
 		if !f.since.After(at) && at.Before(f.until) {
@@ -213,8 +225,9 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 		case "checkin":
 			refusedAt = ""
 			// a check-in inside a freeze the limit refused flags nothing:
-			// the hold answered it, not the card
-			if s.refused && !d.frozenOver(s.At, time.Time{}) {
+			// the hold answered it, not the card — a check-in stands at its
+			// moment, so only a freeze covering it quiets it
+			if s.refused && !d.frozenAt(s.At) {
 				refusedAt = offsetText(s.Offset)
 			}
 			if s.state == "" {

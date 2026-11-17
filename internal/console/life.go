@@ -154,7 +154,7 @@ func runsOf(t factoryd.Task, events []factoryd.Event, steps []map[string]any, ca
 			// a freeze the provider named a reset for records its words and
 			// the reset, so a later reader knows why the stage took hours;
 			// the ladder's short backoff stays a stall
-			if backoff := time.Duration(numAt(m, "backoff_s")) * time.Second; backoff > 30*time.Minute {
+			if backoff := time.Duration(numAt(m, "backoff_s")) * time.Second; backoff > frozenLimit {
 				note := "frozen on the provider limit until " + at.Add(backoff).UTC().Format("15:04 UTC")
 				if words := strings.TrimSpace(textAt(m, "words")); words != "" {
 					note += ": " + textutil.Truncate(words, 200)
