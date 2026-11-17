@@ -2595,6 +2595,28 @@ func TestMergeUpdateWithoutMoveOrRefusedIsAConflict(t *testing.T) {
 	}
 }
 
+// A queue turn's sync that Forgejo refuses with a conflict records the
+// conflict on the card's timeline: the pull request, the head the turn
+// passed and the refusal, a credential in it masked.
+func TestSyncWithMainRecordsTheConflict(t *testing.T) {
+	fj := &gateForgejo{updateAs: http.StatusConflict, updateBody: "https://user:pass@host/x merge failed because of conflict"}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	r.Scrub = redact.New()
+	res, err := r.SyncWithMain(context.Background(), "t1", 9, "c1")
+	if err != nil || res.Conflict == "" || strings.Contains(res.Conflict, "pass@") || fj.updates == 0 {
+		t.Fatalf("SyncWithMain = %+v, %v, updates %d; want the conflict, masked", res, err, fj.updates)
+	}
+	var lines []map[string]any
+	for _, l := range timelineLines(t, r, "t1") {
+		if l["step"] == "merge_conflict" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) != 1 || lines[0]["pr"] != float64(9) || lines[0]["commit"] != "c1" || lines[0]["refusal"] != res.Conflict {
+		t.Fatalf("merge_conflict lines = %v, want one of pr 9 on c1 with the refusal %q", lines, res.Conflict)
+	}
+}
+
 // An update Forgejo refuses for another reason than a conflict is a refusal
 // the card waits on, not an error the activity retries; a head that moved
 // past its gates before the update, and stays so, is a moved head.

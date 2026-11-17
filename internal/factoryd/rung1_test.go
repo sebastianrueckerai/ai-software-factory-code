@@ -107,6 +107,27 @@ func TestRung1StatementOrderMoneyAndRefusals(t *testing.T) {
 	}
 }
 
+// A pull request that no longer merges into main is said right after the
+// problem, with Forgejo's refusal, and route_approval and reverify are
+// listed as not offered for it.
+func TestRung1StatementSaysThePullRequestNoLongerMerges(t *testing.T) {
+	f := rungFacts
+	f.ReviewApproved, f.MergeConflict = true, "the branch conflicts with its base: status 409"
+	got := (&Runner{}).rungStatement(Case{Kind: CaseGateStop, Problem: "PROBLEM"}, f, "DIGEST", nil, 1)
+	said := "The pull request does not merge into main: the branch conflicts with its base: status 409. Neither reverify nor route_approval clears it;" +
+		" a session that merges main into the branch does (extend, continue or handover), or the card closes as superseded."
+	refusal := func(name string) string {
+		return "- " + name + ": not offered: the pull request no longer merges into main (Forgejo refused to merge main into c1), so " + name +
+			" only runs the gates into the same refusal at the merge queue: a session that merges main into the branch clears it" +
+			" (extend, continue or handover), or close the card as superseded when main already carries its work\n"
+	}
+	for _, w := range []string{"PROBLEM\n" + said + "\n", refusal(ActRouteApproval), refusal(ActReverify), "- extend\n"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("statement lacks %q:\n%s", w, got)
+		}
+	}
+}
+
 func TestRung1StatementCutsAndScrubs(t *testing.T) {
 	found := "clone failed https://user:pass@host/x and Authorization: Bearer abc123 " + strings.Repeat("x", 400)
 	got := (&Runner{}).rungStatement(Case{}, CaseFacts{}, "D", []CaseStep{{Rung: 1, Actor: "checkin", Found: found}}, 1)

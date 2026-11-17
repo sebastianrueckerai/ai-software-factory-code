@@ -74,6 +74,10 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 	var b strings.Builder
 	line := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
 	line("%s", r.Scrub.String(c.Problem))
+	if f.MergeConflict != "" {
+		line("The pull request does not merge into main: %s. Neither reverify nor route_approval clears it; "+
+			"a session that merges main into the branch does (extend, continue or handover), or the card closes as superseded.", cut(f.MergeConflict))
+	}
 	if why, _ := c.Facts["closed_why"].(string); why != "" {
 		line("The dependency was closed: %s", cut(why))
 	}

@@ -106,6 +106,7 @@ func TestRungZeroRowsFireOnTheirFacts(t *testing.T) {
 		want *Resolution
 	}{
 		{"green and approved", CaseSessionCap, head("green", true), &Resolution{Action: ActRouteApproval}},
+		{"green and approved, no longer merging into main", CaseSessionCap, func() CaseFacts { f := head("green", true); f.MergeConflict = "conflict"; return f }(), nil},
 		{"green, not approved", CaseGateStop, head("green", false), nil},
 		{"red", CaseBudgetFloor, head("red", false), &Resolution{Action: ActRerunChecks}},
 		{"red, run again", CaseCheckinShare, func() CaseFacts { f := head("red", false); f.RerunOnHead = true; return f }(), nil},
@@ -298,5 +299,49 @@ func TestFindingsLead(t *testing.T) {
 	}
 	if got := FindingsLead(CaseAgentTimeCap, f); !strings.HasSuffix(got, `"five"; and 2 more.`) || !strings.HasPrefix(got, "The review or the audit left 7 findings unresolved on the head h2:") {
 		t.Fatalf("lead = %q, want the findings cut past the fifth", got)
+	}
+}
+
+// A stop at the head, or a repeat of the findings, leads with a merge
+// conflict standing on the head; a human card's ask and an agent's
+// question do not, nor does a head with no conflict.
+func TestConflictLead(t *testing.T) {
+	f := CaseFacts{Head: "h2", MergeConflict: "the branch conflicts with its base"}
+	want := "The pull request no longer merges into main: Forgejo refused to merge main into head h2. " +
+		"Only a session that merges main into the branch clears it, and no gate rerun does."
+	for _, kind := range []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseGateStop, CaseFindingsRepeated} {
+		if got := conflictLead(kind, f); got != want {
+			t.Errorf("%s leads %q, want %q", kind, got, want)
+		}
+	}
+	for _, kind := range []CaseKind{CaseHumanCard, CaseAgentEscalate} {
+		if got := conflictLead(kind, f); got != "" {
+			t.Errorf("%s leads %q, want nothing", kind, got)
+		}
+	}
+	if got := conflictLead(CaseSessionCap, CaseFacts{Head: "h2"}); got != "" {
+		t.Errorf("no conflict leads %q, want nothing", got)
+	}
+}
+
+// A session cap on a head that no longer merges into main and holds an
+// audit finding leads with the conflict, then the finding, then the cap's
+// own ask; the case stores that lead for the human's ask.
+func TestTripCaseLeadsWithTheConflictThenTheFindings(t *testing.T) {
+	g := newFactsRig(t)
+	f := CaseFacts{Head: "h2", PR: 9, PROpen: true, MergeConflict: "the branch conflicts with its base",
+		Findings: []string{"a1"}, AuditFindings: []string{"a1"}, FindingTexts: map[string]string{"a1": "the migration runs outside its transaction"}}
+	c, _, err := g.r.tripCase(context.Background(), g.store.tasks["t1"], f, TripInput{TaskID: "t1", Reason: CapReached + "\nlast: the pull request no longer merges into main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lead := "The pull request no longer merges into main: Forgejo refused to merge main into head h2. " +
+		"Only a session that merges main into the branch clears it, and no gate rerun does. " +
+		`The review or the audit left one finding unresolved on the head h2: "the migration runs outside its transaction".`
+	if c.Kind != CaseSessionCap || !strings.HasPrefix(c.Problem, lead+" ") || len(c.Problem) == len(lead)+1 {
+		t.Fatalf("case %s problem = %q, want the session cap's ask led by %q", c.Kind, c.Problem, lead)
+	}
+	if got := c.Facts["ask_lead"]; got != lead {
+		t.Fatalf("ask_lead = %v, want %q", got, lead)
 	}
 }

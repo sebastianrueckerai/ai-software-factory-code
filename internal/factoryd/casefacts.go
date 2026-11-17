@@ -33,6 +33,7 @@ type CaseFacts struct {
 	PR             int64  `json:"pr,omitempty"`
 	Factory        bool   `json:"factory,omitempty"`         // the pull request is one factoryd opened
 	PROpen         bool   `json:"pr_open,omitempty"`         // PR is set and the card neither merged nor ended
+	MergeConflict  string `json:"merge_conflict,omitempty"`  // Forgejo's refusal to merge main into Head, while PROpen (standingConflict)
 	Checks         string `json:"checks,omitempty"`          // green, red, pending or ""
 	ReviewApproved bool   `json:"review_approved,omitempty"` // the newest model_review on Head was reviewed and approved
 	RerunOnHead    bool   `json:"rerun_on_head,omitempty"`   // Head's checks ran again, or a rerun made Head
@@ -322,6 +323,9 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				f.FindingTexts, f.FindingOrder = headFindingTexts(lines, f.Head, f.Findings)
 				f.ReviewFindings, f.AuditFindings = newestKindFindings(lines, f.Head, "review"), newestKindFindings(lines, f.Head, "audit")
 				pushed = pushedCommit(tl)
+				if f.PROpen {
+					f.MergeConflict = standingConflict(tl, f.Head)
+				}
 			}
 			return err
 		}},
@@ -684,6 +688,26 @@ func rerunHeads(tl []byte) []string {
 		}
 	}
 	return heads
+}
+
+// stepMergeConflict is the timeline's line of Forgejo's refusal to merge
+// main into a head (commit) of the pull request (pr).
+const stepMergeConflict = "merge_conflict"
+
+// standingConflict is the refusal of timeline tl's newest merge conflict
+// on head, "" for none. A push or a sync of main moves the head, so none
+// stands on the new one.
+func standingConflict(tl []byte, head string) string {
+	if head == "" {
+		return ""
+	}
+	for _, raw := range slices.Backward(bytes.Split(tl, []byte("\n"))) {
+		var l struct{ Step, Commit, Refusal string }
+		if json.Unmarshal(raw, &l) == nil && l.Step == stepMergeConflict && l.Commit == head {
+			return l.Refusal
+		}
+	}
+	return ""
 }
 
 // checksWord is a head's checks state as the facts name it.

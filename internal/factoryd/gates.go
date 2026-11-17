@@ -2916,7 +2916,7 @@ func (r *Runner) mergeConflict(ctx context.Context, t Task, repo Repo, pr int64,
 	r.comment(ctx, t, repo, pr, fmt.Sprintf(
 		"factoryd: the merge of %s after %s's approval was refused: the pull request no longer merges into main (%s). The task goes back to the agent to merge main into the branch.",
 		commit, approver, res.Refusal))
-	r.record(ctx, t.ID, "merge_conflict", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
+	r.record(ctx, t.ID, stepMergeConflict, gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
 	return res
 }
 

@@ -1133,6 +1133,32 @@ func TestRouteApprovalAtAPolicyClassNeedsNoApprovingReview(t *testing.T) {
 	}
 }
 
+// A pull request that no longer merges into main refuses the answers that
+// only run the gates again into the same refusal, each naming the conflict
+// and the answers that clear it. With no conflict each applies as before,
+// and an extend at the cap applies with the conflict too.
+func TestAMergeConflictRefusesTheAnswersThatRerunTheGates(t *testing.T) {
+	ready := CaseFacts{Kind: CaseSessionCap, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true,
+		Attempts: 3, SessionCap: 3, AuditFindings: []string{idA}, FindingTexts: map[string]string{idA: "the migration runs outside its transaction"}}
+	conflict := ready
+	conflict.MergeConflict = "the branch conflicts with its base: status 409: merge failed because of conflict"
+	note := Resolution{Note: "a fixture the human judged safe"}
+	for _, name := range []string{ActRouteApproval, ActReverify, ActConfirmAudit} {
+		if got := applies(t, name, ready, note); got != "" {
+			t.Errorf("no conflict: %s applies = %q, want it to apply", name, got)
+		}
+		want := "the pull request no longer merges into main (Forgejo refused to merge main into abcdef1), so " + name +
+			" only runs the gates into the same refusal at the merge queue: a session that merges main into the branch clears it" +
+			" (extend, continue or handover), or close the card as superseded when main already carries its work"
+		if got := applies(t, name, conflict, note); got != want {
+			t.Errorf("conflict: %s applies = %q, want %q", name, got, want)
+		}
+	}
+	if got := applies(t, ActExtend, conflict, Resolution{Args: map[string]any{"sessions": 1}}); got != "" {
+		t.Errorf("conflict: an extend of one session at the cap applies = %q, want it to apply", got)
+	}
+}
+
 // A decision's riding draw counts before the cap check. At a cap of 3
 // reached with 3 attempts, a handover that draws one session applies (the
 // cap becomes 4), one that draws nothing does not, and a draw of agent time

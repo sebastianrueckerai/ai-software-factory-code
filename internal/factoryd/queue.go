@@ -14,6 +14,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The merge queue (stage11-design.md 1.4, merge: {queue: project}): one
@@ -281,7 +282,8 @@ func (r *Runner) SyncWithMain(ctx context.Context, taskID string, pr int64, from
 	if st.MergeBase != main {
 		err := r.forgejo.UpdatePullRequest(ctx, repo.Owner, repo.Name, pr)
 		if errors.Is(err, ErrUpdateConflict) {
-			res.Conflict = err.Error()
+			res.Conflict = textutil.Truncate(r.Scrub.String(err.Error()), 500)
+			r.record(ctx, t.ID, stepMergeConflict, map[string]any{"pr": pr, "commit": from, "refusal": res.Conflict})
 			return res, nil
 		}
 		if err != nil {

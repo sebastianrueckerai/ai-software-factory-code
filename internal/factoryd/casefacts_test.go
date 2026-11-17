@@ -238,6 +238,50 @@ func TestTripFactsReadsTheGatesUnmetCriteria(t *testing.T) {
 	}
 }
 
+// A merge conflict stands on the head the newest merge_conflict line
+// names, with that line's refusal: none on a head no line names, none on
+// no head, none on an empty timeline.
+func TestStandingConflictIsTheNewestRefusalOnTheHead(t *testing.T) {
+	one := []byte(`{"step":"merge_conflict","commit":"aaa","refusal":"X"}` + "\n" + `{"step":"pushed","commit":"bbb"}` + "\n")
+	two := []byte(`{"step":"merge_conflict","commit":"aaa","refusal":"X1"}` + "\n" + `{"step":"merge_conflict","commit":"aaa","refusal":"X2"}` + "\n")
+	for _, c := range []struct {
+		name string
+		tl   []byte
+		head string
+		want string
+	}{
+		{"the conflict's head", one, "aaa", "X"},
+		{"the pushed head", one, "bbb", ""},
+		{"no head", one, "", ""},
+		{"two lines on the head", two, "aaa", "X2"},
+		{"no lines", nil, "aaa", ""},
+	} {
+		if got := standingConflict(c.tl, c.head); got != c.want {
+			t.Errorf("%s: standingConflict = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// The facts of a card whose head Forgejo refused to merge main into hold
+// the refusal; once the pull request is no longer open none stands.
+func TestTripFactsReadTheMergeConflictOnTheHead(t *testing.T) {
+	g := newFactsRig(t)
+	ctx := context.Background()
+	refusal := "the branch conflicts with its base: status 409: merge failed because of conflict"
+	if err := g.tl.Append(ctx, "t1", "merge_conflict", map[string]any{"pr": 9, "commit": "h2", "refusal": refusal}); err != nil {
+		t.Fatal(err)
+	}
+	card := g.store.tasks["t1"]
+	f, err := g.r.tripFacts(ctx, card, "h2", "")
+	if err != nil || f.MergeConflict != refusal {
+		t.Fatalf("facts = %+v, %v; want the conflict %q on h2", f, err, refusal)
+	}
+	card.Status = "merged"
+	if f, err := g.r.tripFacts(ctx, card, "h2", ""); err != nil || f.MergeConflict != "" {
+		t.Fatalf("merged card's conflict = %q, %v; want none", f.MergeConflict, err)
+	}
+}
+
 // A card with no timeline object has no findings, and no reader failed.
 func TestTripFactsTakesAMissingTimelineAsNoFindings(t *testing.T) {
 	g := newFactsRig(t)
