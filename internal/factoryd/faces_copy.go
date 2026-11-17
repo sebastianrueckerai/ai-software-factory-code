@@ -318,7 +318,9 @@ var effectFills = map[string]func(Facts) string{
 // waitEffect is "Not now"'s effect: at a cap, when the cap resets; on a
 // notice, that it stays.
 func waitEffect(f Facts) string {
-	if when := capReset(f); when != "" {
+	if when := capReset(f); when != "" && slices.Contains(questionKinds, f.Case.Kind) {
+		return "The card waits, and the agent's question comes back to you when the limit resets on " + when + "."
+	} else if when != "" {
 		return "The card waits and goes on by itself when the limit resets on " + when + "."
 	}
 	if f.Kind == CaseMonitorFlag {
@@ -341,7 +343,12 @@ func capReset(f Facts) string {
 	default:
 		return ""
 	}
-	return CapTurn(decision, cmp.Or(f.Case.OpenedAt, time.Now())).UTC().Format("2 January at 15:04 UTC")
+	at := cmp.Or(f.Case.OpenedAt, time.Now())
+	if slices.Contains(questionKinds, f.Case.Kind) {
+		// the question opened before its cap bound: the cap is today's
+		at = time.Now()
+	}
+	return CapTurn(decision, at).UTC().Format("2 January at 15:04 UTC")
 }
 
 // CaseFaces are the faces of every case kind.
@@ -628,7 +635,7 @@ func capWhy(f Facts) string {
 	case CaseProjectCap:
 		limit, file = "The project's monthly limit", cmp.Or(projectFile.FindString(f.CapWait+" "+factString(f.Case, "reason")), "the project's file")
 	}
-	return fmt.Sprintf("%s is set in %s, and the card goes on by itself when it resets.", limit, file)
+	return fmt.Sprintf("%s is set in %s, and %s when it resets.", limit, file, onward(f, "the card goes on by itself"))
 }
 
 func capStory(f Facts) Story {

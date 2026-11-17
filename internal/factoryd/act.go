@@ -398,7 +398,10 @@ func CaseLeftToAct(ctx context.Context) bool { left, _ := ctx.Value(caseLeftKey{
 
 // StoreMissedOffers stores, once, the face of each case at the human whose
 // ask holds none: one that reached the human before the register wrote
-// its faces. A background pass reads the live facts of each.
+// its faces. It also stores again an agent's question whose face is a
+// cap's once a session can run: a cap that lifts on its own, at its reset
+// or by a raise, brings the question back within a pass. A background
+// pass reads the live facts of each.
 func (r *Runner) StoreMissedOffers(ctx context.Context) {
 	tasks, err := r.store.ListTasksByStatus(ctx, "waiting-human")
 	if err != nil {
@@ -416,12 +419,16 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 				continue
 			}
 			ask, found := r.CaseAsk(ctx, c)
-			if !found || ask.Detail["story"] != nil {
+			capped := found && slices.Contains(questionKinds, c.Kind) && ask.Detail["ask"] != ownAsk(c, t)
+			if !found || ask.Detail["story"] != nil && !capped {
 				continue
 			}
 			f, err := r.FactsAtCase(ctx, t, c)
 			if err != nil {
 				log.Printf("offers pass: case %d: %v", c.ID, err)
+				continue
+			}
+			if capped && f.atCap().Kind != f.Kind {
 				continue
 			}
 			r.refreshOffers(ctx, t, c, f)

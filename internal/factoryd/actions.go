@@ -83,12 +83,12 @@ var questionKinds = []CaseKind{CaseAgentEscalate, CaseAgentRequestInfo}
 var capDraws = []string{ActExtend, ActFund, ActRaiseCeiling}
 
 // atCap is f as the human meets it: a question of the agent's that no
-// session can answer is the case of the cap that keeps the session off
-// (the budget floor, the session cap or the agent time cap, in the run's
-// order), one decision at a time. Any other f is itself.
+// session can answer is the case of the cap that keeps the session off,
+// in the run's order (noSession), one decision at a time. Any other f is
+// itself.
 func (f CaseFacts) atCap() CaseFacts {
 	if slices.Contains(questionKinds, f.Kind) {
-		if k, _ := f.noSession(false, false); k == CaseBudgetFloor || k == CaseSessionCap || k == CaseAgentTimeCap {
+		if k, _ := f.noSession(false, false); k != "" {
 			f.Kind = k
 		}
 	}

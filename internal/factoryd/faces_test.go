@@ -561,3 +561,58 @@ func TestASuggestionIsTheStoredPickAlone(t *testing.T) {
 		t.Errorf("the roll card suggests %q by %q, want the roll again by the roller", x.face.Suggested, x.face.SuggestedBy)
 	}
 }
+
+// At every cap that keeps a session off, the agent's question is the cap's
+// face: the cap's ask and answers, the question whole as one story line, no
+// answer of the agent's, and every answer one Act takes. #2091 pushed
+// nothing, so no fresh card goes on from it; its budget leaves room under
+// its ceiling, so a fund needs no raise. A limit that resets by itself
+// says the question comes back when it does.
+func TestAnAgentsQuestionAtEveryCapIsTheCapsFace(t *testing.T) {
+	x := fixture(t, "case", string(factoryd.CaseAgentEscalate))
+	question := agentWords + "The weekly bump needs network access to the upstream registries and file hosts (docker.io, quay.io, ghcr.io, gcr.io, " +
+		"registry.k8s.io, deb.debian.org, snapshot.debian.org, go.dev, github.com, objects.githubusercontent.com), none of which resolve in this sandbox. " +
+		"How should the new digests, sha256 sums and versions be obtained?"
+	capWait := func(decision string) func(*factoryd.CaseFacts) {
+		return func(f *factoryd.CaseFacts) {
+			f.CapWait, _, _ = strings.Cut(factoryd.CapWaitReason(decision, "the gateway refused the spend", "state", time.Now().Add(time.Hour)), "\n")
+		}
+	}
+	wait := []string{"Not now", "End the card"}
+	for _, tc := range []struct {
+		cap     string
+		over    func(*factoryd.CaseFacts)
+		ask     string
+		answers []string
+	}{
+		{"day cap", capWait(policy.RefusedDayCap), "The factory's spending limit for today is reached. Wait for it to reset, or end the card?", wait},
+		{"month cap", capWait(policy.RefusedMonthCap), "The factory's spending limit for this month is reached. Wait for it to reset, or end the card?", wait},
+		{"project cap", capWait(policy.RefusedProjectCap), "This project's spending limit for the month is reached. Wait for it to reset, or end the card?", wait},
+		{"budget floor", func(f *factoryd.CaseFacts) { f.LeftEUR = 0.1 }, "The card is out of money. Add 0.20 EUR, or end the card?",
+			[]string{"Add money", "End the card", "Not now"}},
+		{"session cap", func(f *factoryd.CaseFacts) { f.Attempts = f.SessionCap }, "The card used all 3 sessions. Allow more, or end the card?",
+			[]string{"Allow more sessions", "End the card", "Not now"}},
+		{"agent time cap", func(f *factoryd.CaseFacts) { f.AgentTimeS = f.AgentTimeCapS }, "The card used its agent time of 120 minutes. Allow more, or end the card?",
+			[]string{"Allow more sessions", "End the card", "Not now"}},
+	} {
+		y := x
+		tc.over(&y.facts.CaseFacts)
+		y.facts.Recommend = factoryd.Recommendation{}
+		face := factoryd.FaceOf(y.c, y.facts)
+		if face.Ask != tc.ask || !slices.Equal(labels(face.Answers), tc.answers) || face.Story.Happened != question {
+			t.Errorf("%s: %q with %v and the story line %q; want %q with %v and the question whole", tc.cap, face.Ask, labels(face.Answers), face.Story.Happened, tc.ask, tc.answers)
+		}
+		for _, a := range slices.Concat(face.Answers, face.More) {
+			if a.Variant == "say" {
+				t.Errorf("%s: the agent's answer %q shows at the cap", tc.cap, a.Label)
+			}
+			if why := actRefusal(y, a); why != "" {
+				t.Errorf("%s: the face offers %q, which Act refuses: %s", tc.cap, a.Label, why)
+			}
+		}
+		if len(tc.answers) == 2 && (!strings.HasPrefix(face.Answers[0].Effect, "The card waits, and the agent's question comes back to you when the limit resets on ") ||
+			!strings.HasSuffix(face.Why, ", and the agent's question comes back to you when it resets.")) {
+			t.Errorf("%s: Not now says %q and the why %q; want the question back at the reset", tc.cap, face.Answers[0].Effect, face.Why)
+		}
+	}
+}

@@ -377,6 +377,39 @@ func TestAnExtendOnAQuestionAtTheCapLeavesTheQuestionOpen(t *testing.T) {
 	}
 }
 
+// The minute pass stores an agent's question's face again once its cap
+// lifts on its own, a reset or a raise outside the card: while the card
+// can run no session it leaves the cap's face be; with room it stores the
+// question with the agent's answers. No timer of its own wakes it.
+func TestTheOffersPassBringsAQuestionBackWhenItsCapLifts(t *testing.T) {
+	g := newFactsRig(t)
+	ctx := context.Background()
+	q := Case{ID: 7, TaskID: "t1", Kind: CaseAgentEscalate, Status: CaseAtHuman,
+		Facts: map[string]any{"trip": "trip-7", "reason": AgentAsks + "Which store keeps the snapshots?\nWhy: two fit\nRecommendation: SQLite", "choices": []any{"Postgres", "SQLite"}}}
+	g.store.cases = append(g.store.cases, q)
+	card := g.store.tasks["t1"]
+	card.SpentEUR, card.HeldEUR = 1, 0
+	f, err := g.r.FactsAtCase(ctx, card, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card.Usage.Attempts = f.SessionCap
+	g.store.tasks["t1"] = card
+	f, _ = g.r.FactsAtCase(ctx, card, q)
+	g.event("t1", factsNow, EventQuestionAsked, FaceRow(q, card, f, "", nil, func(s string) string { return s }, func(s string) string { return s }))
+	g.store.events[len(g.store.events)-1].Detail["case_id"] = q.ID
+	g.r.StoreMissedOffers(ctx)
+	if stored := g.store.faces[7]; stored != nil {
+		t.Fatalf("the pass stored %v while the cap holds; want the cap's face left be", stored["ask"])
+	}
+	card.Usage.Attempts = f.SessionCap - 1
+	g.store.tasks["t1"] = card
+	g.r.StoreMissedOffers(ctx)
+	if stored := g.store.faces[7]; stored == nil || stored["ask"] != "Which store keeps the snapshots?" {
+		t.Fatalf("the pass stored %v once the cap lifted; want the question", stored)
+	}
+}
+
 // A fund on a card that ended is refused naming its end, with no case
 // needed, and nothing is drawn.
 func TestActRefusesAFundOnAnEndedCard(t *testing.T) {
