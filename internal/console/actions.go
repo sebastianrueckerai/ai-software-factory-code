@@ -1244,19 +1244,16 @@ func (c *Console) doPressCase(ctx context.Context, a actor, id string, caseID in
 	})
 }
 
-// cardRules are the access rules of the card's own actions that ask more
-// than a writer: an approver's retry, replan, sessions and money.
-var cardRules = map[string]accessRule{
-	factoryd.ActRetry:  {need: approver, scope: scCard, what: "retry a card"},
-	factoryd.ActReplan: {need: approver, scope: scCard, what: "replan a card"},
-	factoryd.ActExtend: {need: approver, scope: scCard, what: "extend a card"},
-	factoryd.ActFund:   {need: approver, scope: scCard, what: "fund a card"},
-}
-
-// caseRules are the access rules of the case answers that ask more than a
-// writer: an approver's merge and decisions on a plan's criteria, as the
-// requests' own doors ask.
-var caseRules = map[string]accessRule{
+// approverRules are the access rules of the actions that ask more than a
+// writer, on a card's own door and on a case alike: an approver's retry,
+// replan, sessions and money, merge and decisions on a plan's criteria, as
+// the chat's tools and the requests' own doors ask.
+var approverRules = map[string]accessRule{
+	factoryd.ActRetry:           accessTable["retry"],
+	factoryd.ActReplan:          accessTable["replan"],
+	factoryd.ActExtend:          {need: approver, scope: scCard, what: "extend a card"},
+	factoryd.ActFund:            accessTable["fund"],
+	factoryd.ActRaiseCeiling:    {need: approver, scope: scCard, what: "raise a card's spend limit"},
 	factoryd.ActApproveMerge:    accessTable["approve_merge"],
 	factoryd.ActGrantCriteria:   accessTable["answer_criteria"],
 	factoryd.ActConfirmCriteria: accessTable["answer_criteria"],
@@ -1277,7 +1274,7 @@ func (c *Console) doCardAnswer(ctx context.Context, a actor, id, key string, fie
 		return "", refuse(http.StatusBadRequest, "This answer names no question of the card. Reload the board and press the answer again.")
 	}
 	answer := more[i]
-	if rule, ok := cardRules[answer.Action]; ok {
+	if rule, ok := approverRules[answer.Action]; ok {
 		if err := c.admit(ctx, rule, a, t.Repository, issueRef(t.ID, t.IssueNumber)); err != nil {
 			return "", err
 		}
@@ -1348,7 +1345,7 @@ func (c *Console) answerCase(ctx context.Context, a actor, id string, caseID int
 	if err != nil {
 		return "", err
 	}
-	if rule, ok := caseRules[res.Action]; ok {
+	if rule, ok := approverRules[res.Action]; ok {
 		if err := c.admit(ctx, rule, a, t.Repository, issueRef(t.ID, t.IssueNumber)); err != nil {
 			return "", err
 		}

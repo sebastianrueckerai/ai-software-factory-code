@@ -62,9 +62,29 @@ type askBlock struct {
 	Answers       []answerView
 	Position, Of  int
 	Prev, Next    string
-	// Who says who may press the approving answers; Note what a disabled
-	// answer waits on, or what ends the request without a press.
+	// Who says who may give the answers the viewer may not; Note what a
+	// disabled answer waits on, or what ends the request without a press.
 	Who, Note string
+	// denied are the labels of the answers only an approver may give,
+	// which the viewer may not
+	denied []string
+}
+
+// whoMay names who may give the answers of ask its viewer may not: the
+// line stands beside the answers the viewer may give, or alone in their
+// place when the viewer may give none.
+func (ask *askBlock) whoMay() {
+	switch n := len(ask.denied); {
+	case n == 0:
+	case n == len(ask.Answers):
+		ask.Answers, ask.Who = nil, "Only the project's approvers may answer this."
+	default:
+		last := ask.denied[n-1]
+		if n > 1 {
+			last = strings.Join(ask.denied[:n-1], ", ") + " or " + last
+		}
+		ask.Who = "Only the project's approvers may choose " + last + "."
+	}
 }
 
 // storyLine is a line of the ask's story; Quote is a writer's own words.
@@ -219,14 +239,14 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		if row.NextID != 0 {
 			o.Ask.Next = base + strconv.FormatInt(row.NextID, 10)
 		}
-		approves := v.approves(k.Repository)
 		o.Ask.Answers = c.answersOf(ctx, v, k, k.ID+"-"+strconv.FormatInt(row.Case.ID, 10), row.Face, f, func(a factoryd.Answer, key string) (*pressForm, func(string) string) {
-			if rule, ok := caseRules[a.Action]; ok && rule.need&approver != 0 && !approves {
-				o.Ask.Who = onlyApprovers
+			if !mayAnswer(v, k, a.Action) {
+				o.Ask.denied = append(o.Ask.denied, a.Label)
 				return nil, nil
 			}
 			return casePress(v, k, *row, a, key)
 		}, r.URL.Query().Get("press"), seen)
+		o.Ask.whoMay()
 		if row.Plan != nil {
 			takesOff(o.Ask.Answers, row.Plan.TakeOffRefs)
 		}
@@ -238,7 +258,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		onCase = row.Case.Kind != factoryd.CaseMonitorFlag
 		live := factoryd.FaceOf(row.Case, f)
 		for _, a := range append(live.Answers, live.More...) {
-			if slices.ContainsFunc(row.Face.Offers, func(m factoryd.AskOffer) bool { return m.Value == a.Key() || m.Label == a.Label }) ||
+			if !mayAnswer(v, k, a.Action) || slices.ContainsFunc(row.Face.Offers, func(m factoryd.AskOffer) bool { return m.Value == a.Key() || m.Label == a.Label }) ||
 				slices.ContainsFunc(o.More, func(m answerView) bool { return m.Label == a.Label }) {
 				continue
 			}
@@ -257,6 +277,9 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		ap := o.Brief.Approvals[max(lead, 0)]
 		kase, face := requestFace(ap, bt.Task)
 		press := func(an factoryd.Answer, key string) (*pressForm, func(string) string) {
+			if approverOnly(v, k, ap, an) {
+				o.Ask.denied = append(o.Ask.denied, an.Label)
+			}
 			return requestPress(v, k, ap, an, key)
 		}
 		takeOff := ap.TakeOffRefs
@@ -274,11 +297,9 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		face = v.scrubbed(face)
 		o.Ask = c.askOf(ctx, v, k, face, seen)
 		o.Ask.Position, o.Ask.Of = 1, 1
-		if !ap.Approver {
-			o.Ask.Who = onlyApprovers
-		}
 		f := factoryd.Facts{CaseFacts: factoryd.FactsOf(kase), Card: bt.Task, Case: kase}
 		o.Ask.Answers = c.answersOf(ctx, v, k, ask, face, f, press, r.URL.Query().Get("press"), seen)
+		o.Ask.whoMay()
 		takesOff(o.Ask.Answers, takeOff)
 		requestAsk(o.Ask, ap)
 		o.Brief.Evidence = evidenceOf(face)
@@ -667,21 +688,23 @@ func openPromises(k factoryd.Case, ap approvalCard) factoryd.Case {
 	return k
 }
 
-// onlyApprovers is the ask's line to a viewer who may not press its
-// approving answers.
-const onlyApprovers = "Only the project's approvers may approve."
-
 // requestPress is the press of answer a by key on approval request ap of
 // card k, which no case of the card holds: its decision on the request,
 // a plan's confirmation to the plan, changes to a plan that asks for no
 // confirmation yet to its issue; nil for an answer the request does not
 // take, or one only an approver may press that the viewer may not.
 func requestPress(v *boardView, k card, ap approvalCard, a factoryd.Answer, key string) (*pressForm, func(string) string) {
-	p, field := requestForm(v, k, ap, a)
-	if p != nil && !ap.Approver && accessTable["POST /approvals/{id}/"+path.Base(p.Post)].need&approver != 0 {
+	if approverOnly(v, k, ap, a) {
 		return nil, nil
 	}
-	return p, field
+	return requestForm(v, k, ap, a)
+}
+
+// approverOnly says answer a of request ap posts to a door only approvers
+// pass, and the viewer is none.
+func approverOnly(v *boardView, k card, ap approvalCard, a factoryd.Answer) bool {
+	p, _ := requestForm(v, k, ap, a)
+	return p != nil && !ap.Approver && accessTable["POST /approvals/{id}/"+path.Base(p.Post)].need&approver != 0
 }
 
 func requestForm(v *boardView, k card, ap approvalCard, a factoryd.Answer) (*pressForm, func(string) string) {
@@ -736,6 +759,13 @@ func cardPress(v *boardView, k card, a factoryd.Answer, key string) (*pressForm,
 		p.DataTo = dataTo(k, a)
 	}
 	return p, func(field string) string { return key + "." + field }
+}
+
+// mayAnswer says the viewer of v may give action on card k: an action
+// approverRules names is an approver's.
+func mayAnswer(v *boardView, k card, action string) bool {
+	rule, ok := approverRules[action]
+	return !ok || rule.need&approver == 0 || v.approves(k.Repository)
 }
 
 // mayPress says the viewer of v may press card k's own action a: a

@@ -3035,7 +3035,7 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 			t.Errorf("the red factory request lacks %q:\n%s", want, got)
 		}
 	}
-	for _, not := range []string{`name="action" value="approve"`, "Send it back", "Only the project&#39;s approvers may answer this."} {
+	for _, not := range []string{`name="action" value="approve"`, "Send it back", `class="o-who"`} {
 		if strings.Contains(got, not) {
 			t.Errorf("the red factory request shows %q:\n%s", not, got)
 		}
@@ -3435,7 +3435,7 @@ func TestSpendActionsNeedAPolicyApprover(t *testing.T) {
 	// alice writes the code project, no other: she asks for it
 	opened := drawer(t, r, ck, "t-res", "overview")
 	if strings.Contains(opened, "/approve\"") || !strings.Contains(opened, `action="/approvals/3/deny"`) ||
-		!strings.Contains(opened, `<p class="o-who">Only the project&#39;s approvers may approve.</p>`) {
+		!strings.Contains(opened, `<p class="o-who">Only the project&#39;s approvers may choose Approve it.</p>`) {
 		t.Fatalf("the opened card for a non-approver: approve buttons %v, deny %v", strings.Contains(opened, "/approve\""),
 			strings.Contains(opened, "/deny\""))
 	}

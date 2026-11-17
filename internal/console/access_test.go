@@ -314,8 +314,10 @@ func TestChatTimelineIsACard(t *testing.T) {
 
 // The opened card's answers keep their doors' rules: a writer who is no
 // approver sees the merge disabled beside the line that says so, and gets
-// 403 for an approver's answer, on a merge case (approve_merge) and on a
-// card's own door (retry, replan, extend, fund), and nothing changes.
+// 403 for an approver's answer, on a merge case (approve_merge), on a
+// card's own door (retry, replan, extend, fund) and on any case that offers
+// one (replan, extend, fund on a gate stop), and nothing changes. A case's
+// other actions leave out what the writer may not press.
 func TestAWriterPressesNoApproversAnswer(t *testing.T) {
 	r := newRig(t)
 	withRequestCards(r)
@@ -324,15 +326,17 @@ func TestAWriterPressesNoApproversAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	k.ID = 90
-	r.openCases = map[string][]factoryd.Case{"t-m": {k}}
+	r.openCases = map[string][]factoryd.Case{"t-m": {k}, "t-g": {{ID: 91, TaskID: "t-g", Kind: factoryd.CaseGateStop, Status: factoryd.CaseAtHuman,
+		Facts: roomyFacts(func(f *factoryd.CaseFacts) { f.Kind, f.Gate, f.Attempts = factoryd.CaseGateStop, "review", 1 })}}}
 	r.tasks.tasks = append(r.tasks.tasks,
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 22, BudgetEUR: 2}},
-		factoryd.BoardTask{Task: factoryd.Task{ID: "t-f", Kind: "agent", Status: "failed", Repository: "sf/code", IssueNumber: 23}})
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-f", Kind: "agent", Status: "failed", Repository: "sf/code", IssueNumber: 23}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 24, BudgetEUR: 2}})
 	r.fg.user, r.repoWriters["sf/code"] = "alice", []string{"sebastian", "alice"}
 	r.forgetWriters()
 	ck, s := r.loggedIn(t)
 	ask := askBlockOf(t, drawer(t, r, ck, "t-m", "overview"))
-	if !strings.Contains(ask, `<p class="o-who">Only the project&#39;s approvers may approve.</p>`) ||
+	if !strings.Contains(ask, `<p class="o-who">Only the project&#39;s approvers may choose Merge it.</p>`) ||
 		!strings.Contains(ask, `<button type="button" class="pick" disabled>Merge it</button>`) || !strings.Contains(ask, `data-answer="deny_merge"`) {
 		t.Errorf("a writer's merge ask lacks the line, the disabled merge or the return:\n%s", ask)
 	}
@@ -346,16 +350,39 @@ func TestAWriterPressesNoApproversAnswer(t *testing.T) {
 		{"t-run", url.Values{"action": {factoryd.ActReplan}, "replan.note": {"cut it smaller"}}},
 		{"t-run", url.Values{"action": {factoryd.ActExtend}, "extend.sessions": {"1"}}},
 		{"t-run", url.Values{"action": {factoryd.ActFund}, "fund.eur": {"1.00"}}},
+		{"t-g", url.Values{"case_id": {"91"}, "action": {factoryd.ActReplan}, "replan.note": {"cut it smaller"}}},
+		{"t-g", url.Values{"case_id": {"91"}, "action": {factoryd.ActExtend}, "extend.sessions": {"1"}}},
+		{"t-g", url.Values{"case_id": {"91"}, "action": {factoryd.ActFund}, "fund.eur": {"1.00"}}},
 	} {
 		tc.form.Set("csrf", s.csrf)
 		if rec := r.do(post("/tasks/"+tc.id+"/resolve", tc.form), ck); rec.Code != http.StatusForbidden {
 			t.Errorf("%s by a writer on %s = %d, want 403: %s", tc.form.Get("action"), tc.id, rec.Code, rec.Body)
 		}
 	}
-	if r.approvals.get(4).Status != "pending" || r.events.count() != before {
-		t.Errorf("a refused press acted: request %s, %d rows", r.approvals.get(4).Status, r.events.count()-before)
+	if r.approvals.get(4).Status != "pending" || r.events.count() != before || len(r.acted) != 0 {
+		t.Errorf("a refused press acted: request %s, %d rows, Act %+v", r.approvals.get(4).Status, r.events.count()-before, r.acted)
+	}
+	if more := otherActionsOf(t, drawer(t, r, ck, "t-g", "overview")); strings.Contains(more, `data-answer="replan"`) ||
+		strings.Contains(more, `data-answer="extend"`) || strings.Contains(more, `data-answer="fund"`) {
+		t.Errorf("the case's other actions offer a writer an approver's action:\n%s", more)
 	}
 	if k, _, _ := r.tasks.Task(t.Context(), "t-run"); k.BudgetEUR != 2 || k.Status != "running" {
 		t.Errorf("t-run = %s with %.2f EUR, want running with 2.00", k.Status, k.BudgetEUR)
+	}
+}
+
+// A viewer who may give none of an ask's answers sees its question and one
+// line that names who can answer, and no button: a writer on a plan's
+// criteria request, whose every answer is an approver's.
+func TestAViewerWhoMayAnswerNothingSeesWhoCan(t *testing.T) {
+	r := newRig(t)
+	verdictRig(r)
+	r.fg.user, r.repoWriters["sf/code"] = "alice", []string{"sebastian", "alice"}
+	r.forgetWriters()
+	ck, _ := r.loggedIn(t)
+	ask := askBlockOf(t, drawer(t, r, ck, "t-plan", "overview"))
+	if !strings.Contains(ask, `<p class="o-question">`) || !strings.Contains(ask, `<p class="o-who">Only the project&#39;s approvers may answer this.</p>`) ||
+		strings.Contains(ask, "<button") || strings.Contains(ask, `class="answer`) {
+		t.Errorf("the ask of a viewer who may answer nothing:\n%s", ask)
 	}
 }
