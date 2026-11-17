@@ -1496,6 +1496,16 @@ func (s *acceptanceStore) LeaveQueue(_ context.Context, taskID string) (string, 
 	return "demo-app/demo-app", true, nil
 }
 
+func (s *acceptanceStore) MergeQueuePlaces(context.Context) (map[string]factoryd.QueuePlace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]factoryd.QueuePlace{}
+	for i, id := range s.queue {
+		out[id] = factoryd.QueuePlace{Ahead: i, HeadTask: s.queue[0], HeadIssue: s.tasks[s.queue[0]].IssueNumber}
+	}
+	return out, nil
+}
+
 func (s *acceptanceStore) WaitingQueueHeads(context.Context) ([]string, error) { return nil, nil }
 
 func (s *acceptanceStore) MonthSpend(context.Context, time.Time) (factoryd.MonthSpend, error) {

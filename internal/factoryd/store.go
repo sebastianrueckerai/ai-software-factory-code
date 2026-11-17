@@ -887,6 +887,7 @@ type Store interface {
 	EnterQueue(ctx context.Context, project, taskID string) (QueueSpot, error)
 	QueueHead(ctx context.Context, project string) (string, bool, error)
 	LeaveQueue(ctx context.Context, taskID string) (project string, left bool, err error)
+	MergeQueuePlaces(ctx context.Context) (map[string]QueuePlace, error)
 	WaitingQueueHeads(ctx context.Context) ([]string, error)
 	// RoutineRunOfTask and EndRoutineRun end the run of a routine's card
 	// when the card ends (taskEnded, RoutineStore).
