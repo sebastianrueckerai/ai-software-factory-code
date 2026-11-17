@@ -66,7 +66,7 @@ func (f AuditFinding) Text() string {
 const (
 	auditNoVerdict     = "the audit gave no verdict"
 	auditNotSwitchedOn = "the project does not switch the audit on"
-	maxAuditFindings   = 20
+	auditListFull      = "the audit model listed its maximum; more may stand"
 	maxPreCheck        = 50
 	maxAuditField      = 500
 )
@@ -96,7 +96,7 @@ var auditChecklist = func() string {
 	for i, item := range auditItems {
 		fmt.Fprintf(&b, "%d. %s: %s\n", i+1, item.Name, item.Rule)
 	}
-	fmt.Fprintf(&b, `Never quote a secret's value; name its file and line. Answer with one JSON object and nothing else: {"verdict": "clear|findings", "findings": [{"item": <the checklist item's number, 1 to %d>, "file": "<path>", "line": <line in the new file, 0 for none>, "why": "<under 300 characters>"}]}. verdict clear with no findings when the diff touches no item; findings with at least one entry otherwise; at most 20 findings.`, len(auditItems))
+	fmt.Fprintf(&b, `Never quote a secret's value; name its file and line. Answer with one JSON object and nothing else: {"verdict": "clear|findings", "findings": [{"item": <the checklist item's number, 1 to %d>, "file": "<path>", "line": <line in the new file, 0 for none>, "why": "<under 300 characters>"}]}. verdict clear with no findings when the diff touches no item; findings with at least one entry otherwise; at most %d findings.`, len(auditItems), maxJoinedFindings)
 	return b.String()
 }()
 
@@ -150,12 +150,7 @@ func parseAudit(content string) ([]AuditFinding, string) {
 		if json.Unmarshal(f.Item, &n) != nil || n < 1 || n > len(auditItems) {
 			return nil, fmt.Sprintf("the answer named checklist item %s, which is not a number from 1 to %d", cmp.Or(string(f.Item), "none"), len(auditItems))
 		}
-		if strings.TrimSpace(f.File) == "" {
-			return nil, fmt.Sprintf("the answer named a finding of checklist item %d at no file", n)
-		}
-		if len(out) < maxAuditFindings {
-			out = append(out, AuditFinding{Item: auditItems[n-1].Name, File: strings.TrimSpace(f.File), Line: max(f.Line, 0), Why: strings.TrimSpace(f.Why)})
-		}
+		out = append(out, AuditFinding{Item: auditItems[n-1].Name, File: strings.TrimSpace(f.File), Line: max(f.Line, 0), Why: strings.TrimSpace(f.Why)})
 	}
 	if answer.Verdict == AuditFindings && len(out) == 0 {
 		return nil, "verdict findings names none"
@@ -272,8 +267,9 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 			prechecked = append(prechecked, f)
 		}
 	}
-	if n := len(prechecked); n > maxPreCheck {
-		prechecked = append(prechecked[:maxPreCheck], AuditFinding{Item: fmt.Sprintf("secret in the diff: %d more pre-check hits", n-maxPreCheck),
+	prechecked, more := capTexts(prechecked, maxPreCheck)
+	if more > 0 {
+		prechecked = append(prechecked, AuditFinding{Item: fmt.Sprintf("secret in the diff: %d more pre-check hits", more),
 			Why: fmt.Sprintf("the card lists the first %d", maxPreCheck)})
 	}
 	res.Findings = append(res.Findings, prechecked...)
@@ -336,12 +332,17 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 			if why != "" {
 				found = append(found, AuditFinding{Item: auditNoVerdict, Why: fmt.Sprintf("%s%s (an answer of %d bytes)", label, why, len(got.Content))})
 			}
+			// an answer of the most one lists may have left findings out
+			if len(parsed) >= maxJoinedFindings {
+				res.Findings = append(res.Findings, AuditFinding{Item: auditListFull,
+					Why: fmt.Sprintf("%sthe answer listed %d findings, and one answer lists at most %d", label, len(parsed), maxJoinedFindings)})
+			}
 			for _, f := range parsed {
-				if p := diffPath(f.File, paths); p != "" {
-					f.File = p
-				} else {
-					f.File, f.Why = "", fmt.Sprintf("%s (at %q, no path of the diff)", f.Why, f.File)
+				p := diffPath(f.File, paths)
+				if p == "" && f.File != "" {
+					f.Why = fmt.Sprintf("%s (at %q, no path of the diff)", f.Why, f.File)
 				}
+				f.File = p
 				found = append(found, f)
 			}
 			continue
@@ -361,9 +362,9 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		}
 		noVerdict(gap)
 	}
-	found = slices.DeleteFunc(found, covered)
-	if n := len(found); n > maxJoinedFindings {
-		found = append(found[:maxJoinedFindings], AuditFinding{Item: fmt.Sprintf("... and %d more", n-maxJoinedFindings),
+	found, more = capTexts(slices.DeleteFunc(found, covered), maxJoinedFindings)
+	if more > 0 {
+		found = append(found, AuditFinding{Item: fmt.Sprintf("... and %d more", more),
 			Why: fmt.Sprintf("the card lists the first %d of the parts' findings", maxJoinedFindings)})
 	}
 	res.Findings = append(res.Findings, found...)
@@ -412,6 +413,33 @@ func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit
 func asRecorded(f AuditFinding, scrub *redact.Scrubber) AuditFinding {
 	return AuditFinding{Item: textutil.Truncate(scrub.String(f.Item), maxAuditField), File: textutil.Truncate(f.File, maxAuditField),
 		Line: f.Line, Why: textutil.Truncate(scrub.String(f.Why), maxAuditField)}
+}
+
+// capTexts is fs up to limit texts, each text once: its first finding, its
+// why counting the others at its file. A finding at no file is a text of
+// its own. more counts the findings past the limit.
+func capTexts(fs []AuditFinding, limit int) (kept []AuditFinding, more int) {
+	first, others := map[string]int{}, []int{}
+	for _, f := range fs {
+		if k, ok := first[f.Text()]; ok && f.File != "" {
+			others[k]++
+			continue
+		}
+		if len(kept) == limit {
+			more++
+			continue
+		}
+		if f.File != "" {
+			first[f.Text()] = len(kept)
+		}
+		kept, others = append(kept, f), append(others, 0)
+	}
+	for k, n := range others {
+		if n > 0 {
+			kept[k].Why += fmt.Sprintf("; %d more at this file", n)
+		}
+	}
+	return kept, more
 }
 
 // diffPath is the path of the diff file names: file itself, or file without
