@@ -198,8 +198,8 @@ func TestCloseHeldPlanInTheLastRoundWithoutAnIntegrationCard(t *testing.T) {
 // the Close ends the ask as its drop.
 func TestClosedPlanWithOpenCriteriaKeepsItsHold(t *testing.T) {
 	ctx := context.Background()
-	const words = "factoryd: Close this plan and drop its 10 open promises? Until it closes, the plan holds production deploys.\n\n" +
-		"The plan's open promises stand in its full brief. A human closed the plan's card while these promises were open.\n\n" +
+	words := "factoryd: Close this plan and drop its 10 open promises? Until it closes, the plan holds production deploys.\n\n" +
+		"A human closed the plan's card while these promises were open:\n" + strings.Repeat("- The tests in ./... stay green.\n", 10) + "\n" +
 		"The answers on the board:\n" +
 		"- Drop them and close: Drops the open promises with your reason and closes the plan, so production deploys go on.\n" +
 		"- Keep the plan open: The plan stays open and holds production deploys until an approver closes it."
@@ -543,5 +543,48 @@ func TestAHeldPlansAskReachesTheInbox(t *testing.T) {
 	}
 	if st := SettleOf(m, read(), plan.Status, false); st.Open || st.Word != "answered" || st.By != "sebastian" {
 		t.Fatalf("after the Close the message reads %+v, want it answered by sebastian", st)
+	}
+}
+
+// A closed plan asks again once its ask was withdrawn, and a changed set
+// of open promises takes the place of the live ask of the older set: one
+// ask stands at a time, and Close ends it.
+func TestAHeldPlanAsksAgainAfterAWithdrawalAndOnANewSet(t *testing.T) {
+	ctx := context.Background()
+	r, s, _ := tenCriteriaPlan(t, "done")
+	setStatus(s, "t-plan", "closed")
+	held := func() (live []Case, all int) {
+		for _, c := range s.cases {
+			if c.Kind == CasePlanHeld {
+				all++
+				if c.Status == CaseAtHuman {
+					live = append(live, c)
+				}
+			}
+		}
+		return live, all
+	}
+	r.planCloseCheck(ctx, "t-plan")
+	first, _ := held()
+	if err := s.WithdrawCase(ctx, first[0].ID, "card ended closed"); err != nil {
+		t.Fatal(err)
+	}
+	r.planCloseCheck(ctx, "t-plan")
+	if live, all := held(); len(live) != 1 || all != 2 || live[0].ID == first[0].ID {
+		t.Fatalf("after a withdrawal: live %+v of %d asks, want a new one of 2", live, all)
+	}
+	if err := s.PutCriteriaVerdicts(ctx, "card-1", CriteriaSourceApprover, "sebastian", []CriterionVerdict{{Criterion: "k1", Verdict: "waived", Evidence: "moved", Kind: CriterionInvariant}}); err != nil {
+		t.Fatal(err)
+	}
+	r.planCloseCheck(ctx, "t-plan")
+	live, all := held()
+	if len(live) != 1 || all != 3 || len(factStrings(live[0], "open")) != 9 {
+		t.Fatalf("after a waiver: live %+v of %d asks, want the one of 9 open promises of 3", live, all)
+	}
+	if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil {
+		t.Fatal(err)
+	}
+	if live, _ := held(); len(live) != 0 {
+		t.Fatalf("after the Close %d asks stand, want none", len(live))
 	}
 }

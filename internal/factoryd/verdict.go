@@ -1442,8 +1442,9 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 
 // holdPlan puts the ask of plan t, closed by a human while promises were
 // open, at the human: close it and drop them, or keep it open
-// (heldPlanFace). It asks once per set of open promises, and its issue
-// hears the same words once.
+// (heldPlanFace). It asks once per set of open promises, unless that ask
+// was withdrawn, and its issue hears the same words once; the live ask of
+// an older set gives way to it.
 func (r *Runner) holdPlan(ctx context.Context, t Task, repo Repo, open []PlanCriterion) {
 	ids, promises := make([]string, 0, len(open)), make([]string, 0, len(open))
 	for _, c := range open {
@@ -1455,8 +1456,16 @@ func (r *Runner) holdPlan(ctx context.Context, t Task, repo Repo, open []PlanCri
 		log.Printf("plan %s: the hold's ask: %v", t.ID, err)
 		return
 	}
-	if slices.ContainsFunc(cases, func(c Case) bool { return c.Kind == CasePlanHeld && c.StateKey == key }) {
+	if slices.ContainsFunc(cases, func(c Case) bool { return c.Kind == CasePlanHeld && c.StateKey == key && c.Status != CaseWithdrawn }) {
 		return
+	}
+	for _, c := range cases {
+		if c.Kind == CasePlanHeld && (c.Status == CaseOpen || c.Status == CaseAtHuman) {
+			if err := r.store.WithdrawCase(ctx, c.ID, "the plan's open promises changed"); err != nil {
+				log.Printf("plan %s: the hold's older ask: %v", t.ID, err)
+				return
+			}
+		}
 	}
 	c, opened, err := r.store.OpenCase(ctx, Case{TaskID: t.ID, Repository: t.Repository, Kind: CasePlanHeld, StateKey: key, Status: CaseAtHuman,
 		Problem: "the plan holds production with open promises", Facts: map[string]any{"open": ids, "promises": promises}})
@@ -2007,6 +2016,9 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind string
 		}
 		for _, q := range all {
 			if q.TaskID == t.ID && slices.Contains(criteriaKinds, q.Kind) && (status == "pending" || q.Kind == kind && q.Reason == reason) {
+				if status == "pending" && q.Kind == kind {
+					r.runnableNow(ctx, t, q, spec.Runnable)
+				}
 				return
 			}
 		}
@@ -2032,6 +2044,25 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind string
 		return
 	}
 	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd, row)
+}
+
+// runnableNow keeps the case of plan t's pending request q naming the
+// promises a run can check as they stand: a request asked before its case
+// named them, or whose proofs moved since, reads runnable.
+func (r *Runner) runnableNow(ctx context.Context, t Task, q ApprovalRequest, runnable []string) {
+	cases, err := r.store.OpenCasesOf(ctx, t.ID)
+	if err != nil {
+		log.Printf("plan %s: the runs its ask names: %v", t.ID, err)
+		return
+	}
+	key := fmt.Sprintf("%s:%d", q.Kind, q.ID)
+	for _, c := range cases {
+		if c.Kind == CasePlanCriteria && c.StateKey == key && !slices.Equal(factStrings(c, "runnable"), runnable) {
+			if err := r.store.SetCaseFacts(ctx, c.ID, map[string]any{"runnable": runnable}); err != nil {
+				log.Printf("plan %s: the runs its ask names: %v", t.ID, err)
+			}
+		}
+	}
 }
 
 // CriteriaPass is the criteria sweep, run beside the stale sweep, over the

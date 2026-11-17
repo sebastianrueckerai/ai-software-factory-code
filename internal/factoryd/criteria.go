@@ -450,6 +450,21 @@ func criterionLine(r criterionRun, o proofOutcome) string {
 	return r.label() + ": " + s
 }
 
+// GateEvidence is the evidence of criterion id's row in its parts, as
+// gateRows and criterionLine write it: its state, blind or open ("" for
+// none), and its line without the state and the "criterion <id>: " it
+// leads with. A row of another writer is its line whole.
+func GateEvidence(id, evidence string) (state, line string) {
+	line = evidence
+	for _, s := range []string{proofBlind, proofOpen} {
+		if rest, ok := strings.CutPrefix(line, s+": "); ok {
+			state, line = s, rest
+			break
+		}
+	}
+	return state, strings.TrimPrefix(line, "criterion "+id+": ")
+}
+
 // gateRows are the gate's verdict rows, one per criterion of kind test
 // and invariant: met for one that passed, unmet for any other, its line
 // the evidence, after its state when it has one.

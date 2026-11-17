@@ -243,6 +243,35 @@ func TestCriteriaNeverJudgedTellsWhy(t *testing.T) {
 	}
 }
 
+// A never-judged request asked before its case named the promises a run
+// can check reads them on the next close check, as they stand.
+func TestAPendingRerunNamesTheRunsAsTheyStand(t *testing.T) {
+	ctx := context.Background()
+	r, s, _ := tenCriteriaPlan(t, "closed")
+	card := s.tasks["card-1"]
+	card.IssueNumber, card.MergeCommit, card.FinishedAt = 2011, "", nil
+	s.tasks["card-1"] = card
+	r.planCloseCheck(ctx, "t-plan")
+	pending, err := s.ApprovalRequests(ctx, "pending")
+	if err != nil || len(pending) != 1 || pending[0].Kind != ApprovalCriteriaRerun {
+		t.Fatalf("pending requests %+v, %v; want one of criteria never judged", pending, err)
+	}
+	k, err := RequestCase(pending[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(k.Facts, "runnable")
+	c, _, err := s.OpenCase(ctx, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.planCloseCheck(ctx, "t-plan")
+	got, err := s.CaseByID(ctx, c.ID)
+	if want := []string{"k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "k10"}; err != nil || !slices.Equal(factStrings(got, "runnable"), want) {
+		t.Fatalf("the request's case names %v, %v; want %v", factStrings(got, "runnable"), err, want)
+	}
+}
+
 // Each page of a never-judged request tells what is true of its promise
 // and offers what can happen to it: a verdict that stands reads its line
 // and takes the gap's answers; a human's promise with no verdict is the
@@ -309,9 +338,17 @@ func TestTheNeverJudgedPagesFollowEachPromise(t *testing.T) {
 				Happened: "The last card had no room under its spend limit for the tests the project agent asked for, so they did not run.",
 				Left:     "A new card brings a budget of its own."},
 			[]string{"Build the missing part", "Drop this promise"}},
-		{"the run checked it not", door, &RunFact{Outcome: gateDone, By: "sebastian", At: at},
-			Story{Planned: "The plan promised: A door opens for its key.", Happened: "The tests ran at 2026-11-17 14:02 UTC, but none of them checked it.",
-				Left: "No test exists for it yet."},
+		{"the run left it no result", door, &RunFact{Outcome: gateDone, By: "sebastian", At: at},
+			Story{Planned: "The plan promised: A door opens for its key.", Happened: "The tests ran at 2026-11-17 14:02 UTC, but left no result for it.",
+				Left: "No test checked it."},
+			[]string{"Run the tests now", "Drop this promise"}},
+		{"no test exists, while a run is on its way", PromiseFact{ID: "group_open", Promise: "A group opens at its hours.", Kind: CriterionTest},
+			&RunFact{Outcome: gateStarted, By: "sebastian", At: at},
+			Story{Planned: "The plan promised: A group opens at its hours.", Happened: notRun, Left: "No test exists for it yet."},
+			[]string{"Build the missing part", "Drop this promise"}},
+		{"no test exists, after a run", PromiseFact{ID: "group_open", Promise: "A group opens at its hours.", Kind: CriterionTest},
+			&RunFact{Outcome: gateDone, By: "sebastian", At: at},
+			Story{Planned: "The plan promised: A group opens at its hours.", Happened: notRun, Left: "No test exists for it yet."},
 			[]string{"Build the missing part", "Drop this promise"}},
 	} {
 		f := face(tc.p, tc.run)
@@ -426,6 +463,23 @@ func TestTheAskedTestsMeetTheGatesGuard(t *testing.T) {
 			t.Fatalf("records %v, want %v", g.asked(), want)
 		}
 	})
+	t.Run("no test is left to run", func(t *testing.T) {
+		g, c := askedRig(t)
+		if _, err := g.r.Act(ctx, ActInput{TaskID: "plan1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActRunCriteria}}); err != nil {
+			t.Fatal(err)
+		}
+		var waived []CriterionVerdict
+		for _, c := range proofsAtMainPlan().Criteria {
+			waived = append(waived, CriterionVerdict{Criterion: c.ID, Verdict: "waived", Evidence: "dropped", Kind: c.Kind})
+		}
+		if err := g.store.PutCriteriaVerdicts(ctx, "t1", CriteriaSourceApprover, "sebastian", waived); err != nil {
+			t.Fatal(err)
+		}
+		g.r.CriteriaGatePass(ctx)
+		if want := []string{"asked", "cut no test was left to run"}; !slices.Equal(g.asked(), want) || len(g.kube.podOrder) != 0 {
+			t.Fatalf("records %v with %d pods, want %v and none", g.asked(), len(g.kube.podOrder), want)
+		}
+	})
 }
 
 // A plan question's choices each say what they change: the door refuses a
@@ -488,5 +542,52 @@ func TestAPlanQuestionSaysWhatEachChoiceChanges(t *testing.T) {
 	}
 	if old := effects(face(none)); old["One day"] != "Sends this answer to the planner." {
 		t.Errorf("a stored question's choice: %q", old["One day"])
+	}
+}
+
+// The gate's row reads back in its parts through the one reader: its
+// state, and its line without the state and the criterion's lead, which
+// the face and the console's brief both show. A row another writer wrote
+// reads whole.
+func TestGateEvidenceReadsWhatTheGateWrote(t *testing.T) {
+	run := criterionRun{id: "size_bound", kind: CriterionTest, suite: "./proofs/size_bound", name: "TestSizeBound"}
+	for _, tc := range []struct {
+		state   string
+		outcome proofOutcome
+		met     bool
+		line    string
+	}{
+		{proofBlind, proofOutcome{Outcome: proofFailed, Message: "want 1 over, got 0"}, false, "TestSizeBound in ./proofs/size_bound failed: want 1 over, got 0"},
+		{proofOpen, proofOutcome{Outcome: proofPassed}, true, "TestSizeBound in ./proofs/size_bound passed"},
+		{"", proofOutcome{Outcome: proofMissing}, false, "no test TestSizeBound in ./proofs/size_bound"},
+	} {
+		rows := gateRows([]gateProof{{ID: run.id, Kind: run.kind, Met: tc.met, State: tc.state, Line: criterionLine(run, tc.outcome)}})
+		if state, line := GateEvidence(run.id, rows[0].Evidence); state != tc.state || line != tc.line {
+			t.Errorf("%q reads %q, %q; want %q, %q", rows[0].Evidence, state, line, tc.state, tc.line)
+		}
+	}
+	if state, line := GateEvidence("pages_ok", "the help page names no panel"); state != "" || line != "the help page names no panel" {
+		t.Errorf("a human's row reads %q, %q", state, line)
+	}
+}
+
+// A merge says what its card built: its summary's first sentence, else
+// its title's line.
+func TestAMergeSaysWhatItsCardBuilt(t *testing.T) {
+	c, err := RequestCase(ApprovalRequest{ID: 7, Kind: ApprovalMerge, TaskID: "t-1", Project: "sf/r", PRNumber: 12, Spec: []byte(`{"risk_class":"high","head_sha":"c1"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	card := Task{ID: "t-1", Objective: "Chat proposals survive a restart", Summary: "Moves the chat's proposals into a table. The pass purges them."}
+	for _, tc := range []struct {
+		summary, want string
+	}{
+		{card.Summary, "Moves the chat's proposals into a table."},
+		{"", "This card builds “Chat proposals survive a restart”."},
+	} {
+		card.Summary = tc.summary
+		if got := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: card, Case: c}).Story.Planned; got != tc.want {
+			t.Errorf("summary %q: the story plans %q, want %q", tc.summary, got, tc.want)
+		}
 	}
 }

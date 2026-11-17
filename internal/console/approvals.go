@@ -332,17 +332,7 @@ func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
 	}
 	for _, c := range p.Criteria {
 		v, _ := factoryd.StandingRow(rows, c)
-		row := criterionRow{PlanCriterion: c, Verdict: v.Verdict, Evidence: v.Evidence}
-		// a met gate row's blind or open moved from its evidence to its
-		// Word, as the merge card's rows read it
-		if row.Verdict == "met" && (row.Kind == factoryd.CriterionTest || row.Kind == factoryd.CriterionInvariant) {
-			for _, w := range []string{"blind", "open"} {
-				if rest, cut := strings.CutPrefix(row.Evidence, w+": "); cut {
-					row.Word, row.Evidence = w, rest
-				}
-			}
-		}
-		row.Evidence = promiseEvidence(row)
+		row := evidenceRow(criterionRow{PlanCriterion: c, Verdict: v.Verdict, Evidence: v.Evidence})
 		if row.Word != "" {
 			// a gate row that asks nothing: one line
 			k.GateLines = append(k.GateLines, row)
@@ -367,15 +357,16 @@ func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
 	return nil
 }
 
-// promiseEvidence is row's evidence as the full brief shows it: the gate's
-// line without the state and the "criterion <id>: " it leads with, as the
-// row names its promise already.
-func promiseEvidence(row criterionRow) string {
-	e := row.Evidence
-	for _, lead := range []string{"blind: ", "open: ", "criterion " + row.ID + ": "} {
-		e = strings.TrimPrefix(e, lead)
+// evidenceRow is row with its evidence read by factoryd.GateEvidence: a met
+// gate row's blind or open as its Word, and its line as the full brief
+// shows it, as the row names its promise already.
+func evidenceRow(row criterionRow) criterionRow {
+	state, line := factoryd.GateEvidence(row.ID, row.Evidence)
+	if row.Verdict == "met" && (row.Kind == factoryd.CriterionTest || row.Kind == factoryd.CriterionInvariant) {
+		row.Word = state
 	}
-	return e
+	row.Evidence = line
+	return row
 }
 
 // planRows are planVerdicts' rows as the merge card shows them: a met
@@ -387,14 +378,7 @@ func (c *Console) planRows(ctx context.Context, t factoryd.Task) (rows []criteri
 		return nil, nil, ok, err
 	}
 	for i, row := range rows {
-		if row.Verdict == "met" && (row.Kind == factoryd.CriterionTest || row.Kind == factoryd.CriterionInvariant) {
-			for _, w := range []string{"blind", "open"} {
-				if rest, cut := strings.CutPrefix(rows[i].Evidence, w+": "); cut {
-					rows[i].Word, rows[i].Evidence = w, rest
-				}
-			}
-		}
-		rows[i].Evidence = promiseEvidence(rows[i])
+		rows[i] = evidenceRow(row)
 		if row.Kind != factoryd.CriterionHuman {
 			continue
 		}

@@ -335,3 +335,19 @@ func TestReconcileCasesLeavesACaseARungHoldsToTheSweep(t *testing.T) {
 	}
 	reconcile(t, s, CaseHealReport{Moved: 1})
 }
+
+// A closed plan's ask to close it stands on its closed card: the heal
+// leaves it at the human, as the plan's close alone ends it.
+func TestReconcileCasesLeavesAClosedPlansAsk(t *testing.T) {
+	s := cardCaseStore(t, "cases_heal")
+	held, _, err := s.OpenCase(context.Background(), Case{TaskID: caseTask, Repository: "sf/r", Kind: CasePlanHeld, StateKey: "held:a,b", Status: CaseAtHuman,
+		Problem: "the plan holds production with open promises", Facts: map[string]any{"open": []string{"a", "b"}, "promises": []string{"A holds.", "B holds."}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setCaseTaskStatus(t, s, "closed")
+	reconcile(t, s, CaseHealReport{})
+	if got := caseByID(t, s, held.ID); got.Status != CaseAtHuman {
+		t.Fatalf("the closed plan's ask = %s, want it at the human", got.Status)
+	}
+}

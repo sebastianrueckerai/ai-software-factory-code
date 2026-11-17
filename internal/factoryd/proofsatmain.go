@@ -305,7 +305,7 @@ func (r *Runner) runTests(ctx context.Context, id string) {
 	try := gateTry{plan: plan, card: home, attempt: attempt, by: by}
 	switch {
 	case len(runs) == 0:
-		r.recordTry(rctx, try, gateDone, "", "")
+		r.recordTry(rctx, try, gateCut, "", "no test was left to run")
 		return
 	case r.planClosed(ctx, id):
 		r.recordTry(rctx, try, gateCut, "", "the plan closed")

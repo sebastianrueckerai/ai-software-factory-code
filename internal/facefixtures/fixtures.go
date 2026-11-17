@@ -1203,6 +1203,7 @@ func (b *builder) merge(group, name string) Fixture {
 	t := b.issue(n, "in-review", 3*time.Hour, "Chat proposals survive a restart: keep them in Postgres",
 		"The proposals live in the console's memory, so a restart between a proposal and its Do it loses it. Store them in a table with their expiry and purge the old ones in the settlement pass.")
 	t.AgentSummary = "Merge it: the migration only adds a table and an index, and the acceptance test restarts the console between a proposal and its Do it."
+	t.Summary = "Moves the chat's proposals into a table with their expiry. The settlement pass purges the old ones, and an acceptance test restarts the console between a proposal and its Do it."
 	review := factoryd.Review{Verdict: "approve", Summary: "Moves the proposals into a table with an expiry index; the settlement pass purges them.",
 		Findings: []string{"chat.go: the purge deletes without a batch limit; fine at today's volume"}}
 	gates := factoryd.GateResults{ChecksPassed: true, Policy: factoryd.PolicyGate{Class: policy.ClassHigh, Outcome: policy.OutcomeRequiresApproval,

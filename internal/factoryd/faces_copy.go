@@ -1773,10 +1773,7 @@ func gateKind(kind string) bool { return kind == CriterionTest || kind == Criter
 // evidence (criterionLine, judgeArtifact): a test's message without the
 // test's name and path, a model's reason without its model and prompt.
 func verdictLine(p PromiseFact) string {
-	detail := p.Evidence
-	for _, lead := range []string{"blind: ", "open: ", "criterion " + p.ID + ": "} {
-		detail = strings.TrimPrefix(detail, lead)
-	}
+	_, detail := GateEvidence(p.ID, p.Evidence)
 	head := map[string]string{CriterionJudgement: "The model that judges it found it not met", CriterionHuman: "A human judged it not met"}[p.Kind]
 	switch {
 	case !gateKind(p.Kind):
@@ -1860,7 +1857,7 @@ var criteriaFace = FaceSpec{
 			s.Happened = line(fmt.Sprintf("The tests %s asked for at %s stopped before they finished: %s.", askedBy(run.By), runStamp(run.At), cmp.Or(run.Why, "no reason was recorded")))
 			s.Left = "No test checked it."
 		case stateRanPast:
-			s.Happened, s.Left = fmt.Sprintf("The tests ran at %s, but none of them checked it.", runStamp(run.At)), "No test exists for it yet."
+			s.Happened, s.Left = fmt.Sprintf("The tests ran at %s, but left no result for it.", runStamp(run.At)), "No test checked it."
 		case stateRunnable:
 			s.Happened, s.Left = line(factString(f.Case, "not_run")), "No test checked it."
 		case stateNoTest:
@@ -1887,7 +1884,7 @@ var criteriaFace = FaceSpec{
 			return append(human, waive)
 		case stateRunning:
 			return []string{waive}
-		case stateRunnable, stateCut:
+		case stateRunnable, stateCut, stateRanPast:
 			return []string{ActRunCriteria, waive}
 		case stateJudged, stateGapOpen:
 			if p.Kind == CriterionHuman {
@@ -1919,35 +1916,40 @@ var heldPlanFace = FaceSpec{
 }
 
 // HeldPlanComment is the words on the issue of plan t, held with its open
-// promises (heldPlanFace): the ask, its why and its story, and the answers
-// an approver gives on the board.
+// promises (heldPlanFace): the ask, its why, what happened with each open
+// promise on a line of its own, as the issue holds no full brief, and the
+// answers an approver gives on the board.
 func HeldPlanComment(c Case, t Task) string {
 	face := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: t, Case: c})
-	lines := []string{"factoryd: " + face.Ask + " " + face.Why, strings.TrimSpace(face.Story.Planned + " " + face.Story.Happened), "The answers on the board:"}
-	for _, a := range face.Answers {
-		lines = append(lines, "- "+a.Label+": "+a.Effect)
+	happened := strings.TrimSuffix(face.Story.Happened, ".") + ":"
+	for _, p := range factStrings(c, "promises") {
+		happened += "\n- " + endSentence(p)
 	}
-	return strings.Join(lines[:2], "\n\n") + "\n\n" + strings.Join(lines[2:], "\n")
+	answers := "The answers on the board:"
+	for _, a := range face.Answers {
+		answers += "\n- " + a.Label + ": " + a.Effect
+	}
+	return strings.Join([]string{"factoryd: " + face.Ask + " " + face.Why, happened, answers}, "\n\n")
 }
 
 // The states of a promise on its page (promiseState).
 const (
 	stateJudged   = iota // a verdict stands: not met, by a test, a model or a human
 	stateHuman           // a human's promise with no verdict yet
+	stateNoTest          // no result, and no test exists for it, whatever a run did
 	stateRunning         // a run of the tests a human asked for is on its way
 	stateNoRoom          // that run found no room under the card's spend limit
-	stateCut             // that run stopped before it finished, and a run can check it
-	stateRanPast         // that run ran and checked it not
+	stateCut             // that run stopped before it finished
+	stateRanPast         // that run ran and left it no result
 	stateRunnable        // no result, and a run of the factory can check it
-	stateNoTest          // no result, and no test exists for it
 	stateGapOpen         // no result on a gap's page: the gate left none
 )
 
 // promiseState is what is true of promise p on its page of request f, with
-// the newest run of the plan's tests a human asked for when it decides.
+// the newest run of the plan's tests a human asked for when it decides: a
+// run speaks only of a promise a run can check.
 func promiseState(f Facts, p PromiseFact) (int, RunFact) {
 	run, asked := runOn(f)
-	runnable := slices.Contains(f.Runnable, p.ID)
 	switch {
 	case p.Verdict != "":
 		return stateJudged, run
@@ -1955,18 +1957,18 @@ func promiseState(f Facts, p PromiseFact) (int, RunFact) {
 		return stateGapOpen, run
 	case p.Kind == CriterionHuman:
 		return stateHuman, run
+	case !slices.Contains(f.Runnable, p.ID):
+		return stateNoTest, run
 	case asked && (run.Outcome == gateAsked || run.Outcome == gateStarted):
 		return stateRunning, run
 	case asked && run.Outcome == gateNoRoom:
 		return stateNoRoom, run
-	case asked && run.Outcome == gateCut && runnable:
+	case asked && run.Outcome == gateCut:
 		return stateCut, run
 	case asked && run.Outcome == gateDone:
 		return stateRanPast, run
-	case runnable:
-		return stateRunnable, run
 	}
-	return stateNoTest, run
+	return stateRunnable, run
 }
 
 // askedBy names who asked for a run: a human by their name, the project
