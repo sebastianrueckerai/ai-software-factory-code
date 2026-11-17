@@ -968,7 +968,7 @@ func syntheticFixture() Fixture {
 		Sessions: []FixtureSession{{Attempt: 1, Outcome: "pushed", Commit: "c1", Pushed: true, CostEUR: 0.2, Calls: 10, AgentTimeS: 300, Summary: "pushed c1"}},
 		Gates:    []FixtureGate{{Head: "c1", Gate: "review", Verdict: "approve"}},
 		Checks:   []FixtureChecks{{Head: "c1", State: "success"}},
-		Expect:   &FixtureExpect{ResolvedByRung: []int{ResolvedOpen}, Sessions: 1, HumanCases: 1, Face: []FixtureFace{{Ask: "pull request?", Why: "the normal risk class, and the factory's rules let only a human merge it"}}, Status: "in-review"},
+		Expect:   &FixtureExpect{ResolvedByRung: []int{ResolvedOpen}, Sessions: 1, HumanCases: 1, Face: []FixtureFace{{Ask: "pull request?", Why: "The change is of normal risk, and the factory's rules let only a human merge it."}}, Status: "in-review"},
 	}
 }
 

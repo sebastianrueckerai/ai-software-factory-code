@@ -407,3 +407,12 @@ func TestBudgetFloorAtTheSpendLimitAsksForTheRaise(t *testing.T) {
 		t.Errorf("why %q, want %q", face.Why, want)
 	}
 }
+
+// A human card whose ask is no question asks whether its titled work is
+// done, the title's area lead left out.
+func TestAHumanCardAsksWhetherItsTitledWorkIsDone(t *testing.T) {
+	x := fixture(t, "card", "reproduction-rule card")
+	if want := "Is \u201cthe 429 retry loses the request id\u201d done?"; x.face.Ask != want {
+		t.Errorf("ask %q, want %q", x.face.Ask, want)
+	}
+}

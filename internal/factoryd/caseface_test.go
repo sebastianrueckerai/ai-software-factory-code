@@ -58,7 +58,7 @@ func TestCaseFaceWithoutAStoredFaceReadsTheRegister(t *testing.T) {
 	if got.Ask != want.Ask || got.Why != want.Why || got.Story != want.Story || !reflect.DeepEqual(got.Offers, offersOfAnswers(want.Answers)) {
 		t.Errorf("face = %+v, want the register's %+v", got, want)
 	}
-	if got.Why != "The change is in the migration risk class, and the factory's rules let only a human merge it." {
+	if got.Why != "The change alters the database, and the factory's rules let only a human merge it." {
 		t.Errorf("why = %q, want the risk class named", got.Why)
 	}
 	if got.Preselected != ActApproveMerge || got.Source != "the factory agent" {

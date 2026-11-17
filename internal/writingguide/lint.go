@@ -143,12 +143,12 @@ func enDashPunctuation(text string) bool {
 // label.
 const MaxChoice = 60
 
-// ownVoice finds a writer speaking as itself: I, me, my, we, us, our.
+// ownVoice finds the first person: I, me, my, we, us, our.
 var ownVoice = regexp.MustCompile(`\b(?:I|[Mm]e|[Mm]y|[Mm]yself|[Ww]e|us|[Oo]urs?)\b`)
 
 // ChoiceFaults are the faults of choice, an answer an agent offers a human
 // as a button: none when it is 1 to MaxChoice runes that Lint passes and
-// the writer does not speak as itself, since the human presses it.
+// it names what happens with no one in the first person.
 func ChoiceFaults(choice string) []string {
 	switch n := len([]rune(strings.TrimSpace(choice))); {
 	case n == 0:
@@ -158,7 +158,7 @@ func ChoiceFaults(choice string) []string {
 	}
 	out := Lint(choice)
 	if w := ownVoice.FindString(choice); w != "" {
-		out = append(out, fmt.Sprintf("The answer says %q, but the human presses it. Name what happens, for example \"Send the new pins to the agent\".", w))
+		out = append(out, fmt.Sprintf("The answer says %q. Name what happens, for example \"Send the new pins to the agent\".", w))
 	}
 	return out
 }

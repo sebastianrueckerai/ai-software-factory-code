@@ -3191,7 +3191,7 @@ func TestChatAskRefusesAChoiceTheGuideFaults(t *testing.T) {
 	g.replies = [][]string{{call(1, "ask", args)}, {say("I will ask again.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"go when ready"}})
 	equal(t, "the refused ask", events, []string{
-		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Refused: choices: \"I keep SQLite\": The answer says \"I\", but the human presses it. Name what happens, for example \"Send the new pins to the agent\"."}`,
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Refused: choices: \"I keep SQLite\": The answer says \"I\". Name what happens, for example \"Send the new pins to the agent\"."}`,
 		`text {"text":"I will ask again."}`, `done {}`})
 	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 10)
 	for _, m := range rows {

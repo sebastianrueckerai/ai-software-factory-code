@@ -117,7 +117,7 @@ func TestQuestionBoundsRefuseATextOverTheBound(t *testing.T) {
 func TestQuestionBoundsHoldEachChoiceToTheGuide(t *testing.T) {
 	qs := []PlanQuestion{{Text: "t", Choices: []string{"Keep 7 days", "I keep 30 days; it is safer"}, Recommended: "Keep 7 days", Grounds: "g"}}
 	want := []string{`plan: question 1: choice "I keep 30 days; it is safer": The text holds a semicolon. Write two sentences. ` +
-		`The answer says "I", but the human presses it. Name what happens, for example "Send the new pins to the agent".`}
+		`The answer says "I". Name what happens, for example "Send the new pins to the agent".`}
 	if got := questionBounds(qs); !slices.Equal(got, want) {
 		t.Errorf("findings %q, want %q", got, want)
 	}

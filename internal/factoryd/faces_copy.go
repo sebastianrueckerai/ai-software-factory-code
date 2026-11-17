@@ -967,8 +967,8 @@ var mergeFace = FaceSpec{
 		if w := whyOf(firstSentence(factString(f.Case, "review_not_run"))); w != "" {
 			return w
 		}
-		if class := factString(f.Case, "class"); class != "" {
-			return fmt.Sprintf("The change is in the %s risk class, and the factory's rules let only a human merge it.", class)
+		if words, ok := classWords[factString(f.Case, "class")]; ok {
+			return words + ", and the factory's rules let only a human merge it."
 		}
 		return "The factory's rules let only a human merge this change."
 	},
@@ -980,6 +980,11 @@ var mergeFace = FaceSpec{
 		return []string{ActApproveMerge, ActDenyMerge, ActDenyMerge + "/reject"}
 	},
 }
+
+// classWords say what a change of each risk class is, in plain words.
+var classWords = map[string]string{policy.ClassNormal: "The change is of normal risk", policy.ClassHigh: "The change is high risk",
+	"migration": "The change alters the database", policy.ClassRunner: "The change touches files the factory's own runner reads",
+	policy.ClassLarge: "The change is large"}
 
 // criteriaNames are the promises a criteria request names.
 func criteriaNames(f Facts) []string {
@@ -1051,8 +1056,13 @@ var humanFace = FaceSpec{
 		if q != "" && readsAsAsk(q) {
 			return q
 		}
-		if t := CardTitle(f.Card); t != "" && readsAsAsk("Is \u201c"+t+"\u201d done?") {
-			return "Is \u201c" + t + "\u201d done?"
+		if t := CardTitle(f.Card); t != "" {
+			if _, work, ok := strings.Cut(t, ": "); ok {
+				t = work
+			}
+			if q := "Is \u201c" + t + "\u201d done?"; readsAsAsk(q) {
+				return q
+			}
 		}
 		return "Is the work of this card done?"
 	},
