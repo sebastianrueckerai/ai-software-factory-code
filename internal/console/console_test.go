@@ -2822,7 +2822,7 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	end := strings.Index(body[start:], "</section>")
 	lane := body[start : start+end]
 	for id, ask := range map[string]string{
-		"t-res": `<strong class="title">Rent a cx33 server for 5 hours at about 0.07 EUR?</strong> <span class="why">The card needs it for the load test.</span>`,
+		"t-res": `<strong class="title">Rent a cx33 server for 5 hours at about 0.07 EUR?</strong> <span class="why">The card says what the server is for: load test.</span>`,
 		"t-m": `<strong class="title">Merge this card&#39;s pull request?</strong> ` +
 			`<span class="why">The change is high risk, and the factory&#39;s rules let only a human merge it.</span>`,
 	} {
@@ -2847,7 +2847,7 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		// card needs it, each answer's effect one line; its facts in the
 		// full brief
 		`<p class="o-question">Rent a cx33 server for 5 hours at about 0.07 EUR?</p>`,
-		`<p class="o-askwhy">The card needs it for the load test.</p>`,
+		`<p class="o-askwhy">The card says what the server is for: load test.</p>`,
 		`<span class="effect">Rents a cx33 server for 5 hours at about 0.07 EUR.</span>`,
 		`<span class="effect">The card goes on without the resource.</span>`,
 		`action="/approvals/3/approve"`,

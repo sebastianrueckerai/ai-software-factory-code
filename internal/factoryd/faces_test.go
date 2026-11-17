@@ -713,3 +713,19 @@ func TestAFaceShowsNoGroundsThatNameTheFactorysWords(t *testing.T) {
 		}
 	}
 }
+
+// A resource request's why reads as a sentence whatever words its purpose
+// holds: a verb's or a thing's.
+func TestAResourceRequestsWhyReadsWhateverItsPurpose(t *testing.T) {
+	for purpose, want := range map[string]string{
+		"load-test the feed cache":      "The card says what the server is for: load-test the feed cache.",
+		"load test of the event stream": "The card says what the server is for: load test of the event stream.",
+		"":                              "The card needs a server it may not rent without a human.",
+	} {
+		c := factoryd.Case{TaskID: "t1", Facts: map[string]any{"approval": 3, "approval_kind": factoryd.ApprovalResource, "server_type": "cx33",
+			"lease_minutes": 300, "reservation_eur": 0.072, "purpose": purpose}}
+		if got := factoryd.FaceOf(c, factoryd.Facts{CaseFacts: factoryd.FactsOf(c), Card: factoryd.Task{ID: "t1", Kind: "agent"}}).Why; got != want {
+			t.Errorf("purpose %q: why %q, want %q", purpose, got, want)
+		}
+	}
+}

@@ -156,7 +156,7 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 		mfx.Card.TaskID: {`<p class="o-question">Merge this card&#39;s pull request?</p>`,
 			`<p class="o-askwhy">The factory&#39;s rules let only a human merge this change.</p>`},
 		rfx.Card.TaskID: {`<p class="o-question">Rent a cx33 server for 5 hours at about 0.07 EUR?</p>`,
-			`<p class="o-askwhy">The card needs it for the load-test the feed cache.</p>`},
+			`<p class="o-askwhy">The card says what the server is for: load-test the feed cache.</p>`},
 		"t-e": {`<p class="o-question">Use a replica for the reads?</p>`,
 			`<p class="o-askwhy">The agent stopped because it needs a decision only a human can make.</p>`,
 			`data-press="continue/own_words">Answer in my words</button>`, `<span class="effect">The card keeps waiting for your answer.</span>`},

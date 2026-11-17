@@ -1470,7 +1470,7 @@ var resourceFace = FaceSpec{
 	},
 	Why: func(f Facts) string {
 		if p := resourceOf(f).Purpose; p != "" {
-			return cmp.Or(whyOf("The card needs it for the "+p), "The card needs a server it may not rent without a human.")
+			return cmp.Or(whyOf("The card says what the server is for: "+p), "The card needs a server it may not rent without a human.")
 		}
 		return "The card needs a server it may not rent without a human."
 	},
