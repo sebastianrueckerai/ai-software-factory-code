@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -23,7 +23,7 @@ func drawStore(t *testing.T, id string, eur float64) *PGStore {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	t.Cleanup(func() { s.Close() })
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, events CASCADE`); err != nil {
+	if _, err := s.DB().ExecContext(ctx, `TRUNCATE tasks, events CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	drawCard(t, s, id, 9, eur)
@@ -233,7 +233,7 @@ func TestSizeGateBudgetMoveRecordsAFund(t *testing.T) {
 		r.Detail["size"] != "large" || r.Detail["by"] != "size gate" || r.Detail["amount_eur"] != 5.0 || r.Detail["from_eur"] != 5.0 || r.Detail["to_eur"] != 10.0 {
 		t.Fatalf("the size gate's row = %+v, want card_funded by factoryd of 5 EUR from 5 to 10, size large, by size gate", r)
 	}
-	r := &Runner{store: s, objects: &fakeObjectStore{}, cfg: testRunnerConfig()}
+	r := PgRunner(s, &fakeObjectStore{}, testRunnerConfig())
 	d, err := r.CardDigest(ctx, "t-s")
 	if err != nil {
 		t.Fatalf("CardDigest: %v", err)
@@ -268,7 +268,7 @@ func TestSizeGateBudgetMoveRecordsAFund(t *testing.T) {
 func TestAGrantLeavesTheGateReserveWhole(t *testing.T) {
 	ctx := context.Background()
 	s := drawStore(t, "t-g", 5)
-	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = 4.60 WHERE id = 't-g'`); err != nil {
+	if _, err := s.DB().ExecContext(ctx, `UPDATE tasks SET spent_eur = 4.60 WHERE id = 't-g'`); err != nil {
 		t.Fatal(err)
 	}
 	reserve := policy.DefaultGateReserveEUR

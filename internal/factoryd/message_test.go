@@ -42,6 +42,10 @@ type fakeWorkerEndpoint struct {
 	// every ask as the tool's name with its args
 	onTool func(name string, args map[string]any) (int, string)
 	tools  []string
+	// messageSeen carries one signal per POST /message: a test that
+	// waits on it observes the worker's posts by synchronization, not
+	// by polling its texts. nil: no signal is sent.
+	messageSeen chan struct{}
 }
 
 func (f *fakeWorkerEndpoint) start(t *testing.T, r *Runner) {
@@ -68,6 +72,12 @@ func (f *fakeWorkerEndpoint) start(t *testing.T, r *Runner) {
 			f.lists = append(f.lists, string(b))
 		}
 		status := f.status
+		if req.Method == http.MethodPost && req.URL.Path == "/message" && f.messageSeen != nil {
+			select {
+			case f.messageSeen <- struct{}{}:
+			default:
+			}
+		}
 		f.mu.Unlock()
 		if req.URL.Path == "/tool" {
 			if args, err := json.Marshal(in.Args); err == nil {

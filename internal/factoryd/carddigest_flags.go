@@ -67,13 +67,16 @@ type ownedWait struct {
 
 // ownedWait is the card's one wait the AI owns at d.at, the first row
 // that holds. A failed merge waits for its retry in the merge gate, so
-// its row comes before the gate's. A provider backoff ages from the time
-// its retry is due. A run is quiet since it last moved, by a timeline
-// line or a status move, or answered, by a model call: a session writes
-// no line between its check-ins. A card in gate merge-queue owns the wait
-// only at the front of its queue: one behind another, or held back by its
-// plan, waits for a card that owns the wait. A wait at the human, a step at rung 3
-// among them, has no row.
+// its row comes before the gate's. A named provider limit freezes the
+// card until the reset it named, so its row comes before the quiet one
+// and carries no bound: the freeze card owns the one escalation. A
+// ladder backoff ages from the time its retry is due. A run is quiet
+// since it last moved, by a timeline line or a status move, or answered,
+// by a model call: a session writes no line between its check-ins. A
+// card in gate merge-queue owns the wait only at the front of its queue:
+// one behind another, or held back by its plan, waits for a card that
+// owns the wait. A wait at the human, a step at rung 3 among them, has
+// no row.
 func (d CardDigest) ownedWait() (ownedWait, bool) {
 	h := d.Head
 	quiet := h.StatusSince
@@ -93,6 +96,8 @@ func (d CardDigest) ownedWait() (ownedWait, bool) {
 		return ownedWait{"gate", 0, cmp.Or(h.Since, h.StatusSince)}, true
 	case h.Status == "in-review" && h.Gate != GateApproval && h.Gate != GateMergeQueue:
 		return ownedWait{"gate", 0, cmp.Or(h.Since, h.StatusSince)}, true
+	case h.Status == "running" && d.providerRefused() && d.frozen():
+		return ownedWait{"provider_limit", 0, d.refusedAt}, true
 	case h.Status == "running" && d.providerRefused():
 		return ownedWait{"provider_backoff", 0, cmp.Or(d.retryDue, d.LastStepAt)}, true
 	case h.Status == "running" && d.at.Sub(quiet) > d.Waits.RunQuiet:
@@ -121,6 +126,41 @@ func (d CardDigest) providerRefused() bool {
 	return false
 }
 
+// frozen: the card's newest refusal named a limit whose reset is still
+// ahead — its backoff outlasts the ladder's longest — so the card waits
+// on the provider-limit wait, owned by the freeze card's one escalation.
+func (d CardDigest) frozen() bool {
+	return d.refusedBackoff > ladderBackoffMax && !d.retryDue.IsZero() && d.at.Before(d.retryDue)
+}
+
+// frozenAt reports whether a freeze covers the moment at: a check-in the
+// limit refused inside its interval. A check-in stands at its moment, so
+// one a freeze only opens after still flags.
+func (d CardDigest) frozenAt(at time.Time) bool {
+	for _, f := range d.freezes {
+		if !f.since.After(at) && at.Before(f.until) {
+			return true
+		}
+	}
+	return false
+}
+
+// frozenOver reports whether a freeze covers the moment at or opens
+// between at and next: a session whose end the refusal froze the card
+// on, though its step stands at its start. A session with no next runs
+// to now, so a zero next bounds nothing.
+func (d CardDigest) frozenOver(at, next time.Time) bool {
+	for _, f := range d.freezes {
+		if !f.since.After(at) && at.Before(f.until) {
+			return true
+		}
+		if at.Before(f.since) && (next.IsZero() || !f.since.After(next)) {
+			return true
+		}
+	}
+	return false
+}
+
 // digestFlags are the patterns the card's life d shows, by name: one pass
 // over its steps, then t's cases, its row, its dependencies, its owned
 // wait, its events oldest first, and a plan's proofs, all read from
@@ -135,11 +175,16 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 	review := ""
 	// a grant is open until a session pushes, or, on a plan, the planner's
 	// session files a revision; afterNoPush names the first session after
-	// it that ended without a push
+	// it that ended without a push — never one a provider-limit freeze
+	// emptied, which the limit bought, not the grant
 	granted, afterNoPush := false, ""
 	run, runFirst := 0, ""
 	refusedAt := ""
-	for _, s := range steps {
+	for i, s := range steps {
+		next := time.Time{}
+		if i+1 < len(steps) {
+			next = steps[i+1].At
+		}
 		switch s.Kind {
 		case "proofs":
 			if s.Actor != FactoryDecider {
@@ -165,7 +210,7 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 			name := "session " + attempt
 			if s.state == string(OutcomePushed) {
 				granted = false
-			} else if granted && afterNoPush == "" {
+			} else if granted && afterNoPush == "" && !d.frozenOver(s.At, next) {
 				afterNoPush = name
 			}
 			if s.state != string(OutcomeNoPush) {
@@ -184,7 +229,10 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 			}
 		case "checkin":
 			refusedAt = ""
-			if s.refused {
+			// a check-in inside a freeze the limit refused flags nothing:
+			// the hold answered it, not the card — a check-in stands at its
+			// moment, so only a freeze covering it quiets it
+			if s.refused && !d.frozenAt(s.At) {
 				refusedAt = offsetText(s.Offset)
 			}
 			if s.state == "" {
@@ -264,8 +312,9 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 		add("budget_moved_no_event", fmt.Sprintf("%.2f EUR not %.2f EUR", t.BudgetEUR, budget))
 	}
 	// a rung's step is past its bound once its wait holds: it carries its
-	// own due_at
-	if w, ok := d.ownedWait(); ok && (w.Kind == "rung_answer" || d.at.Sub(w.Since) > d.Waits.Bound(w.Kind)) {
+	// own due_at. A provider-limit freeze carries no bound: the freeze
+	// card owns the one escalation, however long the provider holds.
+	if w, ok := d.ownedWait(); ok && w.Kind != "provider_limit" && (w.Kind == "rung_answer" || d.at.Sub(w.Since) > d.Waits.Bound(w.Kind)) {
 		since := " since " + offsetText(w.Since.Sub(steps[0].At))
 		add("wait_over_bound", w.Kind+since)
 		// the queue's wait starts at the row's queue_since, often the
