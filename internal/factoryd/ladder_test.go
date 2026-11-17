@@ -164,6 +164,24 @@ func TestTripKeyByKind(t *testing.T) {
 	}
 }
 
+// A trip names the case's own question as its problem: the agent's
+// question tripped in the card's last session is the question, though the
+// human's face is the session cap's until a session can run.
+func TestATripNamesTheQuestionNotItsCap(t *testing.T) {
+	card := Task{ID: "t1", Kind: "agent", IssueNumber: 4}
+	f := CaseFacts{Attempts: 3, SessionCap: 3, AgentTimeS: 600, AgentTimeCapS: 7200, SessionLeastS: 300, BudgetEUR: 2, LeftEUR: 1.5, FloorEUR: 0.3}
+	c, err := TripCase(card, f, TripInput{TaskID: card.ID, Reason: AgentAsks + "Which store keeps the snapshots?\nWhy: two fit\nRecommendation: SQLite"}, func(s string) string { return s })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Kind != CaseAgentEscalate || c.Problem != "Which store keeps the snapshots?" {
+		t.Fatalf("the trip's case is %s with the problem %q, want the agent's question", c.Kind, c.Problem)
+	}
+	if face := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: card}); face.Ask != "The card used all 3 sessions. Allow more, or end the card?" {
+		t.Fatalf("the face asks %q, want the session cap's ask", face.Ask)
+	}
+}
+
 // A trip's key is the stop's, never its copy: a card out of money on one
 // head keys one case whether or not review findings change its ask, and
 // another head keys another.

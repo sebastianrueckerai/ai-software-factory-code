@@ -205,6 +205,13 @@ func facing(c Case, f Facts) (Case, Facts) {
 	return c, f
 }
 
+// ownAsk is case c's own question on card t, with no cap in front of it:
+// the case's problem, as the rungs and the digest read it.
+func ownAsk(c Case, t Task) string {
+	f := Facts{CaseFacts: FactsOf(c), Card: t, Case: c}
+	return faceSpecOf(c, f).Ask(f)
+}
+
 // FaceOf is the face of case c on facts f. An answer whose press with its
 // defaults fails on f leaves the face. A rung's or the writer's
 // recommendation leads, else the kind's own suggestion with its grounds;

@@ -1111,7 +1111,7 @@ func TripCase(t Task, f CaseFacts, in TripInput, scrub func(string) string) (Cas
 		facts["checkin_stop"] = in.CheckinStop
 	}
 	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, Status: CaseOpen, Facts: facts, Money: tripMoney(kind, f)}
-	c.Problem = FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: t}).Ask
+	c.Problem = ownAsk(c, t)
 	c.StateKey = tripKey(kind, in.Reason, f.Head, f)
 	if in.Kind != "" {
 		c.StateKey = in.StateKey
