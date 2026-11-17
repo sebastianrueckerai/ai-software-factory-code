@@ -22,6 +22,7 @@ const (
 
 // Exported factoryd names the moved files use bare.
 var (
+	ActAnswerCriteria      = factoryd.ActAnswerCriteria
 	ActApproveMerge        = factoryd.ActApproveMerge
 	ActClose               = factoryd.ActClose
 	ActConfirmCriteria     = factoryd.ActConfirmCriteria
@@ -32,6 +33,7 @@ var (
 	ActGrantCriteria       = factoryd.ActGrantCriteria
 	ActHandover            = factoryd.ActHandover
 	ActNote                = factoryd.ActNote
+	ActRemoveDependency    = factoryd.ActRemoveDependency
 	ActRestartPlan         = factoryd.ActRestartPlan
 	ActResume              = factoryd.ActResume
 	ActRetry               = factoryd.ActRetry
@@ -65,6 +67,7 @@ var (
 	CaseResolved           = factoryd.CaseResolved
 	CaseSessionCap         = factoryd.CaseSessionCap
 	CaseWithdrawn          = factoryd.CaseWithdrawn
+	ChatUser               = factoryd.ChatUser
 	CheckTimeCap           = factoryd.CheckTimeCap
 	ChoiceCase             = factoryd.ChoiceCase
 	ConsoleApproved        = factoryd.ConsoleApproved
@@ -84,6 +87,7 @@ var (
 	EventPlanClosed        = factoryd.EventPlanClosed
 	EventQuestionAnswered  = factoryd.EventQuestionAnswered
 	EventQuestionAsked     = factoryd.EventQuestionAsked
+	EventSessionPushed     = factoryd.EventSessionPushed
 	FactoryDecider         = factoryd.FactoryDecider
 	FactsOf                = factoryd.FactsOf
 	FindingID              = factoryd.FindingID
