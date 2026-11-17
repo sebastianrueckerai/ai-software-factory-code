@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -766,10 +767,12 @@ func TestGateAuditKeepsThePreChecksPath(t *testing.T) {
 
 // GoFiles reads one archive of the commit: the .go files directly in the
 // directories asked for, by their paths in the repository; a commit with
-// no archive is an error.
+// no archive is an error, and so is a directory asked for whose .go files
+// the archive holds otherwise than the commit's tree: a link, a file left
+// out or rewritten, as .gitattributes can make git archive do.
 func TestGoFilesReadsTheDirsAsked(t *testing.T) {
 	fj := &gateForgejo{archives: map[string]map[string]string{"c1": {"x/a.go": "package x\n", "x/b.txt": "b", "x/sub/c.go": "package sub\n",
-		"y/d.go": "package y\n", "e.go": "package e\n"}}}
+		"y/d.go": "package y\n", "e.go": "package e\n", "z/l.go": "-> ../x/a.go"}}}
 	r, _ := newAuditRunner(t, fj, &fakeLiteLLM{}, true)
 	got, err := r.forgejo.GoFiles(context.Background(), "sf", "repo", "c1", []string{"x", "."})
 	if err != nil || len(got) != 2 || string(got["x/a.go"]) != "package x\n" || string(got["e.go"]) != "package e\n" {
@@ -777,6 +780,32 @@ func TestGoFilesReadsTheDirsAsked(t *testing.T) {
 	}
 	if _, err := r.forgejo.GoFiles(context.Background(), "sf", "repo", "c2", []string{"x"}); err == nil {
 		t.Fatal("GoFiles of a commit with no archive gave no error")
+	}
+	if got, err := r.forgejo.GoFiles(context.Background(), "sf", "repo", "c1", []string{"z"}); err == nil {
+		t.Fatalf("GoFiles of a directory with a link to a .go file = %q, want an error: a build reads the file it links", got)
+	}
+	fj.trees = map[string]map[string]string{"c1": maps.Clone(fj.archives["c1"])}
+	fj.trees["c1"]["x/m.go"] = "package x\n\nfunc (T) allow() bool { return true }\n"
+	if got, err := r.forgejo.GoFiles(context.Background(), "sf", "repo", "c1", []string{"x"}); err == nil {
+		t.Fatalf("GoFiles of a directory whose archive leaves a .go file out = %q, want an error", got)
+	}
+	if got, err := r.forgejo.GoFiles(context.Background(), "sf", "repo", "c1", []string{"y"}); err != nil || len(got) != 1 {
+		t.Fatalf("GoFiles of y = %q, %v, want y/d.go: the file left out is in x", got, err)
+	}
+	fj.trees["c1"] = maps.Clone(fj.archives["c1"])
+	fj.trees["c1"]["x/a.go"] = "package x\n\n// $Format:%n/*$\n"
+	if got, err := r.forgejo.GoFiles(context.Background(), "sf", "repo", "c1", []string{"x"}); err == nil {
+		t.Fatalf("GoFiles of a directory whose archive rewrites a .go file = %q, want an error", got)
+	}
+	fj.trees["c1"] = maps.Clone(fj.archives["c1"])
+	delete(fj.trees["c1"], "e.go")
+	if got, err := r.forgejo.GoFiles(context.Background(), "sf", "repo", "c1", []string{"."}); err == nil {
+		t.Fatalf("GoFiles of a directory whose archive holds a .go file its tree lacks = %q, want an error", got)
+	}
+	fj.trees["c1"] = maps.Clone(fj.archives["c1"])
+	fj.archives["c1"]["y/d.go"], fj.trees["c1"]["y/d.go"] = "../x/a.go", "-> ../x/a.go"
+	if got, err := r.forgejo.GoFiles(context.Background(), "sf", "repo", "c1", []string{"y"}); err == nil {
+		t.Fatalf("GoFiles of a directory whose archive holds a link as a file = %q, want an error", got)
 	}
 }
 
