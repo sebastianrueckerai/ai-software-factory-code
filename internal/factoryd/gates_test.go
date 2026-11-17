@@ -1,11 +1,8 @@
 package factoryd
 
 import (
-	"archive/tar"
 	"cmp"
-	"compress/gzip"
 	"context"
-	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -82,12 +79,6 @@ type gateForgejo struct {
 	// diffs are other pull requests' diffs by number; 9's is diff unless
 	// diffs holds one
 	diffs map[int64]string
-	// archives are sf/repo's archives by ref, path to content, each served
-	// as a gzipped tar under the directory repo/, a content "-> target" as
-	// a symbolic link to target; trees are the trees the git trees listing
-	// serves by ref, the archive's where trees holds none
-	archives map[string]map[string]string
-	trees    map[string]map[string]string
 }
 
 func (f *gateForgejo) nextHead() string {
@@ -211,46 +202,6 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 				f.comments[i] = body.Body
 			}
 			io.WriteString(w, `{}`)
-		case r.Method == "GET" && strings.HasPrefix(p, "/git/trees/"):
-			ref := strings.TrimPrefix(p, "/git/trees/")
-			tree, ok := f.trees[ref]
-			if !ok {
-				tree, ok = f.archives[ref]
-			}
-			if !ok {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			entries := []TreeEntry{}
-			for _, name := range slices.Sorted(maps.Keys(tree)) {
-				mode, blob := "100644", tree[name]
-				if target, ok := strings.CutPrefix(blob, "-> "); ok {
-					mode, blob = "120000", target
-				}
-				entries = append(entries, TreeEntry{Path: name, Mode: mode, Type: "blob", SHA: fmt.Sprintf("%x", sha1.Sum(fmt.Appendf(nil, "blob %d\x00%s", len(blob), blob)))})
-			}
-			if r.URL.Query().Get("page") != "1" {
-				entries = entries[:0]
-			}
-			json.NewEncoder(w).Encode(map[string]any{"total_count": len(tree), "tree": entries})
-		case r.Method == "GET" && strings.HasPrefix(p, "/archive/") && strings.HasSuffix(p, ".tar.gz"):
-			tree, ok := f.archives[strings.TrimSuffix(strings.TrimPrefix(p, "/archive/"), ".tar.gz")]
-			if !ok {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			zw := gzip.NewWriter(w)
-			tw := tar.NewWriter(zw)
-			for _, name := range slices.Sorted(maps.Keys(tree)) {
-				if target, ok := strings.CutPrefix(tree[name], "-> "); ok {
-					tw.WriteHeader(&tar.Header{Name: "repo/" + name, Mode: 0o777, Typeflag: tar.TypeSymlink, Linkname: target})
-					continue
-				}
-				tw.WriteHeader(&tar.Header{Name: "repo/" + name, Mode: 0o644, Size: int64(len(tree[name])), Typeflag: tar.TypeReg})
-				io.WriteString(tw, tree[name])
-			}
-			tw.Close()
-			zw.Close()
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/raw/"):
 			rest := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/")
 			f.rawRefs = append(f.rawRefs, r.URL.Query().Get("ref"))

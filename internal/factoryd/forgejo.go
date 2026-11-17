@@ -1,14 +1,10 @@
 package factoryd
 
 import (
-	"archive/tar"
 	"bufio"
 	"bytes"
-	"compress/gzip"
 	"context"
-	"crypto/sha1"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +14,6 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"path"
 	"slices"
 	"strings"
 	"time"
@@ -889,86 +884,6 @@ func (f *Forgejo) CommitParent(ctx context.Context, owner, repo, sha string) (st
 // FileAt reads path at ref.
 func (f *Forgejo) FileAt(ctx context.Context, owner, repo, ref, path string) ([]byte, error) {
 	return f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/raw/%s?ref=%s", owner, repo, path, url.QueryEscape(ref)), nil, http.StatusOK)
-}
-
-// The bounds of an archive GoFiles reads: its gzipped answer, what it
-// unpacks to, and the time the read may take.
-const (
-	maxArchiveRead     = 64 << 20
-	maxArchiveUnpacked = 512 << 20
-	archiveReadTimeout = 2 * time.Minute
-)
-
-// sameBlobs is an error unless files, path to content, are the .go blobs
-// of tree directly in dirs, each a file, not a link.
-func sameBlobs(files map[string][]byte, tree []TreeEntry, dirs []string) error {
-	n := 0
-	for _, e := range tree {
-		if e.Type != "blob" || !strings.HasSuffix(e.Path, ".go") || !slices.Contains(dirs, path.Dir(e.Path)) {
-			continue
-		}
-		n++
-		c, ok := files[e.Path]
-		h := sha1.New()
-		fmt.Fprintf(h, "blob %d\x00", len(c))
-		h.Write(c)
-		if !ok || e.Mode == "120000" || hex.EncodeToString(h.Sum(nil)) != e.SHA {
-			return fmt.Errorf("the archive holds %s otherwise than its blob: a link, or a file .gitattributes leaves out or rewrites", e.Path)
-		}
-	}
-	if n != len(files) {
-		return errors.New("the archive holds .go files the tree lacks")
-	}
-	return nil
-}
-
-// errArchiveTooLarge is an archive that unpacks past maxArchiveUnpacked.
-var errArchiveTooLarge = fmt.Errorf("the archive unpacks past %d MiB", maxArchiveUnpacked>>20)
-
-// GoFiles reads the .go files directly in each of dirs at ref, path to
-// content, from one archive of the repository at ref, each held against
-// the blob ref's tree names: the archive follows .gitattributes, which can
-// leave a file out or rewrite it, and holds a link as no file, while a
-// build reads the blobs. An archive that holds them otherwise is an error.
-func (f *Forgejo) GoFiles(ctx context.Context, owner, repo, ref string, dirs []string) (map[string][]byte, error) {
-	tree, err := f.TreeEntries(ctx, owner, repo, ref)
-	if err != nil {
-		return nil, err
-	}
-	body, err := f.doLimit(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/archive/%s.tar.gz", owner, repo, url.PathEscape(ref)), nil,
-		http.StatusOK, f.callAuth(), maxArchiveRead, archiveReadTimeout)
-	if err != nil {
-		return nil, err
-	}
-	zr, err := gzip.NewReader(bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	unpacked := &io.LimitedReader{R: zr, N: maxArchiveUnpacked}
-	tr := tar.NewReader(unpacked)
-	out := map[string][]byte{}
-	for {
-		h, err := tr.Next()
-		switch {
-		case unpacked.N <= 0:
-			return nil, errArchiveTooLarge
-		case err == io.EOF:
-			return out, sameBlobs(out, tree, dirs)
-		case err != nil:
-			return nil, err
-		}
-		// the archive holds the tree under one directory named for the repository
-		_, name, _ := strings.Cut(h.Name, "/")
-		if h.Typeflag != tar.TypeReg || !strings.HasSuffix(name, ".go") || !slices.Contains(dirs, path.Dir(name)) {
-			continue
-		}
-		if out[name], err = io.ReadAll(tr); err != nil {
-			return nil, err
-		}
-		if unpacked.N <= 0 {
-			return nil, errArchiveTooLarge
-		}
-	}
 }
 
 // CIRunnerRegistration is a freshly registered ephemeral runner. Secret is

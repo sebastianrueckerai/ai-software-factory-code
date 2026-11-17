@@ -36,9 +36,6 @@ type AuditResult struct {
 	// MovedTo is the head the pull request held instead of the audited
 	// commit, when the audit did not run for it
 	MovedTo string `json:"moved_to,omitempty"`
-	// Renames are the case renames the audit model read as context
-	// (quietRenames).
-	Renames RenameCounts `json:"renames,omitzero"`
 	// Confirmed are the findings a person confirmed (audit confirm),
 	// keyed by the finding's text, each with who, why and when.
 	// The verdict settles past them; the audit model neither sees nor
@@ -209,9 +206,8 @@ func (r *Runner) auditConfirmations(ctx context.Context, taskID string) (map[str
 }
 
 // GateAudit is the audit stage on the pull request's head,
-// for a project that switches it on under the task's pinned version: the
-// diff with its case renames as context (quietRenames), a deterministic
-// scan of its added lines for secret shapes, then the audit
+// for a project that switches it on under the task's pinned version: a
+// deterministic scan of the added lines for secret shapes, then the audit
 // model the policy names for the task's class, through the gateway on the
 // task's account, one call for each part of the diff (callAll runs them in
 // parallel), a file larger than a part cut by hunks, the first with the
@@ -219,7 +215,6 @@ func (r *Runner) auditConfirmations(ctx context.Context, taskID string) (map[str
 // finding, and a refused or failed call one for its reason that names its
 // parts; the parts' findings keep the first maxJoinedFindings. A diff the
 // card cannot pay for, or past maxDiffRead, is one finding and no call.
-// The step counts the case renames the model read as context.
 // The findings go to the card and the timeline, never to the
 // pull request, which the agent reads. The findings a person confirmed
 // (audit-confirm) hold no verdict: the audit reads their steps off the
@@ -270,32 +265,10 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	if err != nil {
 		return AuditResult{}, err
 	}
-	failed := 0
-	modelFiles, renames := quietRenames(prFiles, func(base bool, dirs []string) map[string][]byte {
-		ref := commit
-		if base {
-			st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr.Number)
-			if ref = st.MergeBase; err != nil || ref == "" {
-				failed++
-				return nil
-			}
-		}
-		files, err := r.forgejo.GoFiles(ctx, repo.Owner, repo.Name, ref, dirs)
-		if err != nil {
-			failed++
-			return nil
-		}
-		return files
-	})
-	renames.ReadsFailed = failed
-	res.Renames = renames
 	var secrets []string
 	var hits []redact.Hit
 	for _, f := range prFiles {
-		secrets = append(secrets, redact.DiffSecrets(f.Text)...)
-	}
-	for _, f := range modelFiles {
-		hits = append(hits, redact.ScanDiff(f.Text)...)
+		secrets, hits = append(secrets, redact.DiffSecrets(f.Text)...), append(hits, redact.ScanDiff(f.Text)...)
 	}
 	scrub := redact.New(secrets...)
 	// a confirmed finding leaves the list before its cap, so the card lists
@@ -317,10 +290,10 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	for _, f := range prFiles {
 		paths[f.Path], paths[f.OldPath] = true, f.OldPath != ""
 	}
-	parts := diffParts(modelFiles, reviewDiffMax)
-	first := auditInput{Repository: t.Repository, PR: pr.Number, Commit: commit, Concurrency: concurrencyBlock(concurrencySites(modelFiles))}
+	parts := diffParts(prFiles, reviewDiffMax)
+	first := auditInput{Repository: t.Repository, PR: pr.Number, Commit: commit, Concurrency: concurrencyBlock(concurrencySites(prFiles))}
 	if len(parts) > 1 {
-		first.Part = partLabel(parts, 0, len(modelFiles))
+		first.Part = partLabel(parts, 0, len(prFiles))
 	}
 	calls := make([]reviewCall, len(parts))
 	for i, part := range parts {
@@ -331,7 +304,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		}}
 		if i > 0 {
 			calls[i].Prompt, calls[i].Input = auditPartPrompt, func() any {
-				return auditPartInput{Diff: joinFiles(part), Part: partLabel(parts, i, len(modelFiles))}
+				return auditPartInput{Diff: joinFiles(part), Part: partLabel(parts, i, len(prFiles))}
 			}
 		}
 	}
@@ -438,12 +411,8 @@ func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit
 	if len(res.Findings) > 0 {
 		res.Verdict = AuditFindings
 	}
-	step := map[string]any{"pr": pr.Number, "commit": commit, "model": res.Model, "deployment": res.Deployment, "verdict": res.Verdict,
-		"findings": res.Findings, "confirmed": res.Confirmed}
-	if res.Renames != (RenameCounts{}) {
-		step["renames"] = res.Renames
-	}
-	r.record(ctx, t.ID, "audit", besideEnd(ctx, t, GateAudit, beside, step))
+	r.record(ctx, t.ID, "audit", besideEnd(ctx, t, GateAudit, beside, map[string]any{"pr": pr.Number, "commit": commit, "model": res.Model,
+		"deployment": res.Deployment, "verdict": res.Verdict, "findings": res.Findings, "confirmed": res.Confirmed}))
 	return res, r.auditFact(ctx, t, pr, commit, round, res)
 }
 
