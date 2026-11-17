@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/console"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	factorygateway "github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
@@ -135,6 +138,8 @@ var parkRigs = struct {
 // the signed webhook intake and the console over the same store, with
 // the fake Forgejo and the object store behind them all.
 type parkRig struct {
+	mu        sync.Mutex
+	replies   [][]string // each the stream chunks of the next operator call
 	store     *factoryd.PGStore
 	runner    *factoryd.Runner
 	forgejo   *factoryd.Forgejo
@@ -202,6 +207,33 @@ func newParkRig(t *testing.T) *parkRig {
 	}))
 	t.Cleanup(litellm.Close)
 
+	var rig *parkRig
+	// the operator behind the console's chat: its streamed completions
+	// come from the rig's scripted replies
+	op := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer gw-token" {
+			http.Error(w, "not the operator's call", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if r.Header.Get(factorygateway.HeaderFactoryPurpose) == policy.PurposeTitle {
+			// a naming call answers nothing and consumes no reply
+			fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", operatorChunk(map[string]any{"content": ""}))
+			return
+		}
+		rig.mu.Lock()
+		defer rig.mu.Unlock()
+		if len(rig.replies) == 0 {
+			http.Error(w, "unscripted", http.StatusInternalServerError)
+			return
+		}
+		for _, line := range append(rig.replies[0], "[DONE]") {
+			fmt.Fprintf(w, "data: %s\n\n", line)
+		}
+		rig.replies = rig.replies[1:]
+	}))
+	t.Cleanup(op.Close)
+
 	forgejo := &factoryd.Forgejo{BaseURL: fj.server.URL, BotUser: parkBot, BotPassword: "bot-pw"}
 	objects := &stubObjects{data: map[string][]byte{}}
 	workflows := &acceptanceWorkflows{}
@@ -258,7 +290,7 @@ func newParkRig(t *testing.T) *parkRig {
 		Chat:             store,
 		ChatTokens:       store,
 		Notes:            store,
-		Operator:         &factoryd.OperatorModel{GatewayURL: quiet.URL, Token: "gw-token"},
+		Operator:         &factoryd.OperatorModel{GatewayURL: op.URL, Token: "gw-token"},
 		ChatToken:        func(p factoryd.Project) string { return forgejo.Access(p).Chat },
 		Writers: func(ctx context.Context) (string, map[string][]string, error) {
 			ps, err := store.Projects(ctx)
@@ -301,8 +333,9 @@ func newParkRig(t *testing.T) *parkRig {
 			t.Errorf("the rig's Forgejo answered no %s", call)
 		}
 	})
-	return &parkRig{store: store, runner: runner, forgejo: forgejo, fj: fj, intake: in, console: board,
+	rig = &parkRig{store: store, runner: runner, forgejo: forgejo, fj: fj, intake: in, console: board,
 		workflows: workflows, objects: objects, version: v}
+	return rig
 }
 
 // seedWaitingCard parks the running-kind card at the human: the agent's
@@ -411,6 +444,14 @@ func (r *parkRig) login(t *testing.T) (*http.Cookie, string) {
 	return session, string(m[1])
 }
 
+// Reply scripts the next operator calls: each reply is one call's stream
+// chunks, made with Say and Call.
+func (r *parkRig) Reply(replies ...[]string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.replies = append(r.replies, replies...)
+}
+
 // get runs one GET on path as the member of ck and answers the recorder.
 func (r *parkRig) get(t *testing.T, path string, ck *http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
@@ -493,5 +534,140 @@ func TestTheWebhooksEmptyAnswerKeepsTheCapAskLive(t *testing.T) {
 	}
 	if !strings.Contains(page.Body.String(), "agent time is used up") {
 		t.Fatalf("the case fragment lacks the ask's sentence:\n%s", page.Body.String())
+	}
+}
+
+// postChat posts the member's message to the project's chat and answers
+// the turn's event stream.
+func (r *parkRig) postChat(t *testing.T, ck *http.Cookie, form url.Values, path ...string) (int, string) {
+	t.Helper()
+	what := "/projects/" + parkProject + "/chat"
+	if len(path) > 0 {
+		what += path[0]
+	}
+	srv := httptest.NewServer(r.console)
+	defer srv.Close()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	for k, vs := range form {
+		for _, v := range vs {
+			if err := w.WriteField(k, v); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, srv.URL+what, &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.AddCookie(ck)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, string(body)
+}
+
+// parkEvents answers the stream's events as "event data" lines, in order.
+func parkEvents(t *testing.T, body string) []string {
+	t.Helper()
+	var out []string
+	for _, msg := range strings.Split(strings.TrimSuffix(body, "\n\n"), "\n\n") {
+		line := strings.Split(msg, "\n")
+		if len(line) < 2 || !strings.HasPrefix(line[0], "event: ") {
+			t.Errorf("a stream block of no event: %q", msg)
+			continue
+		}
+		out = append(out, strings.TrimPrefix(line[0], "event: ")+" "+strings.TrimPrefix(line[1], "data: "))
+	}
+	return out
+}
+
+// TestTheChatsGrantResolvesTheCapAsk: end to end over the same real store
+// the empty answer refused, the project chat's grant answer tool — its
+// proposal confirmed by the member — lands on doGrantSession, whose
+// grantOf buys agent time at the card's live agent-time cap ask: the case
+// resolves with action extend and its draw of agent time, the answer row
+// names the comment the console posted on the card's issue, and no live
+// ask stands between the card and its work any more.
+func TestTheChatsGrantResolvesTheCapAsk(t *testing.T) {
+	rig := newParkRig(t)
+	ask := rig.seedAgentTimeCapAsk(t, parkTask, parkIssue, parkAskComment)
+
+	rig.Reply([]string{Call(1, "grant_session", `{"task_id":"`+parkTask+`","text":"Extend 1800 s of agent time on the card"}`)},
+		[]string{Say("Granted the extend.")})
+	ck, csrf := rig.login(t)
+	code, body := rig.postChat(t, ck, url.Values{"message": {"Grant what the card asks for."}, "csrf": {csrf}})
+	if code != http.StatusOK {
+		t.Fatalf("POST the chat = %d:\n%s", code, body)
+	}
+	stream := parkEvents(t, body)
+	if len(stream) != 2 || !strings.HasPrefix(stream[0], "proposal ") || !strings.HasPrefix(stream[1], "done ") {
+		t.Fatalf("the turn's events = %v, want the grant's proposal and done", stream)
+	}
+	var offer struct {
+		ID   string `json:"id"`
+		Tool string `json:"tool"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(stream[0], "proposal ")), &offer); err != nil {
+		t.Fatal(err)
+	}
+	if offer.Tool != "grant_session" || offer.ID == "" {
+		t.Fatalf("the offer = %+v, want the grant_session tool's", offer)
+	}
+
+	code, body = rig.postChat(t, ck, url.Values{"csrf": {csrf}}, "/proposals/"+offer.ID)
+	if code != http.StatusOK {
+		t.Fatalf("Do it = %d:\n%s", code, body)
+	}
+	did := parkEvents(t, body)
+	if len(did) != 3 || !strings.HasPrefix(did[0], "tool ") || !strings.HasPrefix(did[1], "applied ") || !strings.HasPrefix(did[2], "done ") {
+		t.Fatalf("the Do it's events = %v, want the tool block, its applied event and done", did)
+	}
+
+	// the case resolved with the structured extend: action extend and its
+	// draw of agent time, no longer at the human
+	ctx := context.Background()
+	got, err := rig.store.CaseByID(ctx, ask.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != factoryd.CaseResolved || got.Resolution == nil || got.Resolution.Action != factoryd.ActExtend {
+		t.Fatalf("the agent-time cap = %s, %+v; want it resolved by an extend", got.Status, got.Resolution)
+	}
+	secs, _ := got.Resolution.Args["agent_time_s"].(float64)
+	if secs <= 0 {
+		t.Fatalf("the extend's args = %v; want agent_time_s > 0", got.Resolution.Args)
+	}
+	if newest, err := rig.store.NewestAskCase(ctx, parkTask); err != nil || newest.ID != 0 {
+		t.Fatalf("the card's newest live ask = %+v, %v; want none, the card goes on past its stop", newest, err)
+	}
+
+	// the answer row names the comment the console posted on the card's issue
+	posted := rig.fj.Posted()
+	if len(posted) != 1 {
+		t.Fatalf("the console posted %+v on the card's issue; want the grant's one comment", posted)
+	}
+	rows, err := rig.store.TaskEvents(ctx, parkTask, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var answered *factoryd.Event
+	for i := range rows {
+		if rows[i].Kind == factoryd.EventQuestionAnswered {
+			answered = &rows[i]
+		}
+	}
+	if answered == nil || answered.Detail["action"] != factoryd.ActExtend || answered.Detail["comment"] != float64(posted[0]) {
+		t.Fatalf("the card's rows hold %+v; want a question_answered row naming action extend and comment %d", rows, posted[0])
 	}
 }
