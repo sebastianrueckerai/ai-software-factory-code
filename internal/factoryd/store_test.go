@@ -670,7 +670,10 @@ func (s *fakeStore) PlansBetweenRounds(ctx context.Context) ([]string, error) {
 func (s *fakeStore) PlansAwaitingCriteria(ctx context.Context) ([]string, error) {
 	var out []string
 	for id, t := range s.tasks {
-		if _, closed := s.closed[id]; t.Status != "done" && t.Status != "failed" || closed {
+		ranOnMain := slices.ContainsFunc(s.events, func(e Event) bool {
+			return e.TaskID == id && e.Kind == EventCriteriaGateRun && fmt.Sprint(e.Detail["pr"]) == "0"
+		})
+		if _, closed := s.closed[id]; t.Status != "done" && t.Status != "failed" && !(t.Status == "closed" && ranOnMain) || closed {
 			continue
 		}
 		rev, ok, err := s.PlanRevision(ctx, id, 0)

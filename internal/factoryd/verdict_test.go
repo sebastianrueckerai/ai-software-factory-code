@@ -2867,6 +2867,35 @@ func integrationAs(status string, pr int64, merge string) func(*fakeStore) {
 	}
 }
 
+// A plan card a human closes while the gate's run on main's head runs,
+// after the run withdrew the closed integration card's rows and before it
+// wrote one, leaves the plan with no row and no merge: no row and no open
+// group brings the sweep back to it. Its run on main's head on record does:
+// the sweep visits the closed plan, nothing holds production, and the plan
+// closes.
+func TestCriteriaPassClosesAPlanClosedDuringItsRunOnMain(t *testing.T) {
+	ctx := context.Background()
+	r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 2085, ""), func(_ int, s *fakeStore, _ string) (CriteriaResult, error) {
+		closed := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+		plan := s.tasks["t-plan"]
+		plan.Status, plan.FinishedAt = "closed", &closed
+		s.tasks["t-plan"] = plan
+		return CriteriaResult{}, errors.New("the run was cut")
+	})
+	s.criteriaVerdicts["t-int"] = nil
+	if err := gateMet(ctx, s, "t-int"); err != nil {
+		t.Fatal(err)
+	}
+	sweep(ctx, r)
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(*calls) != 1 || len(rows) != 0 || !slices.Equal(gateOutcomes(s), []string{"cut#1"}) {
+		t.Fatalf("calls %v, rows %+v, outcomes %v; want one run on main, cut, the rows withdrawn", *calls, rows, gateOutcomes(s))
+	}
+	r.CriteriaPass(ctx)
+	if closeRows(s) != 1 {
+		t.Fatalf("plan_closed rows %d, want the closed plan closed", closeRows(s))
+	}
+}
+
 // An integration card whose work reached main through no pull request of
 // its own leaves the gate criteria to the criteria gate on main's head: a
 // card closed with no pull request (it proved and pushed nothing), one

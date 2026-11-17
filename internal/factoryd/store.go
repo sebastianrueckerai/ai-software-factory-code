@@ -680,10 +680,11 @@ type Store interface {
 	// plan_closed event whose newest revision's outline has parts, by id.
 	PlansBetweenRounds(ctx context.Context) ([]string, error)
 	// PlansAwaitingCriteria are the plan cards done or failed, the plans
-	// the criteria gate can still run for, without a plan_closed event,
-	// whose newest revision names criteria and no later round, which filed
-	// the integration card of that revision, and whose cards are all final
-	// or merged, by id.
+	// the criteria gate can still run for, or closed after a run of the
+	// gate on main's head, which may have withdrawn their rows, without a
+	// plan_closed event, whose newest revision names criteria and no later
+	// round, which filed the integration card of that revision, and whose
+	// cards are all final or merged, by id.
 	PlansAwaitingCriteria(ctx context.Context) ([]string, error)
 	// PlanMerged says whether a card of plan holds an unreverted merge
 	// (a merge commit, or a pull_request_merged row): the rule that opens

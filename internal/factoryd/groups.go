@@ -164,13 +164,15 @@ func (s *PGStore) PlanMerged(ctx context.Context, plan string) (bool, error) {
 }
 
 // PlansAwaitingCriteria are the plan cards done or failed, the plans the
-// criteria gate can still run for, without a plan_closed event, whose
-// newest revision names criteria and no later round, which filed the
-// integration card of that revision, and whose cards are all final or
-// merged, by id.
+// criteria gate can still run for, or closed after a run of the gate on
+// main's head, which may have withdrawn their rows, without a plan_closed
+// event, whose newest revision names criteria and no later round, which
+// filed the integration card of that revision, and whose cards are all
+// final or merged, by id.
 func (s *PGStore) PlansAwaitingCriteria(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT r.task_id FROM plan_revisions r JOIN tasks t ON t.id = r.task_id
-		WHERE t.status IN ('done', 'failed')
+		WHERE (t.status IN ('done', 'failed') OR t.status = 'closed' AND EXISTS (SELECT 1 FROM events
+				WHERE task_id = r.task_id AND kind = 'criteria_gate_run' AND detail->>'pr' = '0'))
 			AND r.revision = (SELECT max(revision) FROM plan_revisions WHERE task_id = r.task_id)
 			AND jsonb_typeof(r.plan->'criteria') = 'array' AND r.plan->'criteria' <> '[]'::jsonb
 			AND COALESCE(r.plan->'outline', '[]'::jsonb) IN ('[]'::jsonb, 'null'::jsonb)

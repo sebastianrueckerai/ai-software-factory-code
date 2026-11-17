@@ -2318,10 +2318,12 @@ func (r *Runner) DeltaPassBound() time.Duration { return r.deltaRoundBound() + t
 
 // criteriaParents are the plans the criteria and delta passes visit, in id
 // order: the plans with verdict rows, those of the open groups, those
-// between rounds and every done or failed one in its last round with
-// criteria, its integration card filed and no plan_closed, whatever rows
-// it holds. A plan a human closed is visited only as before: the gate
-// never runs for it, so no withdrawal leaves it without rows.
+// between rounds and every one in its last round with criteria, its
+// integration card filed and no plan_closed, whatever rows it holds, that
+// is done or failed, or closed after a run of the gate on main's head: a
+// run that withdrew its rows and was cut when a human closed the plan card
+// leaves it no row. A plan closed with no such run is visited only as
+// before: no run withdrew its rows.
 func (r *Runner) criteriaParents(ctx context.Context) []string {
 	ids, err := r.store.CriteriaVerdictTasks(ctx)
 	if err != nil {

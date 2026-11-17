@@ -179,11 +179,13 @@ func TestPlansBetweenRounds(t *testing.T) {
 // without a plan_closed row whose newest revision names criteria and no
 // later round, with that revision's integration card filed and every card
 // final or merged: the done a1, whose cards ended closed and merged, and
-// the failed a2 whose outline is null. a3's row closed it, a4 has rounds
-// to come, a5 runs, a6 names no criteria, a7's newest revision dropped
-// them, a8 a human closed, a9's integration card still runs, a10 filed no
-// integration card, and a11's card under the integration card's key is
-// another revision's feature card.
+// the failed a2 whose outline is null, and a12, which a human closed
+// after a run of the gate on main's head. a3's row closed it, a4 has
+// rounds to come, a5 runs, a6 names no criteria, a7's newest revision
+// dropped them, a8 a human closed with no run of the gate, a9's
+// integration card still runs, a10 filed no integration card, a11's card
+// under the integration card's key is another revision's feature card,
+// and a13, closed, had its run on the integration card's pull request.
 func TestPlansAwaitingCriteria(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_awaiting_criteria"))
@@ -199,6 +201,10 @@ func TestPlansAwaitingCriteria(t *testing.T) {
 		('a7', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 7, `+fin+`, NULL, NULL), ('a8', 1, 0, 'closed', 'sf/r', 'agent', 'webhook', 'plan', 8, `+fin+`, NULL, NULL),
 		('a9', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 9, `+fin+`, NULL, NULL), ('a10', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 10, `+fin+`, NULL, NULL),
 		('a11', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 11, `+fin+`, NULL, NULL),
+		('a12', 1, 0, 'closed', 'sf/r', 'agent', 'webhook', 'plan', 12, `+fin+`, NULL, NULL),
+		('a13', 1, 0, 'closed', 'sf/r', 'agent', 'webhook', 'plan', 13, `+fin+`, NULL, NULL),
+		('a12-int', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 'direct', 33, `+fin+`, 'a12', 'integ'),
+		('a13-int', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'direct', 34, `+fin+`, 'a13', 'integ'),
 		('a1-int', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 'direct', 21, `+fin+`, 'a1', 'integ'),
 		('a1-f', 1, 0, 'merged', 'sf/r', 'agent', 'plan', 'direct', 22, `+fin+`, 'a1', 'feat'),
 		('a2-int', 1, 0, 'failed', 'sf/r', 'agent', 'plan', 'direct', 23, `+fin+`, 'a2', 'integ'),
@@ -219,7 +225,7 @@ func TestPlansAwaitingCriteria(t *testing.T) {
 		{"a1", criteria}, {"a2", `{"round": 1, "outline": null, "criteria": [{"id": "c1", "kind": "test"}], ` + cards + `}`}, {"a3", criteria},
 		{"a4", `{"round": 1, "outline": ["the rest"], "criteria": [{"id": "c1", "kind": "test"}], ` + cards + `}`}, {"a5", criteria},
 		{"a6", `{"round": 1, "criteria": [], ` + cards + `}`}, {"a7", criteria}, {"a7", `{"round": 1, ` + cards + `}`}, {"a8", criteria}, {"a9", criteria},
-		{"a10", criteria},
+		{"a10", criteria}, {"a12", criteria}, {"a13", criteria},
 		{"a11", `{"round": 1, "criteria": [{"id": "c1", "kind": "test"}], "cards": [{"key": "integ2", "role": "integration"}, {"key": "feat", "role": "feature"}]}`},
 	} {
 		if _, err := s.AddPlanRevision(ctx, r.id, json.RawMessage(r.plan), r.id+r.plan); err != nil {
@@ -230,8 +236,13 @@ func TestPlansAwaitingCriteria(t *testing.T) {
 		('2026-10-02T08:00:00Z', 'sf/r', 'a3', 3, 'plan_closed', 'factoryd', 'factoryd')`); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.PlansAwaitingCriteria(ctx); err != nil || !slices.Equal(got, []string{"a1", "a2"}) {
-		t.Fatalf("PlansAwaitingCriteria = %v, %v; want [a1 a2]", got, err)
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail) VALUES
+		('2026-10-02T08:00:00Z', 'sf/r', 'a12', 12, 'criteria_gate_run', 'factoryd', 'factoryd', '{"task": "a12-int", "pr": 0, "outcome": "started"}'),
+		('2026-10-02T08:00:00Z', 'sf/r', 'a13', 13, 'criteria_gate_run', 'factoryd', 'factoryd', '{"task": "a13-int", "pr": 9, "outcome": "ran"}')`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.PlansAwaitingCriteria(ctx); err != nil || !slices.Equal(got, []string{"a1", "a12", "a2"}) {
+		t.Fatalf("PlansAwaitingCriteria = %v, %v; want [a1 a12 a2]", got, err)
 	}
 }
 
