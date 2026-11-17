@@ -263,6 +263,31 @@ func TestEscalationHandlerChoices(t *testing.T) {
 	}
 }
 
+// The agent's pick is the number of one of its choices: it rides the
+// reason as its own line, beside the question, and a number past the
+// choices is refused. A pick among dropped choices is dropped with them.
+func TestEscalationHandlerTakesTheAgentsPick(t *testing.T) {
+	store := newFakeStore()
+	store.CreateTask(t.Context(), Task{ID: "t-run", Status: "running", Track: "direct"})
+	post := func(choices string, pick int) (*httptest.ResponseRecorder, *fakeSessions) {
+		s := &fakeSessions{}
+		rec := httptest.NewRecorder()
+		EscalationHandler(store, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/internal/escalations", strings.NewReader(fmt.Sprintf(
+			`{"task_id":"t-run","kind":"escalation","question":"Which license?","reason":"none named","recommendation":"MIT","choices":%s,"choice":%d}`, choices, pick))))
+		return rec, s
+	}
+	rec, s := post(`["MIT","Apache-2.0"]`, 2)
+	if rec.Code != http.StatusAccepted || len(s.asks) != 1 || s.asks[0].reason() != AgentAsks+"Which license?\nChoice: 2 (Apache-2.0)\nWhy: none named\nRecommendation: MIT" {
+		t.Fatalf("pick 2 = %d, delivered %+v", rec.Code, s.asks)
+	}
+	if rec, s := post(`["MIT","Apache-2.0"]`, 3); rec.Code != http.StatusBadRequest || len(s.asks) != 0 || !strings.Contains(rec.Body.String(), "choice 3 names none of the 2 choices") {
+		t.Fatalf("pick 3 = %d %q, delivered %+v", rec.Code, rec.Body, s.asks)
+	}
+	if rec, s := post(`["yes"]`, 1); rec.Code != http.StatusAccepted || len(s.asks) != 1 || s.asks[0].Choice != 0 || strings.Contains(s.asks[0].reason(), "Choice:") {
+		t.Fatalf("a pick among dropped choices = %d, delivered %+v", rec.Code, s.asks)
+	}
+}
+
 // An escalation counts as delivered only once the session took it: one the
 // session never reads before it ends is refused, never accepted and lost.
 func TestEscalateSessionNeedsTheSessionToTakeIt(t *testing.T) {

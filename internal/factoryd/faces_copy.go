@@ -7,6 +7,7 @@ import (
 	"math"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -424,7 +425,7 @@ func init() {
 			Story:   agentStory,
 			Answers: func(f Facts) []string { return append(sayKeys(f), ActNote, ActClose) },
 			Suggest: func(f Facts) (string, string, string) {
-				return "", "the agent", agentLine(f, "Recommendation")
+				return agentPick(f), "the agent", agentLine(f, "Recommendation")
 			}}),
 		CaseAgentRequestInfo: work(FaceSpec{Ask: agentAsk("The agent needs an answer to go on. What should it know?"),
 			Why: fixed("The agent cannot go on without this answer."), Story: agentStory,
@@ -844,6 +845,19 @@ func agentStory(f Facts) Story {
 		s.Happened = "The agent asked: " + endSentence(strings.Join(strings.Fields(before), " "))
 	}
 	return s
+}
+
+// agentPick is the key of the answer the agent picked through its
+// escalate's choice, which the reason's Choice line numbers from 1; "" for
+// none, or for a choice the face does not offer.
+func agentPick(f Facts) string {
+	n, err := strconv.Atoi(strings.Fields(agentLine(f, "Choice") + " 0")[0])
+	if choices := factStrings(f.Case, "choices"); err == nil && n >= 1 && n <= len(choices) {
+		if key := sayPrefix + strings.TrimSpace(choices[n-1]); slices.Contains(sayKeys(f), key) {
+			return key
+		}
+	}
+	return ""
 }
 
 // sayKeys are the keys of the answers the agent offered, at most three:

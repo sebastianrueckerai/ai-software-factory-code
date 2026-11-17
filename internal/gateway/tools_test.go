@@ -823,6 +823,40 @@ func TestEscalateRefusesAChoiceTheGuideFaults(t *testing.T) {
 	}
 }
 
+// The agent may pick one of its choices by its label or its number from 1:
+// factoryd gets the pick's number. A pick that names none of them is
+// refused with the choices it may name, and reaches no factoryd.
+func TestEscalateTakesTheAgentsPick(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	for pick, want := range map[string]int{"Apache-2.0": 2, " MIT ": 1, "2": 2, "": 0} {
+		before := len(e.escalator.asks)
+		text, isErr := e.call(t, policy.ToolEscalate, map[string]any{"question": "Which license?", "reason": "none named", "recommendation": "MIT",
+			"choices": []string{"MIT", "Apache-2.0"}, "choice": pick})
+		if isErr || len(e.escalator.asks) != before+1 || e.escalator.asks[before].Choice != want {
+			t.Errorf("pick %q: %q, delivered %+v; want choice %d", pick, text, e.escalator.asks[before:], want)
+		}
+	}
+	before := len(e.escalator.asks)
+	for pick, args := range map[string]map[string]any{
+		"GPL-3.0": {"choices": []string{"MIT", "Apache-2.0"}},
+		"3":       {"choices": []string{"MIT", "Apache-2.0"}},
+		"MIT":     {},
+	} {
+		args["question"], args["reason"], args["recommendation"], args["choice"] = "Which license?", "none named", "MIT", pick
+		text, isErr := e.call(t, policy.ToolEscalate, args)
+		want := `choice "` + pick + `" names none of your choices: name one by its label or its number, 1 "MIT" or 2 "Apache-2.0".`
+		if args["choices"] == nil {
+			want = `choice "` + pick + `" names none of your choices: you offered none.`
+		}
+		if !isErr || !strings.Contains(text, "refused_arguments") || !strings.Contains(text, want) {
+			t.Errorf("pick %q: %q, want the refusal %q", pick, text, want)
+		}
+	}
+	if len(e.escalator.asks) != before {
+		t.Fatalf("refused picks reached factoryd: %+v", e.escalator.asks[before:])
+	}
+}
+
 // The recommendation is required, at most 2000 bytes; a
 // refused call reaches no factoryd.
 func TestEscalateNeedsARecommendation(t *testing.T) {

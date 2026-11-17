@@ -47,11 +47,14 @@ type AgentAsk struct {
 	Reason         string   `json:"reason"`
 	Recommendation string   `json:"recommendation"`
 	Choices        []string `json:"choices,omitempty"`
-	Tried          string   `json:"tried"`
-	Needs          string   `json:"needs"`
-	Tool           string   `json:"tool,omitempty"`
-	Need           string   `json:"need,omitempty"`
-	Parts          []string `json:"parts,omitempty"`
+	// Choice is the number from 1 of the choice the agent recommends, 0
+	// for none.
+	Choice int      `json:"choice,omitempty"`
+	Tried  string   `json:"tried"`
+	Needs  string   `json:"needs"`
+	Tool   string   `json:"tool,omitempty"`
+	Need   string   `json:"need,omitempty"`
+	Parts  []string `json:"parts,omitempty"`
 }
 
 // AgentAsk kinds. AskReplan is a person's stop of the running session
@@ -121,7 +124,11 @@ func (a AgentAsk) reason() string {
 	case AskTool:
 		return AgentAsks + "a sandbox with " + a.Tool + "\nWhy: " + a.Need
 	}
-	return AgentAsks + a.Question + "\nWhy: " + a.Reason + "\nRecommendation: " + a.Recommendation
+	pick := ""
+	if a.Choice >= 1 && a.Choice <= len(a.Choices) {
+		pick = fmt.Sprintf("\nChoice: %d (%s)", a.Choice, a.Choices[a.Choice-1])
+	}
+	return AgentAsks + a.Question + pick + "\nWhy: " + a.Reason + "\nRecommendation: " + a.Recommendation
 }
 
 // IntakeAgentEscalation is the intake event of an agent's escalate,
@@ -346,6 +353,13 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 		}
 		if ask.Kind == AskEscalation {
 			ask.Choices = offeredChoices(in.TaskID, ask.Choices)
+			switch {
+			case ask.Choices == nil:
+				ask.Choice = 0
+			case ask.Choice < 0 || ask.Choice > len(ask.Choices):
+				http.Error(w, fmt.Sprintf("choice %d names none of the %d choices", ask.Choice, len(ask.Choices)), http.StatusBadRequest)
+				return
+			}
 		} else {
 			ask.Choices = nil // no human picks: the issue's author answers on Forgejo, a tool request waits for its image, the check-in judges a cut
 		}

@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -136,11 +137,14 @@ type Escalation struct {
 	Reason         string   `json:"reason,omitempty"`
 	Recommendation string   `json:"recommendation,omitempty"`
 	Choices        []string `json:"choices,omitempty"`
-	Tried          string   `json:"tried,omitempty"`
-	Needs          string   `json:"needs,omitempty"`
-	Tool           string   `json:"tool,omitempty"`
-	Need           string   `json:"need,omitempty"`
-	Parts          []string `json:"parts,omitempty"`
+	// Choice is the number from 1 of the choice the agent recommends, 0
+	// for none.
+	Choice int      `json:"choice,omitempty"`
+	Tried  string   `json:"tried,omitempty"`
+	Needs  string   `json:"needs,omitempty"`
+	Tool   string   `json:"tool,omitempty"`
+	Need   string   `json:"need,omitempty"`
+	Parts  []string `json:"parts,omitempty"`
 }
 
 // Escalation kinds.
@@ -422,6 +426,7 @@ type EscalateIn struct {
 	// a choice the guide faults is refused; a list factoryd cannot offer is
 	// dropped there
 	Choices []string `json:"choices,omitempty" jsonschema:"offer 2 to 5 short answers the human can pick with one click, each at most 60 characters in plain words; always leave free text possible"`
+	Choice  string   `json:"choice,omitempty" jsonschema:"the choice you recommend, by its label or its number from 1"`
 }
 
 type RequestInfoIn struct {
@@ -1149,13 +1154,44 @@ func (s *Server) escalate(ctx context.Context, c *toolCaller, in EscalateIn) *mc
 				"choice %q: %s Each choice is a short answer in plain words, at most %d characters.", ch, strings.Join(faults, " "), writingguide.MaxChoice))
 		}
 	}
+	pick, refusal := pickOf(strings.TrimSpace(in.Choice), choices)
+	if refusal != "" {
+		return s.refuseTool(c, tool, "refused_arguments", refusal)
+	}
 	if len(choices) > maxChoices || size > maxChoicesBytes {
 		// factoryd's body cap would refuse the question with them
 		log.Printf("task %s: escalate's choices are dropped: more than %d, or over %d bytes in all", c.task.ID, maxChoices, maxChoicesBytes) // #nosec G706 -- the task id is the stored row's, found by the verified JWT
-		choices = nil
+		choices, pick = nil, 0
 	}
-	return s.handOver(ctx, c, tool, Escalation{Kind: KindEscalation, Question: q, Reason: why, Recommendation: rec, Choices: choices}, "escalated",
+	return s.handOver(ctx, c, tool, Escalation{Kind: KindEscalation, Question: q, Reason: why, Recommendation: rec, Choices: choices, Choice: pick}, "escalated",
 		"escalated; this session will end. Policy decides who answers; an ask nothing settles always reaches a human, and the task resumes with the answer. Stop working now.")
+}
+
+// pickOf is the number from 1 of the one of choices pick names, by its
+// label or its number; 0 for no pick, and a refusal naming the choices
+// for a pick that names none of them.
+func pickOf(pick string, choices []string) (int, string) {
+	if pick == "" {
+		return 0, ""
+	}
+	if n, err := strconv.Atoi(pick); err == nil && n >= 1 && n <= len(choices) {
+		return n, ""
+	}
+	if i := slices.IndexFunc(choices, func(c string) bool { return strings.TrimSpace(c) == pick }); i >= 0 {
+		return i + 1, ""
+	}
+	if len(choices) == 0 {
+		return 0, fmt.Sprintf("choice %q names none of your choices: you offered none.", pick)
+	}
+	named := make([]string, len(choices))
+	for i, c := range choices {
+		named[i] = fmt.Sprintf("%d %q", i+1, strings.TrimSpace(c))
+	}
+	list := named[len(named)-1]
+	if len(named) > 1 {
+		list = strings.Join(named[:len(named)-1], ", ") + " or " + list
+	}
+	return 0, fmt.Sprintf("choice %q names none of your choices: name one by its label or its number, %s.", pick, list)
 }
 
 // requestInfo hands the agent's information request to factoryd, which

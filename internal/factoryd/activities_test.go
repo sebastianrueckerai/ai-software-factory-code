@@ -2469,7 +2469,7 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 	r, store, objects := newActivityRunner(t, task, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
 	rows := &fakeEventRecorder{}
 	r.timeline.Events = teeEvents{rows, store}
-	for _, reason := range []string{"The agent asks: Which file?\nWhy: open\nRecommendation: a.txt, it is first", HealedReason} {
+	for _, reason := range []string{"The agent asks: Which file?\nChoice: 1 (a.txt)\nWhy: open\nRecommendation: a.txt, it is first", HealedReason} {
 		if _, err := r.FaceStop(context.Background(), "t1", reason, []string{"a.txt", "b.txt", "ask @mallory"}); err != nil {
 			t.Fatal(err)
 		}
@@ -2500,8 +2500,8 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 		return out
 	}
 	// the agent's ask: its question, its choices sanitised as answers in its
-	// words, and its recommendation's words as its view, which preselect no
-	// choice
+	// words, and the choice it picked preselected, by the agent, on its
+	// recommendation's words
 	agent := rows.rows[0].Detail
 	if agent["question"] != "Which file?" || agent["ask"] != "Which file?" || agent["why"] != "Open." || agent["source"] != "agent" ||
 		agent["case_id"] != int64(1) || agent["comment"] != int64(701) || !reflect.DeepEqual(agent["choices"], sane) {
@@ -2510,8 +2510,9 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 	if got, want := keys(agent), []string{"say:a.txt", "say:b.txt", "say:ask ＠mallory", ActNote}; !slices.Equal(got, want) {
 		t.Errorf("the agent's ask offers %v, want %v", got, want)
 	}
-	if story, _ := agent["story"].(Story); agent["recommendation"] != nil || agent["preselected"] != nil || story.View != "The agent's view: a.txt, it is first" {
-		t.Errorf("the agent's suggestion: %v, %v, view %q", agent["recommendation"], agent["preselected"], story.View)
+	if story, _ := agent["story"].(Story); agent["recommended_by"] != "the agent" || agent["recommendation"] != "a.txt, it is first" ||
+		!reflect.DeepEqual(agent["preselected"], map[string]any{"action": "say:a.txt"}) || story.View != "" {
+		t.Errorf("the agent's suggestion: by %v, %v, %v, view %q", agent["recommended_by"], agent["recommendation"], agent["preselected"], story.View)
 	}
 	// the healed re-ask names the question it asks again and carries the face
 	healed := rows.rows[1].Detail
