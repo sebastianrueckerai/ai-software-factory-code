@@ -390,13 +390,17 @@ func TestGateRunsCarriedTest(t *testing.T) {
 }
 
 // A carried test whose test is missing at the head asks the ordinary
-// unmet-work question, never a proof gap: the sweep opens no prover card
-// under a policy that runs one, and the plan's one ask names the
-// criterion.
+// unmet-work question, never a proof gap: the integration card's pull
+// request merged, so its gate's row judges main, the sweep opens no
+// prover card under a policy that runs one, and the plan's one ask names
+// the criterion.
 func TestNoGapCardForMissingProof(t *testing.T) {
 	ctx := context.Background()
 	s, db := accReceiptStore(t, "gap_no_proof")
 	seedProofPlan(ctx, t, s)
+	if _, err := db.ExecContext(ctx, `UPDATE tasks SET pr_number = 12, merge_commit = 'm12' WHERE id = 't-int'`); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.PutCriteriaVerdicts(ctx, "t-int", factoryd.CriteriaSourceGate, factoryd.FactoryDecider, []factoryd.CriterionVerdict{
 		{Criterion: "door_open", Verdict: "unmet", Evidence: "criterion door_open: no test TestDoorOpen in ./internal/doors",
 			Kind: factoryd.CriterionTest}}); err != nil {
@@ -410,7 +414,7 @@ func TestNoGapCardForMissingProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(pending) != 1 || pending[0].Kind != factoryd.ApprovalCriteria || pending[0].TaskID != "t-plan" ||
-		pending[0].Reason != "criteria not met with the plan's cards done: door_open" {
+		pending[0].Reason != "criteria not met once every card of the plan ended: door_open" {
 		t.Fatalf("pending = %+v; want the one unmet-work ask naming door_open", pending)
 	}
 	var provers int
