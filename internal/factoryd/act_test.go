@@ -929,6 +929,32 @@ func TestTheMinutePassWithdrawsAnAskANewerOneReplaced(t *testing.T) {
 	}
 }
 
+// A withdrawn question leaves its card waiting on the human only for
+// another ask an answer on the card ends: a monitor flag beside it puts
+// no card in waiting-human, so the card goes back to review.
+func TestAWithdrawnQuestionBesideAFlagMovesItsCard(t *testing.T) {
+	g := newFactsRig(t)
+	forge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments") {
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":501}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(forge.Close)
+	g.r.forgejo = &Forgejo{BaseURL: forge.URL, BotUser: "factory-agent", BotPassword: "pw"}
+	g.store.cases = append(g.store.cases,
+		Case{ID: 7, TaskID: "t1", Kind: CaseAgentEscalate, Status: CaseAtHuman, CommentID: 300, Facts: map[string]any{"reason": AgentAsks + "Which store keeps the snapshots?"}},
+		Case{ID: 8, TaskID: "t1", Kind: CaseMonitorFlag, Status: CaseAtHuman})
+	if err := g.r.EndCase(context.Background(), 7, "the run left the wait"); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.store.tasks["t1"].Status; got != "in-review" {
+		t.Errorf("the card is %s beside a live flag, want in-review", got)
+	}
+}
+
 // A replaced ask whose face reached the human withdraws without moving its
 // card: the card still waits on the human with the newer ask and its
 // answers, and the issue says the older question needs no answer. A case
