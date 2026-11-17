@@ -1,6 +1,8 @@
 package facefixtures_test
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
@@ -49,6 +51,80 @@ func TestFixturesNameEachKindOnceAndActionsApply(t *testing.T) {
 			if why := a.Applies(factoryd.FactsOf(*fx.Case), answer(fx.Kind)); why != "" {
 				t.Errorf("%s: the action does not apply to the case's facts: %s", key, why)
 			}
+		}
+	}
+}
+
+// fixtureReads are the store's reads of a card's brief over the
+// fixtures: their cards, the plan's revision and the plan's cards; no
+// fixture holds a dependency or a plan question.
+type fixtureReads []facefixtures.Fixture
+
+func (r fixtureReads) Task(_ context.Context, id string) (factoryd.Task, bool, error) {
+	for _, fx := range r {
+		if fx.Task.ID == id {
+			return fx.Task, true, nil
+		}
+	}
+	return factoryd.Task{}, false, nil
+}
+
+func (r fixtureReads) Dependencies(context.Context, string) ([]factoryd.Dependency, error) {
+	return nil, nil
+}
+
+func (r fixtureReads) PlanRevision(_ context.Context, id string, _ int) (factoryd.PlanRevision, bool, error) {
+	for _, fx := range r {
+		if fx.Task.ID == id && fx.Plan != nil {
+			raw, err := json.Marshal(fx.Plan)
+			return factoryd.PlanRevision{TaskID: id, Revision: 1, Plan: raw}, true, err
+		}
+	}
+	return factoryd.PlanRevision{}, false, nil
+}
+
+func (r fixtureReads) PlanCards(_ context.Context, plan string) ([]factoryd.Task, error) {
+	var out []factoryd.Task
+	for _, fx := range r {
+		if t := fx.Task; t.Parent == plan && t.Source == factoryd.SourcePlan && t.PlanKey != "" {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func (r fixtureReads) PlanQuestions(context.Context, string, int) ([]factoryd.PlanQuestion, error) {
+	return nil, nil
+}
+
+// Every fixture's card has a brief, the gallery's cards included: a card
+// of plan #1947, the fixtures' plan, belongs to it at its place, with the
+// plan's outcome.
+func TestEveryFixtureHasACardBrief(t *testing.T) {
+	all := facefixtures.All()
+	plan := ""
+	for _, fx := range all {
+		if fx.Kind == "plan card" {
+			plan = fx.Task.ID
+		}
+	}
+	for _, fx := range all {
+		if fx.Task.ID == "" {
+			continue
+		}
+		b, err := factoryd.ReadCardBrief(context.Background(), fixtureReads(all), fx.Task.ID)
+		if err != nil {
+			t.Errorf("%s %s: %v", fx.Group, fx.Kind, err)
+			continue
+		}
+		if b.Text.Title == "" {
+			t.Errorf("%s %s: no title", fx.Group, fx.Kind)
+		}
+		if fx.Task.Parent != plan {
+			continue
+		}
+		if p := b.Plan; p == nil || p.Issue != 1947 || p.Index == 0 || p.Of != 6 || p.Outcome == "" || len(p.Cards) != 6 {
+			t.Errorf("%s %s: plan %+v, want card i of 6 of #1947 with its outcome", fx.Group, fx.Kind, p)
 		}
 	}
 }

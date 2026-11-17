@@ -95,6 +95,8 @@ type ServerOptions struct {
 	Digester Digester
 	// Delegator is the delegate tool's hand-over to factoryd.
 	Delegator Delegator
+	// Briefs is a session's read of its card's brief at factoryd.
+	Briefs Briefer
 	// Cloud is the commissioning connector (the agent Hetzner project).
 	Cloud *Cloud
 	// Telemetry receives the spans and metrics; nil = none.
@@ -324,6 +326,7 @@ func (s *Server) Routes(version string) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/chat/completions", http.HandlerFunc(s.handleChat))
 	mux.Handle("GET /v1/window/{alias}", http.HandlerFunc(s.handleWindow))
+	mux.Handle("GET /worker/brief", http.HandlerFunc(s.handleWorkerBrief))
 	mux.Handle("POST /v1/tools/{tool}", http.HandlerFunc(s.handleChatTool))
 	mux.Handle("/mcp", s.mcpHandler())
 	mux.Handle("/healthz", health.Handler("factory-gateway", version))
@@ -545,6 +548,26 @@ func (s *Server) handleWindow(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(struct { // #nosec G104 -- best-effort response write
 		Window int `json:"window"`
 	}{price.Window})
+}
+
+// handleWorkerBrief answers a session's worker its card's brief, read at
+// factoryd: the brief of the task its ServiceAccount token names, and no
+// other. factoryd's own bearer reads none.
+func (s *Server) handleWorkerBrief(w http.ResponseWriter, r *http.Request) {
+	id, err := s.opts.Auth.Authenticate(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	text, err := s.opts.Briefs.Brief(r.Context(), id.TaskID)
+	if err != nil {
+		http.Error(w, "the card's brief of "+id.TaskID+": "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(struct { // #nosec G104 -- best-effort response write
+		Text string `json:"text"`
+	}{text})
 }
 
 // price is alias's LiteLLM price under the version's output limit; a

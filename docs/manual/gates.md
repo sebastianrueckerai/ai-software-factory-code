@@ -526,12 +526,14 @@ order they were written), as `SessionInput.Answers` (worker env
 `ANSWERS`), each as `<author>, to "<the escalation's first line>":
 <answer>` (the answer cut to 4000 bytes; the issue keeps it whole, and
 the console refuses a longer answer, naming the bound and its length).
-Every worker env value that grows with its input (`OBJECTIVE`,
-`FINDINGS`, `ANSWERS`, `POSTER_INFO`, `DIRECTORIES`, `SPEC`,
-`REPORT_GUIDE`) stays within the 128 KiB Linux allows one environment
-string: a list leaves out its oldest whole entries first, a text is cut,
-and `LEFT_OUT` carries factoryd's note on each, which the brief says in
-factoryd's own words ahead of its sections, outside every quoted block.
+Every worker env value that grows with its input (`FINDINGS`,
+`ANSWERS`, `POSTER_INFO`, `DIRECTORIES`, `REPORT_GUIDE`) stays within
+the 128 KiB Linux allows one environment string: a list leaves out its
+oldest whole entries first, a text is cut, and `LEFT_OUT` carries
+factoryd's note on each, which the brief says in factoryd's own words
+ahead of its sections, outside every quoted block. The card's brief
+(`CardBrief.AgentText`) reaches the worker from the gateway's
+`GET /worker/brief` and is cut at the same 128 KiB, with its note.
 Escalate records its
 comment as an `escalation` intake event, and `Reconcile` rebuilds the
 answers from the intake events (every trusted issue comment newer than an
@@ -702,10 +704,14 @@ the task `closed`. A planner that stops to ask a human (its
 and the answer goes to the next session; a session without a plan passes
 its last message on with the findings. Every session counts against
 `limits.sessions`; at the cap the card waits with the findings and a
-writer's comment buys one more. A card's sessions
-get the section "The spec and the plan" (the plan's issue and summary,
-the pod's `SPEC`) and the feature guide instead of the work guide
-(`CARD_ROLE`): build what this card's brief asks and only that, since
+writer's comment buys one more. A card's brief, which its session reads from the gateway's
+`GET /worker/brief` and its model review from the store, holds its place
+in the plan, the plan's outcome, glossary, summary and cards, the
+answers to the plan's questions, the plan's own brief and what the cards
+it depends on delivered (`CardBrief`); a successor and a retry's
+replacement belong to the plan their card does. Its sessions end with
+the feature guide instead of the work guide (`CARD_ROLE`): build what
+this card's brief asks and only that, since
 other agents build the plan's other cards, with a test per acceptance
 item on the inputs and numbers it gives and no probe tests, and the
 integration card's turns the spec's acceptance tests into Go tests under

@@ -60,7 +60,7 @@ func call(ctx context.Context, client *http.Client, method, target string, heade
 		}
 		rd = bytes.NewReader(b)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, target, rd)
+	req, err := http.NewRequestWithContext(ctx, method, target, rd) // #nosec G704 -- target is a configured host; the taint is a caller's request context, which bounds the call and names no address
 	if err != nil {
 		return nil, err
 	}

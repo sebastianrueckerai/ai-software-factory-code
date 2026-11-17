@@ -49,7 +49,7 @@ func (r *Runner) ProofsAtMain(ctx context.Context, taskID string) (ProofsAtMain,
 	if err != nil || t.Source != SourcePlan || t.Parent == "" {
 		return ProofsAtMain{}, err
 	}
-	p, err := r.filedPlan(ctx, t.Parent, t.ID)
+	p, _, err := planOfStore(ctx, r.store, t.Parent, t.ID)
 	if err != nil || roleOf(p, t.PlanKey) == RoleIntegration {
 		return ProofsAtMain{}, err
 	}

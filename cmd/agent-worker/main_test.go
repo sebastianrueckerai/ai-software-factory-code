@@ -30,7 +30,7 @@ import (
 func setRequiredEnv(t *testing.T) {
 	t.Helper()
 	for name, val := range map[string]string{
-		"TASK_ID": "t1", "OBJECTIVE": "do it", "REPOSITORY": "sf/repo",
+		"TASK_ID": "t1", "REPOSITORY": "sf/repo",
 		"BRANCH": "factory/t1", "PUSH_URL": "https://example/fork.git", "GATEWAY_URL": "http://gw",
 		"TOKEN_FILE": "/tmp/token", "MODEL": "openrouter/x", "ANSWER_TOKENS": "100", "HEADROOM_TOKENS": "10", "STEPS": "200", "LINE_BOUND": "100",
 		"MESSAGE_TOKEN_SHA256": testMessageHash, "EGRESS_CANARY": "example.com:443", "EGRESS_DIRECT_IP": "192.0.2.7:443",
@@ -357,7 +357,7 @@ func TestWorkerGitEnvironmentIsFixed(t *testing.T) {
 // config file.
 func TestTokenStaysOutOfEnvAndGitConfig(t *testing.T) {
 	for k, v := range map[string]string{
-		"TASK_ID": "t1", "OBJECTIVE": "o", "REPOSITORY": "sf/r", "BRANCH": "b", "PUSH_URL": "https://example/fork.git",
+		"TASK_ID": "t1", "REPOSITORY": "sf/r", "BRANCH": "b", "PUSH_URL": "https://example/fork.git",
 		"GATEWAY_URL": "http://gw", "TOKEN_FILE": "/tok", "MODEL": "m",
 		"ANSWER_TOKENS": "1", "HEADROOM_TOKENS": "1", "STEPS": "1", "LINE_BOUND": "0", "MESSAGE_TOKEN_SHA256": testMessageHash,
 		"EGRESS_CANARY": "example.com:443", "EGRESS_DIRECT_IP": "192.0.2.7:443",
@@ -825,7 +825,7 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
-			e := workerEnv{taskID: "t1", sessionID: "s-1", author: "alice", objective: "Fixes #3 for @admin\nbody", repoSHA: tc.start, branch: branch, repoURL: remote, pushURL: fork, startWip: tc.startWip}
+			e := workerEnv{taskID: "t1", sessionID: "s-1", author: "alice", title: "Fixes #3 for @admin", repoSHA: tc.start, branch: branch, repoURL: remote, pushURL: fork, startWip: tc.startWip}
 			dir := filepath.Join(t.TempDir(), "repo")
 			if err := cloneBase(e, dir); err != nil {
 				t.Fatal(err)
@@ -957,7 +957,7 @@ func TestCommitAndPushKeepsPulledMainOutOfTheChange(t *testing.T) {
 				t.Fatal(err)
 			}
 			// the worker container's: no repository URL, no read token
-			e := workerEnv{taskID: "t1", objective: "o", repoSHA: tc.start, branch: branch, pushURL: fork}
+			e := workerEnv{taskID: "t1", title: "o", repoSHA: tc.start, branch: branch, pushURL: fork}
 			base, mainHead, err := prepareRepo(dir, e)
 			if err != nil {
 				t.Fatal(err)
@@ -1039,7 +1039,7 @@ func TestCommitAndPushLeavesScratchReproTestsOut(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			branch := "factory/" + tc.name
-			e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: branch, repoURL: remote, pushURL: fork}
+			e := workerEnv{taskID: "t1", title: "o", repoSHA: sha, branch: branch, repoURL: remote, pushURL: fork}
 			dir := filepath.Join(t.TempDir(), "repo")
 			if err := cloneBase(e, dir); err != nil {
 				t.Fatal(err)
@@ -1103,7 +1103,7 @@ func TestCommitAndPushIgnoresAgentPlantedGitPrograms(t *testing.T) {
 	run("-C", remote, "config", "http.receivepack", "true")
 	sha := run("-C", seed, "rev-parse", "HEAD")
 
-	e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: "factory/t1", repoToken: "r3ad-tok"}
+	e := workerEnv{taskID: "t1", title: "o", repoSHA: sha, branch: "factory/t1", repoToken: "r3ad-tok"}
 	var pushes, refused, spyHeaders int
 	git := &cgi.Handler{Path: backend, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1374,7 +1374,7 @@ func TestCommitAndPushRefusesWorkflowDirChanges(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			branch := "factory/" + tc.name
-			e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: branch, repoURL: remote, pushURL: remote}
+			e := workerEnv{taskID: "t1", title: "o", repoSHA: sha, branch: branch, repoURL: remote, pushURL: remote}
 			dir := filepath.Join(t.TempDir(), "repo")
 			if err := cloneBase(e, dir); err != nil {
 				t.Fatal(err)
@@ -1499,7 +1499,7 @@ func TestCommitAndPushRefusesMisnamedMigrations(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			branch := "factory/mig-" + tc.name
-			e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: branch, repoURL: remote, pushURL: remote, migrationGlobs: tc.globs}
+			e := workerEnv{taskID: "t1", title: "o", repoSHA: sha, branch: branch, repoURL: remote, pushURL: remote, migrationGlobs: tc.globs}
 			dir := filepath.Join(t.TempDir(), "repo")
 			if err := cloneBase(e, dir); err != nil {
 				t.Fatal(err)
@@ -1879,7 +1879,7 @@ func TestDeliverOnAnInterimHeadLandsOnlyAFinishedSession(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
 			run("-C", seed, "push", "-q", fork, "wip:"+branch)
-			e := workerEnv{taskID: "t1", sessionID: "s-2", author: "alice", objective: "o", repoSHA: wip, branch: branch, repoURL: remote, pushURL: fork,
+			e := workerEnv{taskID: "t1", sessionID: "s-2", author: "alice", title: "o", repoSHA: wip, branch: branch, repoURL: remote, pushURL: fork,
 				startWip: true, lineBound: tc.bound}
 			dir := filepath.Join(t.TempDir(), "repo")
 			if err := cloneBase(e, dir); err != nil {
@@ -2005,7 +2005,7 @@ func changedSession(t *testing.T) (dir string, e workerEnv, base, mainHead, fork
 	run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "init")
 	run("clone", "-q", "--bare", seed, remote)
 	run("clone", "-q", "--bare", remote, fork)
-	e = workerEnv{taskID: "t1", objective: "o", repoSHA: run("-C", seed, "rev-parse", "HEAD"), branch: "factory/t1", repoURL: remote, pushURL: fork}
+	e = workerEnv{taskID: "t1", title: "o", repoSHA: run("-C", seed, "rev-parse", "HEAD"), branch: "factory/t1", repoURL: remote, pushURL: fork}
 	dir = filepath.Join(t.TempDir(), "repo")
 	if err := cloneBase(e, dir); err != nil {
 		t.Fatal(err)

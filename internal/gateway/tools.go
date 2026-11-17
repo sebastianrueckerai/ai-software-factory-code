@@ -117,6 +117,12 @@ type Digester interface {
 	Digest(ctx context.Context, taskID string, in DigestIn) (string, error)
 }
 
+// Briefer reads a session's card brief at factoryd (GET /worker/brief).
+// Implemented by Factoryd; tests substitute a fake.
+type Briefer interface {
+	Brief(ctx context.Context, taskID string) (string, error)
+}
+
 // Escalation is what an agent asks: a human (escalate: the
 // question, why, what the agent would do and the answers it offers), the
 // issue's author (request_info: the question, what it tried, what it
@@ -150,6 +156,7 @@ var (
 	_ DeploymentReader = (*Factoryd)(nil)
 	_ ImageLooker      = (*Factoryd)(nil)
 	_ Digester         = (*Factoryd)(nil)
+	_ Briefer          = (*Factoryd)(nil)
 )
 
 // Factoryd is the gateway's client to factoryd's internal endpoint.
@@ -281,6 +288,17 @@ func (f *Factoryd) Digest(ctx context.Context, taskID string, in DigestIn) (stri
 			TaskID string `json:"task_id"`
 			DigestIn
 		}{taskID, in})
+	return factorydText(b, err)
+}
+
+// Brief returns factoryd's text of task taskID's card brief, which its
+// session's worker reads.
+func (f *Factoryd) Brief(ctx context.Context, taskID string) (string, error) {
+	b, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/brief",
+		http.Header{"Authorization": {"Bearer " + f.Token}},
+		struct {
+			TaskID string `json:"task_id"`
+		}{taskID})
 	return factorydText(b, err)
 }
 

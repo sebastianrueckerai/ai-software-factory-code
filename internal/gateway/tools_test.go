@@ -2118,3 +2118,92 @@ func TestFactorydImageLookClient(t *testing.T) {
 		t.Fatalf("5xx err = %v", err)
 	}
 }
+
+func TestFactorydBriefClient(t *testing.T) {
+	var method, path, auth, body string
+	status, reply := http.StatusOK, `{"text":"Fix the counter\n\nWhy: It undercounts."}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		method, path, auth, body = r.Method, r.URL.Path, r.Header.Get("Authorization"), string(b)
+		w.WriteHeader(status)
+		io.WriteString(w, reply)
+	}))
+	defer srv.Close()
+	f := &Factoryd{BaseURL: srv.URL, Token: "shared", HTTP: srv.Client()}
+	text, err := f.Brief(context.Background(), "t-1")
+	if err != nil || text != "Fix the counter\n\nWhy: It undercounts." {
+		t.Fatalf("text %q err %v", text, err)
+	}
+	if method != http.MethodPost || path != "/internal/brief" || auth != "Bearer shared" || body != `{"task_id":"t-1"}` {
+		t.Fatalf("%s %s auth %q body %s", method, path, auth, body)
+	}
+	status, reply = http.StatusNotFound, "card t-1: not found\n"
+	if _, err := f.Brief(context.Background(), "t-1"); err == nil || err.Error() != "card t-1: not found" {
+		t.Fatalf("404: err = %v", err)
+	}
+}
+
+// bearerAuth identifies a bearer token it maps, as the JWT check
+// identifies a sandbox's token; any other bearer, factoryd's shared one
+// too, is no sandbox's.
+type bearerAuth map[string]Identity
+
+func (b bearerAuth) Authenticate(r *http.Request) (Identity, error) {
+	if id, ok := b[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]; ok {
+		return id, nil
+	}
+	return Identity{}, errors.New("not a JWT")
+}
+
+// fakeBriefer answers a card's brief and records whose it read.
+type fakeBriefer struct {
+	read []string
+	err  error
+}
+
+func (f *fakeBriefer) Brief(_ context.Context, taskID string) (string, error) {
+	f.read = append(f.read, taskID)
+	return "the brief of " + taskID, f.err
+}
+
+// A session's worker reads its card's brief on its ServiceAccount token:
+// the brief of the task the token names, whatever the request's headers
+// say. factoryd's shared bearer and an unidentified call read none, and a
+// brief factoryd cannot give answers 502 with its reason.
+func TestWorkerBriefIsTheSessionsOwn(t *testing.T) {
+	for name, tc := range map[string]struct {
+		token, header string
+		err           error
+		status        int
+		body          string
+		read          []string
+	}{
+		"the session's token":              {token: "jwt-t1", status: 200, body: `{"text":"the brief of t1"}`, read: []string{"t1"}},
+		"a header naming another card":     {token: "jwt-t1", header: "t2", status: 200, body: `{"text":"the brief of t1"}`, read: []string{"t1"}},
+		"factoryd's bearer":                {token: testFactorydToken, header: "t2", status: 401, body: "not a JWT"},
+		"no token":                         {status: 401, body: "not a JWT"},
+		"a brief factoryd cannot give out": {token: "jwt-t1", err: errors.New("card t1: not found"), status: 502, body: "the card's brief of t1: card t1: not found", read: []string{"t1"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			briefs := &fakeBriefer{err: tc.err}
+			s := NewServer(ServerOptions{Auth: bearerAuth{"jwt-t1": {TaskID: "t1"}}, Store: newMemStore(), Minter: &fakeMinter{}, LiteLLMURL: "http://127.0.0.1:1",
+				Briefs: briefs, FactorydToken: testFactorydToken})
+			r := httptest.NewRequest(http.MethodGet, "/worker/brief", nil)
+			if tc.token != "" {
+				r.Header.Set("Authorization", "Bearer "+tc.token)
+			}
+			if tc.header != "" {
+				r.Header.Set(HeaderFactoryTask, tc.header)
+				r.Header.Set(HeaderFactoryPurpose, policy.PurposeOperator)
+			}
+			rr := httptest.NewRecorder()
+			s.Routes("test").ServeHTTP(rr, r)
+			if rr.Code != tc.status || !strings.Contains(rr.Body.String(), tc.body) {
+				t.Fatalf("status %d body %q, want %d with %q", rr.Code, rr.Body.String(), tc.status, tc.body)
+			}
+			if !slices.Equal(briefs.read, tc.read) {
+				t.Fatalf("read the briefs of %q, want %q", briefs.read, tc.read)
+			}
+		})
+	}
+}

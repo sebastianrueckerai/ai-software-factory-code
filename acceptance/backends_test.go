@@ -1540,6 +1540,10 @@ func (s *acceptanceStore) CountQueue(context.Context, string) (int, error) { ret
 
 var _ factoryd.Store = (*acceptanceStore)(nil)
 
+func (s *acceptanceStore) CardBrief(ctx context.Context, taskID string) (factoryd.CardBrief, error) {
+	return factoryd.ReadCardBrief(ctx, s, taskID)
+}
+
 // The cases: nothing here opens one.
 func (s *acceptanceStore) OpenCase(context.Context, factoryd.Case) (factoryd.Case, bool, error) {
 	return factoryd.Case{}, false, nil

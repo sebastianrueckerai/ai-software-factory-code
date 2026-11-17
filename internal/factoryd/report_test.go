@@ -623,7 +623,7 @@ func TestRunReportCarriesTheAnswersToItsSession(t *testing.T) {
 	if err := json.Unmarshal([]byte(env["ANSWERS"]), &answers); err != nil || !slices.Equal(answers, []string{answer}) {
 		t.Fatalf("ANSWERS = %s (%v), want [%q]", env["ANSWERS"], err, answer)
 	}
-	if statement := briefText(harness.TaskBrief{Objective: env["OBJECTIVE"], Answers: answers, Report: env["REPORT_GUIDE"]}, "t"); !strings.Contains(statement, "\n- "+answer) {
+	if statement := briefText(harness.TaskBrief{Objective: "the slug breaks on BAD000", Answers: answers, Report: env["REPORT_GUIDE"]}, "t"); !strings.Contains(statement, "\n- "+answer) {
 		t.Fatalf("the statement holds no answer:\n%s", statement)
 	}
 }

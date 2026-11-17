@@ -616,7 +616,9 @@ func (e ErrNoGo) Error() string { return string(e) }
 // run ends with the card that ran the work. The hand-over is claimed
 // before the filing, so of two racing goes only the first files; a
 // filing that fails releases the claim for the retry. The card itself is
-// left as it was: the close that follows records the hand-over.
+// left as it was: the close that follows records the hand-over. A plan's
+// card for a human is none to hand over: its files sit under a workflow
+// directory, whose changes the worker's push refuses.
 func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
@@ -627,6 +629,8 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 		return 0, ErrNoGo(fmt.Sprintf("Card #%d is an agent card: the factory runs it.", t.IssueNumber))
 	case t.Status != "waiting-human":
 		return 0, ErrNoGo(fmt.Sprintf("Card #%d does not wait on you: it is %s.", t.IssueNumber, t.Status))
+	case t.Source == SourcePlan && t.Parent != "":
+		return 0, ErrNoGo(fmt.Sprintf("Card #%d is a plan's card for a human: its files sit under a workflow directory, which no agent may change. Make the change yourself and press Done.", t.IssueNumber))
 	}
 	v := r.cfg.Policy()
 	run, filed, err := r.Routines.RoutineRunOfTask(ctx, taskID)

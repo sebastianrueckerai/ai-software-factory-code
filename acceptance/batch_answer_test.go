@@ -535,6 +535,9 @@ func (s *accBatchStore) ResolveApprovals(ctx context.Context, taskID, kind, stat
 
 // The rest of factoryd's Store: the fixture plan flow touches none of it.
 func (s *accBatchStore) CreateTask(ctx context.Context, t factoryd.Task) error { panic("unused") }
+func (s *accBatchStore) CardBrief(context.Context, string) (factoryd.CardBrief, error) {
+	panic("unused")
+}
 func (s *accBatchStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
 	panic("unused")
 }

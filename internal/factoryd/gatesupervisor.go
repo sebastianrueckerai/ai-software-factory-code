@@ -285,7 +285,12 @@ func (r *Runner) withdrawQuestion(ctx context.Context, taskID, reason string, co
 // error in the bundle instead.
 func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in GateSupervision, pinned policy.Document) (gateBundle, []string) {
 	input, _ := json.Marshal(in.Input) // #nosec G104 -- the workflow's decoded arguments re-encode
-	objective := InboundBrief(harness.TaskBrief{Objective: briefObjective(t.Objective, false), AuthorStanding: t.Standing()}).Objective
+	objective := "unreadable: "
+	if brief, err := r.store.CardBrief(ctx, t.ID); err != nil {
+		objective += err.Error()
+	} else {
+		objective = InboundBrief(harness.TaskBrief{Objective: brief.AgentText(), AuthorStanding: t.Standing()}).Objective
+	}
 	b := gateBundle{Activity: in.Trip.Activity, Attempt: in.Trip.Attempt, Bound: in.Trip.Bound.String(),
 		Elapsed: time.Since(in.Trip.Started).Round(time.Second).String(), Objective: objective,
 		Input: textutil.Truncate(string(input), bundleInput), Allowed: in.allowed()}

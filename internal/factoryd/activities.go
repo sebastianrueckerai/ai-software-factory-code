@@ -1045,11 +1045,17 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if s.docs, err = r.docRepo(ctx, t, in.PolicyVersion); err != nil {
 		return SessionResult{}, named("document repository", err)
 	}
-	plan, spec, role, dirs, err := r.planOf(ctx, t)
+	// the plan the card's parent chain reaches: its card of the card's key
+	// gives the role, whose guide the brief ends with, and the
+	// directories, which the repository map lists
+	_, plan, _, err := cardPlan(ctx, r.store, t)
 	if err != nil {
 		return SessionResult{}, named("plan card", err)
 	}
-	s.spec, s.cardRole, s.directories = spec, role, dirs
+	planned := false
+	if i := slices.IndexFunc(plan.Cards, func(c PlanCard) bool { return c.Key == t.PlanKey }); t.PlanKey != "" && i >= 0 {
+		s.cardRole, s.directories, planned = plan.Cards[i].Role, plan.Cards[i].Directories, true
+	}
 	opened, err := r.openedProofs(ctx, t, plan)
 	if err != nil {
 		return SessionResult{}, named("opened proofs", err)
@@ -1068,12 +1074,9 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		t.Usage.ProofLines = lines
 	}
 	// a carry card's pull request: its head reaches the clone as branch
-	// pull/<n>, and the spec says so, because the sandbox holds no git
-	// credential to fetch it mid-session
-	if t.CarryPR != 0 {
-		s.pull = t.CarryPR
-		s.spec += fmt.Sprintf("\n\nThis card carries pull request #%[1]d: its head is in your clone as branch pull/%[1]d. The sandbox holds no git credential and cannot fetch it, so work from that branch.", t.CarryPR)
-	}
+	// pull/<n>, and the session's facts say so, because the sandbox holds
+	// no git credential to fetch it mid-session
+	s.pull = t.CarryPR
 	// a plan card's first session pins the revision it runs against
 	// (piece 10); the merge refuses a card the plan has since passed
 	if t.Source == SourcePlan && t.Parent != "" && t.PlanRevision == 0 {
@@ -1088,7 +1091,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			t.PlanRevision = rev.Revision
 		}
 	}
-	if t.Source != SourcePlan && t.Standing() == harness.StandingWriter {
+	if !planned && t.Standing() == harness.StandingWriter {
 		_, body, _ := strings.Cut(t.Objective, "\n\n")
 		s.directories = askedDirectories(body)
 	}

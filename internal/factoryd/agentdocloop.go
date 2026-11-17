@@ -121,9 +121,10 @@ func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 
 // agentDocLoopSpans tiles the mode's brief — the session's first user
 // turn — with the builders that render it, every byte claiming one
-// provenance. The issue's text and its author's answers claim fixture:
-// they are the card's own data, not the factory's words. A briefText that
-// drifts fails to locate, which is the rot signal the map runs on.
+// provenance. The card's brief claims its builder, CardBrief.AgentText,
+// and its author's answers claim fixture: they are the card's own data,
+// not the factory's words. A briefText that drifts fails to locate, which
+// is the rot signal the map runs on.
 func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Span {
 	b = InboundBrief(b)
 	open, closing := "<<<ISSUE-"+tag, "ISSUE-"+tag+">>>"
@@ -166,8 +167,12 @@ func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Sp
 			Text: fmt.Sprintf("Issue: %s\n", b.IssueURL)},
 		{Name: "the author's standing", Symbol: "briefText", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: standing},
-		{Name: "the issue's text", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser,
-			Text: "\n" + open + "\n" + b.Objective + "\n" + closing},
+		{Name: "the brief's opening marker", Symbol: "briefText", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: "\n" + open + "\n"},
+		{Name: "the card's brief", Symbol: "CardBrief.AgentText", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: b.Objective},
+		{Name: "the brief's closing marker", Symbol: "briefText", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: "\n" + closing},
 	}
 	if len(b.PosterInfo) > 0 {
 		s = append(s,

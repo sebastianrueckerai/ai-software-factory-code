@@ -240,9 +240,12 @@ var ErrCriterionMet = errors.New("the criterion is met already")
 // criteria gate owns.
 var ErrNotHuman = errors.New("only a human criterion's verdict is the approver's to record")
 
-// planOfStore is filedPlan without the Runner: the newest plan revision
-// of plan task id, and its number.
-func planOfStore(ctx context.Context, store Store, parent, child string) (Plan, int, error) {
+// planOfStore is plan task parent's newest plan revision, the one that
+// filed its cards, and its number; child names the card that reads it. A
+// read that fails is a terminal one.
+func planOfStore(ctx context.Context, store interface {
+	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
+}, parent, child string) (Plan, int, error) {
 	rev, ok, err := store.PlanRevision(ctx, parent, 0)
 	if err != nil || !ok {
 		return Plan{}, 0, cmp.Or(err, error(terminalError("plan %s of card %s has no revision", parent, child)))

@@ -1310,10 +1310,9 @@ func cardFacts(c PlanCard, criteria []PlanCriterion) string {
 // (plan #n), filed for author, with the issues of the cards it depends on
 // (deps, their keys by issue; a card not filed yet by its key alone), the
 // plan's criteria its items cite, and start, the line on the old card's
-// work it starts from, after the facts ("" for none). The integration
-// card carries the plan's spec (piece 7: its brief already does), spec
-// the rendered spec block or "".
-func CardBody(c PlanCard, criteria []PlanCriterion, of string, i, n int, author string, deps []Dependency, spec, start string) string {
+// work it starts from, after the facts ("" for none). The plan's spec is
+// in every card's brief (CardBrief), not in its body.
+func CardBody(c PlanCard, criteria []PlanCriterion, of string, i, n int, author string, deps []Dependency, start string) string {
 	on := make([]string, 0, len(deps))
 	for _, d := range deps {
 		if d.Issue == 0 {
@@ -1327,9 +1326,6 @@ func CardBody(c PlanCard, criteria []PlanCriterion, of string, i, n int, author 
 		c.Key, of, i, n, author, strings.TrimSpace(c.Brief), directories, cmp.Or(strings.Join(on, ", "), "none"), strings.TrimSuffix(facts, "\n"))
 	if start != "" {
 		body += "\n" + start
-	}
-	if spec != "" {
-		body += "\n\nThe spec of the whole feature:\n" + spec
 	}
 	return body
 }
@@ -3310,10 +3306,6 @@ func (r *Runner) restartChildren(ctx context.Context, t Task, repo Repo, revisio
 		for _, d := range dependsOn(order, edges, c.Key) {
 			deps = append(deps, Dependency{Issue: issue[d], Key: d})
 		}
-		spec := ""
-		if c.Role == RoleIntegration {
-			spec = specBlock(p)
-		}
 		// the card's own branch is the old card's work it was filed on; a
 		// read that fails rebriefs it without the line
 		start := ""
@@ -3327,7 +3319,7 @@ func (r *Runner) restartChildren(ctx context.Context, t Task, repo Repo, revisio
 				start = workLine(from)
 			}
 		}
-		body := r.untrusted(t, CardBody(c, p.Criteria, of, place[c.Key], len(order), k.Author, deps, spec, start))
+		body := r.untrusted(t, CardBody(c, p.Criteria, of, place[c.Key], len(order), k.Author, deps, start))
 		if err := r.store.UpdatePlanCardBrief(ctx, k.ID, Task{Objective: r.untrusted(t, c.Title) + "\n\n" + body, Image: c.Image, Rung: c.Rung, Size: c.Size,
 			Why: r.untrusted(t, c.Why), Summary: r.untrusted(t, c.Summary), BriefUnchecked: c.Unchecked}); err != nil {
 			log.Printf("card %s: the plan's revision %d rebriefs it: %v", k.ID, revision, err)
@@ -3954,10 +3946,6 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			deps = append(deps, Dependency{TaskID: cards[d].ID, Issue: cards[d].IssueNumber, Key: d})
 		}
 		title := r.untrusted(t, c.Title)
-		spec := ""
-		if c.Role == RoleIntegration {
-			spec = specBlock(p)
-		}
 		// a row of the key that started or ended runs on its own work; one
 		// that never started is copied to again, which keeps a branch a
 		// filing already put there
@@ -3982,7 +3970,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 				base, start = from.SHA, workLine(from)
 			}
 		}
-		body := r.untrusted(t, CardBody(c, p.Criteria, of, i+1, len(order), approver, deps, spec, start))
+		body := r.untrusted(t, CardBody(c, p.Criteria, of, i+1, len(order), approver, deps, start))
 		row := Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: "standard",
 			BudgetEUR: policy.CardBudget(v.Document.Budget, project.Budget, c.Size, c.Rung == RungFrontier, 0), Status: "queued",
 			Track: policy.TrackDirect, RequiredCapabilities: []string{direct.Class}, SHA: base, Process: process,
@@ -4215,42 +4203,4 @@ func (f *Forgejo) RemoveIssueDependency(ctx context.Context, repo Repo, number i
 	}
 	_, err = f.call(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/dependencies", repo.Owner, repo.Name, number), payload, anySuccess)
 	return err
-}
-
-// filedPlan is plan task parent's newest plan revision, the one that filed
-// its cards, as stored;
-// child names the card the revision's findings name. A read that fails is
-// a terminal one.
-func (r *Runner) filedPlan(ctx context.Context, parent, child string) (Plan, error) {
-	rev, ok, err := r.store.PlanRevision(ctx, parent, 0)
-	if err != nil || !ok {
-		return Plan{}, cmp.Or(err, error(terminalError("plan %s of card %s has no revision", parent, child)))
-	}
-	var p Plan
-	if err := json.Unmarshal(rev.Plan, &p); err != nil {
-		return Plan{}, terminalError("plan %s revision %d: %v", parent, rev.Revision, err)
-	}
-	return p, nil
-}
-
-// planOf is plan card t's plan, its section "The spec and the plan" (its
-// plan's issue text and the plan's summary), its role and its plan row's
-// directories; the zero plan, "" and none for a task no plan filed.
-func (r *Runner) planOf(ctx context.Context, t Task) (p Plan, spec, role string, dirs []string, err error) {
-	if t.Source != SourcePlan || t.Parent == "" {
-		return Plan{}, "", "", nil, nil
-	}
-	plan, _, err := r.task(ctx, t.Parent)
-	if err != nil {
-		return Plan{}, "", "", nil, err
-	}
-	if p, err = r.filedPlan(ctx, t.Parent, t.ID); err != nil {
-		return Plan{}, "", "", nil, err
-	}
-	role = RoleFeature
-	if i := slices.IndexFunc(p.Cards, func(c PlanCard) bool { return c.Key == t.PlanKey }); i >= 0 {
-		role, dirs = p.Cards[i].Role, p.Cards[i].Directories
-	}
-	spec = plan.Objective + "\n\nThe plan's summary: " + strings.TrimSpace(p.Summary)
-	return p, spec, role, dirs, nil
 }

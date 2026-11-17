@@ -1407,11 +1407,10 @@ func TestReportSessionGetsNoRequestTool(t *testing.T) {
 
 // A writer's hand-filed card: the last line "Directories: <dir>, <dir>" of
 // its issue body, key in any case, names the directories of its brief's
-// map (the pod's DIRECTORIES), and the map lists them, so the brief's
-// objective (OBJECTIVE) holds no Directories line (roadmap 201); the
-// title is no line of the body. An outside account's or an alert's line,
-// or a card without one, names none, and its objective keeps every line.
-// Every objective leaves out the intake's Size, Budget and Rung lines.
+// map (the pod's DIRECTORIES); the title is no line of the body. An
+// outside account's or an alert's line, or a card without one, names
+// none. The card's brief keeps every line as the card shows it but the
+// intake's Size, Budget and Rung lines.
 func TestRunSessionPassesTheCardsDirectories(t *testing.T) {
 	line := "Fix the drawer\n\nIt breaks.\nDirectories: internal/console, internal/policy\n"
 	kept := "Fix the drawer\n\nIt breaks.\nDirectories: internal/console, internal/policy"
@@ -1420,8 +1419,9 @@ func TestRunSessionPassesTheCardsDirectories(t *testing.T) {
 		writer            bool
 		want, brief       string
 	}{
-		{line, "webhook", true, `["internal/console","internal/policy"]`, "Fix the drawer\n\nIt breaks."},
-		{"Fix the drawer\n\nDirectories: a\nDIRECTORIES:  internal/console ,, internal/gone", "webhook", true, `["internal/console","internal/gone"]`, "Fix the drawer"},
+		{line, "webhook", true, `["internal/console","internal/policy"]`, kept},
+		{"Fix the drawer\n\nDirectories: a\nDIRECTORIES:  internal/console ,, internal/gone", "webhook", true, `["internal/console","internal/gone"]`,
+			"Fix the drawer\n\nDirectories: a\nDIRECTORIES:  internal/console ,, internal/gone"},
 		{"Fix the drawer\n\nThe directories: internal/x are no line of their own", "webhook", true, "", "Fix the drawer\n\nThe directories: internal/x are no line of their own"},
 		{"Directories: internal/console", "webhook", true, "", "Directories: internal/console"},
 		{"Directories: internal/console\n\nIt breaks.", "webhook", true, "", "Directories: internal/console\n\nIt breaks."},
@@ -1429,13 +1429,13 @@ func TestRunSessionPassesTheCardsDirectories(t *testing.T) {
 		{line, SourceAlert, true, "", kept},
 		{"fix it", "webhook", true, "", "fix it"},
 		{"Fix the drawer\n\nSize: medium\nDirectories: internal/console\n\nIt breaks.\nBudget: 3 EUR\n\nSize: small\nRung: cheap, a one-line fix", "webhook", true,
-			`["internal/console"]`, "Fix the drawer\n\nIt breaks."},
+			`["internal/console"]`, "Fix the drawer\n\nDirectories: internal/console\n\nIt breaks."},
 		{"Fix the drawer\n\nIt breaks.\nSize: huge\nRung: soon", "webhook", false, "", "Fix the drawer\n\nIt breaks.\nSize: huge\nRung: soon"},
 	} {
 		task := Task{ID: "t1", Status: "running", Objective: tc.objective, Repository: "sf/repo", SHA: "base", Source: tc.source,
 			Author: "sebastian", AuthorWriter: tc.writer, RequiredCapabilities: []string{"coder"}, Track: "direct"}
 		kube := newFakeKube()
-		runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+		runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
 		if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
 			pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
 			t.Fatal(err)
@@ -1444,8 +1444,12 @@ func TestRunSessionPassesTheCardsDirectories(t *testing.T) {
 		if got, ok := env["DIRECTORIES"]; got != tc.want || ok != (tc.want != "") {
 			t.Errorf("%q from %s (writer %v): DIRECTORIES = %q (set %v), want %q", tc.objective, tc.source, tc.writer, got, ok, tc.want)
 		}
-		if env["OBJECTIVE"] != tc.brief {
-			t.Errorf("%q from %s (writer %v): OBJECTIVE = %q, want %q", tc.objective, tc.source, tc.writer, env["OBJECTIVE"], tc.brief)
+		b, err := store.CardBrief(context.Background(), "t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := b.AgentText(); got != tc.brief {
+			t.Errorf("%q from %s (writer %v): the card's brief = %q, want %q", tc.objective, tc.source, tc.writer, got, tc.brief)
 		}
 	}
 }
@@ -3863,9 +3867,8 @@ func TestSandboxUIDIsThePodsAndTheImages(t *testing.T) {
 // ANSWERS (7) holds m = 55002 and POSTER_INFO (11) 54998. 21 answers, the
 // newest of 55003 bytes before 19 of 4000 and an old one, leave out the
 // old one by the cap and the oldest of 4000 by the bytes, in one note. A
-// text over its room is cut on a character with "…" (3
-// bytes) to fill the room: OBJECTIVE's is 131061 bytes, so "a" and 65531
-// two-byte "ä" (131063) keep 131057; REPORT_GUIDE's 131058, SPEC's 131066.
+// text over its room is cut on a character with "…" (3 bytes) to fill
+// the room: REPORT_GUIDE's is 131058 bytes.
 func TestWorkerPodSpecFitsTheEnv(t *testing.T) {
 	env := func(task Task, s sessionSpec) map[string]string {
 		pod := (&Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}).workerPodSpec(task, s)
@@ -3908,13 +3911,8 @@ func TestWorkerPodSpecFitsTheEnv(t *testing.T) {
 		{"DIRECTORIES whole", Task{}, sessionSpec{directories: slices.Concat(full, z(2959))}, "DIRECTORIES", jsonOf(slices.Concat(full, z(2959))), nil},
 		{"DIRECTORIES one byte over", Task{}, sessionSpec{directories: slices.Concat(full, z(2960))}, "DIRECTORIES", jsonOf(full),
 			[]string{"1 of the 33 directories, the last"}},
-		{"OBJECTIVE whole", Task{Objective: a("a", 131061)}, sessionSpec{}, "OBJECTIVE", a("a", 131061), nil},
-		{"OBJECTIVE cut on a character", Task{Objective: "a" + a("ä", 65531)}, sessionSpec{}, "OBJECTIVE", "a" + a("ä", 65528) + "…",
-			[]string{"the issue's text past its first 131057 of 131063 bytes"}},
 		{"REPORT_GUIDE cut", Task{}, sessionSpec{report: a("a", 131059)}, "REPORT_GUIDE", a("a", 131055) + "…",
 			[]string{"the report's guide past its first 131055 of 131059 bytes"}},
-		{"SPEC cut", Task{}, sessionSpec{spec: a("a", 131067), cardRole: "web"}, "SPEC", a("a", 131063) + "…",
-			[]string{"the spec and the plan past its first 131063 of 131067 bytes"}},
 	} {
 		tc.task.ID, tc.s.id = "t1", "s-1"
 		vars := env(tc.task, tc.s)

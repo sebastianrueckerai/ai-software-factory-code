@@ -606,8 +606,8 @@ type sessionSpec struct {
 	// standing overrides the task's author standing: a report reads its
 	// parent's issue
 	standing string
-	// spec and cardRole are a plan's card's brief section and role
-	spec, cardRole string
+	// cardRole is a plan's card's role, whose guide its brief ends with
+	cardRole string
 	// directories are the card's, which the worker maps from its clone
 	directories []string
 	// pull is the pull request a carry card carries, whose head the clone
@@ -779,7 +779,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		}
 		s.messageToken = rand.Text()
 		s.facts = SessionFacts{BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), ReserveEUR: s.policy.Limits.GateReserve(), TimeLeft: time.Until(deadline),
-			Attempt: s.attempt, Sessions: s.sessions, Size: t.Size, LargeLines: s.policy.Risk.LargeLines, Usage: t.Usage}.Line()
+			Attempt: s.attempt, Sessions: s.sessions, Size: t.Size, LargeLines: s.policy.Risk.LargeLines, Usage: t.Usage, Carries: s.pull}.Line()
 		if err := r.kube.CreatePod(ctx, ns, podName, r.workerPodSpec(t, s)); err != nil {
 			return out, fmt.Errorf("create pod: %w", err)
 		}
@@ -2715,7 +2715,6 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	env := []map[string]any{
 		{"name": "TASK_ID", "value": t.ID},
 		{"name": "SESSION_ID", "value": s.id},
-		{"name": "OBJECTIVE", "value": fit.text("OBJECTIVE", briefObjective(t.Objective, len(s.directories) > 0), "the issue's text")},
 		{"name": "REPOSITORY", "value": t.Repository},
 		{"name": "REPO_SHA", "value": s.startRef},
 		{"name": "BRANCH", "value": taskBranch(t)},
@@ -2794,8 +2793,8 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	if s.facts != "" {
 		env = append(env, map[string]any{"name": "FACTS", "value": s.facts})
 	}
-	if s.spec != "" {
-		env = append(env, map[string]any{"name": "SPEC", "value": fit.text("SPEC", s.spec, "the spec and the plan")}, map[string]any{"name": "CARD_ROLE", "value": s.cardRole})
+	if s.cardRole != "" {
+		env = append(env, map[string]any{"name": "CARD_ROLE", "value": s.cardRole})
 	}
 	if len(s.directories) > 0 {
 		env = append(env, map[string]any{"name": "DIRECTORIES", "value": fit.list("DIRECTORIES", s.directories, len(s.directories), false, "last", "directories")})

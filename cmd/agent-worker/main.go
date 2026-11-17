@@ -286,8 +286,24 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 	if s.base, s.mainHead, err = prepareRepo(s.repoDir, s.env); err != nil {
 		return s, startError{"prepare repo", err}
 	}
+	s.oc = &factoryd.Opencode{
+		WorkDir:    s.repoDir,
+		GatewayURL: s.env.gatewayURL,
+		TokenFile:  s.env.tokenFile,
+		Model:      s.env.model,
+		Stronger:   s.env.strongerModel,
+		Cheap:      s.env.cheapModel,
+		Budget:     factoryd.TokenBudget{AnswerTokens: s.env.answerTokens, HeadroomTokens: s.env.headroomTokens},
+		Steps:      s.env.steps,
+	}
+	card, err := s.oc.CardText(ctx)
+	if err != nil {
+		return s, startError{"brief", transient{err}}
+	}
+	s.env.title, _, _ = strings.Cut(card, "\n")
+	card, leftOut := fitCard(card, s.env.leftOut)
 	s.brief = harness.TaskBrief{
-		Objective:      s.env.objective,
+		Objective:      card,
 		Repository:     s.env.repository,
 		SHA:            s.env.repoSHA,
 		Findings:       s.env.findings,
@@ -297,9 +313,8 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 		AuthorStanding: s.env.authorStanding,
 		Report:         s.env.report,
 		Tools:          s.env.tools,
-		Spec:           s.env.spec,
 		CardRole:       s.env.cardRole,
-		LeftOut:        s.env.leftOut,
+		LeftOut:        leftOut,
 		Facts:          s.env.facts,
 		Image:          s.env.image,
 	}
@@ -311,16 +326,6 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 	}
 	if s.brief.Map != "" {
 		log("repository map: %d directories, %d bytes", len(s.env.directories), len(s.brief.Map))
-	}
-	s.oc = &factoryd.Opencode{
-		WorkDir:    s.repoDir,
-		GatewayURL: s.env.gatewayURL,
-		TokenFile:  s.env.tokenFile,
-		Model:      s.env.model,
-		Stronger:   s.env.strongerModel,
-		Cheap:      s.env.cheapModel,
-		Budget:     factoryd.TokenBudget{AnswerTokens: s.env.answerTokens, HeadroomTokens: s.env.headroomTokens},
-		Steps:      s.env.steps,
 	}
 	if err := s.oc.Prepare(ctx, harness.SandboxEnv{}, s.brief); err != nil {
 		return s, startError{"prepare brief", err}
@@ -349,6 +354,21 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 		}
 	}
 	return s, nil
+}
+
+// maxCard bounds the card's brief in the session's text, as an
+// environment variable once bounded the issue's text: the rest is the
+// card's and the issue's, and leftOut says so.
+const maxCard = 128 << 10
+
+// fitCard is card within maxCard, and leftOut with the note on what the
+// bound left out.
+func fitCard(card string, leftOut []string) (string, []string) {
+	if len(card) <= maxCard {
+		return card, leftOut
+	}
+	cut := textutil.Truncate(card, maxCard-len("…"))
+	return cut, append(slices.Clip(leftOut), fmt.Sprintf("the card's brief past its first %d of %d bytes", len(cut)-len("…"), len(card)))
 }
 
 // runReport runs a report session: the agent writes, nothing is committed
@@ -532,7 +552,10 @@ const (
 // only; pushURL/pushToken write the task branch to the fork, the only place
 // a worker can write, with the token factoryd posts at the push.
 type workerEnv struct {
-	taskID, sessionID, objective, repository, repoSHA, branch string
+	taskID, sessionID, repository, repoSHA, branch string
+	// title is the card's title, the first line of its brief, which the
+	// session reads from the gateway; the commit's subject
+	title string
 	// startWip (START_WIP) says repoSHA is an interim push's commit: a
 	// session that changes nothing still lands one finished commit on it
 	startWip                               bool
@@ -554,8 +577,8 @@ type workerEnv struct {
 	// report is a report session's guide (MODE report): no
 	// push URL or token, nothing pushed, the last message the result
 	report string
-	// spec and cardRole are a plan's card's (SPEC, CARD_ROLE)
-	spec, cardRole string
+	// cardRole is a plan's card's role (CARD_ROLE)
+	cardRole string
 	// directories are the card's (DIRECTORIES), for the brief's map
 	directories []string
 	// migrationGlobs are the policy's migration directory globs
@@ -603,7 +626,6 @@ func loadEnv() (workerEnv, error) {
 	str := func(name string) string { return os.Getenv(name) }
 	e.taskID = str("TASK_ID")
 	e.sessionID = str("SESSION_ID")
-	e.objective = str("OBJECTIVE")
 	e.repository = str("REPOSITORY")
 	e.repoSHA = str("REPO_SHA")
 	e.startWip = str("START_WIP") == "1"
@@ -619,13 +641,13 @@ func loadEnv() (workerEnv, error) {
 	e.cheapModel = str("CHEAP_MODEL")
 	e.home = str("HOME")
 	e.author, e.authorStanding = str("AUTHOR"), str("AUTHOR_STANDING")
-	e.spec, e.cardRole = str("SPEC"), str("CARD_ROLE")
+	e.cardRole = str("CARD_ROLE")
 	e.docsDir = str("DOCS_DIR")
 	e.companionDirs = strings.Fields(str("COMPANION_DIRS"))
 	e.facts = str("FACTS")
 	e.egressCanary, e.egressDirectIP = str("EGRESS_CANARY"), str("EGRESS_DIRECT_IP")
 	required := map[string]string{
-		"TASK_ID": e.taskID, "OBJECTIVE": e.objective, "REPOSITORY": e.repository,
+		"TASK_ID": e.taskID, "REPOSITORY": e.repository,
 		"BRANCH": e.branch, "GATEWAY_URL": e.gatewayURL, "TOKEN_FILE": e.tokenFile, "MODEL": e.model,
 		"EGRESS_CANARY": e.egressCanary, "EGRESS_DIRECT_IP": e.egressDirectIP,
 	}
@@ -1375,13 +1397,10 @@ func dropScratchReproTests(own string, env []string, e workerEnv) error {
 }
 
 // commitMessage is the worker's commit's message: the task and the
-// issue's title, sanitised, and the trailers that attribute the commit,
+// card's title, sanitised, and the trailers that attribute the commit,
 // written here from the session's env and never by the agent.
 func commitMessage(e workerEnv) string {
-	subject := e.objective
-	if i := strings.IndexAny(subject, "\r\n"); i >= 0 {
-		subject = subject[:i]
-	}
+	subject := e.title
 	if len(subject) > 72 {
 		subject = subject[:72]
 	}

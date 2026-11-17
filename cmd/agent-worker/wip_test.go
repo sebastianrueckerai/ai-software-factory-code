@@ -63,7 +63,7 @@ func seedWipSession(t *testing.T) (h http.Handler, wip *wipServe, dir string, e 
 	run("clone", "-q", remote, holderSeed)
 	holder = holderSeed
 
-	e = workerEnv{taskID: "t1", sessionID: "s-1", author: "sebastian", objective: "o",
+	e = workerEnv{taskID: "t1", sessionID: "s-1", author: "sebastian", title: "o",
 		repoSHA: base, branch: "factory/t-wip", repoURL: remote, pushURL: pushURL}
 	dir = filepath.Join(t.TempDir(), "repo")
 	if err := cloneBase(e, dir); err != nil {

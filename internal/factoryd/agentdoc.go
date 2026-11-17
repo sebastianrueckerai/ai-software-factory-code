@@ -111,11 +111,16 @@ func agentDocFiles() []fileDiff {
 	}}
 }
 
-// agentDocObjective is the fixture task's objective as the brief builder
+// agentDocCardBrief is the fixture task's card brief: an outside account's
+// issue, its title and its why line.
+var agentDocCardBrief = CardBrief{Text: BriefText{Title: "Fix the counter so it counts the skipped rows too.",
+	Why: "The nightly report undercounts the rows it skipped."}}
+
+// agentDocObjective is the fixture task's brief as the brief builder
 // writes it.
 func agentDocObjective() harness.TaskBrief {
 	return InboundBrief(harness.TaskBrief{
-		Objective:      briefObjective("Fix the counter so it counts the skipped rows too.", false),
+		Objective:      agentDocCardBrief.AgentText(),
 		Repository:     "owner/name",
 		SHA:            "fixture-sha",
 		Author:         "fixture-author",

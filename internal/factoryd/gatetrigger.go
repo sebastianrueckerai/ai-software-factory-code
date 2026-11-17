@@ -65,7 +65,7 @@ func (r *Runner) checkinPRFacts(ctx context.Context, t Task) (*CheckInPRFacts, e
 	if t.Source != SourcePlan || t.Parent == "" {
 		return nil, nil
 	}
-	p, err := r.filedPlan(ctx, t.Parent, t.ID)
+	p, _, err := planOfStore(ctx, r.store, t.Parent, t.ID)
 	if err != nil {
 		return nil, err
 	}

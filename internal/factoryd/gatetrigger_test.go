@@ -8,7 +8,7 @@ import (
 
 // gatePlanCard seeds a criteria plan whose integration card t-int is open
 // and holds PR 12 at head c7, and returns the store, the card and the
-// plan as filedPlan hands it over.
+// plan as planOfStore hands it over.
 func gatePlanCard(t *testing.T, settled bool) (*fakeStore, Task, Plan) {
 	t.Helper()
 	s := seedVerdictPlan(t, "t-plan", "t-int", "open")

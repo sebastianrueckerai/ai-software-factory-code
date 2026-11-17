@@ -825,6 +825,10 @@ func (s *fakeStore) UpdatePlanCardBrief(ctx context.Context, id string, card Tas
 	return nil
 }
 
+func (s *fakeStore) CardBrief(ctx context.Context, taskID string) (CardBrief, error) {
+	return ReadCardBrief(ctx, s, taskID)
+}
+
 func (s *fakeStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	t, ok := s.tasks[id]
 	return t, ok, nil

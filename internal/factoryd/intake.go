@@ -703,28 +703,21 @@ func isRulingID(s string) bool {
 	return true
 }
 
-// briefObjective is objective as a model's brief carries it: its body
-// without the lines the intake reads into the card's fields (Size,
-// Budget, Rung, Ships, Carries, Roadmap), and when mapped, without the
-// card's directories line, which the brief's repository map lists
-// (roadmap 201). Every other line stands as its author wrote it.
-func briefObjective(objective string, mapped bool) string {
-	title, body, ok := strings.Cut(objective, "\n\n")
-	if !ok {
-		return objective
-	}
+// briefBody is a card's full text as its brief carries it: without the
+// lines the intake reads into the card's fields (Size, Budget, Rung,
+// Ships, Carries, Roadmap). Every other line stands as its author wrote
+// it.
+func briefBody(body string) string {
 	var kept strings.Builder
 	for l := range strings.Lines(body) {
 		size, eur := askedBudget(l)
 		rung, _ := askedRung(l)
 		ruling, _ := askedShips(l)
-		key, _, _ := strings.Cut(l, ":")
-		dirs := strings.EqualFold(strings.TrimSpace(key), "directories") || strings.TrimSpace(key) == cardDirectories
-		if size == "" && eur == 0 && rung == "" && ruling == "" && askedCarry(l) == 0 && askedRoadmapItem(l) == 0 && (!mapped || !dirs) {
+		if size == "" && eur == 0 && rung == "" && ruling == "" && askedCarry(l) == 0 && askedRoadmapItem(l) == 0 {
 			kept.WriteString(l)
 		}
 	}
-	return strings.TrimRight(title+"\n\n"+strings.TrimLeft(kept.String(), "\n"), "\n")
+	return strings.Trim(kept.String(), "\n")
 }
 
 // pushPayload is a push webhook's body: the ref, the repository and the

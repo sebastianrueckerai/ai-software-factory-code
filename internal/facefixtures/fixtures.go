@@ -324,18 +324,30 @@ const plan1947ID = "t-f654da2d4912"
 // plan1947Cards are plan #1947's cards: the three the board read, then the
 // ones the gallery's own plan's cards stand for.
 var plan1947Cards = []factoryd.PlanCard{
-	{Key: "narrow-doclose-409", Role: factoryd.RoleFoundation, Title: "The doClose refusal narrowed to plans that hold criteria: the review finding answered on branch card/2084", Size: "small"},
+	{Key: "narrow-doclose-409", Role: factoryd.RoleFoundation, Title: "The doClose refusal narrowed to plans that hold criteria: the review finding answered on branch card/2084", Size: "small",
+		Why:     "A plan without criteria cannot close today, because the close refusal asks every plan for criteria.",
+		Summary: "The close refusal applies only to plans that hold criteria. A test closes a plan with none and a plan with two."},
 	{Key: "manifests-name-the-proofs", Role: factoryd.RoleFeature, Title: "The two reproducible manifests name the proofs trees: the red goes green and the merge records the six verdicts",
-		Size: "small", DependsOn: []string{"narrow-doclose-409"}},
+		Size: "small", DependsOn: []string{"narrow-doclose-409"},
+		Why:     "The criteria gate finds no proofs, because the two reproducible manifests do not name the proofs trees.",
+		Summary: "Both manifests list the proofs trees. The gate then finds the six proofs and records their verdicts at the merge."},
 	{Key: "reconciled-head-merge", Role: factoryd.RoleIntegration, Title: "The reconciled green head walked to its merge press: the six verdicts recorded",
 		Size: "medium", DependsOn: []string{"narrow-doclose-409", "manifests-name-the-proofs"},
-		Brief: "Walk the reconciled green head of card/2084 to its merge press: the press runs GateCriteria and records the plan's six criteria verdicts."},
+		Why:     "The plan's six criteria are judged only when one real change reaches its merge press.",
+		Summary: "The reconciled head of the foundation's work goes to its merge press. The press runs the criteria gate and records six verdicts.",
+		Brief:   "Walk the reconciled green head of card/2084 to its merge press: the press runs GateCriteria and records the plan's six criteria verdicts."},
 	{Key: "settled-parks", Role: factoryd.RoleFeature, Title: "The acceptance proved: settled parks and pushed stops, together", Size: "small",
-		Brief: "Turn the plan's acceptance into end-to-end tests under acceptance/: a settled park stays settled, and a pushed stop keeps its push. Both run under bash check with PostgreSQL."},
+		Why:     "A settled park that wakes again asks a human the same question twice.",
+		Summary: "End-to-end tests under acceptance/ prove that a settled park stays settled and a pushed stop keeps its push.",
+		Brief:   "Turn the plan's acceptance into end-to-end tests under acceptance/: a settled park stays settled, and a pushed stop keeps its push. Both run under bash check with PostgreSQL."},
 	{Key: "drawer-files", Role: factoryd.RoleFeature, Title: "Drawer: the Files tab lists the pull request's changes", Size: "small",
-		Brief: "List the pull request's changed files with their additions and deletions in the drawer's Files tab."},
+		Why:     "A human cannot see what a pull request changed without leaving the board.",
+		Summary: "The drawer's Files tab lists each changed file with its added and removed lines.",
+		Brief:   "List the pull request's changed files with their additions and deletions in the drawer's Files tab."},
 	{Key: "delta-1", Role: factoryd.RoleFeature, Title: "The face contract on the two kinds the conformance run named", Size: "small", Round: 2,
-		Brief: "The conformance run named the resource face and the plan face; bring both under the face contract."},
+		Why:     "The conformance run found two kinds whose faces break the face contract.",
+		Summary: "The resource face and the plan face follow the face contract. The conformance run passes on both.",
+		Brief:   "The conformance run named the resource face and the plan face; bring both under the face contract."},
 }
 
 // plan1947 is plan #1947 as the board read it: done, named "empty commit
@@ -364,7 +376,8 @@ func (b *builder) plan1947() {
 }
 
 // planChild is card n of plan #1947 under key, in status, as the plan
-// files it: the card's title, then its body (CardBody).
+// files it: the card's title, then its body (CardBody), and the card's
+// why line and summary.
 func (b *builder) planChild(n int64, status, key string, age time.Duration) factoryd.Task {
 	i := slices.IndexFunc(plan1947Cards, func(c factoryd.PlanCard) bool { return c.Key == key })
 	c := plan1947Cards[i]
@@ -372,9 +385,9 @@ func (b *builder) planChild(n int64, status, key string, age time.Duration) fact
 	for _, d := range c.DependsOn {
 		deps = append(deps, factoryd.Dependency{Key: d})
 	}
-	body := factoryd.CardBody(c, nil, "plan #1947", i+1, len(plan1947Cards), "controller", deps, "", "")
+	body := factoryd.CardBody(c, nil, "plan #1947", i+1, len(plan1947Cards), "controller", deps, "")
 	t := b.card(n, status, factoryd.SourcePlan, age, c.Title+"\n\n"+body)
-	t.Parent, t.PlanKey, t.Author, t.BudgetEUR = plan1947ID, key, "controller", 4
+	t.Parent, t.PlanKey, t.Author, t.BudgetEUR, t.Why, t.Summary = plan1947ID, key, "controller", 4, c.Why, c.Summary
 	return t
 }
 
@@ -1261,9 +1274,10 @@ func (b *builder) cards() {
 		return b.issue(n, "running", 4*time.Hour, "Redo the census fixes on current main: PR #1909 went stale under the face work",
 			"PR #1909 went stale while the face work landed. Redo its census fixes on current main and open a new pull request.")
 	})
-	// #2100 as the board read it, its objective as captured
+	// #2100 as the board read it, its objective as captured, filed before
+	// cards had a why line and a summary
 	t2100 := b.planChild(2100, "queued", "narrow-doclose-409", 75*time.Minute)
-	t2100.ID, t2100.Objective, t2100.CeilingEUR = "t-d913f819b959", liveText(2100), 18
+	t2100.ID, t2100.Objective, t2100.CeilingEUR, t2100.Why, t2100.Summary = "t-d913f819b959", liveText(2100), 18, "", ""
 	b.out = append(b.out, Fixture{Group: GroupCard, Kind: "plan child: foundation", Task: t2100, Facts: facts(t2100, "")})
 	feature := b.planChild(b.next(), "running", "drawer-files", 26*time.Hour)
 	b.out = append(b.out, Fixture{Group: GroupCard, Kind: "plan child: feature", Task: feature, Facts: facts(feature, "")})

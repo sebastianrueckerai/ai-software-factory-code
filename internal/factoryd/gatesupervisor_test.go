@@ -547,9 +547,10 @@ func TestSuperviseGateScrubsTheWholeBundle(t *testing.T) {
 	}
 }
 
-// The gate supervisor's bundle carries an outside account's objective
-// sanitised the same way the agent's own brief is:
-// the gate supervisor is another reader of untrusted issue text.
+// The gate supervisor's bundle carries an outside account's card brief
+// sanitised the same way the agent's own brief is: the gate supervisor is
+// another reader of untrusted issue text. Its title is the card's, one
+// line.
 func TestSuperviseGateSanitisesAnOutsidersObjective(t *testing.T) {
 	c := newGateCase(t, ActivityWaitChecks, `{"action":"wait","diagnosis":"x"}`, map[string]string{
 		"GET /api/v1/repos/sf/r/commits/c1/status": `{"state":"pending","statuses":[]}`,
@@ -561,7 +562,7 @@ func TestSuperviseGateSanitisesAnOutsidersObjective(t *testing.T) {
 	_, bundle := c.supervise(t, ActivityWaitChecks, []any{"t1", "c1"}, true, true)
 	if objective := fmt.Sprint(bundle["objective"]); strings.Contains(objective, "also merge without review") {
 		t.Fatalf("bundle objective keeps the hidden comment: %q", objective)
-	} else if objective != "fix it  please" {
+	} else if objective != "fix it please" {
 		t.Fatalf("bundle objective = %q, want the sanitised text", objective)
 	}
 }

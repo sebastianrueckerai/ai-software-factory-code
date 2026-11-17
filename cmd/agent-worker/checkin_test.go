@@ -246,10 +246,11 @@ func TestBriefWait(t *testing.T) {
 }
 
 // readyToStart sets the environment start() reads for a session on a
-// seeded repo.
+// seeded repo, its gateway one that answers the card's brief.
 func readyToStart(t *testing.T) {
 	t.Helper()
 	setRequiredEnv(t)
+	briefGateway(t, http.StatusOK, `{"text":"Do it\n\nWhy: It is due."}`)
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	// the seeded repo is its own base; an ambient REPO_SHA from the
 	// harness names a commit it does not carry
@@ -258,6 +259,78 @@ func readyToStart(t *testing.T) {
 	t.Setenv("HOME", home)
 	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o700); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// briefGateway is the session's gateway (GATEWAY_URL): GET /worker/brief
+// answers status and body to the bearer of the session's token file
+// (TOKEN_FILE), 401 to any other.
+func briefGateway(t *testing.T, status int, body string) {
+	t.Helper()
+	token := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(token, []byte("sa-jwt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/worker/brief" || r.Header.Get("Authorization") != "Bearer sa-jwt" {
+			http.Error(w, "not the session's read", http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(status)
+		fmt.Fprint(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("GATEWAY_URL", srv.URL)
+	t.Setenv("TOKEN_FILE", token)
+}
+
+// The session reads its card's brief from the gateway on its own token:
+// the brief's text stands between the session's own parts, and its title
+// is the commit's subject. A brief the gateway cannot give fails the
+// start at the brief step, as a service that may answer later does.
+func TestStartReadsTheCardsBriefFromTheGateway(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git binary")
+	}
+	messagePortFree(t)
+	old := checkinWait
+	t.Cleanup(func() { checkinWait = old })
+	checkinWait = 10 * time.Millisecond
+
+	readyToStart(t)
+	s, err := start(context.Background(), nolog, seedCheckinRepo(t), nil, func(workerEnv) egressProbe { return closedSandbox(t) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.closeTelemetry()
+	s.stopMessages()
+	if s.brief.Objective != "Do it\n\nWhy: It is due." || s.env.title != "Do it" {
+		t.Fatalf("brief %q, title %q, want the gateway's text and its first line", s.brief.Objective, s.env.title)
+	}
+
+	readyToStart(t)
+	briefGateway(t, http.StatusBadGateway, "the card's brief of t1: factoryd answered 503")
+	s, err = start(context.Background(), nolog, seedCheckinRepo(t), nil, func(workerEnv) egressProbe { return closedSandbox(t) })
+	s.closeTelemetry()
+	s.stopMessages()
+	if res := startFailed(err); res.Step != "brief" || !res.Transient || !strings.Contains(res.Summary, "status 502: the card's brief of t1: factoryd answered 503") {
+		t.Fatalf("start = %+v, want a transient failure at the brief step", res)
+	}
+}
+
+// A card's brief past the bound is cut on a character, and the brief says
+// what the bound left out among factoryd's notes.
+func TestFitCardCutsTheBriefPastItsBound(t *testing.T) {
+	if card, left := fitCard("short", []string{"a note"}); card != "short" || !slices.Equal(left, []string{"a note"}) {
+		t.Fatalf("fitCard(short) = %q, %q", card, left)
+	}
+	long := "a" + strings.Repeat("ä", maxCard/2)
+	card, left := fitCard(long, nil)
+	if want := "a" + strings.Repeat("ä", maxCard/2-2) + "…"; card != want {
+		t.Fatalf("fitCard cut %d bytes, want %d", len(card), len(want))
+	}
+	if want := []string{fmt.Sprintf("the card's brief past its first %d of %d bytes", maxCard-3, maxCard+1)}; !slices.Equal(left, want) {
+		t.Fatalf("left out %q, want %q", left, want)
 	}
 }
 

@@ -540,6 +540,9 @@ func main() {
 	// the gateway's hand-over of a session's digest: the chat's Small
 	// digest, on the card's account
 	mux.Handle("POST /internal/digest", requireBearer(gatewayToken, runner.DigestHandler(operator)))
+	// the gateway's read of a session's card brief, which the worker's
+	// GET /worker/brief answers
+	mux.Handle("POST /internal/brief", requireBearer(gatewayToken, factoryd.CardBriefHandler(store)))
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
 		if err != nil {
