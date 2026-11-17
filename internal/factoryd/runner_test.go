@@ -614,6 +614,10 @@ type forgejoHub struct {
 	branches map[string]string
 	// files are the raw files by "<ref>:<path>", unlisted: 404
 	files map[string]string
+	// statuses are combined-status bodies by commit, unlisted: no check
+	// reported; statusReads are the commits read, in order
+	statuses    map[string]string
+	statusReads []string
 }
 
 func (h *forgejoHub) minted() []string {
@@ -659,6 +663,11 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 				return
 			}
 			io.WriteString(w, body)
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/commits/") && strings.HasSuffix(r.URL.Path, "/status"):
+			_, sha, _ := strings.Cut(r.URL.Path, "/commits/")
+			sha = strings.TrimSuffix(sha, "/status")
+			h.statusReads = append(h.statusReads, sha)
+			io.WriteString(w, cmp.Or(h.statuses[sha], statusBody("")))
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/") && strings.Count(r.URL.Path, "/") == 5:
 			fmt.Fprint(w, `{"default_branch":"main"}`)
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/") && strings.Count(r.URL.Path, "/") == 5:

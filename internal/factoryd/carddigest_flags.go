@@ -73,7 +73,10 @@ type ownedWait struct {
 // ladder backoff ages from the time its retry is due. A run is quiet
 // since it last moved, by a timeline line or a status move, or answered,
 // by a model call: a session writes no line between its check-ins. A
-// wait at the human, a step at rung 3 among them, has no row.
+// card in gate merge-queue owns the wait only at the front of its queue:
+// one behind another, or held back by its plan, waits for a card that
+// owns the wait. A wait at the human, a step at rung 3 among them, has
+// no row.
 func (d CardDigest) ownedWait() (ownedWait, bool) {
 	h := d.Head
 	quiet := h.StatusSince
@@ -89,7 +92,9 @@ func (d CardDigest) ownedWait() (ownedWait, bool) {
 		return ownedWait{"dependency", 0, h.StatusSince}, true
 	case h.Status == "in-review" && d.lastStep == "merge_failed":
 		return ownedWait{"merge_retry", 0, d.LastStepAt}, true
-	case h.Status == "in-review" && h.Gate != GateApproval:
+	case h.Status == "in-review" && h.Gate == GateMergeQueue && h.MergeQueue != nil && h.MergeQueue.Ahead == 0:
+		return ownedWait{"gate", 0, cmp.Or(h.Since, h.StatusSince)}, true
+	case h.Status == "in-review" && h.Gate != GateApproval && h.Gate != GateMergeQueue:
 		return ownedWait{"gate", 0, cmp.Or(h.Since, h.StatusSince)}, true
 	case h.Status == "running" && d.providerRefused() && d.frozen():
 		return ownedWait{"provider_limit", 0, d.refusedAt}, true

@@ -227,3 +227,52 @@ func TestWorkflowReplaysAHistoryRecordedBeforeTheCheckinDecisionUnchanged(t *tes
 		}
 	}
 }
+
+// [prechange_run_replays] A queued card whose criteria gate stopped for a
+// human during its turn, recorded on a dev server before the
+// human-wait-queue change: it held the turn through the wait, with no
+// LeaveQueue between the stop and the answer, and its approval took a turn
+// at each approval, the second while its failed merge waited to be tried
+// again. It carries no marker, so GetVersion answers DefaultVersion there,
+// and the replay schedules the activities the recording holds, in its
+// order and with its inputs.
+func TestReplayHumanWaitQueueBefore(t *testing.T) {
+	hist := loadHistory(t, filepath.Join("testdata", "devserver-human-wait-queue-before.json"))
+	for _, e := range hist.Events {
+		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"human-wait-queue"` {
+			t.Fatal("the recording holds the human-wait-queue marker: it is no run from before")
+		}
+	}
+	calls, inputs := scheduledActivities(hist)
+	var queue []string
+	for _, a := range calls {
+		switch a {
+		case ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue, ActivityGateCriteria, ActivityOpenTrip, ActivityRequestApproval, ActivityMerge:
+			queue = append(queue, a)
+		}
+	}
+	want := []string{ActivityEnterQueue, ActivitySyncWithMain, ActivityGateCriteria, ActivityOpenTrip, ActivityGateCriteria,
+		ActivityRequestApproval, ActivityLeaveQueue, ActivityEnterQueue, ActivitySyncWithMain, ActivityMerge,
+		ActivityEnterQueue, ActivitySyncWithMain, ActivityMerge, ActivityLeaveQueue}
+	if !slices.Equal(queue, want) {
+		t.Fatalf("the recording's turns and gates = %q, want %q", queue, want)
+	}
+	var got, gotInputs []string
+	replaySplice(t, hist.Events, &activitiesSeen{got: &got, inputs: &gotInputs})
+	if !slices.Equal(got, calls) {
+		t.Fatalf("the replay scheduled %q, the recording %q", got, calls)
+	}
+	for i := range got {
+		// a replay does not compare activity input; the gate's input ends in the checked head, empty on these runs
+		want := inputs[i]
+		switch {
+		case got[i] == ActivityGateCriteria:
+			want += "\n\"\""
+		case got[i] == ActivitySuperviseGate && strings.Contains(want, `"Activity":"GateCriteria"`):
+			want = strings.Replace(want, `"c1"]`, `"c1",""]`, 1)
+		}
+		if gotInputs[i] != want {
+			t.Fatalf("activity %d (%s): the replay recorded\n%s\nthe recording\n%s", i+1, got[i], gotInputs[i], want)
+		}
+	}
+}

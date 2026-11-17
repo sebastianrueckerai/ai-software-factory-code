@@ -303,8 +303,8 @@ type scriptedTools struct{ out map[string]string }
 func TestCheckinTimeCapIsTheFailedCheckinsStop(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9"}
 	chat := &scriptedChat{delay: time.Second, answers: []CheckinResponse{{ToolName: "grep", ToolArgs: map[string]any{"pattern": "x"}}}}
-	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, 20*time.Millisecond)
-	const reason = "check-in time cap reached after 20ms"
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, 400*time.Millisecond)
+	const reason = "check-in time cap reached after 400ms"
 	if out.Decision != RungHandUp || out.ReasonKind != CheckTimeCap || out.Reason != reason {
 		t.Fatalf("decision = %q, kind %q, reason %q; want the time cap's stop under its own kind", out.Decision, out.ReasonKind, out.Reason)
 	}
@@ -338,16 +338,16 @@ func (c *toolsUntilLast) Call(ctx context.Context, _, _ string, in CheckinReques
 }
 
 // A model that would read until its calls run out still answers within
-// the time cap, long before the call cap. The answer is due at 400ms, the
+// the time cap, long before the call cap. The answer is due at 700ms, the
 // cap less half of it, the policy's per-call time being longer; calls
-// take 120ms. Evidence calls start at 0, 120ms and 240ms, when one more
-// still ends before 400ms; at 360ms none would, so the fourth call is
+// take 180ms. Evidence calls start at 0, 180ms and 360ms, when one more
+// still ends before 700ms; at 540ms none would, so the fourth call is
 // the forced answer call, and no evidence call is started only to be
 // cut.
 func TestCheckinTimeCapLeavesTheAnswerCall(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9"}
-	chat := &toolsUntilLast{delay: 120 * time.Millisecond}
-	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 20, 1.5, 1, 2000, 800*time.Millisecond)
+	chat := &toolsUntilLast{delay: 180 * time.Millisecond}
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 20, 1.5, 1, 2000, 1400*time.Millisecond)
 	if out.Decision != CheckHandover || out.Handover != "go on" {
 		t.Fatalf("outcome = %+v, want the answer's handover", out)
 	}

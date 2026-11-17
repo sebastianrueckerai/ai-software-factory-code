@@ -281,8 +281,10 @@ func startOptions(taskID string) client.StartWorkflowOptions {
 //
 // It also forgets webhook deliveries older than DeliveryRetention, sends
 // the case signals no send delivered (resendCaseSignals) and reconciles
-// every project's cases (ReconcileCases).
-func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, completion *Completion, completed func(ctx context.Context, taskID string) (bool, error)) {
+// every project's cases (ReconcileCases). A card of a running kind that
+// waits on a human with no live ask older than the repository's at_human
+// bound gets its ask back (healParkedAsk) through runner.
+func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, completion *Completion, completed func(ctx context.Context, taskID string) (bool, error), runner *Runner) {
 	// first, so an answer's own signal reaches its run before the comments
 	// the resyncs send again: a run that took the comment first would take it
 	// as a plain continue and lose the answer's action
@@ -357,6 +359,9 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 					log.Printf("heal pass: resync task %s: %s", t.ID, maskedErr(err))
 				}
 			}
+			if status == "waiting-human" {
+				healParkedAsk(ctx, store, runner, in.Policy, t)
+			}
 			if status == "waiting-deps" {
 				healDependencyWait(ctx, store, wf, t)
 			}
@@ -368,6 +373,71 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 	signalQueueHeads(ctx, store, wf)
 	endStrayRuns(ctx, store, wf, in.Policy, time.Now())
 	reconcileCases(ctx, store, in.Projects)
+}
+
+// healParkedAsk gives card t its ask back when it waits on a human with
+// none: the residue an answer row that named no action left when it ended
+// a reply-alone ask, or an ask a lost write never opened. Once the wait is
+// older than the repository's at_human bound, the healed-run path opens
+// the ask's own case again (healedTrip's no-case arm, the stop the card
+// asked last), with its face on the card's issue, so the console's answer
+// paths find an ask to press. A card with a live ask, and one whose wait
+// is inside the bound, wait as they are.
+func healParkedAsk(ctx context.Context, store Store, r *Runner, tree func() policy.Tree, t Task) {
+	if t.Kind == "human" || t.Kind == KindChat {
+		return
+	}
+	if r == nil || tree == nil {
+		return
+	}
+	ask, err := store.NewestAskCase(ctx, t.ID)
+	if err != nil {
+		log.Printf("heal pass: the live ask of task %s: %s", t.ID, maskedErr(err))
+		return
+	}
+	if ask.ID != 0 {
+		return
+	}
+	since, err := asklessSince(ctx, store, t.ID)
+	if err != nil {
+		log.Printf("heal pass: the wait of task %s: %s", t.ID, maskedErr(err))
+		return
+	}
+	if time.Since(since) <= tree().WaitsOf(t.Repository).AtHuman {
+		return
+	}
+	if _, err := r.healedTrip(ctx, t, TripInput{TaskID: t.ID, Reason: HealedReason}, ""); err != nil {
+		log.Printf("heal pass: re-ask task %s: %s", t.ID, maskedErr(err))
+		return
+	}
+	log.Printf("heal pass: task %s waited on a human with no ask since %s: the ask is opened again", t.ID, since.UTC().Format(time.RFC3339))
+}
+
+// asklessSince is when card taskID's wait with no live ask began: the end
+// of its newest ended case, else the time of its last ask's face, else
+// the zero time — no ask ever stood, so the wait is as old as the card.
+func asklessSince(ctx context.Context, store Store, taskID string) (time.Time, error) {
+	cases, err := store.CasesOf(ctx, taskID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	var since time.Time
+	for _, c := range cases { // oldest first, so the newest ended case wins
+		if c.ResolvedAt != nil {
+			since = *c.ResolvedAt
+		}
+	}
+	if !since.IsZero() {
+		return since, nil
+	}
+	asks, err := store.AskAnchors(ctx, taskID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if len(asks) > 0 {
+		return asks[len(asks)-1].Asked, nil
+	}
+	return time.Time{}, nil
 }
 
 // endStrayRuns terminates the run of every card that has been final for

@@ -73,6 +73,9 @@ type DigestHead struct {
 	QueueReason                   string
 	QueueSince                    *time.Time
 	Blind, Criteria               int
+	// MergeQueue is the card's place in its project's merge queue, nil
+	// when it holds no queue row.
+	MergeQueue *QueuePlace
 }
 
 // DigestStep is one step of the card's life. Actor is who acted; for a
@@ -311,6 +314,13 @@ func (r *Runner) digestHead(ctx context.Context, t Task, events []Event) (Digest
 		return DigestHead{}, err
 	}
 	h.HoldsEUR = own.Held
+	places, err := r.store.MergeQueuePlaces(ctx)
+	if err != nil {
+		return DigestHead{}, err
+	}
+	if p, ok := places[t.ID]; ok {
+		h.MergeQueue = &p
+	}
 	return h, nil
 }
 

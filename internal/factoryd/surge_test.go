@@ -338,7 +338,7 @@ func TestHealPassStartsAndWakesAResumedWaiter(t *testing.T) {
 	wf := &fakeWorkflows{}
 	forgejo, _ := resyncForgejoStub(t, "sebastian")
 	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent",
-		Timeline: &Timeline{Objects: &fakeObjectStore{}}}, nil, noneCompleted)
+		Timeline: &Timeline{Objects: &fakeObjectStore{}}}, nil, noneCompleted, nil)
 	if !slices.Equal(wf.started, []string{"tw"}) || len(wf.signals) != 1 || !strings.HasPrefix(wf.signals[0], "tw "+SignalSlotFree) {
 		t.Fatalf("starts %v, signals %v; want tw started and woken with %s", wf.started, wf.signals, SignalSlotFree)
 	}

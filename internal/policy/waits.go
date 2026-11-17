@@ -8,7 +8,7 @@ import (
 )
 
 // Waits are the bounds of the waits the AI owns: a wait past its bound
-// opens a case. A wait at the human has no bound here.
+// opens a case. A wait at the human is bounded by AtHuman alone.
 type Waits struct {
 	// Queued is how long a card may stay queued with its admission
 	// reason. Default 2h.
@@ -42,6 +42,9 @@ type Waits struct {
 	// CI's own bound, the longest job's timeout plus a margin. Default
 	// 50m.
 	Checks time.Duration `yaml:"checks,omitempty" json:"checks,omitempty"`
+	// AtHuman is how long a card may wait at the human with no live ask
+	// before the heal pass asks again. Default 5m.
+	AtHuman time.Duration `yaml:"at_human,omitempty" json:"at_human,omitempty"`
 	// NoPushSessions is how many sessions in a row may end without a push.
 	// Default 3.
 	NoPushSessions int `yaml:"no_push_sessions,omitempty" json:"no_push_sessions,omitempty"`
@@ -50,7 +53,7 @@ type Waits struct {
 // DefaultWaits fills what the files leave out, bound by bound.
 var DefaultWaits = Waits{Queued: 2 * time.Hour, Dependency: 48 * time.Hour, Gate: 6 * time.Hour, MergeRetry: time.Hour,
 	ProviderBackoff: 30 * time.Minute, ProviderRecheck: 15 * time.Minute, ProviderLimit: 24 * time.Hour,
-	RunQuiet: 30 * time.Minute, RungAnswer: 35 * time.Minute, Checks: 50 * time.Minute, NoPushSessions: 3}
+	RunQuiet: 30 * time.Minute, RungAnswer: 35 * time.Minute, Checks: 50 * time.Minute, AtHuman: 5 * time.Minute, NoPushSessions: 3}
 
 // maxWait is the longest bound a file may give a wait.
 const maxWait = 7 * 24 * time.Hour
@@ -62,10 +65,10 @@ type waitBound struct {
 }
 
 // bounds are w's timed bounds by their keys.
-func (w *Waits) bounds() [10]waitBound {
-	return [10]waitBound{{"queued", &w.Queued}, {"dependency", &w.Dependency}, {"gate", &w.Gate}, {"merge_retry", &w.MergeRetry},
+func (w *Waits) bounds() [11]waitBound {
+	return [11]waitBound{{"queued", &w.Queued}, {"dependency", &w.Dependency}, {"gate", &w.Gate}, {"merge_retry", &w.MergeRetry},
 		{"provider_backoff", &w.ProviderBackoff}, {"provider_recheck", &w.ProviderRecheck}, {"provider_limit", &w.ProviderLimit},
-		{"run_quiet", &w.RunQuiet}, {"rung_answer", &w.RungAnswer}, {"checks", &w.Checks}}
+		{"run_quiet", &w.RunQuiet}, {"rung_answer", &w.RungAnswer}, {"checks", &w.Checks}, {"at_human", &w.AtHuman}}
 }
 
 // Bound is the bound of one wait kind by its key, such as "queued" or
@@ -138,13 +141,14 @@ type waitsJSON struct {
 	RunQuiet        string `json:"run_quiet,omitempty"`
 	RungAnswer      string `json:"rung_answer,omitempty"`
 	Checks          string `json:"checks,omitempty"`
+	AtHuman         string `json:"at_human,omitempty"`
 	NoPushSessions  int    `json:"no_push_sessions,omitempty"`
 }
 
 // strings are j's bounds in the order of Waits.bounds.
-func (j *waitsJSON) strings() [10]*string {
-	return [10]*string{&j.Queued, &j.Dependency, &j.Gate, &j.MergeRetry, &j.ProviderBackoff, &j.ProviderRecheck, &j.ProviderLimit,
-		&j.RunQuiet, &j.RungAnswer, &j.Checks}
+func (j *waitsJSON) strings() [11]*string {
+	return [11]*string{&j.Queued, &j.Dependency, &j.Gate, &j.MergeRetry, &j.ProviderBackoff, &j.ProviderRecheck, &j.ProviderLimit,
+		&j.RunQuiet, &j.RungAnswer, &j.Checks, &j.AtHuman}
 }
 
 // MarshalJSON is Waits as waitsJSON, its bounds strings, as Limits'.

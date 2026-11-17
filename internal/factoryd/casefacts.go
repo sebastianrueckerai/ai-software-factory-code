@@ -114,9 +114,7 @@ type CaseFacts struct {
 	Report bool `json:"report,omitempty"`
 	// Criteria: the card is the integration or a delta card of a plan whose
 	// criteria a human judges on its merge
-	Criteria bool `json:"criteria,omitempty"`
-	// ApprovalKind is the kind of the approval request a case of a plan's criteria or a merge holds
-	ApprovalKind string    `json:"approval_kind,omitempty"`
+	Criteria     bool      `json:"criteria,omitempty"`
 	Pushed       bool      `json:"pushed,omitempty"` // a session pushed a branch head
 	Dependencies []DepFact `json:"dependencies,omitempty"`
 	Planner      bool      `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
@@ -212,7 +210,6 @@ func (f CaseFacts) noSession(refund, waiting bool) (asked CaseKind, read bool) {
 // atCase weighs f for case c: its kind, and the gate a gate stop names.
 func (f *CaseFacts) atCase(c Case) {
 	f.Kind, f.Gate = c.Kind, ""
-	f.ApprovalKind, _ = c.Facts["approval_kind"].(string)
 	f.RiskClass, _ = c.Facts["class"].(string)
 	f.Factory, _ = c.Facts["factory"].(bool)
 	if f.Killed == nil && c.Facts["killed"] != nil {

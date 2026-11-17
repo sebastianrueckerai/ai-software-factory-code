@@ -43,9 +43,6 @@ func CaseFace(c Case, steps []CaseStep, f CaseFacts, ask CaseAsk, answered *time
 		}
 	}
 	face.Info = cmp.Or(c.Brief, askInfo(ask))
-	if answered != nil {
-		face.Info = strings.TrimSpace(face.Info + "\n\nLast answer processed: " + answered.UTC().Format("2006-01-02 15:04") + " UTC")
-	}
 	if by, _ := ask.Detail["recommended_by"].(string); by != "" {
 		face.Recommendation, _ = ask.Detail["recommendation"].(string)
 		face.Source = by
