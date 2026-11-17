@@ -128,15 +128,19 @@ type CaseFacts struct {
 	Plan         string `json:"plan,omitempty"` // the plan's task id, for a plan or a plan's card
 	// PlanIssue, PlanName and PlanStatus name the plan of a plan's card and
 	// Siblings are its other cards, by issue; all empty for a direct card.
-	PlanIssue    int64         `json:"plan_issue,omitempty"`
-	PlanName     string        `json:"plan_name,omitempty"`
-	PlanStatus   string        `json:"plan_status,omitempty"`
-	Siblings     []SiblingFact `json:"siblings,omitempty"`
-	Running      bool          `json:"running,omitempty"` // a session is live: the card runs and holds a live session row
-	Autonomy     string        `json:"autonomy"`
-	PoolLeft     policy.Draw   `json:"pool_left"`
-	CardDrawLeft policy.Draw   `json:"card_draw_left"`
-	Partial      []string      `json:"partial,omitempty"` // the readers that failed, by name; an entry may carry the read's error after the name and ": "
+	PlanIssue  int64         `json:"plan_issue,omitempty"`
+	PlanName   string        `json:"plan_name,omitempty"`
+	PlanStatus string        `json:"plan_status,omitempty"`
+	Siblings   []SiblingFact `json:"siblings,omitempty"`
+	Running    bool          `json:"running,omitempty"` // a session is live: the card runs and holds a live session row
+	// AtHuman: the case waits at the human. A rung's draw on an agent's
+	// question then comes from a human's thread, not from a rung working
+	// the case by itself.
+	AtHuman      bool        `json:"at_human,omitempty"`
+	Autonomy     string      `json:"autonomy"`
+	PoolLeft     policy.Draw `json:"pool_left"`
+	CardDrawLeft policy.Draw `json:"card_draw_left"`
+	Partial      []string    `json:"partial,omitempty"` // the readers that failed, by name; an entry may carry the read's error after the name and ": "
 	// Flag and Wait are the monitor flag a monitor case holds and the wait it
 	// names; RunGone: the card is live and runs a workflow, and none runs.
 	Flag    string `json:"flag,omitempty"`
@@ -211,9 +215,10 @@ func (f CaseFacts) noSession(refund, waiting bool) (asked CaseKind, read bool) {
 	return "", true
 }
 
-// atCase weighs f for case c: its kind, and the gate a gate stop names.
+// atCase weighs f for case c: its kind, whether it waits at the human, and
+// the gate a gate stop names.
 func (f *CaseFacts) atCase(c Case) {
-	f.Kind, f.Gate = c.Kind, ""
+	f.Kind, f.Gate, f.AtHuman = c.Kind, "", c.Status == CaseAtHuman
 	f.ApprovalKind, _ = c.Facts["approval_kind"].(string)
 	f.RiskClass, _ = c.Facts["class"].(string)
 	f.Factory, _ = c.Facts["factory"].(bool)

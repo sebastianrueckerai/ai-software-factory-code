@@ -259,7 +259,7 @@ func TestRung1FundOnAnAgentsQuestionHandsItUp(t *testing.T) {
 	budget := g.budget(t)
 	out := g.trip(t, AgentAsks+"Which store keeps the snapshots?\nWhy: two fit\nRecommendation: SQLite")
 	g.settle()
-	refusal := "- fund: not offered: this case is the agent's question: a draw answers nothing, so hand it up with the draw as your recommendation"
+	refusal := "- fund: not offered: this case is the agent's question, which a draw does not answer: answer it, or hand it up"
 	if len(g.chat.gots) == 0 || !strings.Contains(g.chat.gots[0].Input, refusal) {
 		t.Fatalf("rung 1's statement does not say %q", refusal)
 	}

@@ -78,8 +78,8 @@ type Action struct {
 var questionKinds = []CaseKind{CaseAgentEscalate, CaseAgentRequestInfo}
 
 // capDraws are the draws that lift a cap: on a question's case they buy the
-// room and leave the question open, the human's alone, since a rung's
-// draw would leave the case open with nobody on it.
+// room and leave the question open, so a rung working the case by itself
+// may take none: it would leave the case open with nobody on it.
 var capDraws = []string{ActExtend, ActFund, ActRaiseCeiling}
 
 // atCap is f as the human meets it: a question of the agent's that no
@@ -650,8 +650,13 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 		}
 	}
 	switch {
-	case rung < 3 && slices.Contains(questionKinds, f.Kind) && slices.Contains(capDraws, a.Name):
-		return "this case is the agent's question: a draw answers nothing, so hand it up with the draw as your recommendation"
+	case rung < 3 && !f.AtHuman && slices.Contains(questionKinds, f.Kind) && slices.Contains(capDraws, a.Name):
+		// a rung working the case by itself: a draw would leave it open
+		// with nobody on it
+		if k := f.atCap().Kind; k == CaseBudgetFloor || k == CaseSessionCap || k == CaseAgentTimeCap {
+			return "this case is the agent's question, which a draw does not answer: hand it up with the draw as your recommendation"
+		}
+		return "this case is the agent's question, which a draw does not answer: answer it, or hand it up"
 	case rung == 3:
 		f = f.atCap()
 	}

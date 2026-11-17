@@ -319,11 +319,11 @@ func TestActRefusesASessionsOnlyExtendAtTheTimeCap(t *testing.T) {
 	}
 }
 
-// An agent's question at its session cap is the cap's case first: rung 2's
-// fund is refused, so a rung hands such a case up, while the human's extend
-// draws the session and leaves the question open, unanswered and
-// unsignalled, and the face stored again is the question's, with the
-// agent's answers.
+// An agent's question at its session cap is the cap's case first. Rung 2's
+// fund on the case while it sits on rung 2 is refused, so the rung hands
+// it up. The human's extend draws the session and leaves the question
+// open, unanswered and unsignalled, and the face stored again is the
+// question's, with the agent's answers.
 func TestAnExtendOnAQuestionAtTheCapLeavesTheQuestionOpen(t *testing.T) {
 	g := newFactsRig(t)
 	ctx := context.Background()
@@ -331,7 +331,7 @@ func TestAnExtendOnAQuestionAtTheCapLeavesTheQuestionOpen(t *testing.T) {
 		Facts: map[string]any{"trip": "trip-7", "reason": AgentAsks + "Which store keeps the snapshots?\nWhy: two fit\nRecommendation: SQLite", "choices": []any{"Postgres", "SQLite"}}}
 	g.store.cases = append(g.store.cases, q)
 	card := g.store.tasks["t1"]
-	card.SpentEUR, card.HeldEUR = 1, 0
+	card.SpentEUR, card.HeldEUR, card.CeilingEUR = 1, 0, 10
 	f, err := g.r.FactsAtCase(ctx, card, q)
 	if err != nil {
 		t.Fatal(err)
@@ -350,11 +350,16 @@ func TestAnExtendOnAQuestionAtTheCapLeavesTheQuestionOpen(t *testing.T) {
 	if len(capped.Answers) == 0 || capped.Answers[0].Action != ActExtend || capped.Story.Happened != "The agent asks: Which store keeps the snapshots?" {
 		t.Fatalf("at the cap the face is %q with %v and story %+v; want the cap's extend first and the question as a story line", capped.Ask, capped.Answers, capped.Story)
 	}
+	// the ladder's rung 2 working the case on its own rung draws nothing
+	fund := ActInput{TaskID: "t1", CaseID: 7, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}}
+	at := len(g.store.cases) - 1
+	g.store.cases[at].Status = CaseOpen
 	var refused ErrActRefused
-	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 7, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}}); !errors.As(err, &refused) ||
-		!strings.HasPrefix(err.Error(), "this case is the agent's question: a draw answers nothing, so hand it up with the draw as your recommendation") {
-		t.Fatalf("rung 2's fund on the question = %v, want it refused, to be handed up", err)
+	if _, err := g.r.Act(ctx, fund); !errors.As(err, &refused) ||
+		!strings.HasPrefix(err.Error(), "this case is the agent's question, which a draw does not answer: hand it up with the draw as your recommendation") {
+		t.Fatalf("rung 2's fund on the question on its rung = %v, want it refused, to be handed up", err)
 	}
+	g.store.cases[at].Status = CaseAtHuman
 	f, _ = g.r.FactsAtCase(ctx, card, q)
 	res, err := capped.Answers[0].Press(Facts{CaseFacts: f, Card: card, Case: q}, nil, "")
 	if err != nil {
@@ -374,6 +379,32 @@ func TestAnExtendOnAQuestionAtTheCapLeavesTheQuestionOpen(t *testing.T) {
 	}
 	if stored := g.store.faces[7]; stored == nil || stored["ask"] != open.Ask {
 		t.Fatalf("the stored face is %v; want the question's, stored again", stored)
+	}
+}
+
+// The project agent's fund in a human's thread on a card whose question
+// waits at the human, out of money, draws: the question stays open,
+// unanswered, and its face is stored again, the question's once the money
+// funds a session. 4.50 of 5.00 EUR spent leaves 0.50 EUR, under the
+// rig's opening of about 1 EUR; 2.00 EUR more leaves 2.50 EUR.
+func TestTheChatsFundOnAWaitingQuestionDrawsAndLeavesItOpen(t *testing.T) {
+	g := newFactsRig(t)
+	ctx := context.Background()
+	q := Case{ID: 7, TaskID: "t1", Kind: CaseAgentEscalate, Status: CaseAtHuman,
+		Facts: map[string]any{"trip": "trip-7", "reason": AgentAsks + "Which store keeps the snapshots?\nWhy: two fit\nRecommendation: SQLite", "choices": []any{"Postgres", "SQLite"}}}
+	g.store.cases = append(g.store.cases, q)
+	card := g.store.tasks["t1"]
+	card.HeldEUR, card.CeilingEUR, card.Usage.Attempts = 0, 10, 1
+	g.store.tasks["t1"] = card
+	out, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 7, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 2.0}}})
+	if err != nil {
+		t.Fatalf("the chat's fund = %v, want it drawn", err)
+	}
+	if got := g.store.tasks["t1"].BudgetEUR; got != 7 || len(g.store.resolved) != 0 || g.store.cases[len(g.store.cases)-1].Status != CaseAtHuman || out.Drawn.EUR != 2 {
+		t.Fatalf("budget %.2f, drawn %+v, resolved %v; want 7.00 EUR and the question open", got, out.Drawn, g.store.resolved)
+	}
+	if stored := g.store.faces[7]; stored == nil || stored["ask"] != "Which store keeps the snapshots?" {
+		t.Fatalf("the stored face is %v; want the question's", stored)
 	}
 }
 
