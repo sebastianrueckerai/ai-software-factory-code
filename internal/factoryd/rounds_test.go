@@ -691,6 +691,8 @@ func deltaRig(t *testing.T, model *fakeLiteLLM, bound time.Duration, questions .
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// the integration card merged last, at the head its gate judged: its rows judge main
+	mergedAtJudgedHead(store, "t-integration", time.Now().Add(time.Hour))
 	r.supervisor = testSupervisorModel(model.srv(t).URL)
 	return r, store, objects, fj
 }
@@ -1623,27 +1625,64 @@ func TestRoundCheckEndsAClosedPlanInItsLastRound(t *testing.T) {
 	}
 }
 
+// deltaInputOf is the criteria the delta round's first call handed the
+// planner.
+func deltaInputOf(t *testing.T, model *fakeLiteLLM) []deltaCriterion {
+	t.Helper()
+	model.mu.Lock()
+	defer model.mu.Unlock()
+	if len(model.chats) == 0 {
+		t.Fatal("the round called no model")
+	}
+	body, _ := json.Marshal(model.chats[0])
+	var req struct {
+		Messages []struct{ Content string } `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatal(err)
+	}
+	var in struct {
+		Criteria []deltaCriterion `json:"criteria"`
+	}
+	_, input, _ := strings.Cut(req.Messages[len(req.Messages)-1].Content, "The input, as JSON:\n")
+	if err := json.Unmarshal([]byte(input), &in); err != nil {
+		t.Fatalf("the round's input: %v", err)
+	}
+	return in.Criteria
+}
+
 // The delta round hands the planner each open criterion with its state: unmet
-// from its row, or never judged, the criteria gate's reason beside it.
+// from its row, or never judged, beside it the reason of the criteria gate's
+// run on the plan as it stands. A run on an earlier state of the plan, its
+// mark another, gives no reason.
 func TestTheDeltaRoundNamesEachCriterionsStateAndTheGatesReason(t *testing.T) {
 	const reason = "The required checks were still running on abcdef12 after 50 minutes"
 	for _, tc := range []struct {
 		name         string
-		never        bool
+		run          string // the gate run's mark: "" for none, "now" for the plan as it stands
 		state, wantR string
 		evidence     string
 	}{
-		{"unmet", false, "unmet", "", "a redirect counts twice in internal/stats"},
-		{"never judged", true, "never_judged", reason, ""},
+		{"unmet", "", "unmet", "", "a redirect counts twice in internal/stats"},
+		{"never judged", "now", "never_judged", reason, ""},
+		{"never judged, the run on an earlier state", "rev 0", "never_judged", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			model := &fakeLiteLLM{content: `{"card": {"title": "x"}}`}
 			r, store, _, _ := deltaRig(t, model, 0)
-			if tc.never {
+			if tc.run != "" {
 				store.criteriaVerdicts["t-integration"] = slices.DeleteFunc(store.criteriaVerdicts["t-integration"], func(v CriterionVerdict) bool { return v.Criterion == "redirect_302" })
+				mark := tc.run
+				if mark == "now" {
+					g, err := planGateOf(ctx, store, "t-plan", store.tasks["t-integration"])
+					if err != nil {
+						t.Fatal(err)
+					}
+					mark = g.mark
+				}
 				if _, err := store.Record(ctx, Event{Repository: "sf/code", TaskID: "t-plan", Kind: EventCriteriaGateRun, Actor: FactoryDecider, Via: ViaFactoryd,
-					Detail: map[string]any{"task": "t-integration", "outcome": gateStarted, "reason": reason}}); err != nil {
+					Detail: map[string]any{"task": "t-integration", "outcome": gateStarted, "reason": reason, "cards": mark}}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1652,31 +1691,37 @@ func TestTheDeltaRoundNamesEachCriterionsStateAndTheGatesReason(t *testing.T) {
 				t.Fatal(err)
 			}
 			r.draftDelta(ctx, t1, repo, []PlanCatch{{TaskID: "t-plan", Revision: 1, Kind: CatchDelta, Finder: FinderApprover, Detail: "redirect_302 grant 9"}})
-			model.mu.Lock()
-			defer model.mu.Unlock()
-			if len(model.chats) == 0 {
-				t.Fatal("the round called no model")
+			criteria := deltaInputOf(t, model)
+			if len(criteria) != 1 || criteria[0].ID != "redirect_302" {
+				t.Fatalf("criteria = %+v, want redirect_302 alone", criteria)
 			}
-			body, _ := json.Marshal(model.chats[0])
-			var req struct {
-				Messages []struct{ Content string } `json:"messages"`
-			}
-			if err := json.Unmarshal(body, &req); err != nil {
-				t.Fatal(err)
-			}
-			var in struct {
-				Criteria []deltaCriterion `json:"criteria"`
-			}
-			_, input, _ := strings.Cut(req.Messages[len(req.Messages)-1].Content, "The input, as JSON:\n")
-			if err := json.Unmarshal([]byte(input), &in); err != nil {
-				t.Fatalf("the round's input: %v", err)
-			}
-			if len(in.Criteria) != 1 || in.Criteria[0].ID != "redirect_302" {
-				t.Fatalf("criteria = %+v, want redirect_302 alone", in.Criteria)
-			}
-			if c := in.Criteria[0]; c.State != tc.state || c.Reason != tc.wantR || c.Evidence != tc.evidence {
+			if c := criteria[0]; c.State != tc.state || c.Reason != tc.wantR || c.Evidence != tc.evidence {
 				t.Errorf("criterion = state %q reason %q evidence %q, want %q %q %q", c.State, c.Reason, c.Evidence, tc.state, tc.wantR, tc.evidence)
 			}
 		})
+	}
+}
+
+// The delta round reads the criteria as the plan's close does: once the
+// integration card's merge is no record of the head its gate judged, its
+// rows judge no head on main and settle nothing, so links_crud and
+// all_green, met on those rows, are open beside redirect_302, and each is
+// never judged on rows that settle.
+func TestTheDeltaRoundReadsTheCriteriaAsTheCloseDoes(t *testing.T) {
+	ctx := context.Background()
+	model := &fakeLiteLLM{content: `{"card": {"title": "x"}}`}
+	r, store, _, _ := deltaRig(t, model, 0)
+	unmergeCard(store, "t-integration")
+	t1, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.draftDelta(ctx, t1, repo, []PlanCatch{{TaskID: "t-plan", Revision: 1, Kind: CatchDelta, Finder: FinderApprover, Detail: "redirect_302 grant 9"}})
+	var got []string
+	for _, c := range deltaInputOf(t, model) {
+		got = append(got, c.ID+" "+c.State)
+	}
+	if want := []string{"links_crud never_judged", "redirect_302 never_judged", "all_green never_judged"}; !slices.Equal(got, want) {
+		t.Fatalf("criteria = %q, want %q", got, want)
 	}
 }

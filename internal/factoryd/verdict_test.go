@@ -294,6 +294,24 @@ func TestGrantCriteria(t *testing.T) {
 	}
 }
 
+// A grant counts the open criteria as the plan's close does: once the
+// integration card's merge is no record of the head its gate judged, the
+// review's met on c1 judges no head on main and settles nothing, so the
+// grant covers c1 beside c2 and c3.
+func TestGrantCriteriaCountsAsTheCloseDoes(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+	unmergeCard(s, "t-int")
+	if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := GrantCriteria(ctx, s, "t-plan", "sebastian", 7); err != nil || n != 3 {
+		t.Fatalf("grant = %d, %v; want 3 (c1, c2, c3), nil", n, err)
+	}
+}
+
 // featurePlan is a plan with the judgement criteria c1 and c2 and three
 // cards: A cites c1, B cites c2, and I, the integration card, cites both.
 func featurePlan() Plan {

@@ -672,9 +672,10 @@ func (r *Runner) CloseHeldPlan(ctx context.Context, id, by, note string, approve
 }
 
 // GrantCriteria writes the catch rows of an approver's grant of one more
-// bounded card on plan task id: one delta due per criterion still open, so
-// the sweep's round drafts it. It reports how many criteria the grant
-// covers; 0 when every criterion is met or waived already.
+// bounded card on plan task id: one delta due per criterion still open on
+// the rows that settle it (planGate), so the sweep's round drafts it. It
+// reports how many criteria the grant covers; 0 when every criterion is
+// met or waived already.
 func GrantCriteria(ctx context.Context, store Store, id, by string, approval int64) (int, error) {
 	t, ok, err := store.Task(ctx, id)
 	if err != nil {
@@ -695,8 +696,12 @@ func GrantCriteria(ctx context.Context, store Store, id, by string, approval int
 	if err != nil {
 		return 0, err
 	}
+	g, err := planGateOf(ctx, store, id, integration)
+	if err != nil {
+		return 0, err
+	}
 	var details []string
-	for _, c := range openCriteria(p, rows) {
+	for _, c := range openCriteria(p, g.settling(rows)) {
 		details = append(details, fmt.Sprintf("%s grant %d", c.ID, approval))
 	}
 	if len(details) == 0 {
@@ -1388,15 +1393,16 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 		log.Printf("plan %s: the delta round: %v", t.ID, err)
 		return
 	}
-	open := openCriteria(p, verdicts)
-	runs, err := r.gateRuns(ctx, t.ID, integration.ID)
+	g, err := planGateOf(ctx, r.store, t.ID, integration)
 	if err != nil {
-		log.Printf("plan %s: the delta round: %v", t.ID, err)
+		log.Printf("plan %s: the delta round: %s", t.ID, r.Scrub.String(err.Error()))
 		return
 	}
+	verdicts = g.settling(verdicts)
+	open := openCriteria(p, verdicts)
 	var gateReason string
-	if len(runs) > 0 {
-		gateReason, _ = runs[0].Detail["reason"].(string)
+	if len(g.runs) > 0 {
+		gateReason, _ = g.runs[0].Detail["reason"].(string)
 	}
 	var criteria []deltaCriterion
 	for _, c := range open {
@@ -1821,14 +1827,10 @@ const criteriaGateBound = reproActivityTimeout
 // minute.
 const CriteriaGatePassBound = criteriaGateBound + time.Minute
 
-// gateRuns are the runs of the criteria gate on integration card task of
-// plan id on record, newest first: the events rows, which the timeline's
-// lines only mirror. A later round's integration card has runs of its own.
-func (r *Runner) gateRuns(ctx context.Context, id, task string) ([]Event, error) {
-	return gateRunsOf(ctx, r.store, id, task)
-}
-
-// gateRunsOf is gateRuns on store.
+// gateRunsOf are the runs of the criteria gate on integration card task
+// of plan id on record in store, newest first: the events rows, which the
+// timeline's lines only mirror. A later round's integration card has runs
+// of its own.
 func gateRunsOf(ctx context.Context, store interface {
 	TaskEventsOfKind(ctx context.Context, id, kind string, limit int) ([]Event, error)
 }, id, task string) ([]Event, error) {
