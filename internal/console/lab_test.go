@@ -1539,7 +1539,7 @@ func idleScene(now time.Time) labScene {
 
 // criteriaScene is a plan whose cards ran out with three test criteria
 // partial: its criteria gap card holds a reviewer's long evidence, one
-// unbroken file::test name in it, and a waiver form under each.
+// unbroken file::test name in it, and asks on a page per promise.
 func criteriaScene(now time.Time) labScene {
 	plan := labCard(now, 1344, "done", "plan", 30*time.Hour, "Metrics: divide and conquer", "Twelve panels on the metrics page.")
 	plan.PlanName = "divide and conquer"
@@ -1560,7 +1560,7 @@ func criteriaScene(now time.Time) labScene {
 			{Key: "foundation", Role: factoryd.RoleFoundation, Title: "Metrics: the panels' read model", Size: "medium"},
 			{Key: "integration", Role: factoryd.RoleIntegration, Title: "Metrics: the panels on the page", Size: "medium", DependsOn: []string{"foundation"}},
 		}})
-	return labScene{
+	return withRequestCases(labScene{
 		tasks: []factoryd.BoardTask{{Task: plan}, {Task: found}, {Task: integ}},
 		plans: map[string][]factoryd.PlanRevision{plan.ID: {{TaskID: plan.ID, Revision: 0, Plan: planJSON, SHA256: "sha-lab", CreatedAt: now.Add(-30 * time.Hour)}}},
 		criteria: map[string][]factoryd.CriterionVerdict{integ.ID: {
@@ -1574,15 +1574,30 @@ func criteriaScene(now time.Time) labScene {
 		approvals: []factoryd.ApprovalRequest{{ID: 1040, Kind: factoryd.ApprovalCriteria, TaskID: plan.ID, Project: "sf/code", Status: "pending",
 			Reason: "criteria not met with the plan's cards done: size_bound_escape, window_and_existing_figures, ledger_retry_integrity",
 			Spec:   json.RawMessage(`{"revision":0,"task":"` + integ.ID + `"}`), CreatedAt: now.Add(-3 * time.Minute)}},
+	})
+}
+
+// withRequestCases is scene s with the case each of its pending requests
+// opens, as openRequestCase opens it, so its card asks on its pages.
+func withRequestCases(s labScene) labScene {
+	s.cases = map[string][]factoryd.Case{}
+	for _, a := range s.approvals {
+		k, err := factoryd.RequestCase(a)
+		if err != nil {
+			panic(err)
+		}
+		k.ID, k.Status = 7000+a.ID, factoryd.CaseAtHuman
+		s.cases[a.TaskID] = append(s.cases[a.TaskID], k)
 	}
+	return s
 }
 
 // humanScene is humanRig's board, pages_ok's artifact one unbroken line
-// of 300 characters.
+// of 300 characters, its human promises each asking on its page.
 func humanScene(time.Time) labScene {
 	s := humanBoard()
 	s.objects[factoryd.ArtifactKey("t-int", "pages_ok")] = pagesOK(strings.Repeat("smallmediumlarge", 19)[:300])
-	return s
+	return withRequestCases(s)
 }
 
 // historyScene is the idle board after a busy week: 320 more cards

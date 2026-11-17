@@ -404,9 +404,9 @@ async function cardPress(page, fails) {
 // its promises stand
 const brief = (page) => page.evaluate(() => document.querySelectorAll('#drawer details[data-sec="brief"]').forEach((d) => { d.open = true; }));
 
-// promises are the drawer's promise rows as their first line names them:
-// the promise and its state
-const promises = (page) => page.evaluate(() => Array.from(document.querySelectorAll("#drawer .criterion > p:first-child")).map((p) => p.textContent.trim().split(".")[0]));
+// promises are the drawer's promise rows as their first line reads: the
+// promise in the plan's words and its state
+const promises = (page) => page.evaluate(() => Array.from(document.querySelectorAll("#drawer .criterion > p:first-child")).map((p) => p.textContent.trim()));
 
 // outside are the drawer's promise rows, and their parts, that reach past
 // the drawer's edge, and a promise's artifact that scrolls sideways; null
@@ -419,13 +419,59 @@ const outside = (page) => page.evaluate(() => {
     (e.matches("pre.artifact") && e.scrollWidth > e.clientWidth)).map((e) => e.tagName.toLowerCase() + (e.className ? "." + e.className : "")).slice(0, 4);
 });
 
+// page is the ask the drawer's opened card shows: its label with the page
+// it is on, and the story's first line, what the plan promised
+const page = (p) => p.evaluate(() => {
+  const a = document.querySelector("#drawer .o-ask");
+  return a && { label: a.querySelector(".o-label").firstChild.textContent.trim(), planned: (a.querySelector(".o-story li") || { textContent: "" }).textContent.trim() };
+});
+
+// held is how the drawer's answers stand: dimmed while a press waits for
+// its board, and the buttons still live
+const held = (p) => p.evaluate(() => {
+  const a = Array.from(document.querySelectorAll("#drawer .o-answers"));
+  return { busy: a.filter((e) => e.getAttribute("aria-busy") === "true").length, live: a.reduce((n, e) => n + Array.from(e.querySelectorAll("button")).filter((b) => !b.disabled).length, 0) };
+});
+
+// slowBoard holds every board read of p 1.2 s and counts them
+async function slowBoard(p) {
+  const n = { reads: 0 };
+  await p.route((u) => u.pathname === "/board", async (r) => {
+    n.reads++;
+    await new Promise((ok) => setTimeout(ok, 1200));
+    await r.continue();
+  });
+  return n;
+}
+
+// press sends answer of the drawer's opened card, its words typed first
+// when it asks for them, and checks its answers dim until the board that
+// answers it lands; label names the check
+async function press(p, answer, words, label, fails) {
+  const board = await slowBoard(p);
+  const form = p.locator('#drawer form[data-answer="' + answer + '"]');
+  if (words) {
+    await form.locator("button.pick").click();
+    await form.locator("textarea").fill(words);
+    await form.locator("button.send").click();
+  } else {
+    await form.locator("button.pick").click();
+  }
+  await p.waitForTimeout(500);
+  const mid = await held(p);
+  if (!mid.busy || mid.live) fails.push(label + ": before its board lands the card's answers stand " + JSON.stringify(mid) + ", want them dimmed with no live button");
+  await p.waitForTimeout(2500);
+  if (!board.reads) fails.push(label + ": the press read no board");
+  await p.unroute((u) => u.pathname === "/board");
+}
+
 // criteriaWaive opens the criteria scene's gap card, plan #1344: its
 // promises in the full brief, the reviewer's evidence with one unbroken
-// file::test name, stay inside the drawer at 1440 and 390. Drop this
-// promise opens its pick on the first open promise and its reason; its
-// Send dims the card's answers until the board that answers it lands,
-// that board's read held 1.2 s; then the card reads the promise waived,
-// its pick offers the two still open, and its answers are live again.
+// file::test name, stay inside the drawer at 1440 and 390. The card asks
+// on a page per open promise. Drop this promise on the second page, with
+// its reason, dims the card's answers until the board that answers it
+// lands; then the card reads that promise waived, asks on the two pages
+// still open, and its answers are live again.
 async function criteriaWaive(browser, fails) {
   await seed("criteria");
   const gap = labID(1344);
@@ -443,33 +489,21 @@ async function criteriaWaive(browser, fails) {
   const p = await open(browser, { width: 1440, height: 900 });
   await p.page.goto(base + "/#card=" + gap, { waitUntil: "load" });
   await p.page.waitForTimeout(1200);
-  const ask = p.page.locator('#drawer form[data-answer="answer_criteria/waive"]');
-  await ask.locator("button.pick").click();
-  const pick = ask.locator('select[name="criterion"]');
-  if ((await pick.inputValue()) !== "size_bound_escape") fails.push('criteria waive: Drop this promise opens on "' + (await pick.inputValue()) + '", want the first open promise size_bound_escape');
-  await pick.selectOption("window_and_existing_figures");
-  await ask.getByLabel("Your reason").fill("The markers, the denial and the range are proved.");
-  let reads = 0;
-  await p.page.route((u) => u.pathname === "/board", async (r) => {
-    reads++;
-    await new Promise((ok) => setTimeout(ok, 1200));
-    await r.continue();
-  });
-  await ask.locator("button.send").click();
-  await p.page.waitForTimeout(500);
-  const held = () => p.page.evaluate(() => {
-    const a = Array.from(document.querySelectorAll("#drawer .o-answers"));
-    return { busy: a.filter((e) => e.getAttribute("aria-busy") === "true").length, live: a.reduce((n, e) => n + Array.from(e.querySelectorAll("button")).filter((b) => !b.disabled).length, 0) };
-  });
-  const mid = await held();
-  if (!mid.busy || mid.live) fails.push("criteria waive: before its board lands the card's answers stand " + JSON.stringify(mid) + ", want them dimmed with no live button");
-  await p.page.waitForTimeout(2500);
+  const first = await page(p.page);
+  const want1 = { label: "Your call · 1 of 3", planned: "The plan promised: The panel counts the cards over their size bound." };
+  if (JSON.stringify(first) !== JSON.stringify(want1)) fails.push("criteria waive: the card opens on " + JSON.stringify(first) + ", want " + JSON.stringify(want1));
+  await p.page.locator("#drawer .o-pages a.next").click();
+  await p.page.waitForTimeout(800);
+  const second = await page(p.page);
+  const want2 = { label: "Your call · 2 of 3", planned: "The plan promised: The new panels keep the page's window and its old figures." };
+  if (JSON.stringify(second) !== JSON.stringify(want2)) fails.push("criteria waive: the next page is " + JSON.stringify(second) + ", want " + JSON.stringify(want2));
+  await press(p.page, "answer_criteria/waive", "The markers, the denial and the range are proved.", "criteria waive", fails);
   await brief(p.page);
-  const after = { rows: await promises(p.page), picks: await p.page.locator('#drawer select[name="criterion"] option').evaluateAll((o) => o.map((x) => x.value)), held: await held() };
-  if (!reads) fails.push("criteria waive: the press read no board");
-  const want = { rows: ["size_bound_escape: partial", "window_and_existing_figures: waived", "ledger_retry_integrity: partial"], picks: ["size_bound_escape", "ledger_retry_integrity"] };
-  if (JSON.stringify(after.rows) !== JSON.stringify(want.rows) || JSON.stringify(after.picks) !== JSON.stringify(want.picks) || after.held.busy || !after.held.live) {
-    fails.push("criteria waive: once its board landed the card reads " + JSON.stringify(after) + ", want " + JSON.stringify(want) + " and its answers live");
+  const after = { rows: await promises(p.page), label: (await page(p.page)).label, held: await held(p.page) };
+  const want = ["The panel counts the cards over their size bound. partial", "The new panels keep the page's window and its old figures. waived",
+    "A retried session spends once in the ledger. partial"];
+  if (JSON.stringify(after.rows) !== JSON.stringify(want) || !/ of 2$/.test(after.label) || after.held.busy || !after.held.live) {
+    fails.push("criteria waive: once its board landed the card reads " + JSON.stringify(after) + ", want " + JSON.stringify(want) + " on a page of 2 and its answers live");
   }
   await p.ctx.close();
 }
@@ -477,11 +511,12 @@ async function criteriaWaive(browser, fails) {
 // criteriaHuman opens the human scene's merge card of t-int: its promise
 // rows in the full brief stay inside the drawer at 1440 and 390, and
 // pages_ok's artifact, one unbroken line, wraps without a sideways
-// scroll; Merge it stays disabled while a human promise waits. Enter in
-// pages_ok's field sends nothing. With a reason typed under all_green, Met
-// on pages_ok reads pages_ok met, Merge it still disabled for page_links,
-// and the reason under all_green kept; a Waive on page_links with its
-// reason enables Merge it, the reason under all_green still kept.
+// scroll. The card asks first on the page of each human promise with no
+// verdict, then on the merge's page, where Merge it stays disabled while
+// one waits. It is met on pages_ok's page dims the card's answers until
+// the board that answers it lands; the card then reads pages_ok met and
+// asks on page_links's page. Drop this promise there, with its reason,
+// leaves the merge's page alone, Merge it live.
 async function criteriaHuman(browser, fails) {
   await seed("human");
   const merge = (page) => page.evaluate(() => Array.from(document.querySelectorAll("#drawer button.pick")).filter((b) => b.textContent.trim() === "Merge it").map((b) => b.disabled));
@@ -500,42 +535,36 @@ async function criteriaHuman(browser, fails) {
   await p.page.goto(base + "/#card=t-int", { waitUntil: "load" });
   await p.page.waitForTimeout(1200);
   await brief(p.page);
-  const before = { rows: await promises(p.page), merge: await merge(p.page) };
-  const want = ["size_bound: met (blind)", "reads_calm: met", "all_green: unmet", "pages_ok: open", "page_links: open"];
-  if (JSON.stringify(before) !== JSON.stringify({ rows: want, merge: [true] })) {
-    fails.push("criteria human: the card reads " + JSON.stringify(before) + ", want " + JSON.stringify({ rows: want, merge: [true] }));
+  const rows = ["Every size row stays under its bound. met (blind)", "The sizes page reads calm. met", "The tests in ./... stay green. unmet",
+    "The pages read well. open", "Every page links home. open"];
+  const before = { rows: await promises(p.page), page: await page(p.page) };
+  const want = { rows, page: { label: "Your call · 1 of 3", planned: "The plan promised: The pages read well." } };
+  if (JSON.stringify(before) !== JSON.stringify(want)) fails.push("criteria human: the card reads " + JSON.stringify(before) + ", want " + JSON.stringify(want));
+  for (const _ of [1, 2]) {
+    await p.page.locator("#drawer .o-pages a.next").click();
+    await p.page.waitForTimeout(800);
   }
-  const kept = "CI covers the suite.";
-  await p.page.locator("#waive-31-d-all_green").fill(kept);
-  let posts = 0;
-  p.page.on("request", (r) => { if (r.method() === "POST" && new URL(r.url()).pathname === "/approvals/31/criterion") posts++; });
-  await p.page.locator("#waive-31-d-pages_ok").fill("The doors page has no rows.");
-  await p.page.locator("#waive-31-d-pages_ok").press("Enter");
-  await p.page.waitForTimeout(600);
-  if (posts) {
-    fails.push("criteria human: Enter in pages_ok's field sent " + posts + " presses, want none");
-    return p.ctx.close();
+  const last = { label: (await page(p.page)).label, merge: await merge(p.page) };
+  if (JSON.stringify(last) !== JSON.stringify({ label: "Your call · 3 of 3", merge: [true] })) {
+    fails.push("criteria human: the merge's page reads " + JSON.stringify(last) + ", want the third of 3 with Merge it disabled");
   }
-  await p.page.locator('#drawer button[aria-label="Met: promise pages_ok"]').click();
-  await p.page.waitForTimeout(2500);
+  await p.page.reload({ waitUntil: "load" });
+  await p.page.waitForTimeout(1200);
+  await press(p.page, "answer_criteria", "", "criteria human, It is met", fails);
   await brief(p.page);
-  const met = { rows: await promises(p.page), merge: await merge(p.page), kept: await p.page.locator("#waive-31-d-all_green").inputValue() };
-  want[3] = "pages_ok: met";
-  if (JSON.stringify(met) !== JSON.stringify({ rows: want, merge: [true], kept })) {
-    fails.push("criteria human: after the Met the card reads " + JSON.stringify(met) + ", want " + JSON.stringify({ rows: want, merge: [true], kept }));
-  }
-  await p.page.locator("#waive-31-d-page_links").fill("The help page is gone.");
-  await p.page.locator('#drawer button[aria-label="Waive promise page_links"]').click();
-  await p.page.waitForTimeout(2500);
+  rows[3] = "The pages read well. met";
+  const met = { rows: await promises(p.page), page: await page(p.page) };
+  const wantMet = { rows, page: { label: "Your call · 1 of 2", planned: "The plan promised: Every page links home." } };
+  if (JSON.stringify(met) !== JSON.stringify(wantMet)) fails.push("criteria human: after It is met the card reads " + JSON.stringify(met) + ", want " + JSON.stringify(wantMet));
+  await press(p.page, "answer_criteria/waive", "The help page is gone.", "criteria human, Drop this promise", fails);
   await brief(p.page);
-  const waived = { rows: await promises(p.page), merge: await merge(p.page), kept: await p.page.locator("#waive-31-d-all_green").inputValue() };
-  want[4] = "page_links: waived";
-  if (JSON.stringify(waived) !== JSON.stringify({ rows: want, merge: [false], kept })) {
-    fails.push("criteria human: after the Waive the card reads " + JSON.stringify(waived) + ", want " + JSON.stringify({ rows: want, merge: [false], kept }));
+  rows[4] = "Every page links home. waived";
+  const waived = { rows: await promises(p.page), merge: await merge(p.page) };
+  if (JSON.stringify(waived) !== JSON.stringify({ rows, merge: [false] })) {
+    fails.push("criteria human: after the drop the card reads " + JSON.stringify(waived) + ", want " + JSON.stringify({ rows, merge: [false] }));
   }
   await p.ctx.close();
 }
-
 
 async function text(page) {
   // what a disclosure hides (the deny form, the own-answer box, the status panel) counts once opened
