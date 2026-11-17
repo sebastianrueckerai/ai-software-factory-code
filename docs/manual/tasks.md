@@ -108,11 +108,16 @@ its key to be left out. The planner's record of the plan's cards shows
 each held card's hold.
 
 A held card owns no wait, so no queue or dependency flag opens a case on
-it. Rungs 0 to 2 neither start nor close it: Act refuses their resume,
-continue, handover, successor, close and replan of the card itself, and
-a restart_plan of a plan that holds a held card, naming the hold. Their
-other answers, a fund, a note or the retry of a failed dependency among
-them, go through. Act records a rung 2 answer as the project agent's
+it. Rungs 0 to 2 neither start nor close it: the hold is a fact of its
+cases (`hold`, and `plan_hold` for a held card of the plan, read through
+the successors its cards were cut into), and the action table refuses
+their resume, continue, handover, successor, close and replan of the card
+itself, and a restart_plan of a plan that holds a held card, naming the
+hold and what fits the rung there: the case's note or settle where the
+table offers them, and the hand-up. A rung's statement lists each as not
+offered with that reason, and a hold that could not be read refuses them
+the same way. Their other answers, a fund, a note or the retry of a
+failed dependency among them, go through. Act records a rung 2 answer as the project agent's
 (`factory-chat`), never as the human whose turn woke it. The chat sets
 and ends a hold only on a line the human typed in that turn, or on their
 press.

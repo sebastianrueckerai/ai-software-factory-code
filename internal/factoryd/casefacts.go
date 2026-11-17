@@ -135,9 +135,14 @@ type CaseFacts struct {
 	Running      bool          `json:"running,omitempty"` // a session is live: the card runs and holds a live session row
 	Autonomy     string        `json:"autonomy"`
 	OpenCriteria int           `json:"open_criteria,omitempty"` // the plan's criteria neither met nor waived, as its Close counts them (PlanOpenCriteria)
-	PoolLeft     policy.Draw   `json:"pool_left"`
-	CardDrawLeft policy.Draw   `json:"card_draw_left"`
-	Partial      []string      `json:"partial,omitempty"` // the readers that failed, by name; an entry may carry the read's error after the name and ": "
+	// Hold is the hold that keeps the card from starting, "card #N is " and
+	// its line (HoldView), "" for none; PlanHold is the same of a held card
+	// of its plan, read through the successors its cards were cut into.
+	Hold         string      `json:"hold,omitempty"`
+	PlanHold     string      `json:"plan_hold,omitempty"`
+	PoolLeft     policy.Draw `json:"pool_left"`
+	CardDrawLeft policy.Draw `json:"card_draw_left"`
+	Partial      []string    `json:"partial,omitempty"` // the readers that failed, by name; an entry may carry the read's error after the name and ": "
 	// Flag and Wait are the monitor flag a monitor case holds and the wait it
 	// names; RunGone: the card is live and runs a workflow, and none runs.
 	Flag    string `json:"flag,omitempty"`
@@ -482,6 +487,23 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			}
 			open, err := PlanOpenCriteria(ctx, r.store, f.Plan, p)
 			f.OpenCriteria = len(open)
+			return err
+		}},
+		{partialHold, func() (err error) {
+			f.Hold, err = r.holdFact(ctx, t)
+			return err
+		}},
+		{partialPlanHold, func() error {
+			if f.Plan == "" {
+				return nil
+			}
+			cards, err := planWaits(ctx, r.store, f.Plan)
+			if err != nil {
+				return err
+			}
+			if i := slices.IndexFunc(cards, Task.Held); i >= 0 {
+				f.PlanHold, err = r.holdFact(ctx, cards[i])
+			}
 			return err
 		}},
 		{"siblings", func() error {

@@ -666,6 +666,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	if !a.Rungs[rung] && !ended {
 		return fmt.Sprintf("%s may not pick %s: %s may", who(rung), a.Name, rungsText(a.Rungs))
 	}
+	if why := holdRefusal(f, rung, a.Name, r.Args); why != "" {
+		return why
+	}
 	if rung == 1 && a.Name == ActWithdraw && f.Kind != CaseMonitorFlag {
 		return "withdraw ends a monitor flag's case alone: the card's run waits on this case, so rung 1 answers it or hands it up"
 	}

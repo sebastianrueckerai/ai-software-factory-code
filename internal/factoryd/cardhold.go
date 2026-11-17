@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -91,6 +92,82 @@ func holdView(ctx context.Context, store interface {
 			name, rel.Status, h.Reason)
 	}
 	return v, nil
+}
+
+// holdFact is card t's hold as a case fact (CaseFacts.Hold), "" when no
+// hold holds it.
+func (r *Runner) holdFact(ctx context.Context, t Task) (string, error) {
+	if !t.Held() {
+		return "", nil
+	}
+	v, err := holdView(ctx, r.store, t)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("card %s is %s", cardName(t), v.Line), nil
+}
+
+// The readers of the hold facts, as CaseFacts.Partial names them.
+const (
+	partialHold     = "hold"
+	partialPlanHold = "plan hold"
+)
+
+// holdStops are the answers that would start or close the card itself.
+var holdStops = []string{ActResume, ActContinue, ActHandover, ActSuccessor, ActClose}
+
+// holdRefusal is why rung, below the human, may not answer f with action
+// and its args: only a human releases a held card, starts it or closes it, so
+// no rung takes a resume, continue, handover, successor or close of it, a
+// replan of it, which sends its work back to the planner to be filed
+// again, nor a restart of its plan while a card of it is held, which
+// closes the plan and files its work anew. A replan of a failed
+// dependency's work leaves the card held. A hold that could not be read
+// refuses as one. "" when rung may.
+func holdRefusal(f CaseFacts, rung int, action string, args map[string]any) string {
+	if rung >= 3 {
+		return ""
+	}
+	var held, partial, on string
+	switch {
+	case action == ActRestartPlan:
+		held, partial, on = f.PlanHold, partialPlanHold, "its plan"
+	case slices.Contains(holdStops, action), action == ActReplan && argString(args, "task_id") == "":
+		held, partial, on = f.Hold, partialHold, "it"
+	default:
+		return ""
+	}
+	if slices.Contains(f.Partial, partial) {
+		what := "the card's hold"
+		if partial == partialPlanHold {
+			what = "the holds of its plan's cards"
+		}
+		return fmt.Sprintf("%s could not be read, so %s takes no %s on %s: try again in a minute, or hand it up to the human", what, who(rung), action, on)
+	}
+	if held == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s. Only a human releases a held card, starts it or closes it, so %s takes no %s on %s: %s", held, who(rung), action, on, holdFit(f, rung))
+}
+
+// holdFit is what fits rung on f instead of an answer a hold refuses: the
+// note and the settle where the table offers them, and the hand-up; on no
+// case, an ask of the human.
+func holdFit(f CaseFacts, rung int) string {
+	if f.Kind == "" {
+		return "ask the human instead"
+	}
+	var fits []string
+	for _, fit := range []struct{ action, words string }{{ActNote, "note the case"}, {ActSettle, "settle it"}} {
+		if a, _ := ActionByName(fit.action); a.offerRefusal(f, rung) == "" {
+			fits = append(fits, fit.words)
+		}
+	}
+	fits = append(fits, "hand it up to the human")
+	if len(fits) == 1 {
+		return fits[0]
+	}
+	return strings.Join(fits[:len(fits)-1], ", ") + " or " + fits[len(fits)-1]
 }
 
 // cardHoldWait is the line of card t's hold, which keeps it from

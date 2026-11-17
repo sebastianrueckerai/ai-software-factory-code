@@ -411,12 +411,13 @@ func TestTheDigestNamesAHoldsEndAtTheCardsClose(t *testing.T) {
 
 // Rungs 0 to 2 neither start nor close a held card: a resume of rung 0, a
 // handover of rung 1, and a close and a replan of rung 2 on its case are
-// refused naming the hold and what fits, and so is rung 2's close with no
-// case. A restart_plan of rung 2, on the held card's case or on its done
-// sibling's, would close the plan and file its work again: it is refused
-// naming the held card. Rung 2's note and fund and rung 0's retry of the
-// failed dependency start and close nothing: they are taken, and the card
-// stays held in waiting-deps.
+// refused naming the hold, what fits the rung on the monitor's case (its
+// settle, rung 2's note, the hand-up) and the actions it may take, and so
+// is rung 2's close with no case. A restart_plan of rung 2, on the held
+// card's case or on its done sibling's, would close the plan and file its
+// work again: it is refused naming the held card. Rung 2's note and fund
+// and rung 0's retry of the failed dependency start and close nothing:
+// they are taken, and the card stays held in waiting-deps.
 func TestARungsAnswerOnAHeldCardIsRefusedNamingTheHold(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, _, _ := newRetryRig(t)
@@ -428,19 +429,25 @@ func TestARungsAnswerOnAHeldCardIsRefusedNamingTheHold(t *testing.T) {
 	b.Hold = &hold
 	store.tasks["t-b"] = b
 	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseMonitorFlag, Status: CaseOpen}, {ID: 5, TaskID: "t-f", Kind: CaseMonitorFlag, Status: CaseOpen}}
+	if _, err := store.AppendCaseStep(ctx, CaseStep{CaseID: 3, Rung: 1, Actor: CheckinDecider}); err != nil {
+		t.Fatal(err)
+	}
 	const held = "card #6 is on hold until #31 (plan #30) is merged or done: waits for the pg split. Only a human releases a held card, starts it or closes it, so "
-	const onCase = ": note the case, settle it, or hand it up to the human"
+	const rung0, rung1 = ": settle it or hand it up to the human, and rung 0 may take retry, settle and withdraw", ": settle it or hand it up to the human, and rung 1 may take fund, retry, settle and withdraw"
+	const rung2 = ": note the case, settle it or hand it up to the human, and rung 2 may take fund, raise_ceiling, retry, settle and note"
 	for _, c := range []struct {
 		in   ActInput
 		want string
 	}{
-		{ActInput{TaskID: "t-b", CaseID: 3, By: FactoryDecider, Rung: 0, Res: Resolution{Action: ActResume}}, held + "rung 0 takes no resume on it" + onCase},
-		{ActInput{TaskID: "t-b", CaseID: 3, By: CheckinDecider, Rung: 1, Res: Resolution{Action: ActHandover, Args: map[string]any{"model": "stronger"}}}, held + "rung 1 takes no handover on it" + onCase},
-		{ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 2, Res: Resolution{Action: ActClose, Note: "the human closed its dependency"}}, held + "rung 2 takes no close on it" + onCase},
-		{ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 2, Res: Resolution{Action: ActReplan, Note: "the plan is wrong"}}, held + "rung 2 takes no replan on it" + onCase},
-		{ActInput{TaskID: "t-b", By: "sebastian", Rung: 2, Res: Resolution{Action: ActClose, Note: "the human closed its dependency"}}, held + "rung 2 takes no close on it: ask the human instead"},
-		{ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 2, Res: Resolution{Action: ActRestartPlan, Note: "one card"}}, held + "rung 2 takes no restart_plan on its plan" + onCase},
-		{ActInput{TaskID: "t-f", CaseID: 5, By: "sebastian", Rung: 2, Res: Resolution{Action: ActRestartPlan, Note: "one card"}}, held + "rung 2 takes no restart_plan on its plan" + onCase},
+		{ActInput{TaskID: "t-b", CaseID: 3, By: FactoryDecider, Rung: 0, Res: Resolution{Action: ActResume}}, held + "rung 0 takes no resume on it" + rung0},
+		{ActInput{TaskID: "t-b", CaseID: 3, By: CheckinDecider, Rung: 1, Res: Resolution{Action: ActHandover, Args: map[string]any{"model": "stronger"}}}, held + "rung 1 takes no handover on it" + rung1},
+		{ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 2, Res: Resolution{Action: ActClose, Note: "the human closed its dependency"}}, held + "rung 2 takes no close on it" + rung2},
+		{ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 2, Res: Resolution{Action: ActReplan, Note: "the plan is wrong"}}, held + "rung 2 takes no replan on it" + rung2},
+		{ActInput{TaskID: "t-b", By: "sebastian", Rung: 2, Res: Resolution{Action: ActClose, Note: "the human closed its dependency"}},
+			held + "rung 2 takes no close on it: ask the human instead, and rung 2 may take extend, fund, raise_ceiling, retry, set_dependency and remove_dependency"},
+		{ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 2, Res: Resolution{Action: ActRestartPlan, Note: "one card"}}, held + "rung 2 takes no restart_plan on its plan" + rung2},
+		{ActInput{TaskID: "t-f", CaseID: 5, By: "sebastian", Rung: 2, Res: Resolution{Action: ActRestartPlan, Note: "one card"}},
+			held + "rung 2 takes no restart_plan on its plan: note the case, settle it or hand it up to the human, and rung 2 may take replan, close, settle and note"},
 	} {
 		var refused ErrActRefused
 		if _, err := r.Act(ctx, c.in); !errors.As(err, &refused) || err.Error() != c.want {
@@ -462,6 +469,109 @@ func TestARungsAnswerOnAHeldCardIsRefusedNamingTheHold(t *testing.T) {
 	}
 	if b := store.tasks["t-b"]; b.Status != "waiting-deps" || b.Hold == nil || *b.Hold != hold {
 		t.Fatalf("card #6 is %s with hold %+v after the answers, want waiting-deps with %+v", b.Status, b.Hold, hold)
+	}
+}
+
+// releaseUnread is a store whose read of card id fails.
+type releaseUnread struct {
+	*fakeStore
+	id string
+}
+
+func (s releaseUnread) Task(ctx context.Context, id string) (Task, bool, error) {
+	if id == s.id {
+		return Task{}, false, errors.New("the database is down")
+	}
+	return s.fakeStore.Task(ctx, id)
+}
+
+// The hold is a fact of the case. On held card #6's dependency case rungs 0
+// to 2 are offered no resume, continue, handover, successor, close or replan
+// of the card, nor rung 2 a restart of its plan, on its own case or on its
+// done sibling #4's: each is listed as not offered with the hold's words and
+// the actions that fit the rung there, rung 2's note among them. The human
+// is offered the close. A hold whose release card cannot be read refuses
+// the same answers naming the read.
+func TestAHeldCardsCaseOffersTheRungsNoStartOrClose(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _, _ := newRetryRig(t)
+	b := store.tasks["t-b"]
+	b.Hold = &CardHold{Reason: "waits for the pg split", By: "sebastian"}
+	store.tasks["t-b"] = b
+	setStatus(store, "t-plan", "done")
+	dep := Case{ID: 3, TaskID: "t-b", Kind: CaseDependencyFailed, StateKey: "t-a", Status: CaseOpen}
+	f, err := r.FactsAtCase(ctx, b, dep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const held = "card #6 is on hold: waits for the pg split. Only a human releases a held card, starts it or closes it, so "
+	fit := map[int]string{0: ": hand it up to the human", 1: ": hand it up to the human", 2: ": note the case or hand it up to the human"}
+	for _, name := range []string{ActResume, ActContinue, ActHandover, ActSuccessor, ActClose, ActReplan} {
+		a, _ := ActionByName(name)
+		for rung := 0; rung <= 2; rung++ {
+			if !a.Rungs[rung] {
+				continue
+			}
+			if got, want := a.offerRefusal(f, rung), held+who(rung)+" takes no "+name+" on it"+fit[rung]; got != want {
+				t.Errorf("rung %d's %s = %q\nwant %q", rung, name, got, want)
+			}
+		}
+	}
+	statement := new(Runner).rungStatement(dep, f, "", nil, 2)
+	if line := "- close: not offered: " + held + "rung 2 takes no close on it" + fit[2] + "\n"; !strings.Contains(statement, line) {
+		t.Errorf("rung 2's statement lacks %q:\n%s", line, statement)
+	}
+	if !slices.Contains(offeredNames(f, 3), ActClose) {
+		t.Errorf("the human is offered %v, want the close among them", offeredNames(f, 3))
+	}
+	restart, _ := ActionByName(ActRestartPlan)
+	sibling, err := r.FactsAtCase(ctx, store.tasks["t-f"], Case{ID: 5, TaskID: "t-f", Kind: CaseAgentEscalate, Status: CaseOpen})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, facts := range []CaseFacts{f, sibling} {
+		if got, want := restart.offerRefusal(facts, 2), held+"rung 2 takes no restart_plan on its plan"+fit[2]; got != want {
+			t.Errorf("rung 2's restart_plan = %q\nwant %q", got, want)
+		}
+	}
+
+	b.Hold.Release = "t-f"
+	store.tasks["t-b"] = b
+	r.store = releaseUnread{store, "t-f"}
+	unread, err := r.FactsAtCase(ctx, b, dep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeAct, _ := ActionByName(ActClose)
+	if got, want := closeAct.offerRefusal(unread, 2), "the card's hold could not be read, so rung 2 takes no close on it: try again in a minute, or hand it up to the human"; got != want {
+		t.Errorf("rung 2's close on an unread hold = %q\nwant %q", got, want)
+	}
+}
+
+// A plan's held card counts through the successor it was cut into: #5 was
+// cut into #9, which a human holds, so rung 2's restart_plan, which would
+// close the plan and file its work again, is refused naming #9 on the case
+// of the plan's done card #4, and Act runs nothing.
+func TestARestartIsRefusedOverAHeldSuccessor(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _, _ := newRetryRig(t)
+	setStatus(store, "t-plan", "done")
+	setStatus(store, "t-a", "closed")
+	succ := Task{ID: SuccessorID("t-a"), Kind: "agent", Status: "queued", Track: policy.TrackDirect, Repository: "linkshort/linkshort", IssueNumber: 9,
+		Source: SourceSuccessor, Parent: "t-plan", PlanKey: "links-api", Hold: &CardHold{Reason: "after the pg split", By: "sebastian"}}
+	if err := store.CreateTask(ctx, succ); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks[succ.ID] = succ
+	store.cases = []Case{{ID: 5, TaskID: "t-f", Kind: CaseAgentEscalate, Status: CaseAtHuman}}
+	_, err := r.Act(ctx, ActInput{TaskID: "t-f", CaseID: 5, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActRestartPlan, Note: "one card"}})
+	const want = "card #9 is on hold: after the pg split. Only a human releases a held card, starts it or closes it, so rung 2 takes no restart_plan on its plan: note the case or hand it up to the human"
+	var refused ErrActRefused
+	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want+", and rung 2 may take ") {
+		t.Fatalf("rung 2's restart_plan = %v\nwant the refusal %q and the actions rung 2 may take", err, want)
+	}
+	if store.cases[0].Status != CaseAtHuman || store.tasks["t-plan"].Status != "done" || !store.tasks[succ.ID].Held() {
+		t.Fatalf("case %s, plan %s, #9 held %t: want all as they were", store.cases[0].Status, store.tasks["t-plan"].Status, store.tasks[succ.ID].Held())
 	}
 }
 
