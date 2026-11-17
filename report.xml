@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuites tests="1" failures="0" errors="0" time="1.732988">
-	<testsuite tests="1" failures="0" time="1.733000" name="github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd" timestamp="2026-11-17T01:24:30Z">
-		<properties>
-			<property name="go.version" value="go1.26.10 linux/amd64"></property>
-		</properties>
-		<testcase classname="github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd" name="TestHealPassLeavesAskedAndFreshlyParkedCards" time="1.670000"></testcase>
-	</testsuite>
-</testsuites>
