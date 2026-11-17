@@ -23,13 +23,17 @@ type CheckInPRFacts struct {
 // holds an open pull request (read through the forge client as the merge
 // press reads it), t is the plan's integration card or a delta card (the
 // same test CriteriaCard uses to decide the gate runs), and the plan
-// still holds criteria without a settled verdict. The error arm is the
-// fail direction: when the card holds a pull request and the forge read
-// fails, gateTrigger returns the error and never a false — a caller must
-// never read an unreadable pull request as no open pull request. With no
-// pull request to read it returns false, nil.
+// still holds criteria no row settles as the plan's close reads them
+// (planGate): rows at a head main does not hold settle nothing. The error
+// arm is the fail direction: when the card holds a pull request and the
+// forge read fails, gateTrigger returns the error and never a false — a
+// caller must never read an unreadable pull request as no open pull
+// request. With no pull request to read it returns false, nil.
 func (r *Runner) gateTrigger(ctx context.Context, t Task, p Plan) (bool, error) {
 	if t.Source != SourcePlan || t.Parent == "" || !CriteriaCard(p, t.PlanKey) {
+		return false, nil
+	}
+	if t.PRNumber == 0 {
 		return false, nil
 	}
 	home, err := IntegrationCard(ctx, r.store, t.Parent, p)
@@ -40,10 +44,11 @@ func (r *Runner) gateTrigger(ctx context.Context, t Task, p Plan) (bool, error) 
 	if err != nil {
 		return false, err
 	}
-	if len(openCriteria(p, rows)) == 0 {
-		return false, nil
+	g, err := planGateOf(ctx, r.store, t.Parent, home)
+	if err != nil {
+		return false, err
 	}
-	if t.PRNumber == 0 {
+	if len(openCriteria(p, g.settling(rows))) == 0 {
 		return false, nil
 	}
 	repo, err := SplitRepo(t.Repository)
