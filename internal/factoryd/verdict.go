@@ -453,19 +453,33 @@ func gateMetIDs(p Plan, rows []CriterionVerdict) []string {
 	return ids
 }
 
-// metOnMain are the criteria the newest run of plan id's criteria gate on
-// card home left met on main, by its record; none before a run.
+// metOnMain are the criteria the newest outcome of plan id's criteria gate
+// on card home that ran (ran, cut or pending) left met on main, by its
+// record: none when it records none, and none once a card of the plan
+// merged or was reverted after it, for main no longer holds what it judged.
 func (r *Runner) metOnMain(ctx context.Context, id, home string) ([]string, error) {
 	runs, err := r.gateRuns(ctx, id, home)
 	if err != nil {
 		return nil, err
 	}
-	for _, e := range runs {
-		if met, ok := e.Detail["met"].(string); ok {
-			return strings.Fields(met), nil
-		}
+	i := slices.IndexFunc(runs, func(e Event) bool {
+		return slices.Contains([]any{gateDone, gateCut, gatePending}, e.Detail["outcome"])
+	})
+	if i < 0 {
+		return nil, nil
 	}
-	return nil, nil
+	met, _ := runs[i].Detail["met"].(string)
+	if met == "" {
+		return nil, nil
+	}
+	cards, err := planWaits(ctx, r.store, id)
+	if err != nil {
+		return nil, err
+	}
+	if changed, err := changedMainSince(ctx, r.store, cards, runs[i].At); err != nil || changed {
+		return nil, err
+	}
+	return strings.Fields(met), nil
 }
 
 // planCloseOpen reads plan t's newest revision and the criteria that hold
@@ -966,10 +980,13 @@ func changedMainAfter(ctx context.Context, store planGateReader, cards []Task, l
 	if err != nil {
 		return false, err
 	}
+	return changedMainSince(ctx, store, slices.DeleteFunc(slices.Clone(cards), func(c Task) bool { return c.ID == last.ID }), at)
+}
+
+// changedMainSince tells whether a card of cards merged or was reverted
+// after at.
+func changedMainSince(ctx context.Context, store planGateReader, cards []Task, at time.Time) (bool, error) {
 	for _, c := range cards {
-		if c.ID == last.ID {
-			continue
-		}
 		if c.RevertedAt != nil && c.RevertedAt.After(at) {
 			return true, nil
 		}

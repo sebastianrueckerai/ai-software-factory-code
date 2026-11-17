@@ -215,7 +215,8 @@ activities, each with a timeline step and a comment on the pull request:
    row settles it; the production hold and a plan's Close count open
    criteria the same way, except that a Close, the human's decision, runs
    no gate again and waives no criterion the newest run on main met
-   (`met` on its record) while that met row stands.
+   (`met` on the newest record of a run's outcome) while that met row
+   stands and no card of the plan merged or was reverted after the record.
    Once every card is final and a gate criterion has no row that settles
    it, the close runs the gate on the integration card: at its pull
    request's head when its rows judge main, else at main's head, the commit

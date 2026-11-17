@@ -2033,20 +2033,34 @@ func TestPlanCloseJudgesOffMainRowsOnMain(t *testing.T) {
 }
 
 // An approver's Close of a plan with a merged card waives only the
-// criteria nothing settles: a criterion the gate's last run on main met
-// stays met, though the human closed the failed card since and the gate
-// has not run for the cards as they stand; a criterion met only at the
-// head of a closed card's unmerged pull request is waived, as the human
-// criterion no row settles.
+// criteria nothing settles. A criterion the gate's newest run on main met
+// (its record at 10-02 12:00) stays met, though the human closed the
+// failed card since and the gate has not run for the cards as they stand.
+// It is waived when that met holds no more: a card merged after the run
+// (10-03), the newest record of a run names no met (a later cut whose rows
+// read failed), or the criterion was met only at the head of a closed
+// card's unmerged pull request. The human criterion c2, which no row
+// settles, is waived in every case.
 func TestCloseHeldPlanKeepsWhatTheGateMetOnMain(t *testing.T) {
 	ctx := context.Background()
+	ran := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	later := time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)
 	for _, c := range []struct {
 		name   string
 		onMain bool
+		after  func(*fakeStore)
 		waived []string
 	}{
-		{"met by a run on main", true, []string{"c2"}},
-		{"met at an unmerged head", false, []string{"c1", "c2", "c3"}},
+		{"met by a run on main", true, func(*fakeStore) {}, []string{"c2"}},
+		{"a card merged since", true, func(s *fakeStore) {
+			s.tasks["card-late"] = Task{ID: "card-late", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "late", Status: "done", MergeCommit: "l1", FinishedAt: &later}
+			s.events = append(s.events, Event{TaskID: "card-late", Kind: EventPullRequestMerged, At: later})
+		}, []string{"c1", "c2", "c3"}},
+		{"a later run records no met", true, func(s *fakeStore) {
+			s.events = append(s.events, Event{TaskID: "t-plan", Kind: EventCriteriaGateRun, At: ran.Add(time.Hour),
+				Detail: map[string]any{"task": "t-int", "pr": int64(0), "commit": "m2", "outcome": gateCut, "attempt": "1", "cards": "x"}})
+		}, []string{"c1", "c2", "c3"}},
+		{"met at an unmerged head", false, func(*fakeStore) {}, []string{"c1", "c2", "c3"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 2085, ""), func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
@@ -2064,29 +2078,103 @@ func TestCloseHeldPlanKeepsWhatTheGateMetOnMain(t *testing.T) {
 				if len(*calls) != 1 || closeRows(s) != 0 {
 					t.Fatalf("calls %v, closes %d; want one run on main and the plan open on c2", *calls, closeRows(s))
 				}
-				closed := time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)
+				gateRunsAt(s, ran)
 				card := s.tasks["card-extra"]
-				card.Status, card.FinishedAt = "closed", &closed
+				card.Status, card.FinishedAt = "closed", &later
 				s.tasks["card-extra"] = card
 			} else if err := gateMet(ctx, s, "t-int"); err != nil {
 				t.Fatal(err)
 			}
+			c.after(s)
 			if n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil || n != len(c.waived) || closeRows(s) != 1 {
 				t.Fatalf("CloseHeldPlan = %d, %v, closes %d; want %d waived and the plan closed", n, err, closeRows(s), len(c.waived))
 			}
-			rows, _ := s.CriteriaVerdicts(ctx, "t-int")
-			var waived []string
-			for _, v := range rows {
-				if v.Source == CriteriaSourceApprover && v.Verdict == "waived" {
-					waived = append(waived, v.Criterion)
-				}
-			}
-			slices.Sort(waived)
-			if !slices.Equal(waived, c.waived) {
-				t.Fatalf("waived %v, want %v; rows %+v", waived, c.waived, rows)
+			if got := waivedOn(ctx, s, "t-int"); !slices.Equal(got, c.waived) {
+				t.Fatalf("waived %v, want %v", got, c.waived)
 			}
 		})
 	}
+}
+
+// The reviewer's case: the gate's run on the merged integration card's
+// pull request met c1, the gap ask on c3 opened, a human closed the plan
+// card, so the gate never runs again, and the revert pass then marked the
+// integration card reverted (10-03, after the run's record at 10-02 12:00).
+// The work that met c1 is off main: an approver's Close waives c1 with c3,
+// and a writer's Close of a plan whose open criteria the run had all met
+// is refused for want of an approver.
+func TestCloseHeldPlanTakesNoMetFromARunMainNoLongerHolds(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name     string
+		c3       string
+		by, note string
+		approver bool
+		want     error
+		waived   []string
+	}{
+		{"the gap on c3, an approver's Close", "unmet", "sebastian", "moved on", true, nil, []string{"c1", "c3"}},
+		{"every open criterion met, a writer's Close", "met", "mallory", "", false, ErrNotApprover, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, s, calls := mainGatePlan(t, nil, func(*fakeStore) {}, func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+				return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+					{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c3", Verdict: c.c3, Kind: CriterionInvariant}})
+			})
+			plan := s.tasks["t-plan"]
+			plan.Track = policy.TrackPlan
+			s.tasks["t-plan"] = plan
+			mergeCard(s, "card-foundation")
+			sweep(ctx, r)
+			if c.c3 == "unmet" {
+				r.CriteriaPass(ctx)
+				if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c3" {
+					t.Fatalf("pending %+v, want the gap ask on c3", pending)
+				}
+			}
+			if !slices.Equal(*calls, []string{"t-int#9@h9:"}) || closeRows(s) != 0 {
+				t.Fatalf("calls %v, closes %d; want the one run on pull request 9 and the plan open", *calls, closeRows(s))
+			}
+			gateRunsAt(s, time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC))
+			closed, reverted := time.Date(2026, 10, 2, 15, 0, 0, 0, time.UTC), time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)
+			plan = s.tasks["t-plan"]
+			plan.Status, plan.FinishedAt = "closed", &closed
+			s.tasks["t-plan"] = plan
+			integration := s.tasks["t-int"]
+			integration.RevertedAt = &reverted
+			s.tasks["t-int"] = integration
+			n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", c.by, c.note, c.approver)
+			if !errors.Is(err, c.want) || (err == nil) != (c.want == nil) || n != len(c.waived) {
+				t.Fatalf("CloseHeldPlan = %d, %v; want %d waived, %v", n, err, len(c.waived), c.want)
+			}
+			if got := waivedOn(ctx, s, "t-int"); !slices.Equal(got, c.waived) {
+				t.Fatalf("waived %v, want %v", got, c.waived)
+			}
+		})
+	}
+}
+
+// gateRunsAt dates the criteria gate's records of s, which the fake store
+// leaves undated, at.
+func gateRunsAt(s *fakeStore, at time.Time) {
+	for i, e := range s.events {
+		if e.Kind == EventCriteriaGateRun && e.At.IsZero() {
+			s.events[i].At = at
+		}
+	}
+}
+
+// waivedOn are the criteria an approver waived on card id, in order.
+func waivedOn(ctx context.Context, s *fakeStore, id string) []string {
+	rows, _ := s.CriteriaVerdicts(ctx, id)
+	var waived []string
+	for _, v := range rows {
+		if v.Source == CriteriaSourceApprover && v.Verdict == "waived" {
+			waived = append(waived, v.Criterion)
+		}
+	}
+	slices.Sort(waived)
+	return waived
 }
 
 // A run on main cut after it wrote rows (its judgement step failed) wrote
