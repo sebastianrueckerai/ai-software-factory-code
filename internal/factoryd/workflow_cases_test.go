@@ -2219,10 +2219,9 @@ func TestWorkflowFilesTheConsolesAnswerToALateFaceOnce(t *testing.T) {
 // stopBeside withdraws nothing for it, and the face's signal gives it the
 // comment, after which the withdrawal names it.
 func TestStopBesideWithdrawsOnlyAnAskWithItsFaceComment(t *testing.T) {
-	run := func(faced bool) []int64 {
+	run := func(faced bool) (withdrawn []int64, ended []string) {
 		var suite testsuite.WorkflowTestSuite
 		env := suite.NewTestWorkflowEnvironment()
-		var withdrawn []int64
 		env.RegisterActivityWithOptions(func(ctx context.Context, taskID, reason string, comment int64, why string, caseID int64) (int64, error) {
 			if caseID != 7 {
 				return 0, fmt.Errorf("withdrawal named case %d, want 7", caseID)
@@ -2230,6 +2229,13 @@ func TestStopBesideWithdrawsOnlyAnAskWithItsFaceComment(t *testing.T) {
 			withdrawn = append(withdrawn, comment)
 			return 900, nil
 		}, activity.RegisterOptions{Name: ActivityWithdrawQuestion})
+		env.RegisterActivityWithOptions(func(ctx context.Context, caseID int64, reason string) error {
+			if caseID != 7 {
+				return fmt.Errorf("ending named case %d, want 7", caseID)
+			}
+			ended = append(ended, reason)
+			return nil
+		}, activity.RegisterOptions{Name: ActivityEndCase})
 		env.RegisterWorkflowWithOptions(func(ctx workflow.Context) error {
 			short := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: time.Minute})
 			t := &taskRun{ctx: ctx, short: short, taskID: "t1", caseID: 7}
@@ -2251,13 +2257,13 @@ func TestStopBesideWithdrawsOnlyAnAskWithItsFaceComment(t *testing.T) {
 		if err := env.GetWorkflowError(); err != nil {
 			t.Fatal(err)
 		}
-		return withdrawn
+		return withdrawn, ended
 	}
-	if got := run(false); len(got) != 0 {
-		t.Fatalf("withdrawn %v for an ask with no comment, want none", got)
+	if got, ended := run(false); len(got) != 0 || !slices.Equal(ended, []string{"the head went back"}) {
+		t.Fatalf("withdrawn %v ended %v for an ask with no comment, want none withdrawn and case 7 ended", got, ended)
 	}
-	if got := run(true); !slices.Equal(got, []int64{640}) {
-		t.Fatalf("withdrawn %v after the face's signal, want comment 640", got)
+	if got, ended := run(true); !slices.Equal(got, []int64{640}) || len(ended) != 0 {
+		t.Fatalf("withdrawn %v ended %v after the face's signal, want comment 640 and no case ended", got, ended)
 	}
 }
 
