@@ -313,3 +313,28 @@ func askOwn(t *testing.T, store interface {
 		t.Fatal(err)
 	}
 }
+
+// Rung 2's proposal meets the guide where Act turns it into one: at manual
+// autonomy a note the human would read as the proposal's grounds with a
+// fault is refused with the fault named, so the agent writes it again,
+// and no step ends and no face is asked.
+func TestRung2ProposalsNoteMeetsTheGuide(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, _ := newRetryRig(t)
+	atLevel(t, r, policy.AutonomyManual)
+	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseDependencyFailed, Status: CaseOpen, StateKey: "t-a", Facts: map[string]any{}}}
+	if _, err := store.AppendCaseStep(ctx, CaseStep{CaseID: 3, Rung: 2, Actor: ChatUser, Outcome: StepInProgress}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Via: ViaChat, Rung: 2,
+		Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Note: "The dependency failed on a cap; retry it."}})
+	var refused ErrActRefused
+	if want := "the note, which the human reads as the grounds of your proposal: The text holds a semicolon. Write two sentences."; !errors.As(err, &refused) || string(refused) != want {
+		t.Fatalf("a proposal with a semicolon = %v, want the refusal %q", err, want)
+	}
+	steps := store.caseSteps[3]
+	if len(steps) != 1 || steps[0].Outcome != StepInProgress || fj.issues[9] != nil ||
+		slices.ContainsFunc(store.events, func(e Event) bool { return e.Kind == EventQuestionAsked }) {
+		t.Errorf("a refused proposal left steps %+v, issue #9 filed %v, events %+v", steps, fj.issues[9] != nil, store.events)
+	}
+}
