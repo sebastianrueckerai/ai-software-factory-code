@@ -168,6 +168,8 @@ type Task struct {
 	// ClosingFinal and ClosingReason are the end the card's run decided,
 	// stored with its move to closing (CloseTask); "" before any.
 	ClosingFinal, ClosingReason string
+	// Hold is a human's hold on the card, nil when it has none.
+	Hold *CardHold
 }
 
 // Accents are the accent colours a human may put on a card, in the order
@@ -345,8 +347,13 @@ type Store interface {
 	MarkStarted(ctx context.Context, id string) error
 	// SetAdmitted stamps task id's admission (admitted_at, once): the
 	// moment it took one of its project's work_in_progress slots. The
-	// same write clears its queue reason and queue_since.
+	// same write clears its queue reason and queue_since. A held card is
+	// stamped not: errHeld.
 	SetAdmitted(ctx context.Context, id string) error
+	// SetCardHold and EndCardHold put a human's hold on a card that has
+	// not started, and end it (PGStore's).
+	SetCardHold(ctx context.Context, id string, h CardHold) (bool, error)
+	EndCardHold(ctx context.Context, id, release string) (bool, error)
 	// SetResumeWait parks card id, back from a wait, queued behind the surge
 	// bound with reason, keeping the time its resumption first waited
 	// (ResumedAt, QueueSince). The card holds no slot; MarkStarted ends it.
@@ -1402,7 +1409,8 @@ const taskColumns = `id, priority, required_capabilities, risk_class, round(budg
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''), COALESCE(plan_name, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
-	image, image_digest, image_egress, COALESCE(roadmap_item, 0), queue_reason, queue_since, resumed_at, closing_final, closing_reason`
+	image, image_digest, image_egress, COALESCE(roadmap_item, 0), queue_reason, queue_since, resumed_at, closing_final, closing_reason,
+	hold_at, hold_by, hold_reason, COALESCE(hold_release, '')`
 
 // scanTask scans one taskColumns row into a Task: oneTask and the task
 // lists scan through it here, the console's two reads in console_store.
@@ -1411,14 +1419,21 @@ const taskColumns = `id, priority, required_capabilities, risk_class, round(budg
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
 	var caps, ships, egress []byte
+	var hold CardHold
+	var holdAt *time.Time
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.HeldEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.CarryPR,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ExtraLines, &t.Usage.ProofLines, &t.Usage.RaisedSessions, &t.Usage.RaisedTime, &t.CeilingEUR,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.HumanSummary, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
-		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem, &t.QueueReason, &t.QueueSince, &t.ResumedAt, &t.ClosingFinal, &t.ClosingReason); err != nil {
+		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem, &t.QueueReason, &t.QueueSince, &t.ResumedAt, &t.ClosingFinal, &t.ClosingReason,
+		&holdAt, &hold.By, &hold.Reason, &hold.Release); err != nil {
 		return Task{}, err
+	}
+	if holdAt != nil {
+		hold.At = *holdAt
+		t.Hold = &hold
 	}
 	var err error
 	if t.RequiredCapabilities, err = fromJSON(caps); err != nil {
@@ -2493,11 +2508,50 @@ func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
 
 // SetAdmitted stamps the card admitted at now, once — a card already
 // stamped keeps its first stamp — and clears its queue reason in the same
-// write, so no refusal lands between the two. admit, the bound's
-// admission pass, is its sole caller.
+// write, so no refusal lands between the two. A card a hold took since
+// admit read it is stamped not: errHeld. admit, the bound's admission
+// pass, is its sole caller.
 func (s *PGStore) SetAdmitted(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET admitted_at = now(), queue_reason = '', queue_since = NULL WHERE id = $1 AND admitted_at IS NULL`, id)
-	return err
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET admitted_at = now(), queue_reason = '', queue_since = NULL WHERE id = $1 AND admitted_at IS NULL AND hold_at IS NULL`, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n > 0 {
+		return err
+	}
+	var held bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1 AND admitted_at IS NULL AND hold_at IS NOT NULL)`, id).Scan(&held); err != nil || !held {
+		return err
+	}
+	return errHeld
+}
+
+// SetCardHold puts hold h on card id while it has not started: a bound
+// agent card queued and never admitted or resumed, or in waiting-deps on
+// a dependency that has not ended. A hold it holds already is replaced.
+// False: the card is in no such state.
+func (s *PGStore) SetCardHold(ctx context.Context, id string, h CardHold) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET hold_at = $2, hold_by = $3, hold_reason = $4, hold_release = NULLIF($5, '')
+		WHERE id = $1 AND `+boundCards+` AND (status = 'queued' AND admitted_at IS NULL AND resumed_at IS NULL
+		OR status = 'waiting-deps' AND EXISTS (SELECT 1 FROM task_deps d JOIN tasks x ON x.id = d.depends_on
+			WHERE d.task_id = $1 AND x.status NOT IN ('done', 'failed', 'closed')))`, id, h.At, h.By, h.Reason, h.Release) // #nosec G202 -- boundCards is built from constants
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// EndCardHold ends card id's hold: any hold for release "", else only one
+// whose release card is release. False: no such hold stood.
+func (s *PGStore) EndCardHold(ctx context.Context, id, release string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET hold_at = NULL, hold_by = '', hold_reason = '', hold_release = NULL
+		WHERE id = $1 AND hold_at IS NOT NULL AND ($2 = '' OR hold_release = $2)`, id, release)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // SetResumeWait is the store's: a parked card, or one already waiting to

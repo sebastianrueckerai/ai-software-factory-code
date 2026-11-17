@@ -525,3 +525,46 @@ func TestAskCaseIDsMigrationGivesOneAskToOneCase(t *testing.T) {
 		t.Fatalf("the shared ask names case %q, want 4, the case that opened first", named)
 	}
 }
+
+// The card-hold migration applies on an empty database, as a re-seed runs
+// it, and again over its own columns: the hold's columns stand, a hold
+// whose release card is no card is refused, and a task row without a hold
+// reads none.
+func TestCardHoldMigration(t *testing.T) {
+	db, err := sql.Open("pgx", schematest.DSN(t, "cardhold"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate an empty database: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE name = 'factoryd/20261121090000_card_hold.sql'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate over the hold's own columns: %v", err)
+	}
+	for _, stmt := range []string{
+		`INSERT INTO tasks (id, budget_eur, status, track) VALUES ('t-r', 1, 'running', 'direct')`,
+		`INSERT INTO tasks (id, budget_eur, status, track, hold_at, hold_by, hold_reason, hold_release)
+		 VALUES ('t-q', 1, 'queued', 'direct', now(), 'sebastian', 'after #2062', 't-r')`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE tasks SET hold_release = 't-none' WHERE id = 't-q'`); err == nil {
+		t.Fatal("a hold whose release card is no card was stored")
+	}
+	var by, reason, release string
+	var held bool
+	if err := db.QueryRowContext(ctx, `SELECT hold_at IS NOT NULL, hold_by, hold_reason, COALESCE(hold_release, '') FROM tasks WHERE id = 't-r'`).
+		Scan(&held, &by, &reason, &release); err != nil {
+		t.Fatal(err)
+	}
+	if held || by != "" || reason != "" || release != "" {
+		t.Fatalf("a row without a hold reads held %t by %q reason %q release %q", held, by, reason, release)
+	}
+}

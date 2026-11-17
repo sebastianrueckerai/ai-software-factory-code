@@ -1548,6 +1548,15 @@ func (s *acceptanceStore) ProjectMonthSpend(context.Context, string, time.Time) 
 
 func (s *acceptanceStore) CountQueue(context.Context, string) (int, error) { return 0, nil }
 
+// The holds: no acceptance run holds a card.
+func (s *acceptanceStore) SetCardHold(context.Context, string, factoryd.CardHold) (bool, error) {
+	return false, nil
+}
+
+func (s *acceptanceStore) EndCardHold(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+
 var _ factoryd.Store = (*acceptanceStore)(nil)
 
 // The cases: nothing here opens one.

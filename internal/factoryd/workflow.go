@@ -778,6 +778,11 @@ const (
 	// the class's unsized time. A run from before reads that, and such a
 	// card asks the agent-time cap before its first session.
 	versionSizedLeast workflow.Version = 1
+	// versionCardHold (change id "card-hold"): a card in its dependency wait
+	// that a human holds (DepState.Hold) stays in the wait with no
+	// dependency open, until the hold ends. Read where the wait would end. A
+	// run from before starts the card once no dependency is open.
+	versionCardHold workflow.Version = 1
 	// versionSessionTime (change id "session-time"): a session's own agent
 	// time (SessionInput.AgentTime) is the card's whole agent time, sized
 	// and with what was added to it, so a session ends at the card's cap

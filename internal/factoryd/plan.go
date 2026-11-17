@@ -3976,6 +3976,13 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 				return nil, err
 			}
 		}
+		// a human's hold on the card it changes, which the replan closed,
+		// holds its work here, set before the issue too
+		if old, ok := byRef[c.From]; ok && c.From != "" && old.Hold != nil {
+			if _, err := r.store.SetCardHold(ctx, card.ID, *old.Hold); err != nil {
+				return nil, err
+			}
+		}
 		if card.IssueNumber == 0 {
 			if card.IssueNumber, err = file(); err != nil {
 				return nil, err

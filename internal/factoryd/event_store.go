@@ -53,6 +53,13 @@ const (
 	EventDependencySet        = "dependency_set"
 	EventCardReplanned        = "card_replanned"
 	EventCardFunded           = "card_funded"
+	// EventCardHeld is a human's hold put on a card, or put on it again:
+	// detail {"reason", and "release", the release card's issue, when it
+	// names one}.
+	EventCardHeld = "card_held"
+	// EventCardHoldEnded is a card's hold ended: by a human, or as
+	// factoryd's row by its release card, detail {"release", "status"}.
+	EventCardHoldEnded = "card_hold_ended"
 	// EventCardExtended is an approver's raise of a card's caps — its
 	// session cap, line bound and budget — the console's Extend the card:
 	// detail {"sessions", "lines", "amount_eur", "from_eur", "to_eur"}.

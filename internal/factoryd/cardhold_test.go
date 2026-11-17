@@ -1,0 +1,450 @@
+package factoryd
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/workflow"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+)
+
+// holdFixture is boundedFixture at bound 3 with plan #1915 (t-pl) and its
+// card #2062 (t-r, running), the release card, and card #1960 (t-held,
+// the oldest queued) held on it unless release is "".
+func holdFixture(t *testing.T, release string, more ...Task) (*fakeStore, *recordingWorkflows, BoundedWorkflows) {
+	t.Helper()
+	base := time.Now().Add(-time.Hour)
+	tasks := append([]Task{
+		{ID: "t-pl", Repository: "demo/app", Kind: "agent", Track: policy.TrackPlan, Status: "done", IssueNumber: 1915},
+		{ID: "t-r", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "running", IssueNumber: 2062, Source: SourcePlan, Parent: "t-pl", PlanKey: "pg-split-prove-3"},
+		{ID: "t-held", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", IssueNumber: 1960, CreatedAt: base,
+			Hold: &CardHold{Reason: "needs the finished pg split", Release: release, By: "sebastian", At: base}},
+	}, more...)
+	return boundedFixture(t, 3, tasks...)
+}
+
+// A held card is not admitted while the queued cards filed after it are:
+// the pull passes it, and admit records its hold's line as its reason.
+func TestAHeldCardIsNotAdmittedWhileOtherQueuedCardsAre(t *testing.T) {
+	ctx := context.Background()
+	base := time.Now()
+	store, rec, bounded := holdFixture(t, "",
+		Task{ID: "t-q2", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", IssueNumber: 2, CreatedAt: base},
+		Task{ID: "t-q3", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", IssueNumber: 3, CreatedAt: base.Add(time.Minute)})
+	pullQueued(ctx, store, bounded, "demo/app")
+	if !slices.Equal(rec.starts, []string{"t-q2", "t-q3"}) {
+		t.Fatalf("starts = %v, want the two cards after the held one", rec.starts)
+	}
+	if h, _, _ := store.Task(ctx, "t-held"); h.AdmittedAt != nil || h.QueueReason != "on hold: needs the finished pg split" {
+		t.Fatalf("the held card: admitted at %v, reason %q; want it unadmitted, its hold the reason", h.AdmittedAt, h.QueueReason)
+	}
+}
+
+// staleHold is a store whose read of card stale answers it as it was
+// before its hold landed: admit read the card, then the hold came.
+type staleHold struct {
+	*fakeStore
+	stale Task
+}
+
+func (s staleHold) Task(ctx context.Context, id string) (Task, bool, error) {
+	if id == s.stale.ID {
+		return s.stale, true, nil
+	}
+	return s.fakeStore.Task(ctx, id)
+}
+
+// A hold that lands after admit read the card keeps it: the stamp refuses
+// a held card, and nothing starts.
+func TestAHoldThatLandsAfterAdmitReadTheCardKeepsIt(t *testing.T) {
+	ctx := context.Background()
+	store, rec, bounded := holdFixture(t, "")
+	stale := store.tasks["t-held"]
+	stale.Hold = nil
+	bounded.Store = staleHold{store, stale}
+	if err := bounded.Start(ctx, "t-held"); err != nil || len(rec.starts) != 0 {
+		t.Fatalf("Start = %v, starts %v; want nothing started", err, rec.starts)
+	}
+	if h := store.tasks["t-held"]; h.AdmittedAt != nil || h.Hold == nil {
+		t.Fatalf("admitted at %v, hold %+v; want the hold standing and no stamp", h.AdmittedAt, h.Hold)
+	}
+}
+
+// The release card #2062 of plan #1915 merges: the next pull ends the hold
+// as the release card's, with factoryd's row naming it, and starts #1960.
+// Until then the card waits with the line that names its release card.
+func TestTheReleaseCardsMergeEndsTheHoldAndStartsTheCard(t *testing.T) {
+	ctx := context.Background()
+	store, rec, bounded := holdFixture(t, "t-r")
+	pullQueued(ctx, store, bounded, "demo/app")
+	want := "on hold until #2062 (plan #1915) is merged or done: needs the finished pg split"
+	if h := store.tasks["t-held"]; len(rec.starts) != 0 || h.QueueReason != want {
+		t.Fatalf("starts %v, reason %q; want none and %q", rec.starts, h.QueueReason, want)
+	}
+	r := store.tasks["t-r"]
+	r.Status = "merged"
+	store.tasks["t-r"] = r
+	pullQueued(ctx, store, bounded, "demo/app")
+	if h := store.tasks["t-held"]; !slices.Equal(rec.starts, []string{"t-held"}) || h.Hold != nil || h.AdmittedAt == nil {
+		t.Fatalf("starts %v, hold %+v, admitted %v; want #1960 started with no hold", rec.starts, h.Hold, h.AdmittedAt)
+	}
+	if len(store.events) != 1 {
+		t.Fatalf("events = %+v, want the hold's end alone", store.events)
+	}
+	e := store.events[0]
+	if e.Kind != EventCardHoldEnded || e.TaskID != "t-held" || e.IssueNumber != 1960 || e.Actor != FactoryDecider ||
+		e.Detail["release"] != int64(2062) || e.Detail["status"] != "merged" {
+		t.Fatalf("the row = %+v, want card_hold_ended of #1960 by factoryd, release 2062 merged", e)
+	}
+}
+
+// A release card that ends closed or failed releases nothing: the card
+// stays held, the line warns naming #2062, plan #1915 and how it ended,
+// and no case opens and no row is written.
+func TestAReleaseCardThatEndsClosedOrFailedKeepsTheHold(t *testing.T) {
+	for _, end := range []string{"closed", "failed"} {
+		t.Run(end, func(t *testing.T) {
+			ctx := context.Background()
+			store, rec, bounded := holdFixture(t, "t-r")
+			r := store.tasks["t-r"]
+			r.Status = end
+			store.tasks["t-r"] = r
+			pullQueued(ctx, store, bounded, "demo/app")
+			pullQueued(ctx, store, bounded, "demo/app")
+			want := "on hold: its release card #2062 (plan #1915) ended " + end +
+				" and releases nothing, so a human releases the hold or holds the card on another card: needs the finished pg split"
+			if h := store.tasks["t-held"]; len(rec.starts) != 0 || h.Hold == nil || h.QueueReason != want {
+				t.Fatalf("starts %v, hold %+v, reason %q; want none, the hold, and %q", rec.starts, h.Hold, h.QueueReason, want)
+			}
+			board, err := store.BoardTasks(ctx, "demo/app")
+			if err != nil {
+				t.Fatal(err)
+			}
+			i := slices.IndexFunc(board, func(b BoardTask) bool { return b.ID == "t-held" })
+			if v := board[i].HoldView; !v.Warn || v.Released || v.Line != want {
+				t.Fatalf("the board's hold = %+v, want the warning", v)
+			}
+			if len(store.cases) != 0 || len(store.events) != 0 {
+				t.Fatalf("cases %+v, events %+v; want none", store.cases, store.events)
+			}
+		})
+	}
+}
+
+// A failed release card counts through its successor: the hold follows
+// #2062's work to #2070, which carries the plan, and #2070's end done
+// releases #1960.
+func TestAFailedReleaseCardsSuccessorReleasesTheHold(t *testing.T) {
+	ctx := context.Background()
+	store, rec, bounded := holdFixture(t, "t-r")
+	r := store.tasks["t-r"]
+	r.Status = "failed"
+	store.tasks["t-r"] = r
+	succ := Task{ID: "t-s", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", IssueNumber: 2070, Source: SourceSuccessor,
+		Parent: "t-pl", PlanKey: "pg-split-prove-3"}
+	if err := store.CreateSuccessor(ctx, "t-r", succ); err != nil {
+		t.Fatal(err)
+	}
+	if h := store.tasks["t-held"].Hold; h == nil || h.Release != "t-s" {
+		t.Fatalf("the hold = %+v, want its release card moved to the successor", h)
+	}
+	s := store.tasks["t-s"]
+	s.Status = "running"
+	store.tasks["t-s"] = s
+	pullQueued(ctx, store, bounded, "demo/app")
+	if want := "on hold until #2070 (plan #1915) is merged or done: needs the finished pg split"; store.tasks["t-held"].QueueReason != want || len(rec.starts) != 0 {
+		t.Fatalf("reason %q, starts %v; want %q and none", store.tasks["t-held"].QueueReason, rec.starts, want)
+	}
+	s.Status = "done"
+	store.tasks["t-s"] = s
+	pullQueued(ctx, store, bounded, "demo/app")
+	if !slices.Equal(rec.starts, []string{"t-held"}) || store.tasks["t-held"].Hold != nil {
+		t.Fatalf("starts %v, hold %+v; want #1960 started, its hold ended", rec.starts, store.tasks["t-held"].Hold)
+	}
+}
+
+// A hold with no release card ends only by a human's release: the pulls
+// pass it however often they run, and the release ends it and starts it.
+func TestAHoldWithNoReleaseCardEndsOnlyByAHumansRelease(t *testing.T) {
+	ctx := context.Background()
+	store, rec, bounded := holdFixture(t, "")
+	r := &Runner{store: store}
+	r.cfg.Workflows = bounded
+	for range 3 {
+		pullQueued(ctx, store, bounded, "demo/app")
+	}
+	if len(rec.starts) != 0 || store.tasks["t-held"].Hold == nil {
+		t.Fatalf("starts %v, hold %+v; want the hold standing", rec.starts, store.tasks["t-held"].Hold)
+	}
+	if ok, err := r.ReleaseCardHold(ctx, "t-held"); err != nil || !ok {
+		t.Fatalf("ReleaseCardHold = %v, %v", ok, err)
+	}
+	if !slices.Equal(rec.starts, []string{"t-held"}) || store.tasks["t-held"].Hold != nil {
+		t.Fatalf("starts %v, hold %+v; want the release to start #1960", rec.starts, store.tasks["t-held"].Hold)
+	}
+	if ok, err := r.ReleaseCardHold(ctx, "t-held"); err != nil || ok {
+		t.Fatalf("a second release = %v, %v; want false: no hold stands", ok, err)
+	}
+}
+
+// A hold lands on a card that has not started, and only there: queued and
+// never admitted, or in waiting-deps on a dependency that has not ended.
+func TestSetCardHoldTakesOnlyACardThatHasNotStarted(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	store := newFakeStore()
+	for _, k := range []Task{
+		{ID: "t-q", Status: "queued", IssueNumber: 1},
+		{ID: "t-adm", Status: "queued", IssueNumber: 2, AdmittedAt: &now},
+		{ID: "t-res", Status: "queued", IssueNumber: 3, ResumedAt: &now},
+		{ID: "t-run", Status: "running", IssueNumber: 4},
+		{ID: "t-roll", Status: "queued", IssueNumber: 5, Source: SourceRoll},
+		{ID: "t-noissue", Status: "queued"},
+		{ID: "t-wd", Status: "waiting-deps", IssueNumber: 6},
+		{ID: "t-wd-ended", Status: "waiting-deps", IssueNumber: 7},
+		{ID: "t-open", Status: "running", IssueNumber: 8},
+		{ID: "t-gone", Status: "closed", IssueNumber: 9},
+	} {
+		k.Kind, k.Repository, k.Track = "agent", "demo/app", "direct"
+		store.tasks[k.ID] = k
+	}
+	store.AddTaskDeps(ctx, "t-wd", []string{"t-gone", "t-open"})
+	store.AddTaskDeps(ctx, "t-wd-ended", []string{"t-gone"})
+	var took []string
+	for _, id := range []string{"t-q", "t-adm", "t-res", "t-run", "t-roll", "t-noissue", "t-wd", "t-wd-ended"} {
+		if ok, err := store.SetCardHold(ctx, id, CardHold{Reason: "x", By: "sebastian"}); err != nil {
+			t.Fatal(err)
+		} else if ok {
+			took = append(took, id)
+		}
+	}
+	if !slices.Equal(took, []string{"t-q", "t-noissue", "t-wd"}) {
+		t.Fatalf("held = %v, want the never-admitted queued cards, a half-filed one among them, and the one waiting on a live dependency", took)
+	}
+}
+
+// The dependency wait of a held card: it waits however its dependencies
+// stand, with no question when one ended closed, until the human's
+// release; then its dependencies decide again. A hold whose release card
+// merged ends at the check.
+func TestDependenciesKeepAHeldCardWaiting(t *testing.T) {
+	ctx := context.Background()
+	card := Task{ID: "t-c", Kind: "agent", Status: "waiting-deps", Gate: GateDependencies, Track: "direct", Process: "spec", Repository: "sf/repo", IssueNumber: 7,
+		Hold: &CardHold{Reason: "after the split", By: "sebastian"}}
+	fj := &prForgejo{labels: map[int64][]string{7: {"agent", "state/waiting-deps"}}}
+	r, store, _ := newActivityRunner(t, card, fj)
+	store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Status: "running", Track: "direct", Repository: "sf/repo", IssueNumber: 3})
+	store.AddTaskDeps(ctx, "t-c", []string{"t-a"})
+	ask := func() DepState {
+		t.Helper()
+		v, err := execActivity(t, r, ActivityDependencies, "t-c")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var d DepState
+		if err := v.Get(&d); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	if d := ask(); d.Hold != "on hold: after the split" || !slices.Equal(d.Waiting, []int64{3}) || d.Ended != nil {
+		t.Fatalf("with #3 open = %+v, want the hold and #3", d)
+	}
+	a := store.tasks["t-a"]
+	a.Status = "closed"
+	store.tasks["t-a"] = a
+	if d := ask(); d.Hold == "" || d.Ended != nil || d.Failed != nil {
+		t.Fatalf("with #3 closed = %+v, want the hold and no question", d)
+	}
+	a.Status = "done"
+	store.tasks["t-a"] = a
+	if d := ask(); d.Hold != "on hold: after the split" || len(d.Waiting) != 0 {
+		t.Fatalf("with #3 done = %+v, want the hold alone", d)
+	}
+	if ok, _ := store.EndCardHold(ctx, "t-c", ""); !ok {
+		t.Fatal("the human's release ended nothing")
+	}
+	if d := ask(); d.Hold != "" || len(d.Waiting) != 0 || d.Ended != nil {
+		t.Fatalf("after the release = %+v, want the card free to start", d)
+	}
+
+	merged := time.Now()
+	store.CreateTask(ctx, Task{ID: "t-rel", Kind: "agent", Status: "merged", Track: "direct", Repository: "sf/repo", IssueNumber: 9, FinishedAt: &merged})
+	c := store.tasks["t-c"]
+	c.Hold = &CardHold{Reason: "after #9", Release: "t-rel", By: "sebastian"}
+	store.tasks["t-c"] = c
+	if d := ask(); d.Hold != "" || store.tasks["t-c"].Hold != nil {
+		t.Fatalf("with #9 merged = %+v, hold %+v; want the hold ended and the card free", d, store.tasks["t-c"].Hold)
+	}
+}
+
+// The workflow keeps a held card in the wait though no dependency is open,
+// asking again every 10 minutes, and starts it once the hold ends. A run
+// from before the change starts it at once.
+func TestTheDependencyWaitHoldsAHeldCard(t *testing.T) {
+	run := func(t *testing.T, old bool) []time.Duration {
+		h := newWorkflowHarness(t)
+		h.taskConfig = depsConfig()
+		if old {
+			h.env.OnGetVersion("card-hold", workflow.DefaultVersion, versionCardHold).Return(workflow.DefaultVersion)
+		}
+		start := h.env.Now()
+		h.env.OnActivity(ActivityDependencies, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (DepState, error) {
+			if h.env.Now().Sub(start) < 15*time.Minute {
+				return DepState{Hold: "on hold: after the split"}, nil
+			}
+			return DepState{}, nil
+		})
+		var began []time.Duration
+		h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			began = append(began, h.env.Now().Sub(start))
+			h.sessions = append(h.sessions, in)
+			return pushed("s1", "c1"), nil
+		})
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+		h.run(t)
+		return began
+	}
+	if began := run(t, false); !slices.Equal(began, []time.Duration{20 * time.Minute}) {
+		t.Fatalf("sessions began at %v, want one at 20m, the first check after the hold ended", began)
+	}
+	if began := run(t, true); !slices.Equal(began, []time.Duration{0}) {
+		t.Fatalf("a run from before began at %v, want at once", began)
+	}
+}
+
+// The heal pass wakes no held card in its dependency wait, though its
+// dependencies are done, and wakes one whose release card merged.
+func TestHealWakesNoHeldCard(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	ended := time.Now()
+	for id, st := range map[string]string{"t-done": "done", "t-rel": "merged", "t-open": "running"} {
+		store.CreateTask(ctx, Task{ID: id, Status: st, Kind: "agent", Repository: "sf/ai-software-factory-code", Track: "direct", IssueNumber: 1, FinishedAt: &ended})
+	}
+	for id, release := range map[string]string{"tw-held": "", "tw-held-open": "t-open", "tw-released": "t-rel"} {
+		store.CreateTask(ctx, Task{ID: id, Status: "waiting-deps", Kind: "agent", Repository: "sf/ai-software-factory-code", Track: "direct",
+			Hold: &CardHold{Reason: "x", Release: release}})
+		store.AddTaskDeps(ctx, id, []string{"t-done"})
+	}
+	wf := &fakeWorkflows{}
+	forgejo, _ := resyncForgejoStub(t, "sebastian")
+	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"}, nil, noneCompleted, nil)
+	var dep []string
+	for _, s := range wf.signals {
+		if strings.Contains(s, " "+SignalDepEnded+" ") {
+			dep = append(dep, strings.Fields(s)[0])
+		}
+	}
+	if !slices.Equal(dep, []string{"tw-released"}) {
+		t.Fatalf("dep_ended to %v, want tw-released alone", dep)
+	}
+}
+
+// A queued card held past every bound owns no wait: no queued_over_bound
+// or wait_over_bound flag, so the monitor opens no case a rung could
+// answer with a start or a close. Its head names the hold, and its steps
+// the human's hold.
+func TestAHeldCardOwnsNoWait(t *testing.T) {
+	since := digestAt(60)
+	hold := &CardHold{Reason: "after the split", By: "sebastian", At: since}
+	for _, status := range []string{"queued", "waiting-deps"} {
+		g := newDigestRig(func(c *Task) {
+			c.Status, c.QueueReason, c.QueueSince, c.Hold = status, "on hold: after the split", &since, hold
+		})
+		g.event(60, EventCardHeld, "sebastian", map[string]any{"reason": "after the split", "release": 2062})
+		g.at(100 * 60)
+		d := g.digest(t)
+		if r := d.Render(); !strings.Contains(r, "held by sebastian") || !strings.Contains(r, "→ until #2062 is merged or done: after the split\n") {
+			t.Fatalf("%s: the steps =\n%s\nwant the hold's step", status, d.Render())
+		}
+		if len(d.Flags) != 0 {
+			t.Fatalf("%s: flags = %v, want none", status, d.Flags)
+		}
+		if head, _, _ := strings.Cut(d.Render(), "\n"); !strings.HasSuffix(head, " · on hold: after the split") {
+			t.Fatalf("%s: the head = %q, want it to name the hold", status, head)
+		}
+	}
+}
+
+// Rungs 0 to 2 neither start, close nor release a held card: a retry of
+// rung 0, a resume of rung 1 and a close of rung 2 on its case are refused
+// naming the hold and what fits; rung 2's note and the human's retry are
+// not.
+func TestARungsAnswerOnAHeldCardIsRefusedNamingTheHold(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _, _ := newRetryRig(t)
+	store.CreateTask(ctx, Task{ID: "t-pl2", Kind: "agent", Status: "done", Track: policy.TrackPlan, Repository: "linkshort/linkshort", IssueNumber: 30})
+	store.CreateTask(ctx, Task{ID: "t-rel", Kind: "agent", Status: "running", Track: policy.TrackDirect, Repository: "linkshort/linkshort",
+		IssueNumber: 31, Source: SourcePlan, Parent: "t-pl2"})
+	b := store.tasks["t-b"]
+	b.Hold = &CardHold{Reason: "waits for the pg split", Release: "t-rel", By: "sebastian"}
+	store.tasks["t-b"] = b
+	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseMonitorFlag, Status: CaseOpen}}
+	const held = "card #6 is on hold until #31 (plan #30) is merged or done: waits for the pg split. Only a human releases a held card, starts it or closes it, so "
+	for _, c := range []struct {
+		in   ActInput
+		want string
+	}{
+		{ActInput{By: FactoryDecider, Rung: 0, Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}},
+			held + "rung 0 takes no retry on it: note the case, settle it, or hand it up to the human"},
+		{ActInput{By: CheckinDecider, Rung: 1, Res: Resolution{Action: ActResume}},
+			held + "rung 1 takes no resume on it: note the case, settle it, or hand it up to the human"},
+		{ActInput{By: "factory-chat", Rung: 2, Res: Resolution{Action: ActClose, Note: "the human closed its dependency"}},
+			held + "rung 2 takes no close on it: note the case, settle it, or hand it up to the human"},
+	} {
+		c.in.TaskID, c.in.CaseID = "t-b", 3
+		var refused ErrActRefused
+		if _, err := r.Act(ctx, c.in); !errors.As(err, &refused) || err.Error() != c.want {
+			t.Errorf("rung %d's %s = %v\nwant %q", c.in.Rung, c.in.Res.Action, err, c.want)
+		}
+	}
+	if store.cases[0].Status != CaseOpen || store.tasks["t-b"].Status != "waiting-deps" {
+		t.Fatalf("case %+v, card %s; want both as they were", store.cases[0], store.tasks["t-b"].Status)
+	}
+	if _, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "factory-chat", Rung: 2, Res: Resolution{Action: ActNote, Note: "the human holds it"}}); err != nil {
+		t.Fatalf("rung 2's note = %v, want it taken", err)
+	}
+	if _, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 3, Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}}); err != nil {
+		t.Fatalf("the human's retry = %v, want it taken", err)
+	}
+}
+
+// A replan that changes a held card into a new one carries the human's
+// hold to the card that takes its work: revision 2 files redirects-2
+// from the held redirects, and redirects-2 holds the same hold.
+func TestAReplanCarriesTheHoldToTheCardThatTakesItsWork(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _, _ := fileRig(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if ref := requestPlan(t, r); len(ref.Refused) != 0 || len(ref.Filed) != 4 {
+		t.Fatalf("the children: %+v", ref)
+	}
+	hold := CardHold{Reason: "after the pg split", By: "sebastian"}
+	if ok, err := store.SetCardHold(ctx, cardsByKey(t, store)["redirects"].ID, hold); err != nil || !ok {
+		t.Fatalf("SetCardHold = %v, %v", ok, err)
+	}
+	p := store.tasks["t-plan"]
+	p.Status = "running"
+	store.tasks["t-plan"] = p
+	next := testPlan()
+	next.Cards[2].Key, next.Cards[2].From = "redirects-2", "redirects"
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, next)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+		t.Fatalf("revision 2: %+v, %v", res, err)
+	}
+	val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 2, int64(7))
+	if ref := getInto[PlanRef](t, val, err); len(ref.Refused) != 0 {
+		t.Fatalf("filing revision 2: %+v", ref)
+	}
+	if got := cardsByKey(t, store)["redirects-2"].Hold; got == nil || *got != hold {
+		t.Fatalf("redirects-2's hold = %+v, want %+v", got, hold)
+	}
+}

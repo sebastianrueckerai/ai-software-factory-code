@@ -56,6 +56,9 @@ func (d CardDigest) Render() string {
 	if h.MergeQueue != nil && h.MergeQueue.Ahead > 0 && h.MergeQueue.HeadIssue > 0 {
 		head = append(head, fmt.Sprintf("waits to merge behind #%d", h.MergeQueue.HeadIssue))
 	}
+	if h.Hold != "" {
+		head = append(head, h.Hold)
+	}
 	var b strings.Builder
 	b.WriteString(strings.Join(head, " · ") + "\n")
 	for _, s := range d.Folded() {

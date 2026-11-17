@@ -8,6 +8,7 @@ import "github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd
 // Unexported factoryd names the moved files reach through the surface.
 var (
 	holdsSlot            = factoryd.PgHoldsSlot
+	errHeld              = factoryd.PgErrHeld
 	toInt                = factoryd.PgToInt
 	rungsOff             = factoryd.PgRungsOff
 	monthCapCardQuestion = factoryd.PgMonthCapCardQuestion
@@ -101,6 +102,7 @@ var (
 	RungFrontier           = factoryd.RungFrontier
 	SourceMonthCap         = factoryd.SourceMonthCap
 	SourcePlan             = factoryd.SourcePlan
+	SourceRoll             = factoryd.SourceRoll
 	SourceRoutine          = factoryd.SourceRoutine
 	SourceSuccessor        = factoryd.SourceSuccessor
 	StepHandedUp           = factoryd.StepHandedUp
@@ -119,7 +121,9 @@ type (
 	ActResult        = factoryd.ActResult
 	ApprovalRequest  = factoryd.ApprovalRequest
 	AskOffer         = factoryd.AskOffer
+	BoardTask        = factoryd.BoardTask
 	CardCapError     = factoryd.CardCapError
+	CardHold         = factoryd.CardHold
 	Case             = factoryd.Case
 	CaseAction       = factoryd.CaseAction
 	CaseDraw         = factoryd.CaseDraw

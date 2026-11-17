@@ -97,6 +97,10 @@ func (e ErrActRefused) Error() string { return string(e) }
 // case ends.
 var outsideActions = []string{ActRetry, ActReplan, ActClose, ActDeployNow, ActSalvage}
 
+// holdKeeps are the actions rungs 0 to 2 take on a card a human holds:
+// none releases it, starts it or closes it.
+var holdKeeps = []string{ActNote, ActSettle, ActWithdraw, ActSetDependency, ActRemoveDependency, ActFileCard}
+
 // endedCardActions are the actions a case of an ended card still takes: they
 // run or draw nothing for the card's work. A plan's criteria are judged and
 // its restart is taken once the plan is done.
@@ -174,6 +178,14 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	c, err := r.actCase(ctx, t, in)
 	if err != nil {
 		return ActResult{Case: c}, err
+	}
+	if t.Held() && in.Rung < 3 && !slices.Contains(holdKeeps, in.Res.Action) {
+		v, err := holdView(ctx, r.store, t)
+		if err != nil {
+			return ActResult{Case: c}, err
+		}
+		return ActResult{Case: c}, ErrActRefused(fmt.Sprintf("card %s is %s. Only a human releases a held card, starts it or closes it, so %s takes no %s on it: note the case, settle it, or hand it up to the human",
+			cardName(t), v.Line, who(in.Rung), in.Res.Action))
 	}
 	if c.ID != 0 && Final(t.Status) && !(PlanWaitCase(c, t) && in.Res.Action == ActRetry) && !slices.Contains(endedCardActions, in.Res.Action) {
 		if _, known := ActionByName(in.Res.Action); !known {

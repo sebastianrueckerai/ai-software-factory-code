@@ -40,6 +40,7 @@ var (
 	PgBudgetQuestion = BudgetQuestion
 	PgHoldsSlot      = HoldsSlot
 	PgToInt          = toInt
+	PgErrHeld        = errHeld
 )
 
 // Aliases of the constants the moved tests read.

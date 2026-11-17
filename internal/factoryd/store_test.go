@@ -245,6 +245,13 @@ func (s *fakeStore) CreateSuccessor(ctx context.Context, id string, t Task) erro
 			}
 		}
 	}
+	for k, held := range s.tasks {
+		if held.Hold != nil && held.Hold.Release == id {
+			h := *held.Hold
+			h.Release, held.Hold = t.ID, &h
+			s.tasks[k] = held
+		}
+	}
 	return nil
 }
 
@@ -1129,12 +1136,41 @@ func (s *fakeStore) SetAdmitted(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
+	if t.AdmittedAt == nil && t.Hold != nil {
+		return errHeld
+	}
 	if t.AdmittedAt == nil {
 		now := time.Now()
 		t.AdmittedAt, t.QueueReason, t.QueueSince = &now, "", nil
 		s.tasks[id] = t
 	}
 	return nil
+}
+
+// SetCardHold mirrors Postgres: a bound agent card with an issue, queued
+// and never admitted or resumed, or in waiting-deps on a dependency that
+// has not ended, takes the hold.
+func (s *fakeStore) SetCardHold(ctx context.Context, id string, h CardHold) (bool, error) {
+	t, ok := s.tasks[id]
+	live := slices.ContainsFunc(s.deps[id], func(d string) bool { return !Final(s.tasks[d].Status) })
+	if !ok || !t.Holdable() || t.Status == "waiting-deps" && !live {
+		return false, nil
+	}
+	t.Hold = &h
+	s.tasks[id] = t
+	return true, nil
+}
+
+// EndCardHold mirrors Postgres: any hold for release "", else only one
+// whose release card is release.
+func (s *fakeStore) EndCardHold(ctx context.Context, id, release string) (bool, error) {
+	t, ok := s.tasks[id]
+	if !ok || t.Hold == nil || release != "" && t.Hold.Release != release {
+		return false, nil
+	}
+	t.Hold = nil
+	s.tasks[id] = t
+	return true, nil
 }
 
 // SetQueueReason mirrors Postgres: a reason of a new kind restarts
@@ -1995,7 +2031,15 @@ func (s *fakeStore) BoardTasks(ctx context.Context, repository string) ([]BoardT
 	var out []BoardTask
 	for _, t := range s.tasks {
 		if t.Repository == repository && t.Kind != KindChat && !factorydFinal(t.Status) {
-			out = append(out, BoardTask{Task: t})
+			b := BoardTask{Task: t}
+			if t.Held() {
+				v, err := holdView(ctx, s, t)
+				if err != nil {
+					return nil, err
+				}
+				b.HoldView = v
+			}
+			out = append(out, b)
 		}
 	}
 	slices.SortFunc(out, func(a, b BoardTask) int {

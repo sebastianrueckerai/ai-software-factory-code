@@ -449,6 +449,12 @@ func (s *accBatchStore) SetQueueReason(context.Context, string, string, time.Tim
 	panic("unused")
 }
 
+func (s *accBatchStore) SetCardHold(context.Context, string, factoryd.CardHold) (bool, error) {
+	panic("unused")
+}
+
+func (s *accBatchStore) EndCardHold(context.Context, string, string) (bool, error) { panic("unused") }
+
 func (s *accBatchStore) CountAdmitted(ctx context.Context, repository string) (int, error) {
 	return s.tasks.CountAdmitted(ctx, repository)
 }

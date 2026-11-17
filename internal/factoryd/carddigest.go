@@ -76,6 +76,9 @@ type DigestHead struct {
 	// MergeQueue is the card's place in its project's merge queue, nil
 	// when it holds no queue row.
 	MergeQueue *QueuePlace
+	// Hold is the line of a human's hold on the card (HoldView), "" when
+	// none holds it: the wait is the human's, no owned one.
+	Hold string
 }
 
 // DigestStep is one step of the card's life. Actor is who acted; for a
@@ -292,6 +295,13 @@ func (r *Runner) digestHead(ctx context.Context, t Task, events []Event) (Digest
 	if t.GateSince != nil {
 		h.Since = *t.GateSince
 	}
+	if t.Held() {
+		v, err := holdView(ctx, r.store, t)
+		if err != nil {
+			return DigestHead{}, err
+		}
+		h.Hold = v.Line
+	}
 	for _, e := range events {
 		if e.Kind == EventTaskStatus {
 			h.StatusSince = e.At
@@ -431,6 +441,16 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 				continue
 			}
 			s.Kind, s.Outcome = "criteria", word("criterion")+" not met"
+		case EventCardHeld:
+			s.Kind, s.Outcome = "held", digestText(scrub, word("reason"))
+			if n := number("release"); n > 0 {
+				s.Outcome = fmt.Sprintf("until #%d is merged or done: %s", n, s.Outcome)
+			}
+		case EventCardHoldEnded:
+			s.Kind, s.Outcome = "hold ended", "released"
+			if n := number("release"); n > 0 {
+				s.Outcome = fmt.Sprintf("#%d %s", n, word("status"))
+			}
 		case EventDependencySet:
 			s.Kind, s.Outcome = "dependency", "depends on "+issueOf(word("depends_on"))
 			if removed, _ := e.Detail["removed"].(bool); removed {

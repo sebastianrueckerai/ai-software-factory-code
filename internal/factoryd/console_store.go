@@ -74,6 +74,9 @@ type BoardTask struct {
 	// pull request in an opened or merged request; "" and 0 for none.
 	RollID    string
 	RollIssue int64
+	// HoldView is where a human's hold on the card stands; zero when none
+	// holds it.
+	HoldView HoldView
 }
 
 // deployLive is the SQL test that a finished card's change runs on the
@@ -236,8 +239,26 @@ func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTas
 	if err := s.fillHeldFor(ctx, tasks, held); err != nil {
 		return nil, err
 	}
+	if err := s.fillHolds(ctx, tasks); err != nil {
+		return nil, err
+	}
 	setSlotWaits(tasks)
 	return tasks, s.fillAsks(ctx, tasks)
+}
+
+// fillHolds sets HoldView on the cards of tasks a human holds.
+func (s *PGStore) fillHolds(ctx context.Context, tasks []BoardTask) error {
+	for i := range tasks {
+		if !tasks[i].Held() {
+			continue
+		}
+		v, err := holdView(ctx, s, tasks[i].Task)
+		if err != nil {
+			return err
+		}
+		tasks[i].HoldView = v
+	}
+	return nil
 }
 
 // fillHeldFor sets HeldFor on the cards of tasks named in held, from the
@@ -396,6 +417,9 @@ func (s *PGStore) BoardTask(ctx context.Context, id string) (BoardTask, bool, er
 		return b, false, err
 	}
 	one := []BoardTask{b}
+	if err := s.fillHolds(ctx, one); err != nil {
+		return b, false, err
+	}
 	err = s.fillAsks(ctx, one)
 	return one[0], err == nil, err
 }
