@@ -216,7 +216,9 @@ activities, each with a timeline step and a comment on the pull request:
    criteria the same way, except that a Close, the human's decision, runs
    no gate again and waives no criterion the newest run on main met
    (`met` on the newest record of a run's outcome) while that met row
-   stands and no card of the plan merged or was reverted after the record.
+   stands, no card of the plan merged after the run started, and no card
+   is reverted that the run's record did not mark reverted, however the
+   revert is dated.
    Once every card is final and a gate criterion has no row that settles
    it, the close runs the gate on the integration card: at its pull
    request's head when its rows judge main, else at main's head, the commit

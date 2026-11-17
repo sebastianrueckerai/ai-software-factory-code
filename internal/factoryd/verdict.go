@@ -456,8 +456,11 @@ func gateMetIDs(p Plan, rows []CriterionVerdict) []string {
 
 // metOnMain are the criteria the newest outcome of plan id's criteria gate
 // on card home that ran (ran, cut or pending) left met on main, by its
-// record: none when it records none, and none once a card of the plan
-// merged or was reverted after it, for main no longer holds what it judged.
+// record. None when it records none, and none once main no longer holds
+// what the run judged: a card is reverted that the run's mark does not
+// mark reverted, whenever the revert is dated, or a card merged after the
+// attempt started, which its started record dates, right after the head
+// read.
 func (r *Runner) metOnMain(ctx context.Context, id, home string) ([]string, error) {
 	runs, err := r.gateRuns(ctx, id, home)
 	if err != nil {
@@ -470,17 +473,38 @@ func (r *Runner) metOnMain(ctx context.Context, id, home string) ([]string, erro
 		return nil, nil
 	}
 	met, _ := runs[i].Detail["met"].(string)
-	if met == "" {
+	mark, _ := runs[i].Detail["cards"].(string)
+	j := slices.IndexFunc(runs[i+1:], func(e Event) bool {
+		return e.Detail["outcome"] == gateStarted && e.Detail["attempt"] == runs[i].Detail["attempt"] && e.Detail["cards"] == mark
+	})
+	if met == "" || j < 0 {
 		return nil, nil
 	}
 	cards, err := planWaits(ctx, r.store, id)
 	if err != nil {
 		return nil, err
 	}
-	if changed, err := changedMainSince(ctx, r.store, cards, runs[i].At); err != nil || changed {
+	reverted := revertedIn(mark)
+	if slices.ContainsFunc(cards, func(c Task) bool { return c.RevertedAt != nil && !reverted[c.ID] }) {
+		return nil, nil
+	}
+	if merged, err := mergedSince(ctx, r.store, cards, runs[i+1+j].At); err != nil || merged {
 		return nil, err
 	}
 	return strings.Fields(met), nil
+}
+
+// revertedIn are the cards mark (cardsMark) marks reverted, by id.
+func revertedIn(mark string) map[string]bool {
+	out := map[string]bool{}
+	fields := strings.Fields(mark)
+	for i := 1; i < len(fields); i++ {
+		if fields[i] == "reverted" {
+			id, _, _ := strings.Cut(fields[i-1], ":")
+			out[id] = true
+		}
+	}
+	return out
 }
 
 // planCloseOpen reads plan t's newest revision and the criteria that hold
@@ -987,10 +1011,15 @@ func changedMainAfter(ctx context.Context, store planGateReader, cards []Task, l
 // changedMainSince tells whether a card of cards merged or was reverted
 // after at.
 func changedMainSince(ctx context.Context, store planGateReader, cards []Task, at time.Time) (bool, error) {
+	if slices.ContainsFunc(cards, func(c Task) bool { return c.RevertedAt != nil && c.RevertedAt.After(at) }) {
+		return true, nil
+	}
+	return mergedSince(ctx, store, cards, at)
+}
+
+// mergedSince tells whether a card of cards merged after at.
+func mergedSince(ctx context.Context, store planGateReader, cards []Task, at time.Time) (bool, error) {
 	for _, c := range cards {
-		if c.RevertedAt != nil && c.RevertedAt.After(at) {
-			return true, nil
-		}
 		if c.Status != "done" && c.Status != "merged" {
 			continue
 		}

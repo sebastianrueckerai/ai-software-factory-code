@@ -2078,7 +2078,7 @@ func TestCloseHeldPlanKeepsWhatTheGateMetOnMain(t *testing.T) {
 				if len(*calls) != 1 || closeRows(s) != 0 {
 					t.Fatalf("calls %v, closes %d; want one run on main and the plan open on c2", *calls, closeRows(s))
 				}
-				gateRunsAt(s, ran)
+				gateRunsAt(s, ran.Add(-time.Hour), ran)
 				card := s.tasks["card-extra"]
 				card.Status, card.FinishedAt = "closed", &later
 				s.tasks["card-extra"] = card
@@ -2096,25 +2096,43 @@ func TestCloseHeldPlanKeepsWhatTheGateMetOnMain(t *testing.T) {
 	}
 }
 
-// The reviewer's case: the gate's run on the merged integration card's
-// pull request met c1, the gap ask on c3 opened, a human closed the plan
-// card, so the gate never runs again, and the revert pass then marked the
-// integration card reverted (10-03, after the run's record at 10-02 12:00).
-// The work that met c1 is off main: an approver's Close waives c1 with c3,
-// and a writer's Close of a plan whose open criteria the run had all met
-// is refused for want of an approver.
+// The reviewer's cases: the gate's run on the merged integration card's
+// pull request (started 10-02 11:00, its outcome at 12:00) met c1, the gap
+// ask on c3 opened, and a human closed the plan card, so the gate never
+// runs again. Then the work that met c1 left main: the revert pass marked
+// the integration card reverted, dated 10-03 after the run, or dated 08:00
+// before it, as a revert that merged on main before the run and that the
+// pass found only after; or a card merged at 11:30, while the run ran. An
+// approver's Close waives c1 with c3, and a writer's Close of a plan whose
+// open criteria the run had all met is refused for want of an approver.
 func TestCloseHeldPlanTakesNoMetFromARunMainNoLongerHolds(t *testing.T) {
 	ctx := context.Background()
+	revert := func(at time.Time) func(*fakeStore) {
+		return func(s *fakeStore) {
+			integration := s.tasks["t-int"]
+			integration.RevertedAt = &at
+			s.tasks["t-int"] = integration
+		}
+	}
+	late := time.Date(2026, 10, 2, 11, 30, 0, 0, time.UTC)
+	mergedDuring := func(s *fakeStore) {
+		s.tasks["card-late"] = Task{ID: "card-late", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "late", Status: "done", MergeCommit: "l1", FinishedAt: &late}
+		s.events = append(s.events, Event{TaskID: "card-late", Kind: EventPullRequestMerged, At: late})
+	}
 	for _, c := range []struct {
 		name     string
 		c3       string
+		change   func(*fakeStore)
 		by, note string
 		approver bool
 		want     error
 		waived   []string
 	}{
-		{"the gap on c3, an approver's Close", "unmet", "sebastian", "moved on", true, nil, []string{"c1", "c3"}},
-		{"every open criterion met, a writer's Close", "met", "mallory", "", false, ErrNotApprover, nil},
+		{"reverted after the run, an approver's Close", "unmet", revert(time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)), "sebastian", "moved on", true, nil, []string{"c1", "c3"}},
+		{"reverted after the run, a writer's Close", "met", revert(time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)), "mallory", "", false, ErrNotApprover, nil},
+		{"a revert dated before the run, an approver's Close", "unmet", revert(time.Date(2026, 10, 2, 8, 0, 0, 0, time.UTC)), "sebastian", "moved on", true, nil, []string{"c1", "c3"}},
+		{"a revert dated before the run, a writer's Close", "met", revert(time.Date(2026, 10, 2, 8, 0, 0, 0, time.UTC)), "mallory", "", false, ErrNotApprover, nil},
+		{"a card merged while the run ran, an approver's Close", "unmet", mergedDuring, "sebastian", "moved on", true, nil, []string{"c1", "c3"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r, s, calls := mainGatePlan(t, nil, func(*fakeStore) {}, func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
@@ -2135,14 +2153,12 @@ func TestCloseHeldPlanTakesNoMetFromARunMainNoLongerHolds(t *testing.T) {
 			if !slices.Equal(*calls, []string{"t-int#9@h9:"}) || closeRows(s) != 0 {
 				t.Fatalf("calls %v, closes %d; want the one run on pull request 9 and the plan open", *calls, closeRows(s))
 			}
-			gateRunsAt(s, time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC))
-			closed, reverted := time.Date(2026, 10, 2, 15, 0, 0, 0, time.UTC), time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)
+			gateRunsAt(s, time.Date(2026, 10, 2, 11, 0, 0, 0, time.UTC), time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC))
+			closed := time.Date(2026, 10, 2, 15, 0, 0, 0, time.UTC)
 			plan = s.tasks["t-plan"]
 			plan.Status, plan.FinishedAt = "closed", &closed
 			s.tasks["t-plan"] = plan
-			integration := s.tasks["t-int"]
-			integration.RevertedAt = &reverted
-			s.tasks["t-int"] = integration
+			c.change(s)
 			n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", c.by, c.note, c.approver)
 			if !errors.Is(err, c.want) || (err == nil) != (c.want == nil) || n != len(c.waived) {
 				t.Fatalf("CloseHeldPlan = %d, %v; want %d waived, %v", n, err, len(c.waived), c.want)
@@ -2154,12 +2170,56 @@ func TestCloseHeldPlanTakesNoMetFromARunMainNoLongerHolds(t *testing.T) {
 	}
 }
 
+// A run on the merged integration card's pull request whose merge was
+// already reverted on main, though the revert pass had not marked it yet,
+// met c1 and c3 at a head main no longer holds. Once the pass marks the
+// card reverted, those rows settle nothing: the plan does not close, the
+// gate is due again for the plan as it stands and runs on main's head m1,
+// withdrawing c1 and c3 first, and its rows decide: c1 red on main asks
+// the gap.
+func TestARevertMarkedAfterTheRunMakesTheGateDueOnMain(t *testing.T) {
+	ctx := context.Background()
+	r, s, calls := mainGatePlan(t, nil, func(*fakeStore) {}, func(call int, s *fakeStore, taskID string) (CriteriaResult, error) {
+		if call == 1 {
+			return CriteriaResult{}, gateMet(ctx, s, taskID)
+		}
+		return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+			{Criterion: "c1", Verdict: "unmet", Evidence: "red on main", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}})
+	})
+	r.CriteriaPass(ctx)
+	r.CriteriaGatePass(ctx)
+	reverted := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
+	integration := s.tasks["t-int"]
+	integration.RevertedAt = &reverted
+	s.tasks["t-int"] = integration
+	r.CriteriaPass(ctx)
+	if closeRows(s) != 0 {
+		t.Fatal("the plan closed on rows of a head main no longer holds")
+	}
+	r.CriteriaGatePass(ctx)
+	r.CriteriaPass(ctx)
+	if !slices.Equal(*calls, []string{"t-int#9@h9:", "t-int#0@m1:"}) {
+		t.Fatalf("gate calls %v, want the run on pull request 9, then one on main's head", *calls)
+	}
+	if got := fmt.Sprint(timelineStep(t, r.timeline.Objects.(*fakeObjectStore), "t-plan", "criteria_rows_withdrawn")["criteria"]); got != "[c1 c3]" {
+		t.Errorf("withdrawn %s, want [c1 c3]", got)
+	}
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	if closeRows(s) != 0 || len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c1" {
+		t.Fatalf("closes %d, pending %+v; want the plan open and the gap ask on c1", closeRows(s), pending)
+	}
+}
+
 // gateRunsAt dates the criteria gate's records of s, which the fake store
-// leaves undated, at.
-func gateRunsAt(s *fakeStore, at time.Time) {
+// leaves undated: a run's start at started, its outcome at ended.
+func gateRunsAt(s *fakeStore, started, ended time.Time) {
 	for i, e := range s.events {
-		if e.Kind == EventCriteriaGateRun && e.At.IsZero() {
-			s.events[i].At = at
+		switch {
+		case e.Kind != EventCriteriaGateRun || !e.At.IsZero():
+		case e.Detail["outcome"] == gateStarted:
+			s.events[i].At = started
+		default:
+			s.events[i].At = ended
 		}
 	}
 }
