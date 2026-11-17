@@ -1177,6 +1177,12 @@ func (e *AskSettledError) Error() string {
 	return "the ask is " + e.Word
 }
 
+// AskUnshownError says the card's open ask holds no case, so no face
+// shows an analysis of it: Kind the ask's kind word.
+type AskUnshownError struct{ Kind string }
+
+func (e *AskUnshownError) Error() string { return "no case shows the " + e.Kind + " ask" }
+
 // askKind is ask event e's kind word: "question" for a question asked,
 // the approval's own kind (merge, plan, criteria) for a request.
 func askKind(e Event) string {
@@ -1195,7 +1201,9 @@ func askKind(e Event) string {
 // open one of either family, a question asked or an approval requested, a
 // monitor's ask aside; none open, the newest ask there is refuses as
 // AskSettledError with its kind and state, a card without an ask as
-// ErrNoAsk.
+// ErrNoAsk. The row names the ask's case, a question's by its id, a
+// request's by the approval its case holds; an ask no case shows, a plan
+// confirmation, refuses as AskUnshownError.
 func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendation string, e Event) error {
 	t, ok, err := s.Task(ctx, taskID)
 	if err != nil {
@@ -1252,11 +1260,21 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendat
 		}
 		return &AskSettledError{Kind: askKind(*newest), Word: newestState.Word, By: newestState.By}
 	}
+	ref, key := ask.Detail["case_id"], "case_id"
+	if ask.Kind == EventApprovalRequested {
+		ref, key = ask.Detail["approval"], "approval"
+		if k := askKind(*ask); k != ApprovalMerge && !slices.Contains(criteriaKinds, k) {
+			ref = nil
+		}
+	}
+	if ref == nil {
+		return &AskUnshownError{Kind: askKind(*ask)}
+	}
 	e.Detail = maps.Clone(e.Detail)
 	if e.Detail == nil {
 		e.Detail = map[string]any{}
 	}
-	e.Detail["found"], e.Detail["source"] = found, "agent"
+	e.Detail["found"], e.Detail["source"], e.Detail[key] = found, "agent", ref
 	if recommendation != "" {
 		e.Detail["recommendation"] = recommendation
 	}

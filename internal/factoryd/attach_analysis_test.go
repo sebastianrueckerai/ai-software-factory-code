@@ -2,7 +2,6 @@ package factoryd
 
 import (
 	"errors"
-	"fmt"
 	"slices"
 	"testing"
 
@@ -31,28 +30,53 @@ func newAskStore(t *testing.T) *PGStore {
 	return s
 }
 
-// seedAsk seeds card issue of repository with its question asked and the
-// member's escalation row of it, as the Poker writes the row.
-func seedAsk(t *testing.T, s *PGStore, repository, taskID string, issue int64, question string) {
+// seedAsk seeds card issue of repository waiting on its question: the
+// case the ask opened, its question_asked row naming the case, and the
+// member's escalation row of it. It answers the case and the row's words.
+func seedAsk(t *testing.T, s *PGStore, repository, taskID string, issue int64, question string) (Case, string) {
 	t.Helper()
-	if err := s.CreateTask(t.Context(), Task{ID: taskID, Kind: "agent", Status: "waiting-human",
-		Repository: repository, IssueNumber: issue, Objective: question, Track: "direct"}); err != nil {
+	card := Task{ID: taskID, Kind: "agent", Status: "waiting-human", Repository: repository, IssueNumber: issue, Objective: question, Track: "direct"}
+	if err := s.CreateTask(t.Context(), card); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Record(t.Context(), Event{Repository: repository, TaskID: taskID, IssueNumber: issue,
-		Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail: map[string]any{"question": question, "why": "the card cannot go on", "info": "the metrics say so"}}); err != nil {
-		t.Fatal(err)
-	}
-	conv, err := s.EnsureInbox(t.Context(), repository, "sebastian")
+	c, e := askOn(t, s, card, "ask", question)
+	return c, seedRow(t, s, e, card)
+}
+
+// askOn records question on card as the ask that opens a case at the
+// human under key, and answers the case and the ask's event.
+func askOn(t *testing.T, s *PGStore, card Task, key, question string) (Case, Event) {
+	t.Helper()
+	c, _, err := s.OpenCase(t.Context(), Case{TaskID: card.ID, Repository: card.Repository, Kind: CaseAgentEscalate, StateKey: key,
+		Status: CaseAtHuman, Problem: question})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AddChatMessage(t.Context(), repository, "sebastian", ChatMessage{Role: "assistant",
-		Conversation: conv, Kind: MessageEscalation, TaskID: taskID, BirthKind: EventQuestionAsked,
-		Content: fmt.Sprintf("#%d - %s needs you: %s\nWhy: the card cannot go on", issue, question, question), Choices: []string{"Yes", "No"}}); err != nil {
+	e := Event{Repository: card.Repository, TaskID: card.ID, IssueNumber: card.IssueNumber, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"question": question, "why": "the card cannot go on", "info": "the metrics say so", "case_id": c.ID}}
+	if _, err := s.Record(t.Context(), e); err != nil {
 		t.Fatal(err)
 	}
+	return c, e
+}
+
+// seedRow writes event e's poke on card to the member's inbox, as the
+// Poker writes it, and answers the row's words.
+func seedRow(t *testing.T, s *PGStore, e Event, card Task) string {
+	t.Helper()
+	m, ok := PokeOf(e, card)
+	if !ok {
+		t.Fatalf("no poke of %s", e.Kind)
+	}
+	conv, err := s.EnsureInbox(t.Context(), e.Repository, "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Conversation = conv
+	if _, err := s.AddChatMessage(t.Context(), e.Repository, "sebastian", m); err != nil {
+		t.Fatal(err)
+	}
+	return m.Content
 }
 
 // askRow reads the task's escalation row content.
@@ -106,9 +130,6 @@ func TestAttachAnalysisKeepsItsEventsDetail(t *testing.T) {
 	}
 }
 
-// seededRow is seedAsk's escalation row, as the Poker wrote it.
-const seededRow = "#40 - Use a replica? needs you: Use a replica?\nWhy: the card cannot go on"
-
 // deskAnalysis is the analysis the board reads beside case id's ask.
 func deskAnalysis(t *testing.T, s *PGStore, repository string, id int64) string {
 	t.Helper()
@@ -126,12 +147,7 @@ func deskAnalysis(t *testing.T, s *PGStore, repository string, id int64) string 
 // one the card shows, while the spine keeps both.
 func TestAttachAnalysisShowsOnTheCard(t *testing.T) {
 	s := newAskStore(t)
-	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
-	c, opened, err := s.OpenCase(t.Context(), Case{TaskID: "t-1", Repository: "sf/wake", Kind: CaseAgentEscalate, StateKey: "k1",
-		Status: CaseAtHuman, Problem: "Use a replica?"})
-	if err != nil || !opened {
-		t.Fatalf("OpenCase = %v, %v", opened, err)
-	}
+	c, seededRow := seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
 	if err := s.AttachAnalysis(t.Context(), "t-1",
 		"The replica adds 12 ms of lag, and the board reads it fine.", "Keep one replica", sebastiansAnalysis); err != nil {
 		t.Fatalf("AttachAnalysis: %v", err)
@@ -178,13 +194,19 @@ func TestAttachAnalysisShowsOnTheCard(t *testing.T) {
 
 // A monitor's ask sits beside the card's own and is answered by its
 // case's number: the card's own ask takes the analysis, though the
-// monitor's is newer and open, and no row of the inbox changes.
+// monitor's is newer and open, and no row of the inbox changes. The board
+// shows the analysis beside the card's own case, not the monitor's.
 func TestAttachAnalysisLeavesAMonitorsAskOut(t *testing.T) {
 	s := newAskStore(t)
-	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
+	own, seededRow := seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
+	flag, _, err := s.OpenCase(t.Context(), Case{TaskID: "t-1", Repository: "sf/wake", Kind: CaseMonitorFlag, StateKey: "flag", Status: CaseAtHuman,
+		Problem: "The card waits past its bound."})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: "t-1", IssueNumber: 40, Kind: EventQuestionAsked, Actor: FactoryDecider,
 		Via: ViaFactoryd, Detail: map[string]any{"question": "The monitor flagged this card: what should happen? Answer case 12 in the project chat.",
-			"case_id": 12, "case_kind": string(CaseMonitorFlag)}}); err != nil {
+			"case_id": flag.ID, "case_kind": string(CaseMonitorFlag)}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.AttachAnalysis(t.Context(), "t-1", "The replica adds 12 ms of lag.", "", sebastiansAnalysis); err != nil {
@@ -196,6 +218,12 @@ func TestAttachAnalysisLeavesAMonitorsAskOut(t *testing.T) {
 	if rows := analyses(t, s, "t-1"); len(rows) != 1 {
 		t.Fatalf("%d analysis rows, want 1", len(rows))
 	}
+	if got := deskAnalysis(t, s, "sf/wake", own.ID); got != "The project agent found: The replica adds 12 ms of lag." {
+		t.Fatalf("the card's own case shows %q", got)
+	}
+	if got := deskAnalysis(t, s, "sf/wake", flag.ID); got != "" {
+		t.Fatalf("the monitor's case shows %q, want no analysis", got)
+	}
 }
 
 // A second ask after the first was answered takes the analysis: the
@@ -203,17 +231,23 @@ func TestAttachAnalysisLeavesAMonitorsAskOut(t *testing.T) {
 func TestAttachAnalysisTakesTheAskAfterAnAnsweredOne(t *testing.T) {
 	s := newAskStore(t)
 	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
-	for _, e := range []Event{{Kind: EventQuestionAnswered, Detail: map[string]any{"answer": "No"}}, {Kind: EventQuestionAsked, Detail: map[string]any{"question": "Which port?"}}} {
-		e.Repository, e.TaskID, e.IssueNumber, e.Actor, e.Via = "sf/wake", "t-1", 40, "sebastian", ViaChat
-		if _, err := s.Record(t.Context(), e); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: "t-1", IssueNumber: 40, Kind: EventQuestionAnswered, Actor: "sebastian", Via: ViaChat,
+		Detail: map[string]any{"answer": "No"}}); err != nil {
+		t.Fatal(err)
 	}
+	card, _, err := s.Task(t.Context(), "t-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _ := askOn(t, s, card, "port", "Which port?")
 	if err := s.AttachAnalysis(t.Context(), "t-1", "Port 8080 is taken.", "", sebastiansAnalysis); err != nil {
 		t.Fatalf("AttachAnalysis: %v", err)
 	}
 	if rows := analyses(t, s, "t-1"); len(rows) != 1 || rows[0].Detail["found"] != "Port 8080 is taken." {
 		t.Fatalf("the analysis rows = %+v", rows)
+	}
+	if got := deskAnalysis(t, s, "sf/wake", second.ID); got != "The project agent found: Port 8080 is taken." {
+		t.Fatalf("the second ask's case shows %q", got)
 	}
 }
 
@@ -222,7 +256,7 @@ func TestAttachAnalysisTakesTheAskAfterAnAnsweredOne(t *testing.T) {
 // row on the spine.
 func TestAttachAnalysisRefusesAnsweredAsk(t *testing.T) {
 	s := newAskStore(t)
-	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
+	_, seededRow := seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
 	if _, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: "t-1", IssueNumber: 40,
 		Kind: EventQuestionAnswered, Actor: "sebastian", Via: ViaChat, Detail: map[string]any{"answer": "No"}}); err != nil {
 		t.Fatal(err)
@@ -240,39 +274,33 @@ func TestAttachAnalysisRefusesAnsweredAsk(t *testing.T) {
 	}
 }
 
-// approvalAskRow is the criteria request's poke row, as the Poker writes
-// it for card #40, whose title is "Use a replica?".
-const approvalAskRow = `Plan #40 "Use a replica?" waits for you: its cards ran out with a criterion still unmet. Waive one with your reason, grant one more bounded card, or confirm the delivered cards satisfy them.`
-
 // seedApprovalAsk seeds over seedAsk's card the criteria approval the gap
 // check opens: the question answered, then the request's event, its
 // pending row and its escalation row, as the Poker writes the row — the
-// fault's shape, the answered question no longer the ask that waits.
-func seedApprovalAsk(t *testing.T, s *PGStore, repository, taskID string, issue int64) {
+// fault's shape, the answered question no longer the ask that waits. It
+// answers the request row's words.
+func seedApprovalAsk(t *testing.T, s *PGStore, repository, taskID string, issue int64) string {
 	t.Helper()
 	if _, err := s.Record(t.Context(), Event{Repository: repository, TaskID: taskID, IssueNumber: issue,
 		Kind: EventQuestionAnswered, Actor: "sebastian", Via: ViaChat, Detail: map[string]any{"answer": "One replica"}}); err != nil {
 		t.Fatal(err)
 	}
+	reason := CriteriaGapReason([]string{"c1"})
 	id, err := s.OpenApproval(t.Context(), ApprovalRequest{Kind: ApprovalCriteria, TaskID: taskID,
-		Project: repository, Spec: []byte(`{"task":"t-int"}`), Reason: "criteria not met with the plan's cards done: c1"})
+		Project: repository, Spec: []byte(`{"task":"t-int"}`), Reason: reason})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Record(t.Context(), Event{Repository: repository, TaskID: taskID, IssueNumber: issue,
-		Kind: EventApprovalRequested, Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail: map[string]any{"approval": id, "kind": ApprovalCriteria, "criteria": []string{"c1"}}}); err != nil {
+	e := Event{Repository: repository, TaskID: taskID, IssueNumber: issue, Kind: EventApprovalRequested, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"approval": id, "kind": ApprovalCriteria, "criteria": []string{"c1"}, "problem": reason}}
+	if _, err := s.Record(t.Context(), e); err != nil {
 		t.Fatal(err)
 	}
-	conv, err := s.EnsureInbox(t.Context(), repository, "sebastian")
+	card, _, err := s.Task(t.Context(), taskID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AddChatMessage(t.Context(), repository, "sebastian", ChatMessage{Role: "assistant",
-		Conversation: conv, Kind: MessageEscalation, TaskID: taskID, BirthKind: EventApprovalRequested,
-		Content: approvalAskRow}); err != nil {
-		t.Fatal(err)
-	}
+	return seedRow(t, s, e, card)
 }
 
 // rowContent reads the task's escalation row content of birth kind birth.
@@ -292,8 +320,8 @@ func rowContent(t *testing.T, s *PGStore, repository, taskID, birth string) stri
 // request's case shows the findings on the card, and no inbox row changes.
 func TestAttachAnalysisReachesTheOpenApprovalAsk(t *testing.T) {
 	s := newAskStore(t)
-	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
-	seedApprovalAsk(t, s, "sf/wake", "t-1", 40)
+	_, seededRow := seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
+	approvalAskRow := seedApprovalAsk(t, s, "sf/wake", "t-1", 40)
 	if err := s.AttachAnalysis(t.Context(), "t-1",
 		"The replica adds 12 ms of lag, and the board reads it fine.", "Waive c1", sebastiansAnalysis); err != nil {
 		t.Fatalf("AttachAnalysis: %v", err)
@@ -342,7 +370,7 @@ func TestAttachAnalysisReachesTheApprovalAskBehindANewerAnswer(t *testing.T) {
 func TestAttachAnalysisRefusalNamesTheAsk(t *testing.T) {
 	s := newAskStore(t)
 	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
-	seedApprovalAsk(t, s, "sf/wake", "t-1", 40)
+	approvalAskRow := seedApprovalAsk(t, s, "sf/wake", "t-1", 40)
 	if _, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: "t-1", IssueNumber: 40,
 		Kind: EventPlanChangesRequested, Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"changes": "one more card"}}); err != nil {
 		t.Fatal(err)
@@ -376,19 +404,16 @@ func TestAttachAnalysisReachesAMergeRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Record(ctx, Event{Repository: "sf/wake", TaskID: "t-merge", IssueNumber: 41, Kind: EventApprovalRequested, Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail: map[string]any{"approval": id, "kind": ApprovalMerge, "pr": 9, "class": "high", "factory": false, "red_checks": false}}); err != nil {
+	e := Event{Repository: "sf/wake", TaskID: "t-merge", IssueNumber: 41, Kind: EventApprovalRequested, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"approval": id, "kind": ApprovalMerge, "pr": 9, "class": "high", "factory": false, "red_checks": false, "checks": "green"}}
+	if _, err := s.Record(ctx, e); err != nil {
 		t.Fatal(err)
 	}
-	conv, err := s.EnsureInbox(ctx, "sf/wake", "sebastian")
+	card, _, err := s.Task(ctx, "t-merge")
 	if err != nil {
 		t.Fatal(err)
 	}
-	const mergeRow = "#41 waits for you: merge PR #9, high risk."
-	if _, err := s.AddChatMessage(ctx, "sf/wake", "sebastian", ChatMessage{Role: "assistant", Conversation: conv, Kind: MessageEscalation,
-		TaskID: "t-merge", BirthKind: EventApprovalRequested, Content: mergeRow, Choices: []string{"Approve"}}); err != nil {
-		t.Fatal(err)
-	}
+	mergeRow := seedRow(t, s, e, card)
 	if err := s.AttachAnalysis(ctx, "t-merge", "The index covers the board's query.", "Approve it", sebastiansAnalysis); err != nil {
 		t.Fatalf("AttachAnalysis: %v", err)
 	}
@@ -422,5 +447,35 @@ func TestAttachAnalysisReachesAMergeRow(t *testing.T) {
 	}
 	if rows := analyses(t, s, "t-merge"); len(rows) != 1 {
 		t.Fatalf("%d analysis rows after the settled attach, want 1", len(rows))
+	}
+}
+
+// A plan confirmation opens no case, so no face could show an analysis
+// of it: the attach refuses with the ask's kind, and nothing is written.
+func TestAttachAnalysisRefusesAnAskNoCaseShows(t *testing.T) {
+	s := newAskStore(t)
+	ctx := t.Context()
+	card := Task{ID: "t-plan", Kind: "agent", Status: "waiting-human", Repository: "sf/wake", IssueNumber: 42, Objective: "Members page", Track: "plan"}
+	if err := s.CreateTask(ctx, card); err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: card.ID, Project: "sf/wake", Spec: []byte(`{"revision":1}`),
+		Reason: "plan revision 1 of #42 waits for its confirmation"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := Event{Repository: "sf/wake", TaskID: card.ID, IssueNumber: 42, Kind: EventApprovalRequested, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"approval": id, "kind": ApprovalPlan, "revision": 1, "cards": 4}}
+	if _, err := s.Record(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+	seedRow(t, s, e, card)
+	err = s.AttachAnalysis(ctx, card.ID, "The plan's four cards cover the spec.", "Confirm it", sebastiansAnalysis)
+	var unshown *AskUnshownError
+	if !errors.As(err, &unshown) || unshown.Kind != ApprovalPlan {
+		t.Fatalf("the attach = %v, want the plan request refused as shown by no case", err)
+	}
+	if rows := analyses(t, s, card.ID); len(rows) != 0 {
+		t.Fatalf("%d analysis rows on an ask no case shows, want 0", len(rows))
 	}
 }

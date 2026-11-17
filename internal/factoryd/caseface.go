@@ -123,10 +123,13 @@ func (s *PGStore) CaseDesk(ctx context.Context, repository string) (CaseDesk, er
 }
 
 // caseAnalyses adds to asks the project agent's newest analysis of each
-// live case of repository, one recorded on its card since the case opened.
+// live case of repository, one recorded on its card since the case opened
+// that names the case: by its id, or by the approval a request's case
+// holds (AttachAnalysis).
 func (s *PGStore) caseAnalyses(ctx context.Context, repository string, asks map[int64]CaseAsk) error {
 	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT ON (c.id) c.id, e.detail
 		FROM cases c JOIN events e ON e.task_id = c.task_id AND e.kind = $2 AND e.at >= c.opened_at
+		AND (e.detail->>'case_id' = c.id::text OR e.detail->>'approval' = c.facts->>'approval')
 		WHERE c.repository = $1 AND c.`+caseLive+` ORDER BY c.id, e.id DESC`, repository, EventAnalysisAttached)
 	if err != nil {
 		return err
