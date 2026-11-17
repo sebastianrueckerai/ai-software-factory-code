@@ -737,7 +737,12 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit,
 		"proofs": rep.proofs, "holdouts": rep.holdouts, "opened": opened, "findings": all}))
 	if pr != 0 {
-		r.timeline.RecordRow(ctx, t.ID, EventCriteriaJudged, FactoryDecider, ViaFactoryd, map[string]any{"pr": pr, "head": commit})
+		// an invariant read another head's checks: the record names no head
+		judged := commit
+		if checks != nil && checks.checked != commit {
+			judged = ""
+		}
+		r.timeline.RecordRow(ctx, t.ID, EventCriteriaJudged, FactoryDecider, ViaFactoryd, map[string]any{"pr": pr, "head": judged})
 	}
 	return CriteriaResult{Findings: rep.findings, Card: rep.card, Stand: stand, Pending: rep.pending}, nil
 }

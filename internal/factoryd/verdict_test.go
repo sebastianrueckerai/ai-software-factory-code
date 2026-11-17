@@ -2244,7 +2244,9 @@ func TestARevertMarkedAfterTheRunMakesTheGateDueOnMain(t *testing.T) {
 // gate runs on main's head, withdraws c1 and c3, finds c1 red, and the gap
 // ask opens. When the pull request merged at h1, the gate's head, the rows
 // settle and the plan closes with no gate run. A human's merge in Forgejo
-// of another head (h3) runs the gate on main as the sync does.
+// of another head (h3) runs the gate on main as the sync does, and so does
+// a merge at h1 when the gate read another head's checks, which leaves its
+// record without a head.
 func TestPlanGateCountsRowsOnlyForTheHeadThatMerged(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
@@ -2256,6 +2258,7 @@ func TestPlanGateCountsRowsOnlyForTheHeadThatMerged(t *testing.T) {
 		{"main moved under the merge ask", "h2", MergeUser, true, []string{"t-int#0@m1:"}, 0},
 		{"merged at the judged head", "h1", MergeUser, false, nil, 1},
 		{"a human merged another head", "h3", "sebastian", false, []string{"t-int#0@m1:"}, 0},
+		{"the gate read another head's checks", "", MergeUser, false, []string{"t-int#0@m1:"}, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r, s, calls := mainGatePlan(t, nil, func(*fakeStore) {}, func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
@@ -2271,9 +2274,13 @@ func TestPlanGateCountsRowsOnlyForTheHeadThatMerged(t *testing.T) {
 			}
 			s.events = slices.DeleteFunc(s.events, func(e Event) bool { return e.TaskID == "t-int" })
 			mergedAt := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+			judged, merged := "h1", c.merged
+			if merged == "" {
+				judged, merged = "", "h1"
+			}
 			s.events = append(s.events,
-				Event{TaskID: "t-int", Kind: EventCriteriaJudged, At: mergedAt.Add(-time.Hour), Detail: map[string]any{"pr": int64(9), "head": "h1"}},
-				Event{TaskID: "t-int", Kind: EventPullRequestMerged, At: mergedAt, Detail: map[string]any{"pr": int64(9), "by": c.by, "head": c.merged}})
+				Event{TaskID: "t-int", Kind: EventCriteriaJudged, At: mergedAt.Add(-time.Hour), Detail: map[string]any{"pr": int64(9), "head": judged}},
+				Event{TaskID: "t-int", Kind: EventPullRequestMerged, At: mergedAt, Detail: map[string]any{"pr": int64(9), "by": c.by, "head": merged}})
 			if err := gateMet(ctx, s, "t-int"); err != nil {
 				t.Fatal(err)
 			}

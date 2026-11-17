@@ -76,7 +76,8 @@ const (
 	EventCriteriaGateRun = "criteria_gate_run"
 	// EventCriteriaJudged records, on a plan's integration or delta card,
 	// the head of its pull request the criteria gate judged and wrote the
-	// plan's rows for: detail {"pr", "head"}. The plan's close counts those
+	// plan's rows for: detail {"pr", "head"}, the head empty when an
+	// invariant read another head's checks. The plan's close counts those
 	// rows as main's only when the pull request merged at that head
 	// (pull_request_merged's "head"). A quiet record, no poke.
 	EventCriteriaJudged = "criteria_judged"

@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -669,6 +670,39 @@ func TestGateCriteriaRecordsTheHeadItJudged(t *testing.T) {
 			}
 			if !slices.Equal(got, tc.want) {
 				t.Fatalf("judged records %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// An invariant criterion reads the required checks of the checked head,
+// which a cheap queue turn leaves at the head before its sync: the run's
+// record then names no head, so no merge matches it and the plan's close
+// runs the gate on main. With the checks of the judged head itself, the
+// record names that head.
+func TestGateCriteriaRecordsNoHeadForAnotherHeadsChecks(t *testing.T) {
+	for _, tc := range []struct {
+		name, checked, want string
+	}{
+		{"the checks of the old head c0", "c0", "9@"},
+		{"the checks of the judged head", "c1", "9@c1"},
+		{"no checked head", "", "9@c1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, hub, store := newTestRunner(t, seedCriteriaPlan(t), newFakeKube(), &fakeObjectStore{})
+			seedBlindPlan(t, store, Plan{Criteria: []PlanCriterion{{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."}}}, nil)
+			hub.statuses = map[string]string{cmp.Or(tc.checked, "c1"): statusBody("success", [4]string{"success", "pr / test", "", ""})}
+			if _, err := runCriteriaChecked(t, r, tc.checked); err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, e := range store.events {
+				if e.TaskID == "t1" && e.Kind == EventCriteriaJudged {
+					got = append(got, fmt.Sprintf("%v@%v", e.Detail["pr"], e.Detail["head"]))
+				}
+			}
+			if !slices.Equal(got, []string{tc.want}) {
+				t.Fatalf("judged records %v, want [%s]", got, tc.want)
 			}
 		})
 	}
