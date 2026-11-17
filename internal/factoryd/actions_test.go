@@ -1151,7 +1151,7 @@ func TestAMergeConflictRefusesTheAnswersThatRerunTheGates(t *testing.T) {
 		}
 		want := "the pull request no longer merges into main (Forgejo refused to merge main into abcdef1), so " + name +
 			" only runs the gates into the same refusal at the merge queue: extend the card for a session that merges main into the branch," +
-			" or close the card as superseded when main already carries its work"
+			" or the card closes as superseded when main already carries its work"
 		if got := applies(t, name, conflict, note); got != want {
 			t.Errorf("conflict: %s applies = %q, want %q", name, got, want)
 		}
@@ -1165,7 +1165,7 @@ func TestAMergeConflictRefusesTheAnswersThatRerunTheGates(t *testing.T) {
 		f := conflict
 		f.Kind = kind
 		want := "the pull request no longer merges into main (Forgejo refused to merge main into abcdef1), so reverify" +
-			" only runs the gates into the same refusal at the merge queue: " + fit + ", or close the card as superseded when main already carries its work"
+			" only runs the gates into the same refusal at the merge queue: " + fit + ", or the card closes as superseded when main already carries its work"
 		if got := applies(t, ActReverify, f, note); got != want {
 			t.Errorf("conflict at %s: reverify applies = %q, want %q", kind, got, want)
 		}

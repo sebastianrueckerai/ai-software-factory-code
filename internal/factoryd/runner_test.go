@@ -5101,8 +5101,9 @@ func TestRunSessionCheckinHandoverRunsTheConversation(t *testing.T) {
 // The #2110 shape at the next session's start: an answer's change request
 // sent the conflict finding to the gate's check-in. The session starts on
 // the branch's head c9, on which the timeline holds Forgejo's refusal to
-// merge main, so the check-in's answer tool offers no reverify and its
-// statement says the conflict; its handover runs the session.
+// merge main, so neither the check-in's answer tool nor its persona offers
+// a reverify, and its statement says the conflict; its handover runs the
+// session.
 func TestRunSessionGateCheckinOffersNoReverifyOnAMergeConflict(t *testing.T) {
 	finding := "the pull request no longer merges into main: main moved under it"
 	runner, hub, _, _, chat, store, objects := checkinRig(t,
@@ -5135,6 +5136,9 @@ func TestRunSessionGateCheckinOffersNoReverifyOnAMergeConflict(t *testing.T) {
 	}
 	if !strings.Contains(req.Input, "The pull request does not merge into main: "+refusal+".") {
 		t.Fatalf("statement lacks the conflict:\n%s", req.Input)
+	}
+	if strings.Contains(req.System, "reverify") {
+		t.Fatalf("persona names a reverify:\n%s", req.System)
 	}
 }
 

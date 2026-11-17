@@ -420,7 +420,7 @@ var Actions = []Action{
 // refusal, and only a session that merges main clears it (conflictFit).
 func conflictRefusal(f CaseFacts, action string) string {
 	return fmt.Sprintf("the pull request no longer merges into main (Forgejo refused to merge main into %s), so %s only runs the gates into the same refusal at the merge queue: "+
-		"%s, or close the card as superseded when main already carries its work", short(f.Head), action, conflictFit(f))
+		"%s, or the card closes as superseded when main already carries its work", short(f.Head), action, conflictFit(f))
 }
 
 // conflictFit is the answer, by the stop's kind, that starts the session a
