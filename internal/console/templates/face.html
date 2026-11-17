@@ -1,4 +1,4 @@
-{{define "face"}}<article class="card face{{if .Needs}} need{{end}}{{if .Final}} final d-{{.Status}}{{end}}{{with .Accent}} edge-{{.}}{{end}}{{if .Stale}} stale{{end}}" data-card="{{.ID}}"{{with .Key}} data-place="{{.}}"{{end}}{{with .CaseID}} data-case="{{.}}"{{end}}>
+{{define "face"}}<article class="card face{{if .Needs}} need{{end}}{{if .Final}} final d-{{.Status}}{{end}}{{with .Accent}} edge-{{.}}{{end}}{{if .Stale}} stale{{end}}" data-card="{{.ID}}"{{with .Key}} data-place="{{.}}"{{end}}{{with .Page}} data-case="{{.}}"{{end}}>
 {{if .Open}}<a class="open" href="#card={{.ID}}"><span class="visually-hidden">Open {{or .Ref "the card"}}</span></a>
 {{end}}{{if and .Needs (or .Ref .Place .Unchecked .Marks .Since)}}<p class="band">{{with .Ref}}<span class="ref">{{.}}</span>{{end}}{{with .Place}} <span class="place">{{.}}</span>{{end}}{{if .Unchecked}} <span class="unchecked">brief not checked</span>{{end}}{{range .Marks}} <span class="{{.Class}}">{{.Words}}</span>{{end}}{{with .Since}} <span class="since">{{.}}</span>{{end}}</p>
 {{end}}<p class="para"><strong class="title">{{.Title}}</strong>{{.Stop}}{{with .Why}} <span class="why">{{.}}</span>{{end}}</p>

@@ -26,6 +26,9 @@ const (
 	// FieldCheck is a box: ticked, the field is "yes". With options, it is
 	// a box per option, and the field holds the ticked ones, one per line.
 	FieldCheck
+	// FieldFixed is a value the page fixes, such as the promise it asks
+	// about: the press posts its default unseen.
+	FieldFixed
 )
 
 // Option is one value of a choice field and the words it shows.
@@ -76,15 +79,17 @@ func (s Story) without(shown ...string) Story {
 const StoryMax = 240
 
 // FaceSpec is the face of one kind: its ask, why line and story from the
-// facts, the answers to its question by key, and the answer it suggests
-// with who suggests it and why. A suggestion without grounds, or a nil
-// Suggest, suggests nothing; grounds without an answer are the writer's
-// view, a story line that names the writer, and show only with one.
+// facts, the answers to its question by key, the other actions of its own
+// by key, and the answer it suggests with who suggests it and why. A
+// suggestion without grounds, or a nil Suggest, suggests nothing; grounds
+// without an answer are the writer's view, a story line that names the
+// writer, and show only with one.
 type FaceSpec struct {
 	Ask     func(Facts) string
 	Why     func(Facts) string
 	Story   func(Facts) Story
 	Answers func(Facts) []string
+	More    func(Facts) []string
 	Suggest func(Facts) (action, by, grounds string)
 }
 
@@ -275,8 +280,9 @@ func ownAsk(c Case, t Task) string {
 // defaults fails on f leaves the face. A rung's or the writer's
 // recommendation leads, else the kind's own suggestion with its grounds;
 // an answer of another kind's question is put first and the last answer
-// over four drops to More. A face left with one answer adds "Not now" and
-// "End the card", each unless an answer of its action is there.
+// over four drops to More. A face of the card's own ask left with one
+// answer adds "Not now" and "End the card", each unless an answer of its
+// action is there; a request's and a plan's ask offer only their own.
 func FaceOf(c Case, f Facts) AskFace {
 	question := cmp.Or(f.Kind, c.Kind)
 	c, f = facing(c, f)
@@ -328,7 +334,7 @@ func FaceOf(c Case, f Facts) AskFace {
 		face.More = append(face.More, answers[mostAnswers:]...)
 		answers = answers[:mostAnswers]
 	}
-	if len(answers) < 2 {
+	if len(answers) < 2 && f.ApprovalKind == "" && AnsweredOnCard(c.Kind) {
 		for _, key := range []string{ActNote, ActClose} {
 			if a, ok := AnswerFor(key, f); ok && answerHolds(a, f) && !slices.ContainsFunc(answers, func(o Answer) bool { return o.Action == a.Action }) {
 				answers = append(answers, a)
@@ -336,7 +342,21 @@ func FaceOf(c Case, f Facts) AskFace {
 		}
 	}
 	face.Answers = answers
-	for _, a := range moreActions(f) {
+	more := moreActions(f)
+	if c.Kind == CaseMergeApproval {
+		// the merge's answers are its whole say on the merge, on its own page
+		more = slices.DeleteFunc(more, func(a Answer) bool {
+			return a.Action == ActApproveMerge || a.Action == ActDenyMerge || a.Action == ActRerunChecks
+		})
+	}
+	if spec.More != nil {
+		for _, key := range spec.More(f) {
+			if a, ok := AnswerFor(key, f); ok && answerHolds(a, f) {
+				more = append(more, a)
+			}
+		}
+	}
+	for _, a := range more {
 		if !slices.ContainsFunc(slices.Concat(answers, face.More), func(o Answer) bool {
 			return o.Key() == a.Key() || o.Label == a.Label || o.Action == a.Action && o.Effect == a.Effect
 		}) {
@@ -364,7 +384,20 @@ func AnswerFor(key string, f Facts) (Answer, bool) {
 			a.Fields = slices.Insert(slices.Delete(a.Fields, i, i+1), 0, minutes)
 		}
 	}
-	if names := criteriaNames(f); a.Action == ActAnswerCriteria && len(names) > 0 {
+	if p, page := promiseOn(f); a.Action == ActAnswerCriteria && page {
+		if a.Variant != "waive" && p.Kind != CriterionHuman {
+			// a human judges only a human's promise
+			return Answer{}, false
+		}
+		// the page is the promise's: its press names it unseen
+		a.Fields = slices.Clone(a.Fields)
+		for i, field := range a.Fields {
+			if field.Name == "criterion" {
+				field.Kind, field.Default, field.Options = FieldFixed, fixed(p.ID), nil
+				a.Fields[i] = field
+			}
+		}
+	} else if names := criteriaNames(f); a.Action == ActAnswerCriteria && len(names) > 0 {
 		// the request names its open promises: the human picks one
 		a.Fields = slices.Clone(a.Fields)
 		for i, field := range a.Fields {

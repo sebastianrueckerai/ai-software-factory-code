@@ -1429,8 +1429,8 @@ func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
 	}
 	esc := escalationOf(t, r, ck, "t-m2")
 	for _, want := range []string{
-		`<p class="o-question">Merge this card&#39;s pull request?</p>`,
-		`<p class="o-by">suggested by the model review: <span class="quote">adds the column</span></p>` + "\n" +
+		`<p class="o-question">Merge “Add the column”?</p>`,
+		`<p class="o-by">suggested by the model review: <span class="quote">It approved the change with 1 finding.</span></p>` + "\n" +
 			`<button type="submit" class="pick">Merge it</button> <span class="effect">Merges the pull request.</span>`,
 		`data-press="deny_merge">Send it back</button> <span class="effect">Returns the pull request to its agent with your note.</span>`,
 	} {
@@ -1777,7 +1777,7 @@ func TestMergeAndResourceRequestsAskOnTheOpenedCard(t *testing.T) {
 		name, kind, ask, evidence string
 		answers                   map[string]string
 	}{
-		{"board-merge.json", factoryd.ApprovalMerge, "Merge this card&#39;s pull request?",
+		{"board-merge.json", factoryd.ApprovalMerge, "Merge “Shard the feed cache”?",
 			`<dt>Model review</dt><dd>adds the shard without changing a read</dd>`,
 			map[string]string{factoryd.ActApproveMerge: "/approvals/41/approve", factoryd.ActDenyMerge: "/approvals/41/deny", factoryd.ActDenyMerge + "/reject": "/approvals/41/deny"}},
 		{"board-resource.json", factoryd.ApprovalResource, "Rent a cx33 server for 5 hours at about 0.07 EUR?",
@@ -1839,7 +1839,7 @@ func TestMergeAndResourceRequestsAskOnTheOpenedCard(t *testing.T) {
 	for _, tc := range []struct {
 		name, ask, post string
 	}{
-		{"board-merge.json", "Merge this card&#39;s pull request?", `action="/tasks/t-board-merge/resolve"`},
+		{"board-merge.json", "Merge “Shard the feed cache”?", `action="/tasks/t-board-merge/resolve"`},
 		{"board-resource.json", "Rent a cx33 server for 5 hours at about 0.07 EUR?", `action="/approvals/41/approve"`},
 	} {
 		r := newRig(t)

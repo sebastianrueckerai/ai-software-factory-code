@@ -1211,10 +1211,13 @@ func duesDetail(dues []PlanCatch) []string {
 }
 
 // CriteriaSpec is the criteria approval's spec: the plan revision the gap
-// is under and the task that carries the verdict rows.
+// is under, the task that carries the verdict rows, and why no test ran.
 type CriteriaSpec struct {
 	Revision int    `json:"revision"`
 	Task     string `json:"task"`
+	// NotRun says in words why no test ran for the promises a request
+	// of criteria never judged names, "" when only humans judge them.
+	NotRun string `json:"not_run,omitempty"`
 }
 
 // planClosed says plan id has its plan_closed row, the fact the open
@@ -1497,6 +1500,15 @@ func (r *Runner) gateWanted(ctx context.Context, plan, integration Task, never [
 	return r.gateDue(ctx, plan.ID, integration)
 }
 
+// queueTests hands plan id's untested promises to the criteria gate pass.
+func (r *Runner) queueTests(id string) {
+	r.gateMu.Lock()
+	defer r.gateMu.Unlock()
+	if !slices.Contains(r.testRuns, id) {
+		r.testRuns = append(r.testRuns, id)
+	}
+}
+
 // gateRunning tells whether plan id's criteria gate runs in this process.
 func (r *Runner) gateRunning(id string) bool {
 	r.gateMu.Lock()
@@ -1514,22 +1526,30 @@ func (r *Runner) queueGate(id string) {
 }
 
 // CriteriaGatePass runs the criteria gate of the plans the close check
-// queued, one at a time, each on a context of its own under the gate's
+// queued, then the tests a human's run_criteria asked for, one at a time, each on a context of its own under the gate's
 // bound: a gate that outlasts the criteria pass finishes here. A run
 // starts only while a whole one still fits the pass.
 func (r *Runner) CriteriaGatePass(ctx context.Context) {
 	r.gateMu.Lock()
-	queue := slices.Sorted(slices.Values(r.gateQueue))
-	r.gateQueue = nil
+	queue, asked := slices.Sorted(slices.Values(r.gateQueue)), r.testRuns
+	r.gateQueue, r.testRuns = nil, nil
 	r.gateMu.Unlock()
-	for i, id := range queue {
+	for i, id := range slices.Concat(queue, asked) {
 		if dl, ok := ctx.Deadline(); ctx.Err() != nil || i > 0 && ok && time.Until(dl) < criteriaGateBound {
-			for _, rest := range queue[i:] {
-				r.queueGate(rest)
+			for j, rest := range slices.Concat(queue, asked)[i:] {
+				if i+j < len(queue) {
+					r.queueGate(rest)
+				} else {
+					r.queueTests(rest)
+				}
 			}
 			return
 		}
-		r.runCriteriaGate(ctx, id)
+		if i < len(queue) {
+			r.runCriteriaGate(ctx, id)
+		} else {
+			r.runTests(ctx, id)
+		}
 	}
 }
 
@@ -1729,7 +1749,7 @@ var criteriaKinds = []string{ApprovalCriteria, ApprovalCriteriaRerun}
 // the plan is at rest: open are criteria whose rows say not met.
 func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, open []PlanCriterion, integration Task) {
 	ids, lines := criteriaLines(open, "")
-	r.openPlanAsk(ctx, t, repo, ApprovalCriteria, CriteriaGapReason(ids),
+	r.openPlanAsk(ctx, t, repo, ApprovalCriteria, "", CriteriaGapReason(ids),
 		"factoryd: the plan's cards ran out with a criterion still unmet.\n\n"+strings.Join(lines, "\n")+
 			"\n\nGrant one more bounded card, or waive a criterion with your reason.", ids, integration)
 }
@@ -1751,6 +1771,7 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 		}
 		parts = append(parts, human+" "+verb+" yours to settle on this card")
 	}
+	notRun := ""
 	if gate != "" {
 		runs, err := r.gateRuns(ctx, t.ID, integration.ID)
 		if err != nil {
@@ -1760,6 +1781,7 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 		if gateRan(runs, gateNoRoom) {
 			parts = append(parts, "the card's ceiling left no room for the gate")
 		}
+		notRun = notRunWords(integration, runs)
 	}
 	why := strings.Join(parts, ". ")
 	ids, lines := criteriaLines(never, " — never judged")
@@ -1769,9 +1791,31 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 		reason += ". Not met: " + strings.Join(more, ", ")
 		ids, lines = append(ids, more...), append(lines, unmetLines...)
 	}
-	r.openPlanAsk(ctx, t, repo, ApprovalCriteriaRerun, reason,
+	r.openPlanAsk(ctx, t, repo, ApprovalCriteriaRerun, notRun, reason,
 		"factoryd: the plan's cards are done, and criteria were never judged: "+why+".\n\n"+
 			strings.Join(lines, "\n")+"\n\nWaive a criterion with your reason, or confirm the delivered cards meet them.", ids, integration)
+}
+
+// notRunWords say why the factory never ran the tests of a plan whose last
+// card is integration, on that card's gate runs.
+func notRunWords(integration Task, runs []Event) string {
+	card := "The last card"
+	if integration.IssueNumber != 0 {
+		card = fmt.Sprintf("The last card, #%d,", integration.IssueNumber)
+	}
+	switch {
+	case integration.Status != "merged" && integration.Status != "done":
+		ended := "closed"
+		if integration.Status == "failed" {
+			ended = "failed"
+		}
+		return card + " " + ended + " without a merge, so the factory never ran the plan's tests."
+	case gateRan(runs, gateNoRoom):
+		return card + " had no room under its spend limit for the plan's tests, so they never ran."
+	case gateAttempts(runs) >= 2:
+		return "The plan's tests stopped twice before they finished, on " + strings.ToLower(card[:1]) + strings.TrimSuffix(card[1:], ",") + "."
+	}
+	return "The plan's tests ran, but none of them checked these promises."
 }
 
 // CriteriaGapReason is the reason of the criteria request of a plan whose
@@ -1794,8 +1838,9 @@ func criteriaLines(cs []PlanCriterion, tail string) (ids, lines []string) {
 // pending ask of either kind, so the two never stack, nor again after a
 // denied one of the same kind and reason, nor while a delta due stands
 // undrafted, only once the plan is at rest.
-// Its spec names the integration card, whose rows the decisions read.
-func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reason, comment string, ids []string, integration Task) {
+// Its spec names the integration card, whose rows the decisions read, and
+// notRun, why no test ran.
+func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, notRun, reason, comment string, ids []string, integration Task) {
 	if due, err := r.undraftedDues(ctx, t.ID); err != nil || len(due) > 0 {
 		if err != nil {
 			log.Printf("plan %s: the gap check: %v", t.ID, err)
@@ -1817,7 +1862,7 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reaso
 	if !r.planAtRest(ctx, t) {
 		return
 	}
-	spec, err := json.Marshal(CriteriaSpec{Task: integration.ID})
+	spec, err := json.Marshal(CriteriaSpec{Task: integration.ID, NotRun: notRun})
 	if err != nil {
 		return
 	}

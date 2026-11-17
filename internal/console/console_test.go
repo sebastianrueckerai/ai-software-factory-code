@@ -2906,7 +2906,7 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		// full brief
 		`<p class="o-question">Merge this card&#39;s pull request?</p>`,
 		`<p class="o-askwhy">The change is high risk, and the factory&#39;s rules let only a human merge it.</p>`,
-		`<p class="o-by">suggested by the model review: <span class="quote">adds the column safely</span></p>`,
+		`<p class="o-by">suggested by the model review: <span class="quote">It approved the change with no finding, and the security audit raised 2 findings.</span></p>`,
 		`<input type="hidden" name="action" value="approve">`, `<input type="hidden" name="action" value="request_changes">`,
 		`<span class="effect">Returns the pull request to its agent with your note.</span>`,
 		`name="csrf" value="` + s.csrf + `"`, `action="/approvals/4/approve"`,

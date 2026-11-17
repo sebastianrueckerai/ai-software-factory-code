@@ -95,13 +95,13 @@ func (e ErrActRefused) Error() string { return string(e) }
 
 // outsideActions are the actions Act runs outside the run, before the
 // case ends.
-var outsideActions = []string{ActRetry, ActReplan, ActClose, ActDeployNow, ActSalvage}
+var outsideActions = []string{ActRetry, ActReplan, ActClose, ActDeployNow, ActSalvage, ActRunCriteria}
 
 // endedCardActions are the actions a case of an ended card still takes: they
 // run or draw nothing for the card's work. A plan's criteria are judged and
 // its restart is taken once the plan is done.
 var endedCardActions = []string{ActClose, ActNote, ActSettle, ActWithdraw, ActRestartPlan,
-	ActAnswerCriteria, ActGrantCriteria, ActConfirmCriteria, ActDenyCriteria}
+	ActAnswerCriteria, ActGrantCriteria, ActConfirmCriteria, ActRunCriteria}
 
 // lockWithin takes mu, or gives up when ctx ends: the wait for a case's
 // lock is bounded by the answer's own context.
@@ -122,11 +122,13 @@ var keepsWaiting = []string{AnswerRerunAgain, AnswerPark, AnswerKeepWaiting, Ans
 
 // keepsOpen says answer res leaves case c live: a note, a criterion's verdict
 // or a filed card, a decision whose request ended the case already (a
-// human card's merge or rejection is its choice, which ends it), a
-// human card's choice that keeps the card waiting, or a draw on the agent's
-// question, which buys its answer room and answers nothing.
+// human card's merge or rejection is its choice, which ends it), a run of
+// a plan's tests, whose results settle its request, a human card's choice
+// that keeps the card waiting, or a draw on the agent's question, which
+// buys its answer room and answers nothing.
 func keepsOpen(c Case, t Task, res Resolution) bool {
 	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(requestEnds, res.Action) && !ChoiceCase(c, t.Kind) ||
+		res.Action == ActRunCriteria && c.Kind == CasePlanCriteria ||
 		ChoiceCase(c, t.Kind) && slices.Contains(keepsWaiting, res.Action) || slices.Contains(questionKinds, c.Kind) && slices.Contains(capDraws, res.Action)
 }
 
@@ -1081,6 +1083,8 @@ func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInpu
 		return r.deployNow(ctx, t, in)
 	case ActSalvage:
 		return r.salvage(ctx, t, f, in)
+	case ActRunCriteria:
+		return r.askTestRun(ctx, t)
 	case ActRetry:
 		id, _ := in.Res.Args["task_id"].(string)
 		if id == "" {

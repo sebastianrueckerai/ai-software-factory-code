@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"regexp"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
@@ -140,8 +142,7 @@ var Vocabulary = []Answer{
 	{Action: ActGrantCriteria, Label: "Build the missing part", Effect: "Files one more card for the open promises."},
 	{Action: ActConfirmCriteria, Label: "The work is enough", Effect: "Records every open promise as met by the delivered cards.",
 		Fields: []Field{optionalNote("What shows it")}},
-	{Action: ActDenyCriteria, Label: "Leave the promises open", Effect: "Refuses the extra card. The plan stays open.",
-		Fields: []Field{requiredNote("Your reason", "Why no card should be built")}},
+	{Action: ActRunCriteria, Label: "Run the tests now", Effect: "Runs the plan's tests on main and records each result."},
 	{Action: ActDeployNow, Label: "Deploy now", Effect: "Releases the held production deploy."},
 	{Action: ActSettle, Label: "It is fine, go on", Effect: "Ends this notice. Nothing else changes."},
 	{Action: ActSettle, Variant: variantNoted, Label: "Noted", Effect: "Ends this notice. Nothing else changes."},
@@ -335,6 +336,15 @@ var effectFills = map[string]func(Facts) string{
 		}
 		return ""
 	},
+	ActGrantCriteria: func(Facts) string {
+		return fmt.Sprintf("Files one more card for the open promises. A small card spends up to %s EUR.", money(policy.Budget{}.SizeBudget("small")))
+	},
+	ActRunCriteria: func(f Facts) string {
+		if f.Kind == CaseMonitorFlag {
+			return "Runs the plan's tests on this card's pull request and records each result."
+		}
+		return ""
+	},
 	AnswerApprove: func(f Facts) string {
 		r := resourceOf(f)
 		if r.ServerType == "" {
@@ -475,7 +485,7 @@ func init() {
 		CasePlanQuestion:     planQuestionFace,
 		CasePlanConfirmation: planConfirmFace,
 		CaseMergeApproval:    mergeFace,
-		CasePlanCriteria:     criteriaFace(false),
+		CasePlanCriteria:     criteriaFace,
 		CaseHumanCard:        humanFace,
 		CaseJudgmentBudget:   humanFace,
 		CaseRedMain:          humanFace,
@@ -493,8 +503,8 @@ func init() {
 		ApprovalMerge:         mergeFace,
 		ApprovalResource:      resourceFace,
 		ApprovalPlan:          planConfirmFace,
-		ApprovalCriteria:      criteriaFace(false),
-		ApprovalCriteriaRerun: criteriaFace(true),
+		ApprovalCriteria:      criteriaFace,
+		ApprovalCriteriaRerun: criteriaFace,
 	}
 	FlagFaces = flagFaces()
 }
@@ -557,6 +567,17 @@ func plannedLine(f Facts) string {
 		verb = "writes the report"
 	}
 	return line(fmt.Sprintf("This card %s \u201c%s\u201d.", verb, t))
+}
+
+// TitleLine says story line l only names card t's work by its title
+// (plannedLine), which a face whose head shows the title leaves out.
+func TitleLine(l string, t Task) bool {
+	for _, f := range []Facts{{Card: t}, {Card: t, CaseFacts: CaseFacts{Planner: true}}, {Card: t, CaseFacts: CaseFacts{Report: true}}} {
+		if l != "" && l == plannedLine(f) {
+			return true
+		}
+	}
+	return false
 }
 
 // both is first and second as one story line, or the one of them that
@@ -1359,28 +1380,116 @@ var planQuestionFace = FaceSpec{
 	},
 }
 
+// planConfirmFace is a plan confirmation's face: the confirmation itself,
+// or a page of one extra promise its round proposed.
 var planConfirmFace = FaceSpec{
 	Ask: func(f Facts) string {
-		if f.Card.PlanName != "" && utf8.RuneCountInString(f.Card.PlanName) < 60 {
-			return fmt.Sprintf("Confirm the plan %q so its cards can start?", f.Card.PlanName)
+		if _, ok := holdoutOn(f); ok {
+			return "Keep this extra promise for " + askedPlan(f) + "?"
 		}
-		return "Confirm this plan so its cards can start?"
+		p, ok := planOn(f)
+		if !ok || len(p.Cards) == 0 {
+			return firstAsk("Confirm "+askedPlan(f)+" so its cards can start?", "Confirm this plan so its cards can start?")
+		}
+		what := plural(len(p.Cards), "card")
+		if len(p.Promises) > 0 {
+			what += " and " + plural(len(p.Promises), "promise")
+		}
+		ask := fmt.Sprintf("Confirm %s with %s", askedPlan(f), what)
+		if len(p.OffMain) > 0 {
+			ask += ", and take " + textutil.AndList(p.OffMain) + " off main"
+		}
+		return firstAsk(ask+"?", "Confirm this plan with "+what+"?")
 	},
-	Why:     fixed("The plan's cards and promises are fixed only once a human confirms them."),
-	Answers: keys(AnswerConfirmPlan, AnswerRevisePlan),
+	Why: func(f Facts) string {
+		if _, ok := holdoutOn(f); ok {
+			return "The plan's cards start only once each extra promise is kept or dropped."
+		}
+		if p, _ := planOn(f); p.HoldoutsOpen > 0 {
+			return fmt.Sprintf("The plan's cards start only once its %s %s kept or dropped.", plural(p.HoldoutsOpen, "extra promise"), isAre(p.HoldoutsOpen))
+		}
+		return "The plan's cards and promises are fixed only once a human confirms them."
+	},
+	Story: func(f Facts) Story {
+		if h, ok := holdoutOn(f); ok {
+			return Story{Planned: "An extra promise is one the plan's own list missed, and a test the agent never sees checks it.",
+				Happened: line("The extra promise: " + endSentence(h.Claim)), Left: "Keeping it adds one more test, which the plan's last card must pass."}
+		}
+		p, _ := planOn(f)
+		s := Story{Planned: line(firstSentence(strings.TrimSpace(p.Outcome)))}
+		if len(p.Cards) > 0 {
+			s.Happened = cmp.Or(line("Its cards: "+textutil.AndList(p.Cards)+"."), fmt.Sprintf("It files %s, listed in the full brief.", plural(len(p.Cards), "card")))
+		}
+		if len(p.Promises) > 0 {
+			s.Left = cmp.Or(line("It promises: "+strings.Join(p.Promises, " ")), fmt.Sprintf("It makes %s, listed in the full brief.", plural(len(p.Promises), "promise")))
+		}
+		if len(p.OffMainWhys) > 0 {
+			s.View = "The planner's view: " + strings.Join(p.OffMainWhys, " ")
+		}
+		return s
+	},
+	Answers: func(f Facts) []string {
+		if _, ok := holdoutOn(f); ok {
+			return []string{AnswerKeepHoldout, AnswerDropHoldout}
+		}
+		if p, _ := planOn(f); p.HoldoutsOpen > 0 {
+			return []string{AnswerRevisePlan}
+		}
+		return []string{AnswerConfirmPlan, AnswerRevisePlan}
+	},
+}
+
+// firstAsk is the first of asks that reads as an ask.
+func firstAsk(asks ...string) string {
+	for _, q := range asks {
+		if readsAsAsk(q) {
+			return q
+		}
+	}
+	return asks[len(asks)-1]
+}
+
+// askedPlan is the plan of card f as an ask names it: "plan “<name>”",
+// else "this plan".
+func askedPlan(f Facts) string {
+	name := strings.TrimSpace(cmp.Or(f.Card.PlanName, strings.TrimRight(CardTitle(f.Card), ".?! ")))
+	if f.Card.Track != policy.TrackPlan {
+		name = f.PlanName
+	}
+	if name == "" {
+		return "this plan"
+	}
+	return "plan \u201c" + name + "\u201d"
+}
+
+// titled is card f's title in quotes, "" for a card without one.
+func titled(f Facts) string {
+	if t := strings.TrimRight(CardTitle(f.Card), ".?! "); t != "" {
+		return "\u201c" + t + "\u201d"
+	}
+	return ""
 }
 
 var mergeFace = FaceSpec{
 	Ask: func(f Facts) string {
+		name := cmp.Or(titled(f), "this card's pull request")
+		if _, ok := promiseOn(f); ok && titled(f) != "" {
+			return firstAsk("Is this promise met by "+titled(f)+"?", "Is this promise of the plan met?")
+		} else if ok {
+			return "Is this promise of the plan met?"
+		}
 		switch {
 		case f.Checks == "red" && f.Factory:
-			return "The checks of this card's pull request are red. Run them again, or close it?"
+			return firstAsk("The checks of "+name+" are red. Run them again, or close it?", "The checks of this card's pull request are red. Run them again, or close it?")
 		case f.Checks == "red":
-			return "The checks of this card's pull request are red. Send it back to its agent?"
+			return firstAsk("The checks of "+name+" are red. Send it back to its agent?", "The checks of this card's pull request are red. Send it back to its agent?")
 		}
-		return "Merge this card's pull request?"
+		return firstAsk("Merge "+name+"?", "Merge this card's pull request?")
 	},
 	Why: func(f Facts) string {
+		if _, ok := promiseOn(f); ok {
+			return fmt.Sprintf("The pull request merges only once each of the %s a human judges has a verdict.", plural(pageCount(f, "page_open"), "promise"))
+		}
 		switch {
 		case f.Checks == "red" && f.Factory:
 			return "It cannot merge until its checks pass, and no agent works on a pull request the factory opened."
@@ -1395,8 +1504,24 @@ var mergeFace = FaceSpec{
 		}
 		return "The factory's rules let only a human merge this change."
 	},
-	Story: workStory,
+	Story: func(f Facts) Story {
+		if p, ok := promiseOn(f); ok {
+			s := Story{Planned: promisedLine(p)}
+			if p.Evidence != "" {
+				s.Happened = line("What to look at: " + endSentence(p.Evidence))
+			}
+			return s
+		}
+		s := Story{Planned: plannedLine(f), Left: checksLine(f)}
+		if !mergeSuggested(f) {
+			s.Happened = reviewLine(f)
+		}
+		return s
+	},
 	Answers: func(f Facts) []string {
+		if _, ok := promiseOn(f); ok {
+			return []string{ActAnswerCriteria, ActAnswerCriteria + "/not_met", ActAnswerCriteria + "/waive"}
+		}
 		deny := []string{ActDenyMerge, ActDenyMerge + "/reject"}
 		if !f.Factory {
 			if f.Checks == "red" {
@@ -1412,11 +1537,74 @@ var mergeFace = FaceSpec{
 		return []string{ActApproveMerge, ActDenyMerge + "/reject"}
 	},
 	Suggest: func(f Facts) (string, string, string) {
-		if f.Checks == "red" || !f.ReviewApproved {
+		if !mergeSuggested(f) {
 			return "", "", ""
 		}
-		return ActApproveMerge, "the model review", factString(f.Case, "review_summary")
+		return ActApproveMerge, "the model review", "It approved the change" + findingsClause(f) + "."
 	},
+}
+
+// mergeSuggested: the model review approved the merge's head, and its
+// checks are green, so the review suggests the merge.
+func mergeSuggested(f Facts) bool {
+	_, page := promiseOn(f)
+	return !page && f.Checks != "red" && f.ReviewApproved
+}
+
+// reviewLine is the model review's verdict on a merge in one line, from
+// its facts: its verdict and how many findings it and the security audit
+// raised; "" when no review judged the head, which the why says.
+func reviewLine(f Facts) string {
+	switch factString(f.Case, "review_verdict") {
+	case "approve":
+		return "The model review approved the change" + findingsClause(f) + "."
+	case "concerns":
+		return fmt.Sprintf("The model review raised concerns in %s%s.", plural(caseInt(f.Case, "review_findings"), "finding"), auditClause(f))
+	}
+	return ""
+}
+
+// findingsClause names the review's and the audit's findings beside an
+// approval.
+func findingsClause(f Facts) string {
+	n := caseInt(f.Case, "review_findings")
+	clause := " with no finding"
+	if n > 0 {
+		clause = " with " + plural(n, "finding")
+	}
+	return clause + auditClause(f)
+}
+
+func auditClause(f Facts) string {
+	if n := caseInt(f.Case, "audit_findings"); n > 0 {
+		return ", and the security audit raised " + plural(n, "finding")
+	}
+	return ""
+}
+
+// checksLine says how a merge's checks stand.
+func checksLine(f Facts) string {
+	switch f.Checks {
+	case "green":
+		return "The checks are green."
+	case "red":
+		if failed := factStrings(f.Case, "failed_checks"); len(failed) > 0 {
+			return cmp.Or(line("The checks are red: "+textutil.AndList(failed)+" failed."), "The checks are red.")
+		}
+		return "The checks are red."
+	}
+	return ""
+}
+
+// caseInt is case c's fact key as a whole number, 0 for none.
+func caseInt(c Case, key string) int {
+	switch n := c.Facts[key].(type) {
+	case int:
+		return n
+	case float64:
+		return int(n)
+	}
+	return 0
 }
 
 // classWords say what a change of each risk class is, in plain words.
@@ -1433,23 +1621,206 @@ func criteriaNames(f Facts) []string {
 	return strings.Split(list, ", ")
 }
 
-func criteriaFace(rerun bool) FaceSpec {
-	return FaceSpec{
-		Ask: func(f Facts) string {
-			n := len(criteriaNames(f))
-			if f.ApprovalKind == ApprovalCriteriaRerun || rerun {
-				return fmt.Sprintf("This plan finished, but no test checked its %s. Settle each one.", plural(n, "promise"))
-			}
-			return fmt.Sprintf("This plan finished, but %s %s not met. Build the missing part?", plural(n, "promise"), isAre(n))
-		},
-		Why: fixed("Until each promise is met or dropped, the plan stays open and holds production deploys."),
-		Answers: func(f Facts) []string {
-			if f.ApprovalKind == ApprovalCriteriaRerun || rerun {
-				return []string{ActAnswerCriteria + "/waive", ActConfirmCriteria}
-			}
-			return []string{ActGrantCriteria, ActAnswerCriteria + "/waive", ActConfirmCriteria}
-		},
+// PromiseFact is the promise one page of a plan's request asks about: its
+// id, its words (PromiseOf), its kind, and its standing verdict with its
+// evidence, or for a human promise what to look at.
+type PromiseFact struct {
+	ID, Promise, Kind, Verdict, Evidence string
+}
+
+// OnPromise is case c as the page of promise p, open of of the plan's
+// promises waiting: a case of a card whose plan holds criteria.
+func OnPromise(c Case, p PromiseFact, open, of int) Case {
+	c.Facts = withFacts(c.Facts, map[string]any{"page_promise": p, "page_open": open, "page_of": of, "criteria": true})
+	return c
+}
+
+// HoldoutFact is the extra promise one page of a plan's confirmation asks
+// about: its index among the round's and its claim.
+type HoldoutFact struct {
+	Idx   int
+	Claim string
+}
+
+// OnHoldout is case c as the page of extra promise h.
+func OnHoldout(c Case, h HoldoutFact) Case {
+	c.Facts = withFacts(c.Facts, map[string]any{"page_holdout": h})
+	return c
+}
+
+// PlanFacts are what a plan's question and confirmation name of the plan:
+// its outcome, its cards' titles, its promises, the cards it takes off
+// main with the planner's reasons, and how many extra promises wait.
+type PlanFacts struct {
+	Outcome              string
+	Cards, Promises      []string
+	OffMain, OffMainWhys []string
+	HoldoutsOpen         int
+}
+
+// OnPlan is case c of a plan's question or confirmation with plan p.
+func OnPlan(c Case, p PlanFacts) Case {
+	c.Facts = withFacts(c.Facts, map[string]any{"page_plan": p})
+	return c
+}
+
+func withFacts(facts, more map[string]any) map[string]any {
+	out := maps.Clone(facts)
+	if out == nil {
+		out = map[string]any{}
 	}
+	maps.Copy(out, more)
+	return out
+}
+
+func promiseOn(f Facts) (PromiseFact, bool) { return PromiseOn(f.Case) }
+
+func holdoutOn(f Facts) (HoldoutFact, bool) { return HoldoutOn(f.Case) }
+
+// PromiseOn is the promise page c asks about, false for a case no page made.
+func PromiseOn(c Case) (PromiseFact, bool) {
+	p, ok := c.Facts["page_promise"].(PromiseFact)
+	return p, ok
+}
+
+// HoldoutOn is the extra promise page c asks about, false for a case no
+// page made.
+func HoldoutOn(c Case) (HoldoutFact, bool) {
+	h, ok := c.Facts["page_holdout"].(HoldoutFact)
+	return h, ok
+}
+
+func planOn(f Facts) (PlanFacts, bool) {
+	p, ok := f.Case.Facts["page_plan"].(PlanFacts)
+	return p, ok
+}
+
+// pageCount is the count a page names under key.
+func pageCount(f Facts, key string) int {
+	n, _ := f.Case.Facts[key].(int)
+	return n
+}
+
+// promisedLine is the story's line of what the plan promised.
+func promisedLine(p PromiseFact) string {
+	return cmp.Or(line("The plan promised: "+endSentence(p.Promise)), "The plan made a promise too long to show here. The full brief holds it.")
+}
+
+// gateKind: a test checks a promise of kind.
+func gateKind(kind string) bool { return kind == CriterionTest || kind == CriterionInvariant }
+
+// verdictLine is what judged an unmet promise said, from its row's
+// evidence (criterionLine, judgeArtifact): a test's message without the
+// test's name and path, a model's reason without its model and prompt.
+func verdictLine(p PromiseFact) string {
+	detail := p.Evidence
+	for _, lead := range []string{"blind: ", "open: ", "criterion " + p.ID + ": "} {
+		detail = strings.TrimPrefix(detail, lead)
+	}
+	head := map[string]string{CriterionJudgement: "The model that judges it found it not met", CriterionHuman: "A human judged it not met"}[p.Kind]
+	switch {
+	case !gateKind(p.Kind):
+		if i := strings.LastIndex(detail, " (model "); i > 0 {
+			detail = detail[:i]
+		}
+	case strings.HasPrefix(detail, "no test ") || strings.Contains(detail, " ran no tests"):
+		return "Its test was not found, so nothing checked it."
+	default:
+		head = "Its test ran and failed"
+		if strings.Contains(detail, " skipped") {
+			head = "Its test was skipped"
+		}
+		_, detail, _ = strings.Cut(detail, ": ")
+	}
+	if detail = strings.TrimSpace(detail); detail != "" {
+		if l := line(head + ": " + endSentence(detail)); l != "" {
+			return l
+		}
+	}
+	return head + "."
+}
+
+// untilSettled is a criteria request's why: what stays blocked until its
+// n open promises are settled.
+func untilSettled(n int) string {
+	switch n {
+	case 0, 1:
+		return "Until this promise is settled, the plan stays open and holds production deploys."
+	case 2:
+		return "Until both are settled, the plan stays open and holds production deploys."
+	}
+	return fmt.Sprintf("Until all %d are settled, the plan stays open and holds production deploys.", n)
+}
+
+// criteriaFace is the face of a plan's criteria request, a page per open
+// promise: a gap, whose promises are not met, or criteria never judged,
+// whose promises no test checked.
+var criteriaFace = FaceSpec{
+	Ask: func(f Facts) string {
+		open, of := pageCount(f, "page_open"), pageCount(f, "page_of")
+		if open == 0 {
+			open = len(criteriaNames(f))
+		}
+		plan := capitalize(askedPlan(f))
+		if f.ApprovalKind == ApprovalCriteriaRerun {
+			return firstAsk(fmt.Sprintf("%s finished, but no test checked its %s. Settle each one.", plan, plural(open, "promise")),
+				fmt.Sprintf("This plan finished, but no test checked its %s. Settle each one.", plural(open, "promise")))
+		}
+		if of == 0 {
+			return firstAsk(fmt.Sprintf("%s finished, but %s %s not met. Settle each one.", plan, plural(open, "promise"), isAre(open)),
+				fmt.Sprintf("This plan finished, but %s %s not met. Settle each one.", plural(open, "promise"), isAre(open)))
+		}
+		return firstAsk(fmt.Sprintf("%s finished, but %d of %d promises %s not met. Settle each one.", plan, open, of, isAre(open)),
+			fmt.Sprintf("This plan finished, but %d of %d promises %s not met. Settle each one.", open, of, isAre(open)))
+	},
+	Why: func(f Facts) string {
+		open := pageCount(f, "page_open")
+		if open == 0 {
+			open = len(criteriaNames(f))
+		}
+		return untilSettled(open)
+	},
+	Story: func(f Facts) Story {
+		p, ok := promiseOn(f)
+		if !ok {
+			return Story{Happened: line(factString(f.Case, "not_run"))}
+		}
+		s := Story{Planned: promisedLine(p)}
+		switch {
+		case f.ApprovalKind == ApprovalCriteriaRerun && p.Kind == CriterionHuman:
+			s.Left = "No human judged it yet."
+		case f.ApprovalKind == ApprovalCriteriaRerun:
+			s.Happened, s.Left = line(factString(f.Case, "not_run")), "No test checked it."
+		case p.Verdict == "" && gateKind(p.Kind):
+			s.Happened = "No test checked it yet."
+		case p.Verdict == "":
+			s.Happened = "No one judged it yet."
+		default:
+			s.Happened = verdictLine(p)
+		}
+		return s
+	},
+	Answers: func(f Facts) []string {
+		p, ok := promiseOn(f)
+		human := []string{ActAnswerCriteria, ActAnswerCriteria + "/not_met"}
+		switch {
+		case f.ApprovalKind == ApprovalCriteriaRerun && ok && p.Kind == CriterionHuman:
+			return append(human, ActAnswerCriteria+"/waive")
+		case f.ApprovalKind == ApprovalCriteriaRerun:
+			return []string{ActRunCriteria, ActAnswerCriteria + "/waive"}
+		case !ok:
+			return []string{ActGrantCriteria, ActAnswerCriteria + "/waive"}
+		case p.Kind == CriterionHuman:
+			return []string{ActGrantCriteria, ActAnswerCriteria + "/waive", ActAnswerCriteria}
+		}
+		return []string{ActGrantCriteria, ActAnswerCriteria + "/waive"}
+	},
+	More: func(f Facts) []string {
+		if ClosablePlan(f.Card) {
+			return []string{AnswerDropAndEnd}
+		}
+		return nil
+	},
 }
 
 // resourceOf is the resource a request on the case asks for.
@@ -1681,7 +2052,8 @@ func flagFaces() map[string]FaceSpec {
 		"budget_moved_no_event": {fact: budgetMoved, why: "Every change of a card's budget should leave a record."},
 		"checkin_cut":           {notice: true, fact: fixed("This card's last session went unjudged because its check ended early."), why: unjudged},
 		"checkin_refused":       {notice: true, fact: fixed("This card's last session went unjudged because its check was refused."), why: unjudged},
-		"criterion_unproven":    {fact: fixed("A promise of the plan has no test result yet."), why: "A plan closes only once each promise has a test result."},
+		"criterion_unproven": {fact: fixed("A promise of the plan has no test result yet."), why: "A plan closes only once each promise has a test result.",
+			fitting: ActRunCriteria, question: "Run the plan's tests now?"},
 		"dependency_failed": {fact: fixed("A card this one waits for failed."), why: "This card cannot start while a card it waits for stays failed.",
 			fitting: ActRetry, question: "Try it again?"},
 		"finding_confirmed_twice": {fact: fixed("The review found the same fault twice on this card."),

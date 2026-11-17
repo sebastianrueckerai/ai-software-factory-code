@@ -386,7 +386,7 @@ func TestPlanCardDecidesTheConfirmation(t *testing.T) {
 	night := "okay — confirmed. Revision 15 is fine."
 	card := board()
 	for _, want := range []string{
-		`<p class="o-question">Confirm this plan so its cards can start?</p>`,
+		`<p class="o-question">Confirm plan “Link shortener” with 3 cards?</p>`,
 		`<input type="hidden" name="decision" value="confirm">` + "\n" + `<button type="submit" class="pick">Confirm the plan</button>`,
 		`<input type="hidden" name="decision" value="revise">` + "\n" + `<button type="button" class="pick" aria-expanded="false" aria-controls="f-t-plan-500-revise-note-set" data-press="revise">Ask for changes</button>`,
 		`name="answer" rows="2" maxlength="1000" placeholder="What the plan should do differently" required`,
@@ -559,15 +559,15 @@ func TestTheConfirmationNamesTheOpenHoldouts(t *testing.T) {
 		return r.do(post("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "project": {"linkshort"}, "revision": {"2"}, "index": {"1"},
 			"decision": {"confirm"}}), ck)
 	}
-	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != "2 hold-outs wait for your Keep it or Drop it below.\n" {
+	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != "2 extra promises of plan #1 wait for Keep it or Drop it on their pages before the confirmation.\n" {
 		t.Errorf("the press with two waiting: %d %q", rec.Code, rec.Body)
 	}
 	r.tasks.proofs["t-plan"][1].State = factoryd.ProofDropped
-	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != "1 hold-out waits for your Keep it or Drop it below.\n" {
+	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != "1 extra promise of plan #1 waits for Keep it or Drop it on its page before the confirmation.\n" {
 		t.Errorf("the press with one waiting: %d %q", rec.Code, rec.Body)
 	}
 	r.tasks.proofs["t-plan"][3].State = factoryd.ProofDropped
-	const none = "The hold-outs of plan #1 wait for your Keep it or Drop it below."
+	const none = "The extra promises of plan #1 wait for Keep it or Drop it on their pages before the confirmation."
 	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != none+"\n" {
 		t.Errorf("the press with none the count reads: %d %q", rec.Code, rec.Body)
 	}

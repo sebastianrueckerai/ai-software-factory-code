@@ -74,32 +74,14 @@
 {{end}}{{with .PlanStill}}<p>Still to plan: {{join . ", "}}.</p>
 {{end}}{{with .TakeOffWhys}}<ul>{{range .}}<li>{{.}}</li>{{end}}</ul>
 {{end}}{{range .Questions}}{{if .Answered}}<p class="answered">{{if eq .Kind "confirmation"}}{{askline .Text}}{{else}}{{.Text}}{{end}}: {{.Reply}} ({{.AnsweredBy}})</p>
-{{end}}{{end}}{{template "evidence-criteria" .}}{{if .Holdouts}}<div class="holdouts" id="holdouts-{{.TaskID}}{{.IDSuffix}}">
-<p class="meta">A hold-out is a behaviour the plan promises to keep intact, kept out of the plan the agent sees and proved at the gate.</p>
-{{range $h := .Holdouts}}<fieldset class="question"><legend>Hold-out {{$h.Index}}</legend>
-<p class="claim">{{$h.Claim}}</p>
-<p class="meta">Inputs: {{$h.Inputs}}<br>Expected: {{$h.Expected}}</p>
-{{with $h.Blurb}}<p class="meta">{{.}}</p>
-{{end}}{{if $h.Decides}}<form method="post" action="/tasks/{{$.TaskID}}/plan/holdout" hx-post="/tasks/{{$.TaskID}}/plan/holdout">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$h.Idx}}">
-<button type="submit" name="verb" value="okay">Keep it</button>
-<button type="submit" name="verb" value="drop">Drop it</button>
-</form>{{end}}
-</fieldset>
-{{end}}</div>{{end}}{{else}}{{range .GateLines}}<p class="meta gate-line">{{.ID}}: {{.Word}}: {{.Evidence}}</p>
+{{end}}{{end}}{{template "evidence-criteria" .}}{{with .Holdouts}}<h4>The extra promises</h4>{{range .}}<p class="claim">{{.Claim}} <span class="meta">{{.Blurb}}</span></p>
+<p class="meta">Inputs: {{.Inputs}}<br>Expected: {{.Expected}}</p>
+{{end}}{{end}}{{else}}{{range .GateLines}}<p class="meta gate-line">{{.Words}} met ({{.Word}}): {{.Evidence}}</p>
 {{end}}{{template "evidence-criteria" .}}{{end}}{{end}}
 
-{{define "evidence-criteria"}}{{$a := .}}{{with .Criteria}}<h4>The promises</h4>{{range $r := .}}<div class="criterion"><p><b>{{.ID}}</b>: {{if .Verdict}}{{.Verdict}}{{else}}open{{end}}{{with .Word}} ({{.}}){{end}}. {{or .Claim .Suite}}</p>
+{{define "evidence-criteria"}}{{$a := .}}{{with .Criteria}}<h4>The promises</h4>{{range $r := .}}<div class="criterion"><p><b>{{.Words}}</b> {{if .Verdict}}{{.Verdict}}{{else}}open{{end}}{{with .Word}} ({{.}}){{end}}</p>{{with .Detail}}<p class="meta">{{.}}</p>{{end}}
 {{with .Evidence}}<p class="reason">{{.}}</p>
 {{end}}{{with .Artifact}}<p class="meta">{{.Name}} at {{printf "%.7s" .Head}}{{with $r.CutLine}}, {{.}}{{end}}</p>
 <pre class="artifact" tabindex="0">{{.Content}}</pre>
 {{else}}{{if $r.Human}}{{with $r.PlanCriterion.Evidence}}<p class="meta">Evidence: {{.}}</p>
-{{end}}{{end}}{{end}}{{if and (eq $a.Kind "merge") $a.Approver (ne $r.Verdict "met") (ne $r.Verdict "waived")}}<form method="post" action="/approvals/{{$a.ID}}/criterion" hx-post="/approvals/{{$a.ID}}/criterion">
-{{if $r.Human}}<button type="submit" disabled hidden></button>{{end}}<input type="hidden" name="csrf" value="{{$a.CSRF}}">{{template "filter" $a.Filter}}<input type="hidden" name="criterion" value="{{$r.ID}}">
-<label for="waive-{{$a.ID}}{{$a.IDSuffix}}-{{$r.ID}}">{{if $r.Human}}Your words, one line. Not met and Waive need them.{{else}}Why it no longer holds, one line{{end}}</label>
-<input type="text" id="waive-{{$a.ID}}{{$a.IDSuffix}}-{{$r.ID}}" name="reason" maxlength="2000"{{if not $r.Human}} required{{end}} hx-preserve>
-{{if $r.Human}}<button type="submit" name="verb" value="met" aria-label="Met: promise {{$r.ID}}">Met</button>
-<button type="submit" name="verb" value="not_met" aria-label="Not met: promise {{$r.ID}}">Not met</button>
-{{end}}<button type="submit" name="verb" value="waived" aria-label="Waive promise {{$r.ID}}">Waive</button>
-</form>
-{{end}}</div>{{end}}{{end}}{{end}}
+{{end}}{{end}}{{end}}</div>{{end}}{{end}}{{end}}

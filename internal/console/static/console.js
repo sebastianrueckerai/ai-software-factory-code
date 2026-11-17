@@ -76,34 +76,6 @@ function refused(e) {
 }
 document.addEventListener("htmx:responseError", refused);
 document.addEventListener("htmx:sendError", refused);
-// A refused press that names the hold-outs moves their zone into view, its
-// fold opened: the card the press came from shows its own zone, and a card
-// the page no longer holds — its drawer closed while the answer travelled —
-// loads the drawer again and shows the zone it lands on.
-function showZone(zone) {
-  var fold = zone.closest("details");
-  if (fold) fold.open = true;
-  zone.scrollIntoView({ block: "center" });
-}
-function holdoutsRefused(e) {
-  var xhr = e.detail.xhr;
-  if (!xhr || xhr.responseText.indexOf("Keep it or Drop it below") < 0) return;
-  var card = e.detail.elt && e.detail.elt.closest("[data-card], [data-opened]");
-  var zone = card && card.isConnected && card.querySelector('[id^="holdouts-"]');
-  if (zone) { showZone(zone); return; }
-  var id = card && (card.dataset.card || card.dataset.opened);
-  if (!id) return;
-  var settle = function (ev) {
-    if (!ev.target || ev.target.id !== "drawer") return;
-    document.removeEventListener("htmx:afterSettle", settle);
-    var z = document.getElementById("holdouts-" + id + "-d") || document.getElementById("holdouts-" + id);
-    if (z) showZone(z);
-  };
-  document.addEventListener("htmx:afterSettle", settle);
-  if (location.hash === "#card=" + encodeURIComponent(id)) showDrawer();
-  else location.hash = "#card=" + encodeURIComponent(id);
-}
-document.addEventListener("htmx:responseError", holdoutsRefused);
 // An answer for a board that has left the page since it was asked for (a
 // find answered first) is not swapped: htmx would still run hx-preserve on
 // it and move the live find into the content it then throws away. Only the

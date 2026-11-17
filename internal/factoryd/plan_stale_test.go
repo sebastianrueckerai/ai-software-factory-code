@@ -75,7 +75,7 @@ func TestFilePlanRefusesADroppedIdBackWithAnotherDefinition(t *testing.T) {
 	ctx := context.Background()
 	withPages := func(claim string) Plan {
 		p := testPlan()
-		p.Criteria = append(p.Criteria, PlanCriterion{ID: "pages_ok", Kind: CriterionHuman, Claim: claim, Evidence: "the list page"})
+		p.Criteria = append(p.Criteria, PlanCriterion{ID: "pages_ok", Kind: CriterionHuman, Promise: "The pages read well.", Claim: claim, Evidence: "the list page"})
 		p.Cards[2].Acceptance = append(p.Cards[2].Acceptance, PlanItem{Criterion: "pages_ok", Text: "the list page reads well"})
 		p.Cards[3].Acceptance = append(p.Cards[3].Acceptance, PlanItem{Criterion: "pages_ok", Text: "the pages read well"})
 		return p

@@ -1010,8 +1010,10 @@ func TestBoardRowsApplyOnTheirPreconditions(t *testing.T) {
 		{"grant on a criteria case", ActGrantCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{}, true},
 		{"grant on a merge case", ActGrantCriteria, CaseFacts{Kind: CaseMergeApproval}, Resolution{}, false},
 		{"confirm on a criteria case", ActConfirmCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{}, true},
-		{"deny with no reason", ActDenyCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{}, false},
-		{"deny with a reason", ActDenyCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{Note: "no"}, true},
+		{"run on criteria never judged", ActRunCriteria, CaseFacts{Kind: CasePlanCriteria, ApprovalKind: ApprovalCriteriaRerun}, Resolution{}, true},
+		{"run on a criteria gap", ActRunCriteria, CaseFacts{Kind: CasePlanCriteria, ApprovalKind: ApprovalCriteria}, Resolution{}, false},
+		{"run on the unproven flag", ActRunCriteria, CaseFacts{Kind: CaseMonitorFlag, Flag: "criterion_unproven"}, Resolution{}, true},
+		{"run on another flag", ActRunCriteria, CaseFacts{Kind: CaseMonitorFlag, Flag: "wait_over_bound"}, Resolution{}, false},
 		{"deny_merge with no reason", ActDenyMerge, CaseFacts{Kind: CaseMergeApproval, PROpen: true}, Resolution{}, false},
 		{"deny_merge with a reason", ActDenyMerge, CaseFacts{Kind: CaseMergeApproval, PROpen: true}, Resolution{Note: "no"}, true},
 	} {

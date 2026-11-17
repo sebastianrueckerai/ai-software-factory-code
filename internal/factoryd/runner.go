@@ -148,9 +148,12 @@ type Runner struct {
 	DeployNow func(ctx context.Context, repository, by, via, decider string) (string, error)
 	// gateQueue holds the plans whose criteria gate is due, which the
 	// close check fills under gateMu and CriteriaGatePass takes; gateRun
-	// is the plan whose gate runs now, which the close check leaves alone
+	// is the plan whose gate runs now, which the close check leaves alone;
+	// testRuns holds the plans whose untested promises a human's
+	// run_criteria asked to run
 	gateMu    sync.Mutex
 	gateQueue []string
+	testRuns  []string
 	gateRun   string
 	// criteriaGate replaces GateCriteria in the criteria gate pass; a
 	// test scripts it

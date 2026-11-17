@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // verdictRig is sf/code's board with a plan whose cards are done and c2
@@ -31,7 +32,7 @@ func verdictRig(r *rig) {
 	}})
 	r.tasks.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "done", Process: "spec", Objective: "Shortener",
-			Repository: "sf/code", IssueNumber: 3}},
+			Repository: "sf/code", IssueNumber: 3, Track: policy.TrackPlan}},
 		{Task: factoryd.Task{ID: "t-found", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 4,
 			Parent: "t-plan", Source: factoryd.SourcePlan, PlanKey: "foundation"}},
 		{Task: factoryd.Task{ID: "t-int", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 5,
@@ -44,6 +45,22 @@ func verdictRig(r *rig) {
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 30, Kind: factoryd.ApprovalCriteria, TaskID: "t-plan",
 		Project: "sf/code", Status: "pending", Reason: "criteria not met with the plan's cards done: c2, c3",
 		Spec: json.RawMessage(`{"revision":0,"task":"t-int"}`)})
+	seatRequestCases(r)
+}
+
+// seatRequestCases puts the case each pending request of r opens on the
+// desk, as the store's desk reads every live case.
+func seatRequestCases(r *rig) {
+	if r.openCases == nil {
+		r.openCases = map[string][]factoryd.Case{}
+	}
+	for _, a := range r.approvals.rows {
+		for _, q := range r.requestCases(context.Background(), a.TaskID) {
+			if q.req.ID == a.ID && !slices.ContainsFunc(r.openCases[a.TaskID], func(k factoryd.Case) bool { return k.ID == q.c.ID }) {
+				r.openCases[a.TaskID] = append(r.openCases[a.TaskID], q.c)
+			}
+		}
+	}
 }
 
 // criteriaCard is the plan's criteria approval on its opened card.
@@ -52,93 +69,105 @@ func criteriaCard(t *testing.T, r *rig, ck *http.Cookie) string {
 	return approvalFaceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?tab=overview&project=ai-software-factory-code", nil), ck).Body.String(), "t-plan")
 }
 
-// Pieces 7 and 8: the criteria gap card asks to build the missing part:
-// Build the missing part grants one more card, Drop this promise picks
-// among the open promises with a reason, The work is enough confirms the
-// delivered cards; a line says the request closes on its own. Its full
-// brief holds each promise's row: c1 met with its evidence, c2 and c3
-// open.
-func TestCriteriaGapCardHoldsVerdictsAndForms(t *testing.T) {
+// page is the opened card of t-plan at its page key, "" for the first.
+func criteriaPage(t *testing.T, r *rig, ck *http.Cookie, key string) string {
+	t.Helper()
+	path := "/cards/t-plan/drawer?tab=overview&project=ai-software-factory-code"
+	if key != "" {
+		path += "&case=t-plan:" + key
+	}
+	return getAs(r, ck, path, false).Body.String()
+}
+
+// Pieces 7 and 8: each open promise of the criteria gap is a page of its
+// own: the ask counts the promises not met of the plan's 3 and says what
+// stays blocked; each page names its promise and what happened to it, and
+// offers Build the missing part with its price, Drop this promise and, on
+// a human promise, It is met. Each answer posts the page's promise unseen
+// to its case; a note shows only after the press. The small card opens on
+// page 1 of 2. The full brief holds a row per promise in its words.
+func TestEachOpenPromiseOfAGapIsAPage(t *testing.T) {
 	r := newRig(t)
 	verdictRig(r)
 	ck, _ := r.loggedIn(t)
-	card := criteriaCard(t, r, ck)
-	for _, want := range []string{
-		`<p class="o-question">This plan finished, but 2 promises are not met. Build the missing part?</p>`,
-		`<p class="o-note">The request closes on its own once every promise is met or dropped.</p>`,
-		`<form method="post" action="/approvals/30/approve" hx-post="/approvals/30/approve" class="answer" data-answer="grant_criteria"`,
-		`<select id="f-t-plan-r30-answer-criteria-waive-criterion" name="criterion"><option value="c2" selected>c2</option><option value="c3">c3</option></select>`,
-		`name="reason" rows="2" maxlength="2000" placeholder="Why the plan no longer needs it" required`,
-		`action="/approvals/30/confirm"`,
-		`<b>c1</b>: met. a link is stored</p>` + "\n" + `<p class="reason">go test ./... exits 0, 214 tests</p>`,
-		`<b>c2</b>: open. the pages read well</p>`,
-		`<b>c3</b>: open. ./internal/server</p>`,
-	} {
-		if !strings.Contains(card, want) {
-			t.Errorf("the criteria card lacks %q:\n%s", want, card)
+	const ask = `<p class="o-question">Plan “Shortener” finished, but 2 of 3 promises are not met. Settle each one.</p>`
+	const why = `<p class="o-askwhy">Until both are settled, the plan stays open and holds production deploys.</p>`
+	small := faceOf(t, needsOf(t, r, ck, "/"), "t-plan")
+	for _, want := range []string{`data-case="7030.1"`, `<strong class="title">Plan “Shortener” finished, but 2 of 3 promises are not met. Settle each one.</strong>`,
+		`<span class="pos" aria-live="polite">1 of 2</span>`} {
+		if !strings.Contains(small, want) {
+			t.Errorf("the small card lacks %s:\n%s", want, small)
 		}
 	}
-	if strings.Contains(card, `<option value="c1"`) || strings.Count(card, `action="/approvals/30/criterion"`) != 1 {
-		t.Errorf("Drop this promise offers the met c1, or the card holds other than one waiver:\n%s", card)
+	for i, tc := range []struct {
+		key, story string
+		answers    []string
+		criterion  string
+	}{
+		{"", "<li>The plan promised: The pages read well.</li><li>No one judged it yet.</li>",
+			[]string{factoryd.ActGrantCriteria, factoryd.ActAnswerCriteria + "/waive", factoryd.ActAnswerCriteria}, "c2"},
+		{"7030.2", "<li>The plan promised: The tests in ./internal/server stay green.</li><li>No test checked it yet.</li>",
+			[]string{factoryd.ActGrantCriteria, factoryd.ActAnswerCriteria + "/waive"}, "c3"},
+	} {
+		page := criteriaPage(t, r, ck, tc.key)
+		block := askBlockOf(t, page)
+		for _, want := range []string{fmt.Sprintf("Your call · %d of 2", i+1), ask, why, tc.story,
+			`<span class="effect">Files one more card for the open promises. A small card spends up to 4.00 EUR.</span>`} {
+			if !strings.Contains(block, want) {
+				t.Errorf("page %d lacks %q:\n%s", i+1, want, block)
+			}
+		}
+		var got []string
+		for _, m := range regexp.MustCompile(`class="answer[^"]*" data-answer="([^"]+)"`).FindAllStringSubmatch(block, -1) {
+			got = append(got, m[1])
+		}
+		equal(t, fmt.Sprintf("page %d's answers", i+1), got, tc.answers)
+		for _, key := range tc.answers[1:] {
+			p := answerForm(t, page, key)
+			if p.Action != "/tasks/t-plan/resolve" || p.Values.Get("case_id") != "7030" || p.Values.Get(key+".criterion") != tc.criterion {
+				t.Errorf("page %d: %s posts %s %v; want case 7030 and promise %s", i+1, key, p.Action, p.Values, tc.criterion)
+			}
+		}
+	}
+	brief := criteriaCard(t, r, ck)
+	for _, want := range []string{
+		`<b>A link is stored.</b> met</p>` + "\n" + `<p class="reason">go test ./... exits 0, 214 tests</p>`,
+		`<b>The pages read well.</b> open</p>`,
+		`<b>The tests in ./internal/server stay green.</b> open</p>`,
+	} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("the full brief lacks %q:\n%s", want, brief)
+		}
 	}
 }
 
-// The waiver picks among the promises open now: a promise the gate met or
-// a human waived since the request opened is no pick, and the ask counts
-// the open ones. The gate's row stands over the review's: c1's failed test
-// is its verdict, and the waiver answers it.
-func TestCriteriaCardShowsOneCriterionAtATime(t *testing.T) {
+// A promise the gate met or a human dropped since the request opened is no
+// page, and the ask counts the open ones: with c3 dropped, one page asks
+// c2. The gate's row stands over the review's: c1's failed test makes it
+// a page that names the failure.
+func TestTheGapsPagesFollowItsRows(t *testing.T) {
 	r := newRig(t)
 	verdictRig(r)
 	r.tasks.criteria["t-int"] = append(r.tasks.criteria["t-int"],
 		factoryd.CriterionVerdict{Criterion: "c3", Verdict: "waived", Evidence: "not worth the money", Kind: factoryd.CriterionInvariant, Source: "approver"})
 	ck, _ := r.loggedIn(t)
-	card := criteriaCard(t, r, ck)
-	for _, want := range []string{
-		`<p class="o-question">This plan finished, but 1 promise is not met. Build the missing part?</p>`,
-		`<select id="f-t-plan-r30-answer-criteria-waive-criterion" name="criterion"><option value="c2" selected>c2</option></select>`,
-		`<b>c3</b>: waived. ./internal/server</p>` + "\n" + `<p class="reason">not worth the money</p>`,
-	} {
-		if !strings.Contains(card, want) {
-			t.Errorf("the criteria card lacks %q:\n%s", want, card)
+	block := askBlockOf(t, criteriaPage(t, r, ck, ""))
+	for _, want := range []string{`<p class="o-question">Plan “Shortener” finished, but 1 of 3 promises is not met. Settle each one.</p>`,
+		`<p class="o-askwhy">Until this promise is settled, the plan stays open and holds production deploys.</p>`, "<li>The plan promised: The pages read well.</li>"} {
+		if !strings.Contains(block, want) {
+			t.Errorf("the one page lacks %q:\n%s", want, block)
 		}
 	}
-}
-
-// A criterion's line on the card is its claim, or an invariant's suite.
-func TestCriteriaCardShowsTheClaimOrTheSuite(t *testing.T) {
-	r := newRig(t)
-	verdictRig(r)
-	plan, _ := json.Marshal(factoryd.Plan{Summary: "The shortener", Criteria: []factoryd.PlanCriterion{
-		{ID: "c1", Kind: factoryd.CriterionInvariant, Suite: "./..."},
-		{ID: "c2", Kind: factoryd.CriterionTest, Claim: "a slug redirects"},
-	}, Cards: []factoryd.PlanCard{
-		{Key: "foundation", Role: "foundation", Title: "Foundation"},
-		{Key: "integration", Role: "integration", Title: "Integration"},
-	}})
-	r.tasks.plans["t-plan"][0].Plan = plan
-	ck, _ := r.loggedIn(t)
-	card := criteriaCard(t, r, ck)
-	if !strings.Contains(card, `<b>c1</b>: open. ./...</p>`) || !strings.Contains(card, `<b>c2</b>: open. a slug redirects</p>`) {
-		t.Errorf("the criteria card's rows are not the suite and the claim:\n%s", card)
+	if strings.Contains(block, "o-pages") {
+		t.Errorf("one open promise shows a carousel:\n%s", block)
 	}
-}
-
-// The gate's row stands over the review's: c1's failed test is its
-// verdict on the card, and the waiver picks it.
-func TestCriteriaCardStandsOnTheGatesRowOverTheReviews(t *testing.T) {
-	r := newRig(t)
-	verdictRig(r)
 	r.tasks.criteria["t-int"] = append(r.tasks.criteria["t-int"], factoryd.CriterionVerdict{Criterion: "c1", Verdict: "unmet",
 		Evidence: "criterion c1: suite ./... failed: Failed boom", Kind: factoryd.CriterionTest, Source: factoryd.CriteriaSourceGate})
-	ck, _ := r.loggedIn(t)
-	card := criteriaCard(t, r, ck)
-	for _, want := range []string{
-		`<b>c1</b>: unmet. a link is stored</p>` + "\n" + `<p class="reason">criterion c1: suite ./... failed: Failed boom</p>`,
-		`<option value="c1" selected>c1</option>`,
-	} {
-		if !strings.Contains(card, want) {
-			t.Errorf("the criteria card lacks %q:\n%s", want, card)
+	first := askBlockOf(t, criteriaPage(t, r, ck, ""))
+	for _, want := range []string{"Your call · 1 of 2", `but 2 of 3 promises are not met.`,
+		"<li>The plan promised: A link is stored.</li><li>Its test ran and failed: Failed boom.</li>"} {
+		if !strings.Contains(first, want) {
+			t.Errorf("c1's page lacks %q:\n%s", want, first)
 		}
 	}
 }
@@ -175,10 +204,10 @@ func TestCriteriaGapWaiveAndGrant(t *testing.T) {
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code" {
 		t.Fatalf("waive = %d %q", rec.Code, rec.Header().Get("Location"))
 	}
-	// the waiver settles c3: the pick holds c2 alone, and c3's row reads
+	// the waiver settles c3: its page goes, c2's stands, and c3's row reads
 	// its standing verdict
-	if card := board(); !strings.Contains(card, `name="criterion"><option value="c2" selected>c2</option></select>`) ||
-		!strings.Contains(card, `<b>c3</b>: waived. ./internal/server</p>`+"\n"+`<p class="reason">the timeout is the provider&#39;s SLA</p>`) {
+	if card := board(); !strings.Contains(card, `name="answer_criteria/waive.criterion" value="c2"`) || strings.Contains(card, `value="c3"`) ||
+		!strings.Contains(card, `<b>The tests in ./internal/server stay green.</b> waived</p>`+"\n"+`<p class="reason">the timeout is the provider&#39;s SLA</p>`) {
 		t.Errorf("after the waiver the card offers c3 still, or lacks its verdict:\n%s", card)
 	}
 	if a := r.approvals.get(30); a.Status != "pending" {
@@ -217,63 +246,10 @@ func TestCriteriaGapWaiveAndGrant(t *testing.T) {
 	})
 }
 
-// A criteria_rerun ask is the criteria card under its own name: it offers
-// Drop this promise and The work is enough, and no Build the missing part,
-// since nothing here can pay for the review that never judged them; an
-// approve that reaches it refuses naming the answers it has.
-func TestCriteriaNeverJudgedCardOffersWaiveAndConfirm(t *testing.T) {
-	r := newRig(t)
-	verdictRig(r)
-	r.approvals.rows[len(r.approvals.rows)-1] = factoryd.ApprovalRequest{ID: 30, Kind: factoryd.ApprovalCriteriaRerun, TaskID: "t-plan",
-		Project: "sf/code", Status: "pending", Reason: "criteria never judged: the review of card #5 did not run (the review never ran): c2, c3",
-		Spec: json.RawMessage(`{"revision":0,"task":"t-int"}`)}
-	var calls []string
-	r.c.cfg.DecideCriterion = func(_ context.Context, id, cid, verdict, by, reason string) error {
-		calls = append(calls, fmt.Sprintf("%s %s %s", id, cid, verdict))
-		return nil
-	}
-	ck, s := r.loggedIn(t)
-	card := criteriaCard(t, r, ck)
-	for _, want := range []string{
-		`<p class="o-question">This plan finished, but no test checked its 2 promises. Settle each one.</p>`,
-		`data-answer="answer_criteria/waive"`,
-		`<option value="c2" selected>c2</option>`,
-		`data-answer="confirm_criteria"`,
-	} {
-		if !strings.Contains(card, want) {
-			t.Errorf("the card lacks %q:\n%s", want, card)
-		}
-	}
-	if strings.Contains(card, `action="/approvals/30/approve"`) || strings.Contains(card, "Build the missing part") {
-		t.Errorf("the card offers the grant:\n%s", card)
-	}
-	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}
-	// the approve is a grant_criteria that Act refuses on this kind of request
-	r.actErr = factoryd.ErrActRefused("this plan's ask is criteria never judged: grant_criteria grants no card")
-	if rec := r.do(post("/approvals/30/approve", form), ck); rec.Code != http.StatusConflict || len(r.acted) != 1 || r.acted[0].Res.Action != factoryd.ActGrantCriteria {
-		t.Fatalf("approve = %d %q, Act took %+v, want Act's refusal of one grant_criteria", rec.Code, rec.Body.String(), r.acted)
-	}
-	r.actErr = nil
-	waive := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "criterion": {"c3"}, "verb": {"waived"}, "reason": {"the provider's SLA"}}
-	if rec := r.do(post("/approvals/30/criterion", waive), ck); rec.Code != http.StatusSeeOther {
-		t.Fatalf("waive = %d %q", rec.Code, rec.Body.String())
-	}
-	deny := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "note": {"not worth the money"}}
-	if rec := r.do(post("/approvals/30/deny", deny), ck); rec.Code != http.StatusSeeOther {
-		t.Fatalf("deny = %d %q", rec.Code, rec.Body.String())
-	}
-	if a := r.approvals.get(30); a.Status != "denied" {
-		t.Errorf("the denial left the request %+v", a)
-	}
-	if want := []string{"t-plan c3 waived"}; fmt.Sprint(calls) != fmt.Sprint(want) {
-		t.Errorf("calls = %q, want %q", calls, want)
-	}
-}
-
 // The work is enough is keyed on every child of the plan done or merged
 // (spec piece 2): it records the human's confirmation of the delivered
-// cards, and a child still open shows no such answer. The request closes
-// on the sweep, not here.
+// cards from Other actions, and a child still open shows no such answer.
+// The request closes on the sweep, not here.
 func TestCriteriaGapConfirm(t *testing.T) {
 	r := newRig(t)
 	verdictRig(r)
@@ -283,11 +259,10 @@ func TestCriteriaGapConfirm(t *testing.T) {
 		return 2, nil
 	}
 	ck, s := r.loggedIn(t)
-	board := func() string {
-		return criteriaCard(t, r, ck)
-	}
-	if card := board(); !strings.Contains(card, `<form method="post" action="/approvals/30/confirm" hx-post="/approvals/30/confirm" class="answer" data-answer="confirm_criteria"`) {
-		t.Errorf("the criteria card lacks The work is enough:\n%s", card)
+	// The work is enough answers the whole request, not one promise: it
+	// stands in Other actions
+	if p := answerForm(t, drawer(t, r, ck, "t-plan", "overview"), factoryd.ActConfirmCriteria); p.Action != "/tasks/t-plan/resolve" || p.Label != "The work is enough" {
+		t.Errorf("the opened card's The work is enough posts %+v", p)
 	}
 	rec := r.do(post("/approvals/30/confirm", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code" {
@@ -295,7 +270,7 @@ func TestCriteriaGapConfirm(t *testing.T) {
 	}
 	// the answer's own note reaches the confirmation through its form
 	send := answerForm(t, drawer(t, r, ck, "t-plan", "overview"), factoryd.ActConfirmCriteria)
-	send.Values.Set("note", "The board shows both pages.")
+	send.Values.Set(factoryd.ActConfirmCriteria+".note", "The board shows both pages.")
 	if rec := r.do(post(send.Action, send.Values), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("confirm with its note = %d: %s", rec.Code, rec.Body)
 	}
@@ -304,7 +279,7 @@ func TestCriteriaGapConfirm(t *testing.T) {
 	}
 	// a note longer than an answer the sessions read is refused, as a
 	// case's answer is, and confirms nothing
-	send.Values.Set("note", strings.Repeat("a", factoryd.MaxAnswer+1))
+	send.Values.Set(factoryd.ActConfirmCriteria+".note", strings.Repeat("a", factoryd.MaxAnswer+1))
 	if rec := r.do(post(send.Action, send.Values), ck); rec.Code != http.StatusBadRequest || len(calls) != 2 {
 		t.Errorf("confirm with a note of %d bytes = %d, calls %q; want 400 and no confirmation", factoryd.MaxAnswer+1, rec.Code, calls)
 	}
@@ -317,14 +292,14 @@ func TestCriteriaGapConfirm(t *testing.T) {
 		}
 	}
 	r.tasks.mu.Unlock()
-	if card := board(); strings.Contains(card, `action="/approvals/30/confirm"`) {
-		t.Errorf("a plan with a child still open offers the confirm button:\n%s", card)
+	if card := drawer(t, r, ck, "t-plan", "overview"); strings.Contains(card, `data-answer="confirm_criteria"`) {
+		t.Errorf("a plan with a child still open offers The work is enough:\n%s", card)
 	}
 }
 
 // A card cut into a successor that is merged counts as delivered: the
-// criteria_rerun request offers the Confirm button, and one whose
-// successor is still open does not. The route records the confirmation
+// criteria request offers The work is enough, and one whose successor is
+// still open does not. The route records the confirmation
 // through the same port the face reads.
 func TestCriteriaRerunDeliveredFollowsACutCardToItsSuccessor(t *testing.T) {
 	r := newRig(t)
@@ -342,11 +317,8 @@ func TestCriteriaRerunDeliveredFollowsACutCardToItsSuccessor(t *testing.T) {
 		return 2, nil
 	}
 	ck, s := r.loggedIn(t)
-	board := func() string {
-		return criteriaCard(t, r, ck)
-	}
-	if card := board(); !strings.Contains(card, `action="/approvals/30/confirm"`) {
-		t.Errorf("the criteria_rerun card lacks The work is enough when the cut card's successor merged:\n%s", card)
+	if card := drawer(t, r, ck, "t-plan", "overview"); !strings.Contains(card, `data-answer="confirm_criteria"`) {
+		t.Errorf("the criteria card lacks The work is enough when the cut card's successor merged:\n%s", card)
 	}
 	rec := r.do(post("/approvals/30/confirm", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	if rec.Code != http.StatusSeeOther {
@@ -364,22 +336,22 @@ func TestCriteriaRerunDeliveredFollowsACutCardToItsSuccessor(t *testing.T) {
 		}
 	}
 	r.tasks.mu.Unlock()
-	if card := board(); strings.Contains(card, `action="/approvals/30/confirm"`) {
-		t.Errorf("a plan with a cut card whose successor is open offers the confirm button:\n%s", card)
+	if card := drawer(t, r, ck, "t-plan", "overview"); strings.Contains(card, `data-answer="confirm_criteria"`) {
+		t.Errorf("a plan with a cut card whose successor is open offers The work is enough:\n%s", card)
 	}
 }
 
 // Fault 9: typed text on the opened card is draft state: every typed
 // field carries the preserve treatment, so one answer's press does not
 // erase another's words. Each answer's typed fields are its own, so a
-// press sends no other's words, and the card states its closing rule.
+// press sends no other's words, and the card says what stays blocked.
 func TestTheBoardKeepsTypedTextAndNamesItsClose(t *testing.T) {
 	r := newRig(t)
 	verdictRig(r)
 	ck, _ := r.loggedIn(t)
 	card := criteriaCard(t, r, ck)
-	if !strings.Contains(card, `<p class="o-note">The request closes on its own once every promise is met or dropped.</p>`) {
-		t.Errorf("the card does not state its closing rule:\n%s", card)
+	if !strings.Contains(card, `<p class="o-askwhy">Until both are settled, the plan stays open and holds production deploys.</p>`) {
+		t.Errorf("the card does not say what stays blocked:\n%s", card)
 	}
 	ask := askBlockOf(t, drawer(t, r, ck, "t-plan", "overview"))
 	for _, form := range strings.Split(ask, "<form ")[1:] {
@@ -387,8 +359,8 @@ func TestTheBoardKeepsTypedTextAndNamesItsClose(t *testing.T) {
 			t.Errorf("an answer holds %d typed fields:\n%s", n, form)
 		}
 	}
-	if n := len(regexp.MustCompile(`<textarea[^>]*>`).FindAllString(ask, -1)); n != 2 {
-		t.Errorf("the ask holds %d typed fields, want the reason and the note:\n%s", n, ask)
+	if n := len(regexp.MustCompile(`<textarea[^>]*>`).FindAllString(ask, -1)); n != 1 {
+		t.Errorf("the ask holds %d typed fields, want Drop this promise's reason:\n%s", n, ask)
 	}
 	for _, f := range regexp.MustCompile(`<input[^>]*type="text"[^>]*>|<textarea[^>]*>`).FindAllString(card, -1) {
 		if !strings.Contains(f, " hx-preserve") || !strings.Contains(f, ` id="`) {
@@ -419,7 +391,7 @@ func TestTheGrantNeedsAnOpenCriterion(t *testing.T) {
 	if strings.Contains(card, `action="/approvals/30/approve"`) {
 		t.Errorf("the grant is offered with no criterion open:\n%s", card)
 	}
-	if !strings.Contains(card, `<p class="o-note">Every promise is met or dropped, so the request closes on the next sweep.</p>`) {
+	if !strings.Contains(card, `<p class="o-note">Every promise is met or dropped, so the plan closes within minutes.</p>`) {
 		t.Errorf("the card does not say its close:\n%s", card)
 	}
 	rec := r.do(post("/approvals/30/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
@@ -537,6 +509,7 @@ func humanRig(r *rig) *[]string {
 		_ = r.c.cfg.Timelines.Put(context.Background(), k, []byte(v))
 	}
 	r.approvals.rows = append(r.approvals.rows, s.approvals...)
+	seatRequestCases(r)
 	var calls []string
 	r.c.cfg.DecideCriterion = func(_ context.Context, id, cid, verdict, by, reason string) error {
 		i := slices.IndexFunc(humanCriteria, func(c factoryd.PlanCriterion) bool { return c.ID == cid })
@@ -772,25 +745,36 @@ func TestTheHumanRowsPresses(t *testing.T) {
 	})
 }
 
-// The integration card's merge card holds a row per promise in the
-// plan's order: a gate row met blind or open says so and holds no form,
-// the judgement's row shows the model's reason, the red invariant offers
-// its Waive alone, and each human row its artifact or its evidence with
-// Met, Not met and Waive. Merge it waits on the human rows with no
-// verdict and names them. Enter in a human row's field presses nothing,
-// since its form's first submit button is a disabled one, while Enter in
-// a row with Waive alone presses its Waive. A feature card's merge card
-// has no rows, an artifact past 8 KiB shows its first 8 KiB, cut on a
-// character, and a failed read says so.
+// The integration card's merge asks each human promise with no verdict on
+// a page of its own, before the merge: page 1 of 3 asks pages_ok, with what
+// to look at, and offers It is met, It is not met and Drop this promise,
+// each posting the page's promise unseen to the merge's case; the merge's
+// page holds Merge it disabled and says why. The full brief holds a row
+// per promise in the plan's order, in its words, with no form: a gate row
+// met blind or open says so, the judgement's row shows the model's reason,
+// the red invariant its failure, and each human row its artifact or its
+// evidence. A feature card's merge has no rows and Merge it enabled; once
+// every human row has a verdict the pages go and Merge it opens. An
+// artifact past 8 KiB shows its first 8 KiB, cut on a character, and a
+// failed read says so.
 func TestTheMergeCardHoldsARowPerCriterion(t *testing.T) {
 	r := newRig(t)
 	humanRig(r)
 	ck, _ := r.loggedIn(t)
+	page := func(task, key string) string {
+		t.Helper()
+		path := "/cards/" + task + "/drawer?tab=overview"
+		if key != "" {
+			path += "&case=" + task + ":" + key
+		}
+		return getAs(r, ck, path, false).Body.String()
+	}
 	card := func(id int64) string {
 		t.Helper()
-		return requestOf(t, r, ck, map[int64]string{31: "t-int", 32: "t-sizes"}[id], id)
+		task := map[int64]string{31: "t-int", 32: "t-sizes"}[id]
+		return approvalFaceOf(t, page(task, ""), task)
 	}
-	rowRE := regexp.MustCompile(`(?s)<div class="criterion"><p><b>([^<]*)</b>: (open|met|unmet|waived|not_met)( \(blind\))?\..*?</div>`)
+	rowRE := regexp.MustCompile(`(?s)<div class="criterion"><p><b>([^<]*)</b> (open|met|unmet|waived|not_met)( \(blind\))?</p>.*?</div>`)
 	rows := func(card string) map[string]string {
 		out := map[string]string{}
 		for _, m := range rowRE.FindAllStringSubmatch(card, -1) {
@@ -803,22 +787,16 @@ func TestTheMergeCardHoldsARowPerCriterion(t *testing.T) {
 	for _, m := range rowRE.FindAllStringSubmatch(k, -1) {
 		order = append(order, m[1]+": "+m[2]+m[3])
 	}
-	equal(t, "the rows", order, []string{"size_bound: met (blind)", "reads_calm: met", "all_green: unmet",
-		"pages_ok: open", "page_links: open"})
+	equal(t, "the rows", order, []string{"Every size row stays under its bound.: met (blind)", "The sizes page reads calm.: met",
+		"The tests in ./... stay green.: unmet", "The pages read well.: open", "Every page links home.: open"})
 	row := rows(k)
 	for id, want := range map[string][]string{
-		"size_bound": {`<p><b>size_bound</b>: met (blind). every size row stays under its bound</p>`,
-			`<p class="reason">criterion size_bound: TestSizeBound in ./proofs/size_bound passed</p>`},
-		"reads_calm": {`<p><b>reads_calm</b>: met. the sizes page reads calm</p>`,
-			`<p class="reason">the page names every size (model big, prompt 6b2355d78a19)</p>`},
-		"all_green": {`<p><b>all_green</b>: unmet. ./...</p>`, `<p class="reason">criterion all_green: suite ./... failed: Failed boom</p>`,
-			`action="/approvals/31/criterion"`, `name="reason" maxlength="2000" required hx-preserve`, `aria-label="Waive promise all_green"`},
-		"pages_ok": {`<p><b>pages_ok</b>: open. The pages read well</p>`, `<p class="meta">pages_ok.txt at 8e3a1b0</p>`,
-			`<pre class="artifact" tabindex="0">sizes: 3 rows` + "\n" + `doors: 2 rows</pre>`, `name="reason" maxlength="2000" hx-preserve`,
-			`name="verb" value="met" aria-label="Met: promise pages_ok"`, `name="verb" value="not_met" aria-label="Not met: promise pages_ok"`,
-			`name="verb" value="waived" aria-label="Waive promise pages_ok"`},
-		"page_links": {`<p><b>page_links</b>: open. Every page links home</p>`, `<p class="meta">Evidence: the links on /help</p>`,
-			`aria-label="Met: promise page_links"`},
+		"Every size row stays under its bound.": {`<p class="reason">criterion size_bound: TestSizeBound in ./proofs/size_bound passed</p>`},
+		"The sizes page reads calm.":            {`<p class="reason">the page names every size (model big, prompt 6b2355d78a19)</p>`},
+		"The tests in ./... stay green.":        {`<p class="reason">criterion all_green: suite ./... failed: Failed boom</p>`},
+		"The pages read well.": {`<p class="meta">pages_ok.txt at 8e3a1b0</p>`,
+			`<pre class="artifact" tabindex="0">sizes: 3 rows` + "\n" + `doors: 2 rows</pre>`},
+		"Every page links home.": {`<p class="meta">Evidence: the links on /help</p>`},
 	} {
 		for _, w := range want {
 			if !strings.Contains(row[id], w) {
@@ -826,40 +804,34 @@ func TestTheMergeCardHoldsARowPerCriterion(t *testing.T) {
 			}
 		}
 	}
-	for id, not := range map[string][]string{
-		"size_bound": {"<form", "blind: "}, "reads_calm": {"<form"}, "all_green": {`value="met"`, `value="not_met"`},
-		"pages_ok": {"Evidence:", "Open /sizes and /doors"}, "page_links": {"<pre"},
-	} {
-		for _, n := range not {
-			if strings.Contains(row[id], n) {
-				t.Errorf("the %s row holds %q:\n%s", id, n, row[id])
-			}
+	for id, r := range row {
+		if strings.Contains(r, "<form") || strings.Contains(r, "blind: ") {
+			t.Errorf("the %s row holds a form or its state twice:\n%s", id, r)
 		}
 	}
-	// the button Enter presses is a form's first submit button
-	first := func(row string) string {
-		i := strings.Index(row, `<button type="submit"`)
-		if i < 0 {
-			return ""
-		}
-		return row[i : i+strings.Index(row[i:], "</button>")+len("</button>")]
-	}
-	for id, want := range map[string]string{
-		"pages_ok":   `<button type="submit" disabled hidden></button>`,
-		"page_links": `<button type="submit" disabled hidden></button>`,
-		"all_green":  `<button type="submit" name="verb" value="waived" aria-label="Waive promise all_green">Waive</button>`,
-	} {
-		if got := first(row[id]); got != want {
-			t.Errorf("Enter in the %s row presses %q, want %q", id, got, want)
+	first := page("t-int", "")
+	for _, want := range []string{"Your call · 1 of 3", `<p class="o-question">Is this promise of the plan met?</p>`,
+		`<p class="o-askwhy">The pull request merges only once each of the 2 promises a human judges has a verdict.</p>`,
+		"<li>The plan promised: The pages read well.</li><li>What to look at: Open /sizes and /doors at 390 px.</li>"} {
+		if !strings.Contains(askBlockOf(t, first), want) {
+			t.Errorf("the first page lacks %q:\n%s", want, askBlockOf(t, first))
 		}
 	}
-	if !strings.Contains(k, `<p class="o-note">Merge it opens once each human promise has a verdict: pages_ok and page_links.</p>`) ||
-		!strings.Contains(k, `<button type="button" class="pick" disabled>Merge it</button>`) ||
-		strings.Contains(k, `action="/approvals/31/approve"`) || strings.Contains(k, "yours to judge") {
-		t.Errorf("the merge card offers Merge it with human rows open, or does not name them:\n%s", k)
+	for _, key := range []string{factoryd.ActAnswerCriteria, factoryd.ActAnswerCriteria + "/not_met", factoryd.ActAnswerCriteria + "/waive"} {
+		if p := answerForm(t, first, key); p.Action != "/tasks/t-int/resolve" || p.Values.Get("case_id") != "7031" || p.Values.Get(key+".criterion") != "pages_ok" {
+			t.Errorf("%s posts %s %v; want case 7031 and pages_ok", key, p.Action, p.Values)
+		}
 	}
-	if k := card(32); strings.Contains(k, `<div class="criterion">`) || !strings.Contains(k, `action="/approvals/32/approve"`) {
-		t.Errorf("the feature card's merge card holds rows or no Merge it:\n%s", k)
+	if second := askBlockOf(t, page("t-int", "7031.2")); !strings.Contains(second, "<li>The plan promised: Every page links home.</li><li>What to look at: the links on /help.</li>") {
+		t.Errorf("the second page:\n%s", second)
+	}
+	merge := askBlockOf(t, page("t-int", "7031"))
+	if !strings.Contains(merge, "Your call · 3 of 3") || !strings.Contains(merge, `<p class="o-note">Merge it opens once the 2 promises on the pages before this one have a verdict.</p>`) ||
+		!strings.Contains(merge, `<button type="button" class="pick" disabled>Merge it</button>`) {
+		t.Errorf("the merge's page offers Merge it with human promises open, or does not say why:\n%s", merge)
+	}
+	if k := card(32); strings.Contains(k, `<div class="criterion">`) || answerForm(t, page("t-sizes", ""), factoryd.ActApproveMerge).Action != "/tasks/t-sizes/resolve" {
+		t.Errorf("the feature card's merge holds rows or no Merge it:\n%s", k)
 	}
 
 	r.tasks.mu.Lock()
@@ -869,9 +841,8 @@ func TestTheMergeCardHoldsARowPerCriterion(t *testing.T) {
 	}
 	r.tasks.mu.Unlock()
 	k = card(31)
-	if !strings.Contains(k, `action="/approvals/31/approve"`) || strings.Contains(k, "Merge it opens once") ||
-		!strings.Contains(rows(k)["pages_ok"], `<p><b>pages_ok</b>: met. The pages read well</p>`) ||
-		strings.Contains(rows(k)["pages_ok"], "<form") {
+	if answerForm(t, page("t-int", ""), factoryd.ActApproveMerge).Action != "/tasks/t-int/resolve" || strings.Contains(k, "Merge it opens once") ||
+		!strings.Contains(rows(k)["The pages read well."], `<b>The pages read well.</b> met</p>`) || strings.Contains(k, "Your call · 1 of") {
 		t.Errorf("with every human row met the card reads:\n%s", k)
 	}
 
@@ -880,7 +851,7 @@ func TestTheMergeCardHoldsARowPerCriterion(t *testing.T) {
 		{strings.Repeat("a", 8191) + "é" + strings.Repeat("b", 807), strings.Repeat("a", 8191)},
 	} {
 		_ = r.c.cfg.Timelines.Put(t.Context(), factoryd.ArtifactKey("t-int", "pages_ok"), []byte(pagesOK(tc.content)))
-		pages := rows(card(31))["pages_ok"]
+		pages := rows(card(31))["The pages read well."]
 		if !strings.Contains(pages, `<pre class="artifact" tabindex="0">`+tc.shown+`</pre>`) ||
 			!strings.Contains(pages, `<p class="meta">pages_ok.txt at 8e3a1b0, the first 8 KiB of 9 KiB</p>`) {
 			t.Errorf("an artifact of %d bytes shows:\n%.400s", len(tc.content), pages)

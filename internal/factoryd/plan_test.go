@@ -53,9 +53,9 @@ func testPlan() Plan {
 	return Plan{Spec: &Spec{Outcome: "A link shortener: links with slugs that redirect and count clicks.",
 		Glossary: []string{"slug: the short key a link gets", "click: one redirect served"}},
 		Summary: "The foundation first, then links and redirects, then the acceptance tests.", Criteria: []PlanCriterion{
-			{ID: "links_crud", Kind: CriterionTest, Claim: "a link created through the API is stored", Inputs: "POST /api/links with a url", Expected: "201 and the row in the store", Suite: "internal/links", Name: "TestCreateLink"},
-			{ID: "redirect_302", Kind: CriterionTest, Claim: "a slug redirects", Inputs: "GET /abc", Expected: "302", Suite: "internal/links", Name: "TestRedirect"},
-			{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."},
+			{ID: "links_crud", Kind: CriterionTest, Promise: "A link made through the API is kept.", Claim: "a link created through the API is stored", Inputs: "POST /api/links with a url", Expected: "201 and the row in the store", Suite: "internal/links", Name: "TestCreateLink"},
+			{ID: "redirect_302", Kind: CriterionTest, Promise: "A short link sends its visitor on.", Claim: "a slug redirects", Inputs: "GET /abc", Expected: "302", Suite: "internal/links", Name: "TestRedirect"},
+			{ID: "all_green", Kind: CriterionInvariant, Promise: "The existing tests stay green.", Suite: "./..."},
 		}, Cards: []PlanCard{
 			{Key: "foundation", Role: RoleFoundation, Title: "Foundation of layout, contract and schema", Why: "So every card builds on one layout and one contract.",
 				Summary: "It lays out the server, the store and one end-to-end test. The test passes on the empty server.", Brief: "Lay out cmd/server, the store and one end-to-end test.",
@@ -677,10 +677,10 @@ func TestPlanGuideAcceptanceRule(t *testing.T) {
 func TestPlanGuideCriteria(t *testing.T) {
 	got := planGuide(testShape, testLimits, nil, nil)
 	for _, want := range []string{
-		`"criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "name": "...", "prompt": "...", "evidence": "..."}]`,
+		`"criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "promise": "...", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "name": "...", "prompt": "...", "evidence": "..."}]`,
 		`"acceptance": [{"criterion": "...", "text": "..."}]`,
 		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
-			"Each criterion has an id in snake_case and a kind naming the fields it uses, and states what the feature does for a caller at a surface that stays put while the cards are built: " +
+			"Each criterion has an id in snake_case, a promise, which is its claim in plain words for a human who reads the board and not the plan, and a kind naming the fields it uses, and states what the feature does for a caller at a surface that stays put while the cards are built: " +
 			"its HTTP API, its command line, its store as a test seeds and reads it, or the files and output it writes; never how it is built inside. " +
 			"kind test names its claim, its inputs and the numbers it expects, and its suite and its test's name: the citing card - or a proof card the planner files - lands the test, a card whose directories hold the suite writes its test, which runs in the sandbox bash check runs, " +
 			"so no browser, no device and no outside service; a want beyond the sandbox becomes a human criterion or waits as a note; " +

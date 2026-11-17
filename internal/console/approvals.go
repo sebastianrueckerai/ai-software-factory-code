@@ -32,6 +32,18 @@ type criterionRow struct {
 	Human    bool                   // Met and Not met are offered: a human criterion on a merge card
 }
 
+// Words are the row's promise as a face names it.
+func (r criterionRow) Words() string { return factoryd.PromiseOf(r.PlanCriterion) }
+
+// Detail is the row's claim beside a promise in other words, "" where the
+// promise is the claim.
+func (r criterionRow) Detail() string {
+	if r.Promise == "" {
+		return ""
+	}
+	return r.Claim
+}
+
 // maxCardArtifact is the most of an artifact a merge card shows.
 const maxCardArtifact = 8 << 10
 
@@ -162,8 +174,8 @@ func (q planQuestion) ChoiceWords() string {
 }
 
 // planHoldout is a plan's hold-out as its card shows it: the claim with
-// its inputs and expected numbers, its state's one line, and whether its
-// okay and drop work (a proposal, the round's confirmation unanswered).
+// its inputs and expected numbers, its state's words, and whether it is
+// a page of its own (a proposal, the round's confirmation unanswered).
 type planHoldout struct {
 	Index int
 	factoryd.PlanProof
@@ -171,12 +183,8 @@ type planHoldout struct {
 	Decides bool
 }
 
-// holdoutBlurbs are the hold-out states' one lines.
-var holdoutBlurbs = map[string]string{
-	factoryd.ProofProposed: "proposed: Keep it keeps it out of the plan. The prover writes its test, hidden from the agent, unless it filed before you keep it.",
-	factoryd.ProofOkayed:   "kept out: once the plan's foundation is on main, or at once when the plan has none, the prover writes its test, hidden from the agent. A hold-out kept after the prover files gets no test.",
-	factoryd.ProofDropped:  "dropped",
-}
+// holdoutBlurbs are the hold-out states' words.
+var holdoutBlurbs = map[string]string{factoryd.ProofProposed: "waits for your answer", factoryd.ProofOkayed: "kept", factoryd.ProofDropped: "dropped"}
 
 func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, act actor, tasks map[string]factoryd.Task, csrf string, approver, face bool) approvalCard {
 	k := approvalCard{ApprovalRequest: a, CSRF: csrf, Approver: approver, Grantable: true}
@@ -424,6 +432,7 @@ func (k *approvalCard) scrubLayers(hosts []string) {
 		k.PlanStill[i] = sanitize.Outbound(scrubText(s), hosts)
 	}
 	for i, row := range k.Criteria {
+		row.Promise = sanitize.Outbound(scrubText(row.Promise), hosts)
 		row.Claim = sanitize.Outbound(scrubText(row.Claim), hosts)
 		row.Suite = sanitize.Outbound(scrubText(row.Suite), hosts)
 		k.Criteria[i] = row

@@ -106,7 +106,7 @@ func TestAPlansQuestionsAreSlotsOfOneRow(t *testing.T) {
 		t.Errorf("the confirmation's small card:\n%s", last)
 	}
 	last := slotOf(t, r, ck, 503)
-	for _, want := range []string{`<p class="o-question">Confirm this plan so its cards can start?</p>`, `name="decision" value="confirm"`, `name="decision" value="revise"`} {
+	for _, want := range []string{`<p class="o-question">Confirm plan “Link shortener” so its cards can start?</p>`, `name="decision" value="confirm"`, `name="decision" value="revise"`} {
 		if !strings.Contains(last, want) {
 			t.Errorf("the confirmation's slot lacks %q:\n%s", want, last)
 		}

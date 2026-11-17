@@ -162,10 +162,12 @@ func takeOffReasonFindings(p Plan) []string {
 // a model judges, in inputs what the artifact a test writes must show,
 // and the pinned prompt; human names the claim only a person settles,
 // with the evidence the approver will see. The kind names the fields it
-// uses, the rest stay empty.
+// uses, the rest stay empty. Promise is the claim in plain words, which
+// the board shows a human who did not read the plan.
 type PlanCriterion struct {
 	ID       string `json:"id"`
 	Kind     string `json:"kind"`
+	Promise  string `json:"promise,omitempty"`
 	Claim    string `json:"claim,omitempty"`
 	Inputs   string `json:"inputs,omitempty"`
 	Expected string `json:"expected,omitempty"`
@@ -622,6 +624,9 @@ func questionBounds(qs []PlanQuestion) []string {
 				add("choice %q: %s", c, strings.Join(faults, " "))
 			}
 		}
+		if n := len(q.Choices); n > maxPlanChoices {
+			add("%d choices; want 2 to %d, as the human's own words are the fourth answer", n, maxPlanChoices)
+		}
 		switch {
 		case q.Recommended == "":
 			add("no recommended answer: name one of its choices")
@@ -640,6 +645,52 @@ func questionBounds(qs []PlanQuestion) []string {
 		}
 	}
 	return out
+}
+
+// maxPlanChoices bounds a plan question's choices: its face offers them
+// and the human's own words.
+const maxPlanChoices = 3
+
+// MaxPromise bounds a criterion's promise, in runes.
+const MaxPromise = 80
+
+// promiseBounds are the findings on the criteria's promises, which only
+// the planner's filing judges, so a revision stored before them still
+// reads: each criterion states its promise, one line of at most MaxPromise
+// runes that passes the guide.
+func promiseBounds(cs []PlanCriterion) []string {
+	var out []string
+	for _, c := range cs {
+		add := func(format string, args ...any) {
+			out = append(out, fmt.Sprintf("plan: criterion %s: "+format, append([]any{c.ID}, args...)...))
+		}
+		switch n := utf8.RuneCountInString(c.Promise); {
+		case strings.TrimSpace(c.Promise) == "":
+			add("promise empty: write the claim in plain words for a human who did not read the plan, at most %d characters", MaxPromise)
+		case n > MaxPromise:
+			add("promise has %d characters, at most %d", n, MaxPromise)
+		case strings.ContainsAny(c.Promise, "\r\n"):
+			add("promise: one line")
+		default:
+			if faults := writingguide.Lint(c.Promise); len(faults) > 0 {
+				add("promise: %s", strings.Join(faults, " "))
+			}
+		}
+	}
+	return out
+}
+
+// PromiseOf is criterion c's promise as a face names it. A revision filed
+// before promises were asked holds none: its claim stands in, and an
+// invariant's suite.
+func PromiseOf(c PlanCriterion) string {
+	switch {
+	case c.Promise != "":
+		return c.Promise
+	case c.Kind == CriterionInvariant && c.Claim == "":
+		return "The tests in " + c.Suite + " stay green."
+	}
+	return endSentence(capitalize(strings.TrimSpace(c.Claim)))
 }
 
 // sizeFindings are a card size's findings, the plan card's and the ready
@@ -1396,7 +1447,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"Split the work into the cards of a plan. " +
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
-		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "name": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "why": "...", "summary": "...", "section": "...", "brief": "...", ` +
+		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "promise": "...", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "name": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "why": "...", "summary": "...", "section": "...", "brief": "...", ` +
 		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."], "recommended": "<one of the choices, verbatim>", "grounds": "why, in one sentence"}]}. ` +
 		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
 		"outline: the parts of the work a later round plans, one short line each, in the order they come; leave it out when this round's cards finish the feature. " +
@@ -1405,7 +1456,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"The merged cards of earlier rounds are not in your last plan. " +
 		"When the criteria fall into two sets whose cards share nothing" + butFoundation + ", you may ask in a question whether they should be two plans. " +
 		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
-		"Each criterion has an id in snake_case and a kind naming the fields it uses, and states what the feature does for a caller at a surface that stays put while the cards are built: " +
+		"Each criterion has an id in snake_case, a promise, which is its claim in plain words for a human who reads the board and not the plan, and a kind naming the fields it uses, and states what the feature does for a caller at a surface that stays put while the cards are built: " +
 		"its HTTP API, its command line, its store as a test seeds and reads it, or the files and output it writes; never how it is built inside. " +
 		"kind test names its claim, its inputs and the numbers it expects, and its suite and its test's name: the citing card - or a proof card the planner files - lands the test, a card whose directories hold the suite writes its test, which runs in the sandbox bash check runs, " +
 		"so no browser, no device and no outside service; a want beyond the sandbox becomes a human criterion or waits as a note; " +
@@ -1459,7 +1510,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 // planForms are the guide's forms of what a planner writes: each card's
 // title, why line, summary and brief, the plan's summary, and its
 // questions to the human.
-var planForms = writingguide.For(writingguide.JobTitle, writingguide.JobWhy, writingguide.JobSummary, writingguide.JobBrief, writingguide.JobAsk)
+var planForms = writingguide.For(writingguide.JobLine, writingguide.JobTitle, writingguide.JobWhy, writingguide.JobSummary, writingguide.JobBrief, writingguide.JobAsk)
 
 // imageField is a card's image field in the plan's shape where the
 // project pins images, "" where it pins none.
@@ -3060,7 +3111,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		p.Cards = append(settled, p.Cards...)
 	}
 	p, found = judgePlan(p, shape, v.Document.Limits, projectPins(v, t.Repository))
-	if found = append(append(found, questionBounds(p.Questions)...), briefs...); len(found) > 0 {
+	if found = slices.Concat(found, promiseBounds(p.Criteria), questionBounds(p.Questions), briefs); len(found) > 0 {
 		return refuse(found)
 	}
 	// a re-file of the newest revision by value: already stored. By

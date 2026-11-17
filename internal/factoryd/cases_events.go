@@ -371,7 +371,22 @@ func RequestCase(a ApprovalRequest) (Case, error) {
 		c.Problem = fmt.Sprintf("Pull request #%d waits for a merge approval", a.PRNumber)
 		c.Facts = map[string]any{"approval": a.ID, "pr": a.PRNumber, "head": spec.HeadSHA, "class": spec.RiskClass, "policy_version": spec.PolicyVersion,
 			"factory": spec.Factory, "red_checks": spec.RedChecks, "pr_open": true, "checks": checks,
-			"review_approved": spec.Review.Verdict == "approve" && spec.Review.Note == "", "review_summary": spec.VerdictSummary}
+			"review_approved": spec.Review.Verdict == "approve" && spec.Review.Note == "", "review_findings": len(spec.Review.Findings)}
+		if spec.Review.Note == "" {
+			c.Facts["review_verdict"] = spec.Review.Verdict
+		}
+		if spec.Audit != nil && len(spec.Audit.Findings) > 0 {
+			c.Facts["audit_findings"] = len(spec.Audit.Findings)
+		}
+		var failed []string
+		for _, t := range spec.FailedTests {
+			if name := cmp.Or(t.Test, t.Job); name != "" && !slices.Contains(failed, name) && len(failed) < 3 {
+				failed = append(failed, name)
+			}
+		}
+		if len(failed) > 0 {
+			c.Facts["failed_checks"] = failed
+		}
 		if spec.Review.Note != "" {
 			_, why := namedReview("", spec.WhyHuman, spec.Review)
 			c.Facts["review_not_run"] = why[0]
@@ -391,6 +406,10 @@ func RequestCase(a ApprovalRequest) (Case, error) {
 	c.StateKey = fmt.Sprintf("%s:%d", a.Kind, a.ID)
 	c.Problem = cmp.Or(a.Reason, "The plan's criteria wait for a verdict")
 	c.Facts = map[string]any{"approval": a.ID, "approval_kind": a.Kind}
+	var spec CriteriaSpec
+	if json.Unmarshal(a.Spec, &spec) == nil && spec.NotRun != "" {
+		c.Facts["not_run"] = spec.NotRun
+	}
 	return c, nil
 }
 
@@ -481,10 +500,6 @@ func decideRequestCase(ctx context.Context, q rowQuerier, id int64, kind CaseKin
 		return CaseWithdrawn, withdrawCase(ctx, q, id, note)
 	}
 	action := ActAnswerCriteria
-	switch {
-	case kind == CasePlanCriteria && status == "denied":
-		action = ActDenyCriteria
-	}
 	if kind == CaseMergeApproval {
 		action = ActDenyMerge
 		if status == "approved" {

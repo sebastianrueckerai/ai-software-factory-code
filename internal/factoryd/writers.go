@@ -19,7 +19,7 @@ type Writer struct {
 // Writers are every model call whose text a human reads, each with a
 // prompt built as its call builds it.
 var Writers = []Writer{
-	{Name: "planner and replanner", Jobs: []writingguide.Job{writingguide.JobTitle, writingguide.JobWhy, writingguide.JobSummary, writingguide.JobBrief, writingguide.JobAsk},
+	{Name: "planner and replanner", Jobs: []writingguide.Job{writingguide.JobLine, writingguide.JobTitle, writingguide.JobWhy, writingguide.JobSummary, writingguide.JobBrief, writingguide.JobAsk},
 		Calls: []string{"factoryd.(*Runner).RunPlan"},
 		Prompt: func() string {
 			return planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, policy.Limits{}, nil, nil)

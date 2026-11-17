@@ -38,8 +38,6 @@ func (b *boardStub) act(r *Runner, in ActInput) (ActResult, error) {
 			return 0, b.s.DecideApproval(ctx, b.approval, ApprovalMerge, status, in.By, in.Res.Note)
 		case ActGrantCriteria:
 			return 0, b.s.DecideApproval(LeaveCaseToAct(ctx), b.approval, ApprovalCriteria, "approved", in.By, "one more bounded card")
-		case ActDenyCriteria:
-			return 0, b.s.DecideApproval(ctx, b.approval, ApprovalCriteria, "denied", in.By, in.Res.Note)
 		case ActRestartPlan:
 			return 0, b.s.ClosePlanWithWaivers(LeaveCaseToAct(ctx), in.TaskID, in.By, func(context.Context) (PlanClose, error) {
 				return PlanClose{Home: in.TaskID, Words: "Closed by " + in.By + ": " + in.Res.Note}, nil
@@ -203,8 +201,8 @@ func criteriaRig(t *testing.T) (rungRig, *boardStub, Case) {
 
 // A done plan's criteria request is answered through Act (the ended-card
 // check lets the criteria's actions and the restart through): a verdict keeps
-// the case at the human; a grant, a confirmation and a denial each resolve it
-// under their own name; restart_plan resolves it too.
+// the case at the human; a grant and a confirmation each resolve it under
+// their own name; restart_plan resolves it too.
 func TestCriteriaActionsRunOnADonePlansCase(t *testing.T) {
 	for _, tc := range []struct {
 		action  string
@@ -216,7 +214,6 @@ func TestCriteriaActionsRunOnADonePlansCase(t *testing.T) {
 		{ActAnswerCriteria, map[string]any{"criterion": "c1", "verdict": "waive"}, "out of scope", CaseAtHuman, ""},
 		{ActGrantCriteria, nil, "", CaseResolved, ActGrantCriteria},
 		{ActConfirmCriteria, nil, "the cards deliver it", CaseResolved, ActConfirmCriteria},
-		{ActDenyCriteria, nil, "not now", CaseResolved, ActDenyCriteria},
 		{ActRestartPlan, nil, "split it in two", CaseResolved, ActRestartPlan},
 	} {
 		t.Run(tc.action, func(t *testing.T) {

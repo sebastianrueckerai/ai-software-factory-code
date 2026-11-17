@@ -1196,7 +1196,7 @@
     "human_cases": 1,
     "face": [
       {
-        "ask": "pull request?",
+        "ask": "Merge “[written by a person, 3083 bytes]”?",
         "why": "The change is of normal risk, and the factory's rules let only a human merge it.",
         "recommendation": ""
       }

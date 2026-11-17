@@ -50,14 +50,14 @@ func TestMergeFaceWhispers(t *testing.T) {
 		}
 	}
 	// the opened card's ask holds the register's question, why, the model
-	// review's pick in its first sentence and each answer's one line of
-	// effect, and none of the parts' tails; the full brief holds them whole
+	// review's pick with its verdict in one line and each answer's one line
+	// of effect, and none of the parts' tails; the full brief holds them whole
 	body := drawer(t, r, ck, "t-m", "overview")
 	ask := askBlockOf(t, body)
 	for _, want := range []string{
-		`<p class="o-question">Merge this card&#39;s pull request?</p>`,
+		`<p class="o-question">Merge “add the column”?</p>`,
 		`<p class="o-askwhy">The change is of normal risk, and the factory&#39;s rules let only a human merge it.</p>`,
-		`<p class="o-by">suggested by the model review: <span class="quote">the change is safe.</span></p>`,
+		`<p class="o-by">suggested by the model review: <span class="quote">It approved the change with 4 findings.</span></p>`,
 		`<span class="effect">Merges the pull request.</span>`,
 		`<span class="effect">Returns the pull request to its agent with your note.</span>`,
 		`<span class="effect">Closes the pull request. The card ends.</span>`,

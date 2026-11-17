@@ -1043,7 +1043,7 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 	ask := askBlockOf(t, body)
 	for _, want := range []string{`<p class="o-question">Merge this card&#39;s pull request?</p>`,
 		`<p class="o-askwhy">The change is high risk, and the factory&#39;s rules let only a human merge it.</p>`,
-		`<p class="o-by">suggested by the model review: <span class="quote">adds the column safely</span></p>`,
+		`<p class="o-by">suggested by the model review: <span class="quote">It approved the change with no finding, and the security audit raised 2 findings.</span></p>`,
 		`<span class="effect">Merges the pull request.</span>`, `<span class="effect">Returns the pull request to its agent with your note.</span>`,
 		`<span class="effect">Closes the pull request. The card ends.</span>`} {
 		if !strings.Contains(ask, want) {

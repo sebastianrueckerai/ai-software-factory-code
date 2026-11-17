@@ -167,7 +167,7 @@
     "human_cases": 1,
     "face": [
       {
-        "ask": "pull request?",
+        "ask": "Merge “[written by a model, 6450 bytes]”?",
         "why": "The model review did not run: its 7 calls would cost about 1.86 EUR",
         "recommendation": ""
       }

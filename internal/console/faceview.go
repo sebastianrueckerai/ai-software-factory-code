@@ -49,8 +49,8 @@ type faceView struct {
 	Open bool
 	// Sent: the card's answer was taken and its run has not read it yet.
 	Sent bool
-	// CaseID names the ask in view, which a board read keeps.
-	CaseID int64
+	// Page names the page of the ask in view, which a board read keeps.
+	Page string
 	// Found is the card's own title, linked, on a face that asks, where a
 	// find matched the title alone; own is that title.
 	Found, own template.HTML
@@ -149,7 +149,7 @@ func (c *Console) faceOf(ctx context.Context, v *boardView, n need, needs bool) 
 		}
 		f.Since, f.own = n.Waiting(), c.linkRefs(ctx, v, k.Repository, factoryd.CardTitle(k.Task))
 		if row := n.Case; row != nil {
-			f.Key, f.CaseID = "case "+k.Place, row.Case.ID
+			f.Key, f.Page = "case "+k.Place, row.Key
 			f.Since = row.Waiting()
 			if f.Since != "" && k.Status == "waiting-human" {
 				f.Since = "waits for you, " + f.Since
@@ -192,11 +192,11 @@ func (c *Console) askFace(ctx context.Context, v *boardView, f *faceView, k card
 	a := &askView{Position: row.At, Of: row.Of, Others: len(face.Offers)}
 	if row.Of > 1 {
 		base := fmt.Sprintf("/projects/%s/cards/%s/cases/", row.Project, k.ID)
-		if row.PrevID != 0 {
-			a.Prev = base + strconv.FormatInt(row.PrevID, 10) + row.Query
+		if row.PrevKey != "" {
+			a.Prev = base + row.PrevKey + row.Query
 		}
-		if row.NextID != 0 {
-			a.Next = base + strconv.FormatInt(row.NextID, 10) + row.Query
+		if row.NextKey != "" {
+			a.Next = base + row.NextKey + row.Query
 		}
 	}
 	f.Ask = a
@@ -260,7 +260,7 @@ func requestFace(a approvalCard, t factoryd.Task) (factoryd.Case, factoryd.Face)
 	k, err := factoryd.RequestCase(a.ApprovalRequest)
 	switch {
 	case a.Kind == factoryd.ApprovalPlan:
-		k = factoryd.Case{Kind: factoryd.CasePlanConfirmation, TaskID: a.TaskID, Repository: a.Project}
+		k = factoryd.OnPlan(factoryd.Case{Kind: factoryd.CasePlanConfirmation, TaskID: a.TaskID, Repository: a.Project}, planFacts(&a))
 	case err != nil:
 		log.Printf("console: approval request %d: %v", a.ID, err)
 		k = factoryd.Case{TaskID: a.TaskID, Repository: a.Project, Facts: map[string]any{"approval": a.ID, "approval_kind": a.Kind}}

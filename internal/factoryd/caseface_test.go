@@ -113,8 +113,8 @@ func TestAnAgentsWordsNeverStandForTheCardsOwnAnswer(t *testing.T) {
 }
 
 // A merge whose model review approved its head suggests the merge, by the
-// model review, on the review's words. Red checks, a review with concerns
-// and a review that did not run suggest nothing.
+// model review, on a line composed from the review's facts. Red checks, a
+// review with concerns and a review that did not run suggest nothing.
 func TestAMergeSuggestsWhatItsReviewApproved(t *testing.T) {
 	request := func(spec MergeSpec) ApprovalRequest {
 		b, err := json.Marshal(spec)
@@ -138,7 +138,7 @@ func TestAMergeSuggestsWhatItsReviewApproved(t *testing.T) {
 			t.Fatal(err)
 		}
 		face := CaseFace(k, Task{ID: "t-m", Kind: "agent"}, CaseAsk{})
-		if face.Preselected != c.want || c.want != "" && (face.Source != "the model review" || face.Recommendation != "Adds the column safely.") {
+		if face.Preselected != c.want || c.want != "" && (face.Source != "the model review" || face.Recommendation != "It approved the change with no finding.") {
 			t.Errorf("%s: suggests %q by %q on %q, want %q by the model review", name, face.Preselected, face.Source, face.Recommendation, c.want)
 		}
 	}

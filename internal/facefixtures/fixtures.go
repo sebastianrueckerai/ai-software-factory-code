@@ -952,6 +952,17 @@ func (b *builder) variants() {
 	spec.RedChecks = true
 	red.Approval.Spec = marshal(spec)
 	red = b.request(GroupVariant, red.Kind, red.Task, red.Approval, 25*time.Minute)
+	gap := b.criteriaGap(GroupVariant, factoryd.ApprovalCriteria)
+	never := b.criteriaGap(GroupVariant, factoryd.ApprovalCriteriaRerun)
+	never.Approval.Kind = factoryd.ApprovalCriteriaRerun
+	never.Approval.Reason = "criteria never judged: the criteria gate has not settled " + strings.TrimPrefix(gap.Approval.Reason, "criteria not met with the plan's cards done: ")
+	never.Approval.Spec = marshal(factoryd.CriteriaSpec{Task: TaskID(never.Task.IssueNumber + 1),
+		NotRun: fmt.Sprintf("The last card, #%d, closed without a merge, so the factory never ran the plan's tests.", never.Task.IssueNumber+1)})
+	plan := never.Plan
+	never = b.request(GroupVariant, never.Kind, never.Task, never.Approval, 3*time.Minute)
+	never.Plan = plan
+	merge := b.merge(GroupVariant, factoryd.ApprovalMerge)
+	merge.Plan = gap.Plan
 	b.out = append(b.out,
 		b.agentStop(GroupVariant, "budget_floor without findings", floor, nil),
 		b.agentStop(GroupVariant, "budget_floor at the spend limit", floor, func(_ *factoryd.Task, f *factoryd.CaseFacts) { f.CeilingEUR = f.BudgetEUR }),
@@ -966,7 +977,50 @@ func (b *builder) variants() {
 		b.infoRequest(GroupVariant, "agent_request_info out of money", func(t *factoryd.Task, f *factoryd.CaseFacts) {
 			t.Usage.Attempts, t.SpentEUR, f.SpentEUR, f.LeftEUR = 1, 1.9, 1.9, 0.1
 		}),
-		red)
+		red,
+		b.promisePage(gap, 0, "unmet", "blind: criterion size_bound_escape: TestSizeBound in ./proofs/size_bound failed: want 1 over, got 0"),
+		b.promisePage(gap, 3, "", ""),
+		b.promisePage(never, 1, "", ""),
+		b.promisePage(merge, 3, "", ""),
+		b.holdoutPage(),
+		b.planPage())
+}
+
+// promisePage is fixture fx's case as the page of its plan's promise i,
+// with its verdict and evidence, one of the plan's open promises: the
+// variant "<kind> on <the promise's kind>'s page".
+func (b *builder) promisePage(fx Fixture, i int, verdict, evidence string) Fixture {
+	c := fx.Plan.Criteria[i]
+	of := len(fx.Plan.Criteria)
+	page := factoryd.OnPromise(*fx.Case, factoryd.PromiseFact{ID: c.ID, Promise: factoryd.PromiseOf(c), Kind: c.Kind, Verdict: verdict, Evidence: evidence}, of, of)
+	fx.Kind = fmt.Sprintf("%s on a %s promise's page", fx.Kind, c.Kind)
+	fx.Case, fx.Facts = &page, factoryd.FactsOf(page)
+	return fx
+}
+
+// holdoutPage is the plan confirmation's case as the page of an extra
+// promise the plan's own list missed.
+func (b *builder) holdoutPage() Fixture {
+	fx := b.planAsk(GroupVariant, "plan_approval on an extra promise's page", true)
+	page := factoryd.OnHoldout(*fx.Case, factoryd.HoldoutFact{Idx: 1, Claim: "A steer typed while the feed reloads still shows once."})
+	fx.Case, fx.Facts = &page, factoryd.FactsOf(page)
+	return fx
+}
+
+// planPage is the plan confirmation's case with its plan's facts: the
+// outcome, the cards and the promises.
+func (b *builder) planPage() Fixture {
+	fx := b.planAsk(GroupVariant, "plan_approval with its plan's facts", true)
+	pf := factoryd.PlanFacts{Outcome: fx.Plan.Spec.Outcome}
+	for _, c := range fx.Plan.Cards {
+		pf.Cards = append(pf.Cards, c.Title)
+	}
+	for _, c := range fx.Plan.Criteria {
+		pf.Promises = append(pf.Promises, factoryd.PromiseOf(c))
+	}
+	page := factoryd.OnPlan(*fx.Case, pf)
+	fx.Case, fx.Facts = &page, factoryd.FactsOf(page)
+	return fx
 }
 
 // infoRequest is the agent card whose agent asked the issue's author for
@@ -1179,7 +1233,7 @@ func (b *builder) planAsk(group, name string, confirm bool) Fixture {
 	p := &factoryd.Plan{Summary: "Four cards: the feed's read model first, then the page and the filters side by side, then the live rows.",
 		Spec: &factoryd.Spec{Outcome: "A writer opens the feed beside the board and sees who did what, by which way and when, with a steer showing within a second of its row."},
 		Criteria: []factoryd.PlanCriterion{{ID: "steer_within_a_second", Kind: factoryd.CriterionTest, Claim: "A steer shows in the feed within a second of its row.",
-			Suite: "./internal/console", Name: "TestFeedShowsASteerAtOnce"}},
+			Promise: "A steer shows in the feed within a second.", Suite: "./internal/console", Name: "TestFeedShowsASteerAtOnce"}},
 		Cards: []factoryd.PlanCard{
 			{Key: "feed-read", Role: factoryd.RoleFoundation, Title: "Events: a paged read of a project's feed", Size: "small"},
 			{Key: "feed-page", Role: factoryd.RoleFeature, Title: "Console: the feed page beside the board", Size: "medium", DependsOn: []string{"feed-read"}},
@@ -1215,11 +1269,16 @@ func (b *builder) criteriaGap(group, name string) Fixture {
 	p := &factoryd.Plan{Summary: "Two cards: the read model, then the page.",
 		Criteria: []factoryd.PlanCriterion{
 			{ID: "size_bound_escape", Kind: factoryd.CriterionTest, Claim: "the panel counts the cards over their size bound",
-				Inputs: "a card over its bound, one unsized and one with no bound", Expected: "1 over, the unsized card counted as large"},
+				Promise: "The panel counts the cards that grew past their size.",
+				Inputs:  "a card over its bound, one unsized and one with no bound", Expected: "1 over, the unsized card counted as large"},
 			{ID: "window_and_existing_figures", Kind: factoryd.CriterionTest, Claim: "the new panels keep the page's window and its old figures",
-				Inputs: "GET /metrics for the last week", Expected: "twelve panels and the old figures unchanged"},
+				Promise: "The new panels keep the page's window and its old figures.",
+				Inputs:  "GET /metrics for the last week", Expected: "twelve panels and the old figures unchanged"},
 			{ID: "ledger_retry_integrity", Kind: factoryd.CriterionTest, Claim: "a retried session spends once in the ledger",
-				Inputs: "one session answered twice", Expected: "one spend row"},
+				Promise: "A retried session spends money once.",
+				Inputs:  "one session answered twice", Expected: "one spend row"},
+			{ID: "panels_read_on_a_phone", Kind: factoryd.CriterionHuman, Claim: "the twelve panels read well on a phone",
+				Promise: "The twelve panels read well on a phone.", Evidence: "Open /metrics at 390 px wide"},
 		},
 		Cards: []factoryd.PlanCard{
 			{Key: "foundation", Role: factoryd.RoleFoundation, Title: "Metrics: the panels' read model", Size: "medium"},
@@ -1347,8 +1406,10 @@ func (b *builder) actions() {
 				t.Source, t.Parent, t.PlanKey = factoryd.SourcePlan, plan1947ID, "reconciled-head-merge"
 				f.Plan, f.PlanIssue, f.PlanName, f.PlanStatus = plan1947ID, 1947, "empty commit fires gate", "done"
 			})
-		case factoryd.ActAnswerCriteria, factoryd.ActGrantCriteria, factoryd.ActConfirmCriteria, factoryd.ActDenyCriteria:
+		case factoryd.ActAnswerCriteria, factoryd.ActGrantCriteria, factoryd.ActConfirmCriteria:
 			fx = b.criteriaGap(GroupAction, name)
+		case factoryd.ActRunCriteria:
+			fx = b.card1850(GroupAction, name)
 		case factoryd.ActDeployNow:
 			fx = humanSourceOf(factoryd.SourceProductionHeld).file(b, GroupAction, name, b.next())
 		case factoryd.ActSettle:

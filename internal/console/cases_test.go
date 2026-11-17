@@ -259,11 +259,11 @@ func TestACardWithACaseCountsOnceAndShowsOnce(t *testing.T) {
 	}
 }
 
-// A plan's confirmation case shows the register's ask on its small card;
-// the plan's approval is the opened card's, once: the confirmation's
-// answers in its ask and, in its full brief, the hold-outs the Confirm
-// waits on, with their clicks. The small card holds no other raw text of the
-// revision: not its summary, its spec, its criteria.
+// A plan's confirmation case with extra promises waiting opens on the first
+// of them on its small card; the plan's approval is the opened card's,
+// once: the extra promise's answers in its ask and, in its full brief, the
+// extra promises with their state. The small card holds no other raw text
+// of the revision: not its summary, its spec, its criteria.
 func TestAPlansCaseHoldsItsApprovalOnce(t *testing.T) {
 	r := newRig(t)
 	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation})
@@ -272,7 +272,7 @@ func TestAPlansCaseHoldsItsApprovalOnce(t *testing.T) {
 	if strings.Count(needs, ` data-case="`) != 1 || strings.Contains(needs, `class="card approval plan"`) {
 		t.Fatalf("want one small card and no plan card in it:\n%s", needs)
 	}
-	if want := `<strong class="title">Confirm this plan so its cards can start?</strong> <span class="why">The plan&#39;s cards and promises are fixed only once a human confirms them.</span>`; !strings.Contains(needs, want) {
+	if want := `<strong class="title">Keep this extra promise for plan “Link shortener”?</strong> <span class="why">The plan&#39;s cards start only once each extra promise is kept or dropped.</span>`; !strings.Contains(needs, want) {
 		t.Errorf("the plan's small card lacks %s:\n%s", want, needs)
 	}
 	for _, raw := range []string{"The foundation lands first, with its migrations.", "On it, the links API and the acceptance tests close the round.",
@@ -285,7 +285,7 @@ func TestAPlansCaseHoldsItsApprovalOnce(t *testing.T) {
 	if strings.Count(drawer, `<h4>The plan</h4>`) != 1 {
 		t.Fatalf("the opened card does not hold the plan's approval once:\n%s", drawer)
 	}
-	for _, want := range []string{`action="/tasks/t-plan/plan/answer"`, `<p class="claim">The door stays shut until a key that fits turns the lock</p>`,
+	for _, want := range []string{`<p class="claim">The door stays shut until a key that fits turns the lock <span class="meta">waits for your answer</span></p>`,
 		`action="/tasks/t-plan/plan/holdout"`} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the opened card lacks %q:\n%s", want, drawer)

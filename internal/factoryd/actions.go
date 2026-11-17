@@ -47,7 +47,7 @@ const (
 	ActAnswerCriteria   = "answer_criteria"   // args: criterion, verdict = met | not_met | waive; note: the reason
 	ActGrantCriteria    = "grant_criteria"    // one more bounded card for the open criteria of a criteria request
 	ActConfirmCriteria  = "confirm_criteria"  // the delivered cards meet the criteria: every open one met, the note the evidence
-	ActDenyCriteria     = "deny_criteria"     // note: the reason; waive a criterion instead if it should not hold
+	ActRunCriteria      = "run_criteria"      // runs the tests of a plan's promises that no test checked yet and records each result
 )
 
 // ActHandBack returns a plan's work card for a human to its planner with
@@ -423,14 +423,11 @@ var Actions = []Action{
 	{Name: ActConfirmCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
 		return criteriaRequestRefusal(f, ActConfirmCriteria)
 	}},
-	{Name: ActDenyCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
-		if why := criteriaRequestRefusal(f, ActDenyCriteria); why != "" {
-			return why
+	{Name: ActRunCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
+		if f.Kind == CasePlanCriteria && f.ApprovalKind == ApprovalCriteriaRerun || f.Kind == CaseMonitorFlag && f.Flag == "criterion_unproven" {
+			return ""
 		}
-		if strings.TrimSpace(r.Note) == "" {
-			return "a denial carries its reason: the note"
-		}
-		return ""
+		return "run_criteria runs a plan's tests that never ran: it answers a plan's criteria never judged or the criterion_unproven flag, and this case is neither"
 	}},
 	{Name: ActDeployNow, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
 		if f.Kind != CaseRollHeld {
@@ -490,7 +487,7 @@ var moneylessKinds = slices.Concat([]CaseKind{CaseMergeApproval, CasePlanQuestio
 // monitorActions are the actions a monitor flag's case takes: those Act carries
 // out itself, since the card's run waits on no such case and drops its
 // resolution.
-var monitorActions = []string{ActNote, ActSettle, ActSalvage, ActRetry, ActReplan, ActFund, ActRaiseCeiling, ActWithdraw}
+var monitorActions = []string{ActNote, ActSettle, ActSalvage, ActRetry, ActReplan, ActFund, ActRaiseCeiling, ActWithdraw, ActRunCriteria}
 
 // rungs marks the rungs of in a row's Rungs.
 func rungs(of ...int) [4]bool {
@@ -566,7 +563,7 @@ func confirmAuditFindings(args map[string]any) []string {
 // boardActions are the actions whose work the console's code does
 // (ActInput.Work), outside the run.
 var boardActions = []string{ActApproveMerge, ActDenyMerge, ActSetDependency, ActRemoveDependency, ActFileCard, ActRestartPlan, ActAnswerCriteria,
-	ActGrantCriteria, ActConfirmCriteria, ActDenyCriteria}
+	ActGrantCriteria, ActConfirmCriteria}
 
 // IsBoardAction reports whether name is one of the actions the console's
 // code does (ActInput.Work).
@@ -577,9 +574,9 @@ func IsBoardAction(name string) bool { return slices.Contains(boardActions, name
 var keptCaseActions = []string{ActAnswerCriteria, ActFileCard}
 
 // requestEnds are the actions whose request's decision ends the case, by
-// the decision's status: a merge's approval and denial, a criteria request's
-// denial. A grant decides its request too, but its work leaves the case to Act.
-var requestEnds = []string{ActApproveMerge, ActDenyMerge, ActDenyCriteria}
+// the decision's status: a merge's approval and denial. A grant decides its
+// request too, but its work leaves the case to Act.
+var requestEnds = []string{ActApproveMerge, ActDenyMerge}
 
 // mergeDecisions are the actions that decide an approval request alone.
 var mergeDecisions = append(slices.Clone(requestEnds), ActGrantCriteria)

@@ -779,8 +779,8 @@ const maxPlanAnswer = 1000
 const maxCriterionReason = 2000
 
 // holdoutsWait is the sentence a confirmation meets while the revision's
-// hold-outs are open: how many wait to be kept or dropped, or the plan by
-// name when the count cannot be read.
+// extra promises are open: how many wait to be kept or dropped on their
+// pages, or the plan by name when the count cannot be read.
 func (c *Console) holdoutsWait(ctx context.Context, t factoryd.Task, revision int) string {
 	n := 0
 	if proofs, err := c.cfg.Tasks.PlanProofs(ctx, t.ID); err == nil {
@@ -790,14 +790,12 @@ func (c *Console) holdoutsWait(ctx context.Context, t factoryd.Task, revision in
 			}
 		}
 	}
-	if n > 0 {
-		verb := "wait"
-		if n == 1 {
-			verb = "waits"
-		}
-		return fmt.Sprintf("%d %s %s for your Keep it or Drop it below.", n, plural(n, "hold-out"), verb)
+	if n == 1 {
+		return fmt.Sprintf("1 extra promise of plan #%d waits for Keep it or Drop it on its page before the confirmation.", t.IssueNumber)
+	} else if n > 1 {
+		return fmt.Sprintf("%d extra promises of plan #%d wait for Keep it or Drop it on their pages before the confirmation.", n, t.IssueNumber)
 	}
-	return fmt.Sprintf("The hold-outs of plan #%d wait for your Keep it or Drop it below.", t.IssueNumber)
+	return fmt.Sprintf("The extra promises of plan #%d wait for Keep it or Drop it on their pages before the confirmation.", t.IssueNumber)
 }
 
 // doAnswerPlanQuestion answers question idx of revision revision of plan
@@ -1264,6 +1262,7 @@ var approverRules = map[string]accessRule{
 	factoryd.ActGrantCriteria:   accessTable["answer_criteria"],
 	factoryd.ActConfirmCriteria: accessTable["answer_criteria"],
 	factoryd.ActAnswerCriteria:  accessTable["answer_criteria"],
+	factoryd.AnswerDropAndEnd:   {need: approver, scope: scCard, what: "close a plan with open promises"},
 }
 
 // doCardAnswer presses card id's own action key, one its Other actions
@@ -3126,7 +3125,7 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeDenied, map[string]any{"approval": q.ID, "kind": "resource"})
 		return "Denied the resource.", nil
 	case factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
-		return c.answerRequest(ctx, a, q, factoryd.Resolution{Action: factoryd.ActDenyCriteria, Note: note})
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan #%d's promises take no denial: drop a promise with your reason, build the missing part, or run the tests.", c.issueOf(ctx, q.TaskID)))
 	case factoryd.ApprovalMerge:
 		return c.answerRequest(ctx, a, q, factoryd.Resolution{Action: factoryd.ActDenyMerge, Args: map[string]any{"action": action}, Note: note})
 	}
@@ -3307,18 +3306,6 @@ func (c *Console) criterionVerdict(ctx context.Context, a actor, q factoryd.Appr
 		"not_met": "Criterion %s is not met. The card goes back to its agent with your words.",
 		"waived":  "Criterion %s waived.",
 	}[verb], cid), nil
-}
-
-// denyCriteria is the work of the denial Act runs for a on criteria request q.
-func (c *Console) denyCriteria(ctx context.Context, a actor, q factoryd.ApprovalRequest, note string) (string, error) {
-	if err := c.decide(ctx, a, q, "denied", note); err != nil {
-		return "", err
-	}
-	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "verb": "denied"})
-	if q.Kind == factoryd.ApprovalCriteriaRerun {
-		return "Denied the ask; waive a criterion instead if it should not hold.", nil
-	}
-	return "Denied the grant; waive a criterion instead if it should not hold.", nil
 }
 
 // doConfirmCriteria records the human's confirmation that the plan's

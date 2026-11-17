@@ -235,7 +235,8 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 	if cs.holds(bt.Task) {
 		// a plan's case that names no question of a revision is answered
 		// by the plan's request
-		if n := c.caseNeed(ctx, v, button(r), bt, k, cs, casesInView(r)[bt.ID]); !planCase(n.Case.Case) || n.Case.Plan != nil || len(o.Brief.Approvals) == 0 {
+		n := c.caseNeed(ctx, v, button(r), bt, k, cs, casesInView(r)[bt.ID])
+		if _, part := factoryd.HoldoutOn(n.Case.Case); !planCase(n.Case.Case) || part || n.Case.Plan != nil || len(o.Brief.Approvals) == 0 {
 			row = n.Case
 		}
 	}
@@ -246,13 +247,13 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		o.Ask = c.askOf(ctx, v, k, row.Face, seen)
 		o.Ask.Position, o.Ask.Of = row.At, row.Of
 		base := "/cards/" + k.ID + "/drawer?tab=overview&case=" + url.QueryEscape(k.ID) + ":"
-		if row.PrevID != 0 {
-			o.Ask.Prev = base + strconv.FormatInt(row.PrevID, 10)
+		if row.PrevKey != "" {
+			o.Ask.Prev = base + row.PrevKey
 		}
-		if row.NextID != 0 {
-			o.Ask.Next = base + strconv.FormatInt(row.NextID, 10)
+		if row.NextKey != "" {
+			o.Ask.Next = base + row.NextKey
 		}
-		o.Ask.Answers = c.answersOf(ctx, v, k, k.ID+"-"+strconv.FormatInt(row.Case.ID, 10), row.Face, f, func(a factoryd.Answer, key string) (*pressForm, func(string) string) {
+		o.Ask.Answers = c.answersOf(ctx, v, k, k.ID+"-"+row.Key, row.Face, f, func(a factoryd.Answer, key string) (*pressForm, func(string) string) {
 			if !mayAnswer(v, k, a.Action) || requestPage(row.Case) && row.Approval != nil && approverOnly(v, k, *row.Approval, a) {
 				o.Ask.denied = append(o.Ask.denied, a.Label)
 				return nil, nil
@@ -295,6 +296,10 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 			o.More = append(o.More, c.answerOf(ctx, v, k, k.ID, a.Key(), a, f, func(a factoryd.Answer, key string) (*pressForm, func(string) string) {
 				return casePress(v, k, *row, a, key)
 			}, seen))
+		}
+		if row.Approval != nil {
+			// a request's page holds only the answers its request takes
+			o.More = slices.DeleteFunc(o.More, func(m answerView) bool { return row.Approval.refuses(m) || m.Press == nil && m.Thread == "" })
 		}
 		o.Brief.Evidence = c.evidenceOf(ctx, v, k, row.Face)
 		if k.Reason != "" {
@@ -428,22 +433,26 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 }
 
 // holds says card t holds a case at the human that its row of Needs you
-// shows: a live card's, a done plan's wait on its failed card, and its
-// helper task's whatever its state. The board, a card's swap and its
-// opened card read it alike.
+// shows: a live card's, a done plan's wait on its failed card and its
+// criteria request, and its helper task's whatever its state. The board,
+// a card's swap and its opened card read it alike.
 func (cs caseSet) holds(t factoryd.Task) bool {
 	return slices.ContainsFunc(cs.byCard[t.ID], func(o factoryd.Case) bool {
-		return !factoryd.Final(t.Status) || factoryd.PlanWaitCase(o, t) || o.TaskID != t.ID
+		return !factoryd.Final(t.Status) || factoryd.PlanWaitCase(o, t) || o.Kind == factoryd.CasePlanCriteria || o.TaskID != t.ID
 	})
 }
 
 // askOf is the ask block of face on card k: the question and its why in
 // the factory's words with their terms marked into seen, and the story,
-// whose writer's words stand quoted. The story's planned line names the
-// card's title, which the opened card's head shows, so it stays out.
+// whose writer's words stand quoted. A planned line that only names the
+// card's title, which the opened card's head shows, stays out.
 func (c *Console) askOf(ctx context.Context, v *boardView, k card, face factoryd.Face, seen map[string]int) *askBlock {
 	a := &askBlock{Question: c.factoryText(ctx, v, k.Repository, face.Ask, seen), Why: c.factoryText(ctx, v, k.Repository, face.Why, seen)}
-	for _, line := range []string{face.Story.Happened, face.Story.Left, face.Story.View} {
+	planned := face.Story.Planned
+	if factoryd.TitleLine(planned, k.Task) {
+		planned = ""
+	}
+	for _, line := range []string{planned, face.Story.Happened, face.Story.Left, face.Story.View} {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -535,6 +544,10 @@ func (c *Console) answerOf(ctx context.Context, v *boardView, k card, scope, key
 		bound = factoryd.MaxReplanComment
 	}
 	for _, field := range a.Fields {
+		if field.Kind == factoryd.FieldFixed {
+			p.Values = append(p.Values, hidden{name(field.Name), defaults[field.Name]})
+			continue
+		}
 		fv := fieldView{ID: id + "-" + field.Name, Name: name(field.Name), Label: field.Label, Value: clean(defaults[field.Name]), Required: field.Required,
 			Max: cmp.Or(p.Max, bound)}
 		if field.Required && fv.Value == "" {
@@ -577,16 +590,16 @@ func (c *Console) answerOf(ctx context.Context, v *boardView, k card, scope, key
 var fieldID = regexp.MustCompile(`[^a-zA-Z0-9-]+`)
 
 // dataTo is where card k stands once answer a is taken: a card's end out
-// of the board's live columns, a note or one promise's answer where it
-// stands, a decided request in its status's column, any other answer in
-// progress.
+// of the board's live columns, a note, one promise's answer or a run of a
+// plan's tests where it stands, a decided request in its status's column,
+// any other answer in progress.
 func dataTo(k card, a factoryd.Answer) string {
 	switch a.Action {
-	case factoryd.ActNote, factoryd.ActSettle, factoryd.AnswerEditBrief, factoryd.AnswerAccent, factoryd.AnswerSteer, factoryd.ActAnswerCriteria:
+	case factoryd.ActNote, factoryd.ActSettle, factoryd.AnswerEditBrief, factoryd.AnswerAccent, factoryd.AnswerSteer, factoryd.ActAnswerCriteria, factoryd.ActRunCriteria:
 		return ""
 	case factoryd.ActApproveMerge, factoryd.ActDenyMerge, factoryd.AnswerApprove, factoryd.AnswerDeny:
 		return k.Status
-	case factoryd.ActClose:
+	case factoryd.ActClose, factoryd.AnswerDropAndEnd:
 		if k.Kind == "human" {
 			return "off"
 		}
@@ -613,7 +626,9 @@ func casePress(v *boardView, k card, row caseRow, a factoryd.Answer, key string)
 		}
 		return p, name
 	}
-	if requestPage(row.Case) {
+	if requestPage(row.Case) || row.Approval != nil && a.Action == factoryd.ActRerunChecks {
+		// a factory pull request's re-run is its request's: the workflow
+		// waits on the request, not on the case
 		if row.Approval == nil {
 			return nil, nil
 		}
@@ -627,6 +642,20 @@ func casePress(v *boardView, k card, row caseRow, a factoryd.Answer, key string)
 			}
 			return key + "." + field
 		}
+	}
+	if planCase(row.Case) && a.Action == factoryd.ActClose {
+		// the plan's own end, no answer of its question
+		return cardPress(v, k, a, key)
+	}
+	if h, ok := factoryd.HoldoutOn(row.Case); ok {
+		// an extra promise's page keeps it or drops it, and the card waits
+		verb := map[string]string{factoryd.AnswerKeepHoldout: "okay", factoryd.AnswerDropHoldout: "drop"}[a.Action]
+		if verb == "" {
+			return nil, nil
+		}
+		p.Post, p.DataTo = "/tasks/"+k.ID+"/plan/holdout", ""
+		p.Values = []hidden{{"revision", strconv.Itoa(factInt(row.Case, "revision"))}, {"index", strconv.Itoa(h.Idx)}, {"verb", verb}}
+		return p, named("note")
 	}
 	switch {
 	case row.Plan != nil:
@@ -737,30 +766,39 @@ func takesOff(answers []answerView, refs []string) {
 
 // requestAsk fits the ask of request ap to its rows as they read now. A
 // merge waits on its head's checks and on each human promise's verdict,
-// which its full brief takes. A criteria request offers Build the missing
-// part only while a promise is open and The work is enough only once the
-// plan's cards are delivered, and says how it ends.
+// which the pages before it take. A criteria request offers Build the
+// missing part only while a promise is open and The work is enough only
+// once the plan's cards are delivered, and says when nothing is left.
 func requestAsk(ask *askBlock, ap approvalCard) {
 	if ap.Kind == factoryd.ApprovalMerge && (len(ap.Unsettled) > 0 || ap.HeadUnread) {
 		for i := range ask.Answers {
 			if ask.Answers[i].Action == factoryd.ActApproveMerge {
 				ask.Answers[i].Press, ask.Answers[i].Fields = nil, nil
+				switch n := len(ap.Unsettled); n {
+				case 0:
+				case 1:
+					ask.Note = "Merge it opens once the promise on the page before this one has a verdict."
+				default:
+					ask.Note = fmt.Sprintf("Merge it opens once the %d promises on the pages before this one have a verdict.", n)
+				}
 			}
-		}
-		if len(ap.Unsettled) > 0 {
-			ask.Note = "Merge it opens once each human promise has a verdict: " + textutil.AndList(ap.Unsettled) + "."
 		}
 	}
 	if ap.Kind != factoryd.ApprovalCriteria && ap.Kind != factoryd.ApprovalCriteriaRerun {
 		return
 	}
-	ask.Answers = slices.DeleteFunc(ask.Answers, func(a answerView) bool {
-		return a.Action == factoryd.ActGrantCriteria && !ap.Grantable || a.Action == factoryd.ActConfirmCriteria && !ap.Delivered
-	})
-	ask.Note = "The request closes on its own once every promise is met or dropped."
+	ask.Answers = slices.DeleteFunc(ask.Answers, ap.refuses)
 	if !ap.Grantable {
-		ask.Note = "Every promise is met or dropped, so the request closes on the next sweep."
+		ask.Answers, ask.Note = nil, "Every promise is met or dropped, so the plan closes within minutes."
 	}
+}
+
+// refuses says criteria request ap does not take answer a as its rows read
+// now: Build the missing part with no promise open, The work is enough
+// before the plan's cards are delivered.
+func (ap approvalCard) refuses(a answerView) bool {
+	criteria := ap.Kind == factoryd.ApprovalCriteria || ap.Kind == factoryd.ApprovalCriteriaRerun
+	return criteria && (a.Action == factoryd.ActGrantCriteria && !ap.Grantable || a.Action == factoryd.ActConfirmCriteria && !ap.Delivered)
 }
 
 // openPromises is criteria case k as request ap's rows read now: its
@@ -816,7 +854,7 @@ func requestForm(v *boardView, k card, ap approvalCard, a factoryd.Answer) (*pre
 		p.Post, p.Values = base+"deny", []hidden{{"action", "reject"}}
 	case a.Action == factoryd.ActDenyMerge:
 		p.Post, p.Values = base+"deny", []hidden{{"action", "request_changes"}}
-	case a.Action == factoryd.AnswerDeny, a.Action == factoryd.ActDenyCriteria:
+	case a.Action == factoryd.AnswerDeny:
 		p.Post = base + "deny"
 	case a.Action == factoryd.ActRerunChecks && ap.Rerun():
 		p.Post = base + "rerun"
@@ -836,6 +874,10 @@ func requestForm(v *boardView, k card, ap approvalCard, a factoryd.Answer) (*pre
 	case a.Action == factoryd.AnswerRevisePlan:
 		p.Post = "/tasks/" + k.ID + "/plan/changes"
 		return p, named("text")
+	case a.Action == factoryd.AnswerDropAndEnd:
+		// the plan's own Close, whose note waives each open promise
+		p.Post, p.Values = "/tasks/"+k.ID+"/resolve", []hidden{{"action", factoryd.ActClose}}
+		return p, func(field string) string { return factoryd.ActClose + "." + field }
 	default:
 		return nil, nil
 	}

@@ -14,7 +14,8 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// answerRequest answers approval request q's case with res through Act.
+// answerRequest answers approval request q's case with res through Act: a
+// board action with its work, any other as Act runs it.
 func (c *Console) answerRequest(ctx context.Context, a actor, q factoryd.ApprovalRequest, res factoryd.Resolution) (string, error) {
 	if len(res.Note) > factoryd.MaxAnswer {
 		return "", answerFits(res.Note)
@@ -31,6 +32,10 @@ func (c *Console) answerRequest(ctx context.Context, a actor, q factoryd.Approva
 	i := slices.IndexFunc(open, func(k factoryd.Case) bool { return approvalOf(q, k) })
 	if i < 0 {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Approval request %d has no live case yet: reload the board.", q.ID))
+	}
+	if !factoryd.IsBoardAction(res.Action) {
+		out, err := c.actOn(ctx, a, t, open[i].ID, res, nil)
+		return out.Text, err
 	}
 	return c.boardAct(ctx, a, t, open[i], res)
 }
@@ -83,7 +88,7 @@ func approvalIDOf(k factoryd.Case) int64 {
 func (c *Console) boardWork(ctx context.Context, a actor, t factoryd.Task, k factoryd.Case, res factoryd.Resolution) (string, error) {
 	arg := func(key string) string { s, _ := res.Args[key].(string); return s }
 	switch res.Action {
-	case factoryd.ActApproveMerge, factoryd.ActDenyMerge, factoryd.ActAnswerCriteria, factoryd.ActGrantCriteria, factoryd.ActConfirmCriteria, factoryd.ActDenyCriteria:
+	case factoryd.ActApproveMerge, factoryd.ActDenyMerge, factoryd.ActAnswerCriteria, factoryd.ActGrantCriteria, factoryd.ActConfirmCriteria:
 		q, err := c.pendingRequest(ctx, a, approvalIDOf(k))
 		if err != nil {
 			return "", err
@@ -98,8 +103,6 @@ func (c *Console) boardWork(ctx context.Context, a actor, t factoryd.Task, k fac
 			return c.grantCriteria(ctx, a, q)
 		case factoryd.ActConfirmCriteria:
 			return c.confirmCriteria(ctx, a, q, res.Note)
-		case factoryd.ActDenyCriteria:
-			return c.denyCriteria(ctx, a, q, res.Note)
 		}
 		verb := arg("verdict")
 		for from, to := range criteriaVerdicts {
