@@ -1184,7 +1184,7 @@ var replayCoverage = map[string]string{
 	"S22": "testdata/fixtures/1347.json",
 	"S23": "TestReportSessionRefusesAnOpeningTheBudgetCannotPay",
 	"S24": "open: by decision, a done integration card re-runs no review",
-	"S25": "TestRung2ProposesAtAssistedAndManual",
+	"S25": "internal/factoryd/pg TestRung2ProposesAtAssistedAndManual",
 	"S26": "TestPassLoopBoundsARunAndFlagsIt",
 	"S27": "TestReplayOfAHistoryWithoutTheCasesMarkerIsRefused",
 	"S28": "TestWorkflowRunRestartedAtClosingFinishesWithItsStoredEnd",
