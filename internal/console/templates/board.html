@@ -321,7 +321,9 @@
 {{if .CriterionNext}}<button type="button" class="next" aria-label="Next criterion" hx-get="/approvals/{{.ID}}/criteria/{{.CriterionNext}}{{.CarouselQuery}}" hx-target="closest .card.approval" hx-swap="outerHTML">›</button>{{else}}<button type="button" class="next" aria-label="Next criterion" disabled>›</button>{{end}}
 </div>{{end}}
 {{if and .Approver .Delivered}}<form method="post" action="/approvals/{{.ID}}/confirm" hx-post="/approvals/{{.ID}}/confirm">
-<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<button type="submit" aria-label="Confirm the delivered cards of {{.TaskID}}">Confirm the delivered cards</button>
+<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<label for="confirm-{{.ID}}{{.IDSuffix}}">Your evidence, one line. A plan with a closed card needs it.</label>
+<input type="text" id="confirm-{{.ID}}{{.IDSuffix}}" name="note" maxlength="2000" hx-preserve>
+<button type="submit" aria-label="Confirm the delivered cards of {{.TaskID}}">Confirm the delivered cards</button>
 </form>{{end}}
 {{end}}
 {{define "plan"}}<h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Plan</a>{{else}}Plan{{end}}{{if .IssueURL}} <a class="ref" href="{{.IssueURL}}" target="_blank" rel="noopener">#{{.Issue}}</a>{{with .PlanName}} · {{.}}{{end}}{{else}}{{with .PlanName}} {{.}}{{end}}{{end}}, revision {{.PlanSpec.Revision}}</h4>

@@ -1645,13 +1645,100 @@ func TestConfirmDeliveredCriteria(t *testing.T) {
 		t.Fatalf("confirm with an open successor = %v, want ErrChildOpen naming the successor", err)
 	}
 
-	// a cut card with no successor row at all refuses naming the cut card
-	s5 := seedVerdictPlan(t, "t-cut-gone", "t-cut-gone-int", "done")
-	cutGone := Task{ID: "t-cut-gone-card", Repository: "sf/code", Parent: "t-cut-gone", Source: SourcePlan, PlanKey: "cut", Status: "closed"}
-	s5.tasks[cutGone.ID] = cutGone
-	_, err = ConfirmDeliveredCriteria(ctx, s5, "t-cut-gone", "sebastian", "they are done")
-	if !errors.Is(err, ErrChildOpen) || !strings.Contains(err.Error(), cutGone.ID) || !strings.Contains(err.Error(), "closed") {
-		t.Fatalf("confirm with a missing successor = %v, want ErrChildOpen naming the cut card", err)
+	// a card that failed with no successor refuses, naming it
+	s5 := seedVerdictPlan(t, "t-failed", "t-failed-int", "done")
+	failed := Task{ID: "t-failed-card", Repository: "sf/code", Parent: "t-failed", Source: SourcePlan, PlanKey: "cut", Status: "failed"}
+	s5.tasks[failed.ID] = failed
+	_, err = ConfirmDeliveredCriteria(ctx, s5, "t-failed", "sebastian", "they are done")
+	if !errors.Is(err, ErrChildOpen) || !strings.Contains(err.Error(), failed.ID) || !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("confirm with a failed card = %v, want ErrChildOpen naming it", err)
+	}
+}
+
+// PlanDelivered: a card done, merged or closed, the last with no successor
+// (a replan cut it, or a person closed it), delivers; a card failed or
+// still running does not, and is named; a card cut into a successor
+// stands as the successor, open while it runs.
+func TestPlanDeliveredTakesAClosedCard(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name      string
+		last      string // the status of t-last
+		successor string // the status of t-last's successor, "" for none
+		delivered bool
+		open      string
+	}{
+		{"closed, no successor", "closed", "", true, ""},
+		{"failed, no successor", "failed", "", false, "t-last"},
+		{"running", "running", "", false, "t-last"},
+		{"closed into a running successor", "closed", "running", false, SuccessorID("t-last")},
+		{"closed into a closed successor", "closed", "closed", true, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := seedVerdictPlan(t, "t-plan", "t-int", "merged")
+			s.tasks["t-last"] = Task{ID: "t-last", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "last", Status: c.last}
+			if c.successor != "" {
+				succ := SuccessorID("t-last")
+				s.tasks[succ] = Task{ID: succ, Repository: "sf/code", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "last", Status: c.successor}
+			}
+			ok, open, err := PlanDelivered(ctx, s, "t-plan")
+			if err != nil || ok != c.delivered || open.ID != c.open {
+				t.Fatalf("PlanDelivered = %v, %q, %v; want %v, %q", ok, open.ID, err, c.delivered, c.open)
+			}
+		})
+	}
+}
+
+// A plan whose integration card ended closed with no pull request (it
+// proved and pushed nothing) and three gate criteria never judged takes
+// the human's confirmation with their line: three met rows of source
+// approver on the integration card, the line their evidence. An empty
+// line is refused while a card ended closed, and taken once every card
+// is done or merged.
+func TestConfirmDeliveredCriteriaOverAClosedIntegrationCard(t *testing.T) {
+	ctx := context.Background()
+	seed := func(status string) *fakeStore {
+		s := newFakeStore()
+		p := criteriaPlan()
+		p.Criteria = []PlanCriterion{
+			{ID: "chat_park_settles_cases", Kind: CriterionTest, Claim: "c", Inputs: "i", Expected: "e"},
+			{ID: "parked_card_still_answers", Kind: CriterionTest, Claim: "c", Inputs: "i", Expected: "e"},
+			{ID: "committed_session_ends_pushed", Kind: CriterionInvariant, Suite: "./..."},
+		}
+		newRevision(t, s, "t-plan", p)
+		s.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/code", IssueNumber: 7, Source: SourceChat, Status: "done"}
+		s.tasks["card-foundation"] = Task{ID: "card-foundation", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "foundation", Status: "done"}
+		s.tasks["t-int"] = Task{ID: "t-int", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Status: status}
+		return s
+	}
+	const line = "main at 6e3b46e: the three tests pass and ci / test is green"
+	s := seed("closed")
+	if _, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", "sebastian", " "); !errors.Is(err, ErrNoEvidence) || !strings.Contains(err.Error(), "t-int is closed") {
+		t.Fatalf("an empty line beside a closed card = %v, want ErrNoEvidence naming t-int", err)
+	}
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(rows) != 0 {
+		t.Fatalf("the refused confirmation wrote rows: %v", rows)
+	}
+	n, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", "sebastian", line)
+	if err != nil || n != 3 {
+		t.Fatalf("confirm = %d, %v; want 3, nil", n, err)
+	}
+	var want []CriterionVerdict
+	for _, c := range []struct{ id, kind string }{
+		{"chat_park_settles_cases", CriterionTest}, {"parked_card_still_answers", CriterionTest}, {"committed_session_ends_pushed", CriterionInvariant},
+	} {
+		want = append(want, CriterionVerdict{Criterion: c.id, Verdict: "met", Evidence: line, Kind: c.kind, Source: CriteriaSourceApprover, DecidedBy: "sebastian"})
+	}
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); !slices.Equal(rows, want) {
+		t.Fatalf("rows =\n%v\nwant\n%v", rows, want)
+	}
+
+	s = seed("done")
+	if n, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", "sebastian", ""); err != nil || n != 3 {
+		t.Fatalf("an empty line with every card done = %d, %v; want 3, nil", n, err)
+	}
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(rows) != 3 || rows[0].Evidence != "confirmed by sebastian" {
+		t.Fatalf("rows = %v, want three met on the confirmer's name", rows)
 	}
 }
 

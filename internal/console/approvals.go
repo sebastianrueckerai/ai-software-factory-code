@@ -59,7 +59,7 @@ type approvalCard struct {
 	Resource      cloudres.ResourceSpec
 	// a plan's criteria gap: the spec, the open criteria with their
 	// standing verdicts, whether every card of the plan is delivered
-	// (done or merged), which the confirm button keys on, and whether a
+	// (done, merged or closed), which the confirm button keys on, and whether a
 	// criterion is still open, which the grant answers
 	CriteriaSpec factoryd.CriteriaSpec
 	// Criteria are the card's rows the carousel pages (one-face 6b): one
@@ -812,11 +812,11 @@ func (c *Console) criterionFragment(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// confirm records the member's confirmation that the plan's delivered
-// cards meet its criteria (doConfirmCriteria).
+// confirm records the human's confirmation that the plan's delivered
+// cards meet its criteria, their note the evidence (doConfirmCriteria).
 func (c *Console) confirm(w http.ResponseWriter, r *http.Request) {
 	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
-		return c.doConfirmCriteria(ctx, a, id, "")
+		return c.doConfirmCriteria(ctx, a, id, r.PostFormValue("note"))
 	})
 }
 

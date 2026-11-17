@@ -105,8 +105,8 @@ type Tasks interface {
 	// PlanCards are the cards plan task plan filed.
 	PlanCards(ctx context.Context, plan string) ([]factoryd.Task, error)
 	// PlanDelivered says whether every card plan filed is delivered —
-	// done or merged, or cut into a successor that is — and the first
-	// card that is not (factoryd.PlanDelivered).
+	// done, merged or closed, or cut into a successor that is — and the
+	// first card that is not (factoryd.PlanDelivered).
 	PlanDelivered(ctx context.Context, plan string) (bool, factoryd.Task, error)
 	// PlanMerged says whether a card of plan holds an unreverted merge.
 	PlanMerged(ctx context.Context, plan string) (bool, error)
@@ -249,7 +249,8 @@ type Config struct {
 	CloseHeldPlan func(ctx context.Context, id, by, note string, approver bool) (waived int, words string, merged bool, err error)
 	// ConfirmDeliveredCriteria meets every open criterion of plan id on
 	// the human's line (factoryd.ConfirmDeliveredCriteria); a card of the
-	// plan not done or merged is factoryd.ErrChildOpen.
+	// plan not done, merged or closed is factoryd.ErrChildOpen, an empty
+	// line beside a closed card factoryd.ErrNoEvidence.
 	ConfirmDeliveredCriteria func(ctx context.Context, id, by, line string) (int, error)
 	// RetryCard files failed card taskID again for by and returns the
 	// replacement's issue (factoryd's Runner.RetryCard): a refusal is

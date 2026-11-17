@@ -557,14 +557,19 @@ func GrantCriteria(ctx context.Context, store Store, id, by string, approval int
 	return len(details), nil
 }
 
-// ErrChildOpen is a plan's card that is not done or merged, which a
-// confirmation of the delivered cards cannot stand on.
-var ErrChildOpen = errors.New("a card of the plan is not done or merged")
+// ErrChildOpen is a plan's card that is not done, merged or closed, which
+// a confirmation of the delivered cards cannot stand on.
+var ErrChildOpen = errors.New("a card of the plan is still open or failed")
+
+// ErrNoEvidence refuses a confirmation without its line on a plan a card
+// of which ended closed: the line is the evidence that main holds the work.
+var ErrNoEvidence = errors.New("a confirmation over closed cards needs your evidence")
 
 // PlanDelivered says whether every card of plan task id is delivered —
-// done or merged, or cut into a successor that is, the successor chain
-// SuccessorID names — and open, the first card that is not. A card with
-// no successor row stands open itself.
+// done, merged or closed, or cut into a successor that is, the successor
+// chain SuccessorID names — and open, the first card that is not. A closed
+// card is the decision that no work of it is left; the criteria are judged
+// on main. A card with no successor row stands for itself.
 func PlanDelivered(ctx context.Context, store interface {
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
 	Task(ctx context.Context, id string) (Task, bool, error)
@@ -578,7 +583,7 @@ func PlanDelivered(ctx context.Context, store interface {
 		switch {
 		case err != nil || !ok:
 			return false, c, err
-		case end.Status != "done" && end.Status != "merged":
+		case end.Status != "done" && end.Status != "merged" && end.Status != "closed":
 			return false, end, nil
 		}
 	}
@@ -639,11 +644,13 @@ func planWaits(ctx context.Context, store interface {
 // plan's delivered cards meet its criteria: every criterion still open
 // is met at once, their line the evidence, the rows on the integration
 // card where the review's stand. It refuses while a card of the plan is
-// not delivered — not done or merged, nor cut into a successor that is —
+// not delivered — not done, merged or closed, nor cut into a successor
+// that is — and an empty line while a card ended closed (ErrNoEvidence),
 // records nothing when no criterion is open, and decides no approval
 // itself: the sweep that reads the rows ends the request and closes the
 // plan.
 func ConfirmDeliveredCriteria(ctx context.Context, store Store, id, by, line string) (int, error) {
+	line = strings.TrimSpace(line)
 	t, ok, err := store.Task(ctx, id)
 	if err != nil {
 		return 0, fmt.Errorf("plan %s: %w", id, err)
@@ -673,6 +680,15 @@ func ConfirmDeliveredCriteria(ctx context.Context, store Store, id, by, line str
 	}
 	if !delivered {
 		return 0, fmt.Errorf("%s is %s: %w", offender.ID, offender.Status, ErrChildOpen)
+	}
+	if line == "" {
+		cards, err := planWaits(ctx, store, id)
+		if err != nil {
+			return 0, err
+		}
+		if i := slices.IndexFunc(cards, func(c Task) bool { return c.Status == "closed" }); i >= 0 {
+			return 0, fmt.Errorf("%s is closed: %w", cards[i].ID, ErrNoEvidence)
+		}
 	}
 	out := make([]CriterionVerdict, len(open))
 	for i, c := range open {

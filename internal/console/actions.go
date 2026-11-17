@@ -3278,7 +3278,8 @@ func (c *Console) denyCriteria(ctx context.Context, a actor, q factoryd.Approval
 // delivered cards meet its criteria: every open criterion met at once,
 // their line the evidence, on the human's own word when it arrives via
 // chat. The sweep that reads the rows ends the request and closes the
-// plan; a card of the plan not done or merged refuses, naming it.
+// plan; a card of the plan not done, merged or closed refuses, naming it,
+// and so does an empty line beside a closed card.
 func (c *Console) doConfirmCriteria(ctx context.Context, a actor, id int64, line string) (string, error) {
 	q, err := c.pendingRequest(ctx, a, id)
 	if err != nil {
@@ -3296,6 +3297,8 @@ func (c *Console) confirmCriteria(ctx context.Context, a actor, q factoryd.Appro
 	switch {
 	case errors.Is(err, factoryd.ErrChildOpen):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Cannot confirm the delivered cards: %v.", err))
+	case errors.Is(err, factoryd.ErrNoEvidence):
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Cannot confirm the delivered cards: %v. Type the line that shows main meets the criteria, then confirm again.", err))
 	case errors.Is(err, factoryd.ErrNotFound):
 		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", q.TaskID))
 	case err != nil:

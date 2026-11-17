@@ -427,6 +427,64 @@ func TestCriteriaRerunDeliveredFollowsACutCardToItsSuccessor(t *testing.T) {
 	}
 }
 
+// A card of the plan closed with no successor (a replan cut it, or a
+// person closed it) does not keep the Confirm button off: the press takes
+// the evidence typed beside it, and the store's refusal of an empty line
+// names the closed card and what to type. A failed card keeps it off.
+func TestCriteriaRerunConfirmsOverAClosedCard(t *testing.T) {
+	r := newRig(t)
+	verdictRig(r)
+	r.approvals.rows[len(r.approvals.rows)-1].Kind = factoryd.ApprovalCriteriaRerun
+	closed := factoryd.BoardTask{Task: factoryd.Task{ID: "t-cut-card", Kind: "agent", Repository: "sf/code", Status: "closed",
+		Parent: "t-plan", Source: factoryd.SourcePlan, PlanKey: "cut"}}
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, closed)
+	r.tasks.mu.Unlock()
+	var calls []string
+	r.c.cfg.ConfirmDeliveredCriteria = func(_ context.Context, id, by, line string) (int, error) {
+		calls = append(calls, fmt.Sprintf("confirm %s by %s: %q", id, by, line))
+		if line == "" {
+			return 0, fmt.Errorf("t-cut-card is closed: %w", factoryd.ErrNoEvidence)
+		}
+		return 3, nil
+	}
+	ck, s := r.loggedIn(t)
+	board := func() string {
+		return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+	}
+	card := board()
+	if !strings.Contains(card, `action="/approvals/30/confirm"`) || !strings.Contains(card, `aria-label="Confirm the delivered cards of t-plan"`) {
+		t.Fatalf("a plan with a closed card lacks the confirm button:\n%s", card)
+	}
+	if !regexp.MustCompile(`<input type="text" id="confirm-30[^"]*" name="note" maxlength="2000" hx-preserve>`).MatchString(card) {
+		t.Errorf("the confirm form lacks its evidence line:\n%s", card)
+	}
+	rec := r.do(post("/approvals/30/confirm", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	if want := "Cannot confirm the delivered cards: t-cut-card is closed: a confirmation over closed cards needs your evidence. " +
+		"Type the line that shows main meets the criteria, then confirm again."; rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("an empty confirm = %d %q, want 400 with %q", rec.Code, rec.Body.String(), want)
+	}
+	const line = "main at 6e3b46e: the tests pass and ci / test is green"
+	rec = r.do(post("/approvals/30/confirm", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "note": {line}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("confirm with evidence = %d %q", rec.Code, rec.Body.String())
+	}
+	if want := []string{`confirm t-plan by sebastian: ""`, fmt.Sprintf("confirm t-plan by sebastian: %q", line)}; !slices.Equal(calls, want) {
+		t.Errorf("calls = %q, want %q", calls, want)
+	}
+
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == closed.ID {
+			r.tasks.tasks[i].Status = "failed"
+		}
+	}
+	r.tasks.mu.Unlock()
+	if card := board(); strings.Contains(card, `action="/approvals/30/confirm"`) {
+		t.Errorf("a plan with a failed card offers the confirm button:\n%s", card)
+	}
+}
+
 // Fault 9: typed text on the board is draft state — every typed field it
 // renders carries the preserve treatment the find's form already carries,
 // so one criterion's Waive does not erase its siblings' reasons — and the

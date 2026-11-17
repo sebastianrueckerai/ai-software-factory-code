@@ -677,7 +677,7 @@ func (s *fakeTasks) PlanCards(_ context.Context, plan string) ([]factoryd.Task, 
 }
 
 // PlanDelivered mirrors factoryd.PlanDelivered: a plan card counts
-// delivered when it is done or merged, or its successor — the row
+// delivered when it is done, merged or closed, or its successor — the row
 // factoryd.SuccessorID names, whatever source it filed under — is.
 func (s *fakeTasks) PlanDelivered(_ context.Context, plan string) (bool, factoryd.Task, error) {
 	s.mu.Lock()
@@ -699,7 +699,7 @@ func (s *fakeTasks) PlanDelivered(_ context.Context, plan string) (bool, factory
 			}
 			c = next
 		}
-		if c.Status != "done" && c.Status != "merged" {
+		if c.Status != "done" && c.Status != "merged" && c.Status != "closed" {
 			if open.ID == "" {
 				open = t.Task
 			}

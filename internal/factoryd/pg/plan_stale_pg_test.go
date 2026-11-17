@@ -155,3 +155,55 @@ func TestPGStorePlanHumanChild(t *testing.T) {
 		t.Fatalf("PlanDelivered after Done = %v, %v; want true", ok, err)
 	}
 }
+
+// Requires a disposable Postgres. A plan's cards done, merged and closed
+// deliver it, the closed one with no successor row; a failed card does
+// not, nor one still running, and each is named; a closed card cut into a
+// running successor stands as the successor.
+func TestPGStorePlanDeliveredTakesAClosedCard(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_plan_delivered_closed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "done", Repository: "sf/r", BudgetEUR: 1, Track: "plan", IssueNumber: 1}
+	if err := s.CreateTask(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range []struct{ id, status string }{{"t-done", "done"}, {"t-merged", "merged"}, {"t-closed", "closed"}} {
+		card := Task{ID: c.id, Kind: "agent", Status: c.status, Repository: "sf/r", BudgetEUR: 1, Track: "direct", Source: SourcePlan,
+			Parent: "t-plan", PlanKey: c.id, IssueNumber: int64(i + 2)}
+		if _, err := s.CreatePlanCard(ctx, card); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ok, open, err := PlanDelivered(ctx, s, "t-plan"); err != nil || !ok {
+		t.Fatalf("PlanDelivered over done, merged and closed = %v, %q, %v; want true", ok, open.ID, err)
+	}
+	last := Task{ID: "t-last", Kind: "agent", Status: "failed", Repository: "sf/r", BudgetEUR: 1, Track: "direct", Source: SourcePlan,
+		Parent: "t-plan", PlanKey: "last", IssueNumber: 5}
+	if _, err := s.CreatePlanCard(ctx, last); err != nil {
+		t.Fatal(err)
+	}
+	if ok, open, err := PlanDelivered(ctx, s, "t-plan"); err != nil || ok || open.ID != "t-last" || open.Status != "failed" {
+		t.Fatalf("PlanDelivered with a failed card = %v, %q %q, %v; want false on t-last failed", ok, open.ID, open.Status, err)
+	}
+	if err := s.TransitionTask(ctx, "t-last", []string{"failed"}, "running"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, open, err := PlanDelivered(ctx, s, "t-plan"); err != nil || ok || open.ID != "t-last" {
+		t.Fatalf("PlanDelivered with a running card = %v, %q, %v; want false on t-last", ok, open.ID, err)
+	}
+	if err := s.TransitionTask(ctx, "t-last", []string{"running"}, "closed"); err != nil {
+		t.Fatal(err)
+	}
+	succ := Task{ID: SuccessorID("t-last"), Kind: "agent", Status: "running", Repository: "sf/r", BudgetEUR: 1, Track: "direct", Source: SourceSuccessor,
+		Parent: "t-plan", PlanKey: "last", IssueNumber: 6}
+	if err := s.CreateTask(ctx, succ); err != nil {
+		t.Fatal(err)
+	}
+	if ok, open, err := PlanDelivered(ctx, s, "t-plan"); err != nil || ok || open.ID != succ.ID {
+		t.Fatalf("PlanDelivered with a closed card cut into a running successor = %v, %q, %v; want false on %s", ok, open.ID, err, succ.ID)
+	}
+}
