@@ -1176,6 +1176,39 @@ func TestAMergeConflictRefusesTheAnswersThatRerunTheGates(t *testing.T) {
 	}
 }
 
+// A timeline that could not be read leaves a merge conflict and the head's
+// audit unknown: route_approval and reverify, which would run the gates on
+// a head that may not merge, and confirm_audit, which judges the audit's
+// findings, are refused naming the unread timeline and what fits, never a
+// reverify that runs the audit again. Rung 0's route_approval does not
+// fire then; read, it does.
+func TestAnUnreadTimelineRefusesTheGatesReruns(t *testing.T) {
+	ready := CaseFacts{Kind: CaseSessionCap, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true, Partial: []string{"timeline"}}
+	const unread = "the card's timeline could not be read, so it is unknown whether the pull request still merges into main, which "
+	for _, tc := range []struct {
+		action string
+		r      Resolution
+		want   string
+	}{
+		{ActRouteApproval, Resolution{}, unread + "route_approval needs: try again in a minute, or hand it up"},
+		{ActReverify, Resolution{}, unread + "reverify needs: try again in a minute, or hand it up"},
+		{ActConfirmAudit, Resolution{Note: "fixtures"}, "the card's timeline could not be read, so the head's audit findings and whether the pull request still merges into main are unknown: try again in a minute"},
+	} {
+		if got := applies(t, tc.action, ready, tc.r); got != tc.want {
+			t.Errorf("%s applies = %q, want %q", tc.action, got, tc.want)
+		}
+	}
+	c := Case{Kind: CaseSessionCap}
+	if res, _ := rung0[0].Fire(context.Background(), nil, c, ready); res != nil {
+		t.Errorf("rung 0 fired %+v on an unread timeline", res)
+	}
+	read := ready
+	read.Partial = nil
+	if res, _ := rung0[0].Fire(context.Background(), nil, c, read); res == nil || res.Action != ActRouteApproval {
+		t.Errorf("rung 0 fired %+v on a read timeline, want route_approval", res)
+	}
+}
+
 // confirm_audit names a finding at a file of the head's newest audit by
 // its whole text, or by a start of it no other such finding shares: a text
 // that is another's start still names its own finding, a start of two is

@@ -121,6 +121,8 @@ var Actions = []Action{
 	}},
 	{Name: ActRouteApproval, Rungs: rungs(0, 1, 2), InRun: true, Applies: func(f CaseFacts, _ Resolution) string {
 		switch {
+		case slices.Contains(f.Partial, "timeline"):
+			return timelineUnread(ActRouteApproval)
 		case f.MergeConflict != "":
 			return conflictRefusal(f, ActRouteApproval)
 		case f.Kind == CaseGateStop && f.Gate == ActivityWaitChecks:
@@ -136,6 +138,8 @@ var Actions = []Action{
 	}},
 	{Name: ActReverify, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, _ Resolution) string {
 		switch {
+		case slices.Contains(f.Partial, "timeline"):
+			return timelineUnread(ActReverify)
 		case f.MergeConflict != "":
 			return conflictRefusal(f, ActReverify)
 		case !f.PROpen:
@@ -171,6 +175,8 @@ var Actions = []Action{
 	// the human decides whether a finding is a fixture.
 	{Name: ActConfirmAudit, Rungs: rungs(3), Applies: func(f CaseFacts, r Resolution) string {
 		switch {
+		case slices.Contains(f.Partial, "timeline"):
+			return "the card's timeline could not be read, so the head's audit findings and whether the pull request still merges into main are unknown: try again in a minute"
 		case f.MergeConflict != "":
 			return conflictRefusal(f, ActConfirmAudit)
 		case len(f.AuditConfirmable) == 0:
@@ -426,6 +432,13 @@ var Actions = []Action{
 func conflictRefusal(f CaseFacts, action string) string {
 	return fmt.Sprintf("the pull request no longer merges into main (Forgejo refused to merge main into %s), so %s only runs the gates into the same refusal at the merge queue: "+
 		"%s, or the card closes as superseded when main already carries its work", short(f.Head), action, conflictFit(f))
+}
+
+// timelineUnread refuses action, which a head that no longer merges into
+// main only runs into the merge queue's refusal, while the card's timeline,
+// which records the conflict, could not be read.
+func timelineUnread(action string) string {
+	return "the card's timeline could not be read, so it is unknown whether the pull request still merges into main, which " + action + " needs: try again in a minute, or hand it up"
 }
 
 // conflictFit is the answer, by the stop's kind, that starts the session a
