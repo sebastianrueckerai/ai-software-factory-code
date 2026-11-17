@@ -39,7 +39,7 @@ var ActionEffects = map[string]string{
 	ActRestartPlan:      "End the plan and file it anew, your note the shape to take.",
 	ActAnswerCriteria:   "Record a verdict on one criterion of the plan.",
 	ActGrantCriteria:    "Grant one more bounded card for the open criteria.",
-	ActConfirmCriteria:  "Confirm the delivered cards meet every open criterion; your note is the evidence.",
+	ActConfirmCriteria:  "Confirm the delivered cards meet every open criterion; your note is the evidence. Waive the ones you cannot confirm first.",
 	ActDenyCriteria:     "Deny the request, your note the reason; waive a criterion instead if it should not hold.",
 }
 

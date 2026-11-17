@@ -3193,8 +3193,13 @@ func (c *Console) criterionVerdict(ctx context.Context, a actor, q factoryd.Appr
 	var row *criterionRow
 	switch q.Kind {
 	case factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
-		if verb != "waived" {
-			return "", refuse(http.StatusConflict, noRows)
+		switch verb {
+		case "met":
+			return "", refuse(http.StatusConflict, "This request records no Met for one criterion. Confirm the delivered cards with your evidence, "+
+				"which meets every open criterion, or waive this criterion with your reason.")
+		case "not_met":
+			return "", refuse(http.StatusConflict, "This request records no Not met for one criterion. Grant one more bounded card for the open criteria, "+
+				"or waive this criterion with your reason.")
 		}
 	case factoryd.ApprovalMerge:
 		t, _, err := c.cfg.Tasks.Task(ctx, q.TaskID)
