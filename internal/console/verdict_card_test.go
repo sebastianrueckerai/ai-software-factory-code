@@ -293,7 +293,13 @@ func TestCriteriaGapConfirm(t *testing.T) {
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code" {
 		t.Fatalf("confirm = %d %q", rec.Code, rec.Header().Get("Location"))
 	}
-	if want := []string{`confirm t-plan by sebastian: ""`}; fmt.Sprint(calls) != fmt.Sprint(want) {
+	// the answer's own note reaches the confirmation through its form
+	send := answerForm(t, drawer(t, r, ck, "t-plan", "overview"), factoryd.ActConfirmCriteria)
+	send.Values.Set("note", "The board shows both pages.")
+	if rec := r.do(post(send.Action, send.Values), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("confirm with its note = %d: %s", rec.Code, rec.Body)
+	}
+	if want := []string{`confirm t-plan by sebastian: ""`, `confirm t-plan by sebastian: "The board shows both pages."`}; fmt.Sprint(calls) != fmt.Sprint(want) {
 		t.Errorf("calls = %q, want %q", calls, want)
 	}
 

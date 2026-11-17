@@ -571,11 +571,12 @@ func (c *Console) decideCriterion(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// confirm records the member's confirmation that the plan's delivered
-// cards meet its criteria (doConfirmCriteria).
+// confirm records the human's confirmation that the plan's delivered
+// cards meet its criteria, with the answer's note as its line
+// (doConfirmCriteria).
 func (c *Console) confirm(w http.ResponseWriter, r *http.Request) {
 	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
-		return c.doConfirmCriteria(ctx, a, id, "")
+		return c.doConfirmCriteria(ctx, a, id, strings.TrimSpace(r.PostFormValue("note")))
 	})
 }
 
