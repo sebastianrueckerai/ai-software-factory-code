@@ -373,6 +373,15 @@ func RequestCase(a ApprovalRequest) (Case, error) {
 		}
 		return c, nil
 	}
+	if a.Kind == ApprovalResource {
+		// a resource request opens no case: its face is the request's own
+		c.StateKey, c.Problem, c.Facts = fmt.Sprintf("%s:%d", a.Kind, a.ID), a.Reason, map[string]any{}
+		if err := json.Unmarshal(a.Spec, &c.Facts); err != nil {
+			return Case{}, err
+		}
+		c.Facts["approval"], c.Facts["approval_kind"] = a.ID, a.Kind
+		return c, nil
+	}
 	c.Kind = CasePlanCriteria
 	c.StateKey = fmt.Sprintf("%s:%d", a.Kind, a.ID)
 	c.Problem = cmp.Or(a.Reason, "The plan's criteria wait for a verdict")
