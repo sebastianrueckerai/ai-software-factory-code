@@ -479,7 +479,7 @@ func TestAChoiceAfterTheCardEndedNamesTheEnd(t *testing.T) {
 func TestSetAskInfoLeavesAProposalAndWritesNothingTwice(t *testing.T) {
 	h := newHeldRig(t, policy.AutonomyFullAuto)
 	ctx := context.Background()
-	h.r.timeline.RecordRow(ctx, h.cardID, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"source": "chat", "info": "proposal info",
+	h.r.timeline.RecordRow(ctx, h.cardID, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"source": "chat", "ask": "Close the card?", "info": "proposal info",
 		"recommendation": "close it", "preselected": map[string]any{"action": ActClose}})
 	xmins := func() string {
 		var out string

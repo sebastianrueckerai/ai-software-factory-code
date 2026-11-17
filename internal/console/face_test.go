@@ -263,7 +263,7 @@ func TestPlanChildChipCarriesTheName(t *testing.T) {
 		name, child, plan string
 		issue             int64
 	}{
-		{"", place("Link shortener"), `<span class="it place">plan, 3 cards</span>`, 1},
+		{"", place("Link shortener"), `<span class="it place">plan of 3 cards</span>`, 1},
 		{"fix prod latency", place("fix prod latency"), `<span class="it place">plan fix prod latency, 3 cards</span>`, 1},
 		{"fix prod latency", place("fix prod latency"), `<span class="it place">plan fix prod latency, 3 cards</span>`, 0},
 	} {
@@ -287,7 +287,7 @@ func TestCardFacePlanChildren(t *testing.T) {
 	r.tasks.tasks = planTasks()
 	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {planRevision("t-plan", 1, "sha-1")}}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, `<span class="it place">plan, 3 cards</span>`) {
+	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, `<span class="it place">plan of 3 cards</span>`) {
 		t.Errorf("the plan's face does not count its cards:\n%s", face)
 	}
 }
@@ -967,9 +967,8 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 
 // A shaped question's small card holds the case's ask and its suggested
 // answer, never the question's raw text; the opened card holds the case's
-// buttons, and with no case the question in full, its why and info
-// rendered as markup with the raw words behind a fold. A card that holds
-// answers its run has not taken warns instead of offering the box.
+// buttons, and with no case no ask at all. A card that holds answers its
+// run has not taken warns instead of offering the box.
 func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	question := &factoryd.HumanQuestion{
 		Ask:            "The call cap is reached: 4 calls of 4, 1.50 EUR of 6.00 EUR left. Which way on?",
@@ -1030,36 +1029,11 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	if strings.Contains(esc, `name="answer" value=`) || strings.Contains(esc, `name="value"`) {
 		t.Errorf("the case's card offers the old choices as buttons:\n%s", esc)
 	}
-	// a card whose question no case holds shows the question's parts
+	// a card no case holds asks nothing on its opened card: the factory
+	// writes no ask without its case, so a stored question there is no ask
 	drawer := page(bt, "/cards/t-q/drawer?tab=overview", false)
-	for _, want := range []string{
-		`<p class="ask">The call cap is reached: 4 calls of 4, 1.50 EUR of 6.00 EUR left. Which way on?</p>`,
-		`<div class="why"><p>the session cap is reached: every finding sent to a human returns unacted</p>`,
-		`<details class="fold"><summary>What each answer does</summary>`,
-		`<div class="info"><p>A grant buys one more session on this card. Park holds the card for a person to work with.</p>`,
-		`<p class="recommendation">Recommendation (the factory question): Grant one session</p>`,
-		`<details class="fold"><summary>The raw text, for copying</summary><pre class="reason detail">the session cap is reached: every finding sent to a human returns unacted</pre></details>`,
-	} {
-		if !strings.Contains(drawer, want) {
-			t.Errorf("the drawer lacks %q:\n%s", want, drawer)
-		}
-	}
-
-	// the why renders as markup when it is markup, its raw text behind the fold
-	question.Why = "## Why the card stopped\n- the cap counts `4` calls\n\n```go\nfmt.Println(4)\n```"
-	drawer = page(bt, "/cards/t-q/drawer?tab=overview", false)
-	for _, want := range []string{
-		`<div class="why"><h2>Why the card stopped</h2>`,
-		`<li>the cap counts <code>4</code> calls</li>`,
-		`<pre><code class="language-go">fmt.Println(4)`,
-		`<details class="fold"><summary>The raw text, for copying</summary><pre class="reason detail">## Why the card stopped`,
-	} {
-		if !strings.Contains(drawer, want) {
-			t.Errorf("the drawer lacks %q:\n%s", want, drawer)
-		}
-	}
-	if strings.Contains(drawer, "&lt;h2&gt;") || strings.Contains(drawer, "&lt;code&gt;") {
-		t.Errorf("the drawer renders the markup as text:\n%s", drawer)
+	if strings.Contains(drawer, `class="need"`) || strings.Contains(drawer, "/tasks/t-q/answer") || strings.Contains(drawer, `class="ask"`) {
+		t.Errorf("the opened card of a card no case holds asks:\n%s", drawer)
 	}
 
 	bt.AnswersPending = 2
@@ -1274,9 +1248,9 @@ func TestNeedsYouCardRoutesTheValue(t *testing.T) {
 
 // The one-click buttons of a shaped question post their value alone, no
 // answer field, so doAnswerValue takes the choice's own label as the
-// answer text: fund, with no budget refusal left, is the label's sentence
-// on the issue as the human with Act's answer row, and park and keep
-// waiting settle the case, their label the answer on the issue.
+// answer text: park and keep waiting settle the case, their label the
+// answer on the issue. Fund, a value no answer takes any more, is refused
+// with the card's state and the press that fits, and posts nothing.
 func TestNeedsYouCardAnswersAChoiceWithoutText(t *testing.T) {
 	question := func() *factoryd.HumanQuestion {
 		return &factoryd.HumanQuestion{
@@ -1297,10 +1271,16 @@ func TestNeedsYouCardAnswersAChoiceWithoutText(t *testing.T) {
 		ck, s := r.loggedIn(t)
 		return r, ev, ck, s
 	}
+	r, ev, ck, s := setup(t)
+	before := ev.count()
+	rec := r.do(post("/tasks/t-q/answer", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "value": {"fund"}}), ck)
+	if want := "The question of card #15 no longer offers that answer (fund). Open the card and press one of the answers it shows."; rec.Code != http.StatusConflict ||
+		!strings.Contains(rec.Body.String(), want) || r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"] != "" || ev.count() != before {
+		t.Fatalf("the fund click = %d %q with %d rows, want 409 with %q and nothing posted", rec.Code, rec.Body.String(), ev.count()-before, want)
+	}
 	for _, tc := range []struct {
 		value, label, action string
 	}{
-		{"fund", "Fund the card", factoryd.ActContinue},
 		{"park", "Park it", factoryd.ActSettle},
 		{"keep_waiting", "Wait for the window", factoryd.ActSettle},
 	} {

@@ -170,19 +170,6 @@ func TestAHealedAskWithNoLiveAskOpensAnOtherCase(t *testing.T) {
 	}
 }
 
-func TestAnAskWithNoWordsKeepsItsEventAndOpensNoCase(t *testing.T) {
-	ctx := context.Background()
-	s := caseEventStore(t)
-	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"source": "agent", "comment": int64(27001)})
-
-	if cs, err := s.CasesOf(ctx, caseTask); err != nil || len(cs) != 0 {
-		t.Fatalf("CasesOf = %+v, %v; want none", cs, err)
-	}
-	if evs, err := s.TaskEvents(ctx, caseTask, 5); err != nil || len(evs) != 1 || evs[0].Kind != EventQuestionAsked {
-		t.Fatalf("TaskEvents = %+v, %v; want the ask", evs, err)
-	}
-}
-
 func TestAnAnswerResolvesTheNewestOpenAskCase(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
@@ -987,5 +974,93 @@ func TestCreateHumanCardWritesTheCardAndItsAskOrNeither(t *testing.T) {
 	}
 	if evs, err := s.TaskEvents(ctx, "t-p1", 10); err != nil || len(evs) != 1 || evs[0].IssueNumber != 41 {
 		t.Fatalf("plan card events = %+v, %v; want its one ask on #41", evs, err)
+	}
+}
+
+// Every way a card comes to ask leaves a case at the human: a human card
+// filed with its ask, an agent's ask by its words, an ask that names its
+// case at a rung, an ask by words that meets its live case at a rung, and
+// a restart's ask again. An ask with no words is refused, so no event
+// stands for it and no card is filed with it.
+func TestEveryAskingCardHoldsACaseAtTheHuman(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	atHuman := func(name, taskID string) {
+		t.Helper()
+		cs, err := s.CasesOf(ctx, taskID)
+		if err != nil || !slices.ContainsFunc(cs, func(c Case) bool { return c.Status == CaseAtHuman }) {
+			t.Errorf("%s: cases of %s = %+v, %v; want one at the human", name, taskID, cs, err)
+		}
+	}
+	card := func(id string, issue int64) {
+		t.Helper()
+		if err := s.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: "running", Objective: "x", Repository: "sf/r", IssueNumber: issue, Track: "direct", BudgetEUR: 5}); err != nil {
+			t.Fatalf("CreateTask %s: %v", id, err)
+		}
+	}
+	ask := func(taskID string, detail map[string]any) error {
+		_, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: taskID, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail})
+		return err
+	}
+	atRung := func(taskID, key string) Case {
+		t.Helper()
+		c, _, err := s.OpenCase(ctx, Case{TaskID: taskID, Repository: "sf/r", Kind: CaseAgentEscalate, StateKey: key, Problem: "Which store?", Status: CaseOpen})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+
+	if _, created, err := s.CreateHumanCard(ctx, Task{ID: "t-human", Kind: "human", Repository: "sf/r", IssueNumber: 61, BudgetEUR: 1, Objective: "Renew the certificate"},
+		HumanAsk{Q: IssueQuestion("Renew the certificate", "It expires Friday.", "alice", true), By: "factoryd", Asker: SourceWebhook, Via: ViaFactoryd}); err != nil || !created {
+		t.Fatalf("CreateHumanCard = %v, %v", created, err)
+	}
+	atHuman("a human card", "t-human")
+
+	card("t-words", 62)
+	if err := ask("t-words", map[string]any{"ask": "Which store?", "question": "Which store?", "source": "agent", "reason": AgentAsks + "Which store?"}); err != nil {
+		t.Fatal(err)
+	}
+	atHuman("an agent's ask by its words", "t-words")
+
+	card("t-named", 63)
+	named := atRung("t-named", "named")
+	if err := ask("t-named", map[string]any{"ask": "Which store?", "case_id": named.ID, "source": "agent"}); err != nil {
+		t.Fatal(err)
+	}
+	atHuman("an ask that names its case at a rung", "t-named")
+
+	card("t-again", 64)
+	words := map[string]any{"ask": "Which store?", "question": "Which store?", "source": "agent", "reason": AgentAsks + "Which store?"}
+	probe, err := CaseFromAsk(Task{ID: "t-again", Kind: "agent", Repository: "sf/r"}, Event{Kind: EventQuestionAsked, Detail: words}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	atRung("t-again", probe.StateKey)
+	if err := ask("t-again", words); err != nil {
+		t.Fatal(err)
+	}
+	atHuman("an ask by words that meets its live case at a rung", "t-again")
+
+	card("t-healed", 65)
+	atRung("t-healed", "healed")
+	if err := ask("t-healed", map[string]any{"ask": "Which store?", "question": "Which store?", "source": "agent", "reason": HealedReason}); err != nil {
+		t.Fatal(err)
+	}
+	atHuman("a restart's ask again", "t-healed")
+
+	card("t-mute", 66)
+	if err := ask("t-mute", map[string]any{"source": "agent"}); err == nil {
+		t.Error("an ask with no words was recorded")
+	}
+	if evs, err := s.TaskEvents(ctx, "t-mute", 10); err != nil || len(evs) != 0 {
+		t.Errorf("events of the refused ask = %+v, %v; want none", evs, err)
+	}
+	if _, _, err := s.CreateHumanCard(ctx, Task{ID: "t-mute-human", Kind: "human", Repository: "sf/r", IssueNumber: 67, BudgetEUR: 1, Objective: "x"},
+		HumanAsk{Q: HumanQuestion{}, By: "factoryd", Asker: SourceWebhook, Via: ViaFactoryd}); err == nil {
+		t.Error("a human card was filed with an ask of no words")
+	}
+	if _, ok, err := s.Task(ctx, "t-mute-human"); err != nil || ok {
+		t.Errorf("the card of the refused ask stands: %v, %v", ok, err)
 	}
 }

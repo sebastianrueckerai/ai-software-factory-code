@@ -1444,6 +1444,13 @@ func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 	if e.IdentityKey != "" && slices.ContainsFunc(s.events, func(have Event) bool { return have.IdentityKey == e.IdentityKey }) {
 		return 0, nil
 	}
+	if t, ok := s.tasks[e.TaskID]; ok && e.Kind == EventQuestionAsked {
+		if id, _ := toInt(e.Detail["case_id"]); id == 0 {
+			if _, err := CaseFromAsk(t, e, ""); err != nil {
+				return 0, err
+			}
+		}
+	}
 	s.events = append(s.events, e)
 	if e.Kind == EventQuestionAsked {
 		id, _ := toInt(e.Detail["case_id"])
@@ -1462,7 +1469,7 @@ func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 
 // askOpensCase opens the case ask row e goes to when it names none, as the
 // events writer does, stamps the row with it and answers its id; 0 when the
-// card is unknown or the ask has no words.
+// card is unknown.
 func (s *fakeStore) askOpensCase(e Event) int64 {
 	t, ok := s.tasks[e.TaskID]
 	if !ok {

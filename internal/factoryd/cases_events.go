@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"maps"
 	"slices"
 	"strings"
@@ -85,12 +84,13 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 	return nil
 }
 
-// askCase opens the case of question_asked event e, or appends a step to
-// the live case it asks again, and tells whether it opened one. An ask
-// that names its case (OpenTrip's face) puts that case at the human with
-// its comment and appends the human's step, while the case is live and
-// the asking card's. One that names none, another card's case or a case
-// that ended goes by its words.
+// askCase opens the case of question_asked event e at the human, or puts
+// the live case it asks again there with a step, and tells whether it
+// opened one. An ask with no words is refused, so a card that asks holds
+// a case at the human. An ask that names its case (OpenTrip's face) puts
+// that case at the human with its comment and appends the human's step,
+// while the case is live and the asking card's. One that names none,
+// another card's case or a case that ended goes by its words.
 func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	if id, _ := toInt(e.Detail["case_id"]); id != 0 {
 		comment, _ := toInt(e.Detail["comment"])
@@ -126,9 +126,8 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	}
 	c, err := CaseFromAsk(t, e, head)
 	if err != nil {
-		// an ask with no words opens no case: its event stands
-		log.Printf("task %s: event %d opens no case: %v", t.ID, e.ID, err)
-		return false, nil
+		// a card that asks holds a case: an ask with no words is no ask
+		return false, err
 	}
 	comment, _ := toInt(e.Detail["comment"])
 	step := CaseStep{Rung: 3, Actor: FactoryDecider, CommentID: int64(comment)}
@@ -156,6 +155,10 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 		if !opened && !healed {
 			step.Found = "asked again: " + c.Problem
 		}
+	}
+	// the ask puts its case at the human, a live case it asks again too
+	if _, err := tx.ExecContext(ctx, `UPDATE cases SET status = $2 WHERE id = $1 AND status = $3`, step.CaseID, CaseAtHuman, CaseOpen); err != nil {
+		return false, err
 	}
 	if err := stampAsk(ctx, tx, e, step.CaseID); err != nil {
 		return false, err

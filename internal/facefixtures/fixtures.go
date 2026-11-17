@@ -1318,7 +1318,7 @@ func (b *builder) cards() {
 		return func(n int64) factoryd.Task { return agentSources[i].card(b, n, "queued") }
 	}
 	agent("direct work card", "running", factoryd.SourceWebhook, func(n int64) factoryd.Task {
-		return b.issue(n, "running", 4*time.Hour, "Redo the census fixes on current main: PR #1909 went stale",
+		return b.issue(n, "running", 4*time.Hour, "Redo the census fixes on current main: PR #1909 went stale under the face work",
 			"PR #1909 went stale while the face work landed. Redo its census fixes on current main and open a new pull request.")
 	})
 	// #2100 as the board read it, its objective as captured, filed before

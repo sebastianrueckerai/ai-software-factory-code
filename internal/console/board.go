@@ -14,6 +14,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -979,17 +980,16 @@ type colMenu struct {
 }
 
 // need is an item of the human lane, or of the Needs you column: an
-// approval request, an escalated card with its answer form (CSRF), or a card that
-// needs the viewer; Since is when it began to wait.
+// approval request, a card with its case at the human and its answer form
+// (CSRF), or a card that needs the viewer; Since is when it began to wait.
 type need struct {
-	Since     time.Time
-	Approval  *approvalCard
-	Card      card
-	Escalated bool
-	CSRF      string
-	Case      *caseRow // the case the row shows, for a card that holds one at the human
-	Suffix    string   // on the ids of the item's fields: "-d" in the drawer, so the column's copy keeps its own
-	Face      faceView // the item's small card (faceOf)
+	Since    time.Time
+	Approval *approvalCard
+	Card     card
+	CSRF     string
+	Case     *caseRow // the case the row shows, for a card that holds one at the human
+	Suffix   string   // on the ids of the item's fields: "-d" in the drawer, so the column's copy keeps its own
+	Face     faceView // the item's small card (faceOf)
 }
 
 // Waiting is how long the item has waited for a member, in minutes or
@@ -2011,6 +2011,9 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			k.Activity = activityLine(e)
 			if why, _ := e.Detail["reason"].(string); e.Kind == factoryd.EventTaskEnded && k.Status == "failed" {
 				k.Failure = failureClause(why)
+				if s, ok := v.byID[factoryd.SuccessorID(k.ID)]; ok && s.IssueNumber > 0 {
+					k.Failure = fmt.Sprintf("closed into successor #%d", s.IssueNumber)
+				}
 			}
 			// the stage began at its status row, when that row is the newest event
 			if k.Stage != "" && e.Kind == factoryd.EventTaskStatus && fmt.Sprint(e.Detail["status"]) == k.Status && !e.At.IsZero() {
@@ -2063,12 +2066,13 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 }
 
 // failureClause is a failure's reason as one clause after "failed: ":
-// its first sentence, "" when that is no short clause.
+// its first sentence, "" when that is no short clause or names a card by
+// its task id.
 func failureClause(reason string) string {
 	first, _, _ := strings.Cut(strings.TrimSpace(reason), "\n")
 	first, _, _ = strings.Cut(first, ". ")
 	first = strings.TrimRight(first, ".")
-	if first == "" || utf8.RuneCountInString(first) > 80 || strings.ContainsAny(first, ":;") {
+	if first == "" || utf8.RuneCountInString(first) > 80 || strings.ContainsAny(first, ":;") || taskIDWord.MatchString(first) {
 		return ""
 	}
 	r, size := utf8.DecodeRuneInString(first)
@@ -2077,6 +2081,8 @@ func failureClause(reason string) string {
 	}
 	return first
 }
+
+var taskIDWord = regexp.MustCompile(`\bt-[0-9a-f]{6,}`)
 
 // callTotals fills each card's calls line beside its spend: the task's
 // call rows summed — its tokens and modeled cost to date (roadmap 206) —
@@ -2254,9 +2260,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	}
 	v.cases = cs
 	inView := casesInView(r)
-	escalation := func(k card) need {
-		return need{Card: k, Escalated: true, CSRF: v.csrf}
-	}
 	// BoardTasks and readFinished read shown.Repository's cards only, so
 	// every byID lookup below stays right: a plan parent not among them
 	// (finished, another project's) is read by planIssue's own read, a
@@ -2311,31 +2314,17 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 				}
 				break
 			}
-			// a human card's question answers from its face, as an
-			// escalation's does
-			asks := k.Question != nil && v.escalated(t)
-			n := need{Since: t.CreatedAt, Card: k}
-			if asks {
-				n = escalation(k)
-				n.Since = t.CreatedAt
-			}
 			if !wide {
-				needs = append(needs, n)
+				needs = append(needs, need{Since: t.CreatedAt, Card: k})
 				break
 			}
 			d.HumanTasks = append(d.HumanTasks, k)
-			if asks {
-				d.Escalations = append(d.Escalations, n)
-			}
 		case wide:
 			if i, ok := byStatus[t.Status]; ok {
 				d.Columns[i].Cards = append(d.Columns[i].Cards, k)
 			}
-			switch {
-			case holds:
+			if holds {
 				d.Escalations = append(d.Escalations, row)
-			case v.escalated(t):
-				d.Escalations = append(d.Escalations, escalation(k))
 			}
 		case holds:
 			needs = append(needs, row)
@@ -2344,12 +2333,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			if v.planned[t.ID] {
 				break
 			}
-			n := need{Since: waitingSince(bt), Card: k}
-			if v.escalated(t) {
-				n = escalation(k)
-				n.Since = waitingSince(bt)
-			}
-			needs = append(needs, n)
+			needs = append(needs, need{Since: waitingSince(bt), Card: k})
 		case col >= 0:
 			// a card whose merge approval pends yields In progress to
 			// that approval, as a plan yields to its questions' card
@@ -3097,7 +3081,7 @@ func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if caseID == 0 {
-		c.fail(w, r, refuse(http.StatusBadRequest, "case_id names the ask the answer is for. Reload the board and press the answer again."))
+		c.fail(w, r, refuse(http.StatusBadRequest, "This answer names no question of the card. Reload the board and press the answer again."))
 		return
 	}
 	if err := c.answersLiveAsk(r.Context(), id, r.PostFormValue("case_id")); err != nil {
@@ -3245,8 +3229,10 @@ func (c *Console) writableCard(w http.ResponseWriter, r *http.Request) (factoryd
 	}
 	v.byID[bt.ID] = bt.Task
 	if bt.Status == "failed" {
-		if rt, ok, err := c.cfg.Tasks.Task(ctx, factoryd.RetryID(bt.ID)); err == nil && ok {
-			v.byID[rt.ID] = rt
+		for _, id := range []string{factoryd.RetryID(bt.ID), factoryd.SuccessorID(bt.ID)} {
+			if rt, ok, err := c.cfg.Tasks.Task(ctx, id); err == nil && ok {
+				v.byID[rt.ID] = rt
+			}
 		}
 	}
 	k := c.boardCard(ctx, v, bt)
@@ -3266,7 +3252,7 @@ func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	// the five columns stand a human's open card in Needs you
 	inNeeds := fiveColumn(bt.Task) == colNeedsYou || bt.Kind == "human" && !factoryd.Final(bt.Status)
-	n, needs := need{Since: waitingSince(bt), Card: k, Escalated: v.escalated(bt.Task)}, inNeeds && !v.filter.wide()
+	n, needs := need{Since: waitingSince(bt), Card: k}, inNeeds && !v.filter.wide()
 	if bt.Kind == "human" {
 		n.Since = bt.CreatedAt
 	}
@@ -3760,24 +3746,18 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 		}
 		// the card's ask: its case at the human answers from the case's own
 		// face, the one its small card shows, where no request of the card
-		// carries the ask; an escalation with no case asks on its own
-		escalated := v.escalated(bt.Task) && bt.Escalation != ""
-		requested := d.Merge != nil || d.PlanApproval != nil || d.Approval != nil
-		if escalated || !requested {
+		// carries the ask; a card asks only by a case
+		if v.escalated(bt.Task) && bt.Escalation != "" || d.Merge == nil && d.PlanApproval == nil && d.Approval == nil {
 			cs, err := c.caseSetOf(ctx, bt.Repository)
 			if err != nil {
 				problem("cases", "Reload the board.", err)
 			}
-			holds := err == nil && slices.ContainsFunc(cs.byCard[bt.ID], func(o factoryd.Case) bool {
+			if err == nil && slices.ContainsFunc(cs.byCard[bt.ID], func(o factoryd.Case) bool {
 				return !factoryd.Final(bt.Status) || factoryd.PlanWaitCase(o, bt.Task)
-			})
-			switch {
-			case holds:
+			}) {
 				n := c.caseNeed(ctx, v, button(r), bt, k, cs, casesInView(r)[bt.ID])
 				n.Suffix = "-d"
 				d.Need = &n
-			case escalated:
-				d.Need = &need{Card: k, Escalated: true, CSRF: v.csrf, Suffix: "-d"}
 			}
 		}
 		d.Runs = c.lifeOf(ctx, bt.Task)

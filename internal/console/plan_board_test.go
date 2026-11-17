@@ -367,7 +367,7 @@ func TestDonePlanShowsItsRound(t *testing.T) {
 	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan, SHA256: "sha-1"}}}
 	ck, _ := r.loggedIn(t)
 	done := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Done")
-	if want := `<span class="it place">plan, 5 cards</span>`; !strings.Contains(faceOf(t, done, "t-plan"), want) {
+	if want := `<span class="it place">plan of 5 cards</span>`; !strings.Contains(faceOf(t, done, "t-plan"), want) {
 		t.Errorf("the plan in Done lacks %q:\n%s", want, done)
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort", nil), ck).Body.String()

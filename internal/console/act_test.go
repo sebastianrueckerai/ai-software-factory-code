@@ -248,9 +248,10 @@ func TestWordsGrantASessionOnlyAtASessionCap(t *testing.T) {
 // An answer with an action meets every answer's gates before Act, on
 // every entry: the chat's close on a human card runs the close's work, its
 // label posted and the issue closed, and resolves the card's case with the
-// choice, handing Act the comment the close posted. On a running agent card
-// the real Act is the only gate: it refuses the button's continue with no
-// case open and takes the chat's extend, a draw.
+// choice, handing Act the comment the close posted. The real Act is the
+// only gate: it takes the chat's extend on a running card with no case
+// open, a draw, and refuses the button's words on a card that holds no
+// case, a continue.
 func TestAnActionMeetsTheAnswersGates(t *testing.T) {
 	r := newRig(t)
 	r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerGo, Label: "Have the factory do it"},
@@ -268,9 +269,11 @@ func TestAnActionMeetsTheAnswersGates(t *testing.T) {
 
 	r = newRig(t)
 	run := factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 11, Track: policy.TrackDirect, BudgetEUR: 5}
-	r.tasks.tasks = []factoryd.BoardTask{{Task: run}}
+	rev := factoryd.Task{ID: "t-rev", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 12, Track: policy.TrackDirect, BudgetEUR: 5}
+	r.tasks.tasks = []factoryd.BoardTask{{Task: run}, {Task: rev}}
 	ra := newRealRunner(t, policy.AutonomyManual)
 	ra.seed(t, run)
+	ra.seed(t, rev)
 	ra.wire(r, "t-run", false)
 	var steered []string
 	r.c.cfg.Steer = func(_ context.Context, taskID, _, text string) error {
@@ -284,6 +287,13 @@ func TestAnActionMeetsTheAnswersGates(t *testing.T) {
 	}
 	if got, _, _ := ra.pg.Task(context.Background(), "t-run"); got.Usage.RaisedSessions != 1 || len(steered) != 0 {
 		t.Errorf("raised sessions %d, steered %v; want 1 and none", got.Usage.RaisedSessions, steered)
+	}
+	// the button's words on a card that holds no case reach the real Act
+	// as a continue, which it refuses
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-rev/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck)
+	if want := "no case is open on card #12, so continue has nothing to answer"; rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) {
+		t.Errorf("words on a card with no case = %d %q; want 409 naming %q", rec.Code, rec.Body, want)
 	}
 }
 

@@ -112,11 +112,6 @@ func (c *Console) faceOf(ctx context.Context, v *boardView, n need, needs bool) 
 			}
 			f.Since = row.Waiting()
 			c.askFace(ctx, v, &f, k, *row, n.PlanDecide())
-		} else if live, ok := v.cases.liveAsk[k.ID]; ok && n.Escalated {
-			row := caseRow{Case: live, Face: v.scrubbed(factoryd.CaseFace(live, k.Task, v.cases.desk.Asks[live.ID])), At: 1, Of: 1, Answers: true}
-			row.Decides = row.Answers && factoryd.AnswersByOffers(live, k.Kind)
-			f.CaseID = live.ID
-			c.askFace(ctx, v, &f, k, row, nil)
 		}
 		return f
 	}
@@ -261,7 +256,11 @@ func (c *Console) placeOf(ctx context.Context, v *boardView, k card, asks bool) 
 			words += " " + cmp.Or(name, factoryd.CardTitle(t))
 		}
 		if ok && len(p.Cards) > 0 {
-			words += fmt.Sprintf(", %d %s", len(p.Cards), plural(len(p.Cards), "card"))
+			sep := ", "
+			if words == "plan" {
+				sep = " of "
+			}
+			words += fmt.Sprintf("%s%d %s", sep, len(p.Cards), plural(len(p.Cards), "card"))
 		}
 		return template.HTML(template.HTMLEscapeString(words))
 	case t.Source == factoryd.SourcePlan && t.Parent != "":
@@ -335,7 +334,7 @@ func (c *Console) stateOf(ctx context.Context, v *boardView, f *faceView, k card
 			word = c.linkRefs(ctx, v, k.Repository, k.Stage)
 		}
 	case k.Status == "failed" && k.Failure != "":
-		word += template.HTML(": " + template.HTMLEscapeString(k.Failure))
+		word += ": " + c.linkRefs(ctx, v, k.Repository, sanitize.Outbound(scrubText(k.Failure), v.policy.Document.LinkHosts))
 	}
 	f.State = word
 	switch {

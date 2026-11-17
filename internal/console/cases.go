@@ -208,7 +208,7 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 			row.Extras = append(row.Extras, ap)
 		}
 	}
-	return need{Since: since, Card: k, Escalated: true, CSRF: v.csrf, Case: &row}
+	return need{Since: since, Card: k, CSRF: v.csrf, Case: &row}
 }
 
 // planSlotOf is the form of plan case k, whose face is face: the

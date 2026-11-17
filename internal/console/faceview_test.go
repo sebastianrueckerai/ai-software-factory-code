@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -194,11 +195,13 @@ func checkSmallCard(t *testing.T, it smallItem) {
 	}
 	title := nodeText(titles[0])
 	captured := it.card != nil && slices.Contains(capturedCards, it.card.IssueNumber) && len(classed(it.n, "ask-row")) == 0
+	// a human's issue keeps its own title, which the door does not bound
+	human := it.card != nil && factoryd.BriefJobOf(*it.card) == factoryd.BriefHumanIssue && len(classed(it.n, "ask-row")) == 0
 	limit := 70
 	if len(classed(it.n, "ask-row")) > 0 {
 		limit = 110
 	}
-	if n := utf8.RuneCountInString(title); n == 0 || n > limit && !captured {
+	if n := utf8.RuneCountInString(title); n == 0 || n > limit && !captured && !human {
 		t.Errorf("the title %q has %d runes, want 1 to %d", title, n, limit)
 	}
 	if strings.HasSuffix(title, "…") || strings.HasSuffix(title, "...") {
@@ -387,11 +390,40 @@ func TestAFailureIsOneClause(t *testing.T) {
 		"The checks stayed red after three runs. The log names TestExport.": "the checks stayed red after three runs",
 		"PR #40 was closed without a merge.":                                "PR #40 was closed without a merge",
 		"session cap of 3 reached: the review asked for changes":            "",
-		"":                                   "",
-		strings.Repeat("a long reason ", 10): "",
+		"":                                     "",
+		strings.Repeat("a long reason ", 10):   "",
+		"closed into successor t-5f3a12b4c9d0": "",
 	} {
 		if got := failureClause(reason); got != want {
 			t.Errorf("failureClause(%q) = %q, want %q", reason, got, want)
+		}
+	}
+}
+
+// A card closed into its successor names the successor by its issue, a
+// link with its title and state, never by its task id, on the board and
+// on the card's own swap.
+func TestAFailedCardNamesItsSuccessorByItsIssue(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	now := time.Now()
+	succ := factoryd.SuccessorID("t-old")
+	r.tasks.tasks = []factoryd.BoardTask{
+		{Task: factoryd.Task{ID: "t-old", Kind: "agent", Status: "failed", Repository: "sf/code", IssueNumber: 40, Source: factoryd.SourceWebhook, CreatedAt: now,
+			FinishedAt: &now, Objective: "Export the board\n\nExport it."}},
+		{Task: factoryd.Task{ID: succ, Kind: "agent", Status: "queued", Repository: "sf/code", IssueNumber: 41, Source: factoryd.SourceSuccessor, CreatedAt: now,
+			Objective: "Carry the export on\n\nCarry it."}},
+	}
+	if _, err := r.events.Record(context.Background(), factoryd.Event{TaskID: "t-old", Repository: "sf/code", At: now, Kind: factoryd.EventTaskEnded,
+		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: map[string]any{"final": "failed", "reason": "closed into successor " + succ}}); err != nil {
+		t.Fatal(err)
+	}
+	want := `failed: closed into successor <a class="ref-link" href="#card=` + succ + `">#41</a> <span class="ref-of">(Carry the export on, queued)</span>`
+	board := smallCard(t, r, ck, "t-old")
+	swap := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-old", nil), ck).Body.String()
+	for name, face := range map[string]string{"the board": board, "the swap": swap} {
+		if !strings.Contains(face, want) || strings.Contains(face, succ+"<") || strings.Contains(face, "successor t-") {
+			t.Errorf("%s: the failed card does not name #41 by its link:\n%s", name, face)
 		}
 	}
 }

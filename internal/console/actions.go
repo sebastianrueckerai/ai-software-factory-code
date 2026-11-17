@@ -1169,6 +1169,11 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 		res.Action = factoryd.ActResume
 	case factoryd.AnswerPark, factoryd.AnswerKeepWaiting:
 		res.Action, res.Args = factoryd.ActSettle, map[string]any{"park": value}
+	default:
+		if a, ok := factoryd.AnswerOf(value); ok && a.Action == factoryd.ActContinue {
+			break // the agent's own answer: its words go on to the session
+		}
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The question of card #%d no longer offers that answer (%s). Open the card and press one of the answers it shows.", t.IssueNumber, value))
 	}
 	out, err := c.actOn(ctx, a, t, k.ID, res, c.posting(a, t, res))
 	if err != nil {

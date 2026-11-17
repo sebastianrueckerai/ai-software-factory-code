@@ -853,3 +853,19 @@ func TestThePlansWaitAnswersOnItsOwnFace(t *testing.T) {
 	}
 
 }
+
+// A value no answer of the card's question offers, such as the successor
+// of a question asked before the register, is refused with the card's
+// state and the press that fits: nothing continues the card.
+func TestAnAnswerValueTheQuestionNoLongerOffersIsRefused(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 31, Objective: "Card W"},
+		Escalation: "The card is out of money.", Question: &factoryd.HumanQuestion{Ask: "The card is out of money. How should it go on?",
+			Choices: []factoryd.QuestionChoice{{Value: "successor", Label: "Close into a successor"}}}}}
+	rec := r.do(post("/tasks/t-w/answer", url.Values{"csrf": {s.csrf}, "value": {"successor"}}), ck)
+	want := "The question of card #31 no longer offers that answer (successor). Open the card and press one of the answers it shows."
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) || len(r.acted) != 0 {
+		t.Fatalf("a removed value = %d %q with %d Act calls; want 409 with %q and none", rec.Code, rec.Body, len(r.acted), want)
+	}
+}

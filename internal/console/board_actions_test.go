@@ -59,7 +59,7 @@ func TestASendWithNoCaseIsRefused(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	rec := r.do(post("/tasks/t-board-escalate/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
 		"action": {"note"}, "fund_eur": {"1.50"}, "note": {"the schema change is mine to make"}}), ck)
-	if want := "case_id names the ask the answer is for. Reload the board and press the answer again."; rec.Code != http.StatusBadRequest ||
+	if want := "This answer names no question of the card. Reload the board and press the answer again."; rec.Code != http.StatusBadRequest ||
 		!strings.Contains(rec.Body.String(), want) || len(r.acted) != 0 {
 		t.Fatalf("a send with no case = %d %q, Act took %+v; want 400 %q and nothing acted", rec.Code, rec.Body, r.acted, want)
 	}

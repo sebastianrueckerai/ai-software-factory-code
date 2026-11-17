@@ -226,6 +226,7 @@ footer#live:empty { display: none; }
 /* a card a press acted on (C31): dimmed while the factory takes it, its
    controls gone once the press moved it */
 .card[aria-busy="true"], .open-need[aria-busy="true"] { opacity: .55; }
+.card[data-sent] :is(.ask-row, .carousel) { display: none; }
 
 .card .card:hover { background: none; }
 .card.face:has(> .foot .st-running) { box-shadow: inset 2px 0 0 var(--st-running); }

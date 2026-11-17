@@ -1527,11 +1527,13 @@ func TestClosePlanAnswerNamesMergedCardsOnlyWhenThereAreSome(t *testing.T) {
 
 // No small card offers Close, a press the opened card carries; the answer
 // form of a card at its session cap says what the answer does, and its
-// answer is a grant: one session_granted row via button.
+// answer is a grant: one session_granted row via button. A stopped card's
+// opened card answers from its case, the words riding the note.
 func TestCardFaceCloseAndGrant(t *testing.T) {
 	r, _ := newWritesRig(t)
 	ck, s := r.loggedIn(t)
 	seatAsk(r, "t-cap", factoryd.CaseSessionCap, roomyFacts(nil))
+	seatAsk(r, "t-e", factoryd.CaseOther, roomyFacts(nil))
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
 	for _, id := range []string{"t-plan", "t-e", "t-cap", "t-a", "t-r", "t-done", "t-f"} {
 		if face := faceOf(t, body, id); strings.Contains(face, "/close") || strings.Contains(face, `value="close"`) {
@@ -1541,8 +1543,8 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 	if esc := escalationOf(t, r, ck, "t-cap"); !strings.Contains(esc, `name="action" value="extend" class="secondary">Allow more sessions</button>`) {
 		t.Errorf("the capped card's answer form =\n%s\nwant it to extend", esc)
 	}
-	if esc := escalationOf(t, r, ck, "t-e"); !strings.Contains(esc, `<button type="submit">Answer</button>`) {
-		t.Errorf("the question's answer form =\n%s\nwant Answer", esc)
+	if esc := escalationOf(t, r, ck, "t-e"); !strings.Contains(esc, `<textarea id="note-t-e-d" name="note"`) || !strings.Contains(esc, `name="action" value="note" class="secondary">Not now</button>`) {
+		t.Errorf("the question's answer form =\n%s\nwant its case's answers and the note for the words", esc)
 	}
 	before := r.events.count()
 	rec := r.do(post("/tasks/t-cap/answer", url.Values{"csrf": {s.csrf}, "answer": {"Trim to 1 MB first."}}), ck)
