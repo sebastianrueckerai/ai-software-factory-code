@@ -302,7 +302,8 @@ func TestGateAuditSettlesPastAPersonsConfirmations(t *testing.T) {
 // A confirmation that covers one finding of two leaves the other to hold
 // the verdict: the fixtures' clearance clears the fixtures alone.
 func TestGateAuditKeepsAFindingItsConfirmationDoesNotCover(t *testing.T) {
-	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n--- a/Makefile\n+++ b/Makefile\n@@ -1 +1,2 @@\n all:\n+check:\n"}
+	fj := &gateForgejo{diff: "diff --git a/internal/x/x_test.go b/internal/x/x_test.go\n--- a/internal/x/x_test.go\n+++ b/internal/x/x_test.go\n@@ -1 +1,2 @@\n package x\n+var rig = 1\n" +
+		"diff --git a/internal/y/y.go b/internal/y/y.go\n--- a/internal/y/y.go\n+++ b/internal/y/y.go\n@@ -1 +1,2 @@\n package y\n+var key = 1\n"}
 	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[` +
 		`{"item":1,"file":"internal/x/x_test.go","line":4,"why":"a rig literal"},` +
 		`{"item":1,"file":"internal/y/y.go","line":9,"why":"a real credential"}]}`}
@@ -494,7 +495,7 @@ func TestGateAuditOfFailedPartsCollapsesByStatus(t *testing.T) {
 func TestGateAuditCapsThePartsFindings(t *testing.T) {
 	var ten []string
 	for i := range 10 {
-		ten = append(ten, fmt.Sprintf(`{"item":2,"file":"f.go","line":%d,"why":"a new host"}`, i+1))
+		ten = append(ten, fmt.Sprintf(`{"item":2,"file":"f00.go","line":%d,"why":"a new host"}`, i+1))
 	}
 	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[` + strings.Join(ten, ",") + `]}`}
 	diff := ""
@@ -510,30 +511,71 @@ func TestGateAuditCapsThePartsFindings(t *testing.T) {
 	}
 }
 
-// The count of findings past the card's list stays a finding whatever
-// stands confirmed: with every listed finding covered, the 10 findings
-// never listed hold the verdict, as no human saw them.
-func TestGateAuditNeverCoversTheFindingsPastTheList(t *testing.T) {
+// Findings a confirmation covers leave the list before its cap. Every one
+// of 60 model findings (10 a part, six parts) at f00.go covered: a clear
+// verdict. 60 pre-check hits in x.env, confirmed: clear. 60 more in y.env
+// beside them: the card lists y.env's first 50 and counts its last 10.
+func TestGateAuditListsTheUnconfirmedFindings(t *testing.T) {
 	var ten []string
 	for i := range 10 {
-		ten = append(ten, fmt.Sprintf(`{"item":2,"file":"f.go","line":%d,"why":"a new host"}`, i+1))
+		ten = append(ten, fmt.Sprintf(`{"item":2,"file":"f00.go","line":%d,"why":"a new host"}`, i+1))
 	}
-	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[` + strings.Join(ten, ",") + `]}`}
 	diff := ""
 	for i := range 6 {
 		diff += diffFile(fmt.Sprintf("f%02d.go", i), 40<<10)
 	}
-	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
-	for _, finding := range []string{"network egress at f.go", "... and 10 more"} {
+	hits := func(path string) string {
+		return "diff --git a/" + path + " b/" + path + "\n--- /dev/null\n+++ b/" + path + "\n@@ -0,0 +1,60 @@\n" + strings.Repeat("+PASSWORD=envpass0001\n", 60)
+	}
+	const kind = "password, secret or token assigned a literal"
+	var y []AuditFinding
+	for i := range 50 {
+		y = append(y, AuditFinding{Item: "secret in the diff: " + kind, File: "y.env", Line: i + 1, Why: "an added line has the shape of a " + kind + " (pre-check)"})
+	}
+	y = append(y, AuditFinding{Item: "secret in the diff: 10 more pre-check hits", Why: "the card lists the first 50"})
+	for _, tc := range []struct {
+		name, diff, answer, confirmed string
+		want                          []AuditFinding
+	}{
+		{"60 model findings", diff, `{"verdict":"findings","findings":[` + strings.Join(ten, ",") + `]}`, "network egress at f00.go", nil},
+		{"60 pre-check hits", hits("x.env"), `{"verdict":"clear"}`, "secret in the diff: " + kind + " at x.env", nil},
+		{"60 more in another file", hits("x.env") + hits("y.env"), `{"verdict":"clear"}`, "secret in the diff: " + kind + " at x.env", y},
+	} {
+		r, _ := newAuditRunner(t, &gateForgejo{diff: tc.diff}, &fakeLiteLLM{content: tc.answer}, true)
+		if err := r.timeline.Append(context.Background(), "t1", stepAuditConfirmed, map[string]any{"finding": tc.confirmed, "by": "sebastian", "why": "fixtures"}); err != nil {
+			t.Fatal(err)
+		}
+		val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+		res := getInto[AuditResult](t, val, err)
+		if !slices.Equal(res.Findings, tc.want) || (res.Verdict == AuditClear) != (tc.want == nil) {
+			t.Errorf("%s: audit = %v %d findings, want %d", tc.name, res.Verdict, len(res.Findings), len(tc.want))
+		}
+	}
+}
+
+// The model's file is a path of the diff: itself, or itself without a
+// leading b/, ./ or /, so one confirmation covers it however a run wrote
+// it. A file the diff does not hold leaves the finding at no file, which no
+// confirmation covers, and the why names what the model wrote.
+func TestGateAuditMapsTheModelsFileOntoTheDiff(t *testing.T) {
+	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[{"item":1,"file":"b/internal/x/x_test.go","line":4,"why":"w1"},` +
+		`{"item":1,"file":"./internal/x/x_test.go","line":4,"why":"w2"},{"item":1,"file":"/internal/x/x_test.go","line":5,"why":"w3"},` +
+		`{"item":1,"file":"N/A","why":"w4"}]}`}
+	r, _ := newAuditRunner(t, &gateForgejo{diff: secretTestDiff}, ll, true)
+	for _, finding := range []string{"secrets at internal/x/x_test.go", "secrets"} {
 		if err := r.timeline.Append(context.Background(), "t1", stepAuditConfirmed, map[string]any{"finding": finding, "by": "sebastian", "why": "fixtures"}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
-	want := []AuditFinding{{Item: "... and 10 more", Why: "the card lists the first 50 of the parts' findings"}}
-	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) {
-		t.Fatalf("audit = %+v, want the count past the list alone holding the verdict", res)
+	want := []AuditFinding{
+		{Item: "secret in the diff: password, secret or token assigned a literal", File: "internal/x/x_test.go", Line: 4,
+			Why: "an added line has the shape of a password, secret or token assigned a literal (pre-check)"},
+		{Item: "secrets", Why: `w4 (at "N/A", no path of the diff)`},
+	}
+	if !slices.Equal(res.Findings, want) {
+		t.Fatalf("findings = %+v, want %+v", res.Findings, want)
 	}
 }
 
@@ -709,14 +751,15 @@ func TestGateAuditCapsThePreCheck(t *testing.T) {
 }
 
 // A pre-check hit keeps its own path even where the path holds the value
-// the scrubber hides; the model's file is scrubbed.
+// the scrubber hides, and so does the model's finding at that path of the
+// diff: one path, one identity.
 func TestGateAuditKeepsThePreChecksPath(t *testing.T) {
 	diff := "diff --git a/k8s/hunter2hunter2.yaml b/k8s/hunter2hunter2.yaml\n--- /dev/null\n+++ b/k8s/hunter2hunter2.yaml\n@@ -0,0 +1 @@\n+password: \"hunter2hunter2\"\n"
 	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[{"item":1,"file":"k8s/hunter2hunter2.yaml","line":1,"why":"a password"}]}`}
 	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
-	if len(res.Findings) != 2 || res.Findings[0].File != "k8s/hunter2hunter2.yaml" || res.Findings[1].File != "k8s/[redacted].yaml" {
+	if len(res.Findings) != 2 || res.Findings[0].File != "k8s/hunter2hunter2.yaml" || res.Findings[1].File != "k8s/hunter2hunter2.yaml" {
 		t.Fatalf("findings = %+v", res.Findings)
 	}
 }

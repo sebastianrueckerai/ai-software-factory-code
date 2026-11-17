@@ -298,14 +298,24 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		hits = append(hits, redact.ScanDiff(f.Text)...)
 	}
 	scrub := redact.New(secrets...)
-	for i, h := range hits {
-		if i == maxPreCheck {
-			res.Findings = append(res.Findings, AuditFinding{Item: fmt.Sprintf("secret in the diff: %d more pre-check hits", len(hits)-maxPreCheck),
-				Why: fmt.Sprintf("the card lists the first %d", maxPreCheck)})
-			break
+	// a confirmed finding leaves the list before its cap, so the card lists
+	// the first unconfirmed ones
+	covered := func(f AuditFinding) bool { return auditConfirmedOf(asRecorded(f, scrub), res.Confirmed) }
+	var prechecked []AuditFinding
+	for _, h := range hits {
+		if f := (AuditFinding{Item: "secret in the diff: " + h.Kind, File: h.File, Line: h.Line,
+			Why: "an added line has the shape of a " + h.Kind + " (pre-check)"}); !covered(f) {
+			prechecked = append(prechecked, f)
 		}
-		res.Findings = append(res.Findings, AuditFinding{Item: "secret in the diff: " + h.Kind, File: h.File, Line: h.Line,
-			Why: "an added line has the shape of a " + h.Kind + " (pre-check)"})
+	}
+	if n := len(prechecked); n > maxPreCheck {
+		prechecked = append(prechecked[:maxPreCheck], AuditFinding{Item: fmt.Sprintf("secret in the diff: %d more pre-check hits", n-maxPreCheck),
+			Why: fmt.Sprintf("the card lists the first %d", maxPreCheck)})
+	}
+	res.Findings = append(res.Findings, prechecked...)
+	paths := map[string]bool{}
+	for _, f := range prFiles {
+		paths[f.Path], paths[f.OldPath] = true, f.OldPath != ""
 	}
 	parts := diffParts(modelFiles, reviewDiffMax)
 	first := auditInput{Repository: t.Repository, PR: pr.Number, Commit: commit, Concurrency: concurrencyBlock(concurrencySites(modelFiles))}
@@ -363,7 +373,11 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 				found = append(found, AuditFinding{Item: auditNoVerdict, Why: fmt.Sprintf("%s%s (an answer of %d bytes)", label, why, len(got.Content))})
 			}
 			for _, f := range parsed {
-				f.File = scrub.String(f.File)
+				if p := diffPath(f.File, paths); p != "" {
+					f.File = p
+				} else {
+					f.File, f.Why = "", fmt.Sprintf("%s (at %q, no path of the diff)", f.Why, f.File)
+				}
 				found = append(found, f)
 			}
 			continue
@@ -383,6 +397,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		}
 		noVerdict(gap)
 	}
+	found = slices.DeleteFunc(found, covered)
 	if n := len(found); n > maxJoinedFindings {
 		found = append(found[:maxJoinedFindings], AuditFinding{Item: fmt.Sprintf("... and %d more", n-maxJoinedFindings),
 			Why: fmt.Sprintf("the card lists the first %d of the parts' findings", maxJoinedFindings)})
@@ -398,16 +413,15 @@ var failedStatus = regexp.MustCompile(`^status \d+`)
 
 // recordAudit scrubs the item and why of res's findings, the model's and
 // the errors', of the diff's secret values and the generic shapes (a
-// model's file is scrubbed where it is read, a pre-check hit's path is
-// the diff's own), settles its verdict and puts it on the timeline and
+// finding's file is a path of the diff, its own, or none), settles its
+// verdict and puts it on the timeline and
 // in its fact row (auditFact); beside: the audit ran beside the checks
 // wait (besideEnd). The findings a person confirmed hold no verdict: each
 // covered one leaves the findings for the confirmation that covers it,
 // whose who and why are scrubbed the same way.
 func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit string, round int, beside bool, res AuditResult, scrub *redact.Scrubber) (AuditResult, error) {
 	for i, f := range res.Findings {
-		res.Findings[i] = AuditFinding{Item: textutil.Truncate(scrub.String(f.Item), maxAuditField), File: textutil.Truncate(f.File, maxAuditField),
-			Line: f.Line, Why: textutil.Truncate(scrub.String(f.Why), maxAuditField)}
+		res.Findings[i] = asRecorded(f, scrub)
 	}
 	var kept []AuditFinding
 	for _, f := range res.Findings {
@@ -431,6 +445,24 @@ func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit
 	}
 	r.record(ctx, t.ID, "audit", besideEnd(ctx, t, GateAudit, beside, step))
 	return res, r.auditFact(ctx, t, pr, commit, round, res)
+}
+
+// asRecorded is f as the timeline records it: its item and why scrubbed of
+// the diff's secret values and the generic shapes, each field cut.
+func asRecorded(f AuditFinding, scrub *redact.Scrubber) AuditFinding {
+	return AuditFinding{Item: textutil.Truncate(scrub.String(f.Item), maxAuditField), File: textutil.Truncate(f.File, maxAuditField),
+		Line: f.Line, Why: textutil.Truncate(scrub.String(f.Why), maxAuditField)}
+}
+
+// diffPath is the path of the diff file names: file itself, or file without
+// a leading a/, b/, ./ or /; "" when it names none.
+func diffPath(file string, paths map[string]bool) string {
+	for _, p := range []string{file, strings.TrimPrefix(file, "a/"), strings.TrimPrefix(file, "b/"), strings.TrimPrefix(file, "./"), strings.TrimPrefix(file, "/")} {
+		if paths[p] {
+			return p
+		}
+	}
+	return ""
 }
 
 // auditFact writes the audit attempt's fact row (EventGateAudit): ran
