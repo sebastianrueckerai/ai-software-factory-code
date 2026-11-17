@@ -187,7 +187,9 @@ func contradiction(c Claim, hits []grepHit, removed bool) (evidence string, ok b
 
 // applyClaims moves every finding that all its claims contradict from
 // rv.Findings to rv.Dropped: grep names a symbol's hits, settle runs a
-// test-outcome claim (nil: none runs, and no claim settles). A failed
+// test-outcome claim (nil: none runs, and no claim settles), every kept
+// claim in the same review. A finding several claims refute keeps one
+// drop whose evidence names each refutation in claim order. A failed
 // grep or run contradicts nothing; a run that settles nothing carries
 // its claim to the next round on rv.Pending. A concerns review whose
 // every finding was dropped turns approve (turnVerdict). The claims are
@@ -195,12 +197,23 @@ func contradiction(c Claim, hits []grepHit, removed bool) (evidence string, ok b
 func applyClaims(rv Review, files []fileDiff, grep func(symbol string) ([]grepHit, error), settle func(Claim) (claimRun, error)) Review {
 	total, refuted := map[int]int{}, map[int]Dropped{}
 	counted := map[int]int{}
+	// note is one claim's refutation of finding: a finding bundling
+	// several claims keeps one drop whose evidence names each run (or
+	// grep hit) that refuted it, in claim order
+	note := func(finding int, d Dropped) {
+		if prior, ok := refuted[finding]; ok {
+			prior.Evidence += "\n" + d.Evidence
+			prior.Symbol += ", " + d.Symbol
+			d = prior
+		}
+		refuted[finding] = d
+	}
 	for _, c := range rv.Claims {
 		total[c.Finding]++
 		if c.Kind == ClaimTestOutcome {
 			if ev, ok, upheld, why := settleTest(c, settle); ok {
 				counted[c.Finding]++
-				refuted[c.Finding] = Dropped{Finding: rv.Findings[c.Finding], Kind: c.Kind, Symbol: c.Symbol, Evidence: ev}
+				note(c.Finding, Dropped{Finding: rv.Findings[c.Finding], Kind: c.Kind, Symbol: c.Symbol, Evidence: ev})
 			} else if upheld != "" {
 				rv.Upheld = append(rv.Upheld, fmt.Sprintf("%s: %s", rv.Findings[c.Finding], upheld))
 			} else {
@@ -217,7 +230,7 @@ func applyClaims(rv Review, files []fileDiff, grep func(symbol string) ([]grepHi
 		removed := slices.ContainsFunc(files, func(f fileDiff) bool { return removesSymbol(f.Text, c.Symbol) })
 		if ev, ok := contradiction(c, hits, removed); ok {
 			counted[c.Finding]++
-			refuted[c.Finding] = Dropped{Finding: rv.Findings[c.Finding], Kind: c.Kind, Symbol: c.Symbol, Evidence: ev}
+			note(c.Finding, Dropped{Finding: rv.Findings[c.Finding], Kind: c.Kind, Symbol: c.Symbol, Evidence: ev})
 		}
 	}
 	var kept []string
