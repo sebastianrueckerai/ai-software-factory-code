@@ -516,14 +516,12 @@ func TestHumanChoiceTakesNoFundAndNoArgs(t *testing.T) {
 	}
 }
 
-// A park settles the case it answers, on both of its cards. The agent
-// card's press reaches Act as a settle with its choice as the park arg:
-// the case resolves, the ruling is the answer's row, and the run hears
-// case_resolved. The human card's own value settles its choice case the
-// same way, the card keeping its wait with no open case and no run
-// signalled, while the chain stall's rerun_again alone keeps its case
-// live.
-func TestAParkSettlesTheCaseItAnswers(t *testing.T) {
+// The agent card's settle with a park arg reaches Act as a settle: the
+// case resolves, the ruling is the answer's row, and the run hears
+// case_resolved. A human card's "Not now" (its park) keeps its case live
+// as the chain stall's rerun_again does: the card goes on waiting with its
+// ask open, the press a step on its case, no ruling and no run signalled.
+func TestASettleEndsTheCaseAndAHumanCardsParkKeepsIt(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
 	g.timeline(t)
@@ -561,7 +559,7 @@ func TestAParkSettlesTheCaseItAnswers(t *testing.T) {
 	g.store.tasks["h1"] = Task{ID: "h1", Kind: "human", Repository: "demo-app/demo-app", IssueNumber: 14, Status: "waiting-human"}
 	for id, tc := range map[int64]struct {
 		value, want string
-	}{9: {AnswerPark, CaseResolved}, 10: {AnswerRerunAgain, CaseAtHuman}} {
+	}{9: {AnswerPark, CaseAtHuman}, 10: {AnswerRerunAgain, CaseAtHuman}} {
 		g.store.cases = append(g.store.cases, Case{ID: id, TaskID: "h1", Kind: CaseHumanCard, Status: CaseAtHuman})
 		g.event("h1", factsNow, EventQuestionAsked, map[string]any{"case_id": int64(id),
 			"offers": []AskOffer{{Value: tc.value, Label: "the choice"}}})
@@ -575,21 +573,20 @@ func TestAParkSettlesTheCaseItAnswers(t *testing.T) {
 		if s := g.store.tasks["h1"].Status; s != "waiting-human" {
 			t.Fatalf("after %s the card is %s, want it parked in waiting-human", tc.value, s)
 		}
+		if len(g.store.caseSteps[id]) == 0 {
+			t.Fatalf("after %s case %d holds no step of the press", tc.value, id)
+		}
 	}
-	// the settled park alone recorded its ruling, and no run was signalled
 	answered = 0
 	for _, e := range g.store.events {
 		if e.Kind == EventQuestionAnswered && e.TaskID == "h1" {
 			answered++
-			if e.Actor != "sebastian" || e.Detail["value"] != AnswerPark {
-				t.Fatalf("the ruling's row = %+v, want sebastian's park of the human card's case", e)
-			}
 		}
 	}
-	if answered != 1 || slices.ContainsFunc(g.r.cfg.Workflows.(*fakeWorkflows).signals, func(s string) bool {
+	if answered != 0 || slices.ContainsFunc(g.r.cfg.Workflows.(*fakeWorkflows).signals, func(s string) bool {
 		return strings.HasPrefix(s, "h1 ")
 	}) {
-		t.Fatalf("%d answer rows, signals %q; want the park's alone and none for the human card", answered, g.r.cfg.Workflows.(*fakeWorkflows).signals)
+		t.Fatalf("%d answer rows, signals %q; want none for the human card", answered, g.r.cfg.Workflows.(*fakeWorkflows).signals)
 	}
 }
 

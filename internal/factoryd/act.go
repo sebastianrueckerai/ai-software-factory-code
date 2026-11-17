@@ -117,9 +117,8 @@ func lockWithin(ctx context.Context, mu *sync.Mutex) error {
 }
 
 // keepsWaiting are the choices of a human card that answer it and leave its
-// case live: the card goes on waiting. A park and a keep waiting settle
-// their case instead: the card keeps its wait with none open.
-var keepsWaiting = []string{AnswerRerunAgain}
+// case live: the card goes on waiting, a park's "Not now" among them.
+var keepsWaiting = []string{AnswerRerunAgain, AnswerPark, AnswerKeepWaiting, AnswerHoldWait}
 
 // keepsOpen says answer res leaves case c live: a note, a criterion's verdict
 // or a filed card, a decision whose request ended the case already, or a
@@ -393,9 +392,9 @@ func LeaveCaseToAct(ctx context.Context) context.Context {
 // CaseLeftToAct reports whether ctx came through LeaveCaseToAct.
 func CaseLeftToAct(ctx context.Context) bool { left, _ := ctx.Value(caseLeftKey{}).(bool); return left }
 
-// StoreMissedOffers stores, once, the offers of each case at the human whose
-// ask holds none: one that reached the human before offers were stored. A
-// background pass reads the live facts of each.
+// StoreMissedOffers stores, once, the face of each case at the human whose
+// ask holds none: one that reached the human before the register wrote
+// its faces. A background pass reads the live facts of each.
 func (r *Runner) StoreMissedOffers(ctx context.Context) {
 	tasks, err := r.store.ListTasksByStatus(ctx, "waiting-human")
 	if err != nil {
@@ -413,7 +412,7 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 				continue
 			}
 			ask, found := r.CaseAsk(ctx, c)
-			if !found || ask.Detail["refusals"] != nil {
+			if !found || ask.Detail["story"] != nil {
 				continue
 			}
 			f, err := r.FactsAtCase(ctx, t, c)
@@ -434,7 +433,7 @@ func (r *Runner) TryLockCase(id int64) (func(), bool) {
 	return mu.Unlock, mu.TryLock()
 }
 
-// refreshOffersOf stores the offers of case caseID anew when it is still at
+// refreshOffersOf stores the face of case caseID anew when it is still at
 // the human after Act failed a press on it, whatever refused it: the face then
 // shows what fits the state the refusal named.
 func (r *Runner) refreshOffersOf(ctx context.Context, taskID string, caseID int64) {
@@ -451,14 +450,13 @@ func (r *Runner) refreshOffersOf(ctx context.Context, taskID string, caseID int6
 	}
 }
 
-// refreshOffers stores the offers of case c anew on facts f.
+// refreshOffers stores the face of case c anew on facts f, its
+// recommendation the one its ask stored.
 func (r *Runner) refreshOffers(ctx context.Context, t Task, c Case, f CaseFacts) {
-	offers, refusals, ok := storeOffers(c, t, f)
-	if !ok {
-		return
-	}
-	if err := r.store.SetCaseOffers(ctx, c.ID, offers, refusals); err != nil {
-		log.Printf("task %s: the offers of case %d after a refusal: %v", t.ID, c.ID, err)
+	ask, _ := r.CaseAsk(ctx, c)
+	face := FaceOf(r.fencedChoices(t, c), Facts{CaseFacts: f, Card: t, Recommend: RecommendationOf(ask.Detail)})
+	if err := r.store.SetCaseFace(ctx, c.ID, FaceKeys(face)); err != nil {
+		log.Printf("task %s: the face of case %d: %v", t.ID, c.ID, err)
 	}
 }
 

@@ -16,7 +16,8 @@ import (
 const slotsComments = "/api/v1/repos/linkshort/linkshort/issues/1/comments"
 
 // slotsRig is plan t-plan #1 at revision 2 with three open questions, each
-// with the planner's recommendation filed on its ask, and the confirmation.
+// with the planner's recommendation on its case and asked an hour ago, and
+// the confirmation.
 func slotsRig(r *rig) {
 	planRig(r)
 	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": {
@@ -27,9 +28,8 @@ func slotsRig(r *rig) {
 	}}
 	r.tasks.plans["t-plan"][1].Plan = []byte(`{"summary":"Probe each site, then show the history.","spec":{"outcome":"A site owner sees an outage within a minute."}}`)
 	r.caseAsks = map[int64]factoryd.CaseAsk{}
-	for i, q := range r.tasks.questions["t-plan 2"][:3] {
-		r.caseAsks[int64(500+i)] = factoryd.CaseAsk{At: time.Now().Add(-time.Hour), Detail: map[string]any{
-			"recommendation": q.Recommended + ": " + q.Grounds, "recommended_by": "the planner"}}
+	for i := range 3 {
+		r.caseAsks[int64(500+i)] = factoryd.CaseAsk{At: time.Now().Add(-time.Hour), Detail: map[string]any{}}
 	}
 }
 
@@ -53,7 +53,7 @@ func TestAPlansQuestionsAreSlotsOfOneRow(t *testing.T) {
 	for _, want := range []string{
 		`<p class="ask">How often does the checker probe a site?</p>`,
 		`<p class="why">Plan #1, revision 2: 3 questions open;`,
-		`<p class="recommendation">Recommendation (the planner): 60 seconds: a minute catches an outage before a user does</p>`,
+		`<p class="recommendation">Recommendation (the planner): a minute catches an outage before a user does</p>`,
 		`<input type="radio" name="choice" value="2" checked> 60 seconds`,
 		`<input type="radio" name="choice" value="1"> 30 seconds`,
 		`<input type="radio" name="choice" value="3"> 5 minutes`,
@@ -258,7 +258,7 @@ func TestPlanFacesDecideThroughTheSharedPartial(t *testing.T) {
 		`<form method="post" action="/tasks/t-plan/plan/answer" hx-post="/tasks/t-plan/plan/answer" class="decide plan-answer" data-to="running">`,
 		`<p class="ask">How often does the checker probe a site?</p>`,
 		`<p class="why">Plan #1, revision 2: 3 questions open;`,
-		`<p class="recommendation">Recommendation (the planner): 60 seconds: a minute catches an outage before a user does</p>`,
+		`<p class="recommendation">Recommendation (the planner): a minute catches an outage before a user does</p>`,
 		`<fieldset class="choices"><legend>Answer</legend>`,
 		`<button type="submit" class="primary">Send</button>`,
 	} {

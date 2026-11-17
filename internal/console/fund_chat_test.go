@@ -101,7 +101,10 @@ func TestMemberChatInboxFundClickFunds(t *testing.T) {
 	r.tasks.set(needRefusal, factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human",
 		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, SpentEUR: 1.83, ModelAlias: "factory/small"})
 	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return needRefusal, nil }
-	buttons := factoryd.ShapedQuestion(needRefusal, factoryd.QuestionFacts{BudgetEUR: 2, SpentEUR: 1.83, LeftEUR: 0.17}, nil)
+	// the question an ask stored before the register wrote faces: its
+	// one-click fund choices by their values
+	buttons := &factoryd.HumanQuestion{Ask: "Fund it, or park it?", Choices: []factoryd.QuestionChoice{
+		{Value: factoryd.AnswerFund + ":0.73", Label: "Fund 0.73 EUR and go on"}, {Value: factoryd.AnswerPark, Label: "Park it"}}}
 	r.tasks.tasks[0].Question = buttons
 	ck, s := r.loggedIn(t)
 	inbox, _ := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
@@ -127,7 +130,7 @@ func TestMemberChatInboxFundClickFunds(t *testing.T) {
 func TestOneClickFundChoiceFundsWithoutANote(t *testing.T) {
 	r := needRig(t)
 	_, s := r.loggedIn(t)
-	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.FundChoiceValue(0.73), "", 0); err != nil {
+	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.AnswerFund+":0.73", "", 0); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := actedOnce(t, r)
@@ -143,7 +146,7 @@ func TestOneClickFundChoiceFundsWithoutANote(t *testing.T) {
 	r.forgetWriters()
 	ck, ms := memberLogin(t, r, "morgan")
 	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {ms.csrf}, "project": {"ai-software-factory-code"},
-		"value": {factoryd.FundChoiceValue(0.5)}}), ck)
+		"value": {factoryd.AnswerFund + ":0.50"}}), ck)
 	if rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != "Only the approvers of project ai-software-factory-code may fund a card." {
 		t.Fatalf("a non-approver's one-click fund = %d: %s", rec.Code, rec.Body)
 	}

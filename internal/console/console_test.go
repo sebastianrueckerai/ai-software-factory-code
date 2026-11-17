@@ -1241,9 +1241,8 @@ type rig struct {
 	openCases    map[string][]factoryd.Case
 	endedCases   []factoryd.Case
 	caseSteps    map[int64][]factoryd.CaseStep
-	// caseAsks are the newest ask of each case by id, caseAnswered when a human last answered a card
-	caseAsks     map[int64]factoryd.CaseAsk
-	caseAnswered map[string]time.Time
+	// caseAsks are the newest ask of each case by id
+	caseAsks map[int64]factoryd.CaseAsk
 	// web is the chat's fake web door; the gateway is the lab's scripted
 	// model, nil in the tests
 	web     *fakeWeb
@@ -1287,12 +1286,10 @@ type rig struct {
 	// refusal of the nth answer; the fake has a case-resolving answer's
 	// Post post its comment, as Act does, and actDid says what an answer
 	// ran
-	acted  []factoryd.ActInput
-	actErr error
-	// noStoredOffers leaves the cases' asks as seated: no offers stored on them
-	noStoredOffers bool
-	actErrs        map[int]error
-	actDid         func(factoryd.ActInput) []factoryd.CaseAction
+	acted   []factoryd.ActInput
+	actErr  error
+	actErrs map[int]error
+	actDid  func(factoryd.ActInput) []factoryd.CaseAction
 	// actProposes makes Act answer a proposal: nothing ran
 	actProposes bool
 	// drawn is PoolDrawn's answer, drawnErr its failure
@@ -1367,14 +1364,17 @@ func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, e
 			}
 		}
 	}
-	kind := factoryd.CaseOther
+	kind, facts := factoryd.CaseOther, map[string]any(nil)
 	switch {
 	case k.Kind == "human":
 		kind = factoryd.CaseHumanCard
 	case k.Track == policy.TrackPlan:
 		kind = factoryd.CasePlanQuestion
+	case strings.HasPrefix(bt.Escalation, factoryd.AgentAsks):
+		// an agent's question opens its own kind, its reason and offered answers the case's facts
+		kind, facts = factoryd.CaseAgentEscalate, map[string]any{"reason": bt.Escalation, "choices": bt.Choices}
 	}
-	return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: kind, Status: factoryd.CaseAtHuman, Problem: problem, CommentID: bt.QuestionComment}}, nil
+	return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: kind, Status: factoryd.CaseAtHuman, Problem: problem, CommentID: bt.QuestionComment, Facts: facts}}, nil
 }
 
 // planCases are the cases of a plan's newest revision at the human, one for
@@ -1537,7 +1537,7 @@ func newRig(t *testing.T) *rig {
 				return t.Repository != repository
 			})
 			r.tasks.mu.Unlock()
-			d := factoryd.CaseDesk{Steps: r.caseSteps, Asks: map[int64]factoryd.CaseAsk{}, Answered: r.caseAnswered}
+			d := factoryd.CaseDesk{Asks: map[int64]factoryd.CaseAsk{}}
 			for id, ask := range r.caseAsks {
 				d.Asks[id] = ask
 			}
@@ -1545,17 +1545,6 @@ func newRig(t *testing.T) *rig {
 				open, _ := r.ownCasesOf(ctx, bt.ID)
 				for _, k := range open {
 					d.Cases = append(d.Cases, k)
-					// a case reaches the human with its offers stored on its ask, as the Runner's passes write them
-					if ask, ok := d.Asks[k.ID]; !r.noStoredOffers && (!ok || ask.Detail["offers"] == nil) {
-						detail := map[string]any{}
-						if ok && ask.Detail != nil {
-							detail = ask.Detail
-						}
-						if offers, refusals := factoryd.OffersFor(factoryd.FactsOf(k)); factoryd.AnswersByOffers(k, bt.Kind) {
-							detail["offers"], detail["refusals"] = offers, refusals
-						}
-						d.Asks[k.ID] = factoryd.CaseAsk{At: ask.At, Detail: detail}
-					}
 				}
 			}
 			return d, err
@@ -3262,9 +3251,9 @@ func TestFittingAFactoryPullRequest(t *testing.T) {
 		return []factoryd.ApprovalRequest{{TaskID: "t-f", Kind: factoryd.ApprovalMerge,
 			Spec: json.RawMessage(fmt.Sprintf(`{"head_sha":"c1","factory":true,"red_checks":%t}`, red))}}
 	}
-	equal(t, "on red checks", fitting(card, capFactsFrom(card, 0, "", nil, request(true))),
+	equal(t, "on red checks", fitting(card, capFactsFrom(card, 0, "", request(true))),
 		"rerun_checks runs its red checks again, or deny_merge closes it with your words")
-	equal(t, "on green checks", fitting(card, capFactsFrom(card, 0, "", nil, request(false))), "approve_merge or deny_merge decide its merge request")
+	equal(t, "on green checks", fitting(card, capFactsFrom(card, 0, "", request(false))), "approve_merge or deny_merge decide its merge request")
 }
 
 // An agent pull request's merge request on red checks fits its return and
@@ -3274,7 +3263,7 @@ func TestFittingAnAgentPullRequestOnRedChecks(t *testing.T) {
 	req := []factoryd.ApprovalRequest{{TaskID: "t-a", Kind: factoryd.ApprovalMerge, Spec: json.RawMessage(`{"head_sha":"c1","red_checks":true}`)}}
 	for _, status := range []string{"in-review", "waiting-human"} {
 		card := factoryd.Task{ID: "t-a", Status: status, IssueNumber: 37}
-		equal(t, status, fitting(card, capFactsFrom(card, 0, "", nil, req)), want)
+		equal(t, status, fitting(card, capFactsFrom(card, 0, "", req)), want)
 	}
 }
 
@@ -4020,48 +4009,36 @@ func (s *fakeTasks) PlanMerged(_ context.Context, plan string) (bool, error) {
 	return false, nil
 }
 
-// A card waiting on a human is capped by its question's typed cap, whatever
-// the escalation's words; a question written before the field is capped by
-// the old text.
-func TestCapFactsTakeTheCapFromTheQuestionsField(t *testing.T) {
+// A card waiting on a human is capped by the cap its escalation's words
+// name: the ladder's wording and the old one a session cap, the time cap's
+// an agent time cap, a plain ask none.
+func TestCapFactsTakeTheCapFromTheEscalation(t *testing.T) {
 	card := factoryd.Task{ID: "t1", Status: "waiting-human"}
-	ladder := &factoryd.HumanQuestion{Ask: "?", Cap: factoryd.CapSession}
-	if f := capFactsFrom(card, 3, "any words", ladder, nil); !f.capped || f.timeCap {
-		t.Errorf("session cap field: capped %v, timeCap %v; want capped, not time", f.capped, f.timeCap)
+	if f := capFactsFrom(card, 3, factoryd.CapReachedLadder+"\nlast: x", nil); !f.capped || f.timeCap {
+		t.Errorf("the ladder's wording: capped %v, timeCap %v; want capped, not time", f.capped, f.timeCap)
 	}
-	if f := capFactsFrom(card, 3, "any words", &factoryd.HumanQuestion{Ask: "?", Cap: factoryd.CapTime}, nil); !f.capped || !f.timeCap {
-		t.Errorf("time cap field: capped %v, timeCap %v; want both", f.capped, f.timeCap)
+	if f := capFactsFrom(card, 3, factoryd.TimeCapReached+"\nlast: x", nil); !f.capped || !f.timeCap {
+		t.Errorf("the time cap: capped %v, timeCap %v; want both", f.capped, f.timeCap)
 	}
-	if f := capFactsFrom(card, 3, "the session cap is reached: every finding sent to the agent so far goes to a human", nil, nil); !f.capped {
-		t.Error("an old question's text is no longer read as a cap")
+	if f := capFactsFrom(card, 3, "the session cap is reached: every finding sent to the agent so far goes to a human", nil); !f.capped {
+		t.Error("the old wording is no longer read as a cap")
 	}
-	if f := capFactsFrom(card, 3, "a plain ask", &factoryd.HumanQuestion{Ask: "?"}, nil); f.capped {
+	if f := capFactsFrom(card, 3, "a plain ask", nil); f.capped {
 		t.Error("a plain ask is capped")
 	}
 }
 
-// A card face reads its cap from the question's typed field, through the
-// console's own read of the board task: a record of the new wording names no
-// cap in its escalation text, and an old record with no field is read by its
-// text.
-func TestCapFactsOfReadsTheTypedCapOfANewRecord(t *testing.T) {
+// A card face reads its cap through the console's own read of the board
+// task: an escalation naming a cap caps it, one naming none does not.
+func TestCapFactsOfReadsTheEscalationOfTheBoardTask(t *testing.T) {
 	r := newRig(t)
 	card := factoryd.Task{ID: "t-n", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13}
 	r.tasks.set("words that name no cap", card)
-	r.tasks.mu.Lock()
-	r.tasks.tasks[0].Question = &factoryd.HumanQuestion{Ask: "?", Cap: factoryd.CapSession}
-	r.tasks.mu.Unlock()
-	if f := r.c.capFactsOf(context.Background(), card); !f.capped || f.timeCap {
-		t.Errorf("a new record: capped %v, timeCap %v; want a session cap read from the field", f.capped, f.timeCap)
-	}
-	r.tasks.mu.Lock()
-	r.tasks.tasks[0].Question = nil
-	r.tasks.mu.Unlock()
 	if f := r.c.capFactsOf(context.Background(), card); f.capped {
-		t.Error("an escalation naming no cap and no field is capped")
+		t.Error("an escalation naming no cap is capped")
 	}
-	r.tasks.set("the session cap is reached: every finding sent to the agent so far goes to a human\nlast: x", card)
-	if f := r.c.capFactsOf(context.Background(), card); !f.capped {
-		t.Error("an old record's text is no longer read as a cap")
+	r.tasks.set(factoryd.CapReachedLadder+"\nlast: x", card)
+	if f := r.c.capFactsOf(context.Background(), card); !f.capped || f.timeCap {
+		t.Errorf("the ladder's cap: capped %v, timeCap %v; want a session cap", f.capped, f.timeCap)
 	}
 }

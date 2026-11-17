@@ -299,7 +299,7 @@ func HoldQuestion(name string, since, now time.Time, groups []Group, fixes []Tas
 	b := SourceBriefs[SourceProductionHeld](BriefFacts{Name: name})
 	q := HumanQuestion{
 		Ask:     b.Title,
-		Choices: []QuestionChoice{{AnswerHoldWait, "Wait"}, {ActDeployNow, "Deploy anyway"}},
+		Choices: []QuestionChoice{{AnswerHoldWait, choices(ActNote + "/" + variantPark)[0].Label}, choices(ActDeployNow)[0]},
 	}
 	why := []string{fmt.Sprintf("Production of %s has waited %s: %s.", name, hours(now.Sub(since)), HoldReason(groups))}
 	if len(fixes) > 0 {
@@ -347,8 +347,8 @@ func holdInfo(plans []HoldPlan) string {
 			others = append(others, fmt.Sprintf("#%d", plan.Issue))
 		}
 	}
-	out := strings.Join(info, "\n") + "\n\nWait keeps production held and asks again in " + hours(HoldAskAfter) + ". " +
-		"Deploy anyway sends main as it is to production, half-built plans included. Replan on top plans the rest again on top of what is merged. " +
+	out := strings.Join(info, "\n") + "\n\nNot now keeps production held and asks again in " + hours(HoldAskAfter) + ". " +
+		"Deploy now sends main as it is to production, half-built plans included. Replan on top plans the rest again on top of what is merged. " +
 		"Take it off main and replan reverts the plan's merged cards first, so production goes ahead without them."
 	switch len(others) {
 	case 0:

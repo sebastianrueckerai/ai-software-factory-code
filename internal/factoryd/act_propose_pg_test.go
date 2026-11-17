@@ -307,9 +307,10 @@ func TestSkippedRung1KindsMeetTheSpentJudgmentBudget(t *testing.T) {
 			if tc.judged {
 				want = fmt.Sprintf("%s The chat task %s has 0.00 of 10.00 EUR left.", noJudgmentLine, chat.ID)
 			}
-			// a case no rung judged is marked; a policy class was judged by the check-in's
-			// moment, so its words stay and the face carries the one line
-			if out.Rung != 3 || len(g.stepsOfRung(t, c.ID, 2)) != 0 || len(g.rows(t, EventCaseClimbed)) != 0 || strings.HasSuffix(c.Problem, unjudgedSuffix) == tc.judged ||
+			// a case no rung judged says so in the agent's view, never in its
+			// ask; a policy class was judged by the check-in's moment, so its
+			// words stay and the face carries the one line
+			if out.Rung != 3 || len(g.stepsOfRung(t, c.ID, 2)) != 0 || len(g.rows(t, EventCaseClimbed)) != 0 || strings.Contains(c.Problem, "not judged") ||
 				!slices.ContainsFunc(g.steps(t, c.ID), func(s CaseStep) bool { return s.Rung == 0 && s.Found == want }) {
 				t.Fatalf("outcome %+v, problem %q, steps %+v; want the spent path in full", out, c.Problem, g.steps(t, c.ID))
 			}
@@ -317,8 +318,8 @@ func TestSkippedRung1KindsMeetTheSpentJudgmentBudget(t *testing.T) {
 			for _, a := range g.asks(t) {
 				info += fmt.Sprint(a.Detail["info"])
 			}
-			if strings.Contains(info, noJudgmentLine) != tc.judged {
-				t.Errorf("info %q, want the no-judgment line only for a judged case", info)
+			if strings.Contains(info, noJudgmentLine) != tc.judged || strings.Contains(info, "The factory found: "+markJudgmentSpent) == tc.judged {
+				t.Errorf("info %q, want the no-judgment line for a judged case and the mark for one no rung judged", info)
 			}
 		})
 	}

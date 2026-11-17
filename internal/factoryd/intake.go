@@ -459,7 +459,7 @@ func ReproQuestion(title, poster, reason string) HumanQuestion {
 		Ask:     oneLine(title),
 		Why:     "filed by " + poster + ": the reproduction command " + reason,
 		Info:    "No agent builds a card whose reproduction command breaks the sandbox rule. File the issue again with a command that keeps it, then close this card.",
-		Choices: doneChoices(false),
+		Choices: humanWorkChoices(false),
 	}
 }
 
@@ -487,7 +487,7 @@ func WorkflowQuestion(title, brief string) HumanQuestion {
 		Ask:     oneLine(title),
 		Why:     "every file of this card sits under a workflow directory (" + strings.Join(WorkflowDirs, ", ") + "), and the factory's push rule refuses changes to workflow files",
 		Info:    "No agent session is bought for it. A human opens the pull request; the brief below says what to change, then close this card.\n\n" + brief,
-		Choices: doneChoices(false),
+		Choices: humanWorkChoices(false),
 	}
 }
 

@@ -31,10 +31,9 @@ func TestMergeApprovalYieldsTheCardInNeedsYou(t *testing.T) {
 	}
 }
 
-// The drawer's merge card: the case's brief renders as markup (its own
-// lists, never a raw wall), each why-a-human entry its own line, and an
-// agent pull request on red checks shows its return and close directly —
-// the actions the brief names, not a disclosure button that hides them.
+// The drawer's merge card: each why-a-human entry is its own line, and an
+// agent pull request on red checks shows its return and close directly,
+// not behind a disclosure button that hides them.
 func TestMergeDrawerRendersTheAskAndItsActions(t *testing.T) {
 	r := newRig(t)
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{
@@ -43,12 +42,9 @@ func TestMergeDrawerRendersTheAskAndItsActions(t *testing.T) {
 	})
 	r.tasks.set("", factoryd.Task{ID: "t-red", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 8, PRNumber: 10})
 	r.openCases = map[string][]factoryd.Case{"t-red": {{ID: 8, TaskID: "t-red", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseAtHuman,
-		Facts: map[string]any{"approval": 6.0}, Brief: "- first fact\n- second fact"}}}
+		Facts: map[string]any{"approval": 6.0}}}}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-red/drawer?tab=overview", nil), ck).Body.String()
-	if !strings.Contains(body, "<li>first fact</li>") {
-		t.Fatal("the drawer renders the detail's facts as no list")
-	}
 	if got := strings.Count(body, `class="why"`); got != 2 {
 		t.Fatalf("the drawer renders %d why lines, want one per entry", got)
 	}

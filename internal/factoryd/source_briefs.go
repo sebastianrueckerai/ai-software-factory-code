@@ -39,7 +39,7 @@ var SourceBriefs = map[string]func(BriefFacts) BriefText{
 			Why: "The factory deploys only images signed with its key, so these images stay off the cluster."}
 	},
 	SourceRollFailed: func(f BriefFacts) BriefText {
-		return BriefText{Title: f.Name + " " + rollAskMarker + ". Retry the roll, park it or close it?",
+		return BriefText{Title: f.Name + " " + rollAskMarker + ". Try the roll again?",
 			Why: "Main's newest images are not live, and every card merged since waits on a green chain."}
 	},
 	SourceMainFix: func(f BriefFacts) BriefText {
@@ -75,7 +75,7 @@ var SourceBriefs = map[string]func(BriefFacts) BriefText{
 				"and a green chain ends every wait."}
 	},
 	SourceChainStall: func(f BriefFacts) BriefText {
-		return BriefText{Title: "Re-run the stalled deploy chain of " + f.Name + ", check it again or dismiss it?",
+		return BriefText{Title: "The deploy chain of " + f.Name + " stalled. Run it again?",
 			Why: "The chain has been pending past its stall bound, and merged cards wait on it."}
 	},
 	SourceAlert: func(f BriefFacts) BriefText {
@@ -145,7 +145,7 @@ var SourceBriefs = map[string]func(BriefFacts) BriefText{
 			Why: "The factory refused the newest configuration, so the version before it stays in force."}
 	},
 	SourceProductionHeld: func(f BriefFacts) BriefText {
-		return BriefText{Title: "Production of " + f.Name + " is held. Wait, deploy anyway, or replan?",
+		return BriefText{Title: "Production of " + f.Name + " is held. Deploy now, or replan?",
 			Why: "While a plan is open on main, no merge goes to production, so a half-built feature never goes live."}
 	},
 	SourceRoutine: func(f BriefFacts) BriefText {

@@ -462,7 +462,7 @@ func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
 	}
 	if e, q := store.askedRows(task.ID)[0], store.askedRows(task.ID)[0].Question; q == nil ||
 		q.Ask != "Needs a decision" || q.Why != "filed by sebastian into the human lane" || q.Info != "please look" ||
-		!slices.Equal(q.Labels(), []string{"Have the factory do it", "Done"}) {
+		!slices.Equal(q.Labels(), []string{"I did it", "Have the factory do it", "Not now"}) {
 		t.Fatalf("intake event = %+v, want the issue asked as a question", e)
 	}
 }
@@ -2585,8 +2585,8 @@ func TestIntakeBotCloseCountsOnlyWhenFactorydRecordedIt(t *testing.T) {
 func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 	none := seedProject("sf/ai-software-factory-code")
 	none.Agents = "none"
-	want := HumanQuestion{Ask: "Add the runner", Why: "filed by sebastian for an agent; the project runs no agents now", Info: "objective body",
-		Choices: []QuestionChoice{{Value: AnswerClose, Label: "Done"}}}
+	want := HumanQuestion{Ask: "Add the runner", Why: "filed by sebastian for an agent, and the project runs no agents now", Info: "objective body",
+		Choices: []QuestionChoice{{Value: AnswerClose, Label: "I did it"}, {Value: AnswerPark, Label: "Not now"}}}
 	for _, via := range []string{"redelivery", "heal pass"} {
 		in, store, _ := newTestIntake(t)
 		in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: store, Store: store}
@@ -2607,7 +2607,7 @@ func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 		}
 		asks := store.askedRows("t-q")
 		if len(asks) != 1 || asks[0].Body != "Add the runner" || asks[0].Question == nil || !reflect.DeepEqual(*asks[0].Question, want) ||
-			!slices.Equal(asks[0].Choices, []string{"Done"}) {
+			!slices.Equal(asks[0].Choices, []string{"I did it", "Not now"}) {
 			t.Fatalf("%s: intake asks %+v, want the issue's title asked", via, asks)
 		}
 		var asked []Event
@@ -2617,8 +2617,8 @@ func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 			}
 		}
 		if len(asked) != 1 || asked[0].Via != ViaFactoryd || asked[0].Detail["ask"] != "Add the runner" ||
-			asked[0].Detail["why"] != "filed by sebastian for an agent; the project runs no agents now" || asked[0].Detail["source"] != "webhook" ||
-			fmt.Sprint(asked[0].Detail["choices"]) != "[Done]" {
+			asked[0].Detail["why"] != "filed by sebastian for an agent, and the project runs no agents now" || asked[0].Detail["source"] != "webhook" ||
+			fmt.Sprint(asked[0].Detail["choices"]) != "[I did it Not now]" {
 			t.Fatalf("%s: question_asked rows %+v", via, asked)
 		}
 	}

@@ -2,17 +2,17 @@ package console
 
 import "github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 
-// decide is the view-model the case-decide partial renders from: the five
-// parts of the ask it decides — the ask with its money line, why, what the
-// call needs, the recommendation with its source — and the answers it
+// decide is the view-model the case-decide partial renders from: the parts
+// of the ask it decides — the ask with its money line, why, the story, the
+// agent's view, the recommendation with its source — and the answers it
 // offers, with the form that sends them. Every face that asks includes the
 // partial with one of these, so the partial reads one value whatever face
 // includes it.
 type decide struct {
 	Ask, Money, Why, Info, Recommendation, Source string
+	Story                                         factoryd.Story
 	Premade                                       []string
 	Offers                                        []offer
-	Refusals                                      []factoryd.ActionRefusal
 	TaskID                                        string
 	CaseID                                        int64
 	// ApprovalID names an approval request: the form's send goes to the
@@ -64,7 +64,8 @@ func (n need) Decide() *decide {
 	f := n.Case.Face
 	d := newDecide(n.Card.ID, n.CSRF, n.Suffix, n.Card.Filter, n.Waiting())
 	d.Ask, d.Money, d.Why, d.Info, d.Recommendation, d.Source = f.Ask, f.Money, f.Why, f.Info, f.Recommendation, f.Source
-	d.Premade, d.Offers, d.Refusals = n.Case.Premade, n.Case.Offers, n.Case.Refusals
+	d.Story = f.Story
+	d.Offers = n.Case.Offers
 	d.CaseID = n.Case.Case.ID
 	d.AnswersPending, d.IssueNumber, d.IssueURL = n.Card.AnswersPending, n.Card.IssueNumber, n.Card.IssueURL
 	return d

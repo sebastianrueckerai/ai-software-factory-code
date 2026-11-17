@@ -115,3 +115,137 @@ func (a HumanAsk) Event(t Task) Event {
 	}
 	return Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: a.Via, Detail: asked}
 }
+
+// Question choice values. A click routes exactly as the label's text
+// typed as an answer does today, except park and keep waiting, which
+// record the answer and leave the card waiting on its person: no comment
+// is posted for them, because a posted comment would start the attempt
+// the person declined to start.
+const (
+	AnswerGrant       = "grant"
+	AnswerPark        = "park"
+	AnswerFund        = "fund"
+	AnswerClose       = "close"
+	AnswerKeepWaiting = "keep_waiting"
+	// AnswerKeepChecking is the checks-wait stop's Keep waiting: it runs
+	// the wait again, where AnswerKeepWaiting only records.
+	AnswerKeepChecking = "keep_checking"
+	AnswerGo           = "go"
+	AnswerExtend       = "extend"
+	AnswerOverrule     = "overrule"
+	AnswerSuccessor    = "successor"
+	// AnswerRetry is the plan's wait choice: the retry of the failed card
+	// it waits on.
+	AnswerRetry = "retry"
+	// AnswerCloseCard is the plan's wait choice: the close of the failed
+	// card it waits on, whose end lets the plan close.
+	AnswerCloseCard = "close_card"
+)
+
+// The marks a stop's reason carries where it names an owner decision:
+// the deadlock headline (the repeat guard, workflow.go) and a refused
+// review's line in the work state (workStateLines). A stop that carries
+// one offers the decision as the exits.
+const (
+	DeadlockAskMark    = "No reply can change this"
+	reviewConcernsMark = "review: concerns"
+	// SuccessorChoice is the successor exit's label, the answer that
+	// closes the card into its successor.
+	SuccessorChoice = "Close into a successor"
+	// OverruleChoice is the review overrule exit's label, the answer that
+	// needs the human's reason.
+	OverruleChoice = "Overrule the review"
+)
+
+// HumanQuestion is the question a human card asks. Source names what
+// backs the recommendation: the check-in's judgment, the agent's, or a
+// factoryd rule; empty without one.
+type HumanQuestion struct {
+	Ask            string           `json:"ask"`
+	Why            string           `json:"why"`
+	Info           string           `json:"info"`
+	Recommendation string           `json:"recommendation,omitempty"`
+	Source         string           `json:"source,omitempty"`
+	Choices        []QuestionChoice `json:"choices,omitempty"`
+}
+
+// The caps an escalation names.
+const (
+	CapSession = "session"
+	CapTime    = "time"
+)
+
+// QuestionCap is the cap escalation names, "" for none.
+func QuestionCap(escalation string) string {
+	switch {
+	case AtTimeStop(escalation):
+		return CapTime
+	case AtSessionCap(escalation):
+		return CapSession
+	}
+	return ""
+}
+
+// QuestionChoice is one premade answer: the value the record carries and
+// the label the person reads.
+type QuestionChoice struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+// ChoiceValue returns the value of the choice whose label words equal
+// words up to case, surrounding space and end punctuation, "" when the
+// question has no such choice.
+func (q *HumanQuestion) ChoiceValue(words string) string {
+	words = ChoiceKey(words)
+	for _, c := range q.Choices {
+		if ChoiceKey(c.Label) == words {
+			return c.Value
+		}
+	}
+	return ""
+}
+
+// ChoiceKey is the words of a choice label as ChoiceValue compares them:
+// lower case, without surrounding space and end punctuation.
+func ChoiceKey(s string) string {
+	return strings.ToLower(strings.TrimRight(strings.TrimSpace(s), ".!?,;: \t"))
+}
+
+// ChoiceLabel returns the label of the choice valued value, "" when the
+// question has no such choice.
+func (q *HumanQuestion) ChoiceLabel(value string) string {
+	for _, c := range q.Choices {
+		if c.Value == value {
+			return c.Label
+		}
+	}
+	return ""
+}
+
+// Offers reports whether the question has a choice valued value.
+func (q *HumanQuestion) Offers(value string) bool {
+	return q.ChoiceLabel(value) != ""
+}
+
+// Labels returns the choice labels, the words a click posts as the
+// answer.
+func (q *HumanQuestion) Labels() []string {
+	out := make([]string, 0, len(q.Choices))
+	for _, c := range q.Choices {
+		out = append(out, c.Label)
+	}
+	return out
+}
+
+// The stall card's answers: re-run again re-runs the head's stuck runs
+// and keeps the card, check again closes it and lets the watch run on,
+// dismiss resolves the stall alert and closes it until the head changes.
+const (
+	AnswerRerunAgain = "rerun_again"
+	AnswerCheckAgain = "check_again"
+	AnswerDismiss    = "dismiss"
+)
+
+// AnswerRetryRoll is the failed-roll card's retry, whose work is RetryRoll.
+const AnswerRetryRoll = "retry"

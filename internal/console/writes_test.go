@@ -1577,7 +1577,7 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 			t.Errorf("card %s offers Close: %t, want %t", id, got, closes)
 		}
 	}
-	if esc := escalationOf(t, body, "t-cap"); !strings.Contains(esc, `<button type="submit" name="action" value="extend" class="secondary">Extend</button>`) {
+	if esc := escalationOf(t, body, "t-cap"); !strings.Contains(esc, `name="action" value="extend" class="primary" aria-label="Allow more sessions, recommended by the factory">Allow more sessions</button>`) {
 		t.Errorf("the capped card's answer form =\n%s\nwant it to extend", esc)
 	}
 	if esc := escalationOf(t, body, "t-e"); !strings.Contains(esc, `<button type="submit">Answer</button>`) {

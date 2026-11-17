@@ -35,7 +35,7 @@ func TestTheFirstRaiseOpensTheSessionOnEveryCent(t *testing.T) {
 	v.Tree.Document.Budget.SessionFloorFrontierEUR = 0.6
 	prices := aliasPrices{"big": {In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768},
 		"small": {In: 1e-6, CacheRead: 1e-7, Out: 4e-6, MaxOutput: 32768}}
-	r := &Runner{store: s, cfg: RunnerConfig{Prices: prices, Policy: func() policy.Version { return v },
+	r := &Runner{store: s, objects: &fakeObjectStore{}, cfg: RunnerConfig{Prices: prices, Policy: func() policy.Version { return v },
 		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
 	set := func(budgetCents, spentCents int) {
 		t.Helper()
@@ -72,11 +72,7 @@ func TestTheFirstRaiseOpensTheSessionOnEveryCent(t *testing.T) {
 					if own, _, err := s.Free(ctx, policy.HoldRequest{TaskID: "t-grid"}); err != nil || own.Free() != card.Left() {
 						t.Fatalf("%s budget %d spent %d hold %v: the floor reads %v free, the ask %v: %v", model, budget, spent, hold, own.Free(), card.Left(), err)
 					}
-					q := BudgetQuestion(why, r.questionFacts(ctx, card, why))
-					raise, err := strconv.ParseFloat(strings.TrimPrefix(q.Choices[0].Value, AnswerFund+":"), 64)
-					if err != nil || !strings.HasPrefix(q.Choices[0].Value, AnswerFund+":") {
-						t.Fatalf("%s budget %d spent %d hold %v: first choice %v", model, budget, spent, hold, q.Choices)
-					}
+					raise := firstRaise(t, r, card, why, model)
 					set(budget+int(raise*100+0.5), spent)
 					if again, err := r.SessionFunded(ctx, "t-grid", model); err != nil || again != "" {
 						failed++
@@ -116,7 +112,7 @@ func TestTheFirstRaiseOpensTheSessionOffTheCentGrid(t *testing.T) {
 	v := testPolicyVersion()
 	prices := aliasPrices{"big": {In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768},
 		"small": {In: 1e-6, CacheRead: 1e-7, Out: 4e-6, MaxOutput: 32768}}
-	r := &Runner{store: s, cfg: RunnerConfig{Prices: prices, Policy: func() policy.Version { return v },
+	r := &Runner{store: s, objects: &fakeObjectStore{}, cfg: RunnerConfig{Prices: prices, Policy: func() policy.Version { return v },
 		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
 	for _, tc := range []struct {
 		budget, spent, held string
@@ -154,11 +150,7 @@ func TestTheFirstRaiseOpensTheSessionOffTheCentGrid(t *testing.T) {
 		if err != nil || why == "" {
 			t.Fatalf("%+v: the session is not refused at the floor: (%q, %v)", tc, why, err)
 		}
-		q := BudgetQuestion(why, r.questionFacts(ctx, card, why))
-		raise, err := strconv.ParseFloat(strings.TrimPrefix(q.Choices[0].Value, AnswerFund+":"), 64)
-		if err != nil {
-			t.Fatalf("%+v: first choice %v", tc, q.Choices)
-		}
+		raise := firstRaise(t, r, card, why, "factory/small")
 		if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET budget_eur = budget_eur + $1::numeric WHERE id = 't-off'`, strconv.FormatFloat(raise, 'f', 2, 64)); err != nil {
 			t.Fatal(err)
 		}

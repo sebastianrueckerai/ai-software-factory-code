@@ -2080,9 +2080,8 @@ func planSlotsScene(now time.Time) labScene {
 	p.Spec = &factoryd.Spec{Outcome: "A writer opens the feed beside the board and sees who did what, by which way and when, with a steer showing within a second of its row."}
 	s.plans[id][0].Plan, _ = json.Marshal(p)
 	s.asks = map[int64]factoryd.CaseAsk{}
-	for i, q := range s.questions[id+" 1"][:3] {
-		s.asks[int64(500+i)] = factoryd.CaseAsk{At: now.Add(-12 * time.Minute), Detail: map[string]any{
-			"recommendation": q.Recommended + ": " + q.Grounds, "recommended_by": "the planner"}}
+	for i := range 3 {
+		s.asks[int64(500+i)] = factoryd.CaseAsk{At: now.Add(-12 * time.Minute), Detail: map[string]any{}}
 	}
 	return s
 }

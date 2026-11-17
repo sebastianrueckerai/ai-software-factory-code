@@ -224,7 +224,7 @@ func TestRollHeldStatementShowsThePlansAndTheOptions(t *testing.T) {
 	}
 	for _, want := range []string{"Production has been held since 2026-10-29T10:00:00Z.",
 		"Plan #1580: 2 of 5 cards merged; waits on #1609 running, #1610 queued, #1611 failed.",
-		"- hold_wait: Wait", "- deploy_now: Deploy anyway"} {
+		"- hold_wait: Not now", "- deploy_now: Deploy now"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the statement lacks %q:\n%s", want, text)
 		}

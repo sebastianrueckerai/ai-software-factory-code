@@ -13,8 +13,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-const unjudgedSuffix = " (not judged, judgment budget spent)"
-
 // askOf and infoOf are the question the face asked on case id.
 func (g rungRig) askOf(t *testing.T, id int64) string { return g.askedOf(t, id, "ask") }
 
@@ -49,8 +47,9 @@ func (g rungRig) spendChat(t *testing.T) Task {
 
 // A chat task with 0.00 of 10.00 EUR left (the default budget): a session
 // cap that rung 0 does not resolve goes to the human on card t1 and on
-// card t2, no conversation runs, each problem line ends with the mark, and
-// the project has one chat_budget card and one judgment_budget case.
+// card t2, no conversation runs, the agent's view leads with the mark and
+// no problem line or ask carries it, and the project has one chat_budget
+// card and one judgment_budget case.
 func TestSpentJudgmentBudgetFacesTheHumanUnjudged(t *testing.T) {
 	g := newRungRig(t, "success")
 	g.r.store = projectStore{g.s}
@@ -80,15 +79,12 @@ func TestSpentJudgmentBudgetFacesTheHumanUnjudged(t *testing.T) {
 	}
 	for _, out := range []TripOutcome{a, b} {
 		c := caseByID(t, g.s, out.CaseID)
-		if out.Rung != 3 || c.Status != CaseAtHuman || !strings.HasSuffix(c.Problem, unjudgedSuffix) || strings.Count(c.Problem, unjudgedSuffix) != 1 {
-			t.Errorf("outcome %+v, case %d %s %q; want at the human with one mark", out, c.ID, c.Status, c.Problem)
+		if out.Rung != 3 || c.Status != CaseAtHuman || strings.Contains(c.Problem, "not judged") {
+			t.Errorf("outcome %+v, case %d %s %q; want at the human with no mark in the problem", out, c.ID, c.Status, c.Problem)
 		}
 		if out.CaseID == a.CaseID {
-			if !strings.HasSuffix(g.askedOf(t, c.ID, "question"), unjudgedSuffix) {
-				t.Errorf("the question of case %d does not end with the mark: %q", c.ID, g.askedOf(t, c.ID, "question"))
-			}
-			if !strings.HasSuffix(g.askOf(t, c.ID), unjudgedSuffix) {
-				t.Errorf("the ask of case %d does not end with the mark: %q", c.ID, g.askOf(t, c.ID))
+			if q, ask := g.askedOf(t, c.ID, "question"), g.askOf(t, c.ID); strings.Contains(q, "not judged") || strings.Contains(ask, "not judged") || ask != c.Problem {
+				t.Errorf("the question %q and the ask %q of case %d, want the case's problem %q with no mark", q, ask, c.ID, c.Problem)
 			}
 			if info := g.infoOf(t, c.ID); !strings.Contains(info, "The factory found: not judged, judgment budget spent") || strings.Contains(info, "The check-in found") {
 				t.Errorf("the info of case %d = %q, want it led by the factory", c.ID, info)
@@ -413,7 +409,7 @@ func TestCountReachedAddsOneStep(t *testing.T) {
 }
 
 // A card on a repository with no project trips: no rung runs and the
-// face's ask ends with the unreadable mark.
+// face's agent view names the unreadable mark, which the ask does not.
 func TestUnreadJudgmentBudgetEndToEnd(t *testing.T) {
 	g := newRungRig(t, "success")
 	ctx := context.Background()
@@ -435,8 +431,10 @@ func TestUnreadJudgmentBudgetEndToEnd(t *testing.T) {
 	if err != nil || len(asks) != 1 {
 		t.Fatalf("asks %+v, %v", asks, err)
 	}
-	if ask, _ := asks[0].Detail["ask"].(string); !strings.HasSuffix(ask, "(not judged, judgment budget unreadable)") {
-		t.Fatalf("ask = %q, want the unreadable mark", ask)
+	ask, _ := asks[0].Detail["ask"].(string)
+	info, _ := asks[0].Detail["info"].(string)
+	if strings.Contains(ask, "not judged") || !strings.Contains(info, "The factory found: "+markJudgmentUnread) {
+		t.Fatalf("ask %q, info %q; want the unreadable mark in the agent's view, not in the ask", ask, info)
 	}
 }
 

@@ -2804,8 +2804,8 @@ func TestAPlansFailedLeafIsACaseAtTheHumanUntilRetryOrClose(t *testing.T) {
 				t.Fatalf("cases %+v, want one", store.cases)
 			}
 			c := store.cases[0]
-			if c.TaskID != "t-plan" || c.Kind != CaseDependencyFailed || c.StateKey != "t-a" || c.Status != CaseAtHuman ||
-				!strings.Contains(c.Problem, "The plan's card #5 (links-api) ended failed") {
+			if reason, _ := c.Facts["reason"].(string); c.TaskID != "t-plan" || c.Kind != CaseDependencyFailed || c.StateKey != "t-a" || c.Status != CaseAtHuman ||
+				c.Problem != "A card of this plan failed. Try it again, or end it so the plan goes on?" || !strings.Contains(reason, "#5 (links-api)") {
 				t.Fatalf("the case = %+v, want t-plan's dependency_failed on t-a at the human", c)
 			}
 			if got := store.tasks["t-plan"].Status; got != "done" {
@@ -2907,9 +2907,8 @@ func TestTheCloseChecksCloseOfAClosedPlanCardEndsItsWait(t *testing.T) {
 	}
 }
 
-// The plan's wait on its failed card has a face of its own: the question
-// offers the failed card's Retry and Close, the stored offers take only
-// what Act takes on the ended plan, Act's Retry files the replacement and
+// The plan's wait on its failed card has a face of its own: its answers
+// are the failed card's retry and its end, Act's Retry files the replacement and
 // Act's Close closes the failed card, and that close opens no case at the
 // next pass: the plan closes once its cards are done or closed.
 func TestThePlansWaitOnItsFailedCardHasAFaceOfItsOwn(t *testing.T) {
@@ -2945,24 +2944,12 @@ func TestThePlansWaitOnItsFailedCardHasAFaceOfItsOwn(t *testing.T) {
 		t.Fatalf("no question_asked row names case %d", c.ID)
 		return nil
 	}
-	listOf := func(t *testing.T, v any) []string {
-		t.Helper()
-		b, err := json.Marshal(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var out []string
-		if err := json.Unmarshal(b, &out); err != nil {
-			t.Fatal(err)
-		}
-		return out
-	}
 
 	t.Run("the face", func(t *testing.T) {
 		_, store, _, c := waitCase(t)
 		d := askDetail(t, store, c)
-		if got := listOf(t, d["choices"]); !slices.Equal(got, []string{"Retry #5 (links-api)", "Close #5 (links-api)"}) {
-			t.Fatalf("the ask's choices = %q, want the failed card's Retry and Close", got)
+		if d["choices"] != nil {
+			t.Fatalf("the ask's choices = %v, want none: the face's answers are its offers", d["choices"])
 		}
 		b, err := json.Marshal(d["offers"])
 		if err != nil {
@@ -2976,8 +2963,8 @@ func TestThePlansWaitOnItsFailedCardHasAFaceOfItsOwn(t *testing.T) {
 		for _, o := range offers {
 			got = append(got, o.Value)
 		}
-		if want := []string{AnswerRetry, AnswerCloseCard, ActClose, ActRestartPlan, ActNote}; !slices.Equal(got, want) {
-			t.Fatalf("the ask's offers = %v, want the two choices and the actions the ended plan takes %v", got, want)
+		if want := []string{ActRetry, ActClose + "/plan_wait"}; !slices.Equal(got, want) || offers[1].Effect != "Ends #5. The plan goes on without it." {
+			t.Fatalf("the ask's offers = %+v, want the failed card's retry and its end %v", offers, want)
 		}
 	})
 

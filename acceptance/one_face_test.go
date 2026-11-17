@@ -89,13 +89,14 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 		Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 531, Objective: "Plan the board's cache"}})
 	r.cases["t-bp"] = []factoryd.Case{{ID: planID, TaskID: "t-bp", Repository: "sf/code",
 		Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman, Problem: "Which cache holds the reads?",
-		Facts:    map[string]any{"revision": float64(2), "index": float64(1), "choices": []any{"Redis", "In memory"}, "recommended": "Redis"},
+		Facts: map[string]any{"revision": float64(2), "index": float64(1), "choices": []any{"Redis", "In memory"}, "recommended": "Redis",
+			"grounds": "it already holds the board keys"},
 		OpenedAt: time.Now().Add(-80 * time.Second)}}
 	// the plan's own seatings, as the plan store and the ask row write
 	// them in production: the revision's table the slot's planTable
 	// reads (plans), the question with its choices the send's choice
-	// guard reads (questions), and the ask on the case (caseAsks) whose
-	// recommendation with its source the face reads
+	// guard reads (questions), and the ask on the case (caseAsks); the
+	// planner's recommendation and grounds are the case's facts
 	plan, err := json.Marshal(factoryd.Plan{Summary: "Round one lands the cache; round two the reads."})
 	if err != nil {
 		t.Fatalf("marshal the plan's table: %v", err)
@@ -104,8 +105,7 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 		CreatedAt: time.Now().Add(-2 * time.Hour)}}
 	r.questions["t-bp 2"] = []factoryd.PlanQuestion{{Text: "Which cache holds the reads?",
 		Choices: []string{"Redis", "In memory"}, Recommended: "Redis", Grounds: "one standing cost buys both"}}
-	r.caseAsks[planID] = factoryd.CaseAsk{At: time.Now().Add(-80 * time.Second),
-		Detail: map[string]any{"recommendation": "Redis: it already holds the board keys", "recommended_by": "the planner"}}
+	r.caseAsks[planID] = factoryd.CaseAsk{At: time.Now().Add(-80 * time.Second), Detail: map[string]any{}}
 	r.mu.Unlock()
 
 	ck, csrf := r.Login(t)
@@ -162,16 +162,16 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 		}
 	}
 	// the escalation's ask and the plan's question keep theirs: the case's
-	// own words, the plan's one line, the table's offers as buttons
+	// own words, the plan's one line, the register's answers as buttons
 	if face := faceOf("t-e"); !strings.Contains(face, `<p class="ask">Use a replica for the reads?</p>`) ||
-		!strings.Contains(face, `<p class="why">The case is the agent&#39;s escalation.</p>`) ||
-		!strings.Contains(face, `<span class="effect">Record your note and keep the case open.</span>`) {
+		!strings.Contains(face, `<p class="why">The agent stopped because it needs a decision only a human can make.</p>`) ||
+		!strings.Contains(face, `<span class="effect">The card stays as it is.</span>`) {
 		t.Errorf("the escalation face lacks its ask, why or offers:\n%s", face)
 	}
 	if face := faceOf("t-bp"); !strings.Contains(face, `<p class="ask">Which cache holds the reads?</p>`) ||
 		!strings.Contains(face, `<p class="why">Plan #531, revision 2: 1 question open;`) ||
 		!strings.Contains(face, `name="choice" value="1" checked`) || !strings.Contains(face, `name="choice" value="2"`) ||
-		!strings.Contains(face, `<p class="recommendation">Recommendation (the planner): Redis: it already holds the board keys</p>`) {
+		!strings.Contains(face, `<p class="recommendation">Recommendation (the planner): it already holds the board keys</p>`) {
 		t.Errorf("the plan face lacks its ask, why, choices or the seated recommendation:\n%s", face)
 	}
 

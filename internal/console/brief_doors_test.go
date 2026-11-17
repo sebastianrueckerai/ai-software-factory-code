@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -284,8 +285,9 @@ func TestOneResponsesFilingsShareATry(t *testing.T) {
 	}
 }
 
-// A human's file_card on the case form files as the New task form does:
-// a brief the door refuses comes back with the way to file it as written,
+// A human's file_card on the case form files as the New task form does: a
+// face that offers it renders its file-as-written box, a brief the door
+// refuses comes back with the way to file it as written,
 // and with file as written ticked it files, marked unchecked. A title no
 // issue can carry is refused for what it is, ticked or not, with no word
 // of the box.
@@ -294,6 +296,9 @@ func TestCaseFormFilesAsWritten(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	r.tasks.set("the findings repeat", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
 	seatAsk(r, "t-g", factoryd.CaseFindingsRepeated, roomyFacts(nil))
+	fileCard, _ := factoryd.AnswerOf(factoryd.ActFileCard)
+	r.caseAsks = map[int64]factoryd.CaseAsk{1: {At: time.Now(), Detail: map[string]any{"ask": "Go on?", "story": factoryd.Story{},
+		"offers": []factoryd.AskOffer{{Value: factoryd.ActFileCard, Label: fileCard.Label, Effect: fileCard.Effect}}}}}
 	page := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
 	if !strings.Contains(escalationOf(t, page, "t-g"), `<input type="checkbox" name="file_card.as_written" value="yes">`) {
 		t.Fatalf("the case form offers no file as written:\n%s", escalationOf(t, page, "t-g"))

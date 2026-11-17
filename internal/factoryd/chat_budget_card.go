@@ -70,7 +70,7 @@ func ChatBudgetQuestion(chat Task) HumanQuestion {
 		Info: fmt.Sprintf("The project spent %.2f EUR of its judgment budget of %.2f EUR in %s. The judgment budget pays the chat, rung 1, rung 2 and the check-in's judgment. Until it is raised or the UTC month turns, no rung judges a stopped card, so every stop reaches Needs you unjudged.",
 			chat.EnforcedSpent(), chat.BudgetEUR, month) + "\n\nThe action: raise the judgment budget on the project screen, or press Fund and go on in the chat thread that hit the stop. " +
 			"Only a human who approves the project can do either. The raise ends this card.",
-		Choices: []QuestionChoice{{AnswerClose, "Decided, close"}},
+		Choices: choices(ActClose+"/"+variantNoted, ActNote+"/"+variantPark),
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -237,40 +238,26 @@ func (b *builder) atHuman(c factoryd.Case, id int64, age time.Duration) *factory
 
 // stop is the agent stop on card t with facts f at reason, the agent's
 // choices with it, judged by up below the human: the case factoryd's trip
-// opens (TripCase), and its ask as AskHuman writes it, the question shaped
-// from the stop (ShapedQuestion, a monitor flag's MonitorQuestion) with
-// the table's offers. in's Kind, StateKey and Extra pass to the trip.
+// opens (TripCase), and its ask as AskHuman writes it, the register's face
+// with the agent's view. in's Kind, StateKey and Extra pass to the trip.
 func (b *builder) stop(group, name string, id int64, t factoryd.Task, f factoryd.CaseFacts, in factoryd.TripInput, up *factoryd.HandUp, age time.Duration) Fixture {
 	in.TaskID, in.Head = t.ID, f.Head
-	qf := factoryd.QuestionFacts{SessionCap: f.SessionCap, SessionGrants: t.Usage.SessionsAdded(), Attempts: f.Attempts, BudgetEUR: f.BudgetEUR,
-		SpentEUR: f.SpentEUR, LeftEUR: f.LeftEUR, FloorEUR: f.FloorEUR, PR: f.PR, PlanTrack: t.Track == policy.TrackPlan,
-		LineBound: factoryd.EffectiveLineBound(t.Size, 800, t.Usage),
-		GrantTime: factoryd.AnswerSlice(policy.SizeAgentTime(t.Size, time.Duration(f.AgentTimeCapS)*time.Second))}
-	switch {
-	case strings.Contains(f.CapWait, "project's month cap"):
-		qf.MonthTurn, qf.ProjectFile = factoryd.CapTurn(policy.RefusedProjectCap, b.now), policy.ProjectFile(Project)
-	case strings.Contains(f.CapWait, "month cap"):
-		qf.MonthTurn, qf.MonthCapEUR, qf.MonthSpentEUR, qf.Month = factoryd.CapTurn(policy.RefusedMonthCap, b.now), 450, 449.99, b.now.UTC().Format("2006-01")
-	}
-	opened, err := factoryd.TripCase(t, f, in, qf, same)
+	opened, err := factoryd.TripCase(t, f, in, same)
 	if err != nil {
 		panic(err)
 	}
 	c := b.atHuman(opened, id, age)
 	f = factoryd.FactsOf(*c)
-	var q *factoryd.HumanQuestion
-	if c.Kind == factoryd.CaseMonitorFlag {
-		q = factoryd.MonitorQuestion(in.Reason)
-	} else {
-		q = factoryd.ShapedQuestion(in.Reason, qf, in.Choices)
+	row := factoryd.FaceRow(*c, t, f, "", up, same, same)
+	row["question"], row["source"], row["reason"], row["case_id"] = row["ask"], factoryd.EscalationSource(in.Reason), in.Reason, c.ID
+	if len(in.Choices) > 0 {
+		row["choices"] = in.Choices
 	}
-	q.OnCase(*c, "", up, same, same)
-	row := q.AskKeys()
-	row["question"], row["source"], row["reason"], row["case_id"] = q.Ask, factoryd.EscalationSource(in.Reason), in.Reason, c.ID
+	if up != nil && up.Preselected != nil {
+		row["preselected"] = map[string]any{"action": up.Preselected.Action, "args": up.Preselected.Args, "fund": up.Preselected.Fund}
+	}
 	if c.Kind == factoryd.CaseMonitorFlag {
 		row["case_kind"], row["flag"] = string(c.Kind), c.Facts["flag"]
-	} else {
-		factoryd.AddStoredOffers(row, *c, t, f)
 	}
 	return Fixture{Group: group, Kind: name, Task: t, Facts: f, Case: c, Ask: &factoryd.CaseAsk{At: c.OpenedAt, Detail: roundTrip(row)}}
 }
@@ -924,7 +911,7 @@ func (b *builder) card2004(group, name string) Fixture {
 		"recommended_by": "the factory agent",
 		"preselected":    map[string]any{"action": factoryd.ActSuccessor},
 	}
-	factoryd.AddStoredOffers(row, *c, t, factoryd.FactsOf(*c))
+	maps.Copy(row, factoryd.FaceKeys(factoryd.FaceOf(*c, factoryd.Facts{CaseFacts: factoryd.FactsOf(*c), Card: t, Recommend: factoryd.RecommendationOf(row)})))
 	return Fixture{Group: group, Kind: name, Task: t, Facts: factoryd.FactsOf(*c), Case: c, Ask: &factoryd.CaseAsk{At: c.OpenedAt, Detail: roundTrip(row)}}
 }
 

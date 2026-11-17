@@ -443,11 +443,6 @@ func (r *Runner) judgmentSpent(ctx context.Context, t Task, c Case, model string
 	}
 	r.FileJudgmentCard(ctx, t, chat)
 	judged := slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 1 && s.Outcome == StepHandedUp && s.Decision != "" })
-	if !judged {
-		if err := r.store.AppendCaseProblem(ctx, c.ID, " ("+markJudgmentSpent+")"); err != nil {
-			return nil, err
-		}
-	}
 	found := fmt.Sprintf("%s: the chat task %s has %.2f of %.2f EUR left", markJudgmentSpent, chat.ID, left, chat.BudgetEUR)
 	if judged {
 		stepFound := fmt.Sprintf("%s The chat task %s has %.2f of %.2f EUR left.", noJudgmentLine, chat.ID, left, chat.BudgetEUR)
@@ -681,7 +676,8 @@ type HandUp struct {
 	Before string
 	// Note is a line the face adds, for a rung that could not judge the case
 	Note string
-	// Mark, when set, ends the ask itself: a case no rung judged says so
+	// Mark, when set, says why no rung judged the case: the agent's view
+	// names what the factory found
 	Mark string
 	// Preselected is the action rung 2 proposed, with its arguments and
 	// fund: the face offers it preselected
@@ -970,14 +966,19 @@ func (r *Runner) refreshDraftInfo(ctx context.Context, taskID, have, note string
 		if asks[i].Comment == 0 || asks[i].Shaped == nil {
 			continue
 		}
-		info := asks[i].Shaped.Info
-		if have != "" {
-			info = strings.Replace(info, "\n\n"+have, "", 1)
+		var paras []string
+		if info := asks[i].Shaped.Info; info != "" {
+			paras = strings.Split(info, "\n\n")
 		}
-		if note != "" {
-			info += "\n\n" + note
+		if at := slices.Index(paras, have); have != "" && at >= 0 {
+			paras = slices.Delete(paras, at, at+1)
+			if note != "" {
+				paras = slices.Insert(paras, at, note)
+			}
+		} else if note != "" {
+			paras = append(paras, note)
 		}
-		return r.store.SetQuestionInfo(ctx, taskID, asks[i].Comment, info)
+		return r.store.SetQuestionInfo(ctx, taskID, asks[i].Comment, strings.Join(paras, "\n\n"))
 	}
 	return nil
 }
@@ -1054,10 +1055,8 @@ func (r *Runner) waitsAtHuman(ctx context.Context, t Task, c Case, found string)
 
 // tripCase is the case trip in makes on card t with facts f, open until
 // its face is written, with the card's cases, for OpenCase to open. The kind is caseKindOf's
-// of the reason, or in's own with its key. The problem is the shaped
-// question's ask where a template names the decision, else the reason's
-// first line, led by the findings standing on the head for a money or
-// cap ask (findingsLead). The facts are f with the reason, its source, what the reason
+// of the reason, or in's own with its key. The problem is the register's
+// ask. The facts are f with the reason, its source, what the reason
 // names and in's extra facts, the money the card's for a stop on its own
 // budget, with what the next opening needs at the floor. The case follows
 // the card's newest ended one.
@@ -1066,7 +1065,7 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 	if err != nil {
 		return Case{}, nil, err
 	}
-	c, err := TripCase(t, f, in, r.questionFacts(ctx, t, in.Reason), r.Scrub.String)
+	c, err := TripCase(t, f, in, r.Scrub.String)
 	if err != nil {
 		return Case{}, nil, err
 	}
@@ -1078,20 +1077,15 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 	return c, cases, nil
 }
 
-// TripCase is the case trip in opens on card t with facts f, the stop's
-// numbers qf, before it follows any case: tripCase's, its texts masked by
-// scrub.
-func TripCase(t Task, f CaseFacts, in TripInput, qf QuestionFacts, scrub func(string) string) (Case, error) {
+// TripCase is the case trip in opens on card t with facts f, before it
+// follows any case: tripCase's, its texts masked by scrub.
+func TripCase(t Task, f CaseFacts, in TripInput, scrub func(string) string) (Case, error) {
 	source := EscalationSource(in.Reason)
 	kind, named := CaseKindOf(source, in.Reason)
 	if in.Kind != "" {
 		kind, named = in.Kind, nil
 	}
 	kind = HumanCardKind(kind, t)
-	problem := ShapedQuestion(in.Reason, qf, in.Choices).Ask
-	if problem == plainAsk {
-		problem = EscalationQuestion(in.Reason)
-	}
 	b, err := json.Marshal(f)
 	if err != nil {
 		return Case{}, err
@@ -1115,73 +1109,20 @@ func TripCase(t Task, f CaseFacts, in TripInput, qf QuestionFacts, scrub func(st
 	if in.CheckinStop != "" {
 		facts["checkin_stop"] = in.CheckinStop
 	}
-	key := tripKey(kind, problem, f.Head, f)
+	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, Status: CaseOpen, Facts: facts, Money: tripMoney(kind, f)}
+	c.Problem = FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: t}).Ask
+	c.StateKey = tripKey(kind, in.Reason, f.Head, f)
 	if in.Kind != "" {
-		key = in.StateKey
+		c.StateKey = in.StateKey
 	}
-	// a money or cap ask cannot fire bare while unresolved review or
-	// audit findings stand on the head: it leads with them, so the human
-	// reads what the money would build on before the ask itself
-	if lead := FindingsLead(kind, f); lead != "" {
-		facts["findings_lead"] = lead
-		problem = lead + " " + problem
-	}
-	return Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: key,
-		Status: CaseOpen, Problem: problem, Facts: facts, Money: tripMoney(kind, f)}, nil
+	return c, nil
 }
 
-// moneyAskKinds are the case kinds whose ask is the card's money or a cap
-// of it: the budget floor, the session cap, the agent-time cap. Their ask
-// leads with the findings standing on the head (findingsLead).
-var moneyAskKinds = []CaseKind{CaseBudgetFloor, CaseSessionCap, CaseAgentTimeCap}
-
-// FindingsLead is the sentence a money or cap ask leads with while an
-// unresolved review or audit finding stands on the case's head: the
-// findings with their texts, in the order the gates raised them. The
-// asks of 2026-11-14 fired bare over such findings (#1879 step 36,
-// #1889 step 45, #1899 case 3826); this is the ordering rule that ends
-// that: the ask names them first in its own text. "" when the kind asks
-// for no money or cap, or no such finding stands.
-func FindingsLead(kind CaseKind, f CaseFacts) string {
-	if !slices.Contains(moneyAskKinds, kind) {
-		return ""
-	}
-	ids := f.FindingOrder
-	if len(ids) == 0 {
-		ids = f.Findings
-	}
-	var items []string
-	for _, id := range ids {
-		if !slices.Contains(f.ReviewFindings, id) && !slices.Contains(f.AuditFindings, id) {
-			continue
-		}
-		text := f.FindingTexts[id]
-		if text == "" {
-			text = id
-		}
-		if item := `"` + textutil.Truncate(text, 120) + `"`; item != `""` {
-			items = append(items, item)
-		}
-	}
-	if len(items) == 0 {
-		return ""
-	}
-	const most = 5
-	count := "one finding"
-	if n := len(items); n != 1 {
-		count = fmt.Sprintf("%d findings", n)
-	}
-	if len(items) > most {
-		items = append(items[:most], fmt.Sprintf("and %d more", len(items)-most))
-	}
-	return fmt.Sprintf("The review or the audit left %s unresolved on the head %s: %s.",
-		count, f.Head, strings.Join(items, "; "))
-}
-
-// tripKey is the state key of a trip's case of kind: head for a stop at
-// the head, the dependency's task id for a dependency's, else the
-// problem's words (caseStateKey), as for a kind with no head.
-func tripKey(kind CaseKind, problem, head string, f CaseFacts) string {
+// tripKey is the state key of a trip's case of kind at reason: head for a
+// stop at the head, the dependency's task id for a dependency's, else the
+// first line of the stop's reason (caseStateKey), never the face's words,
+// so a change of the register's copy opens no second case.
+func tripKey(kind CaseKind, reason, head string, f CaseFacts) string {
 	switch {
 	case slices.Contains(headKinds, kind) && head != "":
 		return head
@@ -1190,7 +1131,7 @@ func tripKey(kind CaseKind, problem, head string, f CaseFacts) string {
 			return d.TaskID
 		}
 	}
-	return caseStateKey(kind, problem, "")
+	return caseStateKey(kind, EscalationQuestion(reason), "")
 }
 
 // tripDep is the dependency a trip of a dependency kind stops on, as the
@@ -1294,13 +1235,6 @@ func factsOf(c Case) CaseFacts {
 		_ = json.Unmarshal(b, &f)
 	}
 	return f
-}
-
-// monitorFace is the face of a monitor flag on t: the reason's flag text
-// is agent-derived, so it is fenced and scrubbed as every text a human
-// reads.
-func (r *Runner) monitorFace(t Task, reason string) *HumanQuestion {
-	return MonitorQuestion(r.Scrub.String(r.untrusted(t, reason)))
 }
 
 // tripNext is the last line of a trip's face for case c: at a cap, where
@@ -1434,27 +1368,38 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		choices[i] = r.untrusted(t, c)
 	}
 	question := EscalationQuestion(reason)
-	var shaped *HumanQuestion
-	if reason != HealedReason && !strings.HasPrefix(reason, screeningAsks) {
-		// the deterministic stops shape their five-part question from the
-		// stop's own numbers; every other ask gets the same five parts
-		// from its reason, so no card asks with words alone
-		if c.Kind == CaseMonitorFlag {
-			shaped = r.monitorFace(t, reason)
-		} else {
-			shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
+	step := map[string]any{"reason": reason, "comment": id}
+	asked := map[string]any{"comment": id, "source": EscalationSource(reason), "reason": textutil.Truncate(r.Scrub.String(reason), 300)}
+	if c.ID != 0 {
+		asked["case_id"] = c.ID
+	}
+	if beside {
+		// the card's own ask stays the card's: its thread seeds from that.
+		// The flag tells the settle the ask of an ended card's open issue
+		asked["case_kind"], asked["flag"] = string(c.Kind), c.Facts["flag"]
+	}
+	whole := reason != HealedReason && !strings.HasPrefix(reason, screeningAsks)
+	if whole {
+		// the register writes the face on the facts Act judges, as the case
+		// reaches the human; a render reads it as stored
+		f, err := r.FactsAtCase(ctx, t, c)
+		if err != nil {
+			log.Printf("task %s: the facts of case %d: %v", t.ID, c.ID, err)
+			f = FactsOf(c)
 		}
-		shaped.OnCase(c, note, up, func(s string) string { return r.untrusted(t, s) }, r.scrub)
+		fence := func(s string) string { return r.untrusted(t, s) }
+		maps.Copy(asked, FaceRow(r.fencedChoices(t, c), t, f, note, up, fence, r.scrub))
+		question, _ = asked["ask"].(string)
 		// the refusal the newest session ended on rides with the ask,
 		// verbatim: the blocker reaches the human with no agent-side
 		// reporting to lose it (card #1345). A prover's refusals name its
 		// hold-outs, so its ask is factoryd's words alone.
 		if t.Source != SourceProver {
 			if tool, refusal, ok := r.lastToolRefusal(ctx, t.ID); ok {
-				shaped.Info += "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal)
+				view, _ := asked["info"].(string)
+				asked["info"] = strings.TrimSpace(view + "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal))
 			}
 		}
-		question = shaped.Ask
 	}
 	if reason == HealedReason {
 		// the restart's sentence asks nothing: the row names the question it asks again
@@ -1466,43 +1411,16 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 			question = cmp.Or(asks[len(asks)-1].Question, question)
 		}
 	}
-	// the shaped question's buttons are not these choices: they carry
-	// values, and park and keep waiting record an answer without posting
-	// one, so the console renders them from the question itself
-	step := map[string]any{"reason": reason, "comment": id}
-	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id, "source": EscalationSource(reason),
-		"reason": textutil.Truncate(r.Scrub.String(reason), 300)}
-	if c.ID != 0 {
-		asked["case_id"] = c.ID
-	}
-	if beside {
-		// the card's own ask stays the card's: its thread seeds from that.
-		// The flag tells the settle the ask of an ended card's open issue
-		asked["case_kind"], asked["flag"] = string(c.Kind), c.Facts["flag"]
-	}
-	if shaped != nil {
-		maps.Copy(asked, shaped.AskKeys())
-	}
+	asked["question"] = textutil.Truncate(question, 300)
 	if len(choices) > 0 {
 		step["choices"] = choices
-		if shaped == nil {
-			asked["choices"] = choices
-		}
+		asked["choices"] = choices
 	}
 	if up != nil && up.Preselected != nil {
 		asked["preselected"] = up.Preselected.preselected()
 	}
-	if shaped == nil {
+	if !whole {
 		r.repeatFace(ctx, t, c, asked)
-	}
-	if c.Kind != CaseMonitorFlag && c.ID != 0 && AnswersByOffers(c, t.Kind) {
-		// the buttons are decided once, on the facts Act judges, as the case
-		// reaches the human; a render reads them as stored
-		if f, err := r.FactsAtCase(ctx, t, c); err != nil {
-			log.Printf("task %s: the offers of case %d: %v", t.ID, c.ID, err)
-		} else {
-			AddStoredOffers(asked, c, t, f)
-		}
 	}
 	// the ask's record comes before the wait: a card that waits on a human
 	// has its ask row, so a failed write fails the step
@@ -1518,67 +1436,71 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 	return id, nil
 }
 
-// OnCase completes q, the shaped question of case c's stop, as its face
-// asks it: led by the findings the case stored (findingsLead), so no ask
-// for money fires bare over unresolved review or audit findings; the
-// planner's note and the hand-up up of the rungs below after its info,
-// their recommendation and mark. fence fences agent text, scrub masks
+// FaceRow is the face an ask row of case c on card t stores: the
+// register's face on facts f with up's recommendation, and as its info the
+// agent's view, note before it. fence fences agent text, scrub masks
 // secrets.
-func (q *HumanQuestion) OnCase(c Case, note string, up *HandUp, fence, scrub func(string) string) {
-	if lead, _ := c.Facts["findings_lead"].(string); lead != "" {
-		q.Ask = fence(lead) + " " + q.Ask
+func FaceRow(c Case, t Task, f CaseFacts, note string, up *HandUp, fence, scrub func(string) string) map[string]any {
+	row := FaceKeys(FaceOf(c, Facts{CaseFacts: f, Card: t, Recommend: up.recommend(fence, scrub)}))
+	if view := agentView(note, up, fence, scrub); view != "" {
+		row["info"] = view
 	}
-	if note != "" {
-		q.Info += "\n\n" + note
+	return row
+}
+
+// fencedChoices is case c with the agent's choices as a face shows them:
+// sanitised as every agent text, since a press posts one as the human's
+// answer.
+func (r *Runner) fencedChoices(t Task, c Case) Case {
+	raw := factStrings(c, "choices")
+	if len(raw) == 0 {
+		return c
 	}
+	safe := make([]string, len(raw))
+	for i, s := range raw {
+		safe[i] = r.untrusted(t, s)
+	}
+	c.Facts = maps.Clone(c.Facts)
+	c.Facts["choices"] = safe
+	return c
+}
+
+// recommend is up's recommendation as a face takes it: the action rung 2
+// proposed, else the one the rung below recommended, with its grounds;
+// none for no hand-up. fence fences agent text, scrub masks secrets.
+func (up *HandUp) recommend(fence, scrub func(string) string) Recommendation {
 	if up == nil {
-		return
+		return Recommendation{}
 	}
-	if rec := up.recommendation(fence, scrub); rec != "" {
-		q.Recommendation, q.Source = rec, recommendedBy(up)
+	rec := Recommendation{Action: up.Action, By: recommendedBy(up), Grounds: up.recommendation(fence, scrub)}
+	if up.Preselected != nil {
+		rec.Action = up.Preselected.Action
 	}
-	if up.Mark != "" {
-		q.Ask += " (" + up.Mark + ")"
+	if rec.Action == "" || rec.Action == RungHandUp {
+		return Recommendation{}
 	}
-	if up.Found != "" {
-		q.Info += "\n\n" + fence(scrub(foundLine(up)))
-		if up.Before != "" {
-			q.Info += "\n\n" + fence(scrub(beforeLine(up.Before)))
+	return rec
+}
+
+// agentView is what the rungs below the human found on the case, the
+// planner's note before it: the agent's view beside the face. fence fences
+// agent text, scrub masks secrets.
+func agentView(note string, up *HandUp, fence, scrub func(string) string) string {
+	parts := []string{note}
+	if up != nil {
+		if up.Found != "" {
+			parts = append(parts, fence(scrub(foundLine(up))))
+			if up.Before != "" {
+				parts = append(parts, fence(scrub(beforeLine(up.Before))))
+			}
 		}
+		parts = append(parts, up.Note)
 	}
-	if up.Note != "" {
-		q.Info += "\n\n" + up.Note
-	}
-}
-
-// AskKeys are the face keys a question_asked row carries of q: its five
-// parts, its choices with their labels, and the cap it is about.
-func (q *HumanQuestion) AskKeys() map[string]any {
-	keys := map[string]any{"ask": q.Ask, "why": q.Why, "info": q.Info, "choices": q.Labels()}
-	if q.Recommendation != "" && q.Source != "" {
-		keys["recommendation"], keys["recommended_by"] = q.Recommendation, q.Source
-	}
-	if q.Cap != "" {
-		keys["cap"] = q.Cap
-	}
-	if len(q.Choices) > 0 {
-		keys["offers"] = q.Choices
-	}
-	return keys
-}
-
-// AddStoredOffers puts the table's offers and refusals of case c on card
-// t with facts f on the ask row asked, after its own choices: the buttons
-// are decided once, on the facts Act judges, as the case reaches the human.
-func AddStoredOffers(asked map[string]any, c Case, t Task, f CaseFacts) {
-	if offers, refusals, ok := storeOffers(c, t, f); ok {
-		asked["offers"] = withTableOffers(asked["offers"], offers)
-		asked["refusals"] = nonNilList(refusals)
-	}
+	return strings.TrimSpace(strings.Join(slices.DeleteFunc(parts, func(p string) bool { return p == "" }), "\n\n"))
 }
 
 // faceKeys are the keys of a question_asked row that make its face.
-var faceKeys = []string{"info", "recommendation", "recommended_by", "choices", "offers", "preselected"}
+var faceKeys = []string{"ask", "why", "story", "info", "recommendation", "recommended_by", "choices", "offers", "preselected"}
 
 // repeatFace fills the face keys asked lacks from the newest ask of case c
 // that has them, so an ask repeated (a restart's) is a whole face too.
@@ -1592,7 +1514,7 @@ func (r *Runner) repeatFace(ctx context.Context, t Task, c Case, asked map[strin
 		if id, _ := toInt(e.Detail["case_id"]); c.ID != 0 && int64(id) != c.ID {
 			continue
 		}
-		if _, whole := e.Detail["offers"]; !whole && e.Detail["info"] == nil {
+		if _, whole := e.Detail["story"]; !whole {
 			continue
 		}
 		for _, k := range faceKeys {

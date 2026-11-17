@@ -365,7 +365,7 @@ func TestSchemaCopierFilesAHumanCardWithoutAgents(t *testing.T) {
 	q := askedQuestion(t, store, card.ID)
 	if q.Ask != ask || !strings.HasPrefix(card.Objective, ask+"\n\n") ||
 		!strings.Contains(q.Info, "The pull request: https://git.example/sf/ai-software-factory-infra/pulls/1\n\n") ||
-		!slices.Equal(q.Choices, []QuestionChoice{{AnswerClose, "Handled, close"}}) {
+		!slices.Equal(q.Choices, []QuestionChoice{{AnswerClose, "I did it"}, {AnswerPark, "Not now"}}) {
 		t.Fatalf("question %+v, objective %q; want the merge ask, the pull request's link and the close", q, card.Objective)
 	}
 	issues, labels, _, prs := fj.snapshot()

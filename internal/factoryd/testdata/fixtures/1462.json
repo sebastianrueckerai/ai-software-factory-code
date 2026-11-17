@@ -259,8 +259,8 @@
     "human_cases": 1,
     "face": [
       {
-        "ask": "merge approval",
-        "why": "The merge gate classes the change normal",
+        "ask": "pull request?",
+        "why": "the normal risk class with a human",
         "recommendation": ""
       }
     ],

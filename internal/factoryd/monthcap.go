@@ -389,3 +389,9 @@ func (c *CapWaits) Wake(ctx context.Context, v policy.Version) error {
 	log.Printf("config: version %d loaded, %d cap waits woken", v.ID, woken)
 	return errors.Join(errs...)
 }
+
+// outerGuardRefused reports whether refusal is LiteLLM's outer guard firing
+// while the ledger eur is below the cap limit.
+func outerGuardRefused(refusal string, eur, limit float64) bool {
+	return strings.HasPrefix(refusal, gateway.ProxyBudgetRefusal) && eur < limit
+}

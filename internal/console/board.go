@@ -2029,7 +2029,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	if v.escalated(t) {
 		k.Reason, k.Choices = cardReason(bt.Escalation), bt.Choices
 		k.Question, k.AnswersPending = bt.Question, bt.AnswersPending
-		f := capFactsFrom(t, v.policy.Document.Limits.Sessions, bt.Escalation, bt.Question, v.pending)
+		f := capFactsFrom(t, v.policy.Document.Limits.Sessions, bt.Escalation, v.pending)
 		k.Capped, k.TimeCapped = f.capped, f.timeCap
 		// the Fund action is offered where the fund's floor refuses a
 		// session's opening calls for want of budget (roadmap 243): the same
@@ -3169,14 +3169,12 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 }
 
 // resolve answers POST /tasks/{id}/resolve: the one send of the case's
-// face and of the escalation's. The form posts the case, the action its
-// button names with that action's arguments ("<action>.<argument>"), the
-// fund beside it and the note; doAnswerCase builds the one resolution and
-// Act runs it once. A premade answer that is one of the card's question's
-// choices answers as that choice's button does (doAnswerValue), the note
-// and the fund its own; any other is a continue. A form that names no
-// case is the escalation face's send: the choice its button names, the
-// fund and the note in one answer on the card (doAnswerValue).
+// face and of the escalation's. The form posts the case, the answer its
+// button names with that answer's fields ("<answer>.<field>"), the fund
+// beside it and the note; doPressCase makes the one resolution and Act
+// runs it once. A form that names no case is the escalation face's send:
+// the choice its button names, the fund and the note in one answer on the
+// card (doAnswerValue).
 func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 	id, action, note := r.PathValue("id"), r.PostFormValue("action"), r.PostFormValue("note")
 	caseID, err := strconv.ParseInt(cmp.Or(r.PostFormValue("case_id"), "0"), 10, 64)
@@ -3217,53 +3215,16 @@ func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
-	if premade := r.PostFormValue("premade"); premade != "" {
-		bt, _, err := c.cfg.Tasks.BoardTask(r.Context(), id)
-		if err != nil {
-			c.fail(w, r, err)
-			return
-		}
-		if bt.Question != nil {
-			if value := bt.Question.ChoiceValue(premade); value != "" {
-				_, err := c.doAnswerValue(r.Context(), button(r), id, note, value, "", fund)
-				c.pressed(w, r, err)
-				return
-			}
-		}
-		action, note = factoryd.ActContinue, strings.TrimSpace(premade+"\n\n"+note)
+	answer, ok := factoryd.AnswerOf(action)
+	if !ok {
+		c.fail(w, r, refuse(http.StatusBadRequest, "The card has no answer "+action+"."))
+		return
 	}
-	args := map[string]any{}
-	var raise float64
-	for _, arg := range factoryd.ActionArgs[action] {
-		v := strings.TrimSpace(r.PostFormValue(action + "." + arg.Name))
-		if arg.Float && v != "" {
-			amount, err := strconv.ParseFloat(v, 64)
-			if err != nil || amount < 0 {
-				c.fail(w, r, refuse(http.StatusBadRequest, arg.Label+" is an amount in EUR"))
-				return
-			}
-			raise = amount
-			continue
-		}
-		switch n, err := strconv.Atoi(v); {
-		case v == "":
-		case !arg.Number:
-			args[arg.Name] = v
-		case err != nil || n < 0:
-			c.fail(w, r, refuse(http.StatusBadRequest, arg.Label+" is a whole number"))
-			return
-		case arg.Name == "minutes":
-			args["agent_time_s"] = n * 60
-		default:
-			args[arg.Name] = n
-		}
+	values := map[string]string{}
+	for _, f := range answer.Fields {
+		values[f.Name] = r.PostFormValue(action + "." + f.Name)
 	}
-	eur := fund
-	if raise > 0 {
-		eur = raise
-	}
-	raw, _ := json.Marshal(args)
-	_, err = c.doAnswerCase(r.Context(), button(r), id, caseID, note, action, raw, eur)
+	_, err = c.doPressCase(r.Context(), button(r), id, caseID, answer, values, note, fund)
 	c.pressed(w, r, err)
 }
 
@@ -3870,7 +3831,6 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 				m.buildDecide()
 				m.Writer = true // the drawer's route already asked for a writer
 				if a.Kind == factoryd.ApprovalMerge {
-					m.Detail = c.caseBriefOf(ctx, a, v.policy.Document.LinkHosts)
 					d.Merge = &m
 				} else {
 					m.scrubLayers(v.policy.Document.LinkHosts)

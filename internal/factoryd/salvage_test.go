@@ -106,12 +106,16 @@ func TestSalvageRefusals(t *testing.T) {
 	}
 }
 
-// The human's stored offers hold the salvage only while the run is gone.
+// salvageOn says the face of a session cap on facts f holds the salvage,
+// among its answers or the others.
+func salvageOn(f CaseFacts) bool {
+	face := FaceOf(Case{Kind: CaseSessionCap}, Facts{CaseFacts: f})
+	return slices.ContainsFunc(slices.Concat(face.Answers, face.More), func(a Answer) bool { return a.Action == ActSalvage })
+}
+
+// The human's face holds the salvage only while the run is gone.
 func TestSalvageIsOfferedWhileTheRunIsGone(t *testing.T) {
-	has := func(f CaseFacts) bool {
-		offers, _ := OffersFor(f)
-		return slices.ContainsFunc(offers, func(o AskOffer) bool { return o.Value == ActSalvage })
-	}
+	has := salvageOn
 	if !has(CaseFacts{Kind: CaseSessionCap, RunGone: true}) {
 		t.Error("a gone run's case does not offer salvage")
 	}
@@ -266,7 +270,7 @@ func TestAnAliveReadThatFailsLeavesTheFactsWholeAndOffersNoSalvage(t *testing.T)
 	if slices.Contains(f.Partial, "run") || f.RunGone {
 		t.Fatalf("partial %v, gone %v; want whole facts and no run verdict", f.Partial, f.RunGone)
 	}
-	if offers, _ := OffersFor(f); slices.ContainsFunc(offers, func(o AskOffer) bool { return o.Value == ActSalvage }) {
+	if salvageOn(f) {
 		t.Error("an unread workflow offers the salvage")
 	}
 }

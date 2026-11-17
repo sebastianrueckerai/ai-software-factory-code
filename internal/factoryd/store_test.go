@@ -1996,17 +1996,6 @@ func (s *fakeStore) StartRung1Step(ctx context.Context, taskID string, limit int
 	return id, false, err
 }
 
-func (s *fakeStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {
-	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id })
-	if i < 0 {
-		return fmt.Errorf("case %d: %w", id, ErrNotFound)
-	}
-	if !strings.HasSuffix(s.cases[i].Problem, suffix) {
-		s.cases[i].Problem += suffix
-	}
-	return nil
-}
-
 func (s *fakeStore) CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error) {
 	return s.caseSteps[caseID], nil
 }
@@ -6068,6 +6057,6 @@ func TestPGStoreTasksByParent(t *testing.T) {
 	}
 }
 
-func (s *fakeStore) SetCaseOffers(context.Context, int64, []AskOffer, []ActionRefusal) error {
+func (s *fakeStore) SetCaseFace(context.Context, int64, map[string]any) error {
 	return nil
 }

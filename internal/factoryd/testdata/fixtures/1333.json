@@ -80,7 +80,7 @@
     "human_cases": 1,
     "face": [
       {
-        "ask": "merge approval",
+        "ask": "pull request?",
         "why": "The model review did not run: model review refused by the gateway (error_price)",
         "recommendation": ""
       }

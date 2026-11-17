@@ -654,7 +654,7 @@ func TestSuperviseGateOfARollAsksNoModel(t *testing.T) {
 
 // [roll_trip_state_in_face] A roll's checks trip escalates with no model
 // call, and its diagnosis names the combined status, the green jobs and the
-// job still running; the stop's question carries it as its Why.
+// job still running; the stop's face carries it as what is left.
 func TestSuperviseGateOfARollNamesTheChecksState(t *testing.T) {
 	c := newGateCase(t, ActivityWaitChecks, `{"action":"wait","diagnosis":"never asked"}`, map[string]string{
 		"GET /api/v1/repos/sf/r/commits/c1/status": `{"state":"pending","statuses":[` +
@@ -671,9 +671,12 @@ func TestSuperviseGateOfARollNamesTheChecksState(t *testing.T) {
 		t.Fatalf("decision %+v after %d model calls", d, len(c.model.chats))
 	}
 	reason := GateStopped + "WaitChecks (attempt 1) past its bound of 12m0s: " + d.Diagnosis
-	q := ShapedQuestion(reason, QuestionFacts{}, nil)
-	if !strings.Contains(q.Why, state) {
-		t.Fatalf("Why = %q, want it to carry %q", q.Why, state)
+	k, err := TripCase(task, CaseFacts{}, TripInput{TaskID: task.ID, Reason: reason}, func(s string) string { return s })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if face := FaceOf(k, Facts{CaseFacts: FactsOf(k), Card: task}); !strings.Contains(face.Story.Left, state) {
+		t.Fatalf("Left = %q, want it to carry %q", face.Story.Left, state)
 	}
 }
 

@@ -1158,7 +1158,7 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 		"Main CI's image jobs sign each image they push. No signature means a job did not sign it or the tag was pushed outside main CI; " +
 		"a signature by another key means the code repository's Actions secret COSIGN_PRIVATE_KEY is not the key k8s/cosign.pub holds. " +
 		"Find which, fix it, and close this issue. The next green push run of main is judged again; an empty commit on main starts one.\n\n" +
-		"Choices:\n- Fixed, close\n\n" +
+		"Choices:\n- I did it\n- Not now\n\n" +
 		"factoryd asks (factoryd). Answer on the card in the console or in the chat's inbox, or close this issue once decided.\n\nfiled by factoryd"
 	want := ask + "\n\n" + body
 	if len(f.issues) != 1 || f.issues[0] != ask+"\n\n"+why+body {
@@ -2966,7 +2966,7 @@ func TestARollTaskThatFailsEndsItsCommitsStatusFailed(t *testing.T) {
 
 // The roll ladder's end: when a roll request settles failed and three
 // have failed since the last merged roll, the roller asks a person — the
-// five-part question, Retry the roll / Park / Close as its buttons —
+// question, Try the roll again / Not now / End the card as its buttons,
 // once: while the question stands no second card files.
 func TestRollEscalatesAfterAttempts(t *testing.T) {
 	f := &rollForgejo{files: map[string]map[string]string{codeRepo + "@main": mainPins()}}
@@ -3009,13 +3009,13 @@ func TestRollEscalatesAfterAttempts(t *testing.T) {
 	if len(asked) != 1 || asked[0].Via != ViaFactoryd || asked[0].Detail["source"] != SourceRollFailed {
 		t.Fatalf("question_asked rows %+v, want factoryd's", asked)
 	}
-	for _, want := range []string{"Choices:", "- Retry the roll", "- Park", "- Close", "card #31"} {
+	for _, want := range []string{"Choices:", "- Try the roll again", "- Not now", "- End the card", "card #31"} {
 		if !strings.Contains(asks[0].Objective, want) {
 			t.Fatalf("the question misses %q:\n%s", want, asks[0].Objective)
 		}
 	}
 	q := questionOfAsk(asked[0].Detail)
-	if q == nil || q.ChoiceValue("Retry the roll") != "retry" {
+	if q == nil || q.ChoiceValue("Try the roll again") != "retry" {
 		t.Fatalf("question %+v, want its buttons' values", q)
 	}
 	// a fourth failure settles while the question stands: no second card
@@ -3028,7 +3028,7 @@ func TestRollEscalatesAfterAttempts(t *testing.T) {
 	}
 }
 
-// The question's Retry the roll work: the failed attempts' requests go
+// The question's Try the roll again work: the failed attempts' requests go
 // — their commits unjudged again — the question's card closes as
 // factoryd's own, and the next poll's judge files one fresh roll of the
 // newest green images; a second poll files nothing more.
@@ -3066,7 +3066,7 @@ func TestRollRetryAnswerStartsAFreshRoll(t *testing.T) {
 	}
 	// a comment of the label on the card, even one recorded, is no answer
 	store.intakeEvents = append(store.intakeEvents,
-		IntakeEvent{TaskID: ask.ID, Kind: "issue_comment", Author: "sebastian", Body: "Retry the roll", Trusted: true})
+		IntakeEvent{TaskID: ask.ID, Kind: "issue_comment", Author: "sebastian", Body: "Try the roll again", Trusted: true})
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}

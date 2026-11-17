@@ -2486,50 +2486,48 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 	if want := []string{"701 [a.txt b.txt ask ＠mallory]", "702 [a.txt b.txt ask ＠mallory]", "703 <nil>"}; !slices.Equal(steps, want) {
 		t.Fatalf("escalated steps = %q, want %q", steps, want)
 	}
-	plainOffers := []QuestionChoice{{"say:a.txt", "a.txt"}, {"say:b.txt", "b.txt"}, {"say:ask ＠mallory", "ask ＠mallory"}, {AnswerPark, "Leave it waiting"}, {AnswerClose, "End the card"}}
-	want := []Event{
-		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"question": "Which file?", "choices": []string{"a.txt", "b.txt", "ask ＠mallory", "Leave it waiting", "End the card"}, "comment": int64(701), "source": "agent", "case_id": int64(1),
-				"reason": "The agent asks: Which file?\nWhy: open\nRecommendation: a.txt, it is first",
-				"ask":    "Which file?", "why": "open", "info": plainInfo, "recommendation": "a.txt, it is first", "recommended_by": "the agent",
-				"offers": plainOffers}},
-		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(702), "source": "supervisor", "reason": HealedReason, "case_id": int64(1),
-				"info": plainInfo, "recommendation": "a.txt, it is first", "recommended_by": "the agent", "offers": plainOffers}},
-		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"question": "This card stopped and needs your decision: how should it go on?", "comment": int64(703), "source": "supervisor", "case_id": int64(2),
-				"reason": "supervisor escalated: the check cannot pass\n\nProgress: 3 commands",
-				"ask":    "This card stopped and needs your decision: how should it go on?",
-				"why":    "supervisor escalated: the check cannot pass", "info": plainInfo,
-				"choices": []string{"Go on", "Leave it waiting", "End the card"},
-				"offers":  []QuestionChoice{{AnswerGrant, "Go on"}, {AnswerPark, "Leave it waiting"}, {AnswerClose, "End the card"}}}},
+	if len(rows.rows) != 3 {
+		t.Fatalf("%d ask rows, want 3", len(rows.rows))
 	}
-	// every ask stores the table's offers after its own choices; the table's
-	// close and note apply on every case, and the rest of the table is the
-	// facts' (TestACaseReachesTheHumanWithItsOffersStoredAndARefusalRefreshesThem)
-	for i, row := range rows.rows {
-		offers, _ := row.Detail["offers"].([]AskOffer)
-		var own []QuestionChoice
-		var table []string
-		for _, o := range offers {
-			if o.Effect == "" {
-				own = append(own, QuestionChoice{o.Value, o.Label})
-			} else {
-				table = append(table, o.Value)
-			}
+	keys := func(d map[string]any) []string {
+		var out []string
+		for _, o := range d["offers"].([]AskOffer) {
+			out = append(out, o.Value)
 		}
-		if !slices.Contains(table, ActClose) || !slices.Contains(table, ActNote) {
-			t.Errorf("row %d stores the table offers %v, want close and note among them", i, table)
-		}
-		delete(row.Detail, "refusals")
-		if own == nil {
-			delete(row.Detail, "offers")
-		} else {
-			row.Detail["offers"] = own
+		return out
+	}
+	// the agent's ask: its question, its choices sanitised as answers in its
+	// words, and its recommendation suggesting the choice it names
+	agent := rows.rows[0].Detail
+	if agent["question"] != "Which file?" || agent["ask"] != "Which file?" || agent["why"] != "Open." || agent["source"] != "agent" ||
+		agent["case_id"] != int64(1) || agent["comment"] != int64(701) || !reflect.DeepEqual(agent["choices"], sane) {
+		t.Errorf("the agent's ask row = %+v", agent)
+	}
+	if got, want := keys(agent), []string{"say:a.txt", "say:b.txt", "say:ask ＠mallory", ActNote}; !slices.Equal(got, want) {
+		t.Errorf("the agent's ask offers %v, want %v", got, want)
+	}
+	if agent["recommended_by"] != "the agent" || agent["recommendation"] != "a.txt, it is first" ||
+		!reflect.DeepEqual(agent["preselected"], map[string]any{"action": "say:a.txt"}) {
+		t.Errorf("the agent's suggestion: by %v, %v, %v", agent["recommended_by"], agent["recommendation"], agent["preselected"])
+	}
+	// the healed re-ask names the question it asks again and carries the face
+	healed := rows.rows[1].Detail
+	if healed["question"] != "Which file?" || healed["reason"] != HealedReason || healed["case_id"] != int64(1) || !reflect.DeepEqual(healed["choices"], sane) {
+		t.Errorf("the healed row = %+v", healed)
+	}
+	for _, k := range []string{"ask", "why", "story", "offers", "recommendation", "recommended_by"} {
+		if !reflect.DeepEqual(healed[k], agent[k]) {
+			t.Errorf("the healed row's %s = %v, want the asked face's %v", k, healed[k], agent[k])
 		}
 	}
-	if !reflect.DeepEqual(rows.rows, want) {
-		t.Fatalf("rows = %+v, want %+v", rows.rows, want)
+	// a stop with no choices asks the register's question of its kind, and
+	// its face holds the close and the note every case takes
+	plain := rows.rows[2].Detail
+	if plain["question"] != plain["ask"] || plain["ask"] != CaseFaces[CaseOther].Ask(Facts{}) || plain["case_id"] != int64(2) || plain["choices"] != nil {
+		t.Errorf("the plain ask row = %+v", plain)
+	}
+	if got := keys(plain); !slices.Contains(got, ActClose) || !slices.Contains(got, ActNote) {
+		t.Errorf("the plain ask offers %v, want the close and the note among them", got)
 	}
 }
 
@@ -2699,8 +2697,7 @@ func TestEscalateATaskWithoutAnIssue(t *testing.T) {
 
 // A session that stops on a tool refusal puts the refusal in its ask's
 // info block, verbatim: the blocker reaches the human without
-// agent-side reporting (card #1345). A plan card's stop names what its
-// choices do on the plan track, and a session whose last tool call
+// agent-side reporting (card #1345), and a session whose last tool call
 // completed quotes nothing.
 func TestEscalateQuotesTheLastToolRefusal(t *testing.T) {
 	const refusal = "Refused: criterion t-c1: gh is not an allowed tool; criterion t-c2: the tool holds no issue write"
@@ -2731,9 +2728,6 @@ func TestEscalateQuotesTheLastToolRefusal(t *testing.T) {
 			t.Fatal(err)
 		}
 		q := questionOfAsk(rows.rows[0].Detail)
-		if !strings.Contains(q.Info, "planner session") || strings.Contains(q.Info, "pull request") {
-			t.Errorf("%s: info = %q, want the plan track's wording", c.name, q.Info)
-		}
 		if c.wantIn != "" && !strings.Contains(q.Info, c.wantIn) {
 			t.Errorf("%s: info = %q, want the refusal verbatim", c.name, q.Info)
 		}
@@ -3550,9 +3544,6 @@ func TestCapReasonReaders(t *testing.T) {
 		if got := capWaitDecision(resumes); got != decision {
 			t.Errorf("%s: capWaitDecision = %q", decision, got)
 		}
-		if got := capRefusedSuffix(resumes); got != "the state: x" {
-			t.Errorf("%s: suffix of the wait on its own = %q", decision, got)
-		}
 		if decision == policy.RefusedDayCap {
 			continue
 		}
@@ -3562,9 +3553,6 @@ func TestCapReasonReaders(t *testing.T) {
 		}
 		if got := capWaitDecision(human); got != "" {
 			t.Errorf("%s: capWaitDecision of the wait on a human = %q, want none", decision, got)
-		}
-		if got := capRefusedSuffix(human); got != "the state: x" {
-			t.Errorf("%s: suffix of the wait on a human = %q", decision, got)
 		}
 	}
 	if want := "the month cap is reached: the gateway refused this task's spend (refused_month_cap): why"; capRefused(policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "why"}) != want {
@@ -3793,10 +3781,8 @@ func TestSessionFundedPricesTheClassSessionModel(t *testing.T) {
 // spent 0.10 is held and the ceiling -0.30: 0.90. With no hold and
 // 4.5004 spent, the ceiling 0.0996 is read down to 0.099, never up to
 // 0.100, so the raise is 0.60 - 0.099 = 0.501, rounded up to 0.51, and at
-// 5.51 (0.6096) the floor funds the session. The floor 0.60 is a button
-// only while the raise stays under it: at 0.65 and 0.90 a fund of it
-// would leave the session refused, so those asks offer the raise and the
-// round 2.00 alone.
+// 5.51 (0.6096) the floor funds the session. The ask names the raise, and
+// "Add money" opens with it.
 func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 	store := newFakeStore()
 	if err := store.CreateTask(context.Background(), Task{ID: "t-2", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "plan",
@@ -3810,12 +3796,12 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 	v.Tree.Document.Classes["planner"] = policy.Class{Session: policy.SessionPlan, Models: []string{policy.Small, policy.Big, policy.Premium},
 		SessionModel: policy.Premium}
 	v.Tree.Document.Prices.MaxOutputTokens[policy.Premium] = 32768
-	r := &Runner{store: store, cfg: RunnerConfig{
+	r := &Runner{store: store, objects: &fakeObjectStore{}, cfg: RunnerConfig{
 		Prices: stubPrices{price: policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}},
 		Policy: func() policy.Version { return v },
 		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
 	ctx := context.Background()
-	ask := func(budget, spent float64, want string, choices ...float64) {
+	ask := func(budget, spent, raise float64) {
 		t.Helper()
 		k := store.tasks["t-2"]
 		k.BudgetEUR, k.SpentEUR, k.HeldEUR = budget, spent, store.held["t-2"].Held
@@ -3824,30 +3810,27 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 		if err != nil || !BudgetRefusal(why) {
 			t.Fatalf("%.4f of %.2f spent: (%q, %v), want the money ask", spent, budget, why, err)
 		}
-		q := BudgetQuestion(why, r.questionFacts(ctx, k, why))
-		if q.Ask != want {
-			t.Errorf("%.4f of %.2f spent: ask = %q, want %q", spent, budget, q.Ask, want)
-		}
-		var wantChoices []QuestionChoice
-		for _, eur := range choices {
-			wantChoices = append(wantChoices, QuestionChoice{FundChoiceValue(eur), fmt.Sprintf("Fund %.2f EUR and go on", eur)})
-		}
-		if wantChoices = append(wantChoices, QuestionChoice{AnswerPark, "Park it"}); !slices.Equal(q.Choices, wantChoices) {
-			t.Errorf("%.4f of %.2f spent: choices = %v, want %v", spent, budget, q.Choices, wantChoices)
-		}
-		first, err := strconv.ParseFloat(strings.TrimPrefix(q.Choices[0].Value, AnswerFund+":"), 64)
+		f, err := r.tripFacts(ctx, k, "", "factory/big")
 		if err != nil {
 			t.Fatal(err)
 		}
-		k.BudgetEUR += first
+		facts := Facts{CaseFacts: f, Card: k}
+		face := FaceOf(Case{Kind: CaseBudgetFloor, Facts: map[string]any{"reason": why}}, facts)
+		if want := fmt.Sprintf("Add %.2f EUR", raise); !strings.Contains(face.Ask, want) {
+			t.Errorf("%.4f of %.2f spent: ask = %q, want it to name %q", spent, budget, face.Ask, want)
+		}
+		if eur := pressedFund(t, facts); eur != raise {
+			t.Fatalf("%.4f of %.2f spent: Add money opens with %.2f, want %.2f", spent, budget, eur, raise)
+		}
+		k.BudgetEUR += raise
 		store.tasks["t-2"] = k
 		if why, err := r.SessionFunded(ctx, "t-2", "factory/big"); err != nil || why != "" {
 			t.Errorf("%.4f of %.2f spent after the first raise: (%q, %v), want the session funded", spent, k.BudgetEUR, why, err)
 		}
 	}
 
-	ask(5, 3.8, "The card spent €3.80 of its €5.00 budget, €0.40 is held by calls in flight, €0.40 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.2, 0.6, 2)
-	ask(5, 4.25, "The card spent €4.25 of its €5.00 budget, €0.40 is held by calls in flight, €0.35 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.65, 2)
+	ask(5, 3.8, 0.2)
+	ask(5, 4.25, 0.65)
 	k := store.tasks["t-2"]
 	k.BudgetEUR, k.SpentEUR = 5, 4.5
 	store.tasks["t-2"] = k
@@ -3861,10 +3844,10 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 		t.Errorf("the held refusal = (%q, %v), want %q", why, err, want)
 	}
 
-	ask(5, 4.5, "The card spent €4.50 of its €5.00 budget, €0.40 is held by calls in flight, €0.10 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.9, 2)
+	ask(5, 4.5, 0.9)
 
 	store.held = nil
-	ask(5, 4.5004, "The card spent €4.50 of its €5.00 budget, €0.40 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.51, 0.6, 2)
+	ask(5, 4.5004, 0.51)
 }
 
 // A card with no model yet (the console passes its row's empty alias)

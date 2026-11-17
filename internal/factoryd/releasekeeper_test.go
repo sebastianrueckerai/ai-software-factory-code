@@ -23,7 +23,7 @@ func keeperAtPtr(h, m int) *time.Time {
 }
 
 const (
-	holdInfoTail = "Wait keeps production held and asks again in 6 hours. Deploy anyway sends main as it is to production, half-built plans included. " +
+	holdInfoTail = "Not now keeps production held and asks again in 6 hours. Deploy now sends main as it is to production, half-built plans included. " +
 		"Replan on top plans the rest again on top of what is merged. Take it off main and replan reverts the plan's merged cards first, so production goes ahead without them."
 	holdWhy      = "While a plan is open on main, no merge goes to production, so a half-built feature never goes live."
 	holdSince    = "Merged is not live: while a plan is open on main, no merge of sf-demo-app goes to production. Production has waited since 2026-10-29 10:00 UTC."
@@ -32,8 +32,8 @@ const (
 )
 
 var holdChoices = []QuestionChoice{
-	{AnswerHoldWait, "Wait"},
-	{ActDeployNow, "Deploy anyway"},
+	{AnswerHoldWait, "Not now"},
+	{ActDeployNow, "Deploy now"},
 	{AnswerReplanOnTop + ":t-plan", "Replan plan #12 on top"},
 	{AnswerTakeOffMain + ":t-plan", "Take plan #12 off main and replan"},
 }
@@ -148,10 +148,10 @@ func TestReleaseKeeperAsksAfterSixHours(t *testing.T) {
 		t.Fatalf("issues %q at 16:00, want one", f.issues)
 	}
 	title, body, _ := strings.Cut(f.issues[0], "\n\n")
-	if want := "Production of sf-demo-app is held. Wait, deploy anyway, or replan?"; title != want {
+	if want := "Production of sf-demo-app is held. Deploy now, or replan?"; title != want {
 		t.Errorf("title %q, want %q", title, want)
 	}
-	for _, want := range []string{holdPlanLine, "Choices:\n- Wait\n- Deploy anyway\n- Replan plan #12 on top\n- Take plan #12 off main and replan\n"} {
+	for _, want := range []string{holdPlanLine, "Choices:\n- Not now\n- Deploy now\n- Replan plan #12 on top\n- Take plan #12 off main and replan\n"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body %q lacks %q", body, want)
 		}
@@ -208,7 +208,7 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 	if len(f.issues) != 1 {
 		t.Fatalf("issues %q, want the fix's ask at once", f.issues)
 	}
-	if title, _, _ := strings.Cut(f.issues[0], "\n\n"); title != "Production of sf-demo-app is held. Wait, deploy anyway, or replan?" {
+	if title, _, _ := strings.Cut(f.issues[0], "\n\n"); title != "Production of sf-demo-app is held. Deploy now, or replan?" {
 		t.Errorf("title %q", title)
 	}
 	if _, q := askOfHold(t, store); q.Why != holdWhy || !strings.Contains(q.Info, "plan #12 is open on main. Fix #40 merged, but production is held. #40 fixes an alert. "+holdSince) {
@@ -245,7 +245,7 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 	if len(f.issues) != 2 {
 		t.Fatalf("issues %d, want a second ask", len(f.issues))
 	}
-	if title, _, _ := strings.Cut(f.issues[1], "\n\n"); title != "Production of sf-demo-app is held. Wait, deploy anyway, or replan?" {
+	if title, _, _ := strings.Cut(f.issues[1], "\n\n"); title != "Production of sf-demo-app is held. Deploy now, or replan?" {
 		t.Errorf("title %q", title)
 	}
 	if _, q := askOfHold(t, store); q.Why != holdWhy ||
@@ -267,8 +267,8 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 func TestReleaseKeeperOffersTheReplansOfTheLongestHeldPlan(t *testing.T) {
 	since := "Merged is not live: while a plan is open on main, no merge of sf-demo-app goes to production. Production has waited since 2026-10-29 09:50 UTC."
 	choices := []QuestionChoice{
-		{AnswerHoldWait, "Wait"},
-		{ActDeployNow, "Deploy anyway"},
+		{AnswerHoldWait, "Not now"},
+		{ActDeployNow, "Deploy now"},
 		{AnswerReplanOnTop + ":t-zplan", "Replan plan #15 on top"},
 		{AnswerTakeOffMain + ":t-zplan", "Take plan #15 off main and replan"},
 	}
@@ -299,7 +299,7 @@ func TestReleaseKeeperOffersTheReplansOfTheLongestHeldPlan(t *testing.T) {
 			}
 			_, q := askOfHold(t, store)
 			want := HumanQuestion{
-				Ask: "Production of sf-demo-app is held. Wait, deploy anyway, or replan?",
+				Ask: "Production of sf-demo-app is held. Deploy now, or replan?",
 				Why: holdWhy,
 				Info: "Production of sf-demo-app has waited 6 hours: " + c.reason + " are open on main. " + since + "\n\nThe open plans and what each waits on:\n" +
 					c.lines + "\n\n" + holdInfoTail + "\n\n" + c.others,

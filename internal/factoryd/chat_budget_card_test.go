@@ -44,7 +44,7 @@ func TestChatBudgetCards(t *testing.T) {
 		Why: "Until the budget is raised or the month turns, every stop reaches a human unjudged.",
 		Info: "The project spent 49.96 EUR of its judgment budget of 50.00 EUR in 2026-11. The judgment budget pays the chat, rung 1, rung 2 and the check-in's judgment. " +
 			"Until it is raised or the UTC month turns, no rung judges a stopped card, so every stop reaches Needs you unjudged.\n\nThe action: raise the judgment budget on the project screen, or press Fund and go on in the chat thread that hit the stop. Only a human who approves the project can do either. The raise ends this card.",
-		Choices: []QuestionChoice{{AnswerClose, "Decided, close"}},
+		Choices: []QuestionChoice{{AnswerClose, "Noted"}, {AnswerPark, "Not now"}},
 	}
 	if !reflect.DeepEqual(asked, want) {
 		t.Fatalf("the ask = %+v, want %+v", asked, want)

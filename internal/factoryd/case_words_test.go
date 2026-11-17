@@ -34,9 +34,10 @@ func TestFacesOfAMonitorFlagNameNoCaseId(t *testing.T) {
 	if got := tripNext(c, "r"); strings.Contains(got, "396") || !strings.Contains(got, "project chat") {
 		t.Fatalf("tripNext = %q", got)
 	}
-	q := MonitorQuestion("r")
-	if s := q.Ask + q.Why + q.Info; strings.Contains(s, "396") {
-		t.Fatalf("MonitorQuestion = %+v", q)
+	c.Facts = map[string]any{"flag": "wait_over_bound", "reason": "r"}
+	face := FaceOf(c, Facts{Card: Task{ID: "t-1", IssueNumber: 1410}})
+	if s := face.Ask + face.Why + face.Story.Planned + face.Story.Happened + face.Story.Left; strings.Contains(s, "396") {
+		t.Fatalf("the monitor flag's face = %+v", face)
 	}
 }
 
@@ -59,17 +60,27 @@ func TestErrCaseEndedNamesTheCardNotTheNumber(t *testing.T) {
 	}
 }
 
+// A monitor flag's reason is agent-derived: the case its trip opens asks in
+// the register's words, so neither the ask nor the face carries the
+// reason's secret, token, mention or credential.
 func TestMonitorFaceMasksASecretAndNeutralisesAMention(t *testing.T) {
 	r, _, _, _, _ := newRetryRig(t)
 	r.Scrub = redact.New("hunter2-configured-secret")
 	reason := "Monitor flag: hunter2-configured-secret Authorization: Bearer abcdefghijklmnop1234567890 @everyone https://user:pass@host.example/x"
-	q := r.monitorFace(Task{Repository: "linkshort/linkshort"}, reason)
+	card := Task{ID: "t-1", Repository: "linkshort/linkshort", IssueNumber: 7}
+	c, err := TripCase(card, CaseFacts{}, TripInput{TaskID: card.ID, Reason: reason, Kind: CaseMonitorFlag, StateKey: "k",
+		Extra: map[string]any{"flag": "wait_over_bound"}}, r.Scrub.String)
+	if err != nil {
+		t.Fatal(err)
+	}
+	face := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: card})
+	shown := strings.Join([]string{c.Problem, face.Ask, face.Why, face.Story.Planned, face.Story.Happened, face.Story.Left}, "\n")
 	for _, leak := range []string{"hunter2-configured-secret", "abcdefghijklmnop1234567890", "@everyone", "user:pass"} {
-		if strings.Contains(q.Ask, leak) {
-			t.Errorf("Ask = %q holds %q", q.Ask, leak)
+		if strings.Contains(shown, leak) {
+			t.Errorf("the face holds %q:\n%s", leak, shown)
 		}
 	}
-	if !strings.Contains(q.Ask, "The monitor flagged this card (") {
-		t.Errorf("Ask = %q", q.Ask)
+	if c.Problem != face.Ask || face.Ask != FlagFaces["wait_over_bound"].Ask(Facts{CaseFacts: FactsOf(c), Card: card, Case: c}) {
+		t.Errorf("the problem %q and the ask %q are not the flag's own", c.Problem, face.Ask)
 	}
 }

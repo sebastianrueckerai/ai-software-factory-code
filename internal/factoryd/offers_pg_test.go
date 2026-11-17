@@ -24,7 +24,7 @@ func storedOffers(t *testing.T, ask map[string]any) []AskOffer {
 	if err := json.Unmarshal(b, &out); err != nil {
 		t.Fatalf("stored offers %s: %v", b, err)
 	}
-	return slices.DeleteFunc(out, func(o AskOffer) bool { return o.Effect == "" })
+	return out
 }
 
 func offerValues(offers []AskOffer) []string {
@@ -35,12 +35,13 @@ func offerValues(offers []AskOffer) []string {
 	return out
 }
 
-// A case reaches the human with the offers the live facts allow stored on its
-// ask, and an Act refusal of a press on it stores them anew.
-func TestACaseReachesTheHumanWithItsOffersStoredAndARefusalRefreshesThem(t *testing.T) {
+// A case reaches the human with the register's face on the live facts
+// stored on its ask, each answer with its effect line, and an Act refusal
+// of a press on it stores the face anew.
+func TestACaseReachesTheHumanWithItsFaceStoredAndARefusalRefreshesIt(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.FaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", []string{"a.txt", "b.txt"}); err != nil {
+	if _, err := g.r.FaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	asks := g.asks(t)
@@ -52,26 +53,23 @@ func TestACaseReachesTheHumanWithItsOffersStoredAndARefusalRefreshesThem(t *test
 		t.Fatalf("cases = %+v, want one", cases)
 	}
 	c := cases[0]
-	stored := storedOffers(t, asks[0].Detail)
-	f, err := g.r.FactsAtCase(ctx, Task{ID: "t1", Repository: "demo-app/demo-app"}, c)
+	card, _, _ := g.s.Task(ctx, "t1")
+	f, err := g.r.FactsAtCase(ctx, card, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, _ := OffersFor(f)
-	if len(want) == 0 || !slices.Equal(offerValues(stored), offerValues(want)) {
-		t.Fatalf("stored offers %v, want the live facts' %v", offerValues(stored), offerValues(want))
+	face := FaceOf(c, Facts{CaseFacts: f, Card: card, Recommend: RecommendationOf(asks[0].Detail)})
+	want := askOffers(face.Answers)
+	stored := storedOffers(t, asks[0].Detail)
+	if len(want) == 0 || !slices.Equal(offerValues(stored), offerValues(want)) || asks[0].Detail["ask"] != face.Ask {
+		t.Fatalf("stored offers %v and ask %q, want the live face's %v and %q", offerValues(stored), asks[0].Detail["ask"], offerValues(want), face.Ask)
 	}
 	for _, o := range stored {
 		if o.Effect == "" {
 			t.Errorf("offer %q stores no effect line", o.Value)
 		}
 	}
-
-	choices := AskOffers(asks[0].Detail)
-	if len(choices) == 0 {
-		t.Fatalf("the ask's own choices are gone from its offers: %v", asks[0].Detail["offers"])
-	}
-	if err := g.s.SetCaseOffers(ctx, c.ID, nil, nil); err != nil {
+	if err := g.s.SetCaseFace(ctx, c.ID, map[string]any{"offers": []AskOffer{}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := storedOffers(t, g.asks(t)[0].Detail); len(got) != 0 {
@@ -82,12 +80,8 @@ func TestACaseReachesTheHumanWithItsOffersStoredAndARefusalRefreshesThem(t *test
 	if _, refused := err.(ErrActRefused); !refused {
 		t.Fatalf("a press the table does not offer = %v, want a refusal", err)
 	}
-	after := g.asks(t)[0].Detail
-	if got := storedOffers(t, after); !slices.Equal(offerValues(got), offerValues(want)) {
+	if got := storedOffers(t, g.asks(t)[0].Detail); !slices.Equal(offerValues(got), offerValues(want)) {
 		t.Fatalf("offers after the refusal = %v, want %v stored anew", offerValues(got), offerValues(want))
-	}
-	if got := AskOffers(after); !slices.Equal(got, choices) {
-		t.Fatalf("the ask's own choices after the refusal = %v, want %v kept", got, choices)
 	}
 }
 
@@ -150,7 +144,7 @@ func TestTheCaseDeskReadsAConstantNumberOfStatements(t *testing.T) {
 				}
 				for _, ask := range []string{"first?", "second?"} {
 					if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: id, IssueNumber: int64(2000 + i), Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-						Detail: map[string]any{"question": ask, "ask": ask, "source": "agent", "reason": AgentAsks + ask, "offers": []AskOffer{{Value: ActClose, Label: "Close", Effect: "End the card."}}}}); err != nil {
+						Detail: map[string]any{"question": ask, "ask": ask, "source": "agent", "reason": AgentAsks + ask, "offers": []AskOffer{{Value: ActClose, Label: "End the card", Effect: "Ends the card and closes its issue. Nothing more runs."}}}}); err != nil {
 						t.Fatal(err)
 					}
 				}

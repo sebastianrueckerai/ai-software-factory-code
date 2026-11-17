@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // monitorKinds are the events that move a card's flags: task_status,
@@ -372,4 +374,17 @@ func (s *PGStore) FlaggedEnds(ctx context.Context) ([]string, error) {
 		[]any{CaseMonitorFlag, FinalStatuses, KindChat}, func(row rowScanner) (id string, err error) {
 			return id, row.Scan(&id)
 		})
+}
+
+// monitorFlagPrefix starts the reason and the problem of a monitor flag's case.
+const monitorFlagPrefix = "Monitor flag: "
+
+// MonitorFlagReason is the reason of flag f's monitor case.
+func MonitorFlagReason(f DigestFlag) string {
+	return monitorFlagPrefix + flagsText([]DigestFlag{f})
+}
+
+// monitorFlagText is the flag a monitor reason or problem names, cut short.
+func monitorFlagText(s string) string {
+	return textutil.Truncate(strings.TrimPrefix(s, monitorFlagPrefix), 80)
 }

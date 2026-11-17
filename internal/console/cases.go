@@ -29,14 +29,9 @@ type caseRow struct {
 	PrevID, NextID int64
 	Project        string
 	Approval       *approvalCard
-	// Offers are the human's buttons: the actions Offered lists on the
-	// case's facts, the recommended one first and preselected; Refusals
-	// say why the nearest ones do not apply when none is offered.
-	Offers   []offer
-	Refusals []factoryd.ActionRefusal
-	// Premade are the words the card's question offers as answers: each
-	// sends as a continue with the words as its note
-	Premade []string
+	// Offers are the human's buttons: the answers the register's face
+	// stored, the suggested one first and preselected.
+	Offers []offer
 	// Extras are the card's pending approvals no case of its own answers, under the carousel
 	Extras  []approvalCard
 	Answers bool
@@ -162,17 +157,13 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		since = waitingSince(bt)
 	}
 	shown := cases[at]
-	var answered *time.Time
-	if t, ok := cs.desk.Answered[bt.ID]; ok {
-		answered = &t
-	}
-	face := factoryd.CaseFace(shown, cs.desk.Steps[shown.ID], factoryd.FactsOf(shown), cs.desk.Asks[shown.ID], answered)
+	face := factoryd.CaseFace(shown, bt.Task, cs.desk.Asks[shown.ID])
 	var slot *planSlot
 	if planCase(shown) {
 		slot = c.planSlotOf(ctx, &face, bt, shown, cases)
 	}
 	hosts := v.policy.Document.LinkHosts
-	for _, s := range []*string{&face.Ask, &face.Money, &face.Why, &face.Info, &face.Recommendation, &face.Source} {
+	for _, s := range []*string{&face.Ask, &face.Money, &face.Why, &face.Story.Planned, &face.Story.Happened, &face.Story.Left, &face.Info, &face.Recommendation, &face.Source} {
 		*s = sanitize.Outbound(scrubText(*s), hosts)
 	}
 	row := caseRow{Case: shown, Face: face, Since: cmp.Or(cs.faceAt(shown), since), At: at + 1, Of: len(cases), Project: v.filter.Project, Placed: !v.filter.wide(), Query: v.filter.query(),
@@ -193,8 +184,7 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		row.Plan = slot
 	}
 	if row.Decides = row.Answers && factoryd.AnswersByOffers(shown, bt.Kind); row.Decides {
-		row.Offers, row.Refusals = offersOf(face, shown.Kind == factoryd.CaseAgentTimeCap || factoryd.FactsOf(shown).Planner)
-		row.Premade = bt.Choices
+		row.Offers = offersOf(face, shown.Kind == factoryd.CaseAgentTimeCap || factoryd.FactsOf(shown).Planner)
 	}
 	for _, a := range v.pending {
 		if a.TaskID != shown.TaskID {
@@ -322,22 +312,6 @@ func approvalOf(a factoryd.ApprovalRequest, k factoryd.Case) bool {
 	return false
 }
 
-// caseBriefOf is the brief the case that holds request a wrote, "" while it
-// has none.
-func (c *Console) caseBriefOf(ctx context.Context, a factoryd.ApprovalRequest, hosts []string) string {
-	cases, err := c.cfg.OpenCasesOf(ctx, a.TaskID)
-	if err != nil {
-		log.Printf("console: the cases of %s: %v", a.TaskID, err)
-		return ""
-	}
-	for _, k := range cases {
-		if approvalOf(a, k) {
-			return sanitize.Outbound(scrubText(k.Brief), hosts)
-		}
-	}
-	return ""
-}
-
 // caseFragment answers GET /projects/{name}/cards/{id}/cases/{case}: the
 // card's case at the human with that id as Needs you shows it, which htmx
 // swaps in for the card's row.
@@ -408,18 +382,27 @@ type offerArg struct {
 }
 
 // offersOf are the buttons of a face as its ask stored them when the case
-// reached the human (or when Act last refused a press on it), the action the ask
-// preselected first, each with the inputs of its arguments; the refusals the
-// ask stored when only the actions every case takes remain.
-func offersOf(face factoryd.Face, timeStop bool) ([]offer, []factoryd.ActionRefusal) {
+// reached the human (or when Act last refused a press on it), the answer the
+// ask suggests first, each with the inputs of its fields but the note,
+// which the form's own box takes.
+func offersOf(face factoryd.Face, timeStop bool) []offer {
 	var out []offer
 	for _, a := range face.Offers {
-		o := offer{NoteOnStep: factoryd.IsBoardAction(a.Value), Name: a.Value, Label: a.Label, Effect: a.Effect, Recommended: a.Value == face.Preselected && face.Preselected != ""}
+		answer, _ := factoryd.AnswerOf(a.Value)
+		o := offer{NoteOnStep: factoryd.IsBoardAction(answer.Action), Name: a.Value, Label: a.Label, Effect: a.Effect, Recommended: a.Value == face.Preselected && face.Preselected != ""}
 		if o.Recommended {
 			o.By = face.Source
 		}
-		for _, arg := range factoryd.ActionArgs[a.Value] {
-			o.Args = append(o.Args, offerArg{Field: a.Value + "." + arg.Name, Label: arg.Label, Options: arg.Options, Number: arg.Number, Float: arg.Float, Check: arg.Check})
+		for _, f := range answer.Fields {
+			if f.Name == "note" {
+				continue
+			}
+			var options []string
+			for _, op := range f.Options {
+				options = append(options, op.Value)
+			}
+			o.Args = append(o.Args, offerArg{Field: a.Value + "." + f.Name, Label: f.Label, Options: options,
+				Number: f.Kind == factoryd.FieldNumber || f.Kind == factoryd.FieldMoney, Float: f.Kind == factoryd.FieldMoney, Check: f.Kind == factoryd.FieldCheck})
 		}
 		if a.Value == factoryd.ActExtend && timeStop {
 			slices.SortStableFunc(o.Args, func(x, y offerArg) int {
@@ -432,7 +415,7 @@ func offersOf(face factoryd.Face, timeStop bool) ([]offer, []factoryd.ActionRefu
 			out = append(out, o)
 		}
 	}
-	return out, face.Refusals
+	return out
 }
 
 func btoi(b bool) int {

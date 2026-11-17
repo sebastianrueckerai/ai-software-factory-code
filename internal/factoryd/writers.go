@@ -68,7 +68,7 @@ var Writers = []Writer{
 		Prompt: func() string { return caseBriefPrompt }},
 	{Name: "approval brief writer", Jobs: []writingguide.Job{writingguide.JobAsk},
 		Calls:  []string{"factoryd.(*BriefWriter).ask"},
-		Prompt: func() string { return briefPrompt(ApprovalMerge) }},
+		Prompt: func() string { return briefPrompt(ApprovalResource) }},
 	{Name: "model review", Jobs: []writingguide.Job{writingguide.JobFinding},
 		Calls:  []string{"factoryd.(*Runner).ModelReview"},
 		Prompt: func() string { return reviewCallPrompt(GateResults{ChecksPassed: true}, false, nil, nil, false) }},

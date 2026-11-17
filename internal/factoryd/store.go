@@ -447,12 +447,13 @@ type Store interface {
 	// SetQuestionInfo replaces the info of the question task's escalation
 	// at comment commentID asked.
 	SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error
+	// SetCaseFace stores the face keys of case caseID on its newest ask,
+	// in place of the suggestion the ask held before.
+	SetCaseFace(ctx context.Context, caseID int64, keys map[string]any) error
 	// SetQuestionProposal puts rung 2's recommendation and its preselected
 	// action on the face of case caseID: its question_asked row's
 	// recommendation and preselected, and for a case that is no monitor
 	// flag's (beside) the card's newest question's recommendation too.
-	// SetCaseOffers stores the table offers and refusals of case caseID on its newest ask, after the question's own choices
-	SetCaseOffers(ctx context.Context, caseID int64, offers []AskOffer, refusals []ActionRefusal) error
 	SetQuestionProposal(ctx context.Context, taskID string, caseID int64, recommendation, by string, preselected map[string]any) error
 	// ConfirmFactoryClose marks the task's factory_closed row for issue as
 	// finished: its comment posted and its issue closed. A confirmed or
@@ -936,9 +937,6 @@ type Store interface {
 	// unless the task's cases hold limit steps of rung 1 already (atLimit),
 	// the count and the insert one write.
 	StartRung1Step(ctx context.Context, taskID string, limit int, st CaseStep) (id int64, atLimit bool, err error)
-	// AppendCaseProblem appends suffix to live case id's problem line,
-	// once: a problem that ends with suffix already stays as it is.
-	AppendCaseProblem(ctx context.Context, id int64, suffix string) error
 	// SetCaseWake sets who owns the next move on case id, the events that
 	// end its wait, and when the sweep wakes it if none does.
 	SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error
@@ -1604,19 +1602,14 @@ func (s *PGStore) SetAskInfo(ctx context.Context, taskID, info string) error {
 	return tx.Commit()
 }
 
-func (s *PGStore) SetCaseOffers(ctx context.Context, caseID int64, offers []AskOffer, refusals []ActionRefusal) error {
-	o, err := json.Marshal(nonNilList(offers))
+func (s *PGStore) SetCaseFace(ctx context.Context, caseID int64, keys map[string]any) error {
+	k, err := json.Marshal(keys)
 	if err != nil {
 		return err
 	}
-	f, err := json.Marshal(nonNilList(refusals))
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(jsonb_set(detail, '{offers}',
-		    COALESCE((SELECT jsonb_agg(x) FROM jsonb_array_elements(COALESCE(detail->'offers', '[]'::jsonb)) x WHERE COALESCE(x->>'effect', '') = ''), '[]'::jsonb) || $2::jsonb), '{refusals}', $3::jsonb)
-		WHERE id = (SELECT e.id FROM events e JOIN cases c ON c.id = $1 AND e.task_id = c.task_id AND e.kind = $4
-		    AND e.detail->>'case_id' = c.id::text ORDER BY e.id DESC LIMIT 1)`, caseID, o, f, EventQuestionAsked)
+	_, err = s.db.ExecContext(ctx, `UPDATE events SET detail = (detail - 'preselected' - 'recommended_by' - 'recommendation') || $2::jsonb
+		WHERE id = (SELECT e.id FROM events e JOIN cases c ON c.id = $1 AND e.task_id = c.task_id AND e.kind = $3
+		    AND e.detail->>'case_id' = c.id::text ORDER BY e.id DESC LIMIT 1)`, caseID, k, EventQuestionAsked)
 	return err
 }
 

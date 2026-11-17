@@ -415,8 +415,8 @@ func cardReads(cfg *console.Config, rig *AcceptanceRig, tasks console.Tasks) {
 	}
 	// the desk holds every card's cases as OpenCasesOf reads them — a
 	// test's seated cases, a waiting card's standing case, the case the
-	// store opens for a request — each with the table's offers stored on
-	// its ask, as the Runner's passes write them when a case faces the
+	// store opens for a request — each with the register's face stored on
+	// its ask, as the Runner's passes write it when a case faces the
 	// human
 	cfg.CaseDesk = func(ctx context.Context, repository string) (factoryd.CaseDesk, error) {
 		boards, err := tasks.BoardTasks(ctx, repository)
@@ -425,8 +425,9 @@ func cardReads(cfg *console.Config, rig *AcceptanceRig, tasks console.Tasks) {
 			open, _ := cfg.OpenCasesOf(ctx, bt.ID)
 			for _, k := range open {
 				d.Cases = append(d.Cases, k)
-				if offers, refusals := factoryd.OffersFor(factoryd.FactsOf(k)); factoryd.AnswersByOffers(k, bt.Kind) {
-					d.Asks[k.ID] = factoryd.CaseAsk{Detail: map[string]any{"offers": offers, "refusals": refusals}}
+				if factoryd.AnswersByOffers(k, bt.Kind) {
+					face := factoryd.FaceOf(k, factoryd.Facts{CaseFacts: factoryd.FactsOf(k), Card: bt.Task})
+					d.Asks[k.ID] = factoryd.CaseAsk{Detail: factoryd.FaceKeys(face)}
 				}
 			}
 		}

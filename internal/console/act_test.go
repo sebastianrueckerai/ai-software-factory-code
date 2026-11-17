@@ -543,18 +543,14 @@ func TestChatAnswerPassesItsArgs(t *testing.T) {
 	}
 }
 
-// The console's answer to every choice the five-part questions offer fits
-// the action table on the facts of its case. For each case kind with a
-// question, each choice value that question offers reaches Act on rung 3
-// as an action the real table gives the human on hand-built facts of the
-// kind: factoryd.Offered holds it, and its own rule takes the answer's
-// arguments. A note, a continue and a park's settle carry what their rule
-// reads, which Offered's probes do not — the note's words, and the
-// settle's park arg — so their rule alone judges them. A human card's
-// choice is its question's to take. The pairs the table refuses stay away from Act:
-// words at a session cap would be a continue with no room, which the
-// console turns into a grant, and a grant on an ask is an extend the
-// table does not offer there.
+// The console's press of every answer the register's face offers fits the
+// action table on the facts of its case. For each case kind, each answer
+// of its face, pressed with its fields' defaults and a note where one is
+// required, reaches Act on rung 3 as an action the real table gives the
+// human on hand-built facts of the kind: factoryd.Offered holds it, and its
+// own rule takes the answer's arguments. A note, a continue and a settle
+// carry what their rule reads, which Offered's probes do not, so their rule
+// alone judges them. A human card's choice is its question's to take.
 func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 	room := factoryd.CaseFacts{Attempts: 1, SessionCap: 3, AgentTimeS: 600, AgentTimeCapS: 7200, BudgetEUR: 2, LeftEUR: 1.5, FloorEUR: 0.5, CeilingEUR: 5}
 	with := func(edit func(*factoryd.CaseFacts)) factoryd.CaseFacts {
@@ -578,6 +574,8 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 		}
 		return a.Applies(f, res)
 	}
+	sample := map[string]string{"note": "the review misreads the spec", "depends_on": "#2190", "title": "Fix the importer",
+		"why": "So a round trip keeps the accent.", "summary": "The importer keeps the accent.", "criterion": "size_bound_escape"}
 	for _, tc := range []struct {
 		kind    factoryd.CaseKind
 		reason  string
@@ -598,32 +596,33 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 		{factoryd.CaseOther, "the pod never started", nil, room},
 		{factoryd.CaseWaitExpired, "The card was quiet for 3 days.", nil, room},
 	} {
-		q := factoryd.ShapedQuestion(tc.reason, factoryd.QuestionFacts{}, tc.choices)
 		tc.facts.Kind = tc.kind
-		for _, c := range q.Choices {
+		facts := map[string]any{}
+		raw, _ := json.Marshal(tc.facts)
+		_ = json.Unmarshal(raw, &facts)
+		facts["reason"] = tc.reason
+		if tc.choices != nil {
+			facts["choices"] = tc.choices
+		}
+		k := factoryd.Case{ID: 1, TaskID: "t-k", Kind: tc.kind, Status: factoryd.CaseAtHuman, Facts: facts}
+		card := factoryd.Task{ID: "t-k", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, BudgetEUR: 2}
+		face := factoryd.FaceOf(k, factoryd.Facts{CaseFacts: tc.facts, Card: card})
+		if len(face.Answers) < 2 {
+			t.Errorf("%s: the face offers %d answers", tc.kind, len(face.Answers))
+		}
+		for _, answer := range face.Answers {
 			r := newRig(t)
 			_, s := r.loggedIn(t)
-			r.tasks.set(tc.reason, factoryd.Task{ID: "t-k", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, BudgetEUR: 2})
-			r.tasks.tasks[0].Question = q
-			facts := map[string]any{"reason": tc.reason}
-			r.openCases = map[string][]factoryd.Case{"t-k": {{ID: 1, TaskID: "t-k", Kind: tc.kind, Status: factoryd.CaseAtHuman, Facts: facts}}}
-			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat}
-			var err error
-			switch c.Value {
-			case factoryd.AnswerExtend:
-				_, err = r.c.doExtend(t.Context(), a, "t-k", 1, 0, 0, 0, c.Label) // the Extend form gives its amounts
-			case factoryd.AnswerOverrule:
-				_, err = r.c.doAnswerValue(t.Context(), a, "t-k", "", c.Value, "the review misreads the spec", 0) // its reason field gives its words
-			default:
-				_, err = r.c.doAnswerValue(t.Context(), a, "t-k", "", c.Value, "", 0)
-			}
-			if err != nil || len(r.acted) != 1 {
-				t.Errorf("%s, %s: %v, Act took %+v", tc.kind, c.Value, err, r.acted)
+			r.tasks.set(tc.reason, card)
+			r.openCases = map[string][]factoryd.Case{"t-k": {k}}
+			a := actor{s: s, repository: "sf/code", via: factoryd.ViaButton}
+			if _, err := r.c.doPressCase(t.Context(), a, "t-k", 1, answer, sample, "", 0); err != nil || len(r.acted) != 1 {
+				t.Errorf("%s, %s: %v, Act took %+v", tc.kind, answer.Key(), err, r.acted)
 				continue
 			}
 			in := r.acted[0]
 			if why := fits(tc.facts, in.Res); in.Rung != 3 || why != "" {
-				t.Errorf("%s, %s: Act took %+v on rung %d, which the table refuses: %s", tc.kind, c.Value, in.Res, in.Rung, why)
+				t.Errorf("%s, %s: Act took %+v on rung %d, which the table refuses: %s", tc.kind, answer.Key(), in.Res, in.Rung, why)
 			}
 		}
 	}

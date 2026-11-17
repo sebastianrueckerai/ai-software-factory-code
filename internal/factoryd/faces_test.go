@@ -5,10 +5,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
@@ -172,7 +174,8 @@ func TestFaceContract(t *testing.T) {
 		}
 		for _, a := range face.Answers {
 			if a.Value == "" && a.Variant != "say" {
-				// an agent's own words are its text, shown as written
+				// an agent's own words pass the escalate door's check; a
+				// live capture holds words filed before the door checked them
 				texts = append(texts, a.Label)
 			}
 			texts = append(texts, a.Effect)
@@ -263,5 +266,24 @@ func TestBudgetFloorWithFindingsAsksOnce(t *testing.T) {
 	}
 	if got := labels(face.Answers); !slices.Equal(got, []string{"Add money", "Start a fresh card on this work", "End the card", "Not now"}) {
 		t.Errorf("answers %v", got)
+	}
+}
+
+// A card that waits on a spending limit says when it goes on by itself:
+// its Not now names the limit's reset, and it offers no raise to go on.
+func TestACapWaitSaysWhenItGoesOnByItself(t *testing.T) {
+	for kind, decision := range map[factoryd.CaseKind]string{factoryd.CaseMonthCap: policy.RefusedMonthCap, factoryd.CaseDayCap: policy.RefusedDayCap} {
+		face := factoryd.FaceOf(factoryd.Case{Kind: kind}, factoryd.Facts{Card: factoryd.Task{ID: "t1", Kind: "agent", IssueNumber: 3}})
+		when := factoryd.CapTurn(decision, time.Now()).UTC().Format("2 January at 15:04 UTC")
+		var keys []string
+		for _, a := range face.Answers {
+			keys = append(keys, a.Key())
+		}
+		if !slices.Equal(keys, []string{factoryd.ActNote, factoryd.ActClose}) {
+			t.Fatalf("%s: answers %v, want not now and end the card", kind, keys)
+		}
+		if want := "The card waits and goes on by itself when the limit resets on " + when + "."; face.Answers[0].Effect != want {
+			t.Errorf("%s: Not now says %q, want %q", kind, face.Answers[0].Effect, want)
+		}
 	}
 }

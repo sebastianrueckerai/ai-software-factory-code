@@ -1269,7 +1269,7 @@ func TestRolloutNotSettledAtTheCapReleasesItsAlertsAndRaisesItsOwn(t *testing.T)
 		"applied=2026-10-15T12:00:00Z\n```\n\n" +
 		"Labels:\n\n```\nalertname=HelmRelease signoz not settled\nkind=HelmRelease\nname=signoz\nnamespace=platform\n```\n\n" +
 		"filed by factoryd from Flux alert rollout/HelmRelease/platform/signoz\n\n" +
-		"Choices:\n- Wait for it to clear\n- Handled, close\n\n" +
+		"Choices:\n- Noted\n- Not now\n\n" +
 		"factoryd asks (factoryd). Answer on the card in the console or in the chat's inbox, or close this issue once decided.\n\nfiled by factoryd"
 	if len(r.fj.issues) != 2 || r.fj.issues[1] != want || r.fj.repos[1] != "sf/ai-software-factory-infra" ||
 		!slices.Equal(r.fj.labels[2], []string{"human", "bug", "state/waiting-human"}) {
@@ -1829,8 +1829,8 @@ func TestAnEventAlertKeepsItsCardPastTheResolve(t *testing.T) {
 		"The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card closes when the CronJob `forgejo-dump` completes a run, or when a human closes it.\n\n" +
 		"factoryd: SigNoz fires the alert Job failed in namespace demo-staging of project demo-app."
 	if len(r.fj.issues) != 1 || !strings.HasPrefix(r.fj.issues[0], ask+"\n\n") || !strings.Contains(r.fj.issues[0], info) ||
-		!strings.Contains(r.fj.issues[0], "\n\nChoices:\n- Handled, close\n\nfactoryd asks") {
-		t.Fatalf("issues %q, want one opening %q, with %q and the one choice Handled, close", r.fj.issues, ask, info)
+		!strings.Contains(r.fj.issues[0], "\n\nChoices:\n- Noted\n- Not now\n\nfactoryd asks") {
+		t.Fatalf("issues %q, want one opening %q, with %q and its choices Noted and Not now", r.fj.issues, ask, info)
 	}
 	if err := r.in.CloseCleared(context.Background()); err != nil {
 		t.Fatal(err)

@@ -63,16 +63,16 @@ func TestNeedsYouShowsOneRowPerCardAndACarouselForMany(t *testing.T) {
 		t.Errorf("t-a (oldest case 3 h) at %d, t-b (30 min) at %d; want the oldest first", a, b)
 	}
 	rowA := needs[a:b]
-	for _, want := range []string{`<p class="ask">ask three</p>`, `<span class="pos" aria-live="polite">1 of 3</span>`, `id="case-prev-t-a" aria-label="Previous case" disabled`,
+	for _, want := range []string{`<p class="why">Ask three.</p>`, `<span class="pos" aria-live="polite">1 of 3</span>`, `id="case-prev-t-a" aria-label="Previous case" disabled`,
 		`id="case-next-t-a" aria-label="Next case" hx-get="/projects/` + casesProject + `/cards/t-a/cases/2?project=` + casesProject + `"`, ` data-place="case `, ` data-case="3"`} {
 		if !strings.Contains(rowA, want) {
 			t.Errorf("t-a's row lacks %q:\n%s", want, rowA)
 		}
 	}
-	if strings.Count(rowA, `<p class="ask">`) != 1 || strings.Contains(rowA, "ask one") {
+	if strings.Count(rowA, `<p class="ask">`) != 1 || strings.Contains(rowA, "Ask one.") {
 		t.Errorf("t-a's row shows more than its one case:\n%s", rowA)
 	}
-	if rowB := needs[b:]; !strings.Contains(rowB, `<p class="ask">ask b</p>`) || strings.Contains(rowB, `class="carousel"`) || strings.Contains(rowB, `class="pos"`) {
+	if rowB := needs[b:]; !strings.Contains(rowB, `<p class="why">Ask b.</p>`) || strings.Contains(rowB, `class="carousel"`) || strings.Contains(rowB, `class="pos"`) {
 		t.Errorf("t-b's single case shows a count or arrows:\n%s", rowB)
 	}
 
@@ -80,7 +80,7 @@ func TestNeedsYouShowsOneRowPerCardAndACarouselForMany(t *testing.T) {
 	if next.Code != http.StatusOK {
 		t.Fatalf("case 2 = %d %s", next.Code, next.Body)
 	}
-	for _, want := range []string{`<p class="ask">ask two</p>`, `<span class="pos" aria-live="polite">2 of 3</span>`,
+	for _, want := range []string{`<p class="why">Ask two.</p>`, `<span class="pos" aria-live="polite">2 of 3</span>`,
 		`id="case-prev-t-a" aria-label="Previous case" hx-get="/projects/` + casesProject + `/cards/t-a/cases/3?`,
 		`id="case-next-t-a" aria-label="Next case" hx-get="/projects/` + casesProject + `/cards/t-a/cases/1?`} {
 		if !strings.Contains(next.Body.String(), want) {
@@ -115,14 +115,14 @@ func TestBoardReadKeepsTheCaseInView(t *testing.T) {
 	r := newRig(t)
 	seatCases(r)
 	ck, _ := r.loggedIn(t)
-	if needs := needsOf(t, r, ck, "/?case=t-a:2&case=t-b:4"); !strings.Contains(needs, `<p class="ask">ask two</p>`) || !strings.Contains(needs, `2 of 3`) {
+	if needs := needsOf(t, r, ck, "/?case=t-a:2&case=t-b:4"); !strings.Contains(needs, `<p class="why">Ask two.</p>`) || !strings.Contains(needs, `2 of 3`) {
 		t.Errorf("the board dropped the case in view:\n%s", needs)
 	}
-	if needs := needsOf(t, r, ck, "/?case=t-a:99"); !strings.Contains(needs, `<p class="ask">ask three</p>`) {
+	if needs := needsOf(t, r, ck, "/?case=t-a:99"); !strings.Contains(needs, `<p class="why">Ask three.</p>`) {
 		t.Errorf("a case no longer at the human kept its place:\n%s", needs)
 	}
 	frag := getAs(r, ck, "/cards/t-a?case=t-a:1", false).Body.String()
-	if !strings.HasPrefix(frag, `<article class="card case"`) || !strings.Contains(frag, `<p class="ask">ask one</p>`) || !strings.Contains(frag, ` data-place="case `) {
+	if !strings.HasPrefix(frag, `<article class="card case"`) || !strings.Contains(frag, `<p class="why">Ask one.</p>`) || !strings.Contains(frag, ` data-place="case `) {
 		t.Errorf("the card fragment is not the case in view with its place:\n%s", frag)
 	}
 	if wide := getAs(r, ck, "/cards/t-a?view=wide", false).Body.String(); !strings.HasPrefix(wide, `<article class="card face`) {
@@ -138,7 +138,7 @@ func TestWideViewListsTheCaseRows(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	body := getAs(r, ck, "/?view=wide", false).Body.String()
 	esc := col(t, body, "Escalations")
-	if strings.Count(esc, `class="card case"`) != 2 || !strings.Contains(esc, `<p class="ask">ask three</p>`) || strings.Contains(esc, ` data-place="`) {
+	if strings.Count(esc, `class="card case"`) != 2 || !strings.Contains(esc, `<p class="why">Ask three.</p>`) || strings.Contains(esc, ` data-place="`) {
 		t.Errorf("the wide view's Escalations are not the case rows:\n%s", esc)
 	}
 	if waiting := col(t, body, "Waiting on a human"); strings.Count(waiting, `<article class="card face`) != 2 {
@@ -273,20 +273,20 @@ func TestAPlansCaseHoldsItsApprovalOnce(t *testing.T) {
 }
 
 // Every text the face reads is scrubbed: URL userinfo and a bearer value
-// come out masked in the finding (Why), the recommendation the ask carries
-// and the ask's info.
+// come out masked in the writer's story, the recommendation the ask
+// carries and the ask's info.
 func TestCaseFaceMasksEveryTextItReads(t *testing.T) {
 	const url, bearer = "https://user:pass@git.example/x", "Authorization: Bearer abc123def456ghi789jkl012mno345"
 	r := newRig(t)
 	seatCases(r)
-	r.caseSteps = map[int64][]factoryd.CaseStep{3: {
-		{CaseID: 3, Rung: 1, Outcome: factoryd.StepHandedUp, Found: "It failed pulling " + url + ". It sent " + bearer + "."}}}
+	r.openCases["t-a"][2].Brief = "It failed pulling " + url + ". It sent " + bearer + "."
 	r.caseAsks = map[int64]factoryd.CaseAsk{3: {At: time.Now().Add(-time.Hour), Detail: map[string]any{
 		"info":           "The log says " + url + " and " + bearer,
-		"recommendation": "handover: the fetch of " + url + " sent " + bearer, "recommended_by": "the factory agent"}}}
+		"recommendation": "close: the fetch of " + url + " sent " + bearer, "recommended_by": "the factory agent",
+		"preselected": map[string]any{"action": "close"}}}}
 	ck, _ := r.loggedIn(t)
 	needs := needsOf(t, r, ck, "/")
-	for _, want := range []string{"It failed pulling", "handover: the fetch of", "The log says"} {
+	for _, want := range []string{"It failed pulling", "close: the fetch of", "The log says"} {
 		if !strings.Contains(needs, want) {
 			t.Fatalf("the face lacks %q:\n%s", want, needs)
 		}
@@ -298,20 +298,21 @@ func TestCaseFaceMasksEveryTextItReads(t *testing.T) {
 	}
 }
 
-// The face's info is the ask's, with the last answer's time under it, and
-// the card's life loads on demand behind a fold.
+// The face's info is the ask's, and the card's life loads on demand behind
+// a fold.
 func TestCaseFaceInfoIsTheAsksAndTheLifeLoadsOnDemand(t *testing.T) {
 	r := newRig(t)
 	seatCases(r)
 	r.caseAsks = map[int64]factoryd.CaseAsk{3: {At: time.Now().Add(-time.Hour), Detail: map[string]any{"info": "Postgres is shared."}}}
-	r.caseAnswered = map[string]time.Time{"t-a": time.Date(2026, 11, 1, 21, 40, 0, 0, time.UTC)}
 	ck, _ := r.loggedIn(t)
 	needs := needsOf(t, r, ck, "/")
-	for _, want := range []string{"Postgres is shared.", "Last answer processed: 2026-11-01 21:40 UTC",
-		`<details class="fold" hx-get="/tasks/t-a/digest" hx-trigger="toggle once"`, "◷ 1 h 0 min"} {
+	for _, want := range []string{"Postgres is shared.", `<details class="fold" hx-get="/tasks/t-a/digest" hx-trigger="toggle once"`, "◷ 1 h 0 min"} {
 		if !strings.Contains(needs, want) {
 			t.Errorf("the face lacks %q:\n%s", want, needs)
 		}
+	}
+	if strings.Contains(needs, "Last answer processed") {
+		t.Errorf("the face names the last answer's time:\n%s", needs)
 	}
 }
 
@@ -406,73 +407,41 @@ func TestACaseRowShowsOneWaitingTime(t *testing.T) {
 	}
 }
 
-// The ask and the money line are scrubbed too, and a recommendation shows
-// with its writer or not at all.
-func TestCaseFaceScrubsAskAndMoneyAndNamesTheRecommendationsWriter(t *testing.T) {
+// A recommendation shows with its writer when it preselects an answer, and
+// words that preselect none do not show, whatever action they open with.
+func TestCaseFaceNamesTheRecommendationsWriter(t *testing.T) {
 	r := newRig(t)
 	seatCases(r)
-	r.openCases["t-a"][2].Problem = "Pulling https://user:pass@git.example/x failed"
-	r.openCases["t-a"][2].Money = &factoryd.CaseMoney{Kind: "session_cap", BudgetEUR: 2, SpentEUR: 1, NeedEUR: 0.5, Buys: "a call with Authorization: Bearer abc123def456ghi789jkl012mno345"}
-	r.caseAsks = map[int64]factoryd.CaseAsk{3: {At: time.Now(), Detail: map[string]any{"recommendation": "park: wait", "recommended_by": "the check-in"}},
-		4: {At: time.Now(), Detail: map[string]any{"recommendation": "no writer words"}}}
+	r.caseAsks = map[int64]factoryd.CaseAsk{3: {At: time.Now(), Detail: map[string]any{"recommendation": "close: wait", "recommended_by": "the check-in",
+		"preselected": map[string]any{"action": "close"}}},
+		4: {At: time.Now(), Detail: map[string]any{"recommendation": "close: no writer words"}}}
 	ck, _ := r.loggedIn(t)
 	needs := needsOf(t, r, ck, "/")
-	for _, leak := range []string{"user:pass", "abc123def456", "no writer words"} {
-		if strings.Contains(needs, leak) {
-			t.Errorf("the face holds %q:\n%s", leak, needs)
-		}
+	if strings.Contains(needs, "no writer words") {
+		t.Errorf("the face holds words that name no answer:\n%s", needs)
 	}
-	if !strings.Contains(needs, `<p class="recommendation">Recommendation (the check-in): park: wait</p>`) || !strings.Contains(needs, "Pulling ") || !strings.Contains(needs, "1.00 of 2.00 EUR spent") {
-		t.Errorf("the face lacks its recommendation with its writer, its ask or its money line:\n%s", needs)
+	if !strings.Contains(needs, `<p class="recommendation">Recommendation (the check-in): close: wait</p>`) {
+		t.Errorf("the face lacks its recommendation with its writer:\n%s", needs)
 	}
 }
 
-// A merge case's brief shows once on the board, as the face's info, and
-// whole in the drawer, rendered as paragraphs with its secrets masked.
-func TestAMergeCasesBriefShowsOnceOnTheBoardAndWholeInTheDrawer(t *testing.T) {
-	const url, bearer = "https://user:pass@git.example/x", "Authorization: Bearer abc123def456ghi789jkl012mno345"
-	r := newRig(t)
-	r.tasks.set("", factoryd.Task{ID: "t-mc", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 8, PRNumber: 10, BudgetEUR: 2})
-	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 61, Kind: factoryd.ApprovalMerge, TaskID: "t-mc", Project: "sf/code",
-		PRNumber: 10, Status: "pending", Spec: json.RawMessage(`{"risk_class":"normal"}`)})
-	r.openCases = map[string][]factoryd.Case{"t-mc": {{ID: 5, TaskID: "t-mc", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseAtHuman,
-		Facts: map[string]any{"approval": 61.0}, Brief: "The card adds the retry.\n\nIts review approved the head. It cloned " + url + " with " + bearer}}}
-	ck, _ := r.loggedIn(t)
-	if needs := needsOf(t, r, ck, "/"); strings.Count(needs, "The card adds the retry.") != 1 {
-		t.Errorf("the board prints the brief's first line %d times, want once:\n%s", strings.Count(needs, "The card adds the retry."), needs)
-	}
-	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-mc/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{"<p>The card adds the retry.</p>", "<p>Its review approved the head."} {
-		if !strings.Contains(drawer, want) {
-			t.Errorf("the drawer lacks %q", want)
-		}
-	}
-	for _, leak := range []string{"user:pass", "abc123def456"} {
-		if strings.Contains(drawer, leak) {
-			t.Errorf("the drawer holds %q", leak)
-		}
-	}
-}
-
-// The face shows the case's brief as its info, the writer's words as the
-// recommendation's grounds, and masks URL userinfo and a bearer value in both.
+// The face shows the case writer's two lines as its story, masked, and
+// the ask's info beside them.
 func TestCaseFaceShowsTheBriefMasked(t *testing.T) {
 	const url, bearer = "https://user:pass@git.example/x", "Authorization: Bearer abc123def456ghi789jkl012mno345"
 	r := newRig(t)
 	seatCases(r)
 	r.openCases["t-a"][2].Brief = "The fetch of " + url + " sent " + bearer + "."
 	r.openCases["t-a"][2].BriefDetail = "Another session fixes both findings."
-	r.caseSteps = map[int64][]factoryd.CaseStep{3: {{CaseID: 3, Rung: 2, Outcome: factoryd.StepHandedUp, Decision: "handover", Grounds: "old grounds"}}}
-	r.caseAsks = map[int64]factoryd.CaseAsk{3: {At: time.Now().Add(-time.Hour), Detail: map[string]any{"info": "the digest's info",
-		"recommendation": "handover: old grounds", "recommended_by": "the factory agent"}}}
+	r.caseAsks = map[int64]factoryd.CaseAsk{3: {At: time.Now().Add(-time.Hour), Detail: map[string]any{"info": "the digest's info"}}}
 	ck, _ := r.loggedIn(t)
 	needs := needsOf(t, r, ck, "/")
-	for _, want := range []string{"The fetch of", "handover: Another session fixes both findings."} {
+	for _, want := range []string{"<li>The fetch of", "<li>Another session fixes both findings.</li>", "<p>the digest's info</p>"} {
 		if !strings.Contains(needs, want) {
 			t.Errorf("the face lacks %q:\n%s", want, needs)
 		}
 	}
-	for _, leak := range []string{"user:pass", "abc123def456", "the digest's info", "old grounds"} {
+	for _, leak := range []string{"user:pass", "abc123def456"} {
 		if strings.Contains(needs, leak) {
 			t.Errorf("the face holds %q:\n%s", leak, needs)
 		}
@@ -504,7 +473,7 @@ func TestAnApprovalShowsOnlyUnderItsOwnCase(t *testing.T) {
 		{ID: 5, TaskID: "t-mc", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseAtHuman, Problem: "merge?", Facts: map[string]any{"approval": 61.0}},
 		{ID: 6, TaskID: "t-mc", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman, Problem: "flag"}}}
 	ck, _ := r.loggedIn(t)
-	if needs := needsOf(t, r, ck, "/"); strings.Contains(needs, `action="/approvals/61/approve"`) || !strings.Contains(needs, `<p class="ask">flag</p>`) {
+	if needs := needsOf(t, r, ck, "/"); strings.Contains(needs, `action="/approvals/61/approve"`) || !strings.Contains(needs, `<p class="ask">The factory flagged something odd on this card. Is that fine?</p>`) {
 		t.Errorf("the merge approval shows under the flag's case:\n%s", needs)
 	}
 	if needs := needsOf(t, r, ck, "/?case=t-mc:5"); !strings.Contains(needs, `action="/approvals/61/approve"`) {

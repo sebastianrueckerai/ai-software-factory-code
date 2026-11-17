@@ -185,10 +185,8 @@ func seatBoardFixture(t *testing.T, r *rig, name string) factoryd.Fixture {
 		ask = a
 	}
 	// A plan card's ask is its plan approval: the card waits on its
-	// revision's questions, whose cases the fake opens, with the pending
-	// approval whose body the card shows. The ask's recommendation is the
-	// planner's, on the case's ask the slot reads, as the ask row writes
-	// it in production: its choice and its grounds in one line.
+	// revision's questions, whose cases the fake opens with the planner's
+	// recommendation, and the pending approval whose body the card shows.
 	if c.Track == "plan" {
 		task.Process = "spec"
 		labels := make([]string, len(ask.Choices))
@@ -201,8 +199,7 @@ func seatBoardFixture(t *testing.T, r *rig, name string) factoryd.Fixture {
 			{Text: ask.Ask, Choices: labels, Recommended: ask.Recommendation, Grounds: ask.Why}}}
 		r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 30, Kind: factoryd.ApprovalPlan, TaskID: c.TaskID,
 			Project: c.Repository, Status: "pending", Spec: json.RawMessage(`{"revision":2,"sha256":"sha-2"}`)})
-		r.caseAsks = map[int64]factoryd.CaseAsk{500: {At: time.Now().Add(-70 * time.Second), Detail: map[string]any{
-			"recommendation": ask.Recommendation + ": " + ask.Why, "recommended_by": "the planner"}}}
+		r.caseAsks = map[int64]factoryd.CaseAsk{500: {At: time.Now().Add(-70 * time.Second), Detail: map[string]any{}}}
 		return fx
 	}
 	question := factoryd.HumanQuestion{Ask: ask.Ask, Why: ask.Why, Info: boardFixtureInfo,
@@ -231,6 +228,9 @@ func seatBoardFixture(t *testing.T, r *rig, name string) factoryd.Fixture {
 		cases = append(cases, kase)
 		detail := map[string]any{"info": boardFixtureInfo}
 		if caseAsk.Recommendation != "" {
+			// a rung recommends the face's first answer, as the ask row stores it
+			face := factoryd.FaceOf(kase, factoryd.Facts{CaseFacts: factoryd.FactsOf(kase), Card: task})
+			detail["preselected"] = map[string]any{"action": face.Answers[0].Key()}
 			detail["recommendation"], detail["recommended_by"] = caseAsk.Recommendation, boardFixtureSource
 		}
 		r.caseAsks[id] = factoryd.CaseAsk{At: time.Now().Add(-70 * time.Second), Detail: detail}
@@ -257,12 +257,11 @@ func buttonsOf(t *testing.T, r *rig, id string) []string {
 	return out
 }
 
-// The face's buttons are the actions Offered lists for the human on the
-// case's facts: on the check-in's seed gate stop, resume, continue,
-// handover, reverify, extend, fund, raise_ceiling, successor, replan, close
-// and note (rung 3 adds raise_ceiling and close to rung 1's list, withdraw
-// is the factory's own). The action the ask preselected leads.
-func TestFaceButtonsAreOfferedAtTheHumansRung(t *testing.T) {
+// The face's buttons are the register's answers for the case on its facts:
+// on the check-in's seed review gate stop, check the work again, go on with
+// a note, send back to the planner and end the card. An answer the ask
+// preselected leads, and its button names who recommended it.
+func TestFaceButtonsAreTheRegistersAnswers(t *testing.T) {
 	seed := factoryd.CaseFacts{Kind: factoryd.CaseGateStop, Gate: "review", Attempts: 1, SessionCap: 3, AgentTimeCapS: 3600,
 		BudgetEUR: 5, SpentEUR: 1, LeftEUR: 4, FloorEUR: 0.3, CeilingEUR: 7, PROpen: true, Head: "c1", Checks: "green",
 		Findings:     []string{"3f2a1c9b0e44"},
@@ -271,22 +270,21 @@ func TestFaceButtonsAreOfferedAtTheHumansRung(t *testing.T) {
 	b, _ := json.Marshal(seed)
 	var facts map[string]any
 	_ = json.Unmarshal(b, &facts)
-	want := []string{"resume", "continue", "handover", "reverify", "extend", "fund", "raise_ceiling", "successor", "replan", "close", "note"}
 
 	r := newRig(t)
 	r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
 	seatAsk(r, "t-g", factoryd.CaseGateStop, facts)
-	if got := buttonsOf(t, r, "t-g"); !slices.Equal(got, want) {
-		t.Fatalf("the face's buttons = %v, want Offered's %v", got, want)
+	if got, want := buttonsOf(t, r, "t-g"), []string{"reverify", "continue", "replan", "close"}; !slices.Equal(got, want) {
+		t.Fatalf("the face's buttons = %v, want the register's %v", got, want)
 	}
 
-	r.caseAsks = map[int64]factoryd.CaseAsk{1: {At: time.Now(), Detail: map[string]any{"preselected": map[string]any{"action": "extend"}, "recommended_by": "the factory agent"}}}
-	if got, wantLead := buttonsOf(t, r, "t-g"), append([]string{"extend"}, slices.DeleteFunc(slices.Clone(want), func(n string) bool { return n == "extend" })...); !slices.Equal(got, wantLead) {
-		t.Fatalf("the face's buttons with extend preselected = %v, want %v", got, wantLead)
+	r.caseAsks = map[int64]factoryd.CaseAsk{1: {At: time.Now(), Detail: map[string]any{"preselected": map[string]any{"action": "replan"}, "recommended_by": "the factory agent"}}}
+	if got, want := buttonsOf(t, r, "t-g"), []string{"replan", "reverify", "continue", "close"}; !slices.Equal(got, want) {
+		t.Fatalf("the face's buttons with replan preselected = %v, want %v", got, want)
 	}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	if !strings.Contains(escalationOf(t, body, "t-g"), `aria-label="Extend, recommended by the factory agent"`) {
+	if !strings.Contains(escalationOf(t, body, "t-g"), `aria-label="Send back to the planner, recommended by the factory agent"`) {
 		t.Errorf("the recommended button does not name who recommended it:\n%s", escalationOf(t, body, "t-g"))
 	}
 }
@@ -317,20 +315,27 @@ func TestOneSendCarriesDecisionFundAndNote(t *testing.T) {
 	}
 }
 
-// With only the actions every case takes to offer (close, note, continue,
-// replan), the face names why the others do not apply.
-func TestFaceNamesTheRefusalsWhenNothingFits(t *testing.T) {
-	r := newRig(t)
-	r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
-	seatAsk(r, "t-g", factoryd.CaseGateStop, roomyFacts(func(f *factoryd.CaseFacts) { f.Final, f.Running = "failed", true }))
-	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	esc := escalationOf(t, body, "t-g")
-	if !strings.Contains(esc, `<p class="refusal"><b>resume</b>: a session is running`) || !strings.Contains(esc, `name="action" value="close"`) {
-		t.Fatalf("the face =\n%s\nwant resume's refusal and the close", esc)
-	}
-	if strings.Contains(esc, "Go on") {
-		t.Errorf("a generic Go on survives:\n%s", esc)
+// An answer the facts refuse never shows. At the session cap with no pull
+// request open, the gate stop offers neither a check of the work nor a
+// session with a note: send back to the planner and end the card stay.
+// Once a session runs, the note goes to it, and the planner waits.
+func TestTheFaceOffersNoAnswerItsFactsRefuse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		over func(*factoryd.CaseFacts)
+		want []string
+	}{
+		{"at the cap", nil, []string{"replan", "close"}},
+		{"a session runs", func(f *factoryd.CaseFacts) { f.Running = true }, []string{"continue", "close"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
+			seatAsk(r, "t-g", factoryd.CaseGateStop, roomyFacts(tc.over))
+			if got := buttonsOf(t, r, "t-g"); !slices.Equal(got, tc.want) {
+				t.Fatalf("buttons = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -362,26 +367,30 @@ func TestRestartPlanClosesThePlanAndSaysWhenTheNewOneCannotBeFiled(t *testing.T)
 	}
 }
 
-// The case of an agent's ask leads with the ask's own answers as the primary
-// buttons; the table's actions follow with the quiet weight, an action with an
-// argument rendering its input beside its button (raise_ceiling's amount), and
-// the raw reason is not repeated: the ask shows once.
-func TestAnAsksOwnAnswersLeadAndTheTablesActionsFollow(t *testing.T) {
+// The case of an agent's ask leads with the agent's own answers as its
+// buttons, the one its recommendation names first as the primary, then
+// Not now and End the card; the ask shows once and the raw reason never.
+func TestAnAsksOwnAnswersLeadAndTheRegistersFollow(t *testing.T) {
 	r := newRig(t)
+	reason := "The agent asks: which store?\nWhy: two fit\nRecommendation: SQLite, one file is enough"
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-ch", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Objective: "add the feed"},
-		Escalation: "The agent asks: which store?\nWhy: two fit", Choices: []string{"Postgres", "SQLite"}}}
+		Escalation: reason, Choices: []string{"Postgres", "SQLite"}}}
+	facts := roomyFacts(nil)
+	facts["choices"], facts["reason"] = []any{"Postgres", "SQLite"}, reason
 	r.openCases = map[string][]factoryd.Case{"t-ch": {{ID: 1, TaskID: "t-ch", Kind: factoryd.CaseAgentEscalate, Status: factoryd.CaseAtHuman, Problem: "which store?",
-		Facts: roomyFacts(nil)}}}
+		Facts: facts}}}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
 	esc := escalationOf(t, body, "t-ch")
-	pg, sq, raise := strings.Index(esc, `name="premade" value="Postgres" class="primary"`), strings.Index(esc, `name="premade" value="SQLite" class="primary"`),
-		strings.Index(esc, `name="action" value="raise_ceiling" class="secondary"`)
-	if pg < 0 || sq < pg || raise < sq {
-		t.Fatalf("the face =\n%s\nwant the ask's answers first as primary buttons, then the table's as secondary", esc)
+	var got []string
+	for _, m := range regexp.MustCompile(`name="action" value="([^"]+)" class="(\w+)"`).FindAllStringSubmatch(esc, -1) {
+		got = append(got, m[1]+" "+m[2])
 	}
-	if !strings.Contains(esc[:raise], `name="raise_ceiling.eur"`) || strings.Contains(esc, `class="reason"`) || strings.Count(esc, "which store?") != 1 {
-		t.Errorf("raise_ceiling lacks its amount input beside it, or the ask shows more than once:\n%s", esc)
+	if want := []string{"say:SQLite primary", "say:Postgres secondary", "note secondary", "close secondary"}; !slices.Equal(got, want) {
+		t.Fatalf("buttons = %q, want %q:\n%s", got, want, esc)
+	}
+	if !strings.Contains(esc, "Recommended by the agent") || strings.Contains(esc, `class="reason"`) || strings.Count(esc, "hich store?") != 1 {
+		t.Errorf("the recommendation names no writer, or the ask shows more than once:\n%s", esc)
 	}
 }
 
@@ -403,8 +412,8 @@ func TestARenderShowsTheStoredOffersOnly(t *testing.T) {
 	r := newRig(t)
 	r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
 	seatAsk(r, "t-g", factoryd.CaseGateStop, roomyFacts(nil))
-	r.caseAsks = map[int64]factoryd.CaseAsk{1: {At: time.Now(), Detail: map[string]any{
-		"offers": []factoryd.AskOffer{{Value: "close", Label: "Close", Effect: "End the card and close its issue."}, {Value: "note", Label: "Note", Effect: "Record your note."}}}}}
+	r.caseAsks = map[int64]factoryd.CaseAsk{1: {At: time.Now(), Detail: map[string]any{"ask": "Go on?", "story": factoryd.Story{},
+		"offers": []factoryd.AskOffer{{Value: "close", Label: "End the card", Effect: "Ends the card."}, {Value: "note", Label: "Not now", Effect: "The card stays as it is."}}}}}
 	if got := buttonsOf(t, r, "t-g"); !slices.Equal(got, []string{"close", "note"}) {
 		t.Fatalf("buttons = %v, want the stored close and note", got)
 	}
@@ -512,19 +521,22 @@ func TestRestartPlanFilesTheNewPlan(t *testing.T) {
 	}
 }
 
-// A case whose ask stores no offers renders the case's own form with the fund
-// and the note and no table button: the old answer, fund and extend forms are
-// gone for a cased card.
-func TestACaseWithNoStoredOffersRendersNoOldForms(t *testing.T) {
+// A case whose ask stores no face renders the register's face on the
+// case's own facts in the case's own form, with the fund and the note: at
+// the session cap, allow more sessions, end the card and not now. The old
+// answer, fund and extend forms are gone for a cased card.
+func TestACaseWithNoStoredFaceRendersTheRegistersAndNoOldForms(t *testing.T) {
 	r := newRig(t)
-	r.noStoredOffers = true
 	r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
 	seatAsk(r, "t-g", factoryd.CaseSessionCap, roomyFacts(nil))
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
 	esc := escalationOf(t, body, "t-g")
 	if strings.Contains(esc, `action="/tasks/t-g/answer"`) || strings.Contains(esc, `action="/tasks/t-g/fund"`) || strings.Contains(esc, `action="/tasks/t-g/extend"`) ||
-		!strings.Contains(esc, `action="/tasks/t-g/resolve"`) || strings.Contains(esc, `name="action"`) {
-		t.Fatalf("the face of a case with no stored offers =\n%s\nwant the resolve form alone, with no table button", esc)
+		!strings.Contains(esc, `action="/tasks/t-g/resolve"`) || !strings.Contains(esc, `name="fund_eur"`) || !strings.Contains(esc, `name="note"`) {
+		t.Fatalf("the face of a case with no stored face =\n%s\nwant the resolve form alone, with the fund and the note", esc)
+	}
+	if got := buttonsOf(t, r, "t-g"); !slices.Equal(got, []string{"extend", "close", "note"}) {
+		t.Fatalf("buttons = %v, want the register's extend, close and note", got)
 	}
 }

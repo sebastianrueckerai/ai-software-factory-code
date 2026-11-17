@@ -805,7 +805,7 @@ func (s *accBatchStore) NewestAskCase(ctx context.Context, taskID string) (facto
 func (s *accBatchStore) CasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 	panic("unused")
 }
-func (s *accBatchStore) SetCaseOffers(context.Context, int64, []factoryd.AskOffer, []factoryd.ActionRefusal) error {
+func (s *accBatchStore) SetCaseFace(context.Context, int64, map[string]any) error {
 	return nil
 }
 

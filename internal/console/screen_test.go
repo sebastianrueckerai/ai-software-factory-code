@@ -993,9 +993,9 @@ func TestDrawerRefusals(t *testing.T) {
 // shows no question and no form to /alerts/, on the board and in the drawer.
 func TestEscalatedCardAsksNoVerdict(t *testing.T) {
 	r, ck := screenRig(t)
-	for _, path := range []string{"/", "/cards/t-esc/drawer"} {
+	for path, ask := range map[string]string{"/": "Which region?", "/cards/t-esc/drawer": "which region?"} {
 		body := r.do(httptest.NewRequest(http.MethodGet, path, nil), ck).Body.String()
-		if !strings.Contains(body, "which region?") {
+		if !strings.Contains(body, ask) {
 			t.Fatalf("GET %s: the escalation is not on the page", path)
 		}
 		for _, banned := range []string{"Was this escalation a real problem", "/alerts/", `name="verdict"`} {

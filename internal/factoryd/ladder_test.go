@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -141,7 +142,7 @@ func TestRungZeroRowsFireOnTheirFacts(t *testing.T) {
 }
 
 // A trip's state key: the head for a stop at it, the dependency's id for a
-// dependency's, else the problem's words.
+// dependency's, else the first line of the stop's reason.
 func TestTripKeyByKind(t *testing.T) {
 	f := CaseFacts{Dependencies: []DepFact{{TaskID: "t-x", Status: "running"}, {TaskID: "t-c", Status: "closed"}, {TaskID: "t-r", Status: "failed", Replaced: "t-r2"},
 		{TaskID: "t-a", Status: "failed"}}}
@@ -160,6 +161,84 @@ func TestTripKeyByKind(t *testing.T) {
 		if got := tripKey(tc.kind, "the stop", tc.head, f); got != tc.want {
 			t.Errorf("tripKey(%s, %q) = %q, want %q", tc.kind, tc.head, got, tc.want)
 		}
+	}
+}
+
+// A trip's state key is the matter, not the face's words: the same stop
+// keys the same case after the register's ask of its kind changes, while
+// the case's problem follows the new ask; another stop of the kind keys
+// another case.
+func TestATripKeyOutlivesACopyChange(t *testing.T) {
+	card := Task{ID: "t1", Kind: "agent", IssueNumber: 4}
+	reason := "check-in: goal conflict: the change edits the importer\n- the exporter drops the accent"
+	trip := func(reason string) Case {
+		t.Helper()
+		c, err := TripCase(card, CaseFacts{}, TripInput{TaskID: card.ID, Reason: reason}, func(s string) string { return s })
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	before := trip(reason)
+	spec := CaseFaces[CaseCheckinHuman]
+	t.Cleanup(func() { CaseFaces[CaseCheckinHuman] = spec })
+	changed := spec
+	changed.Ask = fixed("The check of the session asks you how the card goes on. Go on?")
+	CaseFaces[CaseCheckinHuman] = changed
+	after := trip(reason)
+	if before.Kind != CaseCheckinHuman || after.StateKey != before.StateKey || after.Problem == before.Problem ||
+		after.Problem != "The check of the session asks you how the card goes on. Go on?" {
+		t.Fatalf("before %q keyed %q, after %q keyed %q; want the same key and the new ask", before.Problem, before.StateKey, after.Problem, after.StateKey)
+	}
+	if other := trip("check-in: goal conflict: the change edits the exporter"); other.StateKey == before.StateKey {
+		t.Fatalf("another stop keys %q, the same case", other.StateKey)
+	}
+}
+
+// A stop the review keeps refusing offers its exits: the deadlock and a
+// gate stop whose review raised concerns each offer more sessions, the
+// overrule, a fresh card and the end; a plain gate stop offers a check of
+// the work instead.
+func TestAReviewDeadlockOffersTheExits(t *testing.T) {
+	f := CaseFacts{Attempts: 1, SessionCap: 3, AgentTimeCapS: 3600, BudgetEUR: 5, SpentEUR: 1, LeftEUR: 4, FloorEUR: 0.3, CeilingEUR: 7, PROpen: true, Head: "c1", Checks: "green",
+		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}, PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}}
+	keys := func(c Case) []string {
+		var out []string
+		for _, a := range FaceOf(c, Facts{CaseFacts: f, Card: Task{ID: "t1", IssueNumber: 3}}).Answers {
+			out = append(out, a.Key())
+		}
+		return out
+	}
+	exits := []string{ActExtend, ActReverify + "/" + variantOverrule, ActSuccessor, ActClose}
+	for name, c := range map[string]Case{
+		"deadlock": {Kind: CaseFindingsRepeated},
+		"concerns": {Kind: CaseGateStop, Facts: map[string]any{"reason": "check-in: gate: the checks need a hand\n- " + reviewConcernsMark}},
+	} {
+		if got := keys(c); !slices.Equal(got, exits) {
+			t.Errorf("%s: answers %v, want the exits %v", name, got, exits)
+		}
+	}
+	if got, want := keys(Case{Kind: CaseGateStop, Facts: map[string]any{"reason": "check-in: gate: the checks need a hand"}}), []string{ActReverify, ActContinue, ActReplan, ActClose}; !slices.Equal(got, want) {
+		t.Errorf("a plain gate stop: answers %v, want %v", got, want)
+	}
+}
+
+// A moment's hand_up is a hand-up, not a recommendation: a face whose
+// newest rung step is one preselects nothing, while a rung's action it
+// handed up is the face's suggestion by that rung.
+func TestAMomentsHandUpRecommendsNothing(t *testing.T) {
+	c := Case{ID: 1, Kind: CaseOther, Problem: "p"}
+	same := func(s string) string { return s }
+	moment := []CaseStep{
+		{Rung: 2, Outcome: StepHandedUp, Decision: ActClose, Grounds: "g"},
+		{Rung: 1, Outcome: StepHandedUp, Decision: RungHandUp, Grounds: "a goal conflict"},
+	}
+	if row := FaceRow(c, Task{ID: "t1"}, CaseFacts{}, "", HandedUpBy(moment, 1, ""), same, same); row["recommended_by"] != "the factory" || row["recommendation"] != nil {
+		t.Fatalf("a moment's hand-up preselects %v by %v (%v), want the factory's own suggestion alone", row["preselected"], row["recommended_by"], row["recommendation"])
+	}
+	rung := FaceRow(c, Task{ID: "t1"}, CaseFacts{}, "", HandedUpBy(moment[:1], 1, ""), same, same)
+	if p, _ := rung["preselected"].(map[string]any); p["action"] != ActClose || rung["recommended_by"] != "the factory agent" || rung["recommendation"] != "close: g" {
+		t.Fatalf("a rung's hand-up = %v by %v (%v), want close by the factory agent", rung["preselected"], rung["recommended_by"], rung["recommendation"])
 	}
 }
 
@@ -271,32 +350,18 @@ func TestRungZeroTakesNothingOnFactsReadPartly(t *testing.T) {
 	})
 }
 
-// The lead of a money or cap ask names the review and audit findings
-// standing on the head, in the order the gates raised them, and stands
-// before no such finding: not for another kind, not for findings the
-// checks alone raised, and cut past the fifth finding.
-func TestFindingsLead(t *testing.T) {
-	f := CaseFacts{Head: "h2", Findings: []string{"r1", "a1", "c1"},
-		FindingTexts: map[string]string{"r1": "the review's finding", "a1": "the audit's finding", "c1": "the checks' finding"},
-		FindingOrder: []string{"c1", "r1", "a1"}, ReviewFindings: []string{"r1"}, AuditFindings: []string{"a1"}}
-	if got := FindingsLead(CaseSessionCap, f); got != `The review or the audit left 2 findings unresolved on the head h2: "the review's finding"; "the audit's finding".` {
-		t.Fatalf("lead = %q", got)
-	}
-	if got := FindingsLead(CaseGateStop, f); got != "" {
-		t.Fatalf("a gate stop leads %q, want nothing", got)
+// A cap's ask counts the review's and the audit's findings standing on
+// the head, never names one, and counts no finding the checks alone raised.
+func TestCapAskCountsTheReviewAndAuditFindings(t *testing.T) {
+	f := CaseFacts{Kind: CaseSessionCap, SessionCap: 3, Attempts: 3, Head: "h2", Findings: []string{"r1", "a1", "c1"},
+		FindingTexts:   map[string]string{"r1": "the review's finding", "a1": "the audit's finding", "c1": "the checks' finding"},
+		ReviewFindings: []string{"r1"}, AuditFindings: []string{"a1"}}
+	c := Case{Kind: CaseSessionCap}
+	if got := FaceOf(c, Facts{CaseFacts: f}).Ask; got != "The card used all 3 sessions with 2 review findings open. Allow more, or end the card?" {
+		t.Fatalf("ask = %q", got)
 	}
 	f.ReviewFindings, f.AuditFindings = nil, nil
-	if got := FindingsLead(CaseBudgetFloor, f); got != "" {
-		t.Fatalf("the checks' findings alone lead %q, want nothing", got)
-	}
-	f.ReviewFindings, f.AuditFindings = []string{"r1"}, []string{"a1"}
-	f.FindingOrder = nil
-	f.Findings = []string{"r1", "r2", "r3", "r4", "r5", "r6", "a1"}
-	for id, text := range map[string]string{"r2": "two", "r3": "three", "r4": "four", "r5": "five", "r6": "six"} {
-		f.FindingTexts[id] = text
-		f.ReviewFindings = append(f.ReviewFindings, id)
-	}
-	if got := FindingsLead(CaseAgentTimeCap, f); !strings.HasSuffix(got, `"five"; and 2 more.`) || !strings.HasPrefix(got, "The review or the audit left 7 findings unresolved on the head h2:") {
-		t.Fatalf("lead = %q, want the findings cut past the fifth", got)
+	if got := FaceOf(c, Facts{CaseFacts: f}).Ask; got != "The card used all 3 sessions. Allow more, or end the card?" {
+		t.Fatalf("the checks' findings alone: ask = %q", got)
 	}
 }

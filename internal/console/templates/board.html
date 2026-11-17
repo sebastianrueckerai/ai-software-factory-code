@@ -91,7 +91,8 @@
 <p class="ask">{{.Ask}}</p>
 {{with .Money}}<p class="money">{{.}}</p>{{end}}
 <p class="why">{{.Why}}</p>
-{{with .Info}}<div class="info">{{markup .}}</div>{{end}}
+{{with .Story}}{{if or .Planned .Happened .Left}}<ul class="story">{{with .Planned}}<li>{{.}}</li>{{end}}{{with .Happened}}<li>{{.}}</li>{{end}}{{with .Left}}<li>{{.}}</li>{{end}}</ul>
+{{end}}{{end}}{{with .Info}}<div class="info">{{markup .}}</div>{{end}}
 {{with .Recommendation}}<p class="recommendation">Recommendation{{with $f.Source}} ({{.}}){{end}}: {{.}}</p>{{end}}
 </div>{{end}}
 
@@ -141,7 +142,6 @@
 {{range .Args}}<label>{{.Label}}{{if .Options}} <select name="{{.Field}}">{{range .Options}}<option value="{{.}}">{{.}}</option>{{end}}</select>{{else if .Check}} <input type="checkbox" name="{{.Field}}" value="yes">{{else if .Number}} <input type="number" min="0" step="{{if .Float}}0.01{{else}}1{{end}}" name="{{.Field}}">{{else}} <input type="text" name="{{.Field}}" maxlength="{{maxAnswer}}">{{end}}</label>
 {{end}}<button type="submit" name="action" value="{{.Name}}" class="{{if .Recommended}}primary{{else}}secondary{{end}}"{{if .Aria}} aria-label="{{.Aria}}"{{else if .Recommended}} aria-label="{{.Label}}, recommended{{with .By}} by {{.}}{{end}}"{{end}}>{{.Label}}</button> <span class="effect">{{.Effect}}</span>{{with .By}} <span class="by">Recommended by {{.}}</span>{{end}}{{if .NoteOnStep}} <span class="by">your note stays on the step</span>{{end}}
 </div>
-{{end}}{{range .Refusals}}<p class="refusal"><b>{{.Action}}</b>: {{.Why}}</p>
 {{end}}{{if or .Offers .Premade}}<label for="fund-eur-{{.TaskID}}{{.Suffix}}">Fund, EUR, beside your decision</label>
 <input type="number" step="0.01" min="0" id="fund-eur-{{.TaskID}}{{.Suffix}}" name="fund_eur">
 <label for="note-{{.TaskID}}{{.Suffix}}">Note, {{template "note-goes" .IssueNumber}}; the actions marked "stays on the step" keep it there</label>

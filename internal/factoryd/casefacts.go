@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -827,4 +829,65 @@ func (r *Runner) runGone(ctx context.Context, t Task) bool {
 		return false
 	}
 	return !alive
+}
+
+// minutesWord says a duration in whole minutes, as a card's reader counts
+// agent time, and one under a minute in seconds.
+func minutesWord(d time.Duration) string {
+	if d < time.Minute {
+		if n := int(d.Round(time.Second) / time.Second); n != 1 {
+			return fmt.Sprintf("%d seconds", n)
+		}
+		return "1 second"
+	}
+	if n := int(d.Round(time.Minute) / time.Minute); n != 1 {
+		return fmt.Sprintf("%d minutes", n)
+	}
+	return "1 minute"
+}
+
+// budgetTail parses the refusal's need wherever the state between its
+// head and the need puts its own numbers (holds among them): ", and a
+// session on <model> needs <EUR> EUR". The need is the one figure that
+// travels in the refusal's text: SessionFunded's result is a string the
+// workflow records, so a typed need would change a recorded shape. The
+// card's own figures (budget, spent, held, left, the gate reserve) are
+// typed (CaseFacts), and the raise is computed from them (FundRaise).
+var budgetTail = regexp.MustCompile(`, and \S.*? on (\S+) needs ([\d.]+) EUR`)
+
+// BudgetNeed is the EUR a session needs, as the budget refusal's reason
+// states it; 0 when the reason carries no such number.
+func BudgetNeed(reason string) float64 {
+	m := budgetTail.FindStringSubmatch(reason)
+	if m == nil {
+		return 0
+	}
+	need, err := strconv.ParseFloat(m[2], 64)
+	if err != nil || !(need > 0) {
+		return 0
+	}
+	return need
+}
+
+// FundRaise is the EUR raise that funds one more session off a budget
+// refusal's need and the card's typed figures: the need less the session
+// ceiling, the card's left (budget - spent - holds) less the gate reserve,
+// rounded up to a cent; 0 when the reason carries no need.
+func FundRaise(reason string, left, reserve float64) float64 {
+	need := BudgetNeed(reason)
+	if need <= 0 {
+		return 0
+	}
+	return fundFor(need, policy.SessionHeadroom(left, reserve))
+}
+
+// fundFor is the raise in EUR, rounded up to a cent, that lifts a session
+// ceiling of left, which is negative once the gates spent into the
+// reserve, to need; 0 when the ceiling already covers it. Both are read at
+// the micro-euro, as the admission compares them.
+func fundFor(need, left float64) float64 {
+	if left >= need {
+		return 0
+	}
+	return math.Ceil(policy.RoundMicro(need-left)*100-1e-6) / 100
 }

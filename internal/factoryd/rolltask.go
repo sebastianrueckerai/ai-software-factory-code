@@ -895,17 +895,13 @@ const rollAttemptBound = 3
 const rollRetryBackoff = 10 * time.Minute
 
 // rollAskMarker names the roll ladder's question in the card it files,
-// so StandingQuestion recognises it while it waits. rollRetryLabel is
-// the retry choice's label.
-const (
-	rollAskMarker  = "rolls failed since the last one merged"
-	rollRetryLabel = "Retry the roll"
-)
+// so StandingQuestion recognises it while it waits.
+const rollAskMarker = "rolls failed since the last one merged"
 
 // escalateRolls is the roll ladder's end. A roll request settled failed
 // this poll (each settles once) and the failures since the last merged
-// roll at the bound: the five-part question reaches a person — retry the
-// roll, park it or close it — once per climb, never twice while the
+// roll at the bound: the question reaches a person (try the roll again,
+// not now, or end the card) once per climb, never twice while the
 // question stands. A failure that settles after the card closed climbs
 // again.
 func (r *Roller) escalateRolls(ctx context.Context) {
@@ -953,7 +949,7 @@ type RollFailure struct {
 }
 
 // RollFailedQuestion is the roll ladder's end's question over the failed
-// roll tasks, oldest first: retry the roll, park it or close it.
+// roll tasks, oldest first: try the roll again, not now, or end the card.
 func RollFailedQuestion(failed []RollFailure) HumanQuestion {
 	facts := make([]string, len(failed))
 	for i, f := range failed {
@@ -967,14 +963,10 @@ func RollFailedQuestion(failed []RollFailure) HumanQuestion {
 		Ask: b.Title,
 		Why: b.Why,
 		Info: "The roll tasks that carry main's images into k8s/ keep failing, so the repository pins the last images that went live and every card merged since waits on a green chain." +
-			fmt.Sprintf("\n\nThe failed attempts, oldest first:\n%s\n\nRetry the roll starts one roll task of main's newest green images; park leaves this card waiting; close ends it — the images stay pinned as they are until a new roll merges.", strings.Join(facts, "\n")),
-		Recommendation: "Retry the roll, after reading the newest failed card's reason",
+			fmt.Sprintf("\n\nThe failed attempts, oldest first:\n%s\n\nTry the roll again starts one roll task of main's newest green images. Not now leaves this card waiting. End the card ends it, and the images stay pinned as they are until a new roll merges.", strings.Join(facts, "\n")),
+		Recommendation: "Try the roll again, after reading the newest failed card's reason",
 		Source:         "the roller",
-		Choices: []QuestionChoice{
-			{Value: AnswerRetryRoll, Label: rollRetryLabel},
-			{Value: AnswerPark, Label: "Park"},
-			{Value: AnswerClose, Label: "Close"},
-		},
+		Choices:        choices(ActRetry+"/"+variantRoll, ActNote+"/"+variantPark, ActClose),
 	}
 }
 

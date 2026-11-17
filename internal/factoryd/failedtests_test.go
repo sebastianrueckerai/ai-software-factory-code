@@ -268,20 +268,6 @@ func TestRequestApprovalWithoutRedChecksNamesNoTests(t *testing.T) {
 	}
 }
 
-// The brief writer reads the typed list and the count past its cap.
-func TestBriefFactsCarryTheFailedTests(t *testing.T) {
-	tests := []FailedTest{{Job: "test", Test: "TestA", Package: "p/q", Kind: "failed"}}
-	spec, _ := json.Marshal(MergeSpec{RedChecks: true, FailedTests: tests, FailedTestsMore: 4})
-	facts, err := briefFacts(ApprovalRequest{Kind: ApprovalMerge, Spec: spec}, Task{}, nil, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := facts.(map[string]any)
-	if !reflect.DeepEqual(m["failed_tests"], tests) || m["failed_tests_more"] != 4 {
-		t.Fatalf("facts = %+v", m)
-	}
-}
-
 // A cancelled job is red like a failed one; a log longer than the read's
 // bound says so, with the tests before the cut kept and no test named from
 // the line the cut falls in; a package that is a token is masked.

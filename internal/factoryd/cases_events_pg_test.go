@@ -50,6 +50,9 @@ func recordCaseEvent(t *testing.T, s *PGStore, kind, actor, via string, detail m
 
 const capAsk = "Card 1410 asks: grant one more session?"
 
+// caseCard is the card of caseTask as a face reads it.
+var caseCard = Task{ID: caseTask, Kind: "agent", IssueNumber: 1410}
+
 // askCap records the session cap's ask as Escalate writes it.
 func askCap(t *testing.T, s *PGStore, comment int64) {
 	t.Helper()
@@ -65,7 +68,7 @@ func askAgent(t *testing.T, s *PGStore, question string, comment int64) {
 	t.Helper()
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
 		"question": question, "ask": question, "comment": comment, "source": "agent",
-		"reason": AgentAsks + question, "why": "two files match", "info": plainInfo})
+		"reason": AgentAsks + question, "why": "two files match"})
 }
 
 func onlyOpenCase(t *testing.T, s *PGStore) Case {
@@ -823,14 +826,14 @@ func TestCaseFromAskCarriesTheRecommendedAnswer(t *testing.T) {
 
 // An ask that names no case still opens its case and is stamped with the
 // case's id, so the desk finds it; a proposal on one of two cases at the
-// human lands on its own case's face alone, and a recommendation shows
-// only with its writer.
+// human lands on its own case's face alone, and a recommendation's words
+// show only when it names an answer.
 func TestTheDeskFindsEveryAskByItsCaseAndAProposalLandsOnItsOwn(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": "Which store?", "ask": "Which store?", "info": "Postgres is shared.",
-		"recommendation": "Postgres", "recommended_by": "the agent", "comment": int64(31), "source": "agent",
-		"offers": []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}}})
+		"recommendation": "Postgres is the one store", "recommended_by": "the agent", "preselected": map[string]any{"action": "say:Postgres"},
+		"comment": int64(31), "source": "agent", "choices": []string{"Postgres", "SQLite"}})
 	cap, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseSessionCap, StateKey: "cap", Status: CaseOpen, Problem: "capped"})
 	if err != nil {
 		t.Fatal(err)
@@ -846,8 +849,9 @@ func TestTheDeskFindsEveryAskByItsCaseAndAProposalLandsOnItsOwn(t *testing.T) {
 			agent = c
 		}
 	}
-	face := CaseFace(agent, nil, FactsOf(agent), d.Asks[agent.ID], nil)
-	if face.Info != "Postgres is shared." || len(face.Choices) != 1 || face.Choices[0].Value != "say:Postgres" || face.Recommendation != "Postgres" || face.Source != "the agent" {
+	face := CaseFace(agent, caseCard, d.Asks[agent.ID])
+	if face.Info != "Postgres is shared." || len(face.Offers) == 0 || face.Offers[0].Value != "say:Postgres" || face.Recommendation != "Postgres is the one store" ||
+		face.Source != "the agent" || face.Preselected != "say:Postgres" {
 		t.Errorf("the agent case's face = %+v, want its ask's info, offers and recommendation by the agent", face)
 	}
 	pre := CaseAction{Action: ActExtend, Args: map[string]any{"sessions": 1}}.preselected()
@@ -855,39 +859,16 @@ func TestTheDeskFindsEveryAskByItsCaseAndAProposalLandsOnItsOwn(t *testing.T) {
 		t.Fatal(err)
 	}
 	d, _ = s.CaseDesk(ctx, "sf/r")
-	capFace := CaseFace(cap, nil, FactsOf(cap), d.Asks[cap.ID], nil)
-	agentFace := CaseFace(agent, nil, FactsOf(agent), d.Asks[agent.ID], nil)
+	capFace := CaseFace(cap, caseCard, d.Asks[cap.ID])
+	agentFace := CaseFace(agent, caseCard, d.Asks[agent.ID])
 	if capFace.Recommendation != "extend: one session fixes it" || capFace.Source != "the factory agent" || capFace.Preselected != ActExtend {
 		t.Errorf("the capped case's face = %+v, want the proposal", capFace)
 	}
-	if agentFace.Preselected != "" || agentFace.Recommendation != "Postgres" {
+	if agentFace.Preselected != "say:Postgres" || agentFace.Recommendation != "Postgres is the one store" {
 		t.Errorf("the agent case's face = %+v, want it untouched by the other case's proposal", agentFace)
 	}
-	if got := CaseFace(cap, nil, FactsOf(cap), CaseAsk{Detail: map[string]any{"recommendation": "x"}}, nil); got.Recommendation != "" {
+	if got := CaseFace(cap, caseCard, CaseAsk{Detail: map[string]any{"recommendation": "x"}}); got.Recommendation != "" {
 		t.Errorf("a recommendation with no writer shows: %+v", got)
-	}
-}
-
-// A human's answer, not a rung's, is the card's last answer.
-func TestCaseDeskLastAnswerIsAHumans(t *testing.T) {
-	ctx := context.Background()
-	s := caseEventStore(t)
-	c, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseOther, StateKey: "k", Status: CaseOpen, Problem: "p"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "factoryd", Rung: 1, Action: ActContinue}, nil, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if d, err := s.CaseDesk(ctx, "sf/r"); err != nil || len(d.Answered) != 0 {
-		t.Errorf("a rung's resolution counts as an answer: %v, %v", d.Answered, err)
-	}
-	c2, _, _ := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseOther, StateKey: "k2", Status: CaseOpen, Problem: "p2"})
-	if err := s.ResolveCase(ctx, c2.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if d, err := s.CaseDesk(ctx, "sf/r"); err != nil || d.Answered[caseTask].IsZero() {
-		t.Errorf("a human's resolution is no answer: %v, %v", d.Answered, err)
 	}
 }
 
@@ -904,13 +885,13 @@ func TestAnAskNamingAnEndedCaseNamesTheNewOne(t *testing.T) {
 		t.Fatal(err)
 	}
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": old.ID, "comment": int64(77), "question": "Which store?", "ask": "Which store?",
-		"info": "Postgres is shared.", "source": "agent", "offers": []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}}})
+		"info": "Postgres is shared.", "source": "agent", "choices": []string{"Postgres", "SQLite"}})
 	d, err := s.CaseDesk(ctx, "sf/r")
 	if err != nil || len(d.Cases) != 1 || d.Cases[0].ID == old.ID {
 		t.Fatalf("desk = %+v, %v; want one new case", d, err)
 	}
-	face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[d.Cases[0].ID], nil)
-	if face.Info != "Postgres is shared." || len(face.Choices) != 1 {
+	face := CaseFace(d.Cases[0], caseCard, d.Asks[d.Cases[0].ID])
+	if face.Info != "Postgres is shared." || len(face.Offers) == 0 || face.Offers[0].Value != "say:Postgres" {
 		t.Errorf("the new case's face = %+v, want the ask's info and choice", face)
 	}
 }
@@ -921,12 +902,12 @@ func TestAnAskNamingNoCaseAtAllNamesTheNewOne(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": int64(99999), "comment": int64(78), "question": "Which port?", "ask": "Which port?",
-		"info": "8080 is free.", "source": "agent", "offers": []QuestionChoice{{Value: "say:8080", Label: "8080"}}})
+		"info": "8080 is free.", "source": "agent", "choices": []string{"8080", "9090"}})
 	d, err := s.CaseDesk(ctx, "sf/r")
 	if err != nil || len(d.Cases) != 1 || d.Cases[0].ID == 99999 {
 		t.Fatalf("desk = %+v, %v; want one real case", d, err)
 	}
-	if face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[d.Cases[0].ID], nil); face.Info != "8080 is free." || len(face.Choices) != 1 {
+	if face := CaseFace(d.Cases[0], caseCard, d.Asks[d.Cases[0].ID]); face.Info != "8080 is free." || len(face.Offers) == 0 || face.Offers[0].Value != "say:8080" {
 		t.Errorf("the case's face = %+v, want the ask's info and choice", face)
 	}
 }

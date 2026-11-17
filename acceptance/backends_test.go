@@ -1604,7 +1604,7 @@ func (s *acceptanceStore) ResolveCase(context.Context, int64, factoryd.CaseResol
 	return nil
 }
 
-func (s *acceptanceStore) SetCaseOffers(context.Context, int64, []factoryd.AskOffer, []factoryd.ActionRefusal) error {
+func (s *acceptanceStore) SetCaseFace(context.Context, int64, map[string]any) error {
 	return nil
 }
 

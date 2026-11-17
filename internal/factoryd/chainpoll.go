@@ -1747,3 +1747,12 @@ func (p *ChainPoller) repairHeld(ctx context.Context, card Task, sha string) (bo
 	events, err := p.Store.IntakeEvents(ctx, card.ID)
 	return err == nil && !botCloseRecorded(events, card), err
 }
+
+// issueRefs names issues as a person reads them: "#3, #5".
+func issueRefs(issues []int64) string {
+	refs := make([]string, len(issues))
+	for i, n := range issues {
+		refs[i] = fmt.Sprintf("#%d", n)
+	}
+	return strings.Join(refs, ", ")
+}

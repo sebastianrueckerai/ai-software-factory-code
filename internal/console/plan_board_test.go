@@ -232,7 +232,7 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = "limit reached: 3 sessions", requested.Add(time.Minute)
 	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 5, TaskID: "t-plan", Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman, Problem: "The plan hit its session cap."}}}
 	wide := board(ck, "&view=wide")
-	if !strings.Contains(col(t, wide, "Escalations"), `<p class="ask">The plan hit its session cap.</p>`) || strings.Contains(wide, "limit reached: 3 sessions") ||
+	if !strings.Contains(col(t, wide, "Escalations"), `<p class="ask">The planner has a question about this plan. How should it go?</p>`) || strings.Contains(wide, "limit reached: 3 sessions") ||
 		!strings.Contains(wide, `Escalations <span class="count">1</span>`) || !strings.Contains(wide, `Approvals <span class="count">0</span>`) {
 		t.Errorf("the plan's escalation is not its case's row alone:\n%s", wide)
 	}
@@ -286,7 +286,7 @@ func TestPlanFaceHoldsNoRawEscalation(t *testing.T) {
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = strings.Repeat("a", 3000), requested.Add(time.Minute)
 	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 5, TaskID: "t-plan", Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman, Problem: "The plan hit its session cap."}}}
 	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
-	if !strings.Contains(card, `<p class="ask">The plan hit its session cap.</p>`) || strings.Contains(card, strings.Repeat("a", 100)) {
+	if !strings.Contains(card, `<p class="ask">The planner has a question about this plan. How should it go?</p>`) || strings.Contains(card, strings.Repeat("a", 100)) {
 		t.Errorf("the plan's row is missing or holds its raw escalation:\n%s", card)
 	}
 }
@@ -668,7 +668,7 @@ func TestADonePlanThatWaitsOnItsFailedCardNeedsYou(t *testing.T) {
 	if !strings.Contains(needs, `data-card="t-plan"`) || strings.Contains(done, `data-card="t-plan"`) {
 		t.Errorf("the plan waits outside Needs you:\n%s\n%s", needs, done)
 	}
-	if !strings.Contains(needs, `class="card case"`) || !strings.Contains(needs, "ended failed") {
+	if !strings.Contains(needs, `class="card case"`) || !strings.Contains(needs, `<p class="ask">A card of this plan failed. Try it again, or end it so the plan goes on?</p>`) {
 		t.Errorf("the plan's row carries no case:\n%s", needs)
 	}
 }

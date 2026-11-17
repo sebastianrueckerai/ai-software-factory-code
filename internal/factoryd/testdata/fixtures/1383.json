@@ -88,8 +88,8 @@
     "human_cases": 1,
     "face": [
       {
-        "ask": "session cap",
-        "why": "opencode serve: context canceled",
+        "ask": "Allow more, or end the card?",
+        "why": "A card runs only",
         "recommendation": "extend"
       }
     ],

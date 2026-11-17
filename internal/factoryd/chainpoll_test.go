@@ -1989,9 +1989,9 @@ func tickAt(t *testing.T, p *ChainPoller, clock *time.Time, d time.Duration) {
 
 // stallChoices are the stall card's three answers.
 var stallChoices = []QuestionChoice{
-	{Value: AnswerRerunAgain, Label: "Re-run again"},
-	{Value: AnswerCheckAgain, Label: "Check again"},
-	{Value: AnswerDismiss, Label: "Dismiss"},
+	{Value: AnswerRerunAgain, Label: "Run the chain again"},
+	{Value: AnswerCheckAgain, Label: "Look again"},
+	{Value: AnswerDismiss, Label: "End the card"},
 }
 
 // askedQuestion is the question the newest ask of card id carries, as its
@@ -2584,7 +2584,7 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 		!strings.HasPrefix(q.Info, "The chain of sf/demo-app is red at "+demoCommit+": required context flux/platform: failure. The project runs no agents, so a human repairs it.\n\n"+
 			"The run: /sf/demo-app/actions/runs/16\n\nNo card's change rides this head") ||
 		!strings.Contains(q.Info, "Closing it yourself dismisses the red at 9d9d9d9") ||
-		!slices.Equal(q.Choices, []QuestionChoice{{AnswerClose, "Handled, close"}}) {
+		!slices.Equal(q.Choices, []QuestionChoice{{AnswerClose, "I did it"}, {AnswerPark, "Not now"}}) {
 		t.Fatalf("question %+v, objective %q; want the red head's ask, the run's link and the dismissal", q, card.Objective)
 	}
 	var asked []Event

@@ -52,6 +52,16 @@ type Answer struct {
 // promised, what happened, what is left.
 type Story struct{ Planned, Happened, Left string }
 
+// without is story s with no line that repeats one of shown.
+func (s Story) without(shown ...string) Story {
+	for _, l := range []*string{&s.Planned, &s.Happened, &s.Left} {
+		if slices.Contains(shown, *l) {
+			*l = ""
+		}
+	}
+	return s
+}
+
 // storyMax bounds each line of a story, in runes.
 const storyMax = 240
 
@@ -92,19 +102,14 @@ type AskFace struct {
 }
 
 // RecommendationOf is the recommendation an ask row stores: the action it
-// preselects, else the one its recommendation's words open with, who
-// recommends it and the grounds; none when it names no answer.
+// preselects, who recommends it and the grounds; none when it preselects
+// nothing. The words never name the action.
 func RecommendationOf(detail map[string]any) Recommendation {
 	var r Recommendation
 	if p, ok := detail["preselected"].(map[string]any); ok {
 		r.Action, _ = p["action"].(string)
 	}
 	r.Grounds, _ = detail["recommendation"].(string)
-	if action, _, ok := strings.Cut(r.Grounds, ": "); r.Action == "" && ok {
-		if _, known := AnswerOf(action); known {
-			r.Action = action
-		}
-	}
 	if r.Action == "" {
 		return Recommendation{}
 	}
@@ -191,7 +196,7 @@ func FaceOf(c Case, f Facts) AskFace {
 	spec := faceSpecOf(c, f)
 	face := AskFace{Ask: spec.Ask(f), Why: spec.Why(f)}
 	if spec.Story != nil {
-		face.Story = spec.Story(f)
+		face.Story = spec.Story(f).without(face.Ask, face.Why)
 	}
 	var answers []Answer
 	add := func(key string) {
@@ -350,10 +355,11 @@ func ArgsOf(a Answer, get func(name string) string) (map[string]any, float64, er
 // every field at values' entry or else its default, and note: the words an
 // agent offered lead the note, a money field goes to the fund's or the
 // raise's amount, and an overrule drops the review's findings with the
-// note as its reason.
+// note as its reason. A required field left empty refuses the press,
+// saying what to write.
 func (a Answer) Press(f Facts, values map[string]string, note string) (Resolution, error) {
 	get := func(name string) string {
-		if v, ok := values[name]; ok {
+		if v := values[name]; strings.TrimSpace(v) != "" {
 			return v
 		}
 		i := slices.IndexFunc(a.Fields, func(x Field) bool { return x.Name == name })
@@ -361,6 +367,15 @@ func (a Answer) Press(f Facts, values map[string]string, note string) (Resolutio
 			return ""
 		}
 		return a.Fields[i].Default(f)
+	}
+	for _, field := range a.Fields {
+		v := get(field.Name)
+		if field.Name == noteField {
+			v = cmpNote(v, note)
+		}
+		if field.Required && strings.TrimSpace(v) == "" {
+			return Resolution{}, fmt.Errorf("%s is empty: %s", field.Label, field.Hint)
+		}
 	}
 	args, eur, err := ArgsOf(a, get)
 	if err != nil {

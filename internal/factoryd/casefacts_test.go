@@ -344,10 +344,34 @@ func TestTripFactsFundASessionNoPriceWeighs(t *testing.T) {
 
 // A floor case asks the opening price the run's next session needs: the
 // case's need is the raise the refusal text names, so a fund of exactly
-// it clears SessionFunded, and no premade amount under the raise is
-// offered. Spent 4.40 of 5 with nothing held leaves 0.60, less the 0.40
+// it clears SessionFunded, and "Add money" opens with it. Spent 4.40 of
+// 5 with nothing held leaves 0.60, less the 0.40
 // reserve 0.20 for a session, and the recorded opening on small needs
 // 0.607001: the raise and the case's need are both 0.41.
+// firstRaise is the amount "Add money" opens with on the budget floor of
+// card at refusal why, on the facts of the card's next session on model.
+func firstRaise(t *testing.T, r *Runner, card Task, why, model string) float64 {
+	t.Helper()
+	f, err := r.tripFacts(context.Background(), card, "", model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pressedFund(t, Facts{CaseFacts: f, Card: card, Case: Case{Kind: CaseBudgetFloor, Facts: map[string]any{"reason": why}}})
+}
+
+// pressedFund is the amount a press of "Add money" with its default funds on
+// facts f.
+func pressedFund(t *testing.T, f Facts) float64 {
+	t.Helper()
+	a, _ := answerFor(ActFund, f)
+	res, err := a.Press(f, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eur, _ := res.Args["eur"].(float64)
+	return eur
+}
+
 func TestFloorCaseAsksTheOpeningPrice(t *testing.T) {
 	g := newFactsRig(t)
 	card := g.store.tasks["t1"]
@@ -379,10 +403,8 @@ func TestFloorCaseAsksTheOpeningPrice(t *testing.T) {
 	if c.Kind != CaseBudgetFloor || c.Money == nil || c.Money.NeedEUR != raise {
 		t.Fatalf("case %v money %+v, want the budget floor asking %v", c.Kind, c.Money, raise)
 	}
-	q := BudgetQuestion(why, g.r.questionFacts(ctx, card, why))
-	if want := []QuestionChoice{{FundChoiceValue(raise), "Fund 0.41 EUR and go on"},
-		{FundChoiceValue(2), "Fund 2.00 EUR and go on"}, {AnswerPark, "Park it"}}; !slices.Equal(q.Choices, want) {
-		t.Fatalf("choices = %v, want the raise and the round 2.00 alone: the 0.30 floor would leave the session refused", q.Choices)
+	if eur := pressedFund(t, Facts{CaseFacts: FactsOf(c), Card: card, Case: c}); eur != raise {
+		t.Fatalf("Add money opens with %v, want the raise %v", eur, raise)
 	}
 	card.BudgetEUR += raise
 	g.store.tasks["t1"] = card

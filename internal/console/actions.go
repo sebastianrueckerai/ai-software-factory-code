@@ -123,14 +123,14 @@ func (c *Console) capFactsOf(ctx context.Context, t factoryd.Task) capFacts {
 	if err != nil {
 		log.Printf("console: approvals: %v", err)
 	}
-	return capFactsFrom(t, sessions, bt.Escalation, bt.Question, all)
+	return capFactsFrom(t, sessions, bt.Escalation, all)
 }
 
 // capFactsFrom are t's facts from the policy's sessions (its own cap where
 // it has one), its newest escalation and the pending approval requests; a
 // card neither waiting on a human nor in review has none, and only one
 // waiting on a human is capped.
-func capFactsFrom(t factoryd.Task, sessions int, escalation string, q *factoryd.HumanQuestion, pending []factoryd.ApprovalRequest) capFacts {
+func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []factoryd.ApprovalRequest) capFacts {
 	if t.Status != "waiting-human" && t.Status != "in-review" {
 		return capFacts{}
 	}
@@ -145,7 +145,7 @@ func capFactsFrom(t factoryd.Task, sessions int, escalation string, q *factoryd.
 		}
 	}
 	waits := t.Status == "waiting-human" && !f.merge && !f.plan
-	cap := factoryd.QuestionCap(q, escalation)
+	cap := factoryd.QuestionCap(escalation)
 	f.timeCap = waits && cap == factoryd.CapTime
 	f.capped = waits && (cap != "" || f.timeCap || f.sessions > 0 && f.attempts >= f.sessions+f.extra)
 	return f
@@ -1268,19 +1268,43 @@ func (c *Console) doAnswerAs(ctx context.Context, a actor, id, text, action stri
 }
 
 // doAnswerCase answers case caseID of card id with the typed action the
-// chat names, as doAnswerAs answers the card's own ask. A monitor's case
-// sits beside the card's run: it is answered whatever the card's status,
-// past the run's own ask, and no comment of a's goes on the issue for the
-// run to read. The case's answer has one gate, Act: a merge's or a plan's
-// criteria case is answered here as any case is. A plan question's case is
-// refused with its own door, and a number that names no live case of the card with the card's live
-// cases (noLiveCase).
+// chat names, as doAnswerAs answers the card's own ask.
 func (c *Console) doAnswerCase(ctx context.Context, a actor, id string, caseID int64, text, action string, args json.RawMessage, eur float64) (string, error) {
 	text = strings.TrimSpace(text)
 	res, err := typedAnswer(text, action, args, eur)
 	if err != nil {
 		return "", err
 	}
+	return c.answerCase(ctx, a, id, caseID, text, action, func(factoryd.Facts) (factoryd.Resolution, error) { return res, nil })
+}
+
+// doPressCase answers case caseID of card id with a press of answer on its
+// face: the resolution the press makes on the case's facts, its fields at
+// values and the note, the fund beside it.
+func (c *Console) doPressCase(ctx context.Context, a actor, id string, caseID int64, answer factoryd.Answer, values map[string]string, note string, fund float64) (string, error) {
+	note = strings.TrimSpace(note)
+	return c.answerCase(ctx, a, id, caseID, note, answer.Action, func(f factoryd.Facts) (factoryd.Resolution, error) {
+		res, err := answer.Press(f, values, note)
+		if err != nil {
+			return res, refuse(http.StatusBadRequest, err.Error()+".")
+		}
+		if fund > 0 && res.Action != factoryd.ActFund && res.Action != factoryd.ActRaiseCeiling {
+			res.Fund = &policy.Draw{EUR: fund}
+		}
+		return res, nil
+	})
+}
+
+// answerCase answers case caseID of card id with the resolution resolve
+// makes on the case's facts, text the human's words and action what they
+// pressed. A monitor's case sits beside the card's run: it is answered
+// whatever the card's status, past the run's own ask, and no comment of
+// a's goes on the issue for the run to read. The case's answer has one
+// gate, Act: a merge's or a plan's criteria case is answered here as any
+// case is. A plan question's case is refused with its own door, and a
+// number that names no live case of the card with the card's live cases
+// (noLiveCase).
+func (c *Console) answerCase(ctx context.Context, a actor, id string, caseID int64, text, action string, resolve func(factoryd.Facts) (factoryd.Resolution, error)) (string, error) {
 	if len(text) > factoryd.MaxAnswer {
 		return "", answerFits(text)
 	}
@@ -1304,6 +1328,10 @@ func (c *Console) doAnswerCase(ctx context.Context, a actor, id string, caseID i
 		index, _ := k.Facts["index"].(float64)
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Case %d is %s's %s: answer revision %d, question %d without a case number.",
 			caseID, ref, strings.ReplaceAll(string(k.Kind), "_", " "), int(revision), int(index)))
+	}
+	res, err := resolve(factoryd.Facts{CaseFacts: factoryd.FactsOf(open[i]), Card: t})
+	if err != nil {
+		return "", err
 	}
 	post := c.posting(a, t, res)
 	switch {
@@ -1453,27 +1481,9 @@ func answerAction(value, text string, eur float64, k factoryd.Case, agentTime ti
 	case value == factoryd.AnswerCloseCard:
 		res.Action = factoryd.ActClose
 	case value == factoryd.AnswerOverrule:
-		res.Action, res.Verdicts = factoryd.ActReverify, overruled(k, text)
+		res.Action, res.Verdicts = factoryd.ActReverify, factoryd.Overruled(factoryd.FactsOf(k), text)
 	}
 	return res
-}
-
-// overruled are the drop verdicts a human's overrule of the review carries
-// on case k: one on each finding the head's newest review raised, the
-// human's reason its evidence, named as the human's; nil when the review
-// raised none.
-func overruled(k factoryd.Case, reason string) map[string]factoryd.CheckVerdict {
-	f := factoryd.FactsOf(k)
-	var out map[string]factoryd.CheckVerdict
-	for _, id := range f.ReviewFindings {
-		if text := f.FindingTexts[id]; text != "" {
-			if out == nil {
-				out = map[string]factoryd.CheckVerdict{}
-			}
-			out[text] = factoryd.CheckVerdict{State: factoryd.CheckDropped, Evidence: "the human overruled the review: " + reason}
-		}
-	}
-	return out
 }
 
 // grantOf is what a grant on case k buys, the extend's args: one session

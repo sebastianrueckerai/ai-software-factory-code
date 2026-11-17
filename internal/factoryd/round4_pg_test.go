@@ -93,16 +93,24 @@ func TestAMergeRequestWhoseCaseWasAnsweredGetsItsCaseAgain(t *testing.T) {
 	}
 }
 
-// refusals is stored as a list, never null, so the offers pass finds a face's
-// offers stored and leaves them.
-func TestAnAskStoresItsRefusalsAsAList(t *testing.T) {
+// An ask stores the face's story, so the offers pass finds the face stored
+// and leaves it.
+func TestAnAskStoresItsStorySoTheOffersPassLeavesIt(t *testing.T) {
 	g := newTripRig(t, "success")
-	if _, err := g.r.FaceStop(context.Background(), "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
+	ctx := context.Background()
+	if _, err := g.r.FaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
-	got, ok := g.asks(t)[0].Detail["refusals"].([]any)
-	if !ok || got == nil {
-		t.Fatalf("refusals = %#v, want an empty list", g.asks(t)[0].Detail["refusals"])
+	if _, ok := g.asks(t)[0].Detail["story"].(map[string]any); !ok {
+		t.Fatalf("story = %#v, want the face's story stored", g.asks(t)[0].Detail["story"])
+	}
+	cases, _ := g.s.OpenCasesOf(ctx, "t1")
+	if err := g.s.SetCaseFace(ctx, cases[0].ID, map[string]any{"offers": []AskOffer{{Value: ActNote, Label: "Not now", Effect: "marker"}}}); err != nil {
+		t.Fatal(err)
+	}
+	g.r.StoreMissedOffers(ctx)
+	if got := offerValues(storedOffers(t, g.asks(t)[0].Detail)); !slices.Equal(got, []string{ActNote}) {
+		t.Fatalf("offers after the pass = %v, want the stored face left as it is", got)
 	}
 }
 
@@ -172,8 +180,8 @@ func TestActRefusesAGrantOnCriteriaNeverJudged(t *testing.T) {
 	}
 }
 
-// SetCaseOffers writes to the newest ask that names the case.
-func TestSetCaseOffersTakesTheNewestAsk(t *testing.T) {
+// SetCaseFace writes to the newest ask that names the case.
+func TestSetCaseFaceTakesTheNewestAsk(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
 	if _, err := g.r.FaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
@@ -183,7 +191,7 @@ func TestSetCaseOffersTakesTheNewestAsk(t *testing.T) {
 	if _, err := g.r.FaceStop(ctx, "t1", HealedReason, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.s.SetCaseOffers(ctx, cases[0].ID, []AskOffer{{Value: ActNote, Label: "Note", Effect: "marker"}}, nil); err != nil {
+	if err := g.s.SetCaseFace(ctx, cases[0].ID, map[string]any{"offers": []AskOffer{{Value: ActNote, Label: "Not now", Effect: "marker"}}}); err != nil {
 		t.Fatal(err)
 	}
 	asks := g.asks(t)
@@ -192,6 +200,28 @@ func TestSetCaseOffersTakesTheNewestAsk(t *testing.T) {
 	}
 	if first, newest := offerValues(storedOffers(t, asks[0].Detail)), offerValues(storedOffers(t, asks[1].Detail)); slices.Equal(first, []string{ActNote}) || !slices.Equal(newest, []string{ActNote}) {
 		t.Fatalf("the older ask holds %v and the newest %v; want the marker on the newest alone", first, newest)
+	}
+}
+
+// SetCaseFace replaces the suggestion the ask held: a face that suggests
+// nothing leaves no stale preselected answer, writer or grounds behind.
+func TestSetCaseFaceDropsTheSuggestionItNoLongerHolds(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	if _, err := g.r.FaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
+		t.Fatal(err)
+	}
+	cases, _ := g.s.OpenCasesOf(ctx, "t1")
+	if asks := g.asks(t); len(asks) != 1 || asks[0].Detail["preselected"] == nil {
+		t.Fatalf("asks %+v, want one that preselects an answer", asks)
+	}
+	if err := g.s.SetCaseFace(ctx, cases[0].ID, map[string]any{"offers": []AskOffer{{Value: ActNote, Label: "Not now", Effect: "marker"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"preselected", "recommended_by", "recommendation"} {
+		if v, ok := g.asks(t)[0].Detail[key]; ok {
+			t.Errorf("the ask keeps %s = %v after a face that suggests nothing", key, v)
+		}
 	}
 }
 

@@ -145,22 +145,25 @@ func TestCheckinStopLabelsAndCases(t *testing.T) {
 	}
 }
 
-// Each failed check-in's stop gets the cap template's question, not the
-// plain one, with no budget word in its why, and the share's stop keeps its
-// own.
+// Each failed check-in's stop opens a failed check-in's case, whose face
+// asks the register's question of the factory's own failure, not the
+// card's, with no budget word.
 func TestCheckinFailureQuestions(t *testing.T) {
-	for name, tc := range map[string]struct {
-		reason, ask string
-	}{
-		"time cap": {"check-in: " + CheckTimeCap + ": check-in time cap reached after 10m0s", "The check-in gave no answer within its 10 minutes. May the card go on?"},
-		"call cap": {"check-in: " + CheckCallCap + ": check-in call cap reached after 20 calls", "The check-in gave no answer within its 20 calls. May the card go on?"},
+	card := Task{ID: "t1", Kind: "agent", IssueNumber: 3}
+	for name, reason := range map[string]string{
+		"time cap": "check-in: " + CheckTimeCap + ": check-in time cap reached after 10m0s",
+		"call cap": "check-in: " + CheckCallCap + ": check-in call cap reached after 20 calls",
 	} {
-		q := ShapedQuestion(tc.reason, QuestionFacts{}, nil)
-		if q.Ask != tc.ask {
-			t.Errorf("%s: ask %q, want %q", name, q.Ask, tc.ask)
+		c, err := TripCase(card, CaseFacts{}, TripInput{TaskID: card.ID, Reason: reason}, func(s string) string { return s })
+		if err != nil {
+			t.Fatal(err)
 		}
-		if strings.Contains(q.Why, "person") || !strings.Contains(q.Why, "The failure is the factory's own, not the card's work.") {
-			t.Errorf("%s: why %q", name, q.Why)
+		face := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: card})
+		if c.Kind != CaseCheckinFailed || face.Ask != "The factory's own check of the session failed, not the work. Run one more session?" || c.Problem != face.Ask {
+			t.Errorf("%s: kind %s, ask %q, problem %q", name, c.Kind, face.Ask, c.Problem)
+		}
+		if strings.Contains(face.Why, "EUR") || strings.Contains(face.Why, "budget") {
+			t.Errorf("%s: why %q names money", name, face.Why)
 		}
 	}
 }

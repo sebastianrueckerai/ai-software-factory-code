@@ -292,7 +292,7 @@ func TestRung2NeedsTheJudgmentBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := fmt.Sprintf("not judged, judgment budget spent: the chat task %s has %.2f of 10.00 EUR left", chat.ID, left)
-		if out.Rung != 3 || len(g.rows(t, EventCaseClimbed)) != 0 || !strings.HasSuffix(c.Problem, unjudgedSuffix) || cases != 1 ||
+		if out.Rung != 3 || len(g.rows(t, EventCaseClimbed)) != 0 || strings.Contains(c.Problem, "not judged") || cases != 1 ||
 			!slices.ContainsFunc(g.steps(t, c.ID), func(s CaseStep) bool { return s.Rung == 0 && s.Found == want }) {
 			t.Fatalf("left %v: outcome %+v, problem %q, %d money cases, steps %+v; want the spent path in full", left, out, c.Problem, cases, g.steps(t, c.ID))
 		}
@@ -705,7 +705,8 @@ func TestWakeNamesOnlyTheClimbedCases(t *testing.T) {
 
 // A rung 1 that ended without judging (no decision: a refused call, a cap, a
 // failed run, an expiry) does not make a judged case: at a spent budget the
-// case keeps the mark, and its rung 0 step says "not judged".
+// case keeps the mark: the agent's view says the factory found it not
+// judged, never that a rung judged it, and the problem stays its own.
 func TestRung1ThatDidNotJudgeLeavesTheMark(t *testing.T) {
 	for _, found := range []string{"rung 1 could not run: the gateway refused the call for money", "the rung did not answer within 35m"} {
 		g := newRungRig(t, "success")
@@ -724,8 +725,11 @@ func TestRung1ThatDidNotJudgeLeavesTheMark(t *testing.T) {
 		if _, err := g.r.Climb(ctx, task, c, CaseFacts{}, 1, found); err != nil {
 			t.Fatal(err)
 		}
-		if got := caseByID(t, g.s, c.ID); got.Problem != "stuck"+unjudgedSuffix {
-			t.Fatalf("%q: problem %q, want the mark", found, got.Problem)
+		if got := caseByID(t, g.s, c.ID); got.Problem != "stuck" {
+			t.Fatalf("%q: problem %q, want it unmarked", found, got.Problem)
+		}
+		if info := g.infoOf(t, c.ID); !strings.Contains(info, "The factory found: "+markJudgmentSpent) || strings.Contains(info, noJudgmentLine) {
+			t.Fatalf("%q: info %q, want the mark", found, info)
 		}
 	}
 }

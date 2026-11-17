@@ -151,9 +151,8 @@ type Case struct {
 	OwnerRung  int
 	NextWakeAt *time.Time
 	WakeOn     []string
-	// Brief is the writer's background for the face's part 3 and
-	// BriefDetail its words for part 4's grounds; BriefError marks a writer
-	// that failed.
+	// Brief and BriefDetail are the case writer's lines of the story, what
+	// happened and what is left; BriefError marks a writer that failed.
 	Brief       string
 	BriefDetail string
 	BriefError  string
@@ -416,20 +415,6 @@ func (s *PGStore) StartRung1Step(ctx context.Context, taskID string, limit int, 
 		return 0, false, err
 	}
 	return id, false, tx.Commit()
-}
-
-func (s *PGStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE cases SET problem = problem || $2::text WHERE id = $1 AND right(problem, length($2::text)) <> $2::text AND `+caseLive, id, suffix)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 1 {
-		return nil
-	}
-	if c, err := s.CaseByID(ctx, id); err != nil || strings.HasSuffix(c.Problem, suffix) {
-		return err
-	}
-	return fmt.Errorf("live case %d: %w", id, ErrNotFound)
 }
 
 // StartRungStep appends st, the in-progress step of a rung that works on its

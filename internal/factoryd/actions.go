@@ -394,12 +394,8 @@ var Actions = []Action{
 	// withdraw is the factory's own: Act signals no run for it, so neither
 	// the chat's agent nor the human takes it
 	{Name: ActWithdraw, Rungs: rungs(0, 1), Applies: applyAlways},
-	{Name: ActNote, Rungs: rungs(2, 3), Applies: func(_ CaseFacts, r Resolution) string {
-		if strings.TrimSpace(r.Note) == "" {
-			return "the answer carries no note"
-		}
-		return ""
-	}},
+	// a note with no words is the human's "Not now": the press is the record
+	{Name: ActNote, Rungs: rungs(2, 3), Applies: applyAlways},
 }
 
 // monitorActions are the actions a monitor flag's case takes: those Act carries
@@ -434,7 +430,7 @@ func ActionByName(name string) (Action, bool) {
 var probes = map[string]Resolution{
 	ActHandover: {Args: map[string]any{"model": "same"}}, ActExtend: {Args: map[string]any{"sessions": 1}},
 	ActFund: {Args: map[string]any{"eur": 0.01}}, ActRaiseCeiling: {Args: map[string]any{"eur": 0.01}},
-	ActContinue: {Note: "probe"}, ActNote: {Note: "probe"},
+	ActContinue:         {Note: "probe"},
 	ActDenyMerge:        {Note: "probe"},
 	ActSetDependency:    {Args: map[string]any{"depends_on": "probe"}},
 	ActRemoveDependency: {Args: map[string]any{"depends_on": "probe"}},

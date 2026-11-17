@@ -256,8 +256,8 @@ func raErrText(err error) string {
 // (rerun_again, which keeps the card waiting, included). Rung 2's pick at full
 // auto runs, except Deploy anyway, which no chat answers at any level, and the
 // take-off of a plan's merged work, which only a human takes. A
-// choice that ends its case resolves it: a park and a keep waiting settle
-// it and the card keeps its wait; rerun_again alone leaves it live.
+// choice that ends its case resolves it; rerun_again, a park and a keep
+// waiting leave it live, and the card keeps its wait.
 func TestEveryHumanCardChoiceMeetsTheRealAct(t *testing.T) {
 	type setup struct {
 		task, source string
@@ -302,7 +302,7 @@ func TestEveryHumanCardChoiceMeetsTheRealAct(t *testing.T) {
 						work := len(r.fg.patched) + len(*replans) + len(*deploys) + len(r.reran) + len(r.dismissed)
 						k := ra.caseNow(t)
 						pre, _ := ra.face(t, su.task)["preselected"].(map[string]any)
-						keeps := value == factoryd.AnswerRerunAgain
+						keeps := value == factoryd.AnswerRerunAgain || value == factoryd.AnswerPark || value == factoryd.AnswerKeepWaiting
 						switch {
 						case caller == "agent" && level == policy.AutonomyFullAuto && strings.HasPrefix(value, factoryd.AnswerTakeOffMain):
 							if err == nil || !strings.Contains(err.Error(), "Taking plan #12 off main is the human's, made with this card's choice \"Take plan #12 off main and replan\".") || work != 0 || k.Status != factoryd.CaseAtHuman {

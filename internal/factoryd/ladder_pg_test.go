@@ -247,10 +247,10 @@ func TestOpenTripRepeatsAppendAndAskNothingNew(t *testing.T) {
 // The money and cap asks of 2026-11-14 fired bare while unresolved
 // review findings stood on the head (#1879 step 36, #1889 step 45,
 // #1899 case 3826). A cap ask whose head holds unresolved review or
-// audit findings now leads with them: the case's problem and the ask the
-// human answers name the findings first. The same stop on a head whose
-// findings a newer review resolved asks the bare cap ask.
-func TestACapAskLeadsWithTheFindingsStandingOnTheHead(t *testing.T) {
+// audit findings counts them: the case's problem and the ask the human
+// answers say how many stand, and name none of them. The same stop on a
+// head whose findings a newer review resolved asks the bare cap ask.
+func TestACapAskCountsTheFindingsStandingOnTheHead(t *testing.T) {
 	ctx := context.Background()
 	g := newTripRig(t, "success")
 	rungsOff(g.r)
@@ -264,26 +264,19 @@ func TestACapAskLeadsWithTheFindingsStandingOnTheHead(t *testing.T) {
 	if out.Resolution != nil || out.Comment != 501 || out.Rung != 3 {
 		t.Fatalf("outcome = %+v, want the case at the human on comment 501", out)
 	}
-	card, _, _ := g.s.Task(ctx, "t1")
-	f, err := g.r.tripFacts(ctx, card, "h2", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	lead := FindingsLead(CaseSessionCap, f)
-	if lead == "" {
-		t.Fatalf("facts = %+v, want the review and audit findings of h2 standing", f)
-	}
 	c := caseByID(t, g.s, out.CaseID)
-	if c.Kind != CaseSessionCap || !strings.HasPrefix(c.Problem, lead) {
-		t.Fatalf("case %q = %q, want the session cap led by %q", c.Kind, c.Problem, lead)
-	}
 	asks := g.asks(t)
 	if len(asks) != 1 {
 		t.Fatalf("asks = %d, want one", len(asks))
 	}
 	ask, _ := asks[0].Detail["ask"].(string)
-	if !strings.HasPrefix(ask, lead) || !strings.Contains(ask, "session cap of") {
-		t.Fatalf("ask = %q, want the findings leading the session cap ask", ask)
+	if c.Kind != CaseSessionCap || c.Problem != ask || !strings.HasPrefix(ask, "The card used all") || !strings.Contains(ask, " with 2 review findings open.") {
+		t.Fatalf("case %q = %q, ask %q; want the session cap counting the 2 findings of h2", c.Kind, c.Problem, ask)
+	}
+	for _, text := range []string{"the flag is read where it is not checked", "the migration runs outside its transaction"} {
+		if strings.Contains(ask, text) {
+			t.Fatalf("ask = %q names the finding %q", ask, text)
+		}
 	}
 
 	// the same stop on a head whose findings a newer review resolved: the
@@ -305,11 +298,8 @@ func TestACapAskLeadsWithTheFindingsStandingOnTheHead(t *testing.T) {
 		t.Fatalf("asks = %d, want one", len(asks2))
 	}
 	bare, _ := asks2[0].Detail["ask"].(string)
-	if !strings.Contains(bare, "session cap of") || strings.Contains(bare, "finding") {
+	if !strings.HasPrefix(bare, "The card used all") || strings.Contains(bare, "finding") {
 		t.Fatalf("ask = %q, want the bare session cap ask", bare)
-	}
-	if ask != lead+" "+bare {
-		t.Fatalf("ask = %q, want the findings leading the same ask %q", ask, bare)
 	}
 }
 
@@ -887,9 +877,11 @@ func TestARepeatedAskCarriesTheFaceItRepeats(t *testing.T) {
 		t.Fatalf("desk = %+v, %v", d, err)
 	}
 	c := d.Cases[0]
-	face := CaseFace(c, nil, FactsOf(c), d.Asks[c.ID], nil)
-	first := CaseFace(c, nil, FactsOf(c), CaseAsk{Detail: asks[0].Detail}, nil)
-	if face.Info == "" || len(face.Choices) == 0 || face.Info != first.Info || len(face.Choices) != len(first.Choices) {
+	card, _, _ := g.s.Task(ctx, "t1")
+	face := CaseFace(c, card, d.Asks[c.ID])
+	first := CaseFace(c, card, CaseAsk{Detail: asks[0].Detail})
+	if face.Ask == "" || len(face.Offers) == 0 || face.Ask != first.Ask || face.Why != first.Why || face.Story != first.Story ||
+		face.Info != first.Info || !reflect.DeepEqual(face.Offers, first.Offers) {
 		t.Errorf("face after the restart = %+v, want the first ask's %+v", face, first)
 	}
 	if face.Recommendation != "extend: one more session fixes it" || face.Source != "the factory agent" || face.Preselected != ActExtend {
@@ -900,12 +892,15 @@ func TestARepeatedAskCarriesTheFaceItRepeats(t *testing.T) {
 	}
 }
 
-// A human card's ask and a plan question's reach the face with their info
-// and choices.
+// A human card's ask and a plan question's reach the face with their info,
+// their choices and the choice their asker recommends.
 func TestHumanCardAndPlanQuestionAsksReachTheFace(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	task := Task{ID: "t1", Kind: "human", Repository: "demo-app/demo-app", IssueNumber: 12}
+	task := Task{ID: "h1", Kind: "human", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app", IssueNumber: 51}
+	if err := g.s.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
 	q := HumanQuestion{Ask: "Which store keeps the snapshots?", Why: "Two fit.", Info: "Postgres is shared.", Recommendation: "Postgres", Source: "the agent",
 		Choices: []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}}}
 	if err := recordAsk(ctx, g.r.timeline, task, q, "factoryd", "chat", ViaFactoryd, "", nil); err != nil {
@@ -916,8 +911,9 @@ func TestHumanCardAndPlanQuestionAsksReachTheFace(t *testing.T) {
 		t.Fatalf("desk = %+v, %v", d, err)
 	}
 	c := d.Cases[0]
-	face := CaseFace(c, nil, FactsOf(c), d.Asks[c.ID], nil)
-	if face.Info != "Postgres is shared." || len(face.Choices) != 2 || face.Recommendation != "Postgres" || face.Source != "the agent" {
+	face := CaseFace(c, task, d.Asks[c.ID])
+	if face.Info != "Postgres is shared." || len(face.Offers) != 2 || face.Offers[0].Label != "Postgres" || face.Offers[1].Label != "SQLite" ||
+		face.Preselected != "choice:say:Postgres" || face.Recommendation != "Postgres" || face.Source != "the agent" {
 		t.Errorf("the human card's face = %+v", face)
 	}
 	rev, err := g.s.AddPlanRevision(ctx, "t1", json.RawMessage(`{"summary": "one"}`), "s1")
@@ -938,8 +934,9 @@ func TestHumanCardAndPlanQuestionAsksReachTheFace(t *testing.T) {
 	if plan.ID == 0 {
 		t.Fatalf("no plan question case in %+v", d.Cases)
 	}
-	pf := CaseFace(plan, nil, FactsOf(plan), d.Asks[plan.ID], nil)
-	if len(pf.Choices) != 2 || pf.Recommendation != "Postgres: it is shared" || pf.Source != "the planner" {
+	pf := CaseFace(plan, planTask, d.Asks[plan.ID])
+	if len(pf.Offers) != 3 || pf.Offers[0].Value != "plan:Postgres" || pf.Offers[1].Value != "plan:SQLite" ||
+		pf.Preselected != "plan:Postgres" || pf.Recommendation != "it is shared" || pf.Source != "the planner" {
 		t.Errorf("the plan question's face = %+v", pf)
 	}
 }
