@@ -68,6 +68,9 @@ func TestPokeOf(t *testing.T) {
 				Choices: []string{"Run the failed checks again"}}, true},
 		// a plan's request is its revision's bookkeeping: its questions' rows ask
 		{"a plan pokes nobody", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "plan", "revision": float64(2), "cards": float64(6)}}, plan, ChatMessage{}, false},
+		{"a plan's confirmation says why", Event{Kind: EventQuestionAsked, TaskID: "t-plan", Detail: ConfirmationRow(PlanQuestion{Kind: QuestionConfirmation,
+			Text: "Confirmation of the spec and the criteria of plan revision 2:\nConfirm the plan fixes them."}, 2, 1)}, plan,
+			ChatMessage{Kind: MessageEscalation, Content: "#558 (Members page) needs you. The plan's cards and promises are fixed only once a human confirms them."}, true},
 		// a row as the store reads it back: the request's promise ids, whatever its reason's prose
 		{"a criteria gap", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria", "open": []any{"c1", "c2"}, "of": float64(3),
 			"problem": CriteriaGapReason([]string{"c1", "c2"})}}, plan,

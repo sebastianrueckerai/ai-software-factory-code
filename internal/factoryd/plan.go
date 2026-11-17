@@ -3653,9 +3653,9 @@ func PlanQuestionRow(q PlanQuestion, revision, index int) map[string]any {
 }
 
 // ConfirmationRow is the question_asked row of revision's confirmation q,
-// asked as question index.
+// asked as question index, with its why.
 func ConfirmationRow(q PlanQuestion, revision, index int) map[string]any {
-	return map[string]any{"question": q.Text, "revision": revision, "index": index, "kind": QuestionConfirmation}
+	return map[string]any{"question": q.Text, "why": planConfirmWhy, "revision": revision, "index": index, "kind": QuestionConfirmation}
 }
 
 // askConfirmation appends the confirmation question to revision's stored

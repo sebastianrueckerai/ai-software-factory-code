@@ -1435,7 +1435,7 @@ var planConfirmFace = FaceSpec{
 		if p, _ := planOn(f); p.HoldoutsOpen > 0 {
 			return fmt.Sprintf("The plan's cards start only once its %s %s kept or dropped.", plural(p.HoldoutsOpen, "extra promise"), isAre(p.HoldoutsOpen))
 		}
-		return "The plan's cards and promises are fixed only once a human confirms them."
+		return planConfirmWhy
 	},
 	Story: func(f Facts) Story {
 		if h, ok := holdoutOn(f); ok {
@@ -1465,6 +1465,10 @@ var planConfirmFace = FaceSpec{
 		return []string{AnswerConfirmPlan, AnswerRevisePlan}
 	},
 }
+
+// planConfirmWhy is why a plan's confirmation asks, on its face and on
+// its row, which the inbox's message says.
+const planConfirmWhy = "The plan's cards and promises are fixed only once a human confirms them."
 
 // firstAsk is the first of asks that reads as an ask.
 func firstAsk(asks ...string) string {
