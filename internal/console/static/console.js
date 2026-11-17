@@ -1580,10 +1580,10 @@ document.addEventListener("keydown", function (e) {
     if (!d.doc) return;
     openDoc(d.doc, {heading: d.heading || ""});
   });
-  // a document's own links: a data-doc link opens in the view, a quiet
-  // one goes nowhere
+  // a document's own links and a card's link to a document: a data-doc
+  // link opens in the view at its heading, a quiet one goes nowhere
   document.addEventListener("click", function (e) {
-    var a = e.target.closest && e.target.closest("#doc-view a");
+    var a = e.target.closest && e.target.closest("#doc-view a, a.doc-link[data-doc]");
     if (!a) return;
     if (a.dataset.doc) {
       e.preventDefault();

@@ -3163,7 +3163,7 @@ func TestRunPlanFencesTheWorkSoFar(t *testing.T) {
 			&harness.PriorState{Session: "to_plan", Heading: "The work so far on this card, as factoryd copied it when this session started.", Body: work}},
 		"switched, sixty findings": {true, nil, sixty, sixty,
 			&harness.PriorState{Session: "to_plan", Heading: "The work so far on this card, as factoryd copied it when this session started.", Body: work}},
-		"a direct card's cut": {true, cut, []string{"an earlier finding"}, []string{"an earlier finding", "#1 (this card, no key): its work on branch card/1; its record is card-1.md"},
+		"a direct card's cut": {true, cut, []string{"an earlier finding"}, []string{"an earlier finding", "#1 (this card, no key): its work on the branch of #1; its record is card-1.md"},
 			&harness.PriorState{Session: "replan", Heading: "The records of the plan's old cards, as factoryd copied them when this session started.",
 				Body: "One file per card: its review findings, its criteria verdicts, the check-in's notes and the working state of its last session.\n\n" +
 					"This is the cut of #1 at session 2, 1.50 EUR spent: the rest\n\n" + work}},

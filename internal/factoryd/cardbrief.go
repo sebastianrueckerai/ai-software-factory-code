@@ -95,8 +95,11 @@ const (
 	summaryMax = 600
 )
 
+// RefPattern finds a reference #N in a text, the number its second group: no
+// # after a word, an & or a slash, as in an entity, a URL or a path.
+var RefPattern = regexp.MustCompile(`(?:^|[^\w&#/])(#(\d+))\b`)
+
 var (
-	issueRef     = regexp.MustCompile(`(?:^|[^\w&#/])(#(\d+))\b`)
 	hexID        = regexp.MustCompile(`\b[0-9a-f]{7,}\b`)
 	backticked   = regexp.MustCompile("`[^`]*`?")
 	camelCase    = regexp.MustCompile(`\b[a-z]{2,}[A-Z][A-Za-z0-9]*\b`)
@@ -173,7 +176,7 @@ func checkBrief(b BriefText, job BriefJob, refs RefResolver, on [4]bool) []strin
 		}
 		// a fenced block quotes a log or a file: no reference of the text's
 		f = fencedBlock.ReplaceAllString(f, "")
-		for _, m := range issueRef.FindAllStringSubmatch(linkTarget.ReplaceAllString(f, "]"), -1) {
+		for _, m := range RefPattern.FindAllStringSubmatch(linkTarget.ReplaceAllString(f, "]"), -1) {
 			ok, asked := resolved[m[2]]
 			if !asked {
 				n, err := strconv.Atoi(m[2])
@@ -247,7 +250,7 @@ func titleLength(title string, job BriefJob) []string {
 
 func titleIssueRefs(title string) []string {
 	var out []string
-	for _, m := range issueRef.FindAllStringSubmatch(title, -1) {
+	for _, m := range RefPattern.FindAllStringSubmatch(title, -1) {
 		out = append(out, m[1])
 	}
 	return out

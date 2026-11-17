@@ -1828,6 +1828,9 @@ type boardView struct {
 	// planTrack names the repositories whose project's process has a plan
 	// track.
 	planTrack map[string]bool
+	// refs resolve the references of the render's texts by repository,
+	// each read once (linkRefs)
+	refs map[string]*cardRefs
 }
 
 // viewOf reads what every card of a render shares, and the projects agents

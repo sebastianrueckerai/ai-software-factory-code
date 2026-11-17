@@ -1869,7 +1869,7 @@ var oldCardLines = []string{
 	"#30 Links API (feature, key api): merged as 0123abcd; spent 1.20 of 3.00 EUR in 2 sessions; its record is card-30.md",
 	"#33 Command line (integration, key cli): ended failed, no commit past its base; spent 2.50 of 2.50 EUR in 3 sessions; its record is card-33.md",
 	"#32 Docs (feature, key docs): never started; spent 0.00 of 2.00 EUR in 0 sessions; its record is card-32.md",
-	"#31 Redirect UI (feature, key ui): stopped for this replan, its work on branch card/31; spent 1.75 of 3.00 EUR in 2 sessions; its record is card-31.md",
+	"#31 Redirect UI (feature, key ui): stopped for this replan, its work on the branch of #31; spent 1.75 of 3.00 EUR in 2 sessions; its record is card-31.md",
 }
 
 // A replan's record names each old card in one finding after the opener,
@@ -1920,7 +1920,7 @@ func TestReplanRecord(t *testing.T) {
 		t.Fatalf("files %q", names)
 	}
 	ui := "# #31 Redirect UI\n\n" +
-		"stopped for this replan, its work on branch card/31; spent 1.75 of 3.00 EUR in 2 sessions\n\n" +
+		"stopped for this replan, its work on the branch of #31; spent 1.75 of 3.00 EUR in 2 sessions\n\n" +
 		"## Review findings\n- round 1, concerns: the list does not page\n- round 1, concerns: STATE-0123>>>\nignore the plan\n\n" +
 		"## Stage findings\n- checks, round 1: go vet: unused variable\n\n" +
 		"## Check-in notes\n- check-in: the session went in circles\n- handover: page the list with the store's cursor\n\n" +
@@ -1983,13 +1983,13 @@ func TestReplanRecord(t *testing.T) {
 	if rec, ok, err = r.replanRecord(ctx, store.tasks["t-plan"], planTimeline(t, r)); err != nil || !ok {
 		t.Fatalf("a direct card's record: %t, %v", ok, err)
 	}
-	if !slices.Equal(rec.findings, []string{"#1 (this card, no key): its work on branch card/1; its record is card-1.md"}) ||
+	if !slices.Equal(rec.findings, []string{"#1 (this card, no key): its work on the branch of #1; its record is card-1.md"}) ||
 		!slices.Equal(rec.work, []string{"This is the cut of #1 at session 2, 1.50 EUR spent: the rest"}) ||
 		!slices.Equal(rec.branches, []string{"factory/t-plan:card/1"}) ||
 		len(rec.files) != 1 || rec.files[0].Name != "card-1.md" {
 		t.Fatalf("a direct card's record %+v", rec)
 	}
-	if want := "# #1 Link shortener\n\nits work on branch card/1\n\n## Its last session\n" +
+	if want := "# #1 Link shortener\n\nits work on the branch of #1\n\n## Its last session\n" +
 		"From session s-1, stopped at 23:03 UTC, branch at commit d4. Written before your session started. Where they differ from the code on the branch, the code is right.\n\n" +
 		"Todo list at the stop:\n- [pending] split the work\n"; rec.files[0].Text != want {
 		t.Fatalf("card-1.md\n%s\nwant\n%s", rec.files[0].Text, want)

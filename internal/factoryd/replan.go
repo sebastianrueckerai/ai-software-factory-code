@@ -1646,11 +1646,10 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 				return replanRecord{}, false, err
 			}
 		}
-		branch := fmt.Sprintf("card/%d", k.IssueNumber)
 		work, onBranch := "no commit past its base", ""
 		if head != "" {
-			work, onBranch = "its work on branch "+branch, ", its work on branch "+branch
-			rec.branches = append(rec.branches, taskBranch(k)+":"+branch)
+			work, onBranch = fmt.Sprintf("its work on the branch of #%d", k.IssueNumber), fmt.Sprintf(", its work on the branch of #%d", k.IssueNumber)
+			rec.branches = append(rec.branches, fmt.Sprintf("%s:card/%d", taskBranch(k), k.IssueNumber))
 		}
 		tl, err := r.objects.Get(ctx, "sessions/"+k.ID+"/timeline.jsonl")
 		if err != nil {

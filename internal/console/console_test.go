@@ -118,6 +118,9 @@ type fakeForgejo struct {
 	// rawAt are files at refs other than main, "<ref> <escaped path>" to
 	// the content
 	rawAt map[string]string
+	// issueReads answer the reads of these issue paths in place of the
+	// rig's issues, a pull request among them
+	issueReads map[string]map[string]any
 }
 
 // briefHead opens the issue body of a card the tests file with the why
@@ -365,6 +368,8 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	case r.Method == http.MethodPatch && len(f.deps[r.URL.Path+"/dependencies"]) > 0:
 		http.Error(w, `{"message":"cannot close this issue because it still has open dependencies"}`, http.StatusPreconditionFailed)
+	case r.Method == http.MethodGet && f.issueReads[r.URL.Path] != nil:
+		json.NewEncoder(w).Encode(f.issueReads[r.URL.Path])
 	case r.Method == http.MethodGet && rigIssue.MatchString(r.URL.Path):
 		// the rig's cards' issues, as filed: an issue of 900 or more is none
 		json.NewEncoder(w).Encode(map[string]any{"title": "Fix the cache", "body": "It drops entries.", "state": "open"})

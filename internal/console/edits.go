@@ -47,9 +47,13 @@ type cardRefs struct {
 	issues map[int]resolvedIssue
 }
 
+// resolvedIssue is #N: the project's card of it, else an issue or a pull
+// request of the repository, which merged or not.
 type resolvedIssue struct {
 	title, state string
 	ok           bool
+	card         factoryd.Task
+	pull, merged bool
 }
 
 // probe is a resolver over r's reads with an error of its own, so a
@@ -59,32 +63,41 @@ func (r *cardRefs) probe() *cardRefs {
 }
 
 func (r *cardRefs) Issue(n int) (string, string, bool) {
+	i := r.resolve(n)
+	return i.title, i.state, i.ok
+}
+
+// resolve is #n, read once.
+func (r *cardRefs) resolve(n int) resolvedIssue {
 	if i, ok := r.issues[n]; ok {
-		return i.title, i.state, i.ok
+		return i
 	}
 	i, err := r.issue(n)
 	if err != nil {
 		r.stop(err)
-		return "", "", false
+		return resolvedIssue{}
 	}
 	if r.issues == nil {
 		r.issues = map[int]resolvedIssue{}
 	}
 	r.issues[n] = i
-	return i.title, i.state, i.ok
+	return i
 }
 
 func (r *cardRefs) issue(n int) (resolvedIssue, error) {
 	if k, ok, err := r.c.cfg.Tasks.TaskByIssue(r.ctx, r.t.Repository, int64(n)); err != nil {
 		return resolvedIssue{}, r.failure("the cards", err)
 	} else if ok {
-		return resolvedIssue{factoryd.CardTitle(k), k.Status, true}, nil
+		return resolvedIssue{title: factoryd.CardTitle(k), state: k.Status, ok: true, card: k}, nil
 	}
 	repo, err := factoryd.SplitRepo(r.t.Repository)
 	if err != nil {
 		return resolvedIssue{}, refuse(http.StatusInternalServerError, fmt.Sprintf("The brief's references cannot be checked: the card's repository %q is no owner/name.", r.t.Repository))
 	}
-	var issue struct{ Title, State string }
+	var issue struct {
+		Title, State string
+		PullRequest  *struct{ Merged bool } `json:"pull_request"`
+	}
 	err = r.c.as(r.ctx, r.a.s, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), n), nil, http.StatusOK, &issue)
 	var api *apiError
 	switch {
@@ -93,7 +106,8 @@ func (r *cardRefs) issue(n int) (resolvedIssue, error) {
 	case err != nil:
 		return resolvedIssue{}, r.failure("issue #"+fmt.Sprint(n), err)
 	}
-	return resolvedIssue{issue.Title, issue.State, true}, nil
+	pr := issue.PullRequest
+	return resolvedIssue{title: issue.Title, state: issue.State, ok: true, pull: pr != nil, merged: pr != nil && pr.Merged}, nil
 }
 
 func (r *cardRefs) Files(path string) []string {
