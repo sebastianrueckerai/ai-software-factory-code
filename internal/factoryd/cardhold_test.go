@@ -107,10 +107,14 @@ func TestTheReleaseCardsMergeEndsTheHoldAndStartsTheCard(t *testing.T) {
 }
 
 // A release card that ends closed or failed releases nothing: the card
-// stays held, the line warns naming #2062, plan #1915 and how it ended,
-// and no case opens and no row is written.
+// stays held, the line warns naming #2062, plan #1915, how it ended and
+// what a human does, a retry of a failed #2062 first, whose retry takes
+// the hold over, and no case opens and no row is written.
 func TestAReleaseCardThatEndsClosedOrFailedKeepsTheHold(t *testing.T) {
-	for _, end := range []string{"closed", "failed"} {
+	for end, fit := range map[string]string{
+		"closed": "releases the hold or holds the card on another card",
+		"failed": "retries #2062, whose retry takes the hold over, releases the hold or holds the card on another card",
+	} {
 		t.Run(end, func(t *testing.T) {
 			ctx := context.Background()
 			store, rec, bounded := holdFixture(t, "t-r")
@@ -119,8 +123,7 @@ func TestAReleaseCardThatEndsClosedOrFailedKeepsTheHold(t *testing.T) {
 			store.tasks["t-r"] = r
 			pullQueued(ctx, store, bounded, "demo/app")
 			pullQueued(ctx, store, bounded, "demo/app")
-			want := "on hold: its release card #2062 (plan #1915) ended " + end +
-				" and releases nothing, so a human releases the hold or holds the card on another card: needs the finished pg split"
+			want := "on hold: its release card #2062 (plan #1915) ended " + end + " and releases nothing, so a human " + fit + ": needs the finished pg split"
 			if h := store.tasks["t-held"]; len(rec.starts) != 0 || h.Hold == nil || h.QueueReason != want {
 				t.Fatalf("starts %v, hold %+v, reason %q; want none, the hold, and %q", rec.starts, h.Hold, h.QueueReason, want)
 			}

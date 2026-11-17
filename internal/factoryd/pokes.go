@@ -326,8 +326,12 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		if !t.Held() || t.Hold.Release != str("release_task") {
 			return m, false
 		}
-		m.Content = fmt.Sprintf("%s stays on hold: its release card %s ended %s and releases nothing. Release the hold, or hold it again with another release card.",
-			TitledRef(ref, t), str("release"), str("status"))
+		fit := "Release the hold, or hold it again with another release card."
+		if str("status") == "failed" {
+			// a retry of the release card takes the hold over (takeOverEdges)
+			fit = fmt.Sprintf("Retry #%d, whose retry takes the hold over, or release the hold, or hold it again with another release card.", num("release_issue"))
+		}
+		m.Content = fmt.Sprintf("%s stays on hold: its release card %s ended %s and releases nothing. %s", TitledRef(ref, t), str("release"), str("status"), fit)
 	case EventChatBudgetSpent:
 		// the chat's own task is no card
 		m.TaskID = ""

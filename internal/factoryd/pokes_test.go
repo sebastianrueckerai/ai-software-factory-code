@@ -26,7 +26,8 @@ func TestPokeOf(t *testing.T) {
 		}
 		return Event{Kind: kind, TaskID: "t-1", Actor: "sebastian", Detail: d}
 	}
-	stranded := Event{Kind: EventCardHoldStranded, TaskID: "t-1", Detail: map[string]any{"release_task": "t-9", "release": "#31 (plan #30)", "status": "closed"}}
+	stranded := Event{Kind: EventCardHoldStranded, TaskID: "t-1", Detail: map[string]any{"release_task": "t-9", "release": "#31 (plan #30)", "release_issue": float64(31), "status": "closed"}}
+	failedRelease := Event{Kind: EventCardHoldStranded, TaskID: "t-1", Detail: map[string]any{"release_task": "t-9", "release": "#31 (plan #30)", "release_issue": float64(31), "status": "failed"}}
 	heldOn := func(release string) Task {
 		c := card
 		c.Status, c.Hold = "queued", &CardHold{Reason: "after the pg split", Release: release, By: "sebastian"}
@@ -106,6 +107,9 @@ func TestPokeOf(t *testing.T) {
 		{"a stranded hold", stranded, heldOn("t-9"),
 			ChatMessage{Kind: MessagePoke, Content: "#603 - Session store: pick the table's store stays on hold: its release card #31 (plan #30) ended closed and releases nothing. " +
 				"Release the hold, or hold it again with another release card."}, true},
+		{"a hold whose release card failed", failedRelease, heldOn("t-9"),
+			ChatMessage{Kind: MessagePoke, Content: "#603 - Session store: pick the table's store stays on hold: its release card #31 (plan #30) ended failed and releases nothing. " +
+				"Retry #31, whose retry takes the hold over, or release the hold, or hold it again with another release card."}, true},
 		{"a hold released before the pass", stranded, func() Task { c := card; c.Status = "queued"; return c }(), ChatMessage{}, false},
 		{"a hold a retry's card took over", stranded, heldOn("t-9-r1"), ChatMessage{}, false},
 	} {
@@ -685,7 +689,7 @@ func TestAStrandedHoldPokesTheHumanOnce(t *testing.T) {
 			held = append(held, m)
 		}
 	}
-	const want = "#6 - Card t-held stays on hold: its release card #31 (plan #30) ended failed and releases nothing. Release the hold, or hold it again with another release card."
+	const want = "#6 - Card t-held stays on hold: its release card #31 (plan #30) ended failed and releases nothing. Retry #31, whose retry takes the hold over, or release the hold, or hold it again with another release card."
 	if len(held) != 1 || held[0].Kind != MessagePoke || held[0].TaskID != "t-held" || held[0].Content != want || held[0].Repeats != 0 || len(held[0].Choices) != 0 {
 		t.Fatalf("the hold's pokes = %+v, want one inform about #6: %q", held, want)
 	}

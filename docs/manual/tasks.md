@@ -93,15 +93,16 @@ its dependency wait asks nothing, until the human releases it (Release,
 follows the release card's work into a retry or a successor, as a
 dependency edge does. A release card that ends `failed` or `closed`, or
 that a cut turns into a plan, releases nothing: the card stays held and
-its chip turns to the warning that names the release card, its plan and
-how it ended. A release card's end `failed` or `closed` is told once
-too: its end records `card_hold_stranded` on each card its hold keeps,
-and the inbox of each human the project tells gets one inform, at
-needs-you, naming the held card, the release card, its plan and how it
-ended, and the two ways on: release the hold, or hold the card again on
-another release card. A hold released, or taken over by a retry's card,
-before the poke goes out tells nothing. It opens no case and asks no
-rung. A card that ends, or moves to the human lane, takes its
+its chip turns to the warning that names the release card, its plan, how
+it ended and the ways on. For a release card that failed, a retry of it
+comes first, since its retry takes the hold over. A release of the hold,
+or a hold on another release card, comes next. A closed one leaves these
+two. A release card's end `failed` or `closed` is told once too: its end
+records `card_hold_stranded` on each card its hold keeps, and the inbox
+of each human the project tells gets one inform, at needs-you, naming
+the held card, the release card, its plan, how it ended and the same
+ways on. A hold released, or taken over by a retry's card, before the
+poke goes out tells nothing. It opens no case and asks no rung. A card that ends, or moves to the human lane, takes its
 hold with it, and its `card_hold_ended` row names the move. Release
 refuses a card that no hold holds.
 

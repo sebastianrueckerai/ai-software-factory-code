@@ -82,8 +82,11 @@ func holdView(ctx context.Context, store interface {
 		v.Released = true
 	case rel.Status == "failed" || rel.Status == "closed":
 		v.Warn = true
-		v.Line = fmt.Sprintf("on hold: its release card %s ended %s and releases nothing, so a human releases the hold or holds the card on another card: %s",
-			name, rel.Status, h.Reason)
+		fit := "releases the hold or holds the card on another card"
+		if rel.Status == "failed" {
+			fit = fmt.Sprintf("retries #%d, whose retry takes the hold over, releases the hold or holds the card on another card", rel.IssueNumber)
+		}
+		v.Line = fmt.Sprintf("on hold: its release card %s ended %s and releases nothing, so a human %s: %s", name, rel.Status, fit, h.Reason)
 	}
 	return v, nil
 }
@@ -108,7 +111,7 @@ func strandedHolds(ctx context.Context, tl *Timeline, store Store, rel Task, fin
 	}
 	for _, h := range held {
 		tl.RecordFact(ctx, Event{Repository: h.Repository, TaskID: h.ID, IssueNumber: h.IssueNumber, Kind: EventCardHoldStranded,
-			Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"release_task": rel.ID, "release": name, "status": final},
+			Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"release_task": rel.ID, "release": name, "release_issue": rel.IssueNumber, "status": final},
 			IdentityKey: IdentityKey(EventCardHoldStranded, h.ID, h.Hold.At.UTC().Format(time.RFC3339Nano), rel.ID, final)})
 	}
 }
