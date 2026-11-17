@@ -442,8 +442,8 @@ func TestCaseFaceScrubsTheQuestionAndNamesTheRecommendationsWriter(t *testing.T)
 	}
 }
 
-// The opened card shows the case writer's two lines as its story, masked,
-// and the ask's info beside them.
+// The opened card shows the case writer's two lines in its story, masked,
+// beside the numbers the card composes, and the ask's info beside them.
 func TestCaseFaceShowsTheBriefMasked(t *testing.T) {
 	const url, bearer = "https://user:pass@git.example/x", "Authorization: Bearer abc123def456ghi789jkl012mno345"
 	r := newRig(t)
@@ -453,7 +453,7 @@ func TestCaseFaceShowsTheBriefMasked(t *testing.T) {
 	r.caseAsks = map[int64]factoryd.CaseAsk{3: {At: time.Now().Add(-time.Hour), Detail: map[string]any{"info": "the digest's info"}}}
 	ck, _ := r.loggedIn(t)
 	drawer := getAs(r, ck, "/cards/t-a/drawer?tab=overview", false).Body.String()
-	for _, want := range []string{"<li>The fetch of", "<li>Another session fixes both findings.</li>", "<p>the digest's info</p>"} {
+	for _, want := range []string{"<li>No session has run on this card. The fetch of", "<li>Another session fixes both findings. All of its work is still to do.</li>", "<p>the digest's info</p>"} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the opened card lacks %q:\n%s", want, drawer)
 		}

@@ -195,7 +195,7 @@ func TestWorkflowNeedsInfoResumesWithThePostersAnswer(t *testing.T) {
 }
 
 // Backlog 29: the author's answers buy at most
-// maxPosterAttempts extra attempts. The third answer still reaches the
+// MaxPosterAttempts extra attempts. The third answer still reaches the
 // next session, but buys none: the loop ends at the session cap's card
 // after 3+2 sessions, not 3+3.
 func TestWorkflowPosterAnswersBuyAtMostTwoAttempts(t *testing.T) {

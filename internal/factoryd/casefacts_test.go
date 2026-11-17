@@ -138,8 +138,9 @@ func (g factsRig) timeline(t *testing.T) {
 // The newest session of the timeline is what a stop's story tells: it
 // cost the 0.70 EUR spent between its start and its end, it pushed h2,
 // which the review judged, and the head it started from, h1, held two
-// review findings. A newest session whose push no gate judged yet names
-// no findings, and one that pushed nothing says so.
+// review findings. A newer session that pushed h3, which no gate judged,
+// names h2's findings with no gate on its head; at the card's head h2 it
+// names none, the review judging h2. One that pushed nothing says so.
 func TestTripFactsReadTheLastSession(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
@@ -168,7 +169,7 @@ func TestTripFactsReadTheLastSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := &LastSessionFacts{CostEUR: 0.7, Pushed: true, Review: []string{FindingID("an older remark"), idA}}
+	want := &LastSessionFacts{CostEUR: 0.7, Pushed: true, Judged: []string{"review"}, Review: []string{FindingID("an older remark"), idA}}
 	if got.LastSession != nil {
 		slices.Sort(got.LastSession.Review)
 		slices.Sort(want.Review)
@@ -179,12 +180,20 @@ func TestTripFactsReadTheLastSession(t *testing.T) {
 	write([3]any{factsAt(10, 0), "session_start", map[string]any{"session": "s3", "attempt": 3}},
 		[3]any{factsAt(10, 10), "pushed", map[string]any{"session": "s3", "commit": "h3"}},
 		[3]any{factsAt(10, 12), "session_end", map[string]any{"session": "s3", "outcome": "pushed"}})
-	if got, _ := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", ""); !reflect.DeepEqual(got.LastSession, &LastSessionFacts{Pushed: true}) {
-		t.Errorf("after a push no gate judged, the last session = %+v, want it pushed with no findings and no cost", got.LastSession)
+	if got, _ := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", ""); !reflect.DeepEqual(got.LastSession, &LastSessionFacts{Pushed: true, Judged: []string{"review"}}) {
+		t.Errorf("after a push past the card's head, the last session = %+v, want it pushed with no findings and no cost", got.LastSession)
+	}
+	tl, err := g.r.objects.Get(context.Background(), "sessions/t1/timeline.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps, sessions := lineSteps(g.r.Scrub, tl)
+	if got := lastSession(steps, sessions, "h3"); !reflect.DeepEqual(got, &LastSessionFacts{Pushed: true, Review: []string{idA}}) {
+		t.Errorf("at h3, which no gate judged, the last session = %+v, want h2's review finding and no gate on the head", got)
 	}
 	write([3]any{factsAt(11, 0), "session_start", map[string]any{"session": "s4", "attempt": 4}},
 		[3]any{factsAt(11, 12), "session_end", map[string]any{"session": "s4", "outcome": "no_push"}})
-	if got, _ := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", ""); !reflect.DeepEqual(got.LastSession, &LastSessionFacts{}) {
+	if got, _ := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", ""); !reflect.DeepEqual(got.LastSession, &LastSessionFacts{Judged: []string{"review"}}) {
 		t.Errorf("after a session that pushed nothing, the last session = %+v, want it unpushed", got.LastSession)
 	}
 }
@@ -210,6 +219,9 @@ func TestTripFactsReadTheLastSession(t *testing.T) {
 //     pushes of s2 and s3 after it
 //   - no answer of the issue's author bought a session yet: its grant is
 //     left
+//   - the policy's limits are 20 EUR a day and 50 a month, demo-app's file
+//     sets none, and a session may spend the default 60 percent with
+//     nothing pushed
 func TestTripFactsReadsTheCard(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
@@ -239,7 +251,7 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 		Autonomy:     policy.AutonomyFullAuto,
 		PoolLeft:     policy.Draw{Sessions: 29, AgentTime: 29*time.Hour + 55*time.Minute, EUR: 58.5},
 		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: 85 * time.Minute, EUR: 4},
-		PosterGrant:  true,
+		PosterGrant:  true, DayCapEUR: 20, MonthCapEUR: 50, SpendShare: 0.6,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("facts =\n%+v\nwant\n%+v", got, want)

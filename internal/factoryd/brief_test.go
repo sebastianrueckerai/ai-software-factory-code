@@ -451,14 +451,14 @@ func TestBriefWriterBriefsACaseOnTheJudgmentBudget(t *testing.T) {
 // The writer's prompt asks for the two story lines with the ask form of the
 // guide, and forbids naming a button.
 func TestCaseBriefPromptWritesTheStoryAndNamesNoButton(t *testing.T) {
-	for _, want := range []string{`{"happened": "...", "left": "..."}`, "at most 240 characters", "Name no button, answer or action", writingguide.For(writingguide.JobAsk)} {
+	for _, want := range []string{`{"happened": "...", "left": "..."}`, "at most 160 characters", "Name no button, answer or action", writingguide.For(writingguide.JobAsk)} {
 		if !strings.Contains(caseBriefPrompt, want) {
 			t.Errorf("the prompt lacks %q", want)
 		}
 	}
 }
 
-// A story line past 240 characters, or one the guide's lint faults, refuses
+// A story line past 160 characters, or one the guide's lint faults, refuses
 // the answer: nothing is stored, so the template's story stands, the mark
 // names each fault, and the next call reads the refusal and its answer is
 // stored.
@@ -481,7 +481,7 @@ func TestBriefWriterRefusesAStoryLinePastItsBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	mark := store.caseFailed[5]
-	if len(store.caseBrief) != 0 || !strings.HasPrefix(mark, noBriefMark) || !strings.Contains(mark, "happened has 251 characters, at most 240") ||
+	if len(store.caseBrief) != 0 || !strings.HasPrefix(mark, noBriefMark) || !strings.Contains(mark, "happened has 251 characters, at most 160") ||
 		!strings.Contains(mark, "left: ") {
 		t.Fatalf("story %v, mark %q; want none stored and the mark naming the long line and the semicolon", store.caseBrief, mark)
 	}

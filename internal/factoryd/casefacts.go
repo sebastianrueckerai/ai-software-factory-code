@@ -152,14 +152,25 @@ type CaseFacts struct {
 	// LastSession is the card's newest session as a stop's story tells it,
 	// nil when the timeline names none.
 	LastSession *LastSessionFacts `json:"last_session,omitempty"`
+	// DayCapEUR and MonthCapEUR are the factory's spending limits and
+	// ProjectCapEUR the project's for the month, as the policy in force
+	// sets them (0 for a project with none); SpendShare is the share of
+	// what a card had left at a session's start that the session may spend
+	// with nothing pushed before a human looks.
+	DayCapEUR     float64 `json:"day_cap_eur,omitempty"`
+	MonthCapEUR   float64 `json:"month_cap_eur,omitempty"`
+	ProjectCapEUR float64 `json:"project_cap_eur,omitempty"`
+	SpendShare    float64 `json:"spend_share,omitempty"`
 }
 
 // LastSessionFacts is what the card's newest session cost, whether it
-// pushed, and, when it pushed the head the gates judged after it, the
-// review and the audit findings on the head it started from.
+// pushed, the gates ("review", "audit") that judged the card's head, and,
+// when the session pushed that head, the review and the audit findings on
+// the head it started from.
 type LastSessionFacts struct {
 	CostEUR float64  `json:"cost_eur"`
 	Pushed  bool     `json:"pushed,omitempty"`
+	Judged  []string `json:"judged,omitempty"`
 	Review  []string `json:"review,omitempty"`
 	Audit   []string `json:"audit,omitempty"`
 }
@@ -172,17 +183,17 @@ func lastSession(steps []DigestStep, sessions []*digestSession, head string) *La
 	}
 	s := sessions[len(sessions)-1]
 	out := &LastSessionFacts{Pushed: s.commit != ""}
-	judged := func(st DigestStep) bool { return (st.Kind == "review" || st.Kind == "audit") && st.commit != "" }
-	if s.commit == "" || s.commit != head || !slices.ContainsFunc(steps, func(st DigestStep) bool { return judged(st) && st.commit == head }) {
-		return out
-	}
 	before := ""
 	for _, st := range steps {
-		if judged(st) && st.commit != head {
+		switch {
+		case st.Kind != "review" && st.Kind != "audit" || st.commit == "":
+		case st.commit != head:
 			before = st.commit
+		case !slices.Contains(out.Judged, st.Kind):
+			out.Judged = append(out.Judged, st.Kind)
 		}
 	}
-	if before != "" {
+	if s.commit != "" && s.commit == head && before != "" {
 		out.Review, out.Audit = newestKindFindings(steps, before, "review"), newestKindFindings(steps, before, "audit")
 	}
 	return out
@@ -342,7 +353,11 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 		AgentTimeS: t.Usage.AgentTime.Seconds(), Model: sessionModel(v.Document, t, cmp.Or(model, t.ModelAlias)),
 		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), ReserveEUR: v.Document.Limits.GateReserve(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
 		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState(), NoIssue: t.IssueNumber == 0 && t.Status == "queued" && !t.Report(), Report: t.Report(),
-		PosterGrant: t.Usage.PosterAttempts < maxPosterAttempts}
+		PosterGrant: t.Usage.PosterAttempts < MaxPosterAttempts, DayCapEUR: v.Document.Budget.DayEUR, MonthCapEUR: v.Document.Budget.MonthEUR,
+		SpendShare: v.Document.Limits.NoPushShare()}
+	if _, eur := v.ProjectCap(t.Repository); !math.IsInf(eur, 1) {
+		f.ProjectCapEUR = eur
+	}
 	if Final(t.Status) {
 		f.Final = t.Status
 	}

@@ -929,8 +929,8 @@ func providerBackoff(n int) time.Duration {
 // to two minutes.
 const minSession = 5 * time.Minute
 
-// maxPosterAttempts caps the attempts the issue author's answers buy.
-const maxPosterAttempts = 2
+// MaxPosterAttempts caps the attempts the issue author's answers buy.
+const MaxPosterAttempts = 2
 
 // infoWait is how long an information request waits for the issue
 // author's answer before the issue closes as not reproducible.
@@ -2719,9 +2719,9 @@ func (t *taskRun) sizeAgentTime(size string) {
 }
 
 // grantPoster is grant for an answer to an information request, up to
-// maxPosterAttempts per task.
+// MaxPosterAttempts per task.
 func (t *taskRun) grantPoster(u *TaskUsage) {
-	if u.PosterAttempts >= maxPosterAttempts {
+	if u.PosterAttempts >= MaxPosterAttempts {
 		return
 	}
 	u.PosterAttempts++

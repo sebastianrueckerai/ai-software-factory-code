@@ -94,7 +94,7 @@ func TestAMergeRequestWhoseCaseWasAnsweredGetsItsCaseAgain(t *testing.T) {
 }
 
 // The case writer tells the story after the ask stored the face: its lines
-// show on the stored face from then on.
+// stand beside the composed numbers on the stored face from then on.
 func TestTheWritersStoryShowsOnTheStoredFace(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
@@ -114,8 +114,12 @@ func TestTheWritersStoryShowsOnTheStoredFace(t *testing.T) {
 	if _, stored := ask.Detail["story"]; !stored {
 		t.Fatalf("the ask stored no face: %+v", ask.Detail)
 	}
-	if got := CaseFace(c, Task{ID: "t1"}, ask).Story; got.Happened != happened || got.Left != left {
-		t.Errorf("story %+v, want the writer's lines", got)
+	got := CaseFace(c, Task{ID: "t1"}, ask).Story
+	if want := "No session has run on its 3.00 EUR budget yet. " + happened; got.Happened != want {
+		t.Errorf("happened %q, want %q", got.Happened, want)
+	}
+	if want := left + " All of its work is still to do."; got.Left != want {
+		t.Errorf("left %q, want %q", got.Left, want)
 	}
 }
 

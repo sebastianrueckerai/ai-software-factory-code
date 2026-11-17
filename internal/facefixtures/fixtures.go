@@ -180,7 +180,8 @@ func (b *builder) issue(n int64, status string, age time.Duration, title, body s
 func facts(t factoryd.Task, kind factoryd.CaseKind) factoryd.CaseFacts {
 	f := factoryd.CaseFacts{Kind: kind, Attempts: t.Usage.Attempts, SessionCap: 3, AgentTimeS: 1500, AgentTimeCapS: 7200, SessionLeastS: 300,
 		Model: "big", BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, LeftEUR: t.BudgetEUR - t.SpentEUR, FloorEUR: 0.3, CeilingEUR: 18,
-		Autonomy: policy.AutonomyManual, Stage: t.Gate, Running: t.Status == "running", PosterGrant: t.Usage.PosterAttempts == 0,
+		Autonomy: policy.AutonomyManual, Stage: t.Gate, Running: t.Status == "running", PosterGrant: t.Usage.PosterAttempts < factoryd.MaxPosterAttempts,
+		DayCapEUR: 40, MonthCapEUR: 450, ProjectCapEUR: 100, SpendShare: 0.6,
 		PoolLeft:     policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60},
 		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
 	if t.PRNumber > 0 {
@@ -188,7 +189,7 @@ func facts(t factoryd.Task, kind factoryd.CaseKind) factoryd.CaseFacts {
 		f.PROpen = !factoryd.Final(t.Status)
 	}
 	if t.Usage.Attempts > 0 {
-		f.LastSession = &factoryd.LastSessionFacts{CostEUR: 0.48, Pushed: f.Pushed}
+		f.LastSession = &factoryd.LastSessionFacts{CostEUR: 0.48, Pushed: f.Pushed, Judged: reviewed(f)}
 	}
 	if factoryd.Final(t.Status) {
 		f.Final = t.Status
@@ -197,6 +198,21 @@ func facts(t factoryd.Task, kind factoryd.CaseKind) factoryd.CaseFacts {
 		f.Plan, f.PlanIssue, f.PlanName, f.PlanStatus = plan1947ID, 1947, "empty commit fires gate", "done"
 	}
 	return f
+}
+
+// reviewed are the gates that judged f's head: the review, on a card that
+// pushed one.
+func reviewed(f factoryd.CaseFacts) []string {
+	if f.Head == "" {
+		return nil
+	}
+	return []string{"review"}
+}
+
+// unanswered is f's last session as a start that got no model answer: it
+// spent nothing and pushed nothing.
+func unanswered(f *factoryd.CaseFacts) {
+	f.LastSession = &factoryd.LastSessionFacts{Judged: reviewed(*f)}
 }
 
 // withFindings are f with texts as the review's findings on its head, in
@@ -399,7 +415,8 @@ func (b *builder) planChild(n int64, status, key string, age time.Duration) fact
 func capStop(f *factoryd.CaseFacts) factoryd.TripInput {
 	findings := []string{"TestExportRoundTrip fails on the second import", "the importer drops a card's accent"}
 	withFindings(f, false, findings...)
-	f.LastSession = &factoryd.LastSessionFacts{CostEUR: 0.41, Pushed: true, Review: append(slices.Clone(f.ReviewFindings), factoryd.FindingID("the export skips archived cards"))}
+	f.LastSession = &factoryd.LastSessionFacts{CostEUR: 0.41, Pushed: true, Judged: reviewed(*f),
+		Review: append(slices.Clone(f.ReviewFindings), factoryd.FindingID("the export skips archived cards"))}
 	var history []string
 	for _, s := range findings {
 		history = append(history, factoryd.HistoryLine("review", 3, 0, s))
@@ -700,6 +717,7 @@ var caseStops = map[factoryd.CaseKind]caseStop{
 	factoryd.CaseCheckinShare: {"Chat: the thread list's unread dot", "Show a dot on a thread with rows the human has not read.",
 		func(_ *builder, t *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
 			t.SpentEUR, f.SpentEUR, f.LeftEUR = 1.4, 1.4, 0.6
+			f.LastSession = &factoryd.LastSessionFacts{CostEUR: 1.4, Judged: reviewed(*f)}
 			return factoryd.TripInput{Reason: factoryd.CheckinReason(factoryd.CheckSpend, "the session spent 1.40 EUR of the card's 2.00 EUR in 9 minutes, most of it on reads of the vendored SDK", nil, nil)}
 		}},
 	factoryd.CaseCheckinFailed: {"Intake: refuse an issue without a body", "An issue with no body files a card no agent can work; refuse it with a comment.",
@@ -710,7 +728,7 @@ var caseStops = map[factoryd.CaseKind]caseStop{
 		func(_ *builder, t *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
 			t.Usage.Attempts, f.Attempts = 3, 3
 			withFindings(f, false, "drawer_test.go: no test of the gates' order", "drawer.go: the steps lose their durations")
-			f.LastSession = &factoryd.LastSessionFacts{CostEUR: 0.39, Pushed: true, Review: slices.Clone(f.ReviewFindings)}
+			f.LastSession = &factoryd.LastSessionFacts{CostEUR: 0.39, Pushed: true, Judged: reviewed(*f), Review: slices.Clone(f.ReviewFindings)}
 			mark := factoryd.CheckinStopMark{Kind: factoryd.CheckSpend, Tip: f.Head}
 			return factoryd.TripInput{Reason: factoryd.RepeatAsk(mark, mark)}
 		}},
@@ -734,15 +752,18 @@ var caseStops = map[factoryd.CaseKind]caseStop{
 			return factoryd.TripInput{Reason: "The card was quiet for 7 d while waiting on its author: is its run gone?"}
 		}},
 	factoryd.CasePodNeverStarted: {"Load test: the event stream under 200 followers", "Open 200 followers on one project's stream and measure the heartbeat's board reads.",
-		func(*builder, *factoryd.Task, *factoryd.CaseFacts) factoryd.TripInput {
+		func(_ *builder, _ *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
+			unanswered(f)
 			return factoryd.TripInput{Reason: factoryd.PodNeverStartedReason(3, "0/3 nodes are available: 3 Insufficient memory")}
 		}},
 	factoryd.CaseProviderRefused: {"Gateway: log the provider's request id", "Log the provider's request id beside each call so a refusal can be traced.",
-		func(*builder, *factoryd.Task, *factoryd.CaseFacts) factoryd.TripInput {
+		func(_ *builder, _ *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
+			unanswered(f)
 			return factoryd.TripInput{Reason: factoryd.ProviderRefusedReason(6, 429, "budget exhausted")}
 		}},
 	factoryd.CaseNoAnswer: {"Alerts: group a flapping rule's alerts", "Group the alerts of one rule that fires and clears within ten minutes.",
-		func(*builder, *factoryd.Task, *factoryd.CaseFacts) factoryd.TripInput {
+		func(_ *builder, _ *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
+			unanswered(f)
 			return factoryd.TripInput{Reason: factoryd.NoAnswerReason(3, "the stream ended with no content")}
 		}},
 	factoryd.CaseContentFilter: {"Docs: the threat model's attack list", "List the attacks the threat model covers, one line each.",
@@ -963,7 +984,7 @@ func (b *builder) card2004(group, name string) Fixture {
 	f := facts(t, factoryd.CaseBudgetFloor)
 	f.Head, f.Checks, f.Attempts, f.LeftEUR, f.ReserveEUR, f.FloorEUR = "7eaf7c73121dd332c52b95bb5b024a08b3757146", "red", 2, 0.34, 0.4, 0.6
 	f.Plan, f.PlanIssue, f.PlanStatus = "t-365470f78d3b", 1990, "done"
-	f.LastSession = &factoryd.LastSessionFacts{CostEUR: 2.62, Pushed: true}
+	f.LastSession = &factoryd.LastSessionFacts{CostEUR: 2.62, Pushed: true, Judged: []string{"review", "audit"}}
 	audit := []string{
 		"secret in the diff: password, secret or token assigned a literal at acceptance/price_floor_acceptance_test.go:88",
 		"secret in the diff: password, secret or token assigned a literal at acceptance/price_floor_acceptance_test.go:107",
