@@ -199,6 +199,243 @@ func TestFreezeCardOnePerClass(t *testing.T) {
 	}
 }
 
+// CloseFreezeCard closes the class's open freeze card's row, as the
+// store's close does: the whole-line Class marker matches the class's
+// own card only.
+func (s *freezeStore) CloseFreezeCard(ctx context.Context, repository, class string) (Task, bool, error) {
+	for id, t := range s.tasks {
+		if t.Repository != repository || t.Source != SourceFreezeCard || t.Status != "waiting-human" {
+			continue
+		}
+		if !objectiveHasClassLine(t.Objective, class) {
+			continue
+		}
+		t.Status = "done"
+		s.tasks[id] = t
+		return t, true, nil
+	}
+	return Task{}, false, nil
+}
+
+// Hand-derived against the plan's retry-press tests: the press closes the
+// card at once, with no five-minute grace, and matches the class's own
+// card only; after the press a first success keeps it closed on
+// class_resumed, and a first dated refusal re-arms the hold and updates
+// the same card — no second card, no ask.
+func TestFreezeCardCloseOnRetry(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	repo := Repo{Owner: "sf", Name: "acme"}
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	w := freezeWatcher(store, forgejo, &now)
+	const words = "free quota exhausted, resets 2026-11-22 01:04:50"
+	// the big hold arms: the card files
+	store.rows = append(store.rows, FreezeEvent{ID: 1, Repository: repo.String(), At: base, Kind: "class_frozen",
+		Class: "big", Reset: base.Add(4*time.Hour + 59*time.Minute).Format(time.RFC3339), Words: words})
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// a neighbouring class's card stands open beside it: the big press
+	// leaves it, the whole-line Class match telling the classes apart
+	neighbour := Task{ID: "nb", Kind: "human", Status: "waiting-human", RiskClass: "standard", Repository: repo.String(),
+		Source: SourceFreezeCard, Author: "factory-agent",
+		Objective: "The provider limit freezes the bigv2 class\n\nClass: bigv2\n\nbody"}
+	if err := store.CreateTask(ctx, neighbour); err != nil {
+		t.Fatal(err)
+	}
+	var card Task
+	for _, c := range store.tasks {
+		if c.Source == SourceFreezeCard && objectiveHasClassLine(c.Objective, "big") {
+			card = c
+		}
+	}
+	if card.ID == "" || card.ID == neighbour.ID {
+		t.Fatal("the big class's freeze card did not file")
+	}
+	// the retry press: the card closes at once, no five-minute wait, and
+	// only the big class's card closes
+	if err := w.CloseOnRetry(ctx, repo.String(), "big"); err != nil {
+		t.Fatal(err)
+	}
+	closed, _, _ := store.Task(ctx, card.ID)
+	if closed.Status != "done" {
+		t.Fatalf("after the press the card stands %s, want done at once", closed.Status)
+	}
+	if !slices.Contains(fj.closed, card.IssueNumber) {
+		t.Errorf("issue #%d stands open after the press", card.IssueNumber)
+	}
+	if nb, _, _ := store.Task(ctx, neighbour.ID); nb.Status != "waiting-human" {
+		t.Errorf("the press closed bigv2's card too: %s", nb.Status)
+	}
+	// a second press is quiet: no open card stands
+	if err := w.CloseOnRetry(ctx, repo.String(), "big"); err != nil {
+		t.Fatalf("the second press: %v", err)
+	}
+	if n := len(fj.closed); n != 1 {
+		t.Errorf("%d issues closed, want the one", n)
+	}
+	// a first success after the press: the card stays closed on
+	// class_resumed, no second card
+	now = base.Add(time.Minute)
+	store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: repo.String(), At: now, Kind: "class_resumed",
+		Class: "big", Reset: now.Format(time.RFC3339)})
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if kept, _, _ := store.Task(ctx, card.ID); kept.Status != "done" {
+		t.Fatalf("the success reopened the card: %s", kept.Status)
+	}
+	if len(fj.issues) != 1 {
+		t.Fatalf("issues %d, want the one card", len(fj.issues))
+	}
+	// a first dated refusal after the press: the hold re-arms and the same
+	// card updates — no second card, no ask
+	now = base.Add(2 * time.Minute)
+	store.rows = append(store.rows, FreezeEvent{ID: 3, Repository: repo.String(), At: now, Kind: "class_frozen",
+		Class: "big", Reset: now.Add(8*time.Hour + 59*time.Minute).Format(time.RFC3339), Words: words})
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.issues) != 1 {
+		t.Fatalf("the refusal filed a second card: %d issues", len(fj.issues))
+	}
+	rearmed, _, _ := store.Task(ctx, card.ID)
+	if rearmed.Status != "waiting-human" || !strings.Contains(rearmed.Objective, "in 8h 59m") {
+		t.Fatalf("the re-arm left the card =\n%s", rearmed.Objective)
+	}
+	if !slices.ContainsFunc(fj.comments, func(c string) bool { return strings.Contains(c, "re-armed after the retry") }) {
+		t.Errorf("the re-arm said nothing: comments %q", fj.comments)
+	}
+	for _, e := range store.events {
+		if e.Kind == EventQuestionAsked {
+			t.Fatalf("a question was asked: %+v", e)
+		}
+	}
+	// and the re-armed card still closes five minutes after a resume
+	now = base.Add(3 * time.Minute)
+	store.rows = append(store.rows, FreezeEvent{ID: 4, Repository: repo.String(), At: now, Kind: "class_resumed",
+		Class: "big", Reset: now.Format(time.RFC3339)})
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(freezeResumeHold)
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if done, _, _ := store.Task(ctx, card.ID); done.Status != "done" {
+		t.Fatalf("the re-armed card stands %s after its hold, want closed", done.Status)
+	}
+}
+
+// Hand-derived against the plan's restart case: the press's close lives
+// in the watcher's memory, so a factoryd restart between the press and
+// the probe's answer must not lose it. A fresh watcher on the same store
+// adopts the class's done card as closed — a first success keeps it done,
+// a first dated refusal re-arms the same card, no second card, no ask —
+// while a class whose card ended its episode on a self-resume still gets
+// a new card for a new hold.
+func TestFreezeCardCloseSurvivesRestart(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	repo := Repo{Owner: "sf", Name: "acme"}
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	w := freezeWatcher(store, forgejo, &now)
+	const words = "free quota exhausted, resets 2026-11-22 01:04:50"
+	// the hold arms: the card files
+	store.rows = append(store.rows, FreezeEvent{ID: 1, Repository: repo.String(), At: base, Kind: "class_frozen",
+		Class: "big", Reset: base.Add(4*time.Hour + 59*time.Minute).Format(time.RFC3339), Words: words})
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var card Task
+	for _, c := range store.tasks {
+		if c.Source == SourceFreezeCard && objectiveHasClassLine(c.Objective, "big") {
+			card = c
+		}
+	}
+	if card.ID == "" {
+		t.Fatal("the big class's freeze card did not file")
+	}
+	// the retry press closes it at once, then factoryd restarts: a fresh
+	// watcher over the same store, no memory of the press
+	if err := w.CloseOnRetry(ctx, repo.String(), "big"); err != nil {
+		t.Fatal(err)
+	}
+	if closed, _, _ := store.Task(ctx, card.ID); closed.Status != "done" {
+		t.Fatalf("after the press the card stands %s, want done", closed.Status)
+	}
+	w2 := freezeWatcher(store, forgejo, &now)
+	// a first success after the restart: the card keeps closed
+	now = base.Add(time.Minute)
+	store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: repo.String(), At: now, Kind: "class_resumed",
+		Class: "big", Reset: now.Format(time.RFC3339)})
+	if err := w2.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if kept, _, _ := store.Task(ctx, card.ID); kept.Status != "done" {
+		t.Fatalf("the success after the restart reopened the card: %s", kept.Status)
+	}
+	// a first dated refusal after the restart: the same card re-arms —
+	// no second card, no ask
+	now = base.Add(2 * time.Minute)
+	store.rows = append(store.rows, FreezeEvent{ID: 3, Repository: repo.String(), At: now, Kind: "class_frozen",
+		Class: "big", Reset: now.Add(8*time.Hour + 59*time.Minute).Format(time.RFC3339), Words: words})
+	if err := w2.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.issues) != 1 {
+		t.Fatalf("the refusal after the restart filed a second card: %d issues", len(fj.issues))
+	}
+	rearmed, _, _ := store.Task(ctx, card.ID)
+	if rearmed.Status != "waiting-human" || !strings.Contains(rearmed.Objective, "in 8h 59m") {
+		t.Fatalf("the re-arm after the restart left the card %s:\n%s", rearmed.Status, rearmed.Objective)
+	}
+	if len(fj.closed) != 2 {
+		t.Errorf("%d issue patches, want the press's close and the re-arm's reopen", len(fj.closed))
+	}
+	if !slices.ContainsFunc(fj.comments, func(c string) bool { return strings.Contains(c, "re-armed after the retry") }) {
+		t.Errorf("the re-arm after the restart said nothing: comments %q", fj.comments)
+	}
+	for _, e := range store.events {
+		if e.Kind == EventQuestionAsked {
+			t.Fatalf("a question was asked: %+v", e)
+		}
+	}
+	// a self-closed card ended its episode: after another restart a new
+	// hold files its own card, the done one is not adopted
+	now = base.Add(3 * time.Minute)
+	store.rows = append(store.rows, FreezeEvent{ID: 4, Repository: repo.String(), At: now, Kind: "class_resumed",
+		Class: "big", Reset: now.Format(time.RFC3339)})
+	if err := w2.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(freezeResumeHold)
+	if err := w2.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if done, _, _ := store.Task(ctx, card.ID); done.Status != "done" {
+		t.Fatalf("the re-armed card stands %s after its hold, want closed", done.Status)
+	}
+	w3 := freezeWatcher(store, forgejo, &now)
+	now = now.Add(time.Minute)
+	store.rows = append(store.rows, FreezeEvent{ID: 5, Repository: repo.String(), At: now, Kind: "class_frozen",
+		Class: "big", Reset: now.Add(2 * time.Hour).Format(time.RFC3339), Words: words})
+	if err := w3.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.issues) != 2 {
+		t.Fatalf("the new hold after a self-close reused the done card: %d issues", len(fj.issues))
+	}
+	fresh, _, _ := store.Task(ctx, card.ID)
+	if fresh.Status != "done" || !strings.Contains(fresh.Objective, freezeResumedSentence) {
+		t.Fatalf("the self-closed card was reopened: %s\n%s", fresh.Status, fresh.Objective)
+	}
+}
+
 // card2ID is the second freeze card's id, the one the new hold filed.
 func card2ID(store *freezeStore, repo Repo) string {
 	for _, t := range store.tasks {
