@@ -398,10 +398,10 @@ func CaseLeftToAct(ctx context.Context) bool { left, _ := ctx.Value(caseLeftKey{
 
 // StoreMissedOffers stores, once, the face of each case at the human whose
 // ask holds none: one that reached the human before the register wrote
-// its faces. It also stores again an agent's question whose face is a
-// cap's once a session can run: a cap that lifts on its own, at its reset
-// or by a raise, brings the question back within a pass. A background
-// pass reads the live facts of each.
+// its faces. It also stores again an agent's question whose stored face no
+// longer fits its caps: a cap that binds after the ask, lifts at its reset
+// or by a raise, or gives way to another, within a pass, unless the card's
+// limits could not be read. A background pass reads the live facts of each.
 func (r *Runner) StoreMissedOffers(ctx context.Context) {
 	tasks, err := r.store.ListTasksByStatus(ctx, "waiting-human")
 	if err != nil {
@@ -419,8 +419,8 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 				continue
 			}
 			ask, found := r.CaseAsk(ctx, c)
-			capped := found && slices.Contains(questionKinds, c.Kind) && ask.Detail["ask"] != ownAsk(c, t)
-			if !found || ask.Detail["story"] != nil && !capped {
+			question := found && ask.Detail["story"] != nil && slices.Contains(questionKinds, c.Kind)
+			if !found || ask.Detail["story"] != nil && !question {
 				continue
 			}
 			f, err := r.FactsAtCase(ctx, t, c)
@@ -428,8 +428,13 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 				log.Printf("offers pass: case %d: %v", c.ID, err)
 				continue
 			}
-			if capped && f.atCap().Kind != f.Kind {
-				continue
+			if question {
+				// a question's face follows its caps both ways, on limits
+				// read whole
+				_, read := f.noSession(false, false)
+				if !read || FaceOf(r.fencedChoices(t, c), Facts{CaseFacts: f, Card: t, Recommend: RecommendationOf(ask.Detail)}).Ask == ask.Detail["ask"] {
+					continue
+				}
 			}
 			r.refreshOffers(ctx, t, c, f)
 		}

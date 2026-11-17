@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"reflect"
 	"slices"
@@ -408,11 +409,13 @@ func TestTheChatsFundOnAWaitingQuestionDrawsAndLeavesItOpen(t *testing.T) {
 	}
 }
 
-// The minute pass stores an agent's question's face again once its cap
-// lifts on its own, a reset or a raise outside the card: while the card
-// can run no session it leaves the cap's face be; with room it stores the
-// question with the agent's answers. No timer of its own wakes it.
-func TestTheOffersPassBringsAQuestionBackWhenItsCapLifts(t *testing.T) {
+// The minute pass keeps an agent's question's face with its caps, both
+// ways, on facts read whole, with no timer of its own: a cap that binds
+// after the ask stores the cap's face; a cap that lifts, at its reset or by
+// a raise outside the card, stores the question with the agent's answers;
+// a move from one cap to another stores the new cap's; a face that still
+// fits, or facts whose limits could not be read, store nothing.
+func TestTheOffersPassKeepsAQuestionsFaceWithItsCaps(t *testing.T) {
 	g := newFactsRig(t)
 	ctx := context.Background()
 	q := Case{ID: 7, TaskID: "t1", Kind: CaseAgentEscalate, Status: CaseAtHuman,
@@ -420,24 +423,59 @@ func TestTheOffersPassBringsAQuestionBackWhenItsCapLifts(t *testing.T) {
 	g.store.cases = append(g.store.cases, q)
 	card := g.store.tasks["t1"]
 	card.SpentEUR, card.HeldEUR = 1, 0
+	g.store.tasks["t1"] = card
 	f, err := g.r.FactsAtCase(ctx, card, q)
 	if err != nil {
 		t.Fatal(err)
 	}
-	card.Usage.Attempts = f.SessionCap
-	g.store.tasks["t1"] = card
-	f, _ = g.r.FactsAtCase(ctx, card, q)
-	g.event("t1", factsNow, EventQuestionAsked, FaceRow(q, card, f, "", nil, func(s string) string { return s }, func(s string) string { return s }))
-	g.store.events[len(g.store.events)-1].Detail["case_id"] = q.ID
-	g.r.StoreMissedOffers(ctx)
-	if stored := g.store.faces[7]; stored != nil {
-		t.Fatalf("the pass stored %v while the cap holds; want the cap's face left be", stored["ask"])
+	limit := f.SessionCap
+	set := func(attempts int, spent float64) {
+		card := g.store.tasks["t1"]
+		card.Usage.Attempts, card.SpentEUR = attempts, spent
+		g.store.tasks["t1"] = card
 	}
-	card.Usage.Attempts = f.SessionCap - 1
-	g.store.tasks["t1"] = card
-	g.r.StoreMissedOffers(ctx)
-	if stored := g.store.faces[7]; stored == nil || stored["ask"] != "Which store keeps the snapshots?" {
-		t.Fatalf("the pass stored %v once the cap lifted; want the question", stored)
+	// asked writes the ask row of the face on the card as it stands now
+	asked := func() {
+		f, err := g.r.FactsAtCase(ctx, g.store.tasks["t1"], q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.event("t1", factsNow, EventQuestionAsked, FaceRow(q, g.store.tasks["t1"], f, "", nil, func(s string) string { return s }, func(s string) string { return s }))
+		g.store.events[len(g.store.events)-1].Detail["case_id"] = q.ID
+	}
+	pass := func() any {
+		g.store.faces = nil
+		g.r.StoreMissedOffers(ctx)
+		if stored := g.store.faces[7]; stored != nil {
+			return stored["ask"]
+		}
+		return nil
+	}
+	const question, sessions = "Which store keeps the snapshots?", "The card used all %d sessions. Allow more, or end the card?"
+	set(limit-1, 1)
+	asked()
+	if got := pass(); got != nil {
+		t.Errorf("a face that fits: the pass stored %v, want nothing", got)
+	}
+	set(limit, 1)
+	if got, want := pass(), fmt.Sprintf(sessions, limit); got != want {
+		t.Errorf("the session cap bound after the ask: the pass stored %v, want %q", got, want)
+	}
+	asked()
+	set(limit-1, 1)
+	if got := pass(); got != question {
+		t.Errorf("the cap lifted: the pass stored %v, want the question", got)
+	}
+	set(limit, 1)
+	asked()
+	set(limit, 4.99)
+	if got := pass(); got == nil || !strings.HasPrefix(fmt.Sprint(got), "The card is out of money") {
+		t.Errorf("the money ran out while the sessions were used up: the pass stored %v, want the budget floor's ask", got)
+	}
+	g.r.cfg.Prices = aliasPrices{}
+	set(limit-1, 1)
+	if got := pass(); got != nil {
+		t.Errorf("the floor could not be read: the pass stored %v, want nothing", got)
 	}
 }
 
