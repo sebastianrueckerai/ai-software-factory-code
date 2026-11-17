@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -252,8 +253,8 @@ func PokeOf(e Event, t Task) (ChatMessage, bool) {
 		}
 		m.Kind = MessageEscalation
 		why := str("why")
-		if q := str("question"); why == "" && !strings.Contains(q, "\n") && utf8.RuneCountInString(name+q) <= askLead {
-			// an ask whose row stores no face says its question where it fits
+		if q := cmp.Or(str("question"), str("ask")); why == "" && !strings.Contains(q, "\n") && utf8.RuneCountInString(name+q) <= askLead {
+			// an ask whose row stores no why says its question where it fits
 			why = q
 		}
 		m.Content = askMessage(name, "", why, suggestion(e.Detail, offersOf(e.Detail["offers"])))

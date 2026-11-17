@@ -3392,8 +3392,8 @@ func (c *Console) cardThreadStart(w http.ResponseWriter, r *http.Request) {
 }
 
 // seedCardAsk writes the card's open ask as its thread's first row: the
-// ask's five parts with its choices, the row the thread's answer buttons
-// settle. A monitor's ask is not the card's.
+// inbox's message of it (factoryd.PokeOf) with its choices, the row the
+// thread's answer buttons settle. A monitor's ask is not the card's.
 func (c *Console) seedCardAsk(ctx context.Context, bt factoryd.BoardTask, who string, n int64) {
 	events, err := c.cfg.Events.TaskEvents(ctx, bt.ID, startEvents)
 	if err != nil {
@@ -3416,35 +3416,11 @@ func (c *Console) seedCardAsk(ctx context.Context, bt factoryd.BoardTask, who st
 		BirthKind: factoryd.EventQuestionAsked, At: ask.At}, events, bt.Status, false); !s.Open {
 		return
 	}
-	question, _ := ask.Detail["ask"].(string) // the wake path writes "ask", older rows "question"
-	if question == "" {
-		question, _ = ask.Detail["question"].(string)
+	m, ok := factoryd.PokeOf(*ask, bt.Task)
+	if !ok {
+		return
 	}
-	ref := ask.TaskID
-	switch {
-	case bt.IssueNumber != 0:
-		ref = "#" + strconv.FormatInt(bt.IssueNumber, 10)
-	case ask.IssueNumber != 0:
-		ref = "#" + strconv.FormatInt(ask.IssueNumber, 10)
-	}
-	content := factoryd.TitledRef(ref, bt.Task) + " needs you: " + question
-	for _, part := range []struct{ label, key string }{{"Why", "why"}, {"Info", "info"}, {"Recommendation", "recommendation"}} {
-		if s, _ := ask.Detail[part.key].(string); s != "" {
-			content += "\n" + part.label + ": " + s
-		}
-	}
-	m := factoryd.ChatMessage{Role: "user", Kind: factoryd.MessageEscalation, BirthKind: factoryd.EventQuestionAsked,
-		Content: content, TaskID: bt.ID, Conversation: n}
-	switch cs := ask.Detail["choices"].(type) {
-	case []any:
-		for _, ch := range cs {
-			if s, ok := ch.(string); ok {
-				m.Choices = append(m.Choices, s)
-			}
-		}
-	case []string:
-		m.Choices = append(m.Choices, cs...)
-	}
+	m.Role, m.Conversation = "user", n
 	if _, err := c.cfg.Chat.AddChatMessage(ctx, bt.Repository, who, m); err != nil {
 		log.Printf("console: the card thread of %s: %v", bt.ID, err)
 	}

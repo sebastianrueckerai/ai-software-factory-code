@@ -6,15 +6,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 )
 
-// TitledRef is ref with the card's title, "#1250 - Fix the cache", the
-// ref alone when the card has no title to name.
-func TitledRef(ref string, t Task) string {
-	if title := CardTitle(t); title != "" {
-		return ref + " - " + title
-	}
-	return ref
-}
-
 // CardTitle is t's title, the opening paragraph of its objective on one
 // line and whole: a blank line ends the paragraph, a full stop never
 // does. Its writer keeps it short, so no code cuts it. The objective is
