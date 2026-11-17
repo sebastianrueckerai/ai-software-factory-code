@@ -480,18 +480,23 @@ func TestBudgetFloorAtTheSpendLimitAsksForTheRaise(t *testing.T) {
 }
 
 // A human card whose ask is no question asks whether its titled work is
-// done, the title's area lead left out.
+// done, the whole title quoted when that passes the ask's check, else the
+// card's work: no part of a title is cut away.
 func TestAHumanCardAsksWhetherItsTitledWorkIsDone(t *testing.T) {
-	x := fixture(t, "card", "reproduction-rule card")
-	if want := "Is \u201cthe 429 retry loses the request id\u201d done?"; x.face.Ask != want {
-		t.Errorf("ask %q, want %q", x.face.Ask, want)
+	ask := func(title string) string {
+		card := factoryd.Task{ID: "t1", Kind: "human", IssueNumber: 7, Objective: factoryd.IssueObjective(title, "Make a new one in Forgejo."), Source: factoryd.SourceWebhook}
+		c := factoryd.Case{Kind: factoryd.CaseHumanCard, Facts: map[string]any{"offers": []any{map[string]any{"value": factoryd.ActClose, "label": "I did it"}}}}
+		return factoryd.FaceOf(c, factoryd.Facts{Card: card}).Ask
 	}
-	// a colon after a sentence is no area's: the title keeps it, and the
-	// ask falls back rather than quote the half that names no work
-	card := factoryd.Task{ID: "t1", Kind: "human", IssueNumber: 7, Objective: factoryd.IssueObjective("Rotate the bot token: it expires Friday", "Make a new one in Forgejo."), Source: factoryd.SourceWebhook}
-	c := factoryd.Case{Kind: factoryd.CaseHumanCard, Facts: map[string]any{"offers": []any{map[string]any{"value": factoryd.ActClose, "label": "I did it"}}}}
-	if face := factoryd.FaceOf(c, factoryd.Facts{Card: card}); face.Ask != "Is the work of this card done?" {
-		t.Errorf("a title with a colon mid-sentence asks %q, want the fallback", face.Ask)
+	for title, want := range map[string]string{
+		"Rotate the bot token before Friday":       "Is \u201cRotate the bot token before Friday\u201d done?",
+		"Rotate the bot token: it expires Friday":  "Is the work of this card done?",
+		"Fix CI: it fails on arm64":                "Is the work of this card done?",
+		"Board export: keep the nightly snapshots": "Is the work of this card done?",
+	} {
+		if got := ask(title); got != want {
+			t.Errorf("%q asks %q, want %q", title, got, want)
+		}
 	}
 }
 

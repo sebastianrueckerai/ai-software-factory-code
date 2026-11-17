@@ -1086,10 +1086,6 @@ var humanFace = FaceSpec{
 			return q
 		}
 		if t := CardTitle(f.Card); t != "" {
-			// an area's lead is a word or two, such as "Board export: "
-			if area, work, ok := strings.Cut(t, ": "); ok && len(strings.Fields(area)) <= 2 {
-				t = work
-			}
 			if q := "Is \u201c" + t + "\u201d done?"; readsAsAsk(q) {
 				return q
 			}
