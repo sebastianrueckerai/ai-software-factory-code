@@ -230,7 +230,8 @@ var allDoneMu sync.Mutex
 
 // taskEnded records task t's end in state final, with why when one is
 // told (a failure's reason as its issue comment carries it, which its
-// poke tells), ends the run of a routine's card and wakes the cards
+// poke tells), and on each card a hold keeps until t that a failed or
+// closed t strands, ends the run of a routine's card and wakes the cards
 // waiting on it (wf nil wakes none). When t is the last of a plan's cards
 // to turn done, a card cut into a successor done through it, and the
 // plan's newest revision leaves no part to a later round, the plan records
@@ -241,6 +242,9 @@ func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo,
 		detail["reason"] = why
 	}
 	tl.recordEvent(ctx, t.ID, EventTaskEnded, detail)
+	if final == "failed" || final == "closed" {
+		strandedHolds(ctx, tl, store, t, final)
+	}
 	if t.Source == SourceRoutine {
 		endRoutineRun(ctx, store, t, final)
 	}

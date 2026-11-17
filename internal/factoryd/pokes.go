@@ -47,7 +47,7 @@ const ChoiceRerun = "Re-run the checks"
 // pokeKinds are the events a poke may answer.
 var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventApprovalRequested, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
 	EventCardFiled, EventCardRetried, EventSessionGranted, EventRoutineRan, EventChatBudgetSpent,
-	EventPullRequestMerged}
+	EventPullRequestMerged, EventCardHoldStranded}
 
 // budgetSources are the escalation sources of a card stopped by money.
 var budgetSources = []string{"budget", "cap", SourceMonthCap, "project_cap", "day_cap"}
@@ -226,7 +226,7 @@ func deliveryLevel(m ChatMessage) string {
 	switch m.BirthKind {
 	case EventTaskEnded, EventAllChildrenDone:
 		return LevelAll
-	case EventChatBudgetSpent:
+	case EventChatBudgetSpent, EventCardHoldStranded:
 		return LevelNeedsYou
 	}
 	return ""
@@ -320,6 +320,14 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		}
 	case EventAllChildrenDone:
 		m.Content = fmt.Sprintf("Plan %s is done: all %d cards.", ref, num("cards"))
+	case EventCardHoldStranded:
+		// a hold the human released, or one a retry's card took over,
+		// before the pass strands nothing
+		if !t.Held() || t.Hold.Release != str("release_task") {
+			return m, false
+		}
+		m.Content = fmt.Sprintf("%s stays on hold: its release card %s ended %s and releases nothing. Release the hold, or hold it again with another release card.",
+			TitledRef(ref, t), str("release"), str("status"))
 	case EventChatBudgetSpent:
 		// the chat's own task is no card
 		m.TaskID = ""

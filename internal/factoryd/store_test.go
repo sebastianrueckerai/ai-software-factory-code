@@ -1204,6 +1204,18 @@ func (s *fakeStore) EndCardHold(ctx context.Context, id, release string) (bool, 
 	return true, nil
 }
 
+// HeldOn mirrors Postgres: the cards a hold keeps until release, by id.
+func (s *fakeStore) HeldOn(ctx context.Context, release string) ([]Task, error) {
+	var out []Task
+	for _, t := range s.tasks {
+		if t.Held() && t.Hold.Release == release {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b Task) int { return strings.Compare(a.ID, b.ID) })
+	return out, nil
+}
+
 // SetQueueReason mirrors Postgres: a reason of a new kind restarts
 // queue_since at now, the same one or the count's at new numbers keeps
 // it, and an admitted card takes none.

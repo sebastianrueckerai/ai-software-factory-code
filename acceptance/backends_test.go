@@ -1563,6 +1563,10 @@ func (s *acceptanceStore) EndCardHold(context.Context, string, string) (bool, er
 	return false, nil
 }
 
+func (s *acceptanceStore) HeldOn(context.Context, string) ([]factoryd.Task, error) {
+	return nil, nil
+}
+
 var _ factoryd.Store = (*acceptanceStore)(nil)
 
 // The cases: nothing here opens one.

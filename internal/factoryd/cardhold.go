@@ -68,15 +68,9 @@ func holdView(ctx context.Context, store interface {
 	if err != nil {
 		return HoldView{}, err
 	}
-	name := fmt.Sprintf("#%d", rel.IssueNumber)
-	if rel.Parent != "" {
-		p, ok, err := store.Task(ctx, rel.Parent)
-		if err != nil {
-			return HoldView{}, err
-		}
-		if ok && p.Track == policy.TrackPlan {
-			name += fmt.Sprintf(" (plan #%d)", p.IssueNumber)
-		}
+	name, err := releaseName(ctx, store, rel)
+	if err != nil {
+		return HoldView{}, err
 	}
 	v := HoldView{Line: fmt.Sprintf("on hold until %s is merged or done: %s", name, h.Reason), release: rel}
 	switch {
@@ -92,6 +86,50 @@ func holdView(ctx context.Context, store interface {
 			name, rel.Status, h.Reason)
 	}
 	return v, nil
+}
+
+// strandedHolds records on each card a hold keeps until release card rel,
+// which ended final (failed or closed) and so releases nothing, the row the
+// Poker tells the human (EventCardHoldStranded): once per hold and end, by
+// its identity.
+func strandedHolds(ctx context.Context, tl *Timeline, store Store, rel Task, final string) {
+	held, err := store.HeldOn(ctx, rel.ID)
+	if err != nil {
+		log.Printf("task %s: the holds it releases: %s", rel.ID, maskedErr(err))
+		return
+	}
+	if len(held) == 0 {
+		return
+	}
+	name, err := releaseName(ctx, store, rel)
+	if err != nil {
+		log.Printf("task %s: its plan: %s", rel.ID, maskedErr(err))
+		return
+	}
+	for _, h := range held {
+		tl.RecordFact(ctx, Event{Repository: h.Repository, TaskID: h.ID, IssueNumber: h.IssueNumber, Kind: EventCardHoldStranded,
+			Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"release_task": rel.ID, "release": name, "status": final},
+			IdentityKey: IdentityKey(EventCardHoldStranded, h.ID, h.Hold.At.UTC().Format(time.RFC3339Nano), rel.ID, final)})
+	}
+}
+
+// releaseName is how a hold names its release card rel: its issue, and its
+// plan's when it is a plan's card.
+func releaseName(ctx context.Context, store interface {
+	Task(ctx context.Context, id string) (Task, bool, error)
+}, rel Task) (string, error) {
+	name := fmt.Sprintf("#%d", rel.IssueNumber)
+	if rel.Parent == "" {
+		return name, nil
+	}
+	p, ok, err := store.Task(ctx, rel.Parent)
+	if err != nil {
+		return "", err
+	}
+	if ok && p.Track == policy.TrackPlan {
+		name += fmt.Sprintf(" (plan #%d)", p.IssueNumber)
+	}
+	return name, nil
 }
 
 // holdFact is card t's hold as a case fact (CaseFacts.Hold), "" when no

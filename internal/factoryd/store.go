@@ -354,6 +354,9 @@ type Store interface {
 	// not started, and end it (PGStore's).
 	SetCardHold(ctx context.Context, id string, h CardHold) (bool, error)
 	EndCardHold(ctx context.Context, id, release string) (bool, error)
+	// HeldOn are the cards a hold keeps (Held) until card release ends
+	// done or merged.
+	HeldOn(ctx context.Context, release string) ([]Task, error)
 	// SetResumeWait parks card id, back from a wait, queued behind the surge
 	// bound with reason, keeping the time its resumption first waited
 	// (ResumedAt, QueueSince). The card holds no slot; MarkStarted ends it.
@@ -2570,6 +2573,10 @@ func (s *PGStore) EndCardHold(ctx context.Context, id, release string) (bool, er
 	}
 	n, err := res.RowsAffected()
 	return n > 0, err
+}
+
+func (s *PGStore) HeldOn(ctx context.Context, release string) ([]Task, error) {
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE hold_release = $1 AND hold_at IS NOT NULL AND status IN ('queued', 'waiting-deps') ORDER BY id`, release)
 }
 
 // SetResumeWait is the store's: a parked card, or one already waiting to

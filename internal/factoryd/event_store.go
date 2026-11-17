@@ -62,6 +62,11 @@ const (
 	// {"release", "status"}; or by the card's own move to a final status
 	// or the human lane, detail {"reason", "card_status"}.
 	EventCardHoldEnded = "card_hold_ended"
+	// EventCardHoldStranded is factoryd's row on a held card whose release
+	// card ended failed or closed and so releases nothing, once per hold
+	// and end, which the Poker tells the human: detail {"release_task",
+	// "release", the release card's name and its plan's, "status"}.
+	EventCardHoldStranded = "card_hold_stranded"
 	// EventCardExtended is an approver's raise of a card's caps — its
 	// session cap, line bound and budget — the console's Extend the card:
 	// detail {"sessions", "lines", "amount_eur", "from_eur", "to_eur"}.
