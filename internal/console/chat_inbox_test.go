@@ -16,6 +16,14 @@ import (
 )
 
 // inboxRows stores rows on login's inbox of the code repository, made
+// failedPoke is the inbox's row of card id, issue n, failed on its
+// checks, as the Poker writes it.
+func failedPoke(id string, n int64) factoryd.ChatMessage {
+	m, _ := factoryd.PokeOf(factoryd.Event{Kind: factoryd.EventTaskEnded, TaskID: id, Detail: map[string]any{"state": "failed", "reason": "checks: the checks failed on c1."}},
+		factoryd.Task{ID: id, Kind: "agent", IssueNumber: n})
+	return m
+}
+
 // first, and answers their ids in order.
 func inboxRows(t *testing.T, chat *fakeChat, login string, rows ...factoryd.ChatMessage) []int64 {
 	t.Helper()
@@ -182,9 +190,7 @@ func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 		}
 		record(factoryd.Event{Kind: factoryd.EventTaskStatus, Actor: factoryd.FactoryDecider, At: at})
 		record(factoryd.Event{Kind: factoryd.EventTaskEnded, Actor: factoryd.FactoryDecider, At: at})
-		ids := inboxRows(t, chat, "sebastian", poke("#21 started.", "t-f"),
-			factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, BirthKind: factoryd.EventTaskEnded, TaskID: "t-f",
-				Content: "#21 failed: checks: the checks failed on c1.", Choices: []string{"Retry", "Leave it"}})
+		ids := inboxRows(t, chat, "sebastian", poke("#21 started.", "t-f"), failedPoke("t-f", 21))
 		record(factoryd.Event{Kind: factoryd.EventCardCommented, Actor: "sebastian", At: at.Add(5 * time.Minute)})
 		inbox, err := chat.EnsureInbox(ctx, "sf/code", "sebastian")
 		if err != nil {
@@ -209,9 +215,9 @@ func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 		chatRead(t, r, ck, path)
 		msgs := chatRead(t, r, ck, path).Messages
 		equal(t, c.name+": the inbox read again", []any{msgs[0].Settled, msgs[0].Reason, msgs[1].Settled, msgs[1].Reason, msgs[1].Choices},
-			[]any{true, "seen", false, "", []string{"Retry", "Leave it"}})
+			[]any{true, "seen", false, "", []string{"Try the failed card again", "Not now"}})
 		equal(t, c.name+": the inbox tool", reads(t, r, g, "inbox", `{}`)[0], fmt.Sprintf("The inbox of sebastian on ai-software-factory-code:\n"+
-			"%d 10-11 09:30Z poke #21: #21 failed: checks: the checks failed on c1. (open)\n"+
+			"%d 10-11 09:30Z poke #21: #21 failed: the checks failed on c1. (open)\n"+
 			"%d 10-11 09:30Z poke #21: #21 started. (seen)\n"+
 			"That is the whole window.", ids[1], ids[0]))
 		equal(t, c.name+": the read inbox's badge", badge(), []int64{1, 0, 1})
@@ -223,7 +229,7 @@ func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 			chat.mu.Unlock()
 			g.replies = [][]string{{say("It stays failed.")}}
 			if code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {strconv.FormatInt(inbox, 10)},
-				"message": {strconv.FormatInt(ids[1], 10)}, "choice": {"Leave it"}}); code != http.StatusOK {
+				"message": {strconv.FormatInt(ids[1], 10)}, "choice": {"Not now"}}); code != http.StatusOK {
 				t.Fatalf("%s: the press = %d %v", c.name, code, events)
 			}
 		}
@@ -287,8 +293,7 @@ func TestChatInboxPagesWithBefore(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-f", Kind: "agent", Status: "failed",
 		Repository: "sf/code", IssueNumber: 21}})
 	r.tasks.mu.Unlock()
-	failed := inboxRows(t, chat, "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, BirthKind: factoryd.EventTaskEnded,
-		TaskID: "t-f", Content: "#21 failed: checks: the checks failed on c1.", Choices: []string{"Retry", "Leave it"}})[0]
+	failed := inboxRows(t, chat, "sebastian", failedPoke("t-f", 21))[0]
 	var rows []factoryd.ChatMessage
 	for i := range 25 {
 		rows = append(rows, poke(fmt.Sprintf("poke %d", i), ""))
@@ -304,7 +309,7 @@ func TestChatInboxPagesWithBefore(t *testing.T) {
 	}
 	head := "The inbox of sebastian on ai-software-factory-code:\n"
 	out := reads(t, r, g, "inbox", `{}`)
-	equal(t, "page one", out[0], head+fmt.Sprintf("%d 10-11 09:30Z poke #21: #21 failed: checks: the checks failed on c1. (open)\n", failed)+
+	equal(t, "page one", out[0], head+fmt.Sprintf("%d 10-11 09:30Z poke #21: #21 failed: the checks failed on c1. (open)\n", failed)+
 		strings.Join(first, "\n")+fmt.Sprintf("\nbefore=%d reads on.", ids[5]))
 	out = reads(t, r, g, "inbox", fmt.Sprintf(`{"before":%d}`, ids[5]), "inbox", fmt.Sprintf(`{"before":%d}`, ids[0]))
 	equal(t, "page two", out[0], head+strings.Join(second, "\n")+"\nThat is the whole window.")

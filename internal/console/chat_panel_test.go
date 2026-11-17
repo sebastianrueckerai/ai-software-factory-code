@@ -197,7 +197,7 @@ console.log(JSON.stringify({
   settledEscalation: chatView.factoryHTML({id: 10, role: "assistant", kind: "escalation", content: "Which store?", at: "2026-10-11T09:15:00Z",
     choices: ["Postgres", "SQLite"], settled: true, reason: "answered by sebastian · 09:14"}),
   settledPoke: chatView.factoryHTML({id: 11, role: "assistant", kind: "poke", content: "#7 failed.", at: "2026-10-11T09:16:00Z",
-    choices: ["Retry", "Leave it"], settled: true, reason: "moved on · 09:16"}),
+    choices: ["Try the failed card again", "Not now"], settled: true, reason: "moved on · 09:16"}),
   calls: chatView.historyHTML([{role: "user", content: "look", at: "2026-10-11T09:30:01Z"},
     {role: "assistant", content: "", at: "2026-10-11T09:30:02Z", tool_calls: [{id: "c1", name: "board", arguments: "{}", result: "3 cards"},
       {id: "c2", name: "card", arguments: "{}", result: "Refused: no card 9"}]},

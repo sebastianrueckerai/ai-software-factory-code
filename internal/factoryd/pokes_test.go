@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"encoding/json"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -622,5 +623,54 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 	record(EventQuestionWithdrawn, map[string]any{"case_id": faced[0], "reason": "the issue is closed"})
 	if words := copyWords(); !slices.Equal(words, []string{"withdrawn", "moved on"}) {
 		t.Fatalf("after the issue's withdrawal the copies settle as %q, want the issue's withdrawn", words)
+	}
+}
+
+// Rows written before the inbox's buttons took the vocabulary's labels
+// offer the old words, which no press resolves: the migration renames a
+// request's and a failure's buttons to the labels and leaves an ask's
+// choices, which are its asker's own words, as they are.
+func TestTheChoiceLabelsMigrationRenamesTheOldButtons(t *testing.T) {
+	s := newAskStore(t)
+	ctx := t.Context()
+	conv, err := s.EnsureInbox(ctx, "sf/wake", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []ChatMessage{
+		{Kind: MessageEscalation, BirthKind: EventApprovalRequested, Choices: []string{"Approve"}},
+		{Kind: MessageEscalation, BirthKind: EventApprovalRequested, Choices: []string{"Re-run the checks"}},
+		{Kind: MessagePoke, BirthKind: EventTaskEnded, Choices: []string{"Retry", "Leave it"}},
+		{Kind: MessageEscalation, BirthKind: EventQuestionAsked, Choices: []string{"Approve", "Retry"}},
+	} {
+		m.Role, m.Conversation, m.TaskID, m.Content = "assistant", conv, "t-1", "a row"
+		if _, err := s.AddChatMessage(ctx, "sf/wake", "sebastian", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	file, err := os.ReadFile("../schema/migrations/factoryd/20261125100000_chat_choice_labels.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, string(file)); err != nil {
+		t.Fatalf("the migration: %v", err)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT choices FROM chat_messages ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got [][]string
+	for rows.Next() {
+		var raw []byte
+		var choices []string
+		if err := rows.Scan(&raw); err != nil || json.Unmarshal(raw, &choices) != nil {
+			t.Fatalf("a row's choices: %v %s", err, raw)
+		}
+		got = append(got, choices)
+	}
+	want := [][]string{{"Merge it"}, {"Run the failed checks again"}, {"Try the failed card again", "Not now"}, {"Approve", "Retry"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the choices = %q, want %q", got, want)
 	}
 }

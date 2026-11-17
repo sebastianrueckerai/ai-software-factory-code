@@ -286,8 +286,9 @@ func TestPGStoreBudgetStoppedThreads(t *testing.T) {
 func TestPGStoreChatAsks(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()
 	failed := func(task string, n int64) ChatMessage {
-		return ChatMessage{Role: "assistant", Kind: MessagePoke, BirthKind: EventTaskEnded, Content: "failed.", Choices: []string{"Retry", "Leave it"},
-			TaskID: task, Conversation: n}
+		m, _ := PokeOf(Event{Kind: EventTaskEnded, TaskID: task, Detail: map[string]any{"state": "failed"}}, Task{ID: task, Kind: "agent", IssueNumber: 21})
+		m.Conversation = n
+		return m
 	}
 	ids := map[string]int64{}
 	for _, m := range []struct {
@@ -298,11 +299,11 @@ func TestPGStoreChatAsks(t *testing.T) {
 		{"failed", "sf/code", "anna", failed("t-f", 1)},
 		{"wake", "sf/code", "anna", ChatMessage{Role: "user", BirthKind: "wake_ask", Content: "#21 failed.", Conversation: 1}},
 		{"inform", "sf/code", "anna", ChatMessage{Role: "assistant", Kind: MessagePoke, BirthKind: EventPullRequestMerged, Content: "#21 merged; the chain is running.", TaskID: "t-f", Conversation: 1}},
-		{"press", "sf/code", "anna", ChatMessage{Role: "user", Content: "Leave it", Conversation: 1}},
+		{"press", "sf/code", "anna", ChatMessage{Role: "user", Content: "Not now", Conversation: 1}},
 		{"words", "sf/code", "anna", ChatMessage{Role: "user", Content: "and #22?", Conversation: 1}},
 		{"other thread", "sf/code", "anna", failed("t-g", 2)},
 		{"agent", "sf/code", "anna", ChatMessage{Role: "assistant", Content: "Noted.", Conversation: 2}},
-		{"bob", "sf/code", "bob", ChatMessage{Role: "user", Content: "Retry", Conversation: 2}},
+		{"bob", "sf/code", "bob", ChatMessage{Role: "user", Content: "Try the failed card again", Conversation: 2}},
 		{"later", "sf/code", "anna", ChatMessage{Role: "user", Content: "later", Conversation: 1}},
 		{"other project", "linkshort/linkshort", "anna", failed("t-l", 1)},
 	} {
@@ -337,9 +338,9 @@ func TestPGStoreChatAsks(t *testing.T) {
 	}
 	want := []row{
 		{ids["ask"], 1, "t-e", MessageEscalation, []string{"Yes", "No"}, stamp(time.Time{})},
-		{ids["failed"], 1, "t-f", MessagePoke, []string{"Retry", "Leave it"}, stamp(thread[i].At)},
+		{ids["failed"], 1, "t-f", MessagePoke, []string{"Try the failed card again", "Not now"}, stamp(thread[i].At)},
 		{ids["inform"], 1, "t-f", MessagePoke, nil, stamp(time.Time{})},
-		{ids["other thread"], 2, "t-g", MessagePoke, []string{"Retry", "Leave it"}, stamp(time.Time{})},
+		{ids["other thread"], 2, "t-g", MessagePoke, []string{"Try the failed card again", "Not now"}, stamp(time.Time{})},
 	}
 	if !reflect.DeepEqual(out, want) {
 		t.Fatalf("the ask rows =\n%+v\nwant\n%+v", out, want)

@@ -404,10 +404,10 @@ func TestSettleCounts(t *testing.T) {
 	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#15 needs you: Which port?",
 		Choices: []string{"8080", "80"}, TaskID: "t-open", Conversation: inbox})
 	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#17 needs you: merge PR #21?",
-		Choices: []string{"Approve"}, TaskID: "t-both", Conversation: inbox})
+		Choices: []string{"Merge it"}, TaskID: "t-both", Conversation: inbox})
 	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, Content: "#17 waits for you: the weekly bump.", TaskID: "t-both", Conversation: inbox})
 	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#18 needs you: merge PR #22?",
-		Choices: []string{"Approve"}, TaskID: "t-done", Conversation: done})
+		Choices: []string{"Merge it"}, TaskID: "t-done", Conversation: done})
 	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, Content: "#18 is done: the cap line.", TaskID: "t-done", Conversation: done})
 	week, _ := chat.NewConversation(ctx, "sf/code", "sebastian")
 	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, BirthKind: factoryd.EventRoutineRan,

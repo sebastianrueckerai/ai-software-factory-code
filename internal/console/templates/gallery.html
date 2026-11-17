@@ -28,7 +28,7 @@
 {{range .}}<section class="gallery-entry" id="{{.ID}}" data-entry="{{.Group}}/{{.Kind}}">
 <h2>{{.Group}}: {{.Kind}}</h2>
 {{if .Problem}}<p class="problem" role="alert">{{.Problem}}</p>
-{{else if .Inbox}}<div class="gallery-inbox chat"><div class="chat-log" data-inbox="{{.Inbox}}"></div></div>
+{{else if .Inbox}}<div class="gallery-inbox chat"><div class="chat-log" data-inbox="{{.Inbox}}" data-budget="{{.InboxBudget}}"></div></div>
 {{else}}<div class="gallery-faces">
 <div class="gallery-small"><div class="lane five">{{.Small}}</div></div>
 <div class="gallery-open">{{if .Strip}}{{.Open}}{{else}}<aside class="drawer" aria-label="The card">{{.Open}}</aside>{{end}}</div>
@@ -38,7 +38,7 @@
 <script src="/static/chat.js"></script>
 <script>
 document.querySelectorAll("[data-inbox]").forEach(function (el) {
-  el.innerHTML = chatView.historyHTML(JSON.parse(el.dataset.inbox), "sebastian", [], null);
+  el.innerHTML = chatView.historyHTML(JSON.parse(el.dataset.inbox), "sebastian", [], JSON.parse(el.dataset.budget));
 });
 </script>
 </body>

@@ -127,6 +127,15 @@ func inboxEntries(all []facefixtures.Fixture) []galleryEntry {
 			for _, fx := range []facefixtures.Fixture{capped, merge, plan} {
 				s.seat(fx)
 			}
+			if birth == factoryd.EventChatBudgetSpent {
+				// the chat stands stopped, so its row offers the fund
+				now := time.Now()
+				chat := factoryd.Task{ID: factoryd.ChatTaskID(labCodeProject.Name, now), Kind: factoryd.KindChat, Status: "running", Repository: facefixtures.Repository,
+					BudgetEUR: 5, SpentEUR: 5, Source: factoryd.SourceChat, CreatedAt: now.Add(-10 * 24 * time.Hour)}
+				s.tasks = append(s.tasks, factoryd.BoardTask{Task: chat})
+				s.events = append(s.events, factoryd.Event{At: now.Add(-30 * time.Minute), TaskID: chat.ID, Kind: factoryd.EventChatBudgetSpent,
+					Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: map[string]any{"budget_eur": 5.0, "spent_eur": 5.0, "suggest_eur": 2.0}})
+			}
 			r.seedScene(s)
 			// the inbox is read, never answered: no model call runs
 			r.c.cfg.Operator = &factoryd.OperatorModel{}
@@ -327,12 +336,13 @@ func boardEntries(all []facefixtures.Fixture) []galleryEntry {
 // as the board's column holds it, the opened card beside it, and a
 // problem when the entry did not render. Strip: the faces are the status
 // strip and its panel, not a card and its drawer. Inbox: the inbox's rows
-// as GET /chat answers them, which the page renders as the panel does.
+// as GET /chat answers them, which the page renders as the panel does,
+// with the stopped chat's fund state.
 type galleryFace struct {
 	ID, Group, Kind, Problem string
 	Small, Open              template.HTML
 	Strip                    bool
-	Inbox                    string
+	Inbox, InboxBudget       string
 }
 
 // galleryFaces seats e on a fresh rig and renders its faces: the board's
@@ -365,7 +375,12 @@ func galleryFaces(t *testing.T, e galleryEntry) (galleryFace, error) {
 			return f, err
 		}
 		b, err := json.Marshal(answer.Messages)
+		if err != nil {
+			return f, err
+		}
 		f.Inbox = string(b)
+		b, err = json.Marshal(answer.Budget)
+		f.InboxBudget = string(b)
 		return f, err
 	case target == galleryStatus:
 		f.Strip = true

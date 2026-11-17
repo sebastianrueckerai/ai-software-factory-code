@@ -390,24 +390,23 @@ func TestChatAnswerPressesAnUnboundAsk(t *testing.T) {
 	}
 }
 
-// A poke's choices answer through /chat/answer as an ask's do: Retry
+// A poke's choices answer through /chat/answer as an ask's do: a press
 // lands the human's row and the agent's turn reads it, the proposals'
 // store asked nothing; a choice the poke does not offer is refused,
 // nothing stored.
 func TestChatAnswerPressesAPokeChoiceInTheInbox(t *testing.T) {
-	poke := factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, TaskID: "t-r",
-		Content: "#11 failed: checks: the checks failed on c1.", Choices: []string{"Retry", "Leave it"}}
-	p := pressAnswer(t, true, poke, "Retry", "I filed it again.")
+	poke := failedPoke("t-r", 11)
+	p := pressAnswer(t, true, poke, "Try the failed card again", "I filed it again.")
 	equal(t, "the press", []any{p.code, p.events, p.takes}, []any{http.StatusOK, []string{`text {"text":"I filed it again."}`, `done {}`}, 0})
 	equal(t, "the inbox", rowsOf(t, p.chat, "sebastian", p.conv),
-		[]string{"assistant: #11 failed: checks: the checks failed on c1.", "user: Retry", "assistant: I filed it again."})
-	if got := messages(t, p.g.calls()[0]); got[len(got)-1]["content"] != "Retry" {
+		[]string{"assistant: #11 failed: the checks failed on c1.", "user: Try the failed card again", "assistant: I filed it again."})
+	if got := messages(t, p.g.calls()[0]); got[len(got)-1]["content"] != "Try the failed card again" {
 		t.Fatalf("the model read %+v, want the choice", got[len(got)-1])
 	}
 
 	p = pressAnswer(t, true, poke, "Maybe", "")
 	equal(t, "a choice the poke does not offer", []any{p.code, p.events}, []any{http.StatusBadRequest, []string{"the choice is none of the poke's: press one of its buttons."}})
-	equal(t, "the inbox", rowsOf(t, p.chat, "sebastian", p.conv), []string{"assistant: #11 failed: checks: the checks failed on c1."})
+	equal(t, "the inbox", rowsOf(t, p.chat, "sebastian", p.conv), []string{"assistant: #11 failed: the checks failed on c1."})
 	if n := len(p.g.calls()); n != 0 {
 		t.Fatalf("%d model calls, want none", n)
 	}
@@ -563,8 +562,9 @@ func TestChatClearsOldRows(t *testing.T) {
 	say(factoryd.ChatMessage{Role: "assistant", Content: "#15 closed.", Conversation: inbox})
 	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#15 needs you: Which port?",
 		Choices: []string{"8080", "80"}, TaskID: "t-w", Conversation: inbox})
-	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, BirthKind: factoryd.EventTaskEnded, Content: "#21 failed: checks: the checks failed on c1.",
-		Choices: []string{"Retry", "Leave it"}, TaskID: "t-f", Conversation: inbox})
+	failed := failedPoke("t-f", 21)
+	failed.Conversation = inbox
+	say(failed)
 	if _, err := r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-r", Kind: factoryd.EventQuestionAnswered,
 		Actor: "sebastian", Via: factoryd.ViaButton}); err != nil {
 		t.Fatal(err)
@@ -590,7 +590,7 @@ func TestChatClearsOldRows(t *testing.T) {
 	answer = read()
 	equal(t, "the sweep keeps the open ask and the open choices", []int{len(answer.Messages), int(answer.Thread.Cleared), int(answer.Thread.Unswept)}, []int{2, 2, 0})
 	equal(t, "the kept rows", []any{answer.Messages[0].TaskID, answer.Messages[0].Settled, answer.Messages[1].TaskID, answer.Messages[1].Settled, answer.Messages[1].Choices},
-		[]any{"t-w", false, "t-f", false, []string{"Retry", "Leave it"}})
+		[]any{"t-w", false, "t-f", false, []string{"Try the failed card again", "Not now"}})
 	if _, err := r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-f", Kind: factoryd.EventCardRetried,
 		Actor: "sebastian", Via: factoryd.ViaButton, Detail: map[string]any{"replacement": 22}}); err != nil {
 		t.Fatal(err)

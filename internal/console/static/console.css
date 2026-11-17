@@ -1112,11 +1112,10 @@ form.poolctl button { height: 28px; background: none; color: var(--text); border
 .msg.settled.expanded .said { display: block; }
 .msg.settled.expanded .settled-why { display: block; }
 .msg.settled.expanded .esc-b { display: block; }
-/* a wake turn is one row (the main agent concept): folded to its first line, opened on a click */
+/* a wake turn is one row (the main agent concept): folded to its one line, opened on a click */
 .msg.wake .wake-b { display: none; }
 .msg.wake .fold { display: flex; gap: 8px; align-items: baseline; min-width: 0; margin: 0 0 2px; color: var(--text-faint); font: 11.5px var(--font-mono); cursor: pointer; }
 .msg.wake .fold:hover, .msg.wake .fold:focus-visible { color: var(--text-muted); }
-.msg.wake .fold .fw { flex: none; color: var(--text-muted); }
 .msg.wake .fold .ft { min-width: 0; }
 details.more > summary { cursor: pointer; color: var(--text-faint); font-size: 12px; }
 details.more > summary:hover, details.more > summary:focus-visible { color: var(--text-muted); }
