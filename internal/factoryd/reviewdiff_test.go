@@ -841,6 +841,60 @@ func TestQuietRenamesKeepsAUseItCannotProve(t *testing.T) {
 	}
 }
 
+// A use stays where a build that leaves a file out reads it otherwise: a
+// method of T in a test file, in a file of one platform, in a file a build
+// line selects, in a cgo file and in a file go build skips renames T's own
+// allow, while a build without it reaches E's allow at the base and F's
+// Allow at the head. A use is quiet where every build reads it alike: the
+// method in a file every build reads, a use in a test file of a method a
+// test file declares, a file of one platform that declares a function.
+// Last, E's allow is renamed while a file of one platform keeps T's: the
+// use reaches E's at the head in every build, but T's at the base in that
+// platform's.
+func TestQuietRenamesKeepsAUseAnotherBuildReadsOtherwise(t *testing.T) {
+	const types = "package x\n\ntype E struct{}\n\nfunc (E) allow() bool { return false }\n\ntype F struct{}\n\nfunc (F) Allow() bool { return true }\n\ntype T struct {\n\tE\n\tF\n}\n"
+	const use = "x/u.go: func check(t T) bool { return t.Allow() }"
+	for _, tc := range []struct {
+		name, file, head, user string
+		pairs                  int
+	}{
+		{"a test file", "x/m_test.go", "package x\n", "x/u.go", 0},
+		{"a file of one platform", "x/m_linux.go", "package x\n", "x/u.go", 0},
+		{"a build line", "x/m.go", "//go:build !darwin\n\npackage x\n", "x/u.go", 0},
+		{"a cgo file", "x/m.go", "package x\n\nimport \"C\"\n", "x/u.go", 0},
+		{"a file go build skips", "x/_m.go", "package x\n", "x/u.go", 0},
+		{"a file every build reads", "x/m.go", "package x\n", "x/u.go", 1},
+		{"a use in a test file", "x/m_test.go", "package x\n", "x/u_test.go", 1},
+		{"a platform's function", "x/m.go", "package x\n", "x/u.go", 1},
+	} {
+		base := map[string]string{"x/t.go": types, tc.file: tc.head + "\nfunc (T) allow() bool { return false }\n",
+			tc.user: "package x\n\nfunc check(t T) bool { return t.allow() }\n"}
+		head := map[string]string{"x/t.go": types, tc.file: tc.head + "\nfunc (T) Allow() bool { return false }\n",
+			tc.user: "package x\n\nfunc check(t T) bool { return t.Allow() }\n"}
+		if tc.name == "a platform's function" {
+			base["x/p_unix.go"] = "//go:build unix\n\npackage x\n\nfunc own() {}\n"
+			head["x/p_unix.go"] = base["x/p_unix.go"]
+		}
+		files, read := renameDiff(t, base, head)
+		got, counts := quietRenames(files, read)
+		if counts.Pairs != tc.pairs {
+			t.Errorf("%s: %d pairs quiet, want %d; left %q", tc.name, counts.Pairs, tc.pairs, addedLines(got))
+		}
+		if tc.pairs == 0 && !slices.Contains(addedLines(got), use) {
+			t.Errorf("%s: %q is quiet, want it visible", tc.name, use)
+		}
+	}
+	const was = "package x\n\ntype E struct{}\n\nfunc (E) allow() bool { return false }\n\ntype T struct{ E }\n"
+	files, read := renameDiff(t,
+		map[string]string{"x/t.go": was, "x/m_linux.go": "package x\n\nfunc (T) allow() bool { return true }\n",
+			"x/u.go": "package x\n\nfunc check(t T) bool { return t.allow() }\n"},
+		map[string]string{"x/t.go": strings.ReplaceAll(was, "allow", "Allow"), "x/m_linux.go": "package x\n\nfunc (T) allow() bool { return true }\n",
+			"x/u.go": "package x\n\nfunc check(t T) bool { return t.Allow() }\n"})
+	if got, counts := quietRenames(files, read); counts.Pairs != 0 || !slices.Contains(addedLines(got), use) {
+		t.Errorf("a method of one platform's file, unchanged: %d pairs quiet, want the use visible; left %q", counts.Pairs, addedLines(got))
+	}
+}
+
 // A use stays where a side cannot be read whole: an unread base or head, a
 // line the side holds otherwise, a file of the package go/parser cannot
 // read, a line inside a literal of more than one line; and wherever the

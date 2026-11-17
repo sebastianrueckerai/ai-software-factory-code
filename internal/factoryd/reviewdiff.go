@@ -1,13 +1,17 @@
 package factoryd
 
 import (
+	"bytes"
 	"cmp"
 	"fmt"
 	"go/ast"
+	"go/build"
+	"go/build/constraint"
 	"go/parser"
 	"go/scanner"
 	"go/token"
 	"go/types"
+	"io"
 	"path"
 	"regexp"
 	"slices"
@@ -187,9 +191,10 @@ var auditByPath = []string{"factory/", ".forgejo/", ".gitea/", ".github/"}
 // the base the object a declaration pair renames and at the head that
 // object renamed, found past the package's own types alone (knownPath):
 // no other object can be the one either spelling names, wherever its
-// twin stands. Each line must stand at its line of its side. A hunk left
-// with no change is dropped, and a file left with no hunk unless its
-// header holds more than its paths.
+// twin stands. A use outside a test file must read alike in its package
+// with the test files and without. Each line must stand at its line of
+// its side. A hunk left with no change is dropped, and a file left with no
+// hunk unless its header holds more than its paths.
 func quietRenames(files []fileDiff, read func(base bool, dirs []string) map[string][]byte) ([]fileDiff, RenameCounts) {
 	type block struct {
 		at, n, oldLine, newLine int // the first removed line's index, the run's length, the first removed and added lines' lines
@@ -277,27 +282,34 @@ func quietRenames(files []fileDiff, read func(base bool, dirs []string) map[stri
 		}
 		src := read(side == 0, slices.Compact(slices.Sorted(slices.Values(dirs))))
 		typeChecks.Lock()
-		checked := checkGo(src, keep)
-		for i, f := range files {
-			c, lines := checked[[]string{cmp.Or(f.OldPath, f.Path), f.Path}[side]], strings.SplitAfter(f.Text, "\n")
-			for bi, b := range blocks[i] {
-				for j := range b.n {
-					line, body := b.oldLine+j, lineBody(lines[b.at+j])
-					if side == 1 {
-						line, body = b.newLine+j, lineBody(lines[b.at+b.n+j])
-					}
-					for k := range ids[i][bi][j] {
-						id := c.identAt(line, ids[i][bi][j][k].r.off, body)
-						if id == nil {
-							continue
+		for _, tests := range []bool{false, true} {
+			checked := checkGo(src, keep, tests)
+			for i, f := range files {
+				p, lines := []string{cmp.Or(f.OldPath, f.Path), f.Path}[side], strings.SplitAfter(f.Text, "\n")
+				c := checked[p]
+				for bi, b := range blocks[i] {
+					for j := range b.n {
+						line, body := b.oldLine+j, lineBody(lines[b.at+j])
+						if side == 1 {
+							line, body = b.newLine+j, lineBody(lines[b.at+b.n+j])
 						}
-						rd := reading{found: true, declares: c.declares(id), known: !c.dot && c.knownPath(id)}
-						obj := c.info.Uses[id]
-						if rd.declares {
-							obj = c.info.Defs[id]
+						for k := range ids[i][bi][j] {
+							var rd reading
+							if id := c.identAt(line, ids[i][bi][j][k].r.off, body); id != nil {
+								rd = reading{found: true, declares: c.declares(id), known: !c.dot && c.knownPath(id)}
+								obj := c.info.Uses[id]
+								if rd.declares {
+									obj = c.info.Defs[id]
+								}
+								rd.denotes = c.position(obj)
+							}
+							switch at := &ids[i][bi][j][k].sides[side]; {
+							case !tests, strings.HasSuffix(p, "_test.go"):
+								*at = rd
+							case *at != rd:
+								*at = reading{}
+							}
 						}
-						rd.denotes = c.position(obj)
-						ids[i][bi][j][k].sides[side] = rd
 					}
 				}
 			}
@@ -480,11 +492,15 @@ func (c *checkedFile) own(t types.Type) types.Type {
 }
 
 // checkGo parses files, path to content, and type-checks each package of
-// each directory, every other package read as an empty one (emptyImporter):
-// the files of keep, checked, by path. A function body outside keep is
-// dropped before the check, as no name in another file can denote what
-// it declares. A directory with a file go/parser cannot read holds none.
-func checkGo(files map[string][]byte, keep map[string]bool) map[string]*checkedFile {
+// each directory with its test files or without, every other package read
+// as an empty one (emptyImporter): the files of keep, checked, by path. A
+// file some build leaves out (everyBuild) is not read: a build that holds
+// it resolves every name the check resolves alike, unless the file adds a
+// method to a type, so a package with such a file holds none. A function
+// body outside keep is dropped before the check, as no name in another
+// file can denote what it declares. A directory with a file go/parser
+// cannot read holds none.
+func checkGo(files map[string][]byte, keep map[string]bool, tests bool) map[string]*checkedFile {
 	byDir := map[string][]string{}
 	for p := range files {
 		byDir[path.Dir(p)] = append(byDir[path.Dir(p)], p)
@@ -516,12 +532,26 @@ func checkGo(files map[string][]byte, keep map[string]bool) map[string]*checkedF
 			if parsed == nil {
 				break
 			}
+			methods := false
+			ps = slices.DeleteFunc(ps, func(p string) bool {
+				if !everyBuild(p, files[p], parsed[p], fset) {
+					methods = methods || slices.ContainsFunc(parsed[p].Decls, func(d ast.Decl) bool {
+						fd, ok := d.(*ast.FuncDecl)
+						return ok && fd.Recv != nil
+					})
+					return true
+				}
+				return !tests && strings.HasSuffix(p, "_test.go")
+			})
+			if methods || len(ps) == 0 {
+				continue
+			}
 			asts := make([]*ast.File, len(ps))
 			for k, p := range ps {
 				asts[k] = parsed[p]
 			}
 			info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
-			conf := types.Config{Importer: imports, FakeImportC: true, Error: func(error) {}}
+			conf := types.Config{Importer: imports, Error: func(error) {}}
 			pkg, _ := conf.Check(path.Dir(ps[0]), fset, asts, info)
 			for _, p := range ps {
 				if keep[p] {
@@ -564,6 +594,31 @@ func newCheckedFile(src []byte, fset *token.FileSet, f *ast.File, info *types.In
 		return true
 	})
 	return c
+}
+
+// everyBuild reports whether every build of its package reads f, the file
+// at p with content src: no build line selects it, it needs no cgo, and
+// go/build matches its name on two platforms that share no OS and no
+// architecture, which a name that selects either fails.
+func everyBuild(p string, src []byte, f *ast.File, fset *token.FileSet) bool {
+	for l := range strings.Lines(string(src[:fset.Position(f.Package).Offset])) {
+		if l = strings.TrimSpace(l); constraint.IsGoBuild(l) || constraint.IsPlusBuild(l) {
+			return false
+		}
+	}
+	if slices.ContainsFunc(f.Imports, func(im *ast.ImportSpec) bool {
+		ip, _ := strconv.Unquote(im.Path.Value)
+		return ip == "C"
+	}) {
+		return false
+	}
+	for _, ctxt := range []build.Context{{GOOS: "linux", GOARCH: "amd64"}, {GOOS: "windows", GOARCH: "arm64"}} {
+		ctxt.OpenFile = func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(src)), nil }
+		if ok, err := ctxt.MatchFile(path.Dir(p), path.Base(p)); err != nil || !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // emptyImporter imports every package as an empty one, by its path, named
