@@ -555,7 +555,17 @@ func (c *Console) answerOf(ctx context.Context, v *boardView, k card, scope, key
 			}
 		}
 		for _, op := range field.Options {
-			fv.Options = append(fv.Options, optionView{Value: op.Value, Label: clean(cmp.Or(op.Label, op.Value)), Checked: op.Value == defaults[field.Name]})
+			// a value the scrubber would change posts the part before the
+			// change, which the answer's prefix match still names
+			value := op.Value
+			if masked := clean(value); masked != value {
+				n := 0
+				for n < len(value) && n < len(masked) && value[n] == masked[n] {
+					n++
+				}
+				value = strings.TrimSpace(strings.ToValidUTF8(value[:n], ""))
+			}
+			fv.Options = append(fv.Options, optionView{Value: value, Label: clean(cmp.Or(op.Label, op.Value)), Checked: op.Value == defaults[field.Name]})
 		}
 		if fv.Value != "" && slices.Contains([]string{"text", "note", "number", "money"}, fv.Kind) {
 			// a typed field's id moves with its default, so a swap keeps

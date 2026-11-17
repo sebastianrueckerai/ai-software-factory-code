@@ -1,7 +1,9 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -124,6 +126,73 @@ func TestReviewsSectionShowsTheFindingsTheAskCites(t *testing.T) {
 	}
 }
 
+// A finding's text reaches the page only through the face's scrubber: a
+// token it quotes is masked and a link to a host the policy does not
+// allow is defanged, on the small card and on the opened card alike, in
+// the list of findings and in the box that clears one.
+func TestFindingsPassTheFaceScrubber(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	const token, outside = "abc123def456ghi789jkl012mno345", "https://evil.example/log"
+	texts := []string{"the client sends Authorization: Bearer " + token, "the [log](" + outside + ") shows it"}
+	facts := roomyFacts(func(f *factoryd.CaseFacts) {
+		f.Head, f.FindingTexts = "c0ffee1", map[string]string{}
+		for _, text := range texts {
+			id := factoryd.FindingID(text)
+			f.Findings, f.AuditFindings, f.FindingOrder, f.FindingTexts[id] = append(f.Findings, id), append(f.AuditFindings, id), append(f.FindingOrder, id), text
+		}
+	})
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-f", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 41,
+		Objective: "Import a snapshot back", BudgetEUR: 2, CreatedAt: time.Now()}, AskCase: 1}}
+	seatAsk(r, "t-f", factoryd.CaseSessionCap, facts)
+	opened := drawer(t, r, ck, "t-f", "overview")
+	if !strings.Contains(opened, "<h4>The 2 open findings</h4>") {
+		t.Fatalf("the opened card lists no findings:\n%s", opened)
+	}
+	for name, page := range map[string]string{"the small card": smallCard(t, r, ck, "t-f"), "the opened card": opened} {
+		if strings.Contains(page, token) || strings.Contains(page, outside) || strings.Contains(page, `href="https://evil`) {
+			t.Errorf("%s shows the token or a link to an outside host:\n%s", name, page)
+		}
+	}
+	// the box that clears a finding posts the part before the token, a
+	// prefix the audit's confirmation still names the finding by
+	if !strings.Contains(opened, `name="confirm_audit.findings" value="the client sends Authorization: Bearer">`) {
+		t.Errorf("the box of the finding with the token posts no prefix of it:\n%s", opened)
+	}
+}
+
+// A plan whose cards could not be read does not read done: its state says
+// only that its planning ended, and the board says what it could not read.
+func TestAPlanWhoseCardsCannotBeReadIsNotDone(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	planned := time.Now().Add(-time.Hour)
+	plan := factoryd.Task{ID: "t-plan", Kind: "agent", Track: policy.TrackPlan, Status: "done", Repository: "sf/code", IssueNumber: 40,
+		Objective: "Plan one face", Why: "Every card shows one face.", CreatedAt: planned, FinishedAt: &planned}
+	raw, err := json.Marshal(factoryd.Plan{Cards: []factoryd.PlanCard{{Key: "c1", Title: "Build part c1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.tasks.plans = map[string][]factoryd.PlanRevision{plan.ID: {{TaskID: plan.ID, Revision: 1, Plan: raw, CreatedAt: planned}}}
+	r.tasks.tasks = []factoryd.BoardTask{{Task: plan}}
+	r.c.cfg.Tasks = unreadPlanCards{r.tasks}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project="+labCodeProject.Name, nil), ck).Body.String()
+	face := faceOf(t, body, "t-plan")
+	if strings.Contains(face, ">done<") || strings.Contains(face, " final") || !strings.Contains(face, "planned</span>") {
+		t.Errorf("the plan whose cards could not be read reads done:\n%s", face)
+	}
+	if !strings.Contains(body, "the cards of plan t-plan could not be read") {
+		t.Errorf("the board does not say it could not read the plan's cards")
+	}
+}
+
+// unreadPlanCards is the rig's store whose read of a plan's cards fails.
+type unreadPlanCards struct{ *fakeTasks }
+
+func (unreadPlanCards) PlanCards(context.Context, string) ([]factoryd.Task, error) {
+	return nil, errors.New("the store did not answer")
+}
+
 // A card's text that names a pull request names its live state: #40
 // closed without a merge reads so in the card's full brief, whose text is
 // markdown, as in its why line.
@@ -149,7 +218,8 @@ func TestRefsShowLiveState(t *testing.T) {
 // A human's work card that waits for another card says so in its why
 // line, #2100 a link with its live state, and "I did it" stands nowhere
 // until #2100 is done: not on the small card, not on the opened card.
-// The why line then gives the card's own reason again.
+// A card it waits for that has no issue yet holds it back too. The why
+// line then gives the card's own reason again.
 func TestHumanCardSaysWhatItWaitsFor(t *testing.T) {
 	all := facefixtures.All()
 	i := slices.IndexFunc(all, func(fx facefixtures.Fixture) bool { return fx.Task.IssueNumber == 2101 && fx.Case != nil })
@@ -161,7 +231,7 @@ func TestHumanCardSaysWhatItWaitsFor(t *testing.T) {
 	s := galleryScene()
 	s.seat(all[i])
 	s.drawer = all[i].Task.ID
-	s.tasks[0].Dependencies = []int64{2100}
+	s.tasks[0].Dependencies = []factoryd.DepFact{{TaskID: "t-2100", Issue: 2100, Status: "queued"}}
 	s.tasks = append(s.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-2100", Kind: "agent", Status: "queued", Repository: "sf/code", IssueNumber: 2100,
 		Objective: "Narrow the close refusal", CreatedAt: time.Now()}})
 	id := r.seedScene(s)
@@ -180,6 +250,15 @@ func TestHumanCardSaysWhatItWaitsFor(t *testing.T) {
 		t.Errorf("the opened card offers no way to wait:\n%s", askBlockOf(t, opened))
 	}
 
+	// a card it waits for that has no issue yet still holds "I did it" back
+	r.tasks.mu.Lock()
+	r.tasks.tasks[0].Dependencies = []factoryd.DepFact{{TaskID: "t-unfiled", Status: "queued"}}
+	r.tasks.mu.Unlock()
+	face, opened = smallCard(t, r, ck, id), drawer(t, r, ck, id, "overview")
+	if !strings.Contains(face, `<span class="why">It waits for another card to be done first.</span>`) || strings.Contains(opened, "I did it") {
+		t.Errorf("a card waiting for an unfiled card does not say so, or offers I did it:\n%s", face)
+	}
+
 	r.tasks.mu.Lock()
 	r.tasks.tasks[0].Dependencies = nil
 	r.tasks.tasks[1].Status = "done"
@@ -195,25 +274,29 @@ func TestHumanCardSaysWhatItWaitsFor(t *testing.T) {
 
 // The find matches what a face shows: a card in Needs you shows its ask,
 // so a word of the ask finds it; a word of its title alone finds it too,
-// and its face then shows the title, so the reader sees why it is there.
-// A word only its escalation's later lines hold, which no face shows,
-// finds nothing.
+// and its face then shows the title, its #N a link as on every card text,
+// so the reader sees why it is there. A word only its escalation's later
+// lines hold, and its status key "waiting-human", which no face shows,
+// find nothing.
 func TestFindMatchesWhatTheFaceShows(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-esc", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 12,
-		Objective: "Pick the snapshot store", CreatedAt: time.Now()}, Escalation: factoryd.AgentAsks + "which region holds the bucket?\nthe quokka note", EscalatedAt: time.Now(), AskCase: 1}}
+		Objective: "Pick the snapshot store of #13", CreatedAt: time.Now()}, Escalation: factoryd.AgentAsks + "which region holds the bucket?\nthe quokka note", EscalatedAt: time.Now(), AskCase: 1},
+		{Task: factoryd.Task{ID: "t-13", Kind: "agent", Status: "queued", Repository: "sf/code", IssueNumber: 13, Objective: "Keep the snapshots", CreatedAt: time.Now()}}}
 	find := func(q string) string {
 		return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project="+labCodeProject.Name+"&q="+url.QueryEscape(q), nil), ck).Body.String(), "Needs you")
 	}
 	if got := find("region"); !strings.Contains(got, `data-card="t-esc"`) || strings.Contains(got, `class="found"`) {
 		t.Errorf("a word of the ask does not find the card alone:\n%s", got)
 	}
-	if got := find("snapshot store"); !strings.Contains(got, `<p class="found">Pick the snapshot store</p>`) {
-		t.Errorf("a word of the title finds no card that shows its title:\n%s", got)
+	if got := find("snapshot store"); !strings.Contains(got, `<p class="found">Pick the snapshot store of <a class="ref-link" href="#card=t-13">#13</a> <span class="ref-of">(Keep the snapshots, queued)</span></p>`) {
+		t.Errorf("a word of the title finds no card that shows its title, its #13 a link:\n%s", got)
 	}
-	if got := find("quokka"); strings.Contains(got, `data-card="t-esc"`) {
-		t.Errorf("a word no face shows finds the card:\n%s", got)
+	for _, q := range []string{"quokka", "waiting-human"} {
+		if got := find(q); strings.Contains(got, `data-card="t-esc"`) {
+			t.Errorf("%q, which no face shows, finds the card:\n%s", q, got)
+		}
 	}
 }
 

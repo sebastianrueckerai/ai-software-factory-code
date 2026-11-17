@@ -1000,7 +1000,7 @@ func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "in-review", Repository: "linkshort/linkshort", IssueNumber: 14,
 			PRNumber: 21, Objective: "queue it", CreatedAt: since, Gate: factoryd.GateMergeQueue, GateSince: &since}, QueueAhead: 2},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-blk", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 15,
-			Objective: "blocked work", BriefUnchecked: true, CreatedAt: since}, Dependencies: []int64{3, 5}},
+			Objective: "blocked work", BriefUnchecked: true, CreatedAt: since}, Dependencies: []factoryd.DepFact{{Issue: 3, Status: "queued"}, {Issue: 5, Status: "queued"}}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-h", Kind: "human", Status: "queued", Repository: "sf/code", IssueNumber: 16, Objective: "rotate the key"}})
 	if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardRetried,
 		Actor: "sebastian", Via: factoryd.ViaButton, At: since}); err != nil {

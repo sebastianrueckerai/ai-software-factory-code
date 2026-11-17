@@ -141,14 +141,8 @@ func PlanCardRefs(ctx context.Context, s BriefReads, plan Task, p Plan) ([]CardR
 	if err != nil {
 		return nil, fmt.Errorf("the cards of plan %s: %w", plan.ID, err)
 	}
-	return planCardRefs(ctx, s, p.FilingOrder(), rows)
-}
-
-// planCardRefs are the cards order names, each the row of rows its key
-// filed read through its successors, or its title alone.
-func planCardRefs(ctx context.Context, s BriefReads, order []PlanCard, rows []Task) ([]CardRef, error) {
 	var out []CardRef
-	for _, c := range order {
+	for _, c := range p.FilingOrder() {
 		ref := CardRef{Title: c.Title}
 		if row := slices.IndexFunc(rows, func(r Task) bool { return r.PlanKey == c.Key }); row >= 0 {
 			end, ok, err := throughSuccessors(ctx, s, rows[row])
@@ -168,10 +162,6 @@ func planCardRefs(ctx context.Context, s BriefReads, order []PlanCard, rows []Ta
 // planOfBrief is plan p, at revision of plan task plan, as card t reads it,
 // t's acceptance items and their criteria set on b.
 func planOfBrief(ctx context.Context, s BriefReads, t, plan Task, p Plan, revision int, b *CardBrief) (*BriefPlan, error) {
-	rows, err := s.PlanCards(ctx, plan.ID)
-	if err != nil {
-		return nil, fmt.Errorf("the cards of plan %s: %w", plan.ID, err)
-	}
 	bp := &BriefPlan{Task: plan.ID, Issue: int(plan.IssueNumber), Name: cmp.Or(plan.PlanName, CardTitle(plan)), Key: t.PlanKey,
 		Summary: strings.TrimSpace(p.Summary), Brief: storedBrief(plan)}
 	if p.Spec != nil {
@@ -179,7 +169,8 @@ func planOfBrief(ctx context.Context, s BriefReads, t, plan Task, p Plan, revisi
 	}
 	order := p.FilingOrder()
 	bp.Of = len(order)
-	if bp.Cards, err = planCardRefs(ctx, s, order, rows); err != nil {
+	var err error
+	if bp.Cards, err = PlanCardRefs(ctx, s, plan, p); err != nil {
 		return nil, err
 	}
 	for i, c := range order {

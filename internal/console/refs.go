@@ -213,7 +213,8 @@ func (c *Console) stateWord(ctx context.Context, v *boardView, t factoryd.Task) 
 // planState is plan t's cards as its state reads them, read once a
 // render: "3 of 8 cards done" while not all of them are delivered (done
 // or merged, as the plan's close counts them), and open while one of
-// them has not ended; none for a plan that is not done planning.
+// them has not ended, or "planned" and open when they could not be read;
+// none for a plan that is not done planning.
 func (c *Console) planState(ctx context.Context, v *boardView, t factoryd.Task) (words string, open bool) {
 	if t.Track != policy.TrackPlan || t.Status != "done" {
 		return "", false
@@ -227,6 +228,7 @@ func (c *Console) planState(ctx context.Context, v *boardView, t factoryd.Task) 
 		if err != nil {
 			log.Printf("console: the cards of plan %s: %v", t.ID, err)
 			v.problems = append(v.problems, "the cards of plan "+t.ID+" could not be read")
+			r = rollup{words: "planned", open: true}
 		}
 		done := 0
 		for _, k := range cards {

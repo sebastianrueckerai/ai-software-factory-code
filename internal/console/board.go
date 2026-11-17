@@ -325,7 +325,7 @@ func find(cols []column, q string) []column {
 				switch {
 				case found(words, n.Card, n.Approval, terms):
 				case n.Approval == nil && title != "" && found(words+" "+title, n.Card, nil, terms):
-					n.Face.Found = title
+					n.Face.Found = n.Face.own
 				default:
 					continue
 				}
@@ -1695,11 +1695,13 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	// "blocked by n" counts the dependencies that are not done yet;
 	// WaitingOn already says so for a card in waiting-deps, where the
 	// face shows that chip and never both.
-	if len(bt.Dependencies) > 0 && bt.WaitingOn == "" {
-		refs := make([]string, len(bt.Dependencies))
-		for i, n := range bt.Dependencies {
-			refs[i] = "#" + strconv.FormatInt(n, 10)
+	var refs []string
+	for _, d := range bt.Dependencies {
+		if d.Issue > 0 {
+			refs = append(refs, "#"+strconv.FormatInt(d.Issue, 10))
 		}
+	}
+	if len(refs) > 0 && bt.WaitingOn == "" {
 		k.Blocked, k.BlockedOn = len(refs), strings.Join(refs, ", ")
 	}
 	// a merged card's row may still name gate merge-queue

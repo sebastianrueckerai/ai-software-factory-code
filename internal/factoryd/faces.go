@@ -440,8 +440,10 @@ func depWait(f Facts) string {
 		}
 	}
 	switch n := len(refs); {
-	case n == 0:
+	case len(f.Dependencies) == 0:
 		return ""
+	case n == 0:
+		return "It waits for another card to be done first."
 	case n > 1:
 		refs = []string{strings.Join(refs[:n-1], ", ") + " and " + refs[n-1]}
 	}

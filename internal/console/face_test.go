@@ -214,12 +214,12 @@ func TestCardFaceChips(t *testing.T) {
 	r.tasks.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-bare", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "bare", CreatedAt: time.Now()}},
 		{Task: factoryd.Task{ID: "t-full", Kind: "agent", Status: "running", Track: "direct", Repository: "sf/code", Objective: "full",
-			ModelAlias: "small"}, Dependencies: []int64{3, 5}},
+			ModelAlias: "small"}, Dependencies: []factoryd.DepFact{{Issue: 3, Status: "queued"}, {Issue: 5, Status: "queued"}}},
 		{Task: factoryd.Task{ID: "t-blocked", Kind: "agent", Status: "queued", Track: "direct", Repository: "sf/code", Objective: "blocked"},
-			Dependencies: []int64{3, 5}},
+			Dependencies: []factoryd.DepFact{{Issue: 3, Status: "queued"}, {Issue: 5, Status: "queued"}}},
 		{Task: factoryd.Task{ID: "t-free", Kind: "agent", Status: "queued", Track: "direct", Repository: "sf/code", Objective: "deps done"}},
 		{Task: factoryd.Task{ID: "t-wait", Kind: "agent", Status: "waiting-deps", Track: "direct", Repository: "sf/code", Objective: "waits"},
-			WaitingOn: "#7", Dependencies: []int64{7}},
+			WaitingOn: "#7", Dependencies: []factoryd.DepFact{{Issue: 7, Status: "queued"}}},
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	if full := faceOf(t, body, "t-full"); strings.Contains(full, "small") || strings.Contains(full, `class="badge"`) || strings.Contains(full, "waits") {

@@ -1348,7 +1348,8 @@ func (r *rig) forgetWriters() {
 }
 
 // ownCasesOf are the cases the rig holds for a task: those a test seats, else
-// the one live case of a card waiting on a human.
+// the one live case of a card waiting on a human, of the kind its stop
+// opens in production.
 func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 	if r.openCases != nil {
 		return r.openCases[taskID], nil
@@ -1378,6 +1379,7 @@ func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, e
 		}
 	}
 	kind, facts := factoryd.CaseOther, map[string]any(nil)
+	var money *factoryd.CaseMoney
 	switch {
 	case k.Kind == "human":
 		// the question rides on its case, as the ask that opens it stores it
@@ -1392,8 +1394,18 @@ func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, e
 		// answers the case's facts, on a card with room for a session
 		kind, facts = factoryd.CaseAgentEscalate, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts = 1 })
 		facts["reason"], facts["choices"] = bt.Escalation, bt.Choices
+	default:
+		// any other stop opens the kind its reason names, on the card's
+		// facts, as the trip opens it
+		v, _ := r.c.inForce(ctx)
+		trip, err := factoryd.TripCase(k, factoryd.CardFacts(k, v, ""), factoryd.TripInput{TaskID: k.ID, Reason: bt.Escalation, Choices: bt.Choices},
+			func(s string) string { return s })
+		if err != nil {
+			return nil, err
+		}
+		kind, facts, money = trip.Kind, trip.Facts, trip.Money
 	}
-	return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: kind, Status: factoryd.CaseAtHuman, Problem: problem, CommentID: bt.QuestionComment, Facts: facts}}, nil
+	return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: kind, Status: factoryd.CaseAtHuman, Problem: problem, CommentID: bt.QuestionComment, Facts: facts, Money: money}}, nil
 }
 
 // planCases are the cases of a plan's newest revision at the human, one for

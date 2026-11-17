@@ -24,7 +24,7 @@ func TestWorkAsksTellTheirStory(t *testing.T) {
 	one := "It spent 1.12 of 2.00 EUR in 1 session."
 	for kind, want := range map[factoryd.CaseKind]factoryd.Story{
 		factoryd.CaseSessionCap: {Planned: "This card builds “Board export: import a snapshot back”.",
-			Happened: "It spent 1.12 of 2.00 EUR in all 3 sessions it was given. The last session cut the open review findings from 3 to 2.",
+			Happened: "It spent 1.12 of 2.00 EUR in all 3 sessions it was given. Before the last session, 3 review findings were open.",
 			Left:     "2 findings are open, and the checks failed. One more session costs about 0.41 EUR."},
 		factoryd.CaseAgentTimeCap: {Planned: "This card builds “Gateway: count the provider's 429s per model”.",
 			Happened: "It spent 1.12 of 2.00 EUR in 2 sessions. Its sessions used all 120 minutes of agent time it was given.", Left: green},
@@ -48,7 +48,7 @@ func TestWorkAsksTellTheirStory(t *testing.T) {
 			Happened: one + " The review ran longer than its 20 minutes on its third try.",
 			Left:     "1 finding is open. One more session costs about 0.48 EUR."},
 		factoryd.CaseFindingsRepeated: {Planned: "This card builds “Drawer: the Activity tab”.",
-			Happened: "It spent 1.12 of 2.00 EUR in 3 sessions. The open review findings stayed at 2 after the last session.",
+			Happened: "It spent 1.12 of 2.00 EUR in 3 sessions. Before the last session, 2 review findings were open.",
 			Left:     "2 findings are open. One more session costs about 0.39 EUR."},
 		factoryd.CaseDependencyClosed: {Planned: "This card builds “Board export: a download button on the costs page”.",
 			Happened: "No session has run on its 2.00 EUR budget yet. #2188, which it waits for, was closed.",
@@ -100,9 +100,9 @@ func TestWorkAsksTellTheirStory(t *testing.T) {
 }
 
 // For #2004's facts as the plan fixed them, three sessions spent the
-// card's 4.00 EUR, and the last cut the open review findings from 10 to 8,
-// which the review judged on the new head: the story says so in three
-// lines, by the counts alone.
+// card's 4.00 EUR; before the last 10 review findings were open, 8 are
+// open now, and the review judged the new head: the story states both
+// counts and credits the session with no fix.
 func TestTheStoryOf2004(t *testing.T) {
 	x := fixture(t, facefixtures.GroupCase, string(factoryd.CaseBudgetFloor))
 	f := x.facts
@@ -116,7 +116,7 @@ func TestTheStoryOf2004(t *testing.T) {
 	face := factoryd.FaceOf(x.c, f)
 	got := face.Story
 	want := factoryd.Story{Planned: "This card builds “The three faults end to end: priced, asked, funded”.",
-		Happened: "It spent 4.00 of 4.00 EUR in 3 sessions. The last session cut the open review findings from 10 to 8.",
+		Happened: "It spent 4.00 of 4.00 EUR in 3 sessions. Before the last session, 10 review findings were open.",
 		Left:     "8 findings are open. One more session costs about 2.00 EUR."}
 	if got.Planned != want.Planned || got.Happened != want.Happened || got.Left != want.Left {
 		t.Errorf("the story is\n %q\n %q\n %q\nwant\n %q\n %q\n %q", got.Planned, got.Happened, got.Left, want.Planned, want.Happened, want.Left)
@@ -210,10 +210,11 @@ func TestAPlansWaitTellsThePlansStory(t *testing.T) {
 }
 
 // The last session's line counts a gate's findings only where that gate
-// judged the new head: the review's two findings, one of them gone, count
-// once the review judged it; the audit's eight, which the audit has not
+// judged the new head: the review's two findings before it count once the
+// review judged the new head; the audit's eight, which the audit has not
 // judged on the new head, count as nothing. The left line alone names the
-// gates that have not checked the newest change, in one phrase.
+// gates that have not checked the newest change, in one phrase, and says
+// no finding is open once none is, the checks red or not.
 func TestTheLastSessionClaimsNoFixItsGateHasNotJudged(t *testing.T) {
 	ids := func(prefix string, n int) []string {
 		var out []string
@@ -233,7 +234,7 @@ func TestTheLastSessionClaimsNoFixItsGateHasNotJudged(t *testing.T) {
 		left       string
 		findingsOn bool
 	}{
-		{[]string{"review"}, "It spent 1.50 of 2.00 EUR in all 3 sessions it was given. The last session cut the open review findings from 2 to 1.",
+		{[]string{"review"}, "It spent 1.50 of 2.00 EUR in all 3 sessions it was given. Before the last session, 2 review findings were open.",
 			"1 finding is open. The audit has not checked the newest change yet. One more session costs about 0.40 EUR.", true},
 		{nil, "It spent 1.50 of 2.00 EUR in all 3 sessions it was given.",
 			"The checks are green, and the review and the audit have not checked the newest change yet. One more session costs about 0.40 EUR.", false},
@@ -249,6 +250,13 @@ func TestTheLastSessionClaimsNoFixItsGateHasNotJudged(t *testing.T) {
 		}
 	}
 	g := f
+	g.Findings, g.ReviewFindings, g.Checks = nil, nil, "red"
+	g.LastSession = &factoryd.LastSessionFacts{CostEUR: 0.4, Pushed: true, Judged: []string{"review"}, Review: review}
+	if s, happened, left := factoryd.FaceOf(c, g).Story, "It spent 1.50 of 2.00 EUR in all 3 sessions it was given. Before the last session, 2 review findings were open.",
+		"No finding is open, and the checks failed. One more session costs about 0.40 EUR."; s.Happened != happened || s.Left != left {
+		t.Errorf("every finding gone: %q / %q, want %q / %q", s.Happened, s.Left, happened, left)
+	}
+	g = f
 	g.LastSession = &factoryd.LastSessionFacts{Pushed: true, Judged: []string{"review"}, Audit: audit}
 	s := factoryd.FaceOf(c, g).Story
 	if happened, left := "It spent 1.50 of 2.00 EUR in all 3 sessions it was given.", "1 finding is open. The audit has not checked the newest change yet."; s.Happened != happened || s.Left != left {

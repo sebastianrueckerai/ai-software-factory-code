@@ -96,15 +96,16 @@ func TestPGStoreTaskDeps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waiting, blocked := map[string]string{}, map[string][]int64{}
+	waiting, blocked := map[string]string{}, map[string][]DepFact{}
 	for _, b := range tasks {
 		waiting[b.ID], blocked[b.ID] = b.WaitingOn, b.Dependencies
 	}
 	if waiting["t-x"] != "#4, #5" || waiting["t-y"] != "" {
 		t.Fatalf("board waiting-on = %q, want #4, #5 on the waiting card only", waiting)
 	}
-	if !slices.Equal(blocked["t-x"], []int64{4, 5}) || !slices.Equal(blocked["t-y"], []int64{5}) || len(blocked["t-a"]) != 0 {
-		t.Fatalf("board dependencies = %v, want the deps not done (#3 is) in any status: t-x 4, 5, t-y 5", blocked)
+	failed, running := DepFact{TaskID: "t-c", Issue: 4, Status: "failed"}, DepFact{TaskID: "t-a", Issue: 5, Status: "running"}
+	if !slices.Equal(blocked["t-x"], []DepFact{failed, running}) || !slices.Equal(blocked["t-y"], []DepFact{running}) || len(blocked["t-a"]) != 0 {
+		t.Fatalf("board dependencies = %+v, want the deps not done (#3 is) in any status, as OpenDependencies reads them: t-x #4 and #5, t-y #5", blocked)
 	}
 }
 

@@ -335,21 +335,18 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 }
 
 // withDeps is case k of card bt with the cards a human's work card waits
-// for and that are not done, as the board read them, among its facts: its
-// face says what it waits for, and offers "I did it" once none is left.
+// for and that are not done, as the board read them in the shape Act's
+// facts read them, among its facts: its face says what it waits for, and
+// offers "I did it" once none is left.
 func withDeps(k factoryd.Case, bt factoryd.BoardTask) factoryd.Case {
 	if bt.Kind != "human" || len(bt.Dependencies) == 0 {
 		return k
-	}
-	deps := make([]factoryd.DepFact, len(bt.Dependencies))
-	for i, n := range bt.Dependencies {
-		deps[i] = factoryd.DepFact{Issue: n}
 	}
 	k.Facts = maps.Clone(k.Facts)
 	if k.Facts == nil {
 		k.Facts = map[string]any{}
 	}
-	k.Facts["dependencies"] = deps
+	k.Facts["dependencies"] = bt.Dependencies
 	return k
 }
 

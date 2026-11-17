@@ -51,22 +51,30 @@ type faceView struct {
 	Sent bool
 	// CaseID names the ask in view, which a board read keeps.
 	CaseID int64
-	// Found is the card's title on a face that asks, where a find
-	// matched the title alone.
-	Found string
+	// Found is the card's own title, linked, on a face that asks, where a
+	// find matched the title alone; own is that title.
+	Found, own template.HTML
 }
 
-// text is what face f says, in words.
+// text is what face f says, in words: a card in Needs you its band, its
+// paragraph and its answer row, any other its paragraph and its foot.
 func (f faceView) text() string {
-	w := []string{f.Ref, htmlText(f.Place), htmlText(f.Title), htmlText(f.Why), htmlText(f.State), f.Clock, htmlText(f.Waits), f.Since}
+	w := []string{f.Ref, htmlText(f.Place), htmlText(f.Title) + f.Stop, htmlText(f.Why)}
 	for _, m := range f.Marks {
 		w = append(w, m.Words)
 	}
 	if f.Unchecked {
 		w = append(w, "brief not checked")
 	}
-	if f.Ask != nil && f.Ask.Suggested != nil {
-		w = append(w, f.Ask.Suggested.Label)
+	if !f.Needs {
+		return strings.Join(append(w, htmlText(f.State), f.Clock, htmlText(f.Waits), f.Accent), " ")
+	}
+	w = append(w, f.Since)
+	if f.Sent {
+		w = append(w, "The answer is on its way to the card.")
+	}
+	if a := f.Ask; a != nil && a.Suggested != nil {
+		w = append(w, a.Suggested.Label, a.By)
 	}
 	return strings.Join(w, " ")
 }
@@ -139,7 +147,7 @@ func (c *Console) faceOf(ctx context.Context, v *boardView, n need, needs bool) 
 		for _, s := range k.Fine {
 			f.Marks = append(f.Marks, fine{s.Words, "flag"})
 		}
-		f.Since = n.Waiting()
+		f.Since, f.own = n.Waiting(), c.linkRefs(ctx, v, k.Repository, factoryd.CardTitle(k.Task))
 		if row := n.Case; row != nil {
 			f.Key, f.CaseID = "case "+k.Place, row.Case.ID
 			f.Since = row.Waiting()
@@ -278,7 +286,12 @@ func healedFace(k factoryd.Case, t factoryd.Task) (factoryd.Case, factoryd.Face)
 // link only to a host the policy allows.
 func (v *boardView) scrubbed(face factoryd.Face) factoryd.Face {
 	hosts := v.policy.Document.LinkHosts
-	for _, s := range []*string{&face.Ask, &face.Money, &face.Why, &face.Story.Planned, &face.Story.Happened, &face.Story.Left, &face.Story.View, &face.Info, &face.Recommendation, &face.Source} {
+	face.Findings = slices.Clone(face.Findings)
+	texts := []*string{&face.Ask, &face.Money, &face.Why, &face.Story.Planned, &face.Story.Happened, &face.Story.Left, &face.Story.View, &face.Info, &face.Recommendation, &face.Source}
+	for i := range face.Findings {
+		texts = append(texts, &face.Findings[i])
+	}
+	for _, s := range texts {
 		*s = sanitize.Outbound(scrubText(*s), hosts)
 	}
 	for i := range face.Offers {
@@ -390,7 +403,7 @@ func (c *Console) stateOf(ctx context.Context, v *boardView, f *faceView, k card
 	switch {
 	case fiveColumn(k.Task) == colQueued:
 		f.Hue = statusClass("queued")
-	case k.Final() && !f.Final:
+	case k.Final() && c.working(ctx, v, k):
 		f.Hue = statusClass("running")
 	}
 	switch {

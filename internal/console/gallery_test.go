@@ -314,7 +314,7 @@ func boardEntries(all []facefixtures.Fixture) []galleryEntry {
 			// the one the spec gives it (the captured one names a branch)
 			fx := fixture(facefixtures.GroupCard, "workflow-files card")
 			s := fixtureScene(fx, all)
-			s.tasks[slices.IndexFunc(s.tasks, func(b factoryd.BoardTask) bool { return b.ID == fx.Task.ID })].Dependencies = []int64{2100}
+			s.tasks[slices.IndexFunc(s.tasks, func(b factoryd.BoardTask) bool { return b.ID == fx.Task.ID })].Dependencies = []factoryd.DepFact{{TaskID: facefixtures.TaskID(2100), Issue: 2100, Status: "queued"}}
 			s.tasks = append(s.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: facefixtures.TaskID(2100), Kind: "agent", Status: "queued", Track: policy.TrackDirect,
 				Repository: facefixtures.Repository, IssueNumber: 2100, Source: factoryd.SourcePlan, Author: "controller", CreatedAt: now.Add(-2 * time.Hour),
 				Objective: "Narrow the close refusal to plans that hold criteria\n\nThe close refusal applies only to plans that hold criteria.",

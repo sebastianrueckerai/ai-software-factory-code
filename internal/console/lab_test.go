@@ -1143,7 +1143,7 @@ func busyScene(now time.Time) labScene {
 	deps := factoryd.BoardTask{Task: labCard(now, 616, "waiting-deps", "direct", 70*time.Minute, "Board export: a download button on the costs page",
 		"Offer the newest snapshot as a download beside the costs table."), WaitingOn: "#603, #611"}
 	queued := factoryd.BoardTask{Task: labCard(now, 617, "queued", "direct", 40*time.Minute, "Chat form: center the Send button next to the two-row textarea",
-		"The Send button sits at the textarea's top edge; center it on the two rows."), Dependencies: []int64{611, 614}}
+		"The Send button sits at the textarea's top edge; center it on the two rows."), Dependencies: []factoryd.DepFact{{TaskID: labID(611), Issue: 611, Status: "running"}, {TaskID: labID(614), Issue: 614, Status: "running"}}}
 	planOpen := factoryd.BoardTask{Task: labCard(now, 537, "waiting-deps", "plan", 8*time.Hour, "Costs: a per-model spend table",
 		"Break the costs page's spend down by model, with a cap line per model."), WaitingOn: "#533"}
 	planOpen.PlanName = "quota guard"
@@ -1643,20 +1643,6 @@ func fireScene(now time.Time) labScene {
 			"- acceptance: TestExportRoundTrip fails on the second import\n- review: the importer drops a card's accent",
 		EscalatedAt: ago(12 * time.Minute), AskCase: 66}
 	capped.SpentEUR, capped.ModelAlias, capped.Usage.Attempts = 1.48, "big", 3
-	// #610's stop is its session cap: its case of that kind, on its facts
-	findings := []string{"TestExportRoundTrip fails on the second import", "the importer drops a card's accent"}
-	capFacts := roomyFacts(func(f *factoryd.CaseFacts) {
-		f.SpentEUR, f.LeftEUR, f.Head = 1.48, 0.52, "c0ffee1"
-		f.FindingTexts = map[string]string{}
-		for _, text := range findings {
-			id := factoryd.FindingID(text)
-			f.Findings, f.ReviewFindings, f.FindingOrder, f.FindingTexts[id] = append(f.Findings, id), append(f.ReviewFindings, id), append(f.FindingOrder, id), text
-		}
-	})
-	capFacts["reason"] = capped.Escalation
-	s.cases = map[string][]factoryd.Case{capped.ID: {{ID: 66, TaskID: capped.ID, Repository: "sf/code", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman,
-		Problem: "#610 used its 3 sessions, and 2 findings are still open.", OpenedAt: ago(12 * time.Minute), Facts: capFacts,
-		Money: &factoryd.CaseMoney{Kind: "session_cap", BudgetEUR: 2, SpentEUR: 1.48, Buys: "one more session"}}}}
 
 	queued := factoryd.BoardTask{Task: labCard(now, 623, "waiting-deps", "direct", 50*time.Minute, "Board export: document the snapshot format",
 		"Describe the snapshot's JSON in docs/export.md."), WaitingOn: "#610"}
