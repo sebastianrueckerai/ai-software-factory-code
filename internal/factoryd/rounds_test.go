@@ -622,7 +622,7 @@ func TestConfirmationNamesTheOutline(t *testing.T) {
 func deltaCard(t *testing.T, store *fakeStore) (Task, bool) {
 	t.Helper()
 	for key, c := range cardsByKey(t, store) {
-		if strings.HasPrefix(key, "delta-") {
+		if isDeltaKey(key) {
 			return c, true
 		}
 	}
@@ -942,7 +942,7 @@ func TestDeltaRoundFilesOneCardForADueRunTwice(t *testing.T) {
 	r.draftDelta(ctx, t1, repo, due)
 	n := 0
 	for key := range cardsByKey(t, store) {
-		if strings.HasPrefix(key, "delta-") {
+		if isDeltaKey(key) {
 			n++
 		}
 	}

@@ -1143,8 +1143,13 @@ func deltaKey(plan string, revision int, dues []PlanCatch) string {
 	for _, d := range dues {
 		fmt.Fprintf(h, "\n%s", d.Detail)
 	}
-	return "delta-" + hex.EncodeToString(h.Sum(nil))[:8]
+	return deltaKeyPrefix + hex.EncodeToString(h.Sum(nil))[:8]
 }
+
+const deltaKeyPrefix = "delta-"
+
+// isDeltaKey says whether a card's plan key is one deltaKey made.
+func isDeltaKey(key string) bool { return strings.HasPrefix(key, deltaKeyPrefix) }
 
 // deltaRefusal is an answer of the round the plan rules refused, and why.
 type deltaRefusal struct {
@@ -1354,7 +1359,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		delivered := func(c Task) bool { return c.Status == "merged" || c.Status == "done" }
 		// a delta card's gate judges a head that reached main and writes every row anew
 		reached := delivered(integration) || slices.ContainsFunc(planCards, func(c Task) bool {
-			return c.ID != integration.ID && c.Source == SourcePlan && CriteriaCard(p, c.PlanKey) && delivered(c)
+			return c.ID != integration.ID && c.Source == SourcePlan && isDeltaKey(c.PlanKey) && delivered(c)
 		})
 		if r.planClosed(ctx, parent) || !reached && !(Final(integration.Status) && judgedByPerson(p, rows)) || !r.planAtRest(ctx, t) {
 			return
