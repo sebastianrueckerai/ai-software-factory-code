@@ -1012,7 +1012,7 @@ func TestAResolveWithNothingDecidedLeavesThePlansCriteriaCase(t *testing.T) {
 	}
 	spec, _ := json.Marshal(CriteriaSpec{Task: caseTask})
 	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: caseTask, Project: "sf/r", Spec: spec,
-		Reason: "criteria not met with the plan's cards done: c1"})
+		Reason: "criteria not met once every card of the plan ended: c1"})
 	if err != nil {
 		t.Fatalf("OpenApproval: %v", err)
 	}

@@ -134,14 +134,15 @@ func gateTriggerAsk(t *testing.T, s *fakeStore, card Task) *CheckInAsk {
 
 // TestCheckinStatementNamesGateTriggerPR: the session check-in's statement
 // for a card whose open PR is the gate's trigger names the PR's number, its
-// checks state, the trigger and the gate consequence, and carries the
-// changeless-round rule; a plain feature card's PR is named without them,
-// and the no-PR ask names none of it.
+// checks state, the trigger and the gate consequence, and what a close
+// without it leaves to the gate on main; a plain feature card's PR is
+// named without them, and the no-PR ask names none of it.
 func TestCheckinStatementNamesGateTriggerPR(t *testing.T) {
 	t.Run("open PR on the integration card", func(t *testing.T) {
 		s, card, _ := gatePlanCard(t, false)
 		got := checkinStatement(gateTriggerAsk(t, s, card), nil, 3, 2.5, 1000)
-		for _, want := range []string{"#12", "green", "criteria-gate trigger", "merge press", "A changeless round's pull request is still owed as the gate's trigger", "strands the plan's criteria"} {
+		for _, want := range []string{"#12", "green", "criteria-gate trigger", "merge press", "its merge press runs the plan's criteria gate on its head",
+			"Closing this card without its pull request leaves the plan's criteria to the gate's run on main once every card of the plan has ended, without this pull request's work"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("statement lacks %q:\n%s", want, got)
 			}
@@ -156,7 +157,7 @@ func TestCheckinStatementNamesGateTriggerPR(t *testing.T) {
 				t.Errorf("statement lacks %q:\n%s", want, got)
 			}
 		}
-		for _, gone := range []string{"merge press", "changeless round", "strands the plan's criteria"} {
+		for _, gone := range []string{"merge press", "Closing this card", "the gate's run on main"} {
 			if strings.Contains(got, gone) {
 				t.Errorf("non-trigger statement names %q:\n%s", gone, got)
 			}

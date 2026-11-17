@@ -747,7 +747,7 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 	if len(pending) != 1 || pending[0].Kind != ApprovalCriteria || pending[0].TaskID != "t-gap" {
 		t.Fatalf("pending = %+v, want one criteria request of t-gap", pending)
 	}
-	want := "criteria not met with the plan's cards done: c2, c3"
+	want := "criteria not met once every card of the plan ended: c2, c3"
 	if pending[0].Reason != want {
 		t.Errorf("reason = %q, want %q", pending[0].Reason, want)
 	}
@@ -775,7 +775,7 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 		t.Fatal(err)
 	}
 	r2.CriteriaPass(ctx)
-	if pending, _ = s2.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c3" {
+	if pending, _ = s2.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c3" {
 		t.Fatalf("the changed gap did not re-open: %+v", pending)
 	}
 
@@ -790,6 +790,71 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 	if pending, _ := s3.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
 		t.Fatalf("a running plan asked its gap: %+v", pending)
 	}
+}
+
+// A denied criteria ask is matched on its kind and the criteria its spec
+// names, not on its words: a gap denied under the words of an older
+// factory, and a never-judged ask denied under another cause, do not ask
+// again for the same criteria; a denied ask of other criteria does not
+// hold a new one.
+func TestADeniedCriteriaAskHoldsOnItsCriteria(t *testing.T) {
+	ctx := context.Background()
+	deny := func(t *testing.T, s *fakeStore, kind, reason, spec string) {
+		t.Helper()
+		id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: kind, TaskID: "t-plan", Project: "sf/code", Spec: json.RawMessage(spec), Reason: reason})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DecideApproval(ctx, id, kind, "denied", "sebastian", "no"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gap := func(t *testing.T, denied string) (*Runner, *fakeStore) {
+		t.Helper()
+		s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+		if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
+			{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c2", Evidence: "read it", Kind: CriterionHuman},
+			{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Kind: CriterionInvariant}}); err != nil {
+			t.Fatal(err)
+		}
+		deny(t, s, ApprovalCriteria, "criteria not met with the plan's cards done: "+strings.ReplaceAll(denied, `","`, ", "),
+			`{"revision":0,"task":"t-int","criteria":["`+denied+`"]}`)
+		return &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}, s
+	}
+	t.Run("a gap", func(t *testing.T) {
+		r, s := gap(t, `c2","c3`)
+		r.CriteriaPass(ctx)
+		if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+			t.Fatalf("the denied gap asked again: %+v", pending)
+		}
+	})
+	t.Run("a gap of other criteria", func(t *testing.T) {
+		r, s := gap(t, "c3")
+		r.CriteriaPass(ctx)
+		pending, _ := s.ApprovalRequests(ctx, "pending")
+		if len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c2, c3" {
+			t.Fatalf("pending %+v, want the gap of c2 and c3 asked beside the denied one of c3", pending)
+		}
+		var spec CriteriaSpec
+		if err := json.Unmarshal(pending[0].Spec, &spec); err != nil || spec.Task != "t-int" || !slices.Equal(spec.Criteria, []string{"c2", "c3"}) {
+			t.Fatalf("spec %s (%v), want the integration card and c2, c3", pending[0].Spec, err)
+		}
+	})
+	t.Run("criteria never judged", func(t *testing.T) {
+		r, s, _ := mainGatePlan(t, nil, integrationAs("closed", 0, ""), func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+			return CriteriaResult{}, errors.Join(s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider,
+				[]CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}}), errors.New("cut"))
+		})
+		deny(t, s, ApprovalCriteriaRerun, "criteria never judged: the criteria gate has not settled c3. The card's ceiling left no room for the gate",
+			`{"task":"t-int","criteria":["c3"]}`)
+		for range 3 {
+			sweep(ctx, r)
+		}
+		r.CriteriaPass(ctx)
+		if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+			t.Fatalf("the denied ask asked again: %+v", pending)
+		}
+	})
 }
 
 // A grant on a revision that already holds a refused grant's dues files
@@ -849,7 +914,7 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 		{"the human's alone", note, ApprovalCriteriaRerun,
 			"criteria never judged: c2 is yours to settle on this card. Not met: c1, c3",
 			[]CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest}, {Criterion: "c3", Verdict: "unmet", Kind: CriterionInvariant}}},
-		{"unmet rows only", note, ApprovalCriteria, "criteria not met with the plan's cards done: c2, c3",
+		{"unmet rows only", note, ApprovalCriteria, "criteria not met once every card of the plan ended: c2, c3",
 			[]CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c2", Evidence: "read it", Kind: CriterionHuman}, {Criterion: "c3", Verdict: "unmet", Kind: CriterionInvariant}}},
 	} {
 		s := seedVerdictPlan(t, "t-plan", "t-int", "done")
@@ -891,7 +956,7 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 		}
 		r.CriteriaPass(ctx)
 		if again, _ := s.ApprovalRequests(ctx, "pending"); len(again) != 1 || again[0].Kind != ApprovalCriteria ||
-			again[0].Reason != "criteria not met with the plan's cards done: c1, c2, c3" {
+			again[0].Reason != "criteria not met once every card of the plan ended: c1, c2, c3" {
 			t.Fatalf("mixed: pending %+v, want the gap ask alone", again)
 		}
 		if resolved, _ := s.ApprovalRequests(ctx, "approved"); len(resolved) != 1 || resolved[0].ID != pending[0].ID || resolved[0].DecidedBy != FactoryDecider {
@@ -1833,7 +1898,7 @@ func TestPlanCloseCheckAsksNoGapWhileASuccessorRuns(t *testing.T) {
 	}
 	setStatus(s, succ, "done")
 	r.planCloseCheck(ctx, "t-gap")
-	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c3" {
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c3" {
 		t.Fatalf("pending = %+v, want the gap asked once the successor ended", pending)
 	}
 }
@@ -1862,7 +1927,7 @@ func TestPlanCloseCheckAsksNoGapWhileADueStands(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.tasks["card-delta"] = Task{ID: "card-delta", Repository: "sf/code", Parent: "t-gap", Source: SourcePlan, PlanKey: "delta", Status: "in-review"}
-	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t-gap", Project: "sf/code", Reason: "criteria not met with the plan's cards done: c3"})
+	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t-gap", Project: "sf/code", Reason: "criteria not met once every card of the plan ended: c3"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1880,7 +1945,7 @@ func TestPlanCloseCheckAsksNoGapWhileADueStands(t *testing.T) {
 	s.tasks["card-delta"] = Task{ID: "card-delta", Repository: "sf/code", Parent: "t-gap", Source: SourcePlan, PlanKey: "delta", Status: "done"}
 	r.planCloseCheck(ctx, "t-gap")
 	pending, _ := s.ApprovalRequests(ctx, "pending")
-	if len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c3" {
+	if len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c3" {
 		t.Fatalf("pending = %+v, want the gap asked again", pending)
 	}
 
@@ -1921,7 +1986,7 @@ func TestPlanCloseJudgesOffMainRowsOnMain(t *testing.T) {
 			[]CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}},
 			[]CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Evidence: "red on main", Kind: CriterionTest},
 				{Criterion: "c3", Verdict: "met", Evidence: "main's checks green", Kind: CriterionInvariant}},
-			"[c1 c3]", 0, "criteria not met with the plan's cards done: c1"},
+			"[c1 c3]", 0, "criteria not met once every card of the plan ended: c1"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 2085, ""), func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
@@ -2100,7 +2165,7 @@ func TestCriteriaGateRunsAgainWhenACardEndsAfterIt(t *testing.T) {
 			r, s, calls := mainGatePlan(t, nil, c.card, c.answer)
 			sweep(ctx, r)
 			r.CriteriaPass(ctx)
-			if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c1" {
+			if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c1" {
 				t.Fatalf("after the first run: pending %+v, want the gap ask on c1", pending)
 			}
 			c.running(s)
@@ -2131,7 +2196,7 @@ func TestPlanCloseIgnoresTheRowsOfADeltaCardThatNeverMerged(t *testing.T) {
 	})
 	sweep(ctx, r)
 	r.CriteriaPass(ctx)
-	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c1" {
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c1" {
 		t.Fatalf("after the gate on main: pending %+v, want the gap ask on c1", pending)
 	}
 	key := deltaKey("t-plan", 1, []PlanCatch{{Detail: "c1 grant 1"}})
@@ -2151,7 +2216,7 @@ func TestPlanCloseIgnoresTheRowsOfADeltaCardThatNeverMerged(t *testing.T) {
 	pending, _ := s.ApprovalRequests(ctx, "pending")
 	rows, _ := s.CriteriaVerdicts(ctx, "t-int")
 	c1, _ := StandingRow(rows, PlanCriterion{ID: "c1", Kind: CriterionTest})
-	if len(*calls) != 2 || c1.Evidence != "red on main" || len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c1" {
+	if len(*calls) != 2 || c1.Evidence != "red on main" || len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c1" {
 		t.Fatalf("calls %v, c1 %+v, pending %+v; want a second run on main, c1 red there and the gap ask on c1", *calls, c1, pending)
 	}
 }

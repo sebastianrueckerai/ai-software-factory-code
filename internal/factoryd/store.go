@@ -983,12 +983,12 @@ const (
 	// answers (Spec a PlanSpec).
 	ApprovalPlan = "plan"
 	// ApprovalCriteria is a plan's gap question (the spec-intake concept,
-	// pieces 7 and 8): its cards ran out with a criterion still open; the
-	// approver grants one more bounded card or waives (Spec a
-	// criteriaSpec).
+	// pieces 7 and 8): every card of it ended with a criterion still open;
+	// the approver grants one more bounded card or waives (Spec a
+	// CriteriaSpec).
 	ApprovalCriteria = "criteria"
-	// ApprovalCriteriaRerun is a plan whose cards ran out with criteria
-	// no verdict row holds, a review that never judged them: the approver
+	// ApprovalCriteriaRerun is a plan every card of which ended with
+	// criteria no verdict row holds, a review that never judged them: the approver
 	// grants one more bounded card, waives, or confirms the delivered cards
 	// (Spec a CriteriaSpec).
 	ApprovalCriteriaRerun = "criteria_rerun"

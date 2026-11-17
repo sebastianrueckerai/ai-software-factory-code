@@ -59,7 +59,7 @@ func TestPokeOf(t *testing.T) {
 		{"a plan", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "plan", "revision": float64(2), "cards": float64(6)}}, plan,
 			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for your answers: revision 2, 6 cards; the planner revises it with them.`}, true},
 		{"a criteria gap", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria"}}, plan,
-			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for you: its cards ran out with a criterion still unmet. Waive one with your reason, grant one more bounded card, or confirm the delivered cards satisfy them.`}, true},
+			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for you: every card of it has ended with a criterion still unmet. Waive one with your reason, grant one more bounded card, or confirm the delivered cards satisfy them.`}, true},
 		{"criteria never judged", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria_rerun"}}, plan,
 			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for you: its cards have ended and no verdict on main settles its criteria. Waive one with your reason, grant one more bounded card, or confirm with your evidence that the delivered cards meet them.`}, true},
 		{"a failure", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed",

@@ -1452,10 +1452,12 @@ func duesDetail(dues []PlanCatch) []string {
 }
 
 // CriteriaSpec is the criteria approval's spec: the plan revision the gap
-// is under and the task that carries the verdict rows.
+// is under, the task that carries the verdict rows and the criteria the
+// ask names, which a denied ask is matched on.
 type CriteriaSpec struct {
-	Revision int    `json:"revision"`
-	Task     string `json:"task"`
+	Revision int      `json:"revision"`
+	Task     string   `json:"task"`
+	Criteria []string `json:"criteria,omitempty"`
 }
 
 // planClosed says plan id has its plan_closed row, the fact the open
@@ -2036,7 +2038,7 @@ func (r *Runner) closePlanIssue(ctx context.Context, t Task, repo Repo, comment 
 	return recorded
 }
 
-// criteriaKinds are the asks of a plan whose cards ran out with a
+// criteriaKinds are the asks of a plan every card of which ended with a
 // criterion open: a gap, and criteria never judged.
 var criteriaKinds = []string{ApprovalCriteria, ApprovalCriteriaRerun}
 
@@ -2044,8 +2046,8 @@ var criteriaKinds = []string{ApprovalCriteria, ApprovalCriteriaRerun}
 // the plan is at rest: open are criteria whose rows say not met.
 func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, open []PlanCriterion, integration Task) {
 	ids, lines := criteriaLines(open, "")
-	r.openPlanAsk(ctx, t, repo, ApprovalCriteria, fmt.Sprintf("criteria not met with the plan's cards done: %s", strings.Join(ids, ", ")),
-		"factoryd: the plan's cards ran out with a criterion still unmet.\n\n"+strings.Join(lines, "\n")+
+	r.openPlanAsk(ctx, t, repo, ApprovalCriteria, fmt.Sprintf("criteria not met once every card of the plan ended: %s", strings.Join(ids, ", ")),
+		"factoryd: every card of the plan has ended with a criterion still unmet.\n\n"+strings.Join(lines, "\n")+
 			"\n\nGrant one more bounded card, or waive a criterion with your reason.", ids, integration)
 }
 
@@ -2099,11 +2101,18 @@ func criteriaLines(cs []PlanCriterion, tail string) (ids, lines []string) {
 	return ids, lines
 }
 
+// asksFor tells whether criteria ask q names the criteria ids, in any
+// order.
+func asksFor(q ApprovalRequest, ids []string) bool {
+	var spec CriteriaSpec
+	return json.Unmarshal(q.Spec, &spec) == nil && slices.Equal(slices.Sorted(slices.Values(spec.Criteria)), slices.Sorted(slices.Values(ids)))
+}
+
 // openPlanAsk opens plan t's ask of kind, one of criteriaKinds, with
 // reason, comments it on the plan's issue and pokes: never beside a
 // pending ask of either kind, so the two never stack, nor again after a
-// denied one of the same kind and reason, nor while a delta due stands
-// undrafted, only once the plan is at rest.
+// denied one of the same kind naming the same criteria ids, nor while a
+// delta due stands undrafted, only once the plan is at rest.
 // Its spec names the integration card, whose rows the decisions read.
 func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reason, comment string, ids []string, integration Task) {
 	if due, err := r.undraftedDues(ctx, t.ID); err != nil || len(due) > 0 {
@@ -2119,7 +2128,7 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reaso
 			return
 		}
 		for _, q := range all {
-			if q.TaskID == t.ID && slices.Contains(criteriaKinds, q.Kind) && (status == "pending" || q.Kind == kind && q.Reason == reason) {
+			if q.TaskID == t.ID && slices.Contains(criteriaKinds, q.Kind) && (status == "pending" || q.Kind == kind && asksFor(q, ids)) {
 				return
 			}
 		}
@@ -2127,7 +2136,7 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reaso
 	if !r.planAtRest(ctx, t) {
 		return
 	}
-	spec, err := json.Marshal(CriteriaSpec{Task: integration.ID})
+	spec, err := json.Marshal(CriteriaSpec{Task: integration.ID, Criteria: ids})
 	if err != nil {
 		return
 	}
@@ -2146,8 +2155,8 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reaso
 // plans with verdict rows, the plans of the open groups and the plans
 // between rounds, a person's closed ones too: it closes the plans whose
 // criteria are all met or waived and those without criteria whose cards
-// are all done, opens the gap question of a plan whose cards ran out with
-// a criterion still open, starts the next round of a plan whose round is
+// are all done, opens the gap question of a plan every card of which
+// ended with a criterion still open, starts the next round of a plan whose round is
 // over. It makes no model call: the delta rounds run in DeltaPass. First
 // it opens the provers due (proverPass).
 func (r *Runner) CriteriaPass(ctx context.Context) {

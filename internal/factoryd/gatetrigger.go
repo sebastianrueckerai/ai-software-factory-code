@@ -3,8 +3,9 @@ package factoryd
 import "context"
 
 // The criteria gate's trigger: the fact every replan stop and every
-// check-in decision against a re-cut card names. The gate runs only at a
-// living card's pull request merge press, so a card whose open pull
+// check-in decision against a re-cut card names. The gate runs on a living
+// card's pull request at its merge press; without it the plan's close runs
+// the gate on main, without that card's work. So a card whose open pull
 // request is that trigger must not be read as PR-less, and a failed forge
 // read is the error, never a false: an unreadable pull request is not a
 // closed one.

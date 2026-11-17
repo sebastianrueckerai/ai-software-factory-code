@@ -1029,7 +1029,7 @@ func TestACarriedTestsMissingTestAsksNoProofGap(t *testing.T) {
 	r.CriteriaPass(ctx)
 	pending, _ := s.ApprovalRequests(ctx, "pending")
 	if len(pending) != 1 || pending[0].Kind != ApprovalCriteria || pending[0].TaskID != "t-plan" ||
-		pending[0].Reason != "criteria not met with the plan's cards done: door_open" {
+		pending[0].Reason != "criteria not met once every card of the plan ended: door_open" {
 		t.Fatalf("pending = %+v, want the one unmet-work ask naming door_open", pending)
 	}
 }
