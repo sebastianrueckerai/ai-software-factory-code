@@ -319,9 +319,10 @@ func TestActRefusesASessionsOnlyExtendAtTheTimeCap(t *testing.T) {
 	}
 }
 
-// An agent's question at its session cap is the cap's case first: the
-// human's extend draws the session and leaves the question open, unanswered
-// and unsignalled, and the face stored again is the question's, with the
+// An agent's question at its session cap is the cap's case first: rung 2's
+// fund is refused, so a rung hands such a case up, while the human's extend
+// draws the session and leaves the question open, unanswered and
+// unsignalled, and the face stored again is the question's, with the
 // agent's answers.
 func TestAnExtendOnAQuestionAtTheCapLeavesTheQuestionOpen(t *testing.T) {
 	g := newFactsRig(t)
@@ -348,6 +349,11 @@ func TestAnExtendOnAQuestionAtTheCapLeavesTheQuestionOpen(t *testing.T) {
 	capped := face()
 	if len(capped.Answers) == 0 || capped.Answers[0].Action != ActExtend || capped.Story.Happened != "The agent asks: Which store keeps the snapshots?" {
 		t.Fatalf("at the cap the face is %q with %v and story %+v; want the cap's extend first and the question as a story line", capped.Ask, capped.Answers, capped.Story)
+	}
+	var refused ErrActRefused
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 7, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}}); !errors.As(err, &refused) ||
+		!strings.HasPrefix(err.Error(), "this case is the agent's question: a draw answers nothing, so hand it up with the draw as your recommendation") {
+		t.Fatalf("rung 2's fund on the question = %v, want it refused, to be handed up", err)
 	}
 	f, _ = g.r.FactsAtCase(ctx, card, q)
 	res, err := capped.Answers[0].Press(Facts{CaseFacts: f, Card: card, Case: q}, nil, "")

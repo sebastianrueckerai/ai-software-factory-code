@@ -117,6 +117,15 @@ func (g rungRig) raisedSessions(t *testing.T) int {
 	return n
 }
 
+func (g rungRig) budget(t *testing.T) float64 {
+	t.Helper()
+	var eur float64
+	if err := g.s.db.QueryRowContext(context.Background(), `SELECT budget_eur FROM tasks WHERE id = 't1'`).Scan(&eur); err != nil {
+		t.Fatal(err)
+	}
+	return eur
+}
+
 func (g rungRig) signalsOf(name string) []reopenCall {
 	g.signals.mu.Lock()
 	defer g.signals.mu.Unlock()
@@ -231,6 +240,38 @@ func TestRung1RefusedDrawGoesToTheHuman(t *testing.T) {
 	}
 	if len(g.asks(t)) != 1 || len(g.forge.comments) != 1 {
 		t.Fatalf("asks %d, comments %d, want one face", len(g.asks(t)), len(g.forge.comments))
+	}
+}
+
+// Rung 1's fund on the agent's question is refused: a draw answers no
+// question, so the statement offers none and says to hand the case up.
+// Rung 1's fund is refused as an answer, its hand-up recommends the fund,
+// nothing is drawn, and the case climbs instead of waiting open with
+// nobody on it. The card's ceiling of 10 EUR leaves room for the fund.
+func TestRung1FundOnAnAgentsQuestionHandsItUp(t *testing.T) {
+	g := newRungRig(t, "success")
+	if _, err := g.s.db.ExecContext(context.Background(), `UPDATE tasks SET ceiling_eur = 10 WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	fund := map[string]any{"decision": "fund", "draw": map[string]any{"eur": 0.5}}
+	g.chat.answers = []CheckinResponse{g.answer(t, fund), g.answer(t, map[string]any{"decision": "hand_up", "draw": nil,
+		"recommendation": map[string]any{"action": "fund", "grounds": "the card needs money to answer"}})}
+	budget := g.budget(t)
+	out := g.trip(t, AgentAsks+"Which store keeps the snapshots?\nWhy: two fit\nRecommendation: SQLite")
+	g.settle()
+	refusal := "- fund: not offered: this case is the agent's question: a draw answers nothing, so hand it up with the draw as your recommendation"
+	if len(g.chat.gots) == 0 || !strings.Contains(g.chat.gots[0].Input, refusal) {
+		t.Fatalf("rung 1's statement does not say %q", refusal)
+	}
+	own := g.stepsOfRung(t, out.CaseID, 1)
+	if len(own) != 1 || own[0].Outcome != StepHandedUp || own[0].Decision != ActFund {
+		t.Fatalf("rung 1 steps = %+v, want one handed up recommending the fund", own)
+	}
+	if got := g.budget(t); got != budget || poolRows(t, g) != 0 {
+		t.Fatalf("budget %.2f, pool rows %d; want %.2f and none: no fund was drawn", got, poolRows(t, g), budget)
+	}
+	if c := caseByID(t, g.s, out.CaseID); c.Status == CaseResolved {
+		t.Fatalf("case status = %s, want it climbing", c.Status)
 	}
 }
 
