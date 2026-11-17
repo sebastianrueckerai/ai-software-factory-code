@@ -1462,15 +1462,22 @@ func gateAttempts(runs []Event) int {
 	return n
 }
 
-// gatePendingSince is when the checks first read pending when the newest
-// of runs is a pending record; zero otherwise.
+// gatePendingSince is when the checks first read pending: the since of the
+// newest pending record of runs, zero when a record of an outcome (ran, cut
+// or no_room) is newer or there is none. A started record after it, a
+// restart's, does not renew it.
 func gatePendingSince(runs []Event) time.Time {
-	if len(runs) == 0 || runs[0].Detail["outcome"] != gatePending {
-		return time.Time{}
+	for _, e := range runs {
+		switch e.Detail["outcome"] {
+		case gatePending:
+			since, _ := e.Detail["since"].(string)
+			t, _ := time.Parse(time.RFC3339, since)
+			return t
+		case gateDone, gateCut, gateNoRoom:
+			return time.Time{}
+		}
 	}
-	since, _ := runs[0].Detail["since"].(string)
-	t, _ := time.Parse(time.RFC3339, since)
-	return t
+	return time.Time{}
 }
 
 // gateDue tells whether the criteria gate is still to run for plan id on
@@ -1794,6 +1801,11 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 		}
 		if gateRan(runs, gateNoRoom) {
 			parts = append(parts, "the card's ceiling left no room for the gate")
+		}
+		if len(runs) > 0 {
+			if reason, _ := runs[0].Detail["reason"].(string); reason != "" {
+				parts = append(parts, reason)
+			}
 		}
 	}
 	why := strings.Join(parts, ". ")

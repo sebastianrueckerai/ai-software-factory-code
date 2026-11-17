@@ -3050,8 +3050,28 @@ func TestCriteriaGatePassEndsPendingChecksPastTheBound(t *testing.T) {
 	if len(pending) != 1 || pending[0].Kind != ApprovalCriteriaRerun {
 		t.Fatalf("pending asks = %+v, want the one criteria_rerun ask", pending)
 	}
+	if want := "criteria never judged: the criteria gate has not settled c1, c3. the required checks were still running on h9 after the bound"; !strings.HasPrefix(pending[0].Reason, want) {
+		t.Fatalf("ask reason = %q, want it to start with %q", pending[0].Reason, want)
+	}
 	sweep(ctx, r)
 	if *calls != 2 {
 		t.Fatalf("calls = %d after the ask, want the gate left alone", *calls)
+	}
+}
+
+// A restart between the started record of a later run and its outcome
+// leaves started newest: the bound still counts from the first pending
+// record, so a gate run past it that finds the checks running ends as ran
+// instead of recording a fresh pending.
+func TestCriteriaGatePassKeepsThePendingBoundAcrossARestart(t *testing.T) {
+	ctx := context.Background()
+	r, s, calls, now := pendingGate(t, []string{checksRunning}, CriteriaResult{Pending: true})
+	sweep(ctx, r)
+	s.events = append(s.events, Event{TaskID: "t-plan", Kind: EventCriteriaGateRun,
+		Detail: map[string]any{"task": "t-int", "pr": 9, "commit": "h9", "outcome": gateStarted, "attempt": "1"}})
+	*now = now.Add(r.cfg.Policy().ChecksBound("sf/code") + time.Minute)
+	sweep(ctx, r)
+	if *calls != 2 || !slices.Equal(gateOutcomes(s), []string{"pending#1", "ran#1"}) {
+		t.Fatalf("calls %d, outcomes %v; want the gate run once more and ended as ran, not a new pending", *calls, gateOutcomes(s))
 	}
 }
