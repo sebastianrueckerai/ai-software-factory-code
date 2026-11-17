@@ -82,8 +82,21 @@ var questionKinds = []CaseKind{CaseAgentEscalate, CaseAgentRequestInfo}
 // may take none: it would leave the case open with nobody on it.
 var capDraws = []string{ActExtend, ActFund, ActRaiseCeiling}
 
-// capLifts are the draws that lift each of a card's own caps.
-var capLifts = map[CaseKind][]string{CaseSessionCap: {ActExtend}, CaseAgentTimeCap: {ActExtend}, CaseBudgetFloor: {ActFund, ActRaiseCeiling}}
+// lifts reports whether action's draw of args lifts the card's own cap
+// kind: sessions the session cap, agent time the agent time cap, money the
+// budget floor.
+func lifts(kind CaseKind, action string, args map[string]any) bool {
+	d := extendDraw(args)
+	switch kind {
+	case CaseSessionCap:
+		return action == ActExtend && d.Sessions > 0
+	case CaseAgentTimeCap:
+		return action == ActExtend && d.AgentTime > 0
+	case CaseBudgetFloor:
+		return action == ActFund || action == ActRaiseCeiling
+	}
+	return false
+}
 
 // atCap is f as the human meets it: a question of the agent's that no
 // session can answer is the case of the cap that keeps the session off,
@@ -673,7 +686,7 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 		// a rung working the case by itself: a draw would leave it open
 		// with nobody on it
 		const waits = "; a human's draw waits until the question reaches the human"
-		if slices.Contains(capLifts[f.atCap().Kind], a.Name) {
+		if lifts(f.atCap().Kind, a.Name, r.Args) {
 			return "this case is the agent's question, which a draw does not answer: hand it up with the draw as your recommendation" + waits
 		}
 		return "this case is the agent's question, which a draw does not answer: answer it, or hand it up" + waits

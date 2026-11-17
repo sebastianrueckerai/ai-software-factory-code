@@ -1173,7 +1173,10 @@ func TestADrawOnAWaitingQuestionIsWeighedAtItsCap(t *testing.T) {
 		want string
 	}{
 		{"extend at the session cap", sessionCap, extend, hand},
+		{"extend of agent time at the agent time cap", timeCap, extendTime, hand},
 		{"fund at the budget floor", floor, fund, hand},
+		{"extend of agent time at the session cap", sessionCap, extendTime, answer},
+		{"extend of sessions at the agent time cap", timeCap, extend, answer},
 		{"extend at the budget floor", floor, extend, answer},
 		{"fund at the session cap", sessionCap, fund, answer},
 		{"fund at no cap", func(*CaseFacts) {}, fund, answer},
