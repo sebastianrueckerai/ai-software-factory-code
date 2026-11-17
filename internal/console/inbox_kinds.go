@@ -73,7 +73,7 @@ const (
 func lookedAt(r inboxRow) inboxView {
 	var names []string
 	for _, t := range r.cards {
-		names = append(names, cardWords(t))
+		names = append(names, cmp.Or(factoryd.CardName(t, 0), "a card"))
 	}
 	what := "the factory's news"
 	switch n := len(names); {
@@ -95,19 +95,6 @@ func lookedAt(r inboxRow) inboxView {
 // deed is what a wake's turn does, as its line words it: done, under way,
 // and what it is about.
 type deed struct{ did, doing, on string }
-
-// cardWords name card t for a line: its issue, which links it, and its
-// title.
-func cardWords(t factoryd.Task) string {
-	title := factoryd.CardTitle(t)
-	switch {
-	case t.IssueNumber == 0:
-		return "“" + title + "”"
-	case title == "":
-		return "#" + strconv.FormatInt(t.IssueNumber, 10)
-	}
-	return "#" + strconv.FormatInt(t.IssueNumber, 10) + " (" + title + ")"
-}
 
 // agentDid is a wake's line: what the agent's reply means for the human
 // first, as the chat's form leads, then what the agent did. A turn with no

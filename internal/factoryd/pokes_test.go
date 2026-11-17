@@ -79,7 +79,11 @@ func TestPokeOf(t *testing.T) {
 			ChatMessage{Kind: MessagePoke, Content: named + " failed.", Choices: []string{"Try the failed card again", "Not now"}}, true},
 		{"a failure that fits names its reason's first line", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed",
 			"reason": "checks: the checks failed on c1.\noutput tail:\nFAIL TestStore"}}, card,
-			ChatMessage{Kind: MessagePoke, Content: named + " failed: checks: the checks failed on c1.", Choices: []string{"Try the failed card again", "Not now"}}, true},
+			ChatMessage{Kind: MessagePoke, Content: named + " failed: the checks failed on c1.", Choices: []string{"Try the failed card again", "Not now"}}, true},
+		// a title past 60 characters is cut at a word: "Board export: keep the nightly snapshots in Postgres and" is 56
+		{"a long title is cut at a word", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}},
+			Task{ID: "t-1", Kind: "agent", IssueNumber: 603, Objective: "Board export: keep the nightly snapshots in Postgres and SQLite beside the export", SpentEUR: 0.214},
+			ChatMessage{Kind: MessagePoke, Content: "#603 (Board export: keep the nightly snapshots in Postgres and…) is done and live. It cost 0.21 EUR."}, true},
 		{"a card done", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: named + " is done and live. It cost 0.21 EUR."}, true},
 		{"a plan's card done", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}}, child, ChatMessage{}, false},
@@ -349,10 +353,9 @@ func TestPGStorePokes(t *testing.T) {
 }
 
 // A failed card's poke is made from the reason its issue comment carries:
-// Finish records it on the task_ended event. A policy gate's refusal runs
-// past a notice's length, so the poke names the failed card alone and the
-// card holds the reason.
-func TestFailurePokeCarriesTheIssueCommentsReason(t *testing.T) {
+// Finish records it on the task_ended event, and the poke names it without
+// the gate's code word, "policy", within a notice's 160 characters (155).
+func TestFinishRecordsTheIssueCommentsReason(t *testing.T) {
 	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}}
 	task := prTask
 	task.Kind = "agent"
@@ -375,8 +378,11 @@ func TestFailurePokeCarriesTheIssueCommentsReason(t *testing.T) {
 			detail = e
 		}
 	}
+	if detail["reason"] != reason {
+		t.Fatalf("the task_ended row's reason = %v, want %q", detail["reason"], reason)
+	}
 	m, ok := PokeOf(Event{Kind: EventTaskEnded, TaskID: "t1", Detail: detail}, task)
-	if want := "#4 (Add a make check target) failed."; !ok || m.Content != want {
+	if want := "#4 (Add a make check target) failed: policy version 669: risk class forbidden is forbidden to agents: .forgejo/workflows/ci.yml, .forgejo/workflows/pr.yml."; !ok || m.Content != want {
 		t.Fatalf("the poke = %+v, %t, want %q", m, ok, want)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -302,8 +303,13 @@ func PokeOf(e Event, t Task) (ChatMessage, bool) {
 		case t.Kind != "agent":
 			return m, false
 		case str("state") == "failed":
-			m.Content = notice(name+" failed: "+strings.TrimSuffix(FirstLine(str("reason")), ".")+".", name+" failed.")
-			m.Choices = []string{labelOf(ActRetry), labelOf(ActNote)}
+			reason := FirstLine(str("reason"))
+			if code, rest, ok := strings.Cut(reason, ": "); ok && reasonCode.MatchString(code) {
+				// the gate's code word leads a machine's reason, not a human's line
+				reason = rest
+			}
+			m.Content = notice(name+" failed: "+strings.TrimSuffix(reason, ".")+".", name+" failed.")
+			m.Choices = []string{LabelOf(ActRetry), LabelOf(ActNote)}
 		case str("state") == "done" && t.Parent == "":
 			m.Content = fmt.Sprintf("%s is done and live. It cost %s EUR.", name, money(t.SpentEUR))
 		default:
@@ -355,6 +361,9 @@ func PokeOf(e Event, t Task) (ChatMessage, bool) {
 	}
 	return m, true
 }
+
+// reasonCode is the code word a gate's reason opens with ("checks").
+var reasonCode = regexp.MustCompile(`^[a-z][a-z_]*$`)
 
 // noticeMax bounds a notice, messageMax an ask's message, in runes;
 // askLead a question's card and the question where its row stores no why,
@@ -427,8 +436,8 @@ func offersOf(raw any) []AskOffer {
 	return out
 }
 
-// labelOf is action's label in the vocabulary.
-func labelOf(action string) string {
+// LabelOf is action's label in the vocabulary.
+func LabelOf(action string) string {
 	a, _ := AnswerOf(action)
 	return a.Label
 }
@@ -454,9 +463,9 @@ func approvalPoke(e Event, t Task) (string, []string, bool) {
 		factory, _ := e.Detail["factory"].(bool)
 		switch {
 		case !red:
-			choices = []string{labelOf(ActApproveMerge)}
+			choices = []string{LabelOf(ActApproveMerge)}
 		case factory:
-			choices = []string{labelOf(ActRerunChecks)}
+			choices = []string{LabelOf(ActRerunChecks)}
 		}
 	case ApprovalPlan, ApprovalCriteria, ApprovalCriteriaRerun:
 	default:
@@ -465,31 +474,45 @@ func approvalPoke(e Event, t Task) (string, []string, bool) {
 	face := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: t})
 	suggested := ""
 	if face.Suggested != "" {
-		suggested = capitalize(face.SuggestedBy) + " suggests “" + labelOf(face.Suggested) + "”."
+		suggested = capitalize(face.SuggestedBy) + " suggests “" + LabelOf(face.Suggested) + "”."
 	}
 	return askMessage(inboxName(e, t), face.Ask, face.Why, suggested), choices, true
 }
 
-// inboxName is how the inbox names e's card: its issue, which links it,
-// and its title; the title alone for a card with no issue.
+// inboxName is how the inbox names e's card (CardName), "A card" for a
+// card with neither issue nor title.
 func inboxName(e Event, t Task) string {
-	ref := ""
-	switch {
-	case t.IssueNumber != 0:
-		ref = fmt.Sprintf("#%d", t.IssueNumber)
-	case e.IssueNumber != 0:
-		ref = fmt.Sprintf("#%d", e.IssueNumber)
+	return cmp.Or(CardName(t, e.IssueNumber), "A card")
+}
+
+// nameTitleMax bounds the title a line names a card by, in runes.
+const nameTitleMax = 60
+
+// CardName is how a line names card t: its issue, which links it, and its
+// title cut at a word to nameTitleMax runes; the title alone, quoted, for
+// a card with no issue; "" for neither. issue stands in for a card with
+// no issue of its own.
+func CardName(t Task, issue int64) string {
+	if t.IssueNumber != 0 {
+		issue = t.IssueNumber
 	}
 	title := CardTitle(t)
+	if r := []rune(title); len(r) > nameTitleMax {
+		cut := string(r[:nameTitleMax])
+		if i := strings.LastIndex(cut, " "); i > 0 {
+			cut = cut[:i]
+		}
+		title = strings.TrimRight(cut, " ,;:") + "…"
+	}
 	switch {
-	case ref != "" && title != "":
-		return ref + " (" + title + ")"
-	case ref != "":
-		return ref
+	case issue != 0 && title != "":
+		return fmt.Sprintf("#%d (%s)", issue, title)
+	case issue != 0:
+		return fmt.Sprintf("#%d", issue)
 	case title != "":
 		return "“" + title + "”"
 	}
-	return "A card"
+	return ""
 }
 
 // cardRef is how the agent's wake names e's card: its issue, else its

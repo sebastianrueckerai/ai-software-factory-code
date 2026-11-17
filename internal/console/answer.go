@@ -220,12 +220,12 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 	for _, q := range pending {
 		switch {
 		case q.TaskID != id:
-		case q.Kind == factoryd.ApprovalMerge && choice == labelOf(factoryd.ActApproveMerge):
+		case q.Kind == factoryd.ApprovalMerge && choice == factoryd.LabelOf(factoryd.ActApproveMerge):
 			if err := c.admit(ctx, accessTable["approve_merge"], a, t.Repository, "task "+id); err != nil {
 				return "", err
 			}
 			return c.doApprove(ctx, a, q.ID)
-		case q.Kind == factoryd.ApprovalMerge && choice == labelOf(factoryd.ActRerunChecks):
+		case q.Kind == factoryd.ApprovalMerge && choice == factoryd.LabelOf(factoryd.ActRerunChecks):
 			if err := c.admit(ctx, accessTable["rerun_checks"], a, t.Repository, "task "+id); err != nil {
 				return "", err
 			}
@@ -420,10 +420,4 @@ func repeats(choices []string) bool {
 		seen[k] = true
 	}
 	return false
-}
-
-// labelOf is action's label in the vocabulary.
-func labelOf(action string) string {
-	a, _ := factoryd.AnswerOf(action)
-	return a.Label
 }

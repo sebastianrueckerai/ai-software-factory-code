@@ -8,7 +8,8 @@ import (
 
 // CardTitle is t's title, the opening paragraph of its objective on one
 // line and whole: a blank line ends the paragraph, a full stop never
-// does. Its writer keeps it short, so no code cuts it. The objective is
+// does. Its writer keeps it short; only a line that names a card cuts it
+// (CardName). The objective is
 // sanitised as a brief carries it, so a hidden comment in it shows on no
 // face.
 func CardTitle(t Task) string {

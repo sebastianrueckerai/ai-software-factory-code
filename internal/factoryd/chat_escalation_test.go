@@ -79,7 +79,7 @@ func TestEscalateToHuman(t *testing.T) {
 		t.Fatal(err)
 	}
 	if m, ok := PokeOf(stored, got); !ok || m.Kind != MessageEscalation ||
-		m.Content != "#40 (Nothing on the roadmap is ready. Item 12: no acceptance criteria. Write them?) needs you. The plan needs its acceptance criteria before the build can start." || !slices.Equal(m.Choices, []string{"Write the criteria", "Park"}) {
+		m.Content != "#40 (Nothing on the roadmap is ready. Item 12: no acceptance…) needs you. The plan needs its acceptance criteria before the build can start." || !slices.Equal(m.Choices, []string{"Write the criteria", "Park"}) {
 		t.Fatalf("its poke = %+v", m)
 	}
 	// the ask's durable anchor, the same row the runner's escalations
