@@ -386,6 +386,18 @@ func TestSandboxFactsNameToolsNamesAndRequestTool(t *testing.T) {
 	}
 }
 
+func TestSandboxFactsNameCommissionServerForOutsideHosts(t *testing.T) {
+	const sentence = "commission_server rents a throwaway server that reaches outside hosts over SSH: run the lookups there and release it when done"
+	for name, m := range map[string]*imagegen.Manifest{"factory image": nil, "project image": {Tools: []string{"jq"}}} {
+		if got := SandboxFacts(m, []string{policy.ToolCommission}); !strings.Contains(got, sentence) {
+			t.Errorf("%s: SandboxFacts lacks the commission_server sentence:\n%s", name, got)
+		}
+		if got := SandboxFacts(m, []string{policy.ToolRequestTool}); strings.Contains(got, "commission_server") {
+			t.Errorf("%s: SandboxFacts names commission_server without the tool:\n%s", name, got)
+		}
+	}
+}
+
 // The harness init container copies what the factory's image holds:
 // each path harnessCopy reads is where Dockerfile.sandbox installs it.
 func TestHarnessCopyReadsWhatTheImageInstalls(t *testing.T) {

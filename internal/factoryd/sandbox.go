@@ -63,6 +63,9 @@ func SandboxFacts(m *imagegen.Manifest, tools []string) string {
 	if slices.Contains(tools, policy.ToolRequestTool) {
 		noInstall = "A tool those hosts do not serve cannot be installed at runtime: request_tool asks the factory to add it to one of the project's images, and the card restarts on that image."
 	}
+	if slices.Contains(tools, policy.ToolCommission) {
+		noInstall += " commission_server rents a throwaway server that reaches outside hosts over SSH: run the lookups there and release it when done."
+	}
 	has := make([]string, len(sandboxTools))
 	for i, t := range sandboxTools {
 		has[i] = t.text
