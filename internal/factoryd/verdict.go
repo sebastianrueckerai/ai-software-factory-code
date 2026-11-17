@@ -1613,7 +1613,7 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 	}
 	gctx, cancel := context.WithTimeout(rctx, criteriaGateBound)
 	defer cancel()
-	res, err := gate(gctx, integration.ID, integration.PRNumber, pr.HeadSHA)
+	res, err := gate(gctx, integration.ID, integration.PRNumber, pr.HeadSHA, "")
 	if err != nil {
 		log.Printf("plan %s: the criteria gate: %s", id, r.Scrub.String(err.Error()))
 	}

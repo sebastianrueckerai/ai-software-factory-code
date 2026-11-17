@@ -263,8 +263,16 @@ func TestReplayHumanWaitQueueBefore(t *testing.T) {
 		t.Fatalf("the replay scheduled %q, the recording %q", got, calls)
 	}
 	for i := range got {
-		if gotInputs[i] != inputs[i] {
-			t.Fatalf("activity %d (%s): the replay recorded\n%s\nthe recording\n%s", i+1, got[i], gotInputs[i], inputs[i])
+		// the criteria gate gained a trailing argument, the checked head, empty here
+		want := inputs[i]
+		switch {
+		case got[i] == ActivityGateCriteria:
+			want += "\n\"\""
+		case got[i] == ActivitySuperviseGate && strings.Contains(want, `"Activity":"GateCriteria"`):
+			want = strings.Replace(want, `"c1"]`, `"c1",""]`, 1)
+		}
+		if gotInputs[i] != want {
+			t.Fatalf("activity %d (%s): the replay recorded\n%s\nthe recording\n%s", i+1, got[i], gotInputs[i], want)
 		}
 	}
 }

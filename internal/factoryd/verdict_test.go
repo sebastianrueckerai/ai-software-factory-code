@@ -1806,7 +1806,7 @@ func TestPlanCloseOffMainTakesAnInvariantTheGateMet(t *testing.T) {
 // gatePlan seeds a done plan whose integration card (pull request 9,
 // merged, its own ceiling 6.00) holds budget and spent, an approver's row on the human
 // criterion c2 and a runner whose gate is gate.
-func gatePlan(t *testing.T, budget, spent float64, gate func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error)) (*Runner, *fakeStore) {
+func gatePlan(t *testing.T, budget, spent float64, gate func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error)) (*Runner, *fakeStore) {
 	t.Helper()
 	ctx := context.Background()
 	s := seedVerdictPlan(t, "t-plan", "t-int", "done")
@@ -1855,8 +1855,8 @@ func TestCriteriaGatePassRunsTheGateOnTheReserve(t *testing.T) {
 	} {
 		var calls []string
 		var leftAtCall float64
-		r, s := gatePlan(t, c.budget, c.spent, func(s *fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
+		r, s := gatePlan(t, c.budget, c.spent, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(ctx context.Context, taskID string, pr int64, commit, checked string) (CriteriaResult, error) {
 				calls = append(calls, fmt.Sprintf("%s#%d@%s", taskID, pr, commit))
 				leftAtCall = s.tasks[taskID].Left()
 				return CriteriaResult{}, gateMet(ctx, s, taskID)
@@ -1888,8 +1888,8 @@ func TestCriteriaGatePassRunsTheGateOnTheReserve(t *testing.T) {
 // finishes: the gate pass's context is cancelled by its own deadline at
 // 50ms, the gate takes 120ms on a context of its own, and writes its rows.
 func TestCriteriaGatePassRunsPastThePassBound(t *testing.T) {
-	r, s := gatePlan(t, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(ctx context.Context, taskID string, _ int64, _ string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(ctx context.Context, taskID string, _ int64, _, _ string) (CriteriaResult, error) {
 			select {
 			case <-time.After(120 * time.Millisecond):
 			case <-ctx.Done():
@@ -1919,8 +1919,8 @@ func TestCriteriaGatePassRunsACutGateOnceMore(t *testing.T) {
 		calls int
 	}{{"cut twice", true, 2}, {"ran without rows", false, 1}} {
 		calls := 0
-		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(context.Context, string, int64, string) (CriteriaResult, error) {
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 				calls++
 				if c.cut {
 					return CriteriaResult{}, context.DeadlineExceeded
@@ -1947,8 +1947,8 @@ func TestCriteriaGatePassRunsACutGateOnceMore(t *testing.T) {
 func TestCriteriaGatePassNamesACeilingWithNoRoom(t *testing.T) {
 	ctx := context.Background()
 	calls := 0
-	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 			calls++
 			return CriteriaResult{}, nil
 		}
@@ -1972,8 +1972,8 @@ func TestRunCriteriaGateScrubsItsErrors(t *testing.T) {
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	r, _ := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+	r, _ := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 			return CriteriaResult{}, errors.New(leak)
 		}
 	})
@@ -2010,8 +2010,8 @@ func TestCriteriaGatePassRecordsTheOutcomeAfterThePassEnds(t *testing.T) {
 	calls := 0
 	pass, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 			calls++
 			cancel()
 			return CriteriaResult{}, nil
@@ -2058,8 +2058,8 @@ func TestCriteriaGatePassRunsOnlyForADonePlanAtRest(t *testing.T) {
 		}, nil, 1},
 	} {
 		calls := 0
-		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(context.Context, string, int64, string) (CriteriaResult, error) {
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 				calls++
 				return CriteriaResult{}, nil
 			}
@@ -2090,8 +2090,8 @@ func TestCriteriaGatePassKeepsToThePolicyCeiling(t *testing.T) {
 		calls int
 	}{{5, 0}, {4.6, 1}} {
 		calls := 0
-		r, s := gatePlan(t, 5, c.spent, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(context.Context, string, int64, string) (CriteriaResult, error) {
+		r, s := gatePlan(t, 5, c.spent, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 				calls++
 				return CriteriaResult{}, nil
 			}
@@ -2114,8 +2114,8 @@ func TestCriteriaGatePassKeepsToThePolicyCeiling(t *testing.T) {
 // -0.30) is raised by 0.70 to leave 0.40.
 func TestCriteriaGatePassRaisesAnOverspentCardToTheReserve(t *testing.T) {
 	var left float64
-	r, s := gatePlan(t, 5, 5.3, func(s *fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(_ context.Context, id string, _ int64, _ string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5.3, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(_ context.Context, id string, _ int64, _, _ string) (CriteriaResult, error) {
 			left = s.tasks[id].Left()
 			return CriteriaResult{}, nil
 		}
@@ -2131,8 +2131,8 @@ func TestCriteriaGatePassRaisesAnOverspentCardToTheReserve(t *testing.T) {
 func TestCriteriaGatePassCountsAnEscalationAsACut(t *testing.T) {
 	ctx := context.Background()
 	calls := 0
-	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 			calls++
 			return CriteriaResult{Escalate: "the sandbox did not start"}, nil
 		}
@@ -2164,8 +2164,8 @@ func addGatePlan(t *testing.T, s *fakeStore, p, i string) {
 func TestCriteriaGatePassStartsOnlyARunThatFits(t *testing.T) {
 	ctx := context.Background()
 	var ran []string
-	r, s := gatePlan(t, 5, 1, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(_ context.Context, id string, _ int64, _ string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 1, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(_ context.Context, id string, _ int64, _, _ string) (CriteriaResult, error) {
 			ran = append(ran, id)
 			return CriteriaResult{}, nil
 		}
@@ -2195,8 +2195,8 @@ func TestCriteriaGatePassCutsOnlyAForgejoRefusal(t *testing.T) {
 		asks   int
 	}{{"a server error", http.StatusInternalServerError, 0}, {"a missing pull request", http.StatusNotFound, 1}} {
 		calls := 0
-		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(context.Context, string, int64, string) (CriteriaResult, error) {
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 				calls++
 				return CriteriaResult{}, nil
 			}
@@ -2294,8 +2294,10 @@ func TestRunCriteriaGateScrubsEveryErrorLine(t *testing.T) {
 		}},
 	} {
 		logs.Reset()
-		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(context.Context, string, int64, string) (CriteriaResult, error) { return CriteriaResult{}, nil }
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+				return CriteriaResult{}, nil
+			}
 		})
 		ls := &leakyStore{fakeStore: s}
 		r.store, r.Scrub = ls, redact.New()
@@ -2328,8 +2330,10 @@ func TestPlanCloseCheckScrubsTheGatesReadErrors(t *testing.T) {
 		}},
 	} {
 		logs.Reset()
-		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(context.Context, string, int64, string) (CriteriaResult, error) { return CriteriaResult{}, nil }
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+				return CriteriaResult{}, nil
+			}
 		})
 		ls := &leakyStore{fakeStore: s, in: "gateWanted"}
 		r.store, r.Scrub = ls, redact.New()
@@ -2375,8 +2379,8 @@ func TestCriteriaGateWaitsOnAFailedRead(t *testing.T) {
 		{"only the gate's replan read fails", func(r *Runner, _ *leakyStore) { r.timeline.Objects = &failingObjects{in: "gateWanted"} }},
 	} {
 		calls := 0
-		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(context.Context, string, int64, string) (CriteriaResult, error) {
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 				calls++
 				return CriteriaResult{}, nil
 			}
@@ -2442,8 +2446,8 @@ func (*putFailing) Put(context.Context, string, []byte) error { return errors.Ne
 func TestCriteriaGateOnceGuardReadsTheEventsRow(t *testing.T) {
 	ctx := context.Background()
 	calls := 0
-	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 			calls++
 			return CriteriaResult{}, nil
 		}
@@ -2481,8 +2485,8 @@ func TestRunCriteriaGateChecksAgainBeforeTheRaiseAndTheRun(t *testing.T) {
 		{"during the raise", 5.4, func(s *leakyStore, _ *atomic.Bool) { s.afterFund = func() { closePlan(s.fakeStore) } }},
 	} {
 		calls := 0
-		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(context.Context, string, int64, string) (CriteriaResult, error) {
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 				calls++
 				return CriteriaResult{}, nil
 			}
@@ -2510,8 +2514,8 @@ func TestRunCriteriaGateChecksAgainBeforeTheRaiseAndTheRun(t *testing.T) {
 func TestCriteriaGateCountsALostOutcomeAsACut(t *testing.T) {
 	ctx := context.Background()
 	calls := 0
-	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 			calls++
 			return CriteriaResult{}, nil
 		}
@@ -2533,8 +2537,8 @@ func TestCriteriaGateCountsALostOutcomeAsACut(t *testing.T) {
 func TestCriteriaGateWaitsWhenItsStartIsNotRecorded(t *testing.T) {
 	ctx := context.Background()
 	calls := 0
-	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 			calls++
 			return CriteriaResult{}, nil
 		}
@@ -2552,8 +2556,8 @@ func TestCriteriaGateWaitsWhenItsStartIsNotRecorded(t *testing.T) {
 func TestCriteriaGateRunsOnceForEachRoundsIntegrationCard(t *testing.T) {
 	ctx := context.Background()
 	var calls []string
-	r, s := gatePlan(t, 5, 1, func(s *fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(_ context.Context, id string, _ int64, _ string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 1, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(_ context.Context, id string, _ int64, _, _ string) (CriteriaResult, error) {
 			calls = append(calls, id)
 			return CriteriaResult{}, nil
 		}
@@ -2594,8 +2598,8 @@ func TestCriteriaGateRunningIsNoCut(t *testing.T) {
 	}
 	calls, pending, commented, pokes := 0, -1, -1, -1
 	var r *Runner
-	r, s := gatePlan(t, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(ctx context.Context, id string, _ int64, _ string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(ctx context.Context, id string, _ int64, _, _ string) (CriteriaResult, error) {
 			calls++
 			if calls == 1 {
 				return CriteriaResult{}, errors.New("timed out")
@@ -2638,8 +2642,8 @@ func TestCriteriaGateRunLeavesThePlanAlone(t *testing.T) {
 	ctx := context.Background()
 	closesDuring := -1
 	var r *Runner
-	r, s := gatePlan(t, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(ctx context.Context, id string, _ int64, _ string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(ctx context.Context, id string, _ int64, _, _ string) (CriteriaResult, error) {
 			if err := gateMet(ctx, s, id); err != nil {
 				return CriteriaResult{}, err
 			}
@@ -2663,8 +2667,10 @@ func TestCriteriaGateRunLeavesThePlanAlone(t *testing.T) {
 // the next pass asks.
 func TestCriteriaGateStartedDuringTheCloseCheck(t *testing.T) {
 	ctx := context.Background()
-	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) { return CriteriaResult{}, nil }
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return CriteriaResult{}, nil
+		}
 	})
 	row := func(outcome, attempt string) {
 		t.Helper()
@@ -2715,8 +2721,10 @@ func asksRequested(s *fakeStore) int {
 // rows: no ask that pass. The next pass reads it and asks.
 func TestCriteriaGateAskWaitsOnItsRecordRead(t *testing.T) {
 	ctx := context.Background()
-	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) { return CriteriaResult{}, nil }
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return CriteriaResult{}, nil
+		}
 	})
 	sweep(ctx, r)
 	r.store = &leakyStore{fakeStore: s, events: errors.New("db down"), in: "askRerun"}
@@ -2737,8 +2745,8 @@ func TestCriteriaGateAskWaitsOnItsRecordRead(t *testing.T) {
 func TestCriteriaGateAskNamesOnlyItsCardsCeiling(t *testing.T) {
 	ctx := context.Background()
 	calls := 0
-	r, s := gatePlan(t, 5, 1, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 1, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 			calls++
 			return CriteriaResult{}, nil
 		}
