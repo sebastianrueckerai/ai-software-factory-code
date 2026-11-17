@@ -197,11 +197,17 @@ activities, each with a timeline step and a comment on the pull request:
    main's head: every one passed ends the card done with "proofs met at
    <head>: <ids>", anything else is the next session's finding, naming
    the criteria not met by id alone. It opens nothing and writes no row.
-   Once every card of a plan is final and a gate criterion still holds no
-   row, the plan's close runs the gate on the integration card: at its
-   pull request's head when that merged and the card is done, else at
-   main's head, with no comment. A failed integration card leaves the
-   criteria to the human's ask.
+   A plan's close settles a criterion on the rows only while they judge
+   main: the plan's newest criteria card (its newest delta card, else its
+   integration card) merged its own pull request and no card was delivered
+   after it, or a run of the gate on main's head is on record for the
+   plan's cards as they stand. Otherwise only an approver's row settles it.
+   Once every card is final and a gate criterion has no row that settles
+   it, the close runs the gate on the integration card: at its pull
+   request's head when its rows judge main, else at main's head, the commit
+   fetched by itself, with no comment, after it withdraws every row but the
+   approver's (`criteria_rows_withdrawn` on the plan's timeline). A failed
+   integration card leaves the criteria to the human's ask.
 6. `AutoMerge` decides:
    the project's merge rule is `auto` (`projects.merge_rule`, read by
    `GatePolicy`; the factory's own repositories are `human`), the risk

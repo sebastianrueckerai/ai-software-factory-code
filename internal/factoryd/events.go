@@ -66,8 +66,9 @@ const (
 	EventPlanClosed = "plan_closed"
 	// EventCriteriaGateRun records a run of the criteria gate on a done
 	// plan whose criteria held no verdict row, on the plan task: detail
-	// {"task", "pr", "commit", "outcome", "attempt"}, pr 0 for a run on
-	// main's head, the outcome ran, cut
+	// {"task", "pr", "commit", "outcome", "attempt", "cards"}, pr 0 for a
+	// run on main's head and cards the states of the plan's cards it
+	// judged (cardsMark), the outcome ran, cut
 	// no_room or started (written before the run), the attempt "1" or "2" (a cut run runs once more). A
 	// quiet record, no poke.
 	EventCriteriaGateRun = "criteria_gate_run"

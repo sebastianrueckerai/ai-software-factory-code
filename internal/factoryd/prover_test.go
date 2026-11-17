@@ -1004,7 +1004,8 @@ func TestCarriedTestCriteriaOweTheProverNothing(t *testing.T) {
 }
 
 // The missing test of an all-carried plan asks for no proof gap: with the
-// plan's cards done and its one carried criterion's gate row unmet, the
+// plan's cards done, its integration card's pull request merged, and its
+// one carried criterion's gate row unmet, the
 // evidence naming the test, the close check asks the human only as unmet
 // work - the ordinary criteria ask - never one that names a stored-proof
 // gap.
@@ -1018,7 +1019,8 @@ func TestACarriedTestsMissingTestAsksNoProofGap(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/code", IssueNumber: 7, Track: policy.TrackPlan, Kind: "agent", Source: SourceChat, Status: "done"}
-	s.tasks["t-int"] = Task{ID: "t-int", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Kind: "agent", Track: policy.TrackDirect, Status: "done"}
+	s.tasks["t-int"] = Task{ID: "t-int", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Kind: "agent", Track: policy.TrackDirect, Status: "done",
+		PRNumber: 9, MergeCommit: "abc"}
 	if err := s.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
 		{Criterion: "door_open", Verdict: "unmet", Evidence: "criterion door_open: no test TestDoorOpen in ./internal/doors", Kind: CriterionTest}}); err != nil {
 		t.Fatal(err)
