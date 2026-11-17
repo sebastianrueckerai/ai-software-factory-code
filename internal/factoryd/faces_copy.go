@@ -86,7 +86,7 @@ var Vocabulary = []Answer{
 	{Action: ActRerunChecks, Label: "Run the failed checks again", Effect: "Runs the red checks again on the same code."},
 	{Action: ActWaitChecks, Label: "Wait for the checks", Effect: "Waits once more for the checks. No session runs."},
 	{Action: ActConfirmAudit, Label: "Clear the audit's findings", Effect: "Marks the findings you tick as safe test data and checks the work again.",
-		Fields: []Field{{Name: "findings", Label: "The findings to clear", Kind: FieldCheck, Default: auditFindings},
+		Fields: []Field{{Name: "findings", Label: "The findings to clear", Kind: FieldCheck, Required: true, Hint: "Tick at least one finding to clear"},
 			requiredNote("Your reason", "Why the findings are safe")}},
 	{Action: ActExtend, Label: "Allow more sessions", Effect: "Gives the card more sessions or agent time, and it goes on.",
 		Fields: []Field{{Name: "sessions", Label: "More sessions", Kind: FieldNumber, Default: extendSessions},
@@ -172,7 +172,7 @@ var Vocabulary = []Answer{
 }
 
 // auditFindings are the texts of the head's newest audit findings, one per
-// line: the boxes of the findings to clear, each ticked.
+// line: the boxes of the findings to clear.
 func auditFindings(f Facts) string {
 	var out []string
 	for _, id := range f.AuditFindings {

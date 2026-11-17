@@ -591,11 +591,11 @@ func TestASettleEndsTheCaseAndAHumanCardsParkKeepsIt(t *testing.T) {
 }
 
 // The human's confirm_audit on the gate stop's case records the audit
-// findings it names, all of them when it names none, as
-// audit_finding_confirmed steps with who and why, and ends the case; a
-// second one under a recorded prefix records nothing again. The project
-// agent's press, a press without a reason and one naming a finding the
-// audit does not hold are refused, and write nothing.
+// findings it names as audit_finding_confirmed steps with who and why,
+// and ends the case; a second one under a recorded prefix records nothing
+// again. The project agent's press, a press without a reason, one naming
+// no finding and one naming a finding the audit does not hold are
+// refused, and write nothing.
 func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
@@ -631,6 +631,8 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures",
 				Args: map[string]any{"findings": "secrets at acceptance/rig_test.go:118"}}},
 			`the head's audit holds no finding "secrets at acceptance/rig_test.go:118" names`},
+		{"naming no finding", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
+			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures"}}, "no finding is ticked: tick at least one finding to clear"},
 	} {
 		var refused ErrActRefused
 		if _, err := g.r.Act(ctx, tc.in); !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), tc.want) {
@@ -641,7 +643,7 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 		t.Fatalf("the refusals wrote %v, want nothing", got)
 	}
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
-		Res: Resolution{Action: ActConfirmAudit, Note: "the rig's fakes, not secrets"}}); err != nil {
+		Res: Resolution{Action: ActConfirmAudit, Note: "the rig's fakes, not secrets", Args: map[string]any{"findings": findingB}}}); err != nil {
 		t.Fatal(err)
 	}
 	got := steps()

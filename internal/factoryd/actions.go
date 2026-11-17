@@ -23,7 +23,7 @@ const (
 	ActRouteApproval = "route_approval"
 	ActRerunChecks   = "rerun_checks"
 	ActWaitChecks    = "wait_checks"   // runs a stopped checks wait again: no session, no agent time
-	ActConfirmAudit  = "confirm_audit" // args: findings, one per line, empty for all; note: the reason
+	ActConfirmAudit  = "confirm_audit" // args: findings, one per line; note: the reason
 	ActExtend        = "extend"        // args: sessions, agent_time_s, lines
 	ActFund          = "fund"          // args: eur
 	ActRaiseCeiling  = "raise_ceiling" // args: eur
@@ -171,10 +171,12 @@ var Actions = []Action{
 			return "the head's newest audit holds no finding a person could confirm"
 		case strings.TrimSpace(r.Note) == "":
 			return "a one-line reason is required"
+		case len(confirmAuditFindings(r.Args)) == 0:
+			return "no finding is ticked: tick at least one finding to clear"
 		}
 		for _, p := range confirmAuditFindings(r.Args) {
 			if !f.auditFindingNamed(p) {
-				return fmt.Sprintf("the head's audit holds no finding %q names; name each finding as its audit section shows it, or none to confirm them all", p)
+				return fmt.Sprintf("the head's audit holds no finding %q names; name each finding as its audit section shows it", p)
 			}
 		}
 		return ""
@@ -443,8 +445,7 @@ func ActionByName(name string) (Action, bool) {
 
 // probes are the smallest answers Offered tries the actions that need
 // arguments or a note with: one session, one cent, the same model, one
-// note. At an agent time cap the extend's probe buys agent time, the
-// part its stop names.
+// note.
 var probes = map[string]Resolution{
 	ActHandover: {Args: map[string]any{"model": "same"}}, ActExtend: {Args: map[string]any{"sessions": 1}},
 	ActFund: {Args: map[string]any{"eur": 0.01}}, ActRaiseCeiling: {Args: map[string]any{"eur": 0.01}},
@@ -482,8 +483,7 @@ func argString(args map[string]any, key string) string {
 }
 
 // confirmAuditFindings is confirm_audit's findings argument: the finding
-// text prefixes a person confirms, one per line; empty confirms every
-// finding the head's newest audit holds.
+// text prefixes a person confirms, one per line.
 func confirmAuditFindings(args map[string]any) []string {
 	var out []string
 	for _, line := range strings.Split(argString(args, "findings"), "\n") {
@@ -527,11 +527,15 @@ var mergeDecisions = append(slices.Clone(requestEnds), ActGrantCriteria)
 
 // probe is action a's smallest answer on facts f: its probe, an extend of
 // one minute of agent time at an agent time cap, where a raise of the
-// sessions alone is refused with the stop's own words.
+// sessions alone is refused with the stop's own words, and the clearing of
+// the audit's first finding.
 func probe(a Action, f CaseFacts) Resolution {
 	p := probes[a.Name]
-	if a.Name == ActExtend && f.Kind == CaseAgentTimeCap {
+	switch {
+	case a.Name == ActExtend && f.Kind == CaseAgentTimeCap:
 		p.Args = map[string]any{"agent_time_s": 60}
+	case a.Name == ActConfirmAudit && len(f.AuditFindings) > 0:
+		p.Args = map[string]any{"findings": f.FindingTexts[f.AuditFindings[0]]}
 	}
 	return p
 }

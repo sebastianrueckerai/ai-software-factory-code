@@ -334,7 +334,7 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 		return out, ranErr(out.Did, err)
 	}
 	if res.Action == ActConfirmAudit && in.Rung == 3 {
-		if err := r.confirmAudit(ctx, t, f, in); err != nil {
+		if err := r.confirmAudit(ctx, t, in); err != nil {
 			return out, err
 		}
 	}
@@ -760,22 +760,14 @@ func answersACase(a Action) bool {
 }
 
 // confirmAudit records the audit findings a person's confirm_audit marks
-// fixtures (audit-confirm): each finding text prefix they named, or every
-// finding the head's newest audit holds when none, as an
+// fixtures (audit-confirm): each finding text prefix they named, as an
 // audit_finding_confirmed step with who, why and when. Every GateAudit of
 // the task reads the steps off the timeline and settles its verdict past
 // them, on this attempt and a fresh one alike, until the head's audit
 // clears on its own. A confirmation stands once: one already recorded
 // under the same prefix is not recorded again.
-func (r *Runner) confirmAudit(ctx context.Context, t Task, f CaseFacts, in ActInput) error {
+func (r *Runner) confirmAudit(ctx context.Context, t Task, in ActInput) error {
 	named := confirmAuditFindings(in.Res.Args)
-	if len(named) == 0 {
-		for _, id := range f.AuditFindings {
-			if text := f.FindingTexts[id]; text != "" {
-				named = append(named, text)
-			}
-		}
-	}
 	seen, err := r.auditConfirmations(ctx, t.ID)
 	if err != nil {
 		return err

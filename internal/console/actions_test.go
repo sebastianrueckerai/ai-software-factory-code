@@ -952,6 +952,30 @@ func TestAFundTypedBesideAddMoneyIsTheFund(t *testing.T) {
 	}
 }
 
+// The board reads every ticked box of a field: clearing two of the audit's
+// findings sends those two to Act, one per line.
+func TestTheBoardSendsEveryTickedFinding(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	cappedCard(r, t)
+	two := []string{"secrets at rig_test.go:71", "loopback endpoint at rig_test.go:64"}
+	seatAsk(r, "t-e", factoryd.CaseGateStop, roomyFacts(func(f *factoryd.CaseFacts) {
+		f.Head, f.FindingTexts = "h2", map[string]string{}
+		for _, text := range append(two, "test-only credential at rig_test.go:41") {
+			id := factoryd.FindingID(text)
+			f.Findings, f.AuditFindings, f.FindingTexts[id] = append(f.Findings, id), append(f.AuditFindings, id), text
+		}
+	}))
+	rec := r.do(post("/tasks/t-e/resolve", url.Values{"csrf": {s.csrf}, "case_id": {"1"}, "action": {factoryd.ActConfirmAudit},
+		"confirm_audit.findings": two, "note": {"The rig's fakes."}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("the clearing = %d: %s", rec.Code, rec.Body)
+	}
+	if got, _ := actedOnce(t, r); got.Res.Action != factoryd.ActConfirmAudit || got.Res.Args["findings"] != strings.Join(two, "\n") {
+		t.Fatalf("Act took %+v, want the two ticked findings", got.Res)
+	}
+}
+
 // The checks-wait stop's Keep waiting runs the wait again; the quiet
 // stop's park and keep waiting settle the ask, the choice riding as the
 // settle's park arg.

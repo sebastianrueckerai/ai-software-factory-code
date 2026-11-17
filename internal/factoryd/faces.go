@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -300,6 +301,9 @@ func answerHolds(a Answer, f Facts) bool {
 	for _, field := range a.Fields {
 		if field.Required {
 			written[field.Name] = "written"
+			if len(field.Options) > 0 {
+				written[field.Name] = field.Options[0].Value
+			}
 		}
 	}
 	res, err := a.Press(f, written, "")
@@ -401,7 +405,10 @@ func (a Answer) Press(f Facts, values map[string]string, note string) (Resolutio
 		if field.Name == noteField {
 			v = cmpNote(v, note)
 		}
-		if field.Required && strings.TrimSpace(v) == "" {
+		switch {
+		case field.Required && strings.TrimSpace(v) == "" && field.Kind == FieldCheck:
+			return Resolution{}, errors.New(field.Hint)
+		case field.Required && strings.TrimSpace(v) == "":
 			return Resolution{}, fmt.Errorf("%s is empty: %s", field.Label, field.Hint)
 		}
 	}

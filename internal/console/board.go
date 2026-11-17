@@ -3222,7 +3222,7 @@ func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 	}
 	values := map[string]string{}
 	for _, f := range answer.Fields {
-		values[f.Name] = r.PostFormValue(action + "." + f.Name)
+		values[f.Name] = strings.Join(r.PostForm[action+"."+f.Name], "\n")
 	}
 	_, err = c.doPressCase(r.Context(), button(r), id, caseID, answer, values, note, fund)
 	c.pressed(w, r, err)

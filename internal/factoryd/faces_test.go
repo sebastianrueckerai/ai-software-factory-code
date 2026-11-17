@@ -240,6 +240,9 @@ func written(a factoryd.Answer) map[string]string {
 	for _, f := range a.Fields {
 		if f.Required {
 			out[f.Name] = sample[f.Name]
+			if len(f.Options) > 0 {
+				out[f.Name] = f.Options[0].Value
+			}
 		}
 	}
 	return out
@@ -443,5 +446,32 @@ func TestAHumanCardAsksWhetherItsTitledWorkIsDone(t *testing.T) {
 	x := fixture(t, "card", "reproduction-rule card")
 	if want := "Is \u201cthe 429 retry loses the request id\u201d done?"; x.face.Ask != want {
 		t.Errorf("ask %q, want %q", x.face.Ask, want)
+	}
+}
+
+// Clear the audit's findings clears the findings ticked and nothing else:
+// a box per finding in More, no box ticked is refused before anything
+// clears, and two ticked boxes name those two findings alone.
+func TestClearingTheAuditClearsOnlyTheTickedFindings(t *testing.T) {
+	x := fixture(t, "case", string(factoryd.CaseBudgetFloor))
+	i := slices.IndexFunc(x.face.More, func(a factoryd.Answer) bool { return a.Action == factoryd.ActConfirmAudit })
+	if i < 0 {
+		t.Fatalf("More %v lacks the audit's clearing", labels(x.face.More))
+	}
+	clear := x.face.More[i]
+	if got := len(clear.Fields[0].Options); got != 8 {
+		t.Fatalf("%d boxes, want one per audit finding, 8", got)
+	}
+	if _, err := clear.Press(x.facts, map[string]string{"findings": ""}, "The rig's fakes."); err == nil || err.Error() != "Tick at least one finding to clear" {
+		t.Errorf("no box ticked = %v, want the refusal to tick at least one", err)
+	}
+	two := "secrets at acceptance/price_floor_acceptance_test.go:71\nloopback endpoint at acceptance/price_floor_acceptance_test.go:64"
+	res, err := clear.Press(x.facts, map[string]string{"findings": two}, "The rig's fakes.")
+	if err != nil || res.Args["findings"] != two || factoryd.PressRefusal(x.facts, res) != "" {
+		t.Fatalf("two ticked = %+v, %v, refusal %q; want the two findings alone", res, err, factoryd.PressRefusal(x.facts, res))
+	}
+	res.Args["findings"] = ""
+	if got := factoryd.PressRefusal(x.facts, res); got != "no finding is ticked: tick at least one finding to clear" {
+		t.Errorf("the table takes no finding with %q, want the refusal to tick one", got)
 	}
 }
