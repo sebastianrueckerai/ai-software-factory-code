@@ -979,6 +979,8 @@ func (s *accBatchStore) CriteriaVerdicts(context.Context, string) ([]factoryd.Cr
 
 func (s *accBatchStore) CriteriaVerdictTasks(context.Context) ([]string, error) { panic("unused") }
 
+func (s *accBatchStore) PlansAwaitingCriteria(context.Context) ([]string, error) { panic("unused") }
+
 func (s *accBatchStore) PlanCatches(context.Context, string) ([]factoryd.PlanCatch, error) {
 	panic("unused")
 }

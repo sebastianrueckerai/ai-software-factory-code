@@ -679,6 +679,11 @@ type Store interface {
 	// PlansBetweenRounds are the done or closed plan cards without a
 	// plan_closed event whose newest revision's outline has parts, by id.
 	PlansBetweenRounds(ctx context.Context) ([]string, error)
+	// PlansAwaitingCriteria are the plan cards at rest (done, failed or
+	// closed) without a plan_closed event whose newest revision names
+	// criteria and no later round, and whose cards are all final or
+	// merged, by id.
+	PlansAwaitingCriteria(ctx context.Context) ([]string, error)
 	// PlanMerged says whether a card of plan holds an unreverted merge
 	// (a merge commit, or a pull_request_merged row): the rule that opens
 	// the plan's production group.

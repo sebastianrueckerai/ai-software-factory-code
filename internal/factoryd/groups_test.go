@@ -174,6 +174,50 @@ func TestPlansBetweenRounds(t *testing.T) {
 	}
 }
 
+// The plans awaiting their criteria are the plan cards at rest without a
+// plan_closed row whose newest revision names criteria and no later round,
+// and whose cards are all final or merged: the done a1, whose cards ended
+// closed and merged, the failed a2 whose outline is null and the closed
+// a8. a3's row closed it, a4 has rounds to come, a5 runs, a6 names no
+// criteria, a7's newest revision dropped them and a9's card still runs.
+func TestPlansAwaitingCriteria(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_awaiting_criteria"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const fin = "'2026-10-01T09:00:00Z'"
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, track, issue_number, finished_at, parent_task, plan_key) VALUES
+		('a1', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 1, `+fin+`, NULL, NULL), ('a2', 1, 0, 'failed', 'sf/r', 'agent', 'webhook', 'plan', 2, `+fin+`, NULL, NULL),
+		('a3', 1, 0, 'closed', 'sf/r', 'agent', 'webhook', 'plan', 3, `+fin+`, NULL, NULL), ('a4', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 4, `+fin+`, NULL, NULL),
+		('a5', 1, 0, 'running', 'sf/r', 'agent', 'webhook', 'plan', 5, NULL, NULL, NULL), ('a6', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 6, `+fin+`, NULL, NULL),
+		('a7', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 7, `+fin+`, NULL, NULL), ('a8', 1, 0, 'closed', 'sf/r', 'agent', 'webhook', 'plan', 8, `+fin+`, NULL, NULL),
+		('a9', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 9, `+fin+`, NULL, NULL),
+		('a1-int', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 'direct', 10, `+fin+`, 'a1', 'integ'),
+		('a1-f', 1, 0, 'merged', 'sf/r', 'agent', 'plan', 'direct', 11, `+fin+`, 'a1', 'feat'),
+		('a9-int', 1, 0, 'running', 'sf/r', 'agent', 'plan', 'direct', 12, NULL, 'a9', 'integ')`); err != nil {
+		t.Fatal(err)
+	}
+	criteria := `{"round": 1, "criteria": [{"id": "c1", "kind": "test"}]}`
+	for _, r := range []struct{ id, plan string }{
+		{"a1", criteria}, {"a2", `{"round": 1, "outline": null, "criteria": [{"id": "c1", "kind": "test"}]}`}, {"a3", criteria},
+		{"a4", `{"round": 1, "outline": ["the rest"], "criteria": [{"id": "c1", "kind": "test"}]}`}, {"a5", criteria},
+		{"a6", `{"round": 1, "criteria": []}`}, {"a7", criteria}, {"a7", `{"round": 1}`}, {"a8", criteria}, {"a9", criteria},
+	} {
+		if _, err := s.AddPlanRevision(ctx, r.id, json.RawMessage(r.plan), r.id+r.plan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via) VALUES
+		('2026-10-02T08:00:00Z', 'sf/r', 'a3', 3, 'plan_closed', 'factoryd', 'factoryd')`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.PlansAwaitingCriteria(ctx); err != nil || !slices.Equal(got, []string{"a1", "a2", "a8"}) {
+		t.Fatalf("PlansAwaitingCriteria = %v, %v; want [a1 a2 a8]", got, err)
+	}
+}
+
 const planClosedBackfill = "factoryd/20261104100000_plan_closed_backfill.sql"
 
 // The backfill closes, quietly, each plan without criteria whose cards

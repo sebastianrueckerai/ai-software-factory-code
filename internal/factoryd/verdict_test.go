@@ -2000,6 +2000,44 @@ func TestCriteriaGateOnMainCutAfterItsRowsDoesNotHang(t *testing.T) {
 	})
 }
 
+// A plan with no merged card and no approver's row is visited by no open
+// group and, once the run on main withdrew the rows of its closed
+// integration card, by no row: the sweep still visits it, as every
+// last-round plan at rest with criteria and no plan_closed. Main's branch
+// unreadable for good cuts the first run (Forgejo's 404); the next sweep
+// runs the gate again, and its rows close the plan.
+func TestCriteriaPassVisitsAPlanWhoseRowsWereWithdrawn(t *testing.T) {
+	ctx := context.Background()
+	fj := &prForgejo{mainHead: "m1", branchGone: true}
+	r, s := gatePlanOn(t, fj, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(ctx context.Context, taskID string, _ int64, _, _ string) (CriteriaResult, error) {
+			return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+				{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}})
+		}
+	})
+	integrationAs("closed", 2085, "")(s)
+	s.criteriaVerdicts["t-int"] = nil
+	if err := gateMet(ctx, s, "t-int"); err != nil {
+		t.Fatal(err)
+	}
+	p := criteriaPlan()
+	p.Criteria = slices.DeleteFunc(p.Criteria, func(c PlanCriterion) bool { return c.Kind == CriterionHuman })
+	newRevision(t, s, "t-plan", p)
+	sweep(ctx, r)
+	if got := gateOutcomes(s); !slices.Equal(got, []string{"cut#1"}) {
+		t.Fatalf("the first run: outcomes %v, want one cut", got)
+	}
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(rows) != 0 {
+		t.Fatalf("rows %+v, want the closed card's withdrawn", rows)
+	}
+	fj.branchGone = false
+	sweep(ctx, r)
+	r.CriteriaPass(ctx)
+	if got := gateOutcomes(s); !slices.Equal(got, []string{"cut#1", "ran#2"}) || closeRows(s) != 1 {
+		t.Fatalf("outcomes %v, closes %d; want the second run on main and the plan closed", got, closeRows(s))
+	}
+}
+
 // A card of the plan that ends after the gate's last run makes the gate due
 // again on main: a delta card done with nothing pushed (its proofs met at
 // main), the failed integration card retried and closed, or retried and

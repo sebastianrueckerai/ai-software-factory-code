@@ -2115,8 +2115,9 @@ func (r *Runner) deltaRoundBound() time.Duration {
 func (r *Runner) DeltaPassBound() time.Duration { return r.deltaRoundBound() + time.Minute }
 
 // criteriaParents are the plans the criteria and delta passes visit, in id
-// order: the plans with verdict rows, those of the open groups and those
-// between rounds.
+// order: the plans with verdict rows, those of the open groups, those
+// between rounds and every one at rest in its last round with criteria and
+// no plan_closed, whatever rows it holds.
 func (r *Runner) criteriaParents(ctx context.Context) []string {
 	ids, err := r.store.CriteriaVerdictTasks(ctx)
 	if err != nil {
@@ -2148,6 +2149,13 @@ func (r *Runner) criteriaParents(ctx context.Context) []string {
 		log.Printf("criteria pass: the plans between rounds: %v", err)
 	}
 	for _, id := range between {
+		parents[id] = true
+	}
+	awaiting, err := r.store.PlansAwaitingCriteria(ctx)
+	if err != nil {
+		log.Printf("criteria pass: the plans awaiting their criteria: %v", err)
+	}
+	for _, id := range awaiting {
 		parents[id] = true
 	}
 	return slices.Sorted(maps.Keys(parents))

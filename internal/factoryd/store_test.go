@@ -667,6 +667,29 @@ func (s *fakeStore) PlansBetweenRounds(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
+func (s *fakeStore) PlansAwaitingCriteria(ctx context.Context) ([]string, error) {
+	var out []string
+	for id, t := range s.tasks {
+		if _, closed := s.closed[id]; !Final(t.Status) || closed {
+			continue
+		}
+		rev, ok, err := s.PlanRevision(ctx, id, 0)
+		if err != nil {
+			return nil, err
+		}
+		var p Plan
+		if !ok || json.Unmarshal(rev.Plan, &p) != nil || len(p.Criteria) == 0 || len(p.Outline) > 0 ||
+			slices.ContainsFunc(slices.Collect(maps.Values(s.tasks)), func(c Task) bool {
+				return c.Parent == id && c.Source == SourcePlan && c.PlanKey != "" && !Final(c.Status) && c.Status != "merged"
+			}) {
+			continue
+		}
+		out = append(out, id)
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
 func (s *fakeStore) QueuedPlans(ctx context.Context, repository string) ([]int64, error) {
 	var out []int64
 	for _, c := range s.tasks {
@@ -5046,8 +5069,10 @@ func (s *fakeStore) CriteriaVerdicts(ctx context.Context, taskID string) ([]Crit
 
 func (s *fakeStore) CriteriaVerdictTasks(ctx context.Context) ([]string, error) {
 	var ids []string
-	for id := range s.criteriaVerdicts {
-		ids = append(ids, id)
+	for id, rows := range s.criteriaVerdicts {
+		if len(rows) > 0 {
+			ids = append(ids, id)
+		}
 	}
 	return ids, nil
 }

@@ -163,6 +163,34 @@ func (s *PGStore) PlanMerged(ctx context.Context, plan string) (bool, error) {
 	return merged, err
 }
 
+// PlansAwaitingCriteria are the plan cards at rest (done, failed or
+// closed) without a plan_closed event whose newest revision names criteria
+// and no later round, and whose cards are all final or merged, by id.
+func (s *PGStore) PlansAwaitingCriteria(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT r.task_id FROM plan_revisions r JOIN tasks t ON t.id = r.task_id
+		WHERE t.status IN ('done', 'failed', 'closed')
+			AND r.revision = (SELECT max(revision) FROM plan_revisions WHERE task_id = r.task_id)
+			AND jsonb_typeof(r.plan->'criteria') = 'array' AND r.plan->'criteria' <> '[]'::jsonb
+			AND COALESCE(r.plan->'outline', '[]'::jsonb) IN ('[]'::jsonb, 'null'::jsonb)
+			AND NOT EXISTS (SELECT 1 FROM events WHERE task_id = r.task_id AND kind = 'plan_closed')
+			AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_task = r.task_id AND c.source = 'plan' AND c.plan_key IS NOT NULL
+				AND c.status NOT IN ('done', 'failed', 'closed', 'merged'))
+		ORDER BY r.task_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 func (s *PGStore) PlansBetweenRounds(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT r.task_id FROM plan_revisions r JOIN tasks t ON t.id = r.task_id
 		WHERE t.status IN ('done', 'closed')
