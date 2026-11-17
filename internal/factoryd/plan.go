@@ -633,6 +633,10 @@ func questionBounds(qs []PlanQuestion) []string {
 			add("grounds empty")
 		case utf8.RuneCountInString(q.Grounds) > MaxQuestion:
 			add("grounds is over %d characters", MaxQuestion)
+		default:
+			if faults := GroundsFaults(q.Grounds); len(faults) > 0 {
+				add("grounds: %s", strings.Join(faults, " "))
+			}
 		}
 	}
 	return out

@@ -683,34 +683,42 @@ func TestAFactoryPullRequestsMergeFaceClosesIt(t *testing.T) {
 	}
 }
 
-// A face shows no grounds that name the factory's own words: grounds that
-// name a rung, a case, a task id, a hash or a code name leave the face, and
-// the pick they came with still leads, on a live face and on one an ask
-// stored. Grounds in plain words stay, a file's path in them too. The view
-// a writer's words make leaves the story on the same check.
-func TestAFaceShowsNoGroundsThatNameTheFactorysWords(t *testing.T) {
+// A face shows only grounds that pass the one check every writer of
+// grounds meets at its door (GroundsFaults: the guide and the names of the
+// factory's own machinery). Grounds filed before the check that fail it
+// leave the face, live and stored alike, and the pick they came with
+// still leads under its writer. Plain words stay: a case in English, a
+// file's path and a commit's hash.
+func TestAFaceShowsOnlyGroundsThatPassTheGuide(t *testing.T) {
 	c := factoryd.Case{ID: 3, TaskID: "t1", Kind: factoryd.CaseGateStop, Status: factoryd.CaseAtHuman, Facts: map[string]any{"gate": "review"}}
 	card := factoryd.Task{ID: "t1", Kind: "agent", Status: "waiting-human", IssueNumber: 4}
 	for grounds, want := range map[string]string{
-		"The deciding rung (factory-chat) chose successor.":                 "",
-		"The case already holds the answer.":                                "",
-		"Card t-e758758121d7 merged the fix.":                               "",
-		"The head 4d03448ea6d0 is red.":                                     "",
-		"The gate_stop is the review's.":                                    "",
-		"The findings at acceptance/price_floor_acceptance_test.go:71 hold": "The findings at acceptance/price_floor_acceptance_test.go:71 hold",
-		"The work is on main.":                                              "The work is on main.",
+		"The deciding rung (factory-chat) chose successor.":                  "",
+		"Card t-e758758121d7 merged the fix.":                                "",
+		"The gate_stop is the review's.":                                     "",
+		"Scenario 2 fails; the rest is green.":                               "",
+		"The case already holds the answer.":                                 "The case already holds the answer.",
+		"The head 4d03448ea6d0 is red.":                                      "The head 4d03448ea6d0 is red.",
+		"The findings at acceptance/price_floor_acceptance_test.go:71 hold.": "The findings at acceptance/price_floor_acceptance_test.go:71 hold.",
 	} {
 		rec := factoryd.Recommendation{Action: factoryd.ActClose, By: "the factory agent", Grounds: grounds}
 		live := factoryd.FaceOf(c, factoryd.Facts{CaseFacts: factoryd.FactsOf(c), Card: card, Recommend: rec})
 		stored := factoryd.CaseFace(c, card, factoryd.CaseAsk{Detail: map[string]any{"story": map[string]any{}, "offers": []any{},
 			"preselected": map[string]any{"action": factoryd.ActClose}, "recommended_by": "the factory agent", "recommendation": grounds}})
-		if live.Suggested != factoryd.ActClose || live.Grounds != want || stored.Preselected != factoryd.ActClose || stored.Recommendation != want {
-			t.Errorf("%q: live %q with %q, stored %q with %q; want the close with %q", grounds, live.Suggested, live.Grounds,
+		if live.Suggested != factoryd.ActClose || live.SuggestedBy != "the factory agent" || live.Grounds != want ||
+			stored.Preselected != factoryd.ActClose || stored.Recommendation != want {
+			t.Errorf("%q: live %q by %q with %q, stored %q with %q; want the close by the factory agent with %q", grounds, live.Suggested, live.SuggestedBy, live.Grounds,
 				stored.Preselected, stored.Recommendation, want)
 		}
-		if got := factoryd.ForbiddenWord(grounds); (got == "") != (want != "") {
-			t.Errorf("ForbiddenWord(%q) = %q", grounds, got)
+		if faults := factoryd.GroundsFaults(grounds); (len(faults) == 0) != (want != "") {
+			t.Errorf("GroundsFaults(%q) = %q", grounds, faults)
 		}
+	}
+	if got, want := factoryd.GroundsFaults("The deciding rung (factory-chat) chose successor."), []string{
+		`The text holds "rung", a word of the factory's own machinery. Say what it means for the reader.`,
+		`The text holds "factory-chat", a name of the factory's own machinery. Say what it means for the reader.`,
+	}; !slices.Equal(got, want) {
+		t.Errorf("the faults of a rung's name = %q, want %q", got, want)
 	}
 }
 

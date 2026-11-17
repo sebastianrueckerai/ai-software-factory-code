@@ -108,6 +108,9 @@ func (a AgentAsk) validate() error {
 			return fmt.Errorf("%s is required, at most %d bytes", name, limit)
 		}
 	}
+	if faults := GroundsFaults(a.Recommendation); len(faults) > 0 {
+		return fmt.Errorf("recommendation: %s", strings.Join(faults, " "))
+	}
 	return nil
 }
 

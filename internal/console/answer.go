@@ -384,6 +384,9 @@ func (t *turn) escalate(ask, why, info, recommendation, choice string, choices [
 			return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: %q: %s", c, strings.Join(faults, " ")))
 		}
 	}
+	if err := groundsRefusal(recommendation); err != nil {
+		return "", err
+	}
 	q := factoryd.HumanQuestion{Ask: ask, Why: why, Info: info, Recommendation: recommendation, Source: "the project agent"}
 	for _, c := range choices {
 		q.Choices = append(q.Choices, factoryd.QuestionChoice{Value: "say:" + c, Label: c})

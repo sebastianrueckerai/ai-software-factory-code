@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // FieldKind is what a field of an answer takes.
@@ -112,38 +113,50 @@ type AskFace struct {
 	More                            []Answer
 }
 
-// FaceForbidden are the words no face shows: a task id, a hash, a branch,
-// the factory's own nouns, a snake_case name and a gate's step name.
-var FaceForbidden = []*regexp.Regexp{
-	regexp.MustCompile(`\bt-[0-9a-f]{6,}`),
-	regexp.MustCompile(`\b[0-9a-f]{12,}\b`),
-	regexp.MustCompile(`\bcard/\d+`),
-	regexp.MustCompile(`(?i)\b(rungs?|cases?|offers?|premade|slots?)\b`),
-	regexp.MustCompile(`\b[a-z]+_[a-z_]+\b`),
-	regexp.MustCompile(`\b(` + strings.Join([]string{ActivityRunSession, ActivityWaitChecks, ActivityGateReproduction,
-		ActivityGateCriteria, ActivityModelReview, ActivityGateAudit}, "|") + `)\b`),
-}
-
-// filePath is a file's path in a text, with its line: it names the file,
-// none of FaceForbidden.
-var filePath = regexp.MustCompile(`\S*/\S*\.[a-z]+(:[\d-]+)?`)
-
-// ForbiddenWord is the first of FaceForbidden's words s shows outside a
-// file's path, "" for none.
-func ForbiddenWord(s string) string {
-	s = filePath.ReplaceAllString(s, "")
-	for _, re := range FaceForbidden {
-		if m := re.FindString(s); m != "" {
-			return m
+// factoryNames are the names of the factory's own machinery, which no face
+// shows: a card's id, the chat's and the check-in's names as deciders, an
+// activity's name, and an action's or a case kind's key. factoryd names a
+// service a card may deploy or watch, so it is no such name.
+var factoryNames = func() *regexp.Regexp {
+	names := []string{ChatUser, CheckinDecider, ActivityRunSession, ActivityWaitChecks, ActivityGateReproduction,
+		ActivityGateCriteria, ActivityModelReview, ActivityGateAudit}
+	for _, a := range Actions {
+		if strings.Contains(a.Name, "_") {
+			names = append(names, a.Name)
 		}
 	}
-	return ""
+	for _, k := range CaseKinds() {
+		if strings.Contains(string(k), "_") {
+			names = append(names, string(k))
+		}
+	}
+	for i := range names {
+		names[i] = regexp.QuoteMeta(names[i])
+	}
+	return regexp.MustCompile(`\bt-[0-9a-f]{6,}\b|\b(?:` + strings.Join(names, "|") + `)\b`)
+}()
+
+// FactoryName is the first name of the factory's own machinery s shows,
+// "" for none.
+func FactoryName(s string) string { return factoryNames.FindString(s) }
+
+// GroundsFaults are the faults of a suggestion's grounds: the guide's
+// (writingguide.Lint) and a name of the factory's own machinery. Every
+// door where a rung or a writer files grounds refuses them with these
+// lines, so the writer corrects itself.
+func GroundsFaults(grounds string) []string {
+	faults := writingguide.Lint(grounds)
+	if m := FactoryName(grounds); m != "" {
+		faults = append(faults, fmt.Sprintf("The text holds %q, a name of the factory's own machinery. Say what it means for the reader.", m))
+	}
+	return faults
 }
 
-// plainGrounds is a recommendation's grounds as a face shows them: none
-// when they name one of the factory's own words, so the pick leads alone.
-func plainGrounds(grounds string) string {
-	if ForbiddenWord(grounds) != "" {
+// shownGrounds are grounds as a face shows them: none when they fail
+// GroundsFaults, as grounds filed before the doors held them to it may;
+// the pick and its writer stay.
+func shownGrounds(grounds string) string {
+	if len(GroundsFaults(grounds)) > 0 {
 		return ""
 	}
 	return grounds
@@ -296,14 +309,14 @@ func FaceOf(c Case, f Facts) AskFace {
 		}
 		a := answers[i]
 		answers = slices.Insert(slices.Delete(answers, i, i+1), 0, a)
-		face.Suggested, face.SuggestedBy, face.Grounds = a.Key(), by, plainGrounds(grounds)
+		face.Suggested, face.SuggestedBy, face.Grounds = a.Key(), by, shownGrounds(grounds)
 		return true
 	}
 	led := lead(f.Recommend.Action, f.Recommend.By, f.Recommend.Grounds)
 	if spec.Suggest != nil {
 		// words that lead no answer, beside a recommendation or alone, are
 		// their writer's view
-		if key, by, grounds := spec.Suggest(f); grounds != "" && by != "" && grounds != face.Grounds && (led || key == "" || !lead(key, by, grounds)) && plainGrounds(grounds) != "" {
+		if key, by, grounds := spec.Suggest(f); grounds != "" && by != "" && grounds != face.Grounds && (led || key == "" || !lead(key, by, grounds)) && shownGrounds(grounds) != "" {
 			face.Story.View = capitalize(by) + "'s view: " + strings.Join(strings.Fields(grounds), " ")
 		}
 	}

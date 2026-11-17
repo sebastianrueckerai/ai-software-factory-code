@@ -873,3 +873,13 @@ func (w *signalLog) Terminate(context.Context, string, string, string) error { r
 
 func (w *signalLog) Alive(context.Context, string) (bool, error)       { return true, nil }
 func (w *signalLog) RunningRuns(context.Context) ([]RunningRun, error) { return nil, nil }
+
+// A question's grounds meet the guide where the planner files them: a
+// fault is a finding with the fault named.
+func TestQuestionBoundsHoldTheGroundsToTheGuide(t *testing.T) {
+	q := []PlanQuestion{{Text: "Which rows does the feed read?", Choices: []string{"The 500 newest rows", "Every row"}, Recommended: "The 500 newest rows",
+		Grounds: "The feed reads one table; a row bound keeps its page small."}}
+	if got, want := questionBounds(q), []string{"plan: question 1: grounds: The text holds a semicolon. Write two sentences."}; !slices.Equal(got, want) {
+		t.Errorf("questionBounds = %q, want %q", got, want)
+	}
+}

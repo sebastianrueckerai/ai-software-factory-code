@@ -1659,14 +1659,14 @@ func TestTheNoteGoesWhereTheCardSays(t *testing.T) {
 		k.Problem = "Go on with the replica?"
 		r.openCases[tc.id][0] = k
 		r.caseAsks = map[int64]factoryd.CaseAsk{tc.caseID: {At: time.Now(), Detail: map[string]any{"info": "The reads outgrow the single node.",
-			"recommendation": "Take the replica; it holds the reads.", "recommended_by": "the factory agent", "preselected": map[string]any{"action": factoryd.ActReplan}}}}
+			"recommendation": "Take the replica, which holds the reads.", "recommended_by": "the factory agent", "preselected": map[string]any{"action": factoryd.ActReplan}}}}
 		page := drawer(t, r, ck, tc.id, "overview")
 		face := askBlockOf(t, page)
 		for _, want := range []string{
 			`<p class="o-question">` + tc.ask + `</p>`,
 			`<p class="o-askwhy">` + tc.why + `</p>`,
 			`class="answer suggested" data-answer="replan" data-to="running">`,
-			`<p class="o-by">suggested by the factory agent: <span class="quote">Take the replica; it holds the reads.</span></p>`,
+			`<p class="o-by">suggested by the factory agent: <span class="quote">Take the replica, which holds the reads.</span></p>`,
 			`<span class="effect">` + tc.ends + `</span>`,
 		} {
 			if !strings.Contains(face, want) {

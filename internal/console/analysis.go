@@ -12,8 +12,8 @@ import (
 
 // attachAnalysis is the attach_analysis tool: what the agent found about
 // a card's ask, recorded on the card, where the human reads it beside the
-// ask (the main agent concept); no inbox row repeats it. An ask already settled is done;
-// a card with no ask needs escalate, not an analysis.
+// ask (the main agent concept); no inbox row repeats it. An ask already
+// settled is done; a card with no ask needs escalate, not an analysis.
 func (t *turn) attachAnalysis(in toolInput) (string, error) {
 	found, recommendation := strings.TrimSpace(in.Found), strings.TrimSpace(in.Recommendation)
 	switch {
@@ -23,6 +23,9 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 		return "", refuse(http.StatusBadRequest, "found: what you learned about the ask, 1 to 2000 characters")
 	case len(recommendation) > 2000:
 		return "", refuse(http.StatusBadRequest, "recommendation: 0 to 2000 characters, empty to offer none")
+	}
+	if err := groundsRefusal(recommendation); err != nil {
+		return "", err
 	}
 	k, err := t.card(in)
 	if err != nil {
@@ -67,6 +70,15 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 // handedUp opens the tool's answer when the analysis handed the case to
 // the human: the inbox reads that the turn asks the human on a card.
 const handedUp = "Handed #"
+
+// groundsRefusal refuses a recommendation that fails the one check every
+// writer of grounds meets (factoryd.GroundsFaults), with its faults named.
+func groundsRefusal(recommendation string) error {
+	if faults := factoryd.GroundsFaults(recommendation); len(faults) > 0 {
+		return refuse(http.StatusBadRequest, "recommendation: "+strings.Join(faults, " "))
+	}
+	return nil
+}
 
 // askNoun is an ask kind's noun for a refusal: the approval kinds' own
 // words with request, a question's own word.

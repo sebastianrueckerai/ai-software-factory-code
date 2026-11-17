@@ -73,7 +73,7 @@ func storedFace(detail map[string]any) (AskFace, bool) {
 		face.Answers = append(face.Answers, a)
 	}
 	r := RecommendationOf(detail)
-	face.Suggested, face.SuggestedBy, face.Grounds = r.Action, r.By, plainGrounds(r.Grounds)
+	face.Suggested, face.SuggestedBy, face.Grounds = r.Action, r.By, shownGrounds(r.Grounds)
 	return face, true
 }
 

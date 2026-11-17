@@ -301,10 +301,22 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 		if faults := writingguide.Lint(s); len(faults) > 0 {
 			t.Errorf("%q: %v", s, faults)
 		}
+		for _, re := range faceForbidden {
+			if m := re.FindString(s); m != "" {
+				t.Errorf("%q names %q", s, m)
+			}
+		}
 	}
 	for _, s := range slices.DeleteFunc(whole, drop) {
-		if m := factoryd.ForbiddenWord(s); m != "" {
+		if m := factoryd.FactoryName(s); m != "" {
 			t.Errorf("%q names %q", s, m)
+		}
+	}
+	for _, by := range classed(o, "o-by") {
+		for _, q := range classed(by, "quote") {
+			if faults := factoryd.GroundsFaults(nodeText(q)); len(faults) > 0 {
+				t.Errorf("the grounds %q fail the guide: %v", nodeText(q), faults)
+			}
 		}
 	}
 }

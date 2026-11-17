@@ -1014,8 +1014,9 @@ func (b *builder) card2004(group, name string) Fixture {
 			"The controller then funded €0.70 as a session floor for the six then-open findings. Session 2 pushed 4d03448 adding scenario 2 (TestFloorCaseAsksThePrintedPrice). Review approved (+22:47). " +
 			"Checks failed at 4d03448 and again after factoryd's rerun on head 7eaf7c7: CI shows scenario 2's test genuinely failing (job 'test' after 14m42s) — real unfinished work, not a flake. " +
 			"The audit still lists 8 findings on acceptance/price_floor_acceptance_test.go:71-107 (secret/token literals, secrets, loopback endpoints) — the same fake-rig fixture class rung 0 already adjudicated on case 5631.",
-		"recommendation": "The deciding rung (factory-chat) chose successor. Grounds: scenario 1 is green and pushed on PR #2085; scenario 2's CI failure (TestFloorCaseAsksThePrintedPrice) is real unfinished work, one small session's worth; " +
-			"the 8 audit findings are the same fake-rig fixture class already adjudicated (case 5631). The card's €0.34 cannot even pay the €0.40 the gates need, and bridging the gap costs ≈€1.30 of your money for work a successor finishes on its own fresh budget — the pattern of #2006 → #2097 this morning. Parking buys nothing the successor doesn't.",
+		"recommendation": "Scenario 1 is green and pushed on pull request #2085. Scenario 2's CI failure (TestFloorCaseAsksThePrintedPrice) is real unfinished work, one small session's worth. " +
+			"The 8 audit findings are the same fake-rig fixture class judged before. The card's €0.34 cannot pay the €0.40 the gates need, and closing the gap costs about €1.30 of your money " +
+			"for work a successor finishes on its own fresh budget, as #2006 did with #2097 this morning. Parking buys nothing the successor does not.",
 		"recommended_by": "the factory agent",
 		"preselected":    map[string]any{"action": factoryd.ActSuccessor},
 	}
@@ -1035,7 +1036,7 @@ func (b *builder) card2091(group, name string) Fixture {
 		"none of which resolve in this sandbox. How should the new digests, sha256 sums and versions be obtained?",
 		Choices: []string{"Open the upstream hosts to this sandbox", "Provide the new pins; I apply and test them", "Refile the card to run where registry access exists"}}
 	up := &factoryd.HandUp{Action: factoryd.ActHandover, Rung: 2, ActionRung: 2,
-		Grounds: "The stop is real and structural — only you hold the sandbox's network policy. The rung-1's read is right: only you hold the sandbox's network policy. No model change, replan or new session can fetch a digest this DNS refuses.",
+		Grounds: "The stop is real and structural: only you hold the sandbox's network policy. No model change, replan or new session can fetch a digest this DNS refuses.",
 		Found:   "every fetch of the ten hosts failed with \"no such host\" — the sandbox's egress allows the Go proxy and npm alone. The weekly car…"}
 	return b.stop(group, name, 5850, t, f, in, up, 31*time.Minute)
 }

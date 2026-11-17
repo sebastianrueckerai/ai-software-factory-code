@@ -1011,3 +1011,16 @@ func TestCloseIssueAsFactoryRefusedWhenARemovalFails(t *testing.T) {
 		t.Fatalf("err = %v, want the refusal to name #6 and carry Forgejo's reason", err)
 	}
 }
+
+// An agent's recommendation meets the guide where the escalate tool files
+// it: a fault refuses the ask with the fault named.
+func TestAnEscalationsRecommendationMeetsTheGuide(t *testing.T) {
+	a := AgentAsk{Kind: AskEscalation, Question: "Which store keeps the snapshots?", Reason: "Both stores fit.", Recommendation: "Keep them in S3; the rung above agrees."}
+	if err := a.validate(); err == nil || !strings.Contains(err.Error(), "recommendation: The text holds a semicolon. Write two sentences.") {
+		t.Errorf("a recommendation with a semicolon = %v, want the fault named", err)
+	}
+	a.Recommendation = "Keep them in S3."
+	if err := a.validate(); err != nil {
+		t.Errorf("a plain recommendation = %v", err)
+	}
+}

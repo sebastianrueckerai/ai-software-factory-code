@@ -402,6 +402,9 @@ func ParseRungAnswer(f CaseFacts, rung int, text string) (RungAnswer, error) {
 	if j.Recommendation.Grounds == nil {
 		return RungAnswer{}, errors.New("the recommendation leaves grounds out")
 	}
+	if faults := GroundsFaults(*j.Recommendation.Grounds); len(faults) > 0 {
+		return RungAnswer{}, fmt.Errorf("the recommendation's grounds: %s", strings.Join(faults, " "))
+	}
 	if enumCheck("action", *j.Recommendation.Action, recommendable(f, rung, *j.Decision)) != nil {
 		if *j.Decision == RungHandUp {
 			return RungAnswer{}, fmt.Errorf("the recommended action %q is not an action for the rungs above: they answer with %s", *j.Recommendation.Action, offeredText(recommendable(f, rung, RungHandUp)))
