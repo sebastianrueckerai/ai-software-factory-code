@@ -245,10 +245,15 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 			}
 		}
 	}
-	var texts []string
+	// the texts a human reads: the factory's own words pass the guide, and
+	// no word of any, a writer's quoted words too, is a forbidden one
+	var texts, whole []string
+	read := func(n *html.Node) {
+		texts, whole = append(texts, textOutside(n, quoted)), append(whole, textOutside(n, func(*html.Node) bool { return false }))
+	}
 	for _, name := range append(slices.Clone(openedProse), "o-line", "pick", "effect", "o-label") {
 		for _, p := range classed(o, name) {
-			texts = append(texts, textOutside(p, quoted))
+			read(p)
 		}
 	}
 	for n := range o.Descendants() {
@@ -257,25 +262,23 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 		}
 		switch n.Data {
 		case "summary", "label", "legend":
-			texts = append(texts, textOutside(n, quoted))
+			read(n)
 		}
-		texts = append(texts, htmlAttr(n, "aria-label"), htmlAttr(n, "title"), htmlAttr(n, "placeholder"))
+		for _, a := range []string{htmlAttr(n, "aria-label"), htmlAttr(n, "title"), htmlAttr(n, "placeholder")} {
+			texts, whole = append(texts, a), append(whole, a)
+		}
 	}
-	texts = slices.DeleteFunc(texts, func(s string) bool { return s == "" })
-	if captured {
-		title := factoryd.CardTitle(*card)
-		texts = slices.DeleteFunc(texts, func(s string) bool {
-			return strings.Contains(s, title) || card.Summary != "" && strings.Contains(s, card.Summary)
-		})
+	drop := func(s string) bool {
+		return s == "" || captured && (strings.Contains(s, factoryd.CardTitle(*card)) || card.Summary != "" && strings.Contains(s, card.Summary))
 	}
-	for _, s := range texts {
+	for _, s := range slices.DeleteFunc(texts, drop) {
 		if faults := writingguide.Lint(s); len(faults) > 0 {
 			t.Errorf("%q: %v", s, faults)
 		}
-		for _, re := range faceForbidden {
-			if m := re.FindString(s); m != "" {
-				t.Errorf("%q names %q", s, m)
-			}
+	}
+	for _, s := range slices.DeleteFunc(whole, drop) {
+		if m := factoryd.ForbiddenWord(s); m != "" {
+			t.Errorf("%q names %q", s, m)
 		}
 	}
 }

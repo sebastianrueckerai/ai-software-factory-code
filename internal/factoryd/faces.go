@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -108,6 +109,43 @@ type AskFace struct {
 	Answers                         []Answer
 	Suggested, SuggestedBy, Grounds string
 	More                            []Answer
+}
+
+// FaceForbidden are the words no face shows: a task id, a hash, a branch,
+// the factory's own nouns, a snake_case name and a gate's step name.
+var FaceForbidden = []*regexp.Regexp{
+	regexp.MustCompile(`\bt-[0-9a-f]{6,}`),
+	regexp.MustCompile(`\b[0-9a-f]{12,}\b`),
+	regexp.MustCompile(`\bcard/\d+`),
+	regexp.MustCompile(`(?i)\b(rungs?|cases?|offers?|premade|slots?)\b`),
+	regexp.MustCompile(`\b[a-z]+_[a-z_]+\b`),
+	regexp.MustCompile(`\b(` + strings.Join([]string{ActivityRunSession, ActivityWaitChecks, ActivityGateReproduction,
+		ActivityGateCriteria, ActivityModelReview, ActivityGateAudit}, "|") + `)\b`),
+}
+
+// filePath is a file's path in a text, with its line: it names the file,
+// none of FaceForbidden.
+var filePath = regexp.MustCompile(`\S*/\S*\.[a-z]+(:[\d-]+)?`)
+
+// ForbiddenWord is the first of FaceForbidden's words s shows outside a
+// file's path, "" for none.
+func ForbiddenWord(s string) string {
+	s = filePath.ReplaceAllString(s, "")
+	for _, re := range FaceForbidden {
+		if m := re.FindString(s); m != "" {
+			return m
+		}
+	}
+	return ""
+}
+
+// plainGrounds is a recommendation's grounds as a face shows them: none
+// when they name one of the factory's own words, so the pick leads alone.
+func plainGrounds(grounds string) string {
+	if ForbiddenWord(grounds) != "" {
+		return ""
+	}
+	return grounds
 }
 
 // RecommendationOf is the recommendation an ask row stores: the action it
@@ -254,14 +292,14 @@ func FaceOf(c Case, f Facts) AskFace {
 		}
 		a := answers[i]
 		answers = slices.Insert(slices.Delete(answers, i, i+1), 0, a)
-		face.Suggested, face.SuggestedBy, face.Grounds = a.Key(), by, grounds
+		face.Suggested, face.SuggestedBy, face.Grounds = a.Key(), by, plainGrounds(grounds)
 		return true
 	}
 	led := lead(f.Recommend.Action, f.Recommend.By, f.Recommend.Grounds)
 	if spec.Suggest != nil {
 		// words that lead no answer, beside a recommendation or alone, are
 		// their writer's view
-		if key, by, grounds := spec.Suggest(f); grounds != "" && by != "" && grounds != face.Grounds && (led || key == "" || !lead(key, by, grounds)) {
+		if key, by, grounds := spec.Suggest(f); grounds != "" && by != "" && grounds != face.Grounds && (led || key == "" || !lead(key, by, grounds)) && plainGrounds(grounds) != "" {
 			face.Story.View = capitalize(by) + "'s view: " + strings.Join(strings.Fields(grounds), " ")
 		}
 	}
