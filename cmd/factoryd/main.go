@@ -470,6 +470,8 @@ func main() {
 	monthAlarm := &factoryd.MonthAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Config: configSource, Current: policyLoader.Current,
 		Timeline: runner.Timeline(), Metrics: metrics, Scrub: scrub}
 	go monthAlarm.Loop(ctx, time.Minute)
+	freezeCards := &factoryd.FreezeCard{Store: store, Forgejo: forgejo, Current: policyLoader.Current, Timeline: runner.Timeline()}
+	go freezeCards.Loop(ctx, time.Minute)
 	go chatBudgetCards.Loop(ctx, time.Minute)
 	ciRuns := &factoryd.CIRuns{Forgejo: forgejo, Owner: own.Repo().Owner, Repo: own.Repo().Name, Token: forgejo.Access(own).Actions, Metrics: metrics, Runs: store}
 	go ciRuns.Run(ctx)
