@@ -618,6 +618,10 @@ type forgejoHub struct {
 	// reported; statusReads are the commits read, in order
 	statuses    map[string]string
 	statusReads []string
+	// mergeBases are the merge bases with main of the fork's commits by
+	// commit, each one main reaches; the compare of an unlisted commit
+	// fails
+	mergeBases map[string]string
 }
 
 func (h *forgejoHub) minted() []string {
@@ -714,6 +718,19 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 				return
 			}
 			fmt.Fprintf(w, `{"commit":{"id":%q}}`, h.branchHead)
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/repo/compare/main...factory-agent:"):
+			head := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/repo/compare/main...factory-agent:")
+			switch base, ok := h.mergeBases[head]; {
+			case !ok:
+				http.Error(w, "failed", http.StatusInternalServerError)
+			case base == head:
+				io.WriteString(w, `{"total_commits":0,"commits":[]}`)
+			default:
+				fmt.Fprintf(w, `{"total_commits":1,"commits":[{"sha":%q,"parents":[{"sha":%q}]}]}`, head, base)
+			}
+		case r.Method == "GET" && r.URL.Path == "/api/v1/repos/sf/repo/commits" && r.URL.Query().Get("not") == "main":
+			// main reaches every merge base: none lies past main
+			io.WriteString(w, `[]`)
 		case r.Method == "DELETE":
 			var id int64
 			fmt.Sscanf(r.URL.Path, "/api/v1/users/factory-agent/tokens/%d", &id)

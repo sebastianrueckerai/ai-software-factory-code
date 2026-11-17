@@ -13,8 +13,10 @@ import (
 )
 
 // A plan card's session that ends without a push may have found its work
-// on main already: the proofs of the criteria the card cites run at
-// main's head, and when every one passes the card closes done. The run is
+// on main already: while the card's branch holds no work main lacks, the
+// proofs of the criteria the card cites run at main's head, and when
+// every one passes the card closes done. An invariant the card cites
+// counts for nothing: it holds before the work as after it. The run is
 // blind: it opens no proof, writes no row and records no event, and its
 // line and its finding name the criteria alone.
 
@@ -36,13 +38,15 @@ type mainOutcome struct {
 }
 
 // ProofsAtMain runs the proofs of the criteria plan card taskID cites at
-// main's head in one runner pod: each cited invariant's suite and each
-// cited criterion's stored or opened proof. A flagged stored proof makes
-// no run, nor does a criterion without a proof. A task no plan filed, the
-// plan's integration card, which closes through the criteria gate, and a
-// card that cites nothing answer ProofsAtMain{}. A pod that ended early
-// leaves the criteria it did not reach no report. A sandbox that cannot
-// start is its line and ProofsAtMain{}, so the card goes on.
+// main's head in one runner pod: each cited criterion's stored or opened
+// proof, no invariant. A flagged stored proof makes no run, nor does a
+// criterion without a proof. A task no plan filed, the plan's integration
+// card, which closes through the criteria gate, a card that cites no
+// criterion but invariants, and a card whose branch holds work main
+// lacks answer ProofsAtMain{}, as does a branch that cannot be read, with
+// its error. A pod that ended early leaves the criteria it did not reach
+// no report. A sandbox that cannot start is its line and ProofsAtMain{},
+// so the card goes on.
 func (r *Runner) ProofsAtMain(ctx context.Context, taskID string) (ProofsAtMain, error) {
 	defer beatUntilDone(ctx, "proofs at main")()
 	t, repo, err := r.task(ctx, taskID)
@@ -53,19 +57,25 @@ func (r *Runner) ProofsAtMain(ctx context.Context, taskID string) (ProofsAtMain,
 	if err != nil || roleOf(p, t.PlanKey) == RoleIntegration {
 		return ProofsAtMain{}, err
 	}
+	rows, err := r.store.PlanProofs(ctx, t.Parent)
+	if err != nil {
+		return ProofsAtMain{}, err
+	}
+	runs := slices.DeleteFunc(gateRuns(p, rows), criterionRun.holdout)
 	ids, err := r.cardCriteria(ctx, t, p)
+	ids = slices.DeleteFunc(ids, func(id string) bool {
+		return slices.ContainsFunc(runs, func(c criterionRun) bool { return c.id == id && c.kind == CriterionInvariant })
+	})
 	if err != nil || len(ids) == 0 {
 		return ProofsAtMain{}, err
 	}
-	rows, err := r.store.PlanProofs(ctx, t.Parent)
-	if err != nil {
+	if ahead, err := r.workAhead(ctx, t); ahead != "" || err != nil {
 		return ProofsAtMain{}, err
 	}
 	head, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
 	if err != nil {
 		return ProofsAtMain{}, err
 	}
-	runs := slices.DeleteFunc(gateRuns(p, rows), criterionRun.holdout)
 	outcomes := map[string]string{}
 	var entries []harness.Proof
 	for _, id := range ids {
@@ -108,6 +118,24 @@ func (r *Runner) ProofsAtMain(ctx context.Context, taskID string) (ProofsAtMain,
 		return ProofsAtMain{Head: head, Findings: []string{"the proof of " + unmet[0] + " is not met at main " + at}}, nil
 	}
 	return ProofsAtMain{Head: head, Findings: []string{"the proofs of " + textutil.AndList(unmet) + " are not met at main " + at}}, nil
+}
+
+// workAhead is the head of card t's branch on the fork while main lacks
+// it, or "" when the fork holds no branch for the card past its base or
+// main holds the branch's head.
+func (r *Runner) workAhead(ctx context.Context, t Task) (head string, err error) {
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return "", err
+	}
+	if head, err = r.branchHead(ctx, t, repo); err != nil || head == "" {
+		return "", err
+	}
+	base, err := r.forgejo.MergeBase(ctx, repo.Owner, repo.Name, r.forgejo.Fork(repo).Owner, head)
+	if err != nil || base == head {
+		return "", err
+	}
+	return head, nil
 }
 
 // runAtMain runs entries at main's head in a sandbox of t's, torn down
