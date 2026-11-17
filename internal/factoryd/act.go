@@ -400,8 +400,9 @@ func CaseLeftToAct(ctx context.Context) bool { left, _ := ctx.Value(caseLeftKey{
 // ask holds none: one that reached the human before the register wrote
 // its faces. It also stores again an agent's question whose stored face no
 // longer fits its caps: a cap that binds after the ask, lifts at its reset
-// or by a raise, or gives way to another, within a pass, unless the card's
-// limits could not be read. A background pass reads the live facts of each.
+// or by a raise, or gives way to another, within a pass, once the facts
+// are read whole (readWhole). A background pass reads the live facts of
+// each.
 func (r *Runner) StoreMissedOffers(ctx context.Context) {
 	tasks, err := r.store.ListTasksByStatus(ctx, "waiting-human")
 	if err != nil {
@@ -428,15 +429,22 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 				log.Printf("offers pass: case %d: %v", c.ID, err)
 				continue
 			}
+			face, err := r.liveFace(ctx, t, c, f)
+			if err != nil {
+				log.Printf("offers pass: case %d: %v", c.ID, err)
+				continue
+			}
 			if question {
-				// a question's face follows its caps both ways, on limits
+				// a question's face follows its caps both ways, on facts
 				// read whole
-				_, read := f.noSession(false, false)
-				if !read || FaceOf(r.fencedChoices(t, c), Facts{CaseFacts: f, Card: t, Recommend: RecommendationOf(ask.Detail)}).Ask == ask.Detail["ask"] {
+				stored, _ := storedFace(ask.Detail)
+				if !f.readWhole() || face.Ask == stored.Ask && slices.Equal(answerKeys(face.Answers), answerKeys(stored.Answers)) {
 					continue
 				}
 			}
-			r.refreshOffers(ctx, t, c, f)
+			if err := r.store.SetCaseFace(ctx, c.ID, FaceKeys(face)); err != nil {
+				log.Printf("task %s: the face of case %d: %v", t.ID, c.ID, err)
+			}
 		}
 	}
 }
@@ -466,14 +474,43 @@ func (r *Runner) refreshOffersOf(ctx context.Context, taskID string, caseID int6
 	}
 }
 
-// refreshOffers stores the face of case c anew on facts f, its
-// recommendation the one its ask stored.
+// refreshOffers stores the face of case c anew on facts f.
 func (r *Runner) refreshOffers(ctx context.Context, t Task, c Case, f CaseFacts) {
-	ask, _ := r.CaseAsk(ctx, c)
-	face := FaceOf(r.fencedChoices(t, c), Facts{CaseFacts: f, Card: t, Recommend: RecommendationOf(ask.Detail)})
-	if err := r.store.SetCaseFace(ctx, c.ID, FaceKeys(face)); err != nil {
+	face, err := r.liveFace(ctx, t, c, f)
+	if err == nil {
+		err = r.store.SetCaseFace(ctx, c.ID, FaceKeys(face))
+	}
+	if err != nil {
 		log.Printf("task %s: the face of case %d: %v", t.ID, c.ID, err)
 	}
+}
+
+// liveFace is case c's face on facts f with the recommendation the rungs
+// left in its steps: the steps are its record, which an ask row only
+// renders, so a face that could not lead it loses it from no later one.
+func (r *Runner) liveFace(ctx context.Context, t Task, c Case, f CaseFacts) (AskFace, error) {
+	steps, err := r.store.CaseSteps(ctx, c.ID)
+	if err != nil {
+		return AskFace{}, err
+	}
+	rec := HandedUpBy(steps, 1, "").recommend(func(s string) string { return r.untrusted(t, s) }, r.scrub)
+	return FaceOf(r.fencedChoices(t, c), Facts{CaseFacts: f, Card: t, Recommend: rec}), nil
+}
+
+// readWhole says f holds every read a question's face weighs: its limits,
+// the card's events and its checks. A face stored on less would lose the
+// draw a missing read keeps off it.
+func (f CaseFacts) readWhole() bool {
+	_, read := f.noSession(false, false)
+	return read && !slices.ContainsFunc(f.Partial, func(p string) bool { return p == "events" || p == "checks" })
+}
+
+func answerKeys(answers []Answer) []string {
+	out := make([]string, len(answers))
+	for i, a := range answers {
+		out[i] = a.Key()
+	}
+	return out
 }
 
 // Proposes says rung 2's answer action at autonomy state is a proposal the

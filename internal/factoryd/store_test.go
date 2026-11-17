@@ -6070,5 +6070,15 @@ func (s *fakeStore) SetCaseFace(_ context.Context, caseID int64, keys map[string
 		s.faces = map[int64]map[string]any{}
 	}
 	s.faces[caseID] = keys
+	// the newest ask row of the case takes the face, as the store's merge
+	for i := len(s.events) - 1; i >= 0; i-- {
+		if e := s.events[i]; e.Kind == EventQuestionAsked && fmt.Sprint(e.Detail["case_id"]) == fmt.Sprint(caseID) {
+			for _, k := range []string{"preselected", "recommended_by", "recommendation"} {
+				delete(e.Detail, k)
+			}
+			maps.Copy(e.Detail, keys)
+			break
+		}
+	}
 	return nil
 }

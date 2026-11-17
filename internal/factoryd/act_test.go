@@ -824,3 +824,77 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 		t.Fatalf("confirmations = %v, want the one standing, the second press recording nothing again", got)
 	}
 }
+
+// A rung's recommendation on an agent's question lives in the case's
+// steps, and the face follows it through a cap: asked with room, the
+// rung's switch of the model leads with its grounds; the session cap binds
+// and the pass stores the cap's face, which cannot lead it; the cap lifts,
+// and the pass stores the question with the rung's pick and its grounds
+// leading again.
+func TestAQuestionKeepsItsRecommendationThroughACap(t *testing.T) {
+	g := newFactsRig(t)
+	ctx := context.Background()
+	q := Case{ID: 7, TaskID: "t1", Kind: CaseAgentEscalate, Status: CaseAtHuman,
+		Facts: map[string]any{"trip": "trip-7", "reason": AgentAsks + "Which store keeps the snapshots?\nWhy: two fit\nRecommendation: SQLite", "choices": []any{"Postgres", "SQLite"}}}
+	g.store.cases = append(g.store.cases, q)
+	g.store.caseSteps = map[int64][]CaseStep{7: {{CaseID: 7, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp, Decision: ActHandover,
+		Grounds: "a stronger model reads the schema", Did: []CaseAction{{Action: ActHandover, Args: map[string]any{"model": "stronger"}, Result: resultRecommended}}}}}
+	card := g.store.tasks["t1"]
+	card.SpentEUR, card.HeldEUR = 1, 0
+	g.store.tasks["t1"] = card
+	f, err := g.r.FactsAtCase(ctx, card, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := f.SessionCap
+	set := func(attempts int) {
+		card := g.store.tasks["t1"]
+		card.Usage.Attempts = attempts
+		g.store.tasks["t1"] = card
+	}
+	row := func() map[string]any {
+		events, _ := g.store.TaskEventsOfKind(ctx, "t1", EventQuestionAsked, 1)
+		return events[0].Detail
+	}
+	set(limit - 1)
+	f, _ = g.r.FactsAtCase(ctx, g.store.tasks["t1"], q)
+	fence := func(s string) string { return g.r.untrusted(card, s) }
+	g.event("t1", factsNow, EventQuestionAsked, FaceRow(q, g.store.tasks["t1"], f, "", HandedUpBy(g.store.caseSteps[7], 2, ""), fence, g.r.scrub))
+	row()["case_id"] = q.ID
+	want := Recommendation{Action: ActHandover, By: "the factory agent", Grounds: "a stronger model reads the schema"}
+	if got := RecommendationOf(row()); got != want {
+		t.Fatalf("asked with room, the row recommends %+v, want %+v", got, want)
+	}
+	set(limit)
+	g.r.StoreMissedOffers(ctx)
+	if got := row()["ask"]; got != fmt.Sprintf("The card used all %d sessions. Allow more, or end the card?", limit) {
+		t.Fatalf("the cap bound: the row asks %v, want the cap's ask", got)
+	}
+	set(limit - 1)
+	g.r.StoreMissedOffers(ctx)
+	if got := RecommendationOf(row()); row()["ask"] != "Which store keeps the snapshots?" || got != want {
+		t.Fatalf("the cap lifted: the row asks %v and recommends %+v, want the question with %+v", row()["ask"], got, want)
+	}
+}
+
+// The pass stores a question's face only on facts read whole: with the
+// card's events or its checks unread, a cap's face would lose the draw
+// that lifts it, and nothing would repair it.
+func TestAQuestionsFaceWaitsForWholeReads(t *testing.T) {
+	f := CaseFacts{Kind: CaseAgentEscalate, Attempts: 3, SessionCap: 3, AgentTimeS: 300, AgentTimeCapS: 7200, SessionLeastS: 300, LeftEUR: 1, FloorEUR: 0.3}
+	if !f.readWhole() {
+		t.Error("facts read whole read as partial")
+	}
+	for _, partial := range []string{"events", "checks", "floor"} {
+		g := f
+		g.Partial = []string{partial}
+		if g.readWhole() {
+			t.Errorf("with %s unread the facts read as whole", partial)
+		}
+	}
+	g := f
+	g.Partial = []string{"siblings"}
+	if !g.readWhole() {
+		t.Error("an unread plan's siblings keep a question's face from its store")
+	}
+}
