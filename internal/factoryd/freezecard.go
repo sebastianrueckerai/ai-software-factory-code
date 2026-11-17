@@ -61,6 +61,10 @@ type FreezeCardStore interface {
 	InsertIntakeEvent(context.Context, IntakeEvent) (int64, error)
 	IntakeEvents(context.Context, string) ([]IntakeEvent, error)
 	ConfirmFactoryClose(context.Context, string, int64) error
+	// CloseFreezeCard closes the class's open freeze card's row at once,
+	// no five-minute grace, and answers the row it closed; ok is false —
+	// and nothing changes — when no open card stands.
+	CloseFreezeCard(ctx context.Context, repository, class string) (Task, bool, error)
 }
 
 // FreezeCard is the watcher in the month alarm's cap-card shape: the
@@ -95,6 +99,7 @@ type freezeClass struct {
 	frozenAt  time.Time
 	resumedAt time.Time
 	spoke     bool
+	closed    bool // the retry press closed the card; a later arm reopens it
 }
 
 // Loop checks every interval until ctx ends.
@@ -176,6 +181,33 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		return err
 	}
 	body := freezeCardBody(ev, count, w.now())
+	if st.closed {
+		// the press closed the card; a first dated refusal re-arms the
+		// hold and updates the same card — no second card, no ask
+		if err := w.Store.SetObjective(ctx, st.taskID, freezeCardTitle(st.class)+"\n\n"+body); err != nil {
+			return err
+		}
+		if err := w.Store.TransitionTask(ctx, st.taskID, []string{"done"}, "waiting-human"); err != nil {
+			return err
+		}
+		repo, err := SplitRepo(st.repo)
+		if err != nil {
+			return err
+		}
+		if err := w.Forgejo.ReopenIssue(ctx, repo.Owner, repo.Name, st.issue); err != nil {
+			return err
+		}
+		if _, err := w.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, st.issue,
+			fmt.Sprintf("factoryd: the hold re-armed after the retry with a later reset (%s). %d cards of the class wait.", ev.Reset, count)); err != nil {
+			log.Printf("freeze card: comment the re-arm on issue #%d: %v", st.issue, err)
+		}
+		st.closed = false
+		st.reset = ev.Reset
+		st.frozenAt = w.now()
+		st.resumedAt, st.spoke = time.Time{}, false
+		log.Printf("freeze card: the hold re-armed after the retry, %s's card #%d holds again", st.class, st.issue)
+		return nil
+	}
 	if st.taskID == "" {
 		t, err := w.file(ctx, st, ev, body)
 		if err != nil {
@@ -210,6 +242,9 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 // the held time on its face. The retry press's at-once close is the
 // freeze-close-on-retry card's item.
 func (w *FreezeCard) resumed(ctx context.Context, st *freezeClass, ev FreezeEvent) error {
+	if st.closed {
+		return nil // the press closed it; success keeps it closed
+	}
 	if st.taskID == "" {
 		t, issue, ok, err := w.findCard(ctx, st)
 		if err != nil {
@@ -235,12 +270,48 @@ func (w *FreezeCard) resumed(ctx context.Context, st *freezeClass, ev FreezeEven
 	return nil
 }
 
+// CloseOnRetry closes the class's open freeze card at once, no
+// five-minute grace: the retry press — the chat action and the card
+// button — calls it after it clears the hold. It matches the class's own
+// card only, by the whole-line Class marker, and is idempotent when no
+// open card stands. The class's memory keeps the closed card, so a first
+// dated refusal after the press re-arms the hold and updates the same
+// card, while a first success keeps it closed on class_resumed.
+func (w *FreezeCard) CloseOnRetry(ctx context.Context, repository, class string) error {
+	t, ok, err := w.Store.CloseFreezeCard(ctx, repository, class)
+	if err != nil || !ok {
+		return err
+	}
+	msg := fmt.Sprintf("The retry press cleared the %s class's hold: the freeze card closes at once.", class)
+	if err := closeIssueAsFactory(ctx, w.Store, w.Forgejo, t, "factoryd: "+msg); err != nil {
+		return err
+	}
+	if st := w.classes[repository+"/"+class]; st != nil {
+		st.closed = true
+	}
+	log.Printf("freeze card: the retry press closed %s's card #%d at once", class, t.IssueNumber)
+	return nil
+}
+
+// objectiveHasClassLine answers whether objective carries the class's
+// marker as a whole line, so a close matches the class's own card only —
+// the big class's press does not close bigv2's card.
+func objectiveHasClassLine(objective, class string) bool {
+	want := freezeClassMarker(class)
+	for _, line := range strings.Split(objective, "\n") {
+		if strings.TrimSpace(line) == want {
+			return true
+		}
+	}
+	return false
+}
+
 // tick runs the classes' clocks: a card past its resume hold closes
 // itself; a card whose freeze outgrew waits.provider_limit speaks once.
 func (w *FreezeCard) tick(ctx context.Context) error {
 	now := w.now()
 	for key, st := range w.classes {
-		if st.taskID == "" {
+		if st.taskID == "" || st.closed {
 			continue
 		}
 		switch {
@@ -461,4 +532,27 @@ func (s *PGStore) FrozenCards(ctx context.Context, repository, class string) (in
 	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM tasks
 		WHERE repository = $1 AND model_alias = $2 AND status IN ('running', 'waiting', 'queued')`, repository, class).Scan(&n)
 	return n, err
+}
+
+// CloseFreezeCard closes the class's open freeze card's row at once, no
+// five-minute grace: the retry press's close. It matches the class's own
+// card only — source provider_freeze, the repository, and the whole-line
+// Class marker on the objective — and answers ok false, changing
+// nothing, when no open card stands, which makes a second press quiet.
+func (s *PGStore) CloseFreezeCard(ctx context.Context, repository, class string) (Task, bool, error) {
+	open, err := s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks
+		WHERE repository = $1 AND source = $2 AND status = 'waiting-human' ORDER BY id`, repository, SourceFreezeCard)
+	if err != nil {
+		return Task{}, false, err
+	}
+	for _, t := range open {
+		if !objectiveHasClassLine(t.Objective, class) {
+			continue
+		}
+		if err := s.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
+			return Task{}, false, err
+		}
+		return t, true, nil
+	}
+	return Task{}, false, nil
 }
