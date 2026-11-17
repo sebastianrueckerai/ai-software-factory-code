@@ -1706,25 +1706,52 @@ func (r *Runner) lastToolRefusal(ctx context.Context, taskID string) (tool, refu
 	return last.Tool, last.Err, true
 }
 
-// RequestInfo asks the issue's author for what the agent needs:
-// state waiting-poster, mirrored on the issue, and a comment with the
-// request that mentions the author and the project's notify list (the
-// project's approvers when it is empty), whose Forgejo bells ring; an
-// info_request alert. It returns the comment's id: only later comments
-// answer it.
+// RequestInfo asks the issue's author for what the agent needs: a comment
+// with the request that mentions the author and the project's notify list
+// (the project's approvers when it is empty), whose Forgejo bells ring;
+// its anchor; an info_request alert; then state waiting-poster, mirrored
+// on the issue, and the request's ask on the board. It returns the
+// comment's id: only later comments answer it. A retry of the activity
+// finds its own anchor by its mark and posts nothing again.
 func (r *Runner) RequestInfo(ctx context.Context, taskID, reason string) (int64, error) {
+	lock := r.requestLock(taskID)
+	lock.Lock()
+	defer lock.Unlock()
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return 0, err
 	}
-	if t.Status == "waiting-poster" {
-		// a retry: a request whose anchor stands is not posted again
-		if a, err := r.newestInfoRequest(ctx, taskID); err != nil {
+	mark := requestMark(ctx)
+	a, err := r.markedRequest(ctx, taskID, mark)
+	if err != nil {
+		return 0, err
+	}
+	if a == nil {
+		notify := r.cfg.Policy().ApproversOf(t.Repository)
+		if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil {
 			return 0, err
-		} else if a != nil && a.Body == reason {
-			return a.CommentID, r.askRequest(ctx, t, *a)
+		} else if ok {
+			notify = p.NotifyOrApprovers(notify)
 		}
-	} else {
+		id, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, infoRequestComment(t, r.untrusted(t, reason), notify))
+		if err != nil {
+			return 0, err
+		}
+		r.record(ctx, taskID, "info_requested", map[string]any{"reason": reason, "comment": id, "notify": notify})
+		// the durable anchor Reconcile rebuilds the wait from and the
+		// board's ask is written from
+		a = &IntakeEvent{TaskID: taskID, Kind: IntakeInfoRequest, Author: "factoryd", Body: reason, CommentID: id, DeliveryID: mark, CreatedAt: time.Now()}
+		if _, err := r.store.InsertIntakeEvent(ctx, *a); err != nil {
+			return 0, fmt.Errorf("record information request comment %d: %w", id, err)
+		}
+		if _, err := r.store.InsertAlert(ctx, Alert{Kind: AlertInfoRequest, Source: "agent", TaskID: taskID,
+			Detail: map[string]any{"comment": id, "reason": textutil.Truncate(reason, 2000), "notify": notify}}); err != nil {
+			log.Printf("task %s: record the info_request alert: %v", taskID, err)
+		}
+	}
+	// the card waits once its anchor stands, so the minute pass, which
+	// asks a waiting card's newest anchor, never meets an earlier request's
+	if t.Status != "waiting-poster" {
 		if err := r.store.TransitionTask(ctx, taskID, []string{"running", "in-review"}, "waiting-poster"); err != nil {
 			return 0, terminalError("task %s is %s, cannot wait for the issue's author: %v", taskID, t.Status, err)
 		}
@@ -1732,28 +1759,42 @@ func (r *Runner) RequestInfo(ctx context.Context, taskID, reason string) (int64,
 		pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
 		t.Status = "waiting-poster"
 	}
-	notify := r.cfg.Policy().ApproversOf(t.Repository)
-	if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil {
-		return 0, err
-	} else if ok {
-		notify = p.NotifyOrApprovers(notify)
+	return a.CommentID, r.askRequest(ctx, t, *a)
+}
+
+// requestMark names this request across its activity's retries: its run
+// and activity; "" outside an activity.
+func requestMark(ctx context.Context) string {
+	if !activity.IsActivity(ctx) {
+		return ""
 	}
-	id, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, infoRequestComment(t, r.untrusted(t, reason), notify))
+	info := activity.GetInfo(ctx)
+	return "info-request " + info.WorkflowExecution.RunID + "/" + info.ActivityID
+}
+
+// markedRequest is the anchor of task taskID's request mark, nil for none
+// or for no mark.
+func (r *Runner) markedRequest(ctx context.Context, taskID, mark string) (*IntakeEvent, error) {
+	if mark == "" {
+		return nil, nil
+	}
+	events, err := r.store.IntakeEvents(ctx, taskID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	r.record(ctx, taskID, "info_requested", map[string]any{"reason": reason, "comment": id, "notify": notify})
-	// the durable anchor Reconcile rebuilds the wait from and the board's
-	// ask is written from
-	a := IntakeEvent{TaskID: taskID, Kind: IntakeInfoRequest, Author: "factoryd", Body: reason, CommentID: id, CreatedAt: time.Now()}
-	if _, err := r.store.InsertIntakeEvent(ctx, a); err != nil {
-		return 0, fmt.Errorf("record information request comment %d: %w", id, err)
+	i := slices.IndexFunc(events, func(e IntakeEvent) bool { return e.Kind == IntakeInfoRequest && e.DeliveryID == mark })
+	if i < 0 {
+		return nil, nil
 	}
-	if _, err := r.store.InsertAlert(ctx, Alert{Kind: AlertInfoRequest, Source: "agent", TaskID: taskID,
-		Detail: map[string]any{"comment": id, "reason": textutil.Truncate(reason, 2000), "notify": notify}}); err != nil {
-		log.Printf("task %s: record the info_request alert: %v", taskID, err)
-	}
-	return id, r.askRequest(ctx, t, a)
+	return &events[i], nil
+}
+
+// requestLock is task id's request lock: RequestInfo holds it from its
+// first read to its ask, and the minute pass asks no request while it is
+// held.
+func (r *Runner) requestLock(id string) *sync.Mutex {
+	lock, _ := r.requestLocks.LoadOrStore(id, &sync.Mutex{})
+	return lock.(*sync.Mutex)
 }
 
 // newestInfoRequest is the anchor of task taskID's newest information

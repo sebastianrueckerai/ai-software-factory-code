@@ -1151,8 +1151,8 @@ func TestAnInformationRequestAsksTheHuman(t *testing.T) {
 
 // A card that waits on its issue's author without the request's case, one
 // that asked before the board did or whose ask failed to write, gets the
-// case from the request's anchor at the minute pass, once; a retry of the
-// request posts nothing again and asks no second time.
+// case from the request's anchor at the minute pass, once, and none while
+// the request itself still runs.
 func TestAWaitOnTheAuthorWithoutItsCaseGetsItAtTheMinutePass(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
@@ -1182,15 +1182,55 @@ func TestAWaitOnTheAuthorWithoutItsCaseGetsItAtTheMinutePass(t *testing.T) {
 			t.Fatalf("%s: %d steps asking %q, want the one ask of %q", when, len(steps), face.Ask, question)
 		}
 	}
+	lock := g.r.requestLock("t1")
+	lock.Lock()
+	g.r.StoreMissedOffers(ctx)
+	if cs, _ := g.s.CasesOf(ctx, "t1"); len(cs) != 0 {
+		t.Fatalf("while the request runs, the pass opened %+v", cs)
+	}
+	lock.Unlock()
 	g.r.StoreMissedOffers(ctx)
 	asked("after one pass")
 	g.r.StoreMissedOffers(ctx)
 	asked("after another pass")
-	id, err := g.r.RequestInfo(ctx, "t1", reason)
-	if err != nil || id != 41 || len(g.forge.comments) != 0 {
-		t.Fatalf("the retry = %d, %v and posted %d comments; want comment 41 and nothing posted", id, err, len(g.forge.comments))
+}
+
+// A request knows itself across its activity's retries by the mark its
+// anchor stores, not by its words: an earlier request of the same words is
+// another request. A retry after the comment failed posts the request and
+// asks it; a retry after it finished posts nothing and asks nothing again.
+func TestARequestsRetryKnowsItsOwnRequest(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	question := "Which Hetzner location does the load test's server use, fsn1 or nbg1?"
+	reason := AgentAsk{Kind: AskInfo, Question: question, Tried: "both regions' price lists", Needs: "the location the server runs in"}.reason()
+	if _, err := g.s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: IntakeInfoRequest, Author: "factoryd", Body: reason, CommentID: 41}); err != nil {
+		t.Fatal(err)
 	}
-	asked("after the retry")
+	g.forge.failComment = true
+	if _, err := execActivity(t, g.r, ActivityRequestInfo, "t1", reason); err == nil {
+		t.Fatal("the request posted while its comment failed")
+	}
+	for _, attempt := range []string{"the retry", "a retry after it finished"} {
+		v, err := execActivity(t, g.r, ActivityRequestInfo, "t1", reason)
+		var id int64
+		if err == nil {
+			err = v.Get(&id)
+		}
+		if err != nil || id != 501 || len(g.forge.comments) != 1 {
+			t.Fatalf("%s = %d, %v, with %d comments posted; want comment 501, posted once", attempt, id, err, len(g.forge.comments))
+		}
+		cs, err := g.s.CasesOf(ctx, "t1")
+		if err != nil || len(cs) != 1 || cs[0].CommentID != 501 || cs[0].Status != CaseAtHuman {
+			t.Fatalf("%s: cases %+v, %v; want the request's one case at the human by comment 501", attempt, cs, err)
+		}
+		if steps, _ := g.s.CaseSteps(ctx, cs[0].ID); len(steps) != 1 {
+			t.Fatalf("%s: %d steps, want the one ask", attempt, len(steps))
+		}
+		if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "waiting-poster" {
+			t.Fatalf("%s: the card is %s, want waiting-poster", attempt, task.Status)
+		}
+	}
 }
 
 // The project agent answers the request in the chat: its press posts the

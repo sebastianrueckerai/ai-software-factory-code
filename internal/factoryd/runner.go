@@ -207,6 +207,10 @@ type Runner struct {
 	// failed card's replacement once at a time, however many presses
 	// race it (one factoryd replica)
 	retryLocks sync.Map
+	// requestLocks holds a *sync.Mutex by task id, so a card's request
+	// for information and the minute pass ask it once between them (one
+	// factoryd replica)
+	requestLocks sync.Map
 	// now and sleep are the runner's clock (clock, pause); nil is the
 	// wall clock
 	now   func() time.Time

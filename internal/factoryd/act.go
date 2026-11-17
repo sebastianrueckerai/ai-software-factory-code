@@ -417,10 +417,16 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 		return
 	}
 	for _, t := range posters {
+		// a request still running asks itself
+		lock := r.requestLock(t.ID)
+		if !lock.TryLock() {
+			continue
+		}
 		a, err := r.newestInfoRequest(ctx, t.ID)
 		if err == nil && a != nil {
 			err = r.askRequest(ctx, t, *a)
 		}
+		lock.Unlock()
 		if err != nil {
 			log.Printf("offers pass: task %s: the information request's ask: %v", t.ID, err)
 		}
