@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -449,12 +450,39 @@ func TestBriefWriterBriefsACaseOnTheJudgmentBudget(t *testing.T) {
 }
 
 // The writer's prompt asks for the two story lines with the ask form of the
-// guide, and forbids naming a button.
+// guide and each line's bound, and forbids naming a button.
 func TestCaseBriefPromptWritesTheStoryAndNamesNoButton(t *testing.T) {
-	for _, want := range []string{`{"happened": "...", "left": "..."}`, "at most 160 characters", "Name no button, answer or action", writingguide.For(writingguide.JobAsk)} {
+	for _, want := range []string{`{"happened": "...", "left": "..."}`, "happened: one sentence, at most 160 characters", "left: one sentence, at most 87 characters",
+		"Name no button, answer or action", writingguide.For(writingguide.JobAsk)} {
 		if !strings.Contains(caseBriefPrompt, want) {
 			t.Errorf("the prompt lacks %q", want)
 		}
+	}
+}
+
+// The writer's left line fits beside the longest left line the card
+// composes, so the face joins the two whole: 999 open findings, failed
+// checks, both gates unchecked and a price of 9999.99 EUR make 152 runes,
+// and 152 + 1 + 87 is the story's bound of 240. A longer composed clause
+// breaks this test, not a face.
+func TestTheWritersLeftFitsBesideTheLongestComposedLeft(t *testing.T) {
+	var ids []string
+	for i := range 999 {
+		ids = append(ids, FindingID(fmt.Sprint(i)))
+	}
+	f := Facts{CaseFacts: CaseFacts{Attempts: 9, Head: "h2", Checks: "red", Findings: ids, ReviewFindings: ids,
+		LastSession: &LastSessionFacts{CostEUR: 9999.99, Pushed: true, Audit: ids[:1]}}}
+	longest := leftLine(f)
+	if n := utf8.RuneCountInString(longest); n != 152 || n+1+writerLeftMax > storyMax {
+		t.Errorf("the longest composed left %q has %d runes; with the writer's %d and a space it passes %d", longest, n, writerLeftMax, storyMax)
+	}
+	left := strings.Repeat("a", 87)
+	if _, got, err := parseCaseBrief(fmt.Sprintf(`{"happened": "The check-in found a fault.", "left": %q}`, left)); err != nil || got != left {
+		t.Errorf("an 87-rune left = %q, %v; want it taken", got, err)
+	}
+	if _, _, err := parseCaseBrief(fmt.Sprintf(`{"happened": "The check-in found a fault.", "left": %q}`, left+"a")); err == nil ||
+		!strings.Contains(err.Error(), "left has 88 characters, at most 87") {
+		t.Errorf("an 88-rune left = %v, want the door's refusal naming its bound", err)
 	}
 }
 

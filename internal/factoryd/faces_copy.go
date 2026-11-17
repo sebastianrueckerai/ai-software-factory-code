@@ -801,44 +801,19 @@ func imageWaitLine(f Facts) string {
 }
 
 // writerLines is story s with the lines case c's writer wrote in words
-// where it wrote them: what stopped the card after the money line, and
-// what is left of the work before the findings and the price, each as
-// much as its line holds. CaseFace alone adds them, to the story the
-// register composed.
+// where it wrote them, whole: what stopped the card after the money line,
+// and what is left of the work before the findings and the price. CaseFace
+// alone adds them, to the story the register composed.
 func writerLines(s Story, c Case) Story {
 	// a line the story holds already, as a row stored it, stands once
 	if h := line(c.Brief); h != "" && !strings.Contains(s.Happened, h) {
 		s.Happened = both(firstSentence(s.Happened), h)
 	}
 	if l := line(c.BriefDetail); l != "" && !strings.Contains(s.Left, l) {
-		if s.Left == "" {
-			s.Left = l
-		} else {
-			// the writer's words give way to the findings and the price
-			s.Left = strings.TrimSpace(clipWords(l, storyMax-utf8.RuneCountInString(s.Left)-1) + " " + s.Left)
-		}
+		// the writer's door bounds l to fit (writerLeftMax)
+		s.Left = strings.TrimSpace(l + " " + s.Left)
 	}
 	return s
-}
-
-// clipWords is s cut after a word to at most n runes, marked "…" when cut;
-// "" when no word fits.
-func clipWords(s string, n int) string {
-	if utf8.RuneCountInString(s) <= n {
-		return s
-	}
-	var out string
-	for _, w := range strings.Fields(s) {
-		next := strings.TrimSpace(out + " " + w)
-		if utf8.RuneCountInString(next)+1 > n {
-			break
-		}
-		out = next
-	}
-	if out == "" {
-		return ""
-	}
-	return out + "…"
 }
 
 func spentLine(f Facts) string {

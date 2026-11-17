@@ -1,10 +1,12 @@
 package factoryd_test
 
 import (
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -273,24 +275,24 @@ func TestTheWritersWordsStandBesideTheNumbers(t *testing.T) {
 	}
 }
 
-// The writer's words give way to the numbers: a 160-rune left line beside
-// twelve open findings, failed checks, two unchecked gates and the price is
-// cut at a word, and the composed line stands whole. A row stored with the
-// writer's lines in it, as the base stored them, shows each line once.
-func TestTheWritersWordsGiveWayToTheNumbers(t *testing.T) {
+// The writer's left line, within its bound, stands whole beside the
+// longest left line the card composes: 87 runes, a space and 152 make the
+// story's 240. A row stored with the writer's lines in it, as the base
+// stored them, shows each line once.
+func TestTheWritersLeftStandsWholeBesideTheNumbers(t *testing.T) {
 	var ids []string
-	for i := range 12 {
-		ids = append(ids, factoryd.FindingID(string(rune('a'+i))))
+	for i := range 999 {
+		ids = append(ids, factoryd.FindingID(fmt.Sprint(i)))
 	}
-	c := factoryd.Case{Kind: factoryd.CaseCheckinHuman,
-		BriefDetail: "Where the nightly snapshots live is still open: the plan must say whether they stay in Postgres or move to the object store before the next export runs tonight."}
-	f := factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseCheckinHuman, Attempts: 2, BudgetEUR: 30, SpentEUR: 14, LeftEUR: 16, FloorEUR: 0.3,
-		CeilingEUR: 60, Head: "h2", Checks: "red", Findings: ids, ReviewFindings: ids,
-		LastSession: &factoryd.LastSessionFacts{CostEUR: 12.34, Pushed: true, Audit: ids[:1]}},
+	l := "Where the nightly snapshots live is open: Postgres, or the object store the plan names."
+	c := factoryd.Case{Kind: factoryd.CaseCheckinHuman, BriefDetail: l}
+	f := factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseCheckinHuman, Attempts: 9, BudgetEUR: 20000, SpentEUR: 14, LeftEUR: 19986, FloorEUR: 0.3,
+		CeilingEUR: 40000, Head: "h2", Checks: "red", Findings: ids, ReviewFindings: ids,
+		LastSession: &factoryd.LastSessionFacts{CostEUR: 9999.99, Pushed: true, Audit: ids[:1]}},
 		Card: factoryd.Task{Kind: "agent", Objective: "Keep the nightly snapshots"}}
 	got := factoryd.CaseFace(c, f.Card, factoryd.CaseAsk{Detail: factoryd.FaceKeys(factoryd.FaceOf(c, f))}).Story.Left
-	if want := "Where the nightly snapshots live is still open: the plan must say whether they stay in… " +
-		"12 findings are open, and the checks failed. The review and the audit have not checked the newest change yet. One more session costs about 12.34 EUR."; got != want {
+	want := l + " 999 findings are open, and the checks failed. The review and the audit have not checked the newest change yet. One more session costs about 9999.99 EUR."
+	if got != want || utf8.RuneCountInString(l) != 87 || utf8.RuneCountInString(got) != 240 {
 		t.Errorf("left\n %q\nwant\n %q", got, want)
 	}
 	h, l := "The check found that the card keeps the snapshots in Postgres.", "Where the snapshots live is still open."
