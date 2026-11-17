@@ -318,6 +318,29 @@ func TestStartReadsTheCardsBriefFromTheGateway(t *testing.T) {
 	}
 }
 
+// A gateway that holds the brief's read past briefWait fails the start at
+// the brief step, as a service that may answer later does: the session
+// does not hang on it.
+func TestStartBoundsTheBriefsRead(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git binary")
+	}
+	messagePortFree(t)
+	old := briefWait
+	t.Cleanup(func() { briefWait = old })
+	briefWait = 50 * time.Millisecond
+	readyToStart(t)
+	hung := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	t.Cleanup(hung.Close)
+	t.Setenv("GATEWAY_URL", hung.URL)
+	s, err := start(context.Background(), nolog, seedCheckinRepo(t), nil, func(workerEnv) egressProbe { return closedSandbox(t) })
+	s.closeTelemetry()
+	s.stopMessages()
+	if res := startFailed(err); res.Step != "brief" || !res.Transient || !strings.Contains(res.Summary, "context deadline exceeded") {
+		t.Fatalf("start = %+v, want a transient failure at the brief step past its bound", res)
+	}
+}
+
 // A card's brief past the bound is cut on a character, and the brief says
 // what the bound left out among factoryd's notes.
 func TestFitCardCutsTheBriefPastItsBound(t *testing.T) {

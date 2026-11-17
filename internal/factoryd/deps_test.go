@@ -455,7 +455,7 @@ func TestDependenciesNamesTheFirstFailedOne(t *testing.T) {
 	replace := func(id string, issue int64) {
 		t.Helper()
 		n := Task{ID: RetryID(id), Kind: "agent", Status: "queued", Track: "direct", Repository: "sf/repo", IssueNumber: issue}
-		if ok, err := store.ReplaceFailedCard(ctx, id, n); !ok || err != nil {
+		if ok, err := store.ReplaceCard(ctx, id, "failed", n); !ok || err != nil {
 			t.Fatalf("replace %s = %v, %v", id, ok, err)
 		}
 	}
@@ -875,7 +875,7 @@ func TestPGStoreRetryCard(t *testing.T) {
 		return Task{ID: id, Status: "queued", Track: policy.TrackDirect, BudgetEUR: 1, Repository: "sf/r", Kind: "agent",
 			Source: SourcePlan, Parent: "t-plan", PlanKey: key}
 	}
-	if ok, err := s.ReplaceFailedCard(ctx, "t-a", card("t-a2", "links")); !ok || err != nil {
+	if ok, err := s.ReplaceCard(ctx, "t-a", "failed", card("t-a2", "links")); !ok || err != nil {
 		t.Fatalf("first retry = %v, %v; want done", ok, err)
 	}
 	if a, _, _ := s.Task(ctx, "t-a"); a.PlanKey != "" || a.Status != "failed" {
@@ -885,7 +885,7 @@ func TestPGStoreRetryCard(t *testing.T) {
 		t.Fatalf("replacement = %s with key %q", got.Status, got.PlanKey)
 	}
 	for _, again := range []struct{ of, id, key string }{{"t-a", "t-a3", "links"}, {"t-f", "t-f2", "foundation"}} {
-		if ok, err := s.ReplaceFailedCard(ctx, again.of, card(again.id, again.key)); ok || err != nil {
+		if ok, err := s.ReplaceCard(ctx, again.of, "failed", card(again.id, again.key)); ok || err != nil {
 			t.Fatalf("retry of %s = %v, %v; want refused", again.of, ok, err)
 		}
 		if _, found, _ := s.Task(ctx, again.id); found {
@@ -936,9 +936,9 @@ type cancelOnReplace struct {
 	cancel context.CancelFunc
 }
 
-func (s cancelOnReplace) ReplaceFailedCard(ctx context.Context, id string, t Task) (bool, error) {
+func (s cancelOnReplace) ReplaceCard(ctx context.Context, id, status string, t Task) (bool, error) {
 	defer s.cancel()
-	return s.fakeStore.ReplaceFailedCard(ctx, id, t)
+	return s.fakeStore.ReplaceCard(ctx, id, status, t)
 }
 
 // A retry whose request is cancelled after its transaction still files the

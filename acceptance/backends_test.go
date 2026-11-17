@@ -1223,7 +1223,7 @@ func (s *acceptanceStore) Dependents(ctx context.Context, id string) ([]factoryd
 	return out, nil
 }
 
-func (s *acceptanceStore) ReplaceFailedCard(context.Context, string, factoryd.Task) (bool, error) {
+func (s *acceptanceStore) ReplaceCard(context.Context, string, string, factoryd.Task) (bool, error) {
 	return false, nil
 }
 

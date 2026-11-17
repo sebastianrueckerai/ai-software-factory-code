@@ -2785,6 +2785,26 @@ func TestChildBriefCarriesItsRole(t *testing.T) {
 	}
 }
 
+// A plan's card whose key the plan's newest revision no longer holds still
+// builds its part of the plan: its session ends with the feature guide.
+func TestAPlanCardItsPlanNoLongerHoldsKeepsTheFeatureGuide(t *testing.T) {
+	ctx := context.Background()
+	card := Task{ID: "t1", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec", Repository: "sf/r", SHA: "abc123",
+		IssueNumber: 4, Source: SourcePlan, Parent: "t-plan", PlanKey: "dropped", Author: "sebastian", AuthorWriter: true,
+		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "Stats\n\nCount the clicks."}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, card, kube, &fakeObjectStore{})
+	store.CreateTask(ctx, Task{ID: "t-plan", Kind: "agent", Status: "running", Repository: "sf/r", IssueNumber: 1, Objective: "Link shortener", Track: policy.TrackPlan})
+	raw, sha, _ := planSHA(testPlan())
+	store.AddPlanRevision(ctx, "t-plan", raw, sha)
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil, resultLine(true, "built")); err != nil {
+		t.Fatal(err)
+	}
+	if env := podEnv(kube.podAt(0)); env["CARD_ROLE"] != RoleFeature || env["DIRECTORIES"] != "" {
+		t.Fatalf("CARD_ROLE %q DIRECTORIES %q, want feature and none", env["CARD_ROLE"], env["DIRECTORIES"])
+	}
+}
+
 // A carry card: its issue's Carries line names a pull request whose head
 // the clone container supplies as branch pull/<n>, and the session's facts
 // say so and why — the sandbox holds no git credential, so the agent

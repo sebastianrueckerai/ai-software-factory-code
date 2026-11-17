@@ -768,12 +768,13 @@ type Store interface {
 	// Dependencies are the cards task id depends on, each with its
 	// status, those not done first.
 	Dependencies(ctx context.Context, id string) ([]Dependency, error)
-	// ReplaceFailedCard puts card t in failed card id's place in one
+	// ReplaceCard puts card t in the place of card id, in status, in one
 	// transaction: id lets go of its plan key, which t holds, if any; t is
 	// inserted with every dependency of id, and every task waiting on id
-	// waits on t. False, and nothing changed, when id is no failed card
-	// holding t's key (none outside a plan) or t exists already.
-	ReplaceFailedCard(ctx context.Context, id string, t Task) (bool, error)
+	// waits on t. A retry replaces a failed card, a hand-over a card
+	// waiting on a human. False, and nothing changed, when id is no card in
+	// status holding t's key (none outside a plan) or t exists already.
+	ReplaceCard(ctx context.Context, id, status string, t Task) (bool, error)
 	// CreateSuccessor inserts t, the successor of card id, in one
 	// transaction with every dependency of id, and every task waiting on id
 	// waits on t.
@@ -1150,7 +1151,7 @@ func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
 
 // InsertTask, the package helper, inserts t through db, onConflict the
 // insert's conflict clause, so the pool's writers and a retry's
-// transaction (ReplaceFailedCard) reuse it. An issue a live card of the
+// transaction (ReplaceCard) reuse it. An issue a live card of the
 // same repository still holds is refused, naming the holder (roadmap 298).
 func InsertTask(ctx context.Context, db interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
@@ -1653,8 +1654,7 @@ func (s *PGStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.D
 }
 
 // ReleaseHandover deletes the card's hand-over claim, the failed filing's,
-// so a retry can claim it again. ReplaceFailedCard (deps.go) is its sole
-// caller; a task with no claim deletes nothing and still succeeds.
+// so a retry can claim it again. Go (deps.go) is its sole caller; a task with no claim deletes nothing and still succeeds.
 func (s *PGStore) ReleaseHandover(ctx context.Context, taskID string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM intake_events WHERE task_id = $1 AND kind = 'handover'`, taskID)
 	return err

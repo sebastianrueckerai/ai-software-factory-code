@@ -296,7 +296,9 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 		Budget:     factoryd.TokenBudget{AnswerTokens: s.env.answerTokens, HeadroomTokens: s.env.headroomTokens},
 		Steps:      s.env.steps,
 	}
-	card, err := s.oc.CardText(ctx)
+	briefCtx, cancel := context.WithTimeout(ctx, briefWait)
+	card, err := s.oc.CardText(briefCtx)
+	cancel()
 	if err != nil {
 		return s, startError{"brief", transient{err}}
 	}
@@ -355,6 +357,11 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 	}
 	return s, nil
 }
+
+// briefWait bounds the read of the card's brief: past the 150 s the
+// gateway's call to factoryd may take, so a gateway that holds the read
+// fails the start as a service that may answer later does.
+var briefWait = 160 * time.Second
 
 // maxCard bounds the card's brief in the session's text, as an
 // environment variable once bounded the issue's text: the rest is the

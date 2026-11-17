@@ -250,11 +250,18 @@ func planOfStore(ctx context.Context, store interface {
 	if err != nil || !ok {
 		return Plan{}, 0, cmp.Or(err, error(terminalError("plan %s of card %s has no revision", parent, child)))
 	}
+	p, err := revisionPlan(rev)
+	return p, rev.Revision, err
+}
+
+// revisionPlan is the plan revision rev holds; a revision that does not
+// read as one is a terminal error.
+func revisionPlan(rev PlanRevision) (Plan, error) {
 	var p Plan
 	if err := json.Unmarshal(rev.Plan, &p); err != nil {
-		return Plan{}, 0, terminalError("plan %s revision %d: %v", parent, rev.Revision, err)
+		return Plan{}, terminalError("plan %s revision %d: %v", rev.TaskID, rev.Revision, err)
 	}
-	return p, rev.Revision, nil
+	return p, nil
 }
 
 // DecideCriterion records an approver's decision on one criterion of plan

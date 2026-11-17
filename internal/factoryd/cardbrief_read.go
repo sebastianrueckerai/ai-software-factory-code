@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 )
 
@@ -77,9 +78,9 @@ func (s *PGStore) CardBrief(ctx context.Context, taskID string) (CardBrief, erro
 }
 
 // ReadCardBrief is card id's brief, every store's CardBrief: the stored
-// text, the cards it depends on, and the plan its parent chain reaches
-// (cardPlan) at its newest revision, each card of the plan read through
-// the successors it was cut into.
+// text, the cards it depends on that the store holds, and the plan its
+// parent chain reaches (cardPlan) at its newest revision, each card of
+// the plan read through the successors it was cut into.
 func ReadCardBrief(ctx context.Context, s BriefReads, id string) (CardBrief, error) {
 	t, ok, err := s.Task(ctx, id)
 	switch {
@@ -94,9 +95,12 @@ func ReadCardBrief(ctx context.Context, s BriefReads, id string) (CardBrief, err
 		return CardBrief{}, fmt.Errorf("the dependencies of %s: %w", id, err)
 	}
 	for _, d := range deps {
-		dep, _, err := s.Task(ctx, d.TaskID)
+		dep, found, err := s.Task(ctx, d.TaskID)
 		if err != nil {
 			return CardBrief{}, fmt.Errorf("dependency %s of %s: %w", d.TaskID, id, err)
+		}
+		if !found {
+			continue
 		}
 		ref := CardRef{Issue: int(d.Issue), Title: CardTitle(dep), State: d.Status}
 		b.DependsOn = append(b.DependsOn, ref)
@@ -161,15 +165,15 @@ func ReadCardBrief(ctx context.Context, s BriefReads, id string) (CardBrief, err
 // cardPlan is the plan card t belongs to, none (a zero plan task) for a
 // card of no plan: the first task up its parent chain that holds a plan,
 // and that plan at its newest revision with the revision's number. So a
-// successor, a retry's replacement and a card a plan's card delegated
-// belong to the plan their card does. A report task is a step of its
-// parent card, whose guide carries what its job reads of a plan, and
-// belongs to none; nor does a plan itself.
+// successor, a retry's replacement, a hand-over and a card a plan's card
+// delegated belong to the plan their card does. A report task is a step
+// of its parent card, whose guide carries what its job reads of a plan,
+// and belongs to none; nor does a plan itself, whatever its parent.
 func cardPlan(ctx context.Context, s interface {
 	Task(ctx context.Context, id string) (Task, bool, error)
 	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
 }, t Task) (plan Task, p Plan, revision int, err error) {
-	if t.Report() {
+	if t.Report() || t.Track == policy.TrackPlan {
 		return Task{}, Plan{}, 0, nil
 	}
 	seen := map[string]bool{t.ID: true}
@@ -179,14 +183,32 @@ func cardPlan(ctx context.Context, s interface {
 		if plan, ok, err = s.Task(ctx, id); err != nil || !ok {
 			return Task{}, Plan{}, 0, err
 		}
-		if _, has, err := s.PlanRevision(ctx, id, 0); err != nil {
+		rev, has, err := s.PlanRevision(ctx, id, 0)
+		if err != nil {
 			return Task{}, Plan{}, 0, err
-		} else if has {
-			p, revision, err = planOfStore(ctx, s, id, t.ID)
-			return plan, p, revision, err
+		}
+		if has {
+			p, err = revisionPlan(rev)
+			return plan, p, rev.Revision, err
 		}
 	}
 	return Task{}, Plan{}, 0, nil
+}
+
+// planCardOf is card t's card in the plan its parent chain reaches, and
+// that plan; ok false for a card that is none of a plan's cards.
+func planCardOf(ctx context.Context, s interface {
+	Task(ctx context.Context, id string) (Task, bool, error)
+	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
+}, t Task) (c PlanCard, p Plan, ok bool, err error) {
+	if _, p, _, err = cardPlan(ctx, s, t); err != nil {
+		return PlanCard{}, Plan{}, false, err
+	}
+	i := slices.IndexFunc(p.Cards, func(c PlanCard) bool { return c.Key == t.PlanKey })
+	if t.PlanKey == "" || i < 0 {
+		return PlanCard{}, p, false, nil
+	}
+	return p.Cards[i], p, true, nil
 }
 
 // storedBrief is t's brief as the store holds it: its title, why line and

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -156,8 +157,9 @@ func TestCardBriefOfAPlanChild(t *testing.T) {
 
 // A card that continues a plan's card belongs to the same plan, at the
 // same place: the successor of a plan's card, the replacement of its
-// retry. A plan's card for a human is never handed to the factory: its
-// files sit under a workflow directory, which no agent may push.
+// retry, and the agent card a human handed a plan's card for a human to,
+// which takes its place in the plan as the retry's replacement does: its
+// key, its dependencies and its dependents.
 func TestSuccessorKeepsThePlan(t *testing.T) {
 	ctx := context.Background()
 	// the plan as card t-a (#5, links-api) of testPlan holds it; its own
@@ -171,7 +173,10 @@ func TestSuccessorKeepsThePlan(t *testing.T) {
 	}
 	check := func(name string, store *fakeStore, id string) {
 		t.Helper()
-		c := store.tasks[id]
+		c, ok := store.tasks[id]
+		if !ok {
+			t.Fatalf("%s: no card %s", name, id)
+		}
 		got, err := store.CardBrief(ctx, id)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -194,27 +199,123 @@ func TestSuccessorKeepsThePlan(t *testing.T) {
 	check("the successor", store, id)
 
 	r, store, _, _, _ = newRetryRig(t)
-	n, err := r.RetryCard(ctx, "t-a", "alice")
+	if _, err := r.RetryCard(ctx, "t-a", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	check("the retry's replacement", store, RetryID("t-a"))
+
+	// links-api as a card for a human: its project ran no agents when it
+	// was queued, and runs them again
+	r, store, _, _ = routineRunner(t, routineTree(t))
+	const repo = "sf/ai-software-factory-code"
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Repository: repo, IssueNumber: 1, Objective: "Link shortener\n\nBuild a link shortener."}
+	card := func(id string, n int64, status, key, objective string) Task {
+		return Task{ID: id, Kind: "agent", Status: status, Track: policy.TrackDirect, Repository: repo, IssueNumber: n, Source: SourcePlan, Parent: "t-plan",
+			PlanKey: key, RiskClass: "standard", BudgetEUR: 2, Size: "small", Objective: objective}
+	}
+	human := card("t-a", 5, "waiting-human", "links-api", retryCard)
+	human.Kind, human.Track = "human", ""
+	for _, c := range []Task{plan, card("t-f", 4, "done", "foundation", "Foundation"), human, card("t-b", 6, "waiting-deps", "redirects", "Redirects")} {
+		if err := store.CreateTask(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, sha, err := planSHA(testPlan())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range store.tasks {
-		if c.IssueNumber == n && c.ID != "t-a" {
-			check("the retry's replacement", store, c.ID)
-		}
-	}
-
-	r, store, _, _ = routineRunner(t, routineTree(t))
-	if err := store.CreateTask(ctx, Task{ID: "t-wf", Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-code", IssueNumber: 7,
-		Source: SourcePlan, Parent: "t-plan", PlanKey: "ci-workflow", RiskClass: "standard", Objective: "Pin the runner image\n\nChange .forgejo/workflows/ci.yml."}); err != nil {
+	if _, err := store.AddPlanRevision(ctx, "t-plan", raw, sha); err != nil {
 		t.Fatal(err)
 	}
-	var no ErrNoGo
-	if _, err := r.Go(ctx, "t-wf", "sebastian"); !errors.As(err, &no) || !strings.Contains(err.Error(), "workflow directory") {
-		t.Fatalf("Go of a plan's card for a human = %v, want the refusal that names the workflow directory", err)
+	store.AddTaskDeps(ctx, "t-a", []string{"t-f"})
+	store.AddTaskDeps(ctx, "t-b", []string{"t-a"})
+	n, err := r.Go(ctx, "t-a", "sebastian")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(store.tasks) != 1 {
-		t.Fatalf("the refused hand-over filed a card: %d tasks", len(store.tasks))
+	var agent Task
+	for _, c := range store.tasks {
+		if c.IssueNumber == n {
+			agent = c
+		}
+	}
+	check("the hand-over", store, agent.ID)
+	if agent.Source != SourcePlan || agent.Size != "small" || store.tasks["t-a"].PlanKey != "" {
+		t.Errorf("the agent card %+v, the human card's key %q: want the plan's card of links-api in its place", agent, store.tasks["t-a"].PlanKey)
+	}
+	if !slices.Equal(store.deps[agent.ID], []string{"t-f"}) || !slices.Equal(store.deps["t-b"], []string{agent.ID}) {
+		t.Errorf("edges: %s waits on %q, t-b on %q; want t-f and %s", agent.ID, store.deps[agent.ID], store.deps["t-b"], agent.ID)
+	}
+}
+
+// A card whose every file sits under a workflow directory goes to no
+// agent: the worker's push refuses such changes. The go refuses it, a
+// plan's card and a human's own issue alike, and files nothing.
+func TestGoRefusesAWorkflowOnlyCard(t *testing.T) {
+	ctx := context.Background()
+	const repo = "sf/ai-software-factory-code"
+	p := testPlan()
+	p.Cards = append(p.Cards, PlanCard{Key: "ci", Role: RoleFeature, Title: "Pin the runner image", Brief: "Pin it.", Directories: []string{".forgejo/workflows"}, Size: "small"})
+	for name, c := range map[string]Task{
+		"a plan's card": {ID: "t-wf", Kind: "human", Status: "waiting-human", Repository: repo, IssueNumber: 7, Source: SourcePlan, Parent: "t-plan", PlanKey: "ci",
+			RiskClass: "standard", Objective: "Pin the runner image\n\nPin it."},
+		"a human's issue": {ID: "t-wf", Kind: "human", Status: "waiting-human", Repository: repo, IssueNumber: 7, Source: SourceWebhook,
+			RiskClass: "standard", Objective: "Pin the runner image\n\nPin it.\nDirectories: .forgejo/workflows"},
+	} {
+		r, store, _, _ := routineRunner(t, routineTree(t))
+		for _, k := range []Task{{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Repository: repo, IssueNumber: 1, Objective: "Link shortener"}, c} {
+			if err := store.CreateTask(ctx, k); err != nil {
+				t.Fatal(err)
+			}
+		}
+		raw, sha, err := planSHA(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.AddPlanRevision(ctx, "t-plan", raw, sha); err != nil {
+			t.Fatal(err)
+		}
+		var no ErrNoGo
+		want := "Card #7 changes only files under a workflow directory (.forgejo/workflows), and the factory's push refuses changes to workflow files: make the change yourself and press Done."
+		if _, err := r.Go(ctx, "t-wf", "sebastian"); !errors.As(err, &no) || err.Error() != want {
+			t.Errorf("%s: Go = %v, want %q", name, err, want)
+		}
+		if len(store.tasks) != 2 {
+			t.Errorf("%s: the refused hand-over filed a card: %d tasks", name, len(store.tasks))
+		}
+	}
+}
+
+// A dependency the store no longer holds is no card to name: the brief
+// leaves it out, never naming a card without a title.
+func TestCardBriefLeavesOutAGoneDependency(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	for _, c := range []Task{{ID: "t-1", Track: "direct", Objective: "Tidy the docs"}, {ID: "t-0", Track: "direct", IssueNumber: 3, Status: "done", Objective: "Write the docs"}} {
+		if err := store.CreateTask(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store.AddTaskDeps(ctx, "t-1", []string{"t-0", "t-gone"})
+	b, err := store.CardBrief(ctx, "t-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []CardRef{{Issue: 3, Title: "Write the docs", State: "done"}}; !reflect.DeepEqual(b.DependsOn, want) {
+		t.Fatalf("depends on %+v, want %+v", b.DependsOn, want)
+	}
+}
+
+// A plan is no card of a plan, whatever its parent: a delegated card that
+// became a plan belongs to none.
+func TestAPlanBelongsToNoPlan(t *testing.T) {
+	ctx := context.Background()
+	_, store, _, _, _ := newRetryRig(t)
+	if err := store.CreateTask(ctx, Task{ID: "t-sub", Track: policy.TrackPlan, Parent: "t-a", Objective: "Split the links API"}); err != nil {
+		t.Fatal(err)
+	}
+	if plan, p, _, err := cardPlan(ctx, store, store.tasks["t-sub"]); plan.ID != "" || p.Cards != nil || err != nil {
+		t.Fatalf("cardPlan of a plan = %q, %+v, %v; want none", plan.ID, p, err)
 	}
 }
 

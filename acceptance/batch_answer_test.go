@@ -1001,7 +1001,7 @@ func (s *accBatchStore) WaitingDependents(ctx context.Context, id string) ([]str
 func (s *accBatchStore) Dependents(ctx context.Context, id string) ([]factoryd.Dependency, error) {
 	panic("unused")
 }
-func (s *accBatchStore) ReplaceFailedCard(ctx context.Context, id string, t factoryd.Task) (bool, error) {
+func (s *accBatchStore) ReplaceCard(ctx context.Context, id, status string, t factoryd.Task) (bool, error) {
 	panic("unused")
 }
 func (s *accBatchStore) CreateSuccessor(ctx context.Context, id string, t factoryd.Task) error {
