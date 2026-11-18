@@ -315,10 +315,10 @@ type SupervisorModel struct {
 	HTTP       *http.Client // nil = http.DefaultClient
 }
 
-// chatInputLead opens every JSON-mode call's user message: OpenAI refuses
+// ChatInputLead opens every JSON-mode call's user message: OpenAI refuses
 // JSON mode when no input message names JSON, and an input's own JSON
 // does not always hold the word.
-const chatInputLead = "The input, as JSON:\n"
+const ChatInputLead = "The input, as JSON:\n"
 
 // chatPayload builds one JSON-mode call's body.
 func chatPayload(alias, system string, user []byte, limit int) ([]byte, error) {
@@ -328,7 +328,7 @@ func chatPayload(alias, system string, user []byte, limit int) ([]byte, error) {
 		"response_format": map[string]string{"type": "json_object"},
 		"messages": []map[string]string{
 			{"role": "system", "content": system},
-			{"role": "user", "content": chatInputLead + string(user)},
+			{"role": "user", "content": ChatInputLead + string(user)},
 		},
 	})
 }
@@ -393,9 +393,13 @@ func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose strin
 			Error struct {
 				Message string `json:"message"`
 			} `json:"error"`
+			Reset string `json:"reset"`
 		}
 		if d := res.Header.Get(gateway.HeaderDecision); d != "" && json.Unmarshal(body, &refused) == nil {
-			return "", "", fmt.Errorf("gateway %s: %w", d, &policy.Refusal{Decision: d, Reason: refused.Error.Message})
+			// the named limit's reset (server.go's writeProviderLimit) is
+			// what a consumer holds its retry to
+			until, _ := time.Parse(time.RFC3339, refused.Reset)
+			return "", "", fmt.Errorf("gateway %s: %w", d, &policy.Refusal{Decision: d, Reason: refused.Error.Message, Until: until})
 		}
 		return "", "", fmt.Errorf("status %d: %s", res.StatusCode, textutil.Truncate(string(body), 300))
 	}

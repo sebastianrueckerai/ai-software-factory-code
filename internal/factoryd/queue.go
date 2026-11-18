@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The merge queue (stage11-design.md 1.4, merge: {queue: project}): one
@@ -20,12 +22,15 @@ import (
 // approval stage; the oldest entry of a project holds the turn. The
 // project is the task's repository, as an approval request's is. The turn
 // merges main in and runs the checks of a head that moved. A task leaves
-// the queue while its approval waits for a human, and an approval enters
-// it again at its end: that turn merges main in once more and holds
-// through the merge (versionQueueWaits). A failed merge keeps the turn
-// through its retries, and a refused merge or exhausted retries leave the
-// queue until the next approval. A run from before holds its turn through
-// the approval wait and the merge.
+// the queue while it waits for a human, its approval or any other wait
+// (versionHumanWaitQueue), and every merge happens at a turn it holds: an
+// approval, or a merge after another wait, enters it again first, and
+// that turn merges main in once more and holds through the merge
+// (versionQueueWaits, holdTurn). A failed merge keeps the turn through its
+// retries, and a refused merge or exhausted retries leave the queue until
+// the next approval. A run from before human-wait-queue holds its turn
+// through a gate's wait, and one from before queue-waits through the
+// approval wait and the merge too.
 
 // SignalQueueTurn wakes a task waiting in the merge queue: the entry ahead
 // of it left.
@@ -84,6 +89,47 @@ func (s *PGStore) QueueHead(ctx context.Context, project string) (string, bool, 
 	return id, err == nil, err
 }
 
+// QueuePlace is a task's place in its project's merge queue: the entries
+// ahead of it, and the task, with its issue, that holds the turn.
+type QueuePlace struct {
+	Ahead     int
+	HeadTask  string
+	HeadIssue int64
+}
+
+// MergeQueuePlaces answers the place of every task in any project's merge
+// queue, as EnterQueue gives the turn: ordered as QueueHead orders them,
+// except that a paused queue puts its pause's own cards first and holds
+// every other task behind them.
+func (s *PGStore) MergeQueuePlaces(ctx context.Context) (map[string]QueuePlace, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT r.task_id, r.ahead, r.head, COALESCE(h.issue_number, 0) FROM (
+		SELECT q.task_id,
+			CASE WHEN q.is_pause THEN 0
+			     ELSE row_number() OVER (PARTITION BY q.project, q.is_pause ORDER BY q.entered_at, q.task_id) - 1 + q.paused::int END AS ahead,
+			CASE WHEN q.paused THEN q.pause_head ELSE first_value(q.task_id) OVER (PARTITION BY q.project ORDER BY q.entered_at, q.task_id) END AS head
+		FROM (SELECT mq.project, mq.task_id, mq.entered_at, p.project IS NOT NULL AS paused,
+			COALESCE(mq.task_id IN (p.fix_task, p.revert_task), false) AS is_pause,
+			CASE WHEN EXISTS (SELECT 1 FROM merge_queue f WHERE f.task_id = p.fix_task) THEN p.fix_task
+			     WHEN EXISTS (SELECT 1 FROM merge_queue f WHERE f.task_id = p.revert_task) THEN p.revert_task
+			     WHEN p.fix_task <> '' THEN p.fix_task ELSE COALESCE(p.revert_task, '') END AS pause_head
+			FROM merge_queue mq LEFT JOIN queue_pauses p ON p.project = mq.project) q) r
+		LEFT JOIN tasks h ON h.id = r.head`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]QueuePlace{}
+	for rows.Next() {
+		var id string
+		var p QueuePlace
+		if err := rows.Scan(&id, &p.Ahead, &p.HeadTask, &p.HeadIssue); err != nil {
+			return nil, err
+		}
+		out[id] = p
+	}
+	return out, rows.Err()
+}
+
 // LeaveQueue takes taskID out of its project's merge queue; left: it was
 // in one.
 func (s *PGStore) LeaveQueue(ctx context.Context, taskID string) (project string, left bool, err error) {
@@ -137,7 +183,7 @@ func (r *Runner) EnterQueue(ctx context.Context, taskID string) (int, error) {
 		if t.Gate == GateMergeQueue {
 			return 1, nil
 		}
-		return 1, r.store.SetGate(ctx, t.ID, GateMergeQueue, r.clock())
+		return 1, r.store.SetGate(ctx, t.ID, GateMergeQueue, r.Clock())
 	}
 	spot, err := r.store.EnterQueue(ctx, t.Repository, t.ID)
 	if err != nil {
@@ -236,7 +282,8 @@ func (r *Runner) SyncWithMain(ctx context.Context, taskID string, pr int64, from
 	if st.MergeBase != main {
 		err := r.forgejo.UpdatePullRequest(ctx, repo.Owner, repo.Name, pr)
 		if errors.Is(err, ErrUpdateConflict) {
-			res.Conflict = err.Error()
+			res.Conflict = textutil.Truncate(r.Scrub.String(err.Error()), 500)
+			r.record(ctx, t.ID, stepMergeConflict, map[string]any{"pr": pr, "commit": from, "refusal": res.Conflict})
 			return res, nil
 		}
 		if err != nil {
@@ -384,7 +431,9 @@ func (t *taskRun) turn(head string) (sync SyncResult, v verdict, stop bool) {
 		if err := workflow.ExecuteActivity(t.short, ActivityEnterQueue, t.taskID).Get(t.ctx, &ahead); err != nil {
 			return sync, verdict{final: "failed", reason: "enter the merge queue: " + errMessage(err)}, true
 		}
-		if ahead == 0 {
+		t.inTurn = ahead == 0
+		if t.inTurn {
+			t.turnLost = false
 			break
 		}
 		timerCtx, cancel := workflow.WithCancel(t.ctx)
@@ -421,6 +470,37 @@ func (t *taskRun) turn(head string) (sync SyncResult, v verdict, stop bool) {
 		return sync, conflictVerdict(sync.Conflict), true
 	}
 	return sync, verdict{}, false
+}
+
+// holdTurn takes the turn again for a merge after the card left the
+// queue for a human (turnLost), as an approval's turn does: head is the
+// one to merge, commit when the turn did not move it, the synced head on
+// the cheap turn. A head that moved past the gated change, or merged main
+// in on a file of the pull request (synced), stops with v. A card that
+// holds its turn merges commit.
+func (t *taskRun) holdTurn(commit string) (head string, v verdict, stop bool) {
+	if !t.turnLost || !t.queued() {
+		return commit, verdict{}, false
+	}
+	sync, v, stop := t.turn(commit)
+	if stop {
+		return commit, v, true
+	}
+	if sync.To == commit {
+		return commit, verdict{}, false
+	}
+	if v, again := t.movedPast(sync.To, t.gatedChange); again {
+		return commit, v, true
+	}
+	if len(sync.Overlap) > 0 {
+		return commit, verdict{synced: true, head: sync.To}, true
+	}
+	// the cheap turn: main's new commits share no file with the pull
+	// request, so Forgejo keeps an approval on the head the sync made, and
+	// the checks that held for commit hold
+	t.checkedHead = cmp.Or(t.checkedHead, commit)
+	t.syncedHead, t.head = sync.To, sync.To
+	return sync.To, verdict{}, false
 }
 
 // queueTurn takes the task's turn (turn) and runs the checks stage again
@@ -473,6 +553,10 @@ const leftQueue = "the checks are still red after the merge queue's turns"
 // approvalWaitLeft is why a card leaves the merge queue when its approval
 // waits for a human (versionQueueWaits).
 const approvalWaitLeft = "the approval waits for a human"
+
+// humanWaitLeft is why a card at its turn leaves the merge queue when any
+// other wait for a human begins (versionHumanWaitQueue).
+const humanWaitLeft = "the card waits for a human"
 
 // approvalWithdrawn is the note of a merge approval request the
 // re-stage of its red head withdrew.
@@ -610,9 +694,26 @@ func (r *Runner) WithdrawApproval(ctx context.Context, taskID string) error {
 }
 
 // leaveQueue takes the task out of its project's merge queue on its way
-// out of the turn; a failure is logged: Finish leaves the queue too.
+// out of the turn; a failure is logged: Finish leaves the queue too, and
+// a card still in its turn leaves at its next wait for a human.
 func (t *taskRun) leaveQueue(why string) {
 	if err := workflow.ExecuteActivity(t.short, ActivityLeaveQueue, t.taskID, why).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("leave the merge queue", "task", t.taskID, "error", err)
+		return
 	}
+	t.inTurn = false
+}
+
+// leaveForHuman takes the card out of its merge queue while it waits for
+// a human. At versionHumanWaitQueue a card that left its turn already
+// leaves nothing, and its merge takes the turn again first (holdTurn).
+func (t *taskRun) leaveForHuman(why string) {
+	if t.humanWaitQueue < versionHumanWaitQueue {
+		t.leaveQueue(why)
+		return
+	}
+	if t.inTurn {
+		t.leaveQueue(why)
+	}
+	t.turnLost = true
 }

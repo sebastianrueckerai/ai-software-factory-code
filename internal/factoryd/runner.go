@@ -136,9 +136,9 @@ type Runner struct {
 	objects    ObjectStore
 	timeline   *Timeline
 	supervisor *SupervisorModel
-	// checkin is the check-in's model client, wired like the supervisor's
+	// Checkin is the check-in's model client, wired like the supervisor's
 	// (the gateway under the task's account); a test scripts it
-	checkin checkinChat
+	Checkin checkinChat
 	// ChatBudget files the one money case when the judgment budget is
 	// spent; nil files none
 	ChatBudget *ChatBudgetCards
@@ -154,7 +154,7 @@ type Runner struct {
 	gateRun   string
 	// criteriaGate replaces GateCriteria in the criteria gate pass; a
 	// test scripts it
-	criteriaGate func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error)
+	criteriaGate func(ctx context.Context, taskID string, pr int64, commit, checked string) (CriteriaResult, error)
 	// endpointWait bounds how long the worker's message endpoint is given
 	// to come up for a brief, record or proofs list delivery; a test
 	// shortens it
@@ -185,6 +185,9 @@ type Runner struct {
 	liveMu  sync.Mutex
 	live    map[string]*liveSession // by task: its running session
 	sandbox map[string][2]string    // by task: namespace and name of its running sandbox pod
+	// starting is when the task's session began its start check-in, by
+	// task, until the check-in ends
+	starting map[string]time.Time
 	// filed is what a running session's file_plan tool stored, by task:
 	// its answer, taken by the loop that ran the session
 	filed map[string]PlanResult
@@ -257,6 +260,20 @@ type sessionWorker struct {
 
 // ErrNoLiveSession: the task has no session running in this factoryd.
 var ErrNoLiveSession = errors.New("the task has no running session")
+
+// ErrSessionStarting: the task's session is in its start check-in, which
+// decides whether its agent starts.
+var ErrSessionStarting = errors.New("the task's session is in its start check-in")
+
+// SessionStartingError is ErrSessionStarting with the time the start
+// check-in began.
+type SessionStartingError struct{ Since time.Time }
+
+func (e *SessionStartingError) Error() string {
+	return ErrSessionStarting.Error() + " since " + e.Since.UTC().Format(time.RFC3339)
+}
+
+func (e *SessionStartingError) Unwrap() error { return ErrSessionStarting }
 
 // errReplanAsked: the task's running session took a replan ask already,
 // or one is on its way, and stops for it.
@@ -351,6 +368,25 @@ func (r *Runner) trackPod(taskID, ns, name string) (untrack func()) {
 	}
 }
 
+// startCheckin marks the task's session as in its start check-in, which
+// MessageSession names, until the returned func.
+func (r *Runner) startCheckin(taskID string) (done func()) {
+	r.liveMu.Lock()
+	defer r.liveMu.Unlock()
+	if r.starting == nil {
+		r.starting = map[string]time.Time{}
+	}
+	since := time.Now()
+	r.starting[taskID] = since
+	return func() {
+		r.liveMu.Lock()
+		defer r.liveMu.Unlock()
+		if r.starting[taskID].Equal(since) {
+			delete(r.starting, taskID)
+		}
+	}
+}
+
 func (r *Runner) sandboxPod(taskID string) (ns, name string, ok bool) {
 	r.liveMu.Lock()
 	defer r.liveMu.Unlock()
@@ -440,7 +476,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 		cfg.Timeline = &Timeline{Objects: objects, Metrics: cfg.Metrics, Events: store, Store: store}
 	}
 	runner := &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
-		checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
+		Checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
 		objects: objects, timeline: cfg.Timeline, grace: workerTerminationGrace, askMargin: 5 * time.Second, stopWait: workerTerminationGrace + 5*time.Second, cheapCap: cheapAttemptCap,
 		startPoll: 2 * time.Second, configGrace: configErrorGrace, Scrub: redact.New(), checksMargin: checksPollMargin}
 	return runner, nil
@@ -563,10 +599,10 @@ type sessionSpec struct {
 	planTrack bool
 	// facts is factoryd's FACTS line for the brief
 	facts string
-	// agentTime and checkIn are the task's resolved values (policy.Time,
-	// via TaskConfig for every session kind, RunSession's and
-	// reportSession's alike): supervisorConfig's WallClockCap and
-	// CheckIn, and the session's deadline.
+	// agentTime is RunSession's SessionInput.AgentTime, the card's whole
+	// agent time, and reportSession's the class's time less its reserve
+	// (reportTime); checkIn is TaskConfig's. They are supervisorConfig's
+	// WallClockCap and CheckIn, and the session's deadline.
 	agentTime, checkIn time.Duration
 	// checkinExtra is the time the workflow added to the session's activity
 	// for the check-in that opens it: the deadline moves out by what the
@@ -833,7 +869,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		})
 		if s.checkInAsk != nil {
 			var stop bool
+			done := r.startCheckin(t.ID)
 			out.checkIn, stop = r.checkinBlock(ctx, t, s, ns, podName, workerStop, deadline, parentRecord)
+			done()
 			if stop {
 				return out, nil
 			}
@@ -916,7 +954,22 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			out.overBound = fmt.Sprintf("%s %s at %s", overBoundNote, taskBranch(t), s.startRef)
 		}
 	}()
-	watch := newLimitWatch(s.policy.Limits, s.planner, time.Now(), time.Until(deadline))
+	// the line bound the worker holds is the LINE_BOUND workerPodSpec gave
+	// it, read back from a pod a stopped factoryd left running: the row
+	// the retry read may hold a raise that landed meanwhile. One that
+	// cannot be read is 0, so the first tick hands the worker the card's.
+	held := EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage)
+	if live != nil {
+		env, err := r.kube.PodEnv(ctx, ns, podName, workerContainer)
+		if err == nil {
+			held, err = strconv.Atoi(env["LINE_BOUND"])
+		}
+		if err != nil {
+			held = 0
+			log.Printf("task %s: session %s: read the line bound its pod holds: %s", t.ID, s.id, r.scrub(err.Error()))
+		}
+	}
+	watch := newLimitWatch(s.policy.Limits, s.planner, time.Now(), time.Until(deadline), held)
 	digest := newDigestBuilder(time.Now())
 	// messages: the guidance this session's delivered messages carried
 	var messages []string
@@ -925,8 +978,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	defer cancelLog()
 	// the worker asks for its push token once its agent is dead; the log
 	// follower answers at once, as the session loop may be waiting on a
-	// supervisor call, and re-asks cover a failed answer
-	var pushToken string
+	// supervisor call, and re-asks cover a failed answer. The ask's
+	// ordinal keys its mint: one token per ask, fresh names on re-asks
+	// after a refused push.
+	minted := map[int]string{}
 	answer := func(line []byte) {
 		var env struct {
 			Push  *harness.PushRequest `json:"push"`
@@ -940,7 +995,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			if !r.holds(sessCtx, t.ID, s.owner) {
 				return
 			}
-			if err := r.answerPush(sessCtx, t, s, ns, podName, &pushToken); err != nil {
+			if err := r.answerPush(sessCtx, t, s, ns, podName, minted, *env.Push); err != nil {
 				log.Printf("task %s: push token for %s: %v", t.ID, env.Push.Commit, err)
 			}
 		case env.Event != nil && env.Event.Kind == harness.EventPushFailed && strings.Contains(detailString(*env.Event, "error"), ErrPushOverBound.Error()):
@@ -1096,6 +1151,21 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if !stopAt.IsZero() {
 			grace = min(grace, time.Until(stopAt.Add(r.stopWait)))
 		}
+		// take is the stop's taking of the session's work when the
+		// worker's own end push did not land: its head on the outcome,
+		// else the unpushed work said in the open (takeStopWork)
+		take := func() {
+			if out.result != nil || out.superseded {
+				return
+			}
+			landed := r.takeStopWork(sessCtx, t, s, ns, podName, workerStop, time.Unix(0, podStopped.Load()))
+			if landed.head != "" {
+				out.wip = landed.head
+				out.overBound = fmt.Sprintf("%s %s at %s", stopTakenNote, taskBranch(t), landed.head)
+			} else if landed.unpushed != "" {
+				out.overBound = stopUnpushed + landed.unpushed
+			}
+		}
 		timeout := time.After(grace)
 		for {
 			select {
@@ -1103,10 +1173,12 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				return
 			case <-timeout:
 				out.noResult = fmt.Sprintf("the stopped worker did not report within %s", grace.Round(time.Second))
+				take()
 				return
 			case line, ok := <-lines:
 				if !ok {
 					out.noResult = ended("the stopped worker exited without a result")
+					take()
 					return
 				}
 				if _, done := read(line); done {
@@ -1214,7 +1286,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			lines, started := sup.CardLines(), sup.started
 			go func() {
 				defer close(answered)
-				d, ck, ride = r.checkinLive(callCtx, t, s, ns, podName, recorder, trip, slices.Clone(messages), workerStop, deadline, lines, supCfg.SizeLines, started, wip)
+				d, ck, ride = r.checkinLive(callCtx, t, s, ns, podName, recorder, trip, slices.Clone(messages), workerStop, deadline, lines, started, wip)
 			}()
 			for answering := true; answering; {
 				select {
@@ -1437,7 +1509,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	if err != nil {
 		log.Printf("task %s: the check-in's chat task: %s", t.ID, r.scrub(err.Error()))
 		rec := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id, ParentSession: s.parent, Moment: ask.Moment,
-			Decision: CheckHandover, Reason: checkinRefusedReason + r.scrub(err.Error())}
+			Decision: CheckHandover, Reason: CheckinRefusedReason + r.scrub(err.Error())}
 		brief("")
 		return &CheckInOutcome{Decision: CheckHandover, Record: rec}, false
 	}
@@ -1446,9 +1518,13 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		if ask.Gates != nil {
 			lines = ask.Gates.Policy.Lines
 		}
-		bound := EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage)
-		ask.Pace = r.pace(ctx, t, s, lines, bound, time.Now(), deadline)
-		ask.CostState = r.costState(ctx, t, limits.GateReserve())
+		if t.PRNumber > 0 {
+			tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
+			if err != nil {
+				log.Printf("task %s: the check-in's merge conflict: %s", t.ID, r.scrub(err.Error()))
+			}
+			ask.Conflict = standingConflict(tl, s.startRef)
+		}
 		var parent []byte
 		if s.parent != "" {
 			if rec, err := parentRecord(); err == nil {
@@ -1459,10 +1535,14 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 				}
 			}
 		}
-		tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, parent: parent,
-			facts: checkinFacts(t, s, wipOutcome{}), ask: &ask}
-		out := r.runCheckin(ctx, callTask, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
-			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, s.pastCheckin(deadline.Add(s.checkinExtra))))
+		tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, parent: parent, ask: &ask}
+		out := r.judged(ctx, t, s, &ask, eurLeft, func(eurLeft float64) CheckInOutcome {
+			ask.Pace, ask.CostState = r.pace(ctx, t, s, lines, time.Now(), deadline), r.costState(ctx, t, limits.GateReserve())
+			row, now := r.cardNow(ctx, t, s)
+			tools.facts = checkinFacts(row, now, wipOutcome{})
+			return r.runCheckin(ctx, callTask, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.Checkin, tools,
+				limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, s.pastCheckin(deadline.Add(s.checkinExtra))))
+		})
 		if out.Record != nil {
 			out.Record.Session = s.id
 		}
@@ -1502,19 +1582,62 @@ func startCheckinTime(limits policy.Limits, deadline time.Time) time.Duration {
 	return max(0, min(limits.CheckinTimeCap(), time.Until(deadline).Round(time.Second)))
 }
 
-// pace states where the card stands for a check-in: the spend from a fresh
-// read of the task, the agent time of the earlier sessions plus this one's.
-// A report session has no card bound and no session count: nil.
-func (r *Runner) pace(ctx context.Context, t Task, s sessionSpec, lines, bound int, started, deadline time.Time) *Pace {
+// pace states where the card stands for a check-in, from a fresh read of
+// its row (cardNow): the spend, the line bound and the session cap with
+// an extend's raises, the agent time of the earlier sessions plus this
+// one's. A report session has no card bound and no session count: nil.
+func (r *Runner) pace(ctx context.Context, t Task, s sessionSpec, lines int, started, deadline time.Time) *Pace {
 	if s.report != "" {
 		return nil
 	}
-	if fresh, ok, err := r.store.Task(ctx, t.ID); err == nil && ok {
-		t = fresh
-	}
-	return &Pace{Lines: lines, BoundLines: bound, SpentEUR: t.EnforcedSpent(), BudgetEUR: t.BudgetEUR, ReserveEUR: s.policy.Limits.GateReserve(),
-		SpentMinutes: int((t.Usage.AgentTime + time.Since(started)).Minutes()), LeftMinutes: int(time.Until(deadline).Minutes()),
+	t, s = r.cardNow(ctx, t, s)
+	return &Pace{Lines: lines, BoundLines: EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage), SpentEUR: t.EnforcedSpent(), BudgetEUR: t.BudgetEUR,
+		ReserveEUR: s.policy.Limits.GateReserve(), SpentMinutes: int((t.Usage.AgentTime + time.Since(started)).Minutes()), LeftMinutes: int(time.Until(deadline).Minutes()),
 		Attempt: s.attempt, Sessions: s.sessions}
+}
+
+// cardNow is the card's row read afresh, t where it cannot be read, and s
+// with the session cap the row holds: the cap the session started under,
+// at t, plus every session an extend added since.
+func (r *Runner) cardNow(ctx context.Context, t Task, s sessionSpec) (Task, sessionSpec) {
+	row, ok, err := r.store.Task(ctx, t.ID)
+	if err != nil || !ok {
+		return t, s
+	}
+	s.sessions += row.Usage.SessionsAdded() - t.Usage.SessionsAdded()
+	return row, s
+}
+
+// judged runs the check-in through run, which builds its pace from the
+// card's row, with eurLeft of the judgment budget, and again while the
+// answer hands up and the row holds a higher line bound or session cap
+// than the pace that answer read: an extend answered the hand-up during
+// the conversation. Each run after the first reads the judgment budget
+// again. The record holds every run's calls, cost and time.
+func (r *Runner) judged(ctx context.Context, t Task, s sessionSpec, ask *CheckInAsk, eurLeft float64, run func(eurLeft float64) CheckInOutcome) CheckInOutcome {
+	out := run(eurLeft)
+	for out.Decision == RungHandUp && ask.Pace != nil {
+		read, now := ask.Pace, r.pace(ctx, t, s, 0, time.Now(), time.Now())
+		if now.BoundLines <= read.BoundLines && now.Sessions <= read.Sessions {
+			break
+		}
+		log.Printf("task %s: session %s: the check-in handed up on %d lines and %d sessions, and the card now holds %d and %d: it judges again",
+			t.ID, s.id, read.BoundLines, read.Sessions, now.BoundLines, now.Sessions)
+		if _, left, err := r.checkinMoney(ctx, t); err != nil {
+			eurLeft -= out.Record.CostEUR
+			log.Printf("task %s: session %s: the judgment budget could not be read again, so the check-in states %.2f EUR, the first figure less the first run's cost: %s",
+				t.ID, s.id, eurLeft, r.scrub(err.Error()))
+		} else {
+			eurLeft = left
+		}
+		first := out.Record
+		out = run(eurLeft)
+		out.Record.Calls = append(first.Calls, out.Record.Calls...)
+		out.Record.ToolCalls += first.ToolCalls
+		out.Record.CostEUR += first.CostEUR
+		out.Record.Duration += first.Duration
+	}
+	return out
 }
 
 // costState assembles the cost and state block from the store: the task
@@ -1563,10 +1686,10 @@ func sizeBounded(t Task, s sessionSpec) bool {
 }
 
 // cuttable: the planner can cut the rest of the session's card into
-// smaller cards: a plan's child goes back to its plan, a direct card only
-// where its project's process has a plan track.
+// smaller cards: a plan's card or its successor goes back to its plan, a
+// direct card only where its project's process has a plan track.
 func cuttable(t Task, s sessionSpec) bool {
-	return sizeBounded(t, s) && (t.Source == SourcePlan || s.planTrack)
+	return sizeBounded(t, s) && (t.PlanCard() || s.planTrack)
 }
 
 // checkinLive is the mid-session check-in: a detector tripped, and the
@@ -1577,14 +1700,14 @@ func cuttable(t Task, s sessionSpec) bool {
 // ask's facts name it. d is the action for the trip switch; ck the
 // conversation's outcome with its record (nil only under no alias); ride
 // says the outcome stops the session and rides SessionResult.CheckIn.
-func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod string, rec *SessionRecorder, trip *Trip, messages []string, workerStop <-chan struct{}, deadline time.Time, lines, bound int, started time.Time, wip wipOutcome) (d Decision, ck *CheckInOutcome, ride bool) {
+func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod string, rec *SessionRecorder, trip *Trip, messages []string, workerStop <-chan struct{}, deadline time.Time, lines int, started time.Time, wip wipOutcome) (d Decision, ck *CheckInOutcome, ride bool) {
 	limits := s.policy.Limits
 	// a handover's next session runs on the stronger rung, or on the
 	// session_model of a plan or report class, which this session runs on
 	climbs := r.cfg.Models.Stronger != "" && s.model != sessionModel(s.policy, t, r.cfg.Models.Stronger)
 	ask := CheckInAsk{Moment: CheckInSession, ParentSession: s.id,
 		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail, Stuck: trip.Stuck, Climbs: climbs}, Messages: messages, Gates: s.lastGates,
-		Replan: cuttable(t, s), Pace: r.pace(ctx, t, s, lines, bound, started, deadline), CostState: r.costState(ctx, t, limits.GateReserve())}
+		Replan: cuttable(t, s)}
 	if r.callModel(t, policy.PurposeCheckin) == "" {
 		d := unjudged(trip, "no model under the check-in's purpose")
 		log.Printf("task %s: no model under the check-in's purpose: %s over %s", t.ID, d.Action, trip.Kind)
@@ -1593,7 +1716,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	callTask, eurLeft, err := r.checkinMoney(ctx, t)
 	if err != nil {
 		log.Printf("task %s: the check-in's chat task: %s", t.ID, r.scrub(err.Error()))
-		reason := checkinRefusedReason + r.scrub(err.Error())
+		reason := CheckinRefusedReason + r.scrub(err.Error())
 		return unjudged(trip, reason), &CheckInOutcome{Decision: CheckHandover, Reason: reason, Findings: ask.Findings, Review: ask.Review,
 			Record: &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id, ParentSession: s.id, Moment: CheckInSession,
 				Decision: CheckHandover, Reason: reason}}, false
@@ -1605,9 +1728,23 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 		return d, nil, false
 	}
 	tr := rec.Transcript()
-	tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s, wip), ask: &ask, parent: tr}
-	out := r.runCheckin(ctx, callTask, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
-		limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
+	pr, err := r.checkinPRFacts(ctx, t)
+	if err != nil {
+		log.Printf("task %s: the check-in's pull request facts: %s", t.ID, r.scrub(err.Error()))
+		reason := CheckinRefusedReason + r.scrub(err.Error())
+		return unjudged(trip, reason), &CheckInOutcome{Decision: CheckHandover, Reason: reason, Findings: ask.Findings, Review: ask.Review,
+			Record: &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id, ParentSession: s.id, Moment: CheckInSession,
+				Decision: CheckHandover, Reason: reason}}, false
+	}
+	ask.PR = pr
+	tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, ask: &ask, parent: tr}
+	out := r.judged(ctx, t, s, &ask, eurLeft, func(eurLeft float64) CheckInOutcome {
+		ask.Pace, ask.CostState = r.pace(ctx, t, s, lines, started, deadline), r.costState(ctx, t, limits.GateReserve())
+		row, now := r.cardNow(ctx, t, s)
+		tools.facts = checkinFacts(row, now, wip)
+		return r.runCheckin(ctx, callTask, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.Checkin, tools,
+			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
+	})
 	out.Record.Session = s.id
 	switch out.Decision {
 	case ActContinue:
@@ -1640,7 +1777,7 @@ func unjudged(trip *Trip, reason string) Decision {
 // checkinMoney is the task the moment's model calls book on and the money
 // it may spend: the project's chat task of this month and its left money.
 func (r *Runner) checkinMoney(ctx context.Context, t Task) (callTask string, eurLeft float64, err error) {
-	chat, err := r.judgmentTask(ctx, t)
+	chat, err := r.JudgmentTask(ctx, t)
 	if err != nil {
 		return "", 0, err
 	}
@@ -1897,12 +2034,15 @@ func (p *runnerTools) Tool(ctx context.Context, name string, args map[string]any
 		}
 		results := struct {
 			*GateResults
-			ReviewDropped   []Dropped `json:"review_dropped,omitempty"`
-			ReviewUnsettled []string  `json:"review_unsettled,omitempty"`
-			ReviewUpheld    []string  `json:"review_upheld,omitempty"`
+			ReviewDropped    []Dropped      `json:"review_dropped,omitempty"`
+			ReviewUnsettled  []string       `json:"review_unsettled,omitempty"`
+			ReviewUpheld     []string       `json:"review_upheld,omitempty"`
+			ReviewPending    []PendingClaim `json:"review_pending,omitempty"`
+			ReviewTurnedFrom string         `json:"review_turned_from,omitempty"`
 		}{GateResults: p.ask.Gates}
 		if p.ask.Review != nil {
 			results.ReviewDropped, results.ReviewUnsettled, results.ReviewUpheld = p.ask.Review.Dropped, p.ask.Review.Unsettled, p.ask.Review.Upheld
+			results.ReviewPending, results.ReviewTurnedFrom = p.ask.Review.Pending, p.ask.Review.TurnedFrom
 		}
 		b, err := json.Marshal(results)
 		if err != nil {
@@ -2228,12 +2368,14 @@ func exitedHow(plain string, d PodDiagnosis) string {
 
 // The start steps a pod can fail at for good; stepImagePin a gate's
 // sandbox whose card's image has no pin in force, stepBudget a session
-// the card's own money cannot open.
+// the card's own money cannot open, stepProofs a proofs worker that ran
+// no entry, which its closing line says as "proofs mode: <why>".
 const (
 	stepImagePull       = "image pull"
 	stepContainerConfig = "container config"
 	stepImagePin        = "image pin"
 	stepBudget          = "budget"
+	stepProofs          = "proofs mode"
 )
 
 // StepEgressProbe is the worker's start step that holds the sandbox to its
@@ -2641,6 +2783,10 @@ func (f *envFit) text(name, s, what string) string {
 	return cut
 }
 
+// workerContainer names the sandbox pod's worker container, whose env a
+// reattach reads back.
+const workerContainer = "worker"
+
 func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	tools := s.policy.Tools(t.RequiredCapabilities, t.Source)
 	if s.report != "" {
@@ -2829,9 +2975,10 @@ func (r *Runner) sandboxPodSpec(t Task, image, cache string, env []map[string]an
 	volumes := []any{
 		map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": "4Gi"}},
 		map[string]any{"name": "home", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
-		// the agent runs the checks CI runs, so its tmp is the CI pod's:
-		// 1 GiB evicted a session building factoryd's race tests (#816)
-		map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "4Gi"}},
+		// the agent runs the checks CI runs, and runs them several at
+		// once: each pg-test.sh server takes over a GiB, and 4 GiB
+		// evicted sessions with their unpushed work
+		map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "8Gi"}},
 		map[string]any{"name": "harness", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
 	}
 	if gatewayToken {
@@ -2896,7 +3043,7 @@ func (r *Runner) sandboxPodSpec(t Task, image, cache string, env []map[string]an
 				"terminationMessagePolicy": "FallbackToLogsOnError",
 			}},
 			"containers": []any{map[string]any{
-				"name":    "worker",
+				"name":    workerContainer,
 				"image":   image,
 				"command": []any{"/bin/sh", "-c", cacheUmaskSh, "/factory/bin/agent-worker"},
 				"env":     env,
@@ -3287,9 +3434,10 @@ func (k *InClusterKube) Namespace() string {
 	return string(bytes.TrimSpace(b))
 }
 
-// watchLimits reads the card's spend once per tick and sends the agent the
-// warning it is due; a warning the pod did not take stays due, and only its
-// first failure is recorded on the timeline.
+// watchLimits reads the card's row once per tick: an extend's line raise
+// reaches the session at once, and the agent gets the warning it is due;
+// a warning the pod did not take stays due, and only its first failure is
+// recorded on the timeline.
 func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod string, w *limitWatch, sup *Supervisor) *Trip {
 	cur, ok, err := r.store.Task(ctx, t.ID)
 	if err != nil {
@@ -3298,6 +3446,29 @@ func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod
 	}
 	if !ok {
 		return nil
+	}
+	// a bound the row raised past the worker's reaches the worker's push
+	// rule, the size detector and the agent; a raise the pod did not take
+	// stays due, unless no retry changes its answer
+	if bound := EffectiveLineBound(cur.Size, s.policy.Risk.LargeLines, cur.Usage); bound > w.bound {
+		switch err := r.postWorker(ctx, ns, pod, s.messageToken, "/bound", map[string]int{"lines": bound}); {
+		case err == nil:
+			w.bound = bound
+			log.Printf("task %s: session %s takes the raised line bound of %d lines", t.ID, s.id, bound)
+			if sizeBounded(t, s) {
+				sup.SetSizeLines(bound)
+			}
+			text := fmt.Sprintf("factoryd: this card's line bound is now %d changed lines, and your push may hold that many from now on. "+
+				"Agent time and sessions an extend added apply from the next session; this session's time is unchanged.", bound)
+			if err := r.message(ctx, t, s, ns, pod, text); err != nil {
+				log.Printf("task %s: tell the agent its raised line bound: %s", t.ID, r.scrub(err.Error()))
+			}
+		case postFinal(err):
+			w.bound = bound
+			log.Printf("task %s: session %s did not take the raised line bound of %d lines, which its next session gets: %s", t.ID, s.id, bound, r.scrub(err.Error()))
+		default:
+			log.Printf("task %s: hand session %s the raised line bound of %d lines: %s", t.ID, s.id, bound, r.scrub(err.Error()))
+		}
 	}
 	for _, wn := range w.due(cur.EnforcedSpent(), cur.BudgetEUR, time.Now()) {
 		err := r.messageWorker(ctx, ns, pod, s.messageToken, wn.text)

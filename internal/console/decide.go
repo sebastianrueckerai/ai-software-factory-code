@@ -15,16 +15,30 @@ type decide struct {
 	Refusals                                      []factoryd.ActionRefusal
 	TaskID                                        string
 	CaseID                                        int64
-	CSRF, Suffix                                  string
-	Filter                                        boardFilter
-	AnswersPending                                int
-	IssueNumber                                   int64
-	IssueURL, Waiting                             string
+	// ApprovalID names an approval request: the form's send goes to the
+	// approve endpoint with the chosen action, 0 on a case's decide, whose
+	// send resolves the case.
+	ApprovalID   int64
+	CSRF, Suffix string
 	// Plan is the plan ask the slot renders: the form posts to
 	// /tasks/{id}/plan/answer with the slot's revision and index, one
 	// decision at a time — the confirm/revise ask or the answer ask, never
 	// both. nil on a case face.
-	Plan *planSlot
+	Plan           *planSlot
+	Action, DataTo string // the form posts to Action, with data-to DataTo
+	Filter         boardFilter
+	AnswersPending int
+	IssueNumber    int64
+	IssueURL       string
+	Waiting        string
+}
+
+// newDecide is the decide frame every face builds on: the card it answers
+// on, its csrf and suffix, the board's filter and the wait, and the form
+// a case's decide sends, which an approval's own builder retargets.
+func newDecide(taskID, csrf, suffix string, filter boardFilter, waiting string) *decide {
+	return &decide{TaskID: taskID, CSRF: csrf, Suffix: suffix, Filter: filter, Waiting: waiting,
+		Action: "/tasks/" + taskID + "/resolve", DataTo: "running"}
 }
 
 // PlanDecide is the plan ask's decide view-model: the shared case-decide
@@ -35,12 +49,10 @@ func (n need) PlanDecide() *decide {
 		return nil
 	}
 	f := n.Case.Face
-	return &decide{
-		Ask: f.Ask, Money: f.Money, Why: f.Why, Info: f.Info, Recommendation: f.Recommendation, Source: f.Source,
-		TaskID: n.Card.ID, CSRF: n.CSRF, Suffix: n.Suffix, Filter: n.Card.Filter,
-		AnswersPending: n.Card.AnswersPending, IssueNumber: n.Card.IssueNumber, IssueURL: n.Card.IssueURL,
-		Waiting: n.Waiting(), Plan: n.Case.Plan,
-	}
+	d := newDecide(n.Card.ID, n.CSRF, n.Suffix, n.Card.Filter, n.Waiting())
+	d.Ask, d.Money, d.Why, d.Info, d.Recommendation, d.Source = f.Ask, f.Money, f.Why, f.Info, f.Recommendation, f.Source
+	d.Plan = n.Case.Plan
+	return d
 }
 
 // Decide is the need's decide view-model: the partial case-decide renders
@@ -50,13 +62,12 @@ func (n need) Decide() *decide {
 		return n.escalationDecide()
 	}
 	f := n.Case.Face
-	return &decide{
-		Ask: f.Ask, Money: f.Money, Why: f.Why, Info: f.Info, Recommendation: f.Recommendation, Source: f.Source,
-		Premade: n.Case.Premade, Offers: n.Case.Offers, Refusals: n.Case.Refusals,
-		TaskID: n.Card.ID, CaseID: n.Case.Case.ID, CSRF: n.CSRF, Suffix: n.Suffix, Filter: n.Card.Filter,
-		AnswersPending: n.Card.AnswersPending, IssueNumber: n.Card.IssueNumber, IssueURL: n.Card.IssueURL,
-		Waiting: n.Waiting(),
-	}
+	d := newDecide(n.Card.ID, n.CSRF, n.Suffix, n.Card.Filter, n.Waiting())
+	d.Ask, d.Money, d.Why, d.Info, d.Recommendation, d.Source = f.Ask, f.Money, f.Why, f.Info, f.Recommendation, f.Source
+	d.Premade, d.Offers, d.Refusals = n.Case.Premade, n.Case.Offers, n.Case.Refusals
+	d.CaseID = n.Case.Case.ID
+	d.AnswersPending, d.IssueNumber, d.IssueURL = n.Card.AnswersPending, n.Card.IssueNumber, n.Card.IssueURL
+	return d
 }
 
 // escalationDecide is the escalation face's decide view-model: the card's
@@ -70,8 +81,8 @@ func (n need) escalationDecide() *decide {
 	if k.Kind == "human" {
 		return nil
 	}
-	d := &decide{TaskID: k.ID, CSRF: n.CSRF, Suffix: n.Suffix, Filter: k.Filter,
-		AnswersPending: k.AnswersPending, IssueNumber: k.IssueNumber, IssueURL: k.IssueURL, Waiting: n.Waiting()}
+	d := newDecide(k.ID, n.CSRF, n.Suffix, k.Filter, n.Waiting())
+	d.AnswersPending, d.IssueNumber, d.IssueURL = k.AnswersPending, k.IssueNumber, k.IssueURL
 	if q := k.Question; q != nil {
 		d.Ask, d.Why, d.Info, d.Recommendation, d.Source = q.Ask, q.Why, q.Info, q.Recommendation, q.Source
 		for _, c := range q.Choices {

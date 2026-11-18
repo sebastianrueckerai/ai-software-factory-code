@@ -48,7 +48,7 @@ var (
 	shortMoney  = map[string]any{"budget_eur": 2, "left_eur": 0.48, "reserve_eur": 0.4, "floor_eur": 0.3}
 )
 
-const shortFloor = budgetRefused + ": Raise the budget (Fund on the board) and answer, or close the card.\n" +
+const shortFloor = BudgetRefused + ": Raise the budget (Fund on the board) and answer, or close the card.\n" +
 	"0.080 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR"
 
 // fundUntilAsked refuses h's sessions their opening with shortFloor once
@@ -76,7 +76,7 @@ func stopFace(t *testing.T, h *workflowHarness, prefix string, more map[string]a
 		t.Fatalf("trips %+v, want one asking %q", h.trips, prefix)
 	}
 	in, u := h.trips[i], h.tripUsage[i]
-	kind, _ := caseKindOf(escalationSource(in.Reason), in.Reason)
+	kind, _ := CaseKindOf(EscalationSource(in.Reason), in.Reason)
 	facts := map[string]any{"attempts": u.Attempts, "session_cap": testWorkflowConfig.MaxSessions + u.SessionsAdded(),
 		"agent_time_s": u.AgentTime.Seconds(), "agent_time_cap_s": (testWorkflowConfig.WallClockCap + u.TimeAdded()).Seconds(), "session_least_s": 300}
 	if in.Head != "" {
@@ -138,8 +138,8 @@ func TestReplyAtStopsThatBuyASession(t *testing.T) {
 	}{
 		"checkin failed": {checkin(CheckTimeCap, "check-in time cap reached after 10m0s"), 1, 1, "check-in: " + CheckTimeCap, false},
 		"checkin human":  {checkin(CheckGoalConflict, "the objective contradicts the review"), 1, 1, "check-in: " + CheckGoalConflict, false},
-		"checkin share":  {checkin(CheckSpend, spentStop), 1, 1, checkinSpendAsk, false},
-		"content filter": {escalate(contentFilterRefusal + zaiFilterSummary + ". Close this card, or answer to try once more."), 1, 1, contentFilterRefusal, false},
+		"checkin share":  {checkin(CheckSpend, spentStop), 1, 1, CheckinSpendAsk, false},
+		"content filter": {escalate(ContentFilterRefusal + zaiFilterSummary + ". Close this card, or answer to try once more."), 1, 1, ContentFilterRefusal, false},
 		"agent escalate": {escalate(AgentAsks + "which file?\nWhy: two match"), 1, 1, AgentAsks, false},
 		"other":          {escalate("a stop the factory cannot name"), 1, 1, "a stop", false},
 		"no model answer": {func(t *testing.T, spent bool) *workflowHarness {
@@ -168,9 +168,9 @@ func TestReplyAtStopsThatBuyASession(t *testing.T) {
 				took = 20 * time.Minute
 			}
 			h.onTimedSessions(timedSession{took, missingTool("s1", "ffmpeg", "cut the video")}, timedSession{time.Minute, pushed("s2", "c2")})
-			h.onPark(ToolPark{Ask: imageWaited + "ffmpeg, which has no pin in force: is its build stuck?"})
+			h.onPark(ToolPark{Ask: ImageWaited + "ffmpeg, which has no pin in force: is its build stuck?"})
 			return h
-		}, 2, 1, imageWaited, true},
+		}, 2, 1, ImageWaited, true},
 	} {
 		for _, v := range []string{"time left", "time spent", "session limit", "budget short"} {
 			t.Run(name+" with "+v, func(t *testing.T) {
@@ -187,7 +187,7 @@ func TestReplyAtStopsThatBuyASession(t *testing.T) {
 				}
 				switch {
 				case v == "budget short":
-					if !askedWith(h, budgetRefused) || len(h.sessions) != tc.stopSessions {
+					if !askedWith(h, BudgetRefused) || len(h.sessions) != tc.stopSessions {
 						t.Fatalf("asks %q, sessions %d; want the budget floor asked after the reply and %d sessions", h.escalated, len(h.sessions), tc.stopSessions)
 					}
 					faceSays(t, stopFace(t, h, tc.asked, shortMoney), false, "budget floor")
@@ -225,7 +225,7 @@ func TestReplyAtACapStartsNone(t *testing.T) {
 	}{
 		"session cap":    {TaskUsage{Attempts: testWorkflowConfig.MaxSessions, AgentTime: time.Minute}, "", capReachedLadder, "Extend on the board"},
 		"agent-time cap": {TaskUsage{Attempts: 1, AgentTime: testWorkflowConfig.WallClockCap}, "", timeCapReachedLadder, "Extend on the board"},
-		"budget floor":   {TaskUsage{Attempts: 1, AgentTime: time.Minute}, shortFloor, budgetRefused, "Fund form on the board"},
+		"budget floor":   {TaskUsage{Attempts: 1, AgentTime: time.Minute}, shortFloor, BudgetRefused, "Fund form on the board"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newWorkflowHarness(t)
@@ -283,12 +283,12 @@ func TestReplyAtProviderAndPodStops(t *testing.T) {
 		}{
 			"time spent":    {spentState(), timeCapReachedLadder},
 			"session limit": {RunState{Status: "running", Usage: TaskUsage{Attempts: testWorkflowConfig.MaxSessions}}, capReachedLadder},
-			"budget short":  {RunState{Status: "running", Usage: TaskUsage{Attempts: 1, AgentTime: time.Minute}}, budgetRefused},
+			"budget short":  {RunState{Status: "running", Usage: TaskUsage{Attempts: 1, AgentTime: time.Minute}}, BudgetRefused},
 		} {
 			t.Run(name+" with "+v, func(t *testing.T) {
 				h, asked := build(t, true)
 				h.state = tc.state
-				if tc.cap == budgetRefused {
+				if tc.cap == BudgetRefused {
 					h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(shortFloor, nil)
 				}
 				replyRun(t, h)
@@ -393,7 +393,7 @@ func TestReplyAtAShareStopWithThePullRequestOpen(t *testing.T) {
 			if final := h.run(t); final != "done" || len(h.sessions) != 2 || askedWith(h, capReachedLadder) || !slices.Contains(steps, "pr c1 after 1 cards") {
 				t.Fatalf("final %q, sessions %d, steps %q, asks %q; want c1 through the gates again after the reply, no session", final, len(h.sessions), steps, h.escalated)
 			}
-			face := stopFace(t, h, checkinSpendAsk, map[string]any{"pr_open": true})
+			face := stopFace(t, h, CheckinSpendAsk, map[string]any{"pr_open": true})
 			if !strings.Contains(face, "through the gates again") || strings.Contains(face, "new attempt") || strings.Contains(face, "session cap") {
 				t.Fatalf("face %q, want it to say the reply takes the head through the gates again", face)
 			}
@@ -468,7 +468,7 @@ func TestReplyAtADependencyStop(t *testing.T) {
 // stopped ones) of 6, or of 3. The first stop's face, a goal conflict with
 // the pull request open, says a reply starts a new attempt, as it did.
 func TestReplyAtTheDeadlock(t *testing.T) {
-	const deadlock = checkinSpendAsk + deadlockAskMark
+	const deadlock = CheckinSpendAsk + DeadlockAskMark
 	for name, sessions := range map[string]int{"sessions left": 6, "session limit": 3} {
 		t.Run(name, func(t *testing.T) {
 			h := newWorkflowHarness(t)
@@ -519,7 +519,7 @@ func TestReplyWhileADayCapBindsBeforeTheBudget(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.taskConfig = askTaskConfig()
 	h.onTimedSessions(timedSession{time.Minute, SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Summary: "stopped",
-		Reason: contentFilterRefusal + zaiFilterSummary + ". Close this card, or answer to try once more."}}, timedSession{time.Minute, pushed("s2", "c2")})
+		Reason: ContentFilterRefusal + zaiFilterSummary + ". Close this card, or answer to try once more."}}, timedSession{time.Minute, pushed("s2", "c2")})
 	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, model string) (string, error) {
 			switch {
@@ -531,14 +531,14 @@ func TestReplyWhileADayCapBindsBeforeTheBudget(t *testing.T) {
 			return shortFloor, nil
 		})
 	replyRun(t, h)
-	if len(h.sessions) != 1 || len(h.escalated) != 3 || !strings.HasPrefix(h.escalated[1], dayCapResumes) || !strings.HasPrefix(h.escalated[2], budgetRefused) ||
+	if len(h.sessions) != 1 || len(h.escalated) != 3 || !strings.HasPrefix(h.escalated[1], dayCapResumes) || !strings.HasPrefix(h.escalated[2], BudgetRefused) ||
 		h.escalatedAt[2].Before(dayTurn(h.escalatedAt[0])) {
 		t.Fatalf("sessions %d, asks %q at %v; want the day cap's wait, then the budget floor at the day's turn, no session", len(h.sessions), h.escalated, h.escalatedAt)
 	}
-	capWait, _, _ := strings.Cut(capWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), state, dayTurn(h.escalatedAt[0])), "\n")
+	capWait, _, _ := strings.Cut(CapWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), state, dayTurn(h.escalatedAt[0])), "\n")
 	more := maps.Clone(shortMoney)
 	more["cap_wait"] = capWait
-	face := stopFace(t, h, contentFilterRefusal, more)
+	face := stopFace(t, h, ContentFilterRefusal, more)
 	if !strings.HasPrefix(face, "The day cap is reached: the card resumes on its own") || !strings.Contains(face, stamp(dayTurn(h.escalatedAt[0]))) ||
 		!strings.Contains(face, "Once it lifts, the task asks the budget floor") {
 		t.Fatalf("face %q, want the day cap's wait first, then the budget floor", face)

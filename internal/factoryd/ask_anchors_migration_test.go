@@ -144,7 +144,7 @@ func TestAskAnchorsMigrationCarriesTheCommentOntoTheFaceOfOldCases(t *testing.T)
 		t.Fatal(err)
 	}
 	at := time.Date(2026, 11, 1, 11, 30, 0, 0, time.UTC)
-	answers, _, _ := answersFrom([]IntakeEvent{
+	answers, _, _ := AnswersFrom([]IntakeEvent{
 		{TaskID: "t1", Kind: "issue_comment", Author: "sebastian", Body: "before the face", CommentID: 26000, Trusted: true, CreatedAt: at},
 		{TaskID: "t1", Kind: "issue_comment", Author: "sebastian", Body: "after the face", CommentID: 27050, Trusted: true, CreatedAt: at},
 	}, asks, nil)
@@ -155,7 +155,7 @@ func TestAskAnchorsMigrationCarriesTheCommentOntoTheFaceOfOldCases(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	answers, _, _ = answersFrom([]IntakeEvent{
+	answers, _, _ = AnswersFrom([]IntakeEvent{
 		{TaskID: "t4", Kind: "issue_comment", Author: "sebastian", Body: "before any face", CommentID: 26000, Trusted: true, CreatedAt: at},
 		{TaskID: "t4", Kind: "issue_comment", Author: "sebastian", Body: "between the faces", CommentID: 27012, Trusted: true, CreatedAt: at},
 		{TaskID: "t4", Kind: "issue_comment", Author: "sebastian", Body: "after the second face", CommentID: 27050, Trusted: true, CreatedAt: at},

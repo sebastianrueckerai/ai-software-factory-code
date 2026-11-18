@@ -236,39 +236,15 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 		!strings.Contains(wide, `Escalations <span class="count">1</span>`) || !strings.Contains(wide, `Approvals <span class="count">0</span>`) {
 		t.Errorf("the plan's escalation is not its case's row alone:\n%s", wide)
 	}
-	// a plan case whose ask matches no question (a cap's words on a plan
-	// case) has no slot: its row holds its one ask under the carousel, the
-	// approval body beside it no longer asking every question — its
-	// Request changes and the card's own Close keep the filter
+	// a plan case with no slot is answered by the approval card's own ask:
+	// the one decide form, Request changes and the card's own Close keep
+	// the filter
 	if filtered := col(t, wide, "Escalations"); strings.Count(filtered,
-		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) != 2 ||
-		strings.Contains(filtered, `action="/tasks/t-plan/plan/answer"`) {
-		t.Errorf("the plan row's two forms ask or do not keep the filter:\n%s", filtered)
-	}
-	// a plan case with no facts keeps the one-question slot face: the slot
-	// is derived from its state key's revision and its ask's place
-	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 6, TaskID: "t-plan", Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman,
-		StateKey: "deadbeef@r2", Problem: "How long are the results kept?"}}}
-	wide = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&view=wide", nil), ck).Body.String()
-	row := col(t, wide, "Escalations")
-	for _, want := range []string{`<p class="ask">How long are the results kept?</p>`,
-		`<input type="hidden" name="revision" value="2"><input type="hidden" name="index" value="1">`} {
-		if !strings.Contains(row, want) {
-			t.Errorf("the derived slot lacks %q:\n%s", want, row)
-		}
-	}
-	if strings.Count(row, `action="/tasks/t-plan/plan/answer"`) != 1 {
-		t.Errorf("the derived slot is not the one answer form:\n%s", row)
+		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) != 3 {
+		t.Errorf("the plan row's three forms do not keep the filter:\n%s", filtered)
 	}
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = "", time.Time{}
-	r.openCases = map[string][]factoryd.Case{}
-	// with no case at the human the approval stands alone and asks one
-	// question at a time too, never every open question at once
-	r.tasks.questions["t-plan 2"] = append(r.tasks.questions["t-plan 2"], factoryd.PlanQuestion{Text: "Who may add a site?", Choices: []string{"anyone"}})
-	if alone := col(t, board(ck, ""), "Needs you"); strings.Count(alone, `action="/tasks/t-plan/plan/answer"`) != 1 ||
-		strings.Contains(alone, "Who may add a site?") || !strings.Contains(alone, `<p class="meta">2 questions open. The answers go to the planner`) {
-		t.Errorf("the plan alone does not ask its first open question alone:\n%s", alone)
-	}
+	r.openCases = nil
 
 	r.repoWriters["linkshort/linkshort"] = append(r.repoWriters["linkshort/linkshort"], "alice")
 	r.forgetWriters()
@@ -385,6 +361,77 @@ func TestDonePlanShowsItsRound(t *testing.T) {
 	}
 }
 
+// A done plan's children, its rollup and its drawer's list read each key's
+// card: a card that failed into a running successor shows as the
+// successor.
+func TestDonePlanListsEachKeysCard(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	r.tasks.tasks = append(planTasks(), factoryd.BoardTask{Task: factoryd.Task{ID: factoryd.SuccessorID("t-c2"), Kind: "agent", Status: "running",
+		Track: "direct", Process: "spec", Objective: "card 2, carried on", Repository: "linkshort/linkshort", IssueNumber: 7,
+		Source: factoryd.SourceSuccessor, Parent: "t-plan", PlanKey: "k2"}})
+	r.tasks.tasks[1].Status = "failed"
+	ck, _ := r.loggedIn(t)
+	done := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Done")
+	if want := "<span class=\"chip rollup\">1\u00a0running · 1\u00a0done · 1\u00a0waiting · 1\u00a0queued</span>"; !strings.Contains(done, want) {
+		t.Errorf("the plan in Done lacks %q:\n%s", want, done)
+	}
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort", nil), ck).Body.String()
+	if want := `<li><a href="https://git.example/linkshort/linkshort/issues/7" target="_blank" rel="noopener">#7</a> running</li>`; !strings.Contains(drawer, want) {
+		t.Errorf("the plan's drawer lacks %q:\n%s", want, drawer)
+	}
+	if strings.Contains(drawer, `>#2</a>`) {
+		t.Errorf("the plan's drawer lists the failed #2:\n%s", drawer)
+	}
+}
+
+// The drawer's rounds count each key's card: a card of round 1 that failed
+// into a successor that is done counts done.
+func TestDonePlanDrawerRoundsCountEachKeysCard(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	r.tasks.tasks = append(planTasks(),
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-c9", Kind: "agent", Status: "failed", Track: "direct", Process: "spec", Objective: "card 9",
+			Repository: "linkshort/linkshort", IssueNumber: 9, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k9"}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: factoryd.SuccessorID("t-c9"), Kind: "agent", Status: "done", Track: "direct", Process: "spec",
+			Objective: "card 9, carried on", Repository: "linkshort/linkshort", IssueNumber: 10, Source: factoryd.SourceSuccessor, Parent: "t-plan", PlanKey: "k9"}})
+	plan, _ := json.Marshal(factoryd.Plan{Round: 2, Outline: []string{"the console"}, Cards: []factoryd.PlanCard{
+		{Key: "k9", Role: factoryd.RoleFoundation, Title: "card 9", Size: "small", Round: 1},
+		{Key: "k2", Role: factoryd.RoleFeature, Title: "card 2", Size: "small", Round: 2},
+		{Key: "k3", Role: factoryd.RoleFeature, Title: "card 3", Size: "small", Round: 2},
+		{Key: "k4", Role: factoryd.RoleFeature, Title: "card 4", Size: "small", Round: 2},
+		{Key: "k5", Role: factoryd.RoleFeature, Title: "card 5", Size: "small", Round: 2},
+	}})
+	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan, SHA256: "sha-1"}}}
+	ck, _ := r.loggedIn(t)
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort", nil), ck).Body.String()
+	if want := `<ol aria-label="The plan's rounds"><li>round 1: 1 card, 1 done.</li><li aria-current="step">round 2: 4 cards, 1 done. This round.</li></ol>`; !strings.Contains(drawer, want) {
+		t.Errorf("the plan's drawer lacks %q:\n%s", want, drawer)
+	}
+}
+
+// The confirm button's take-off line names each key's card: the successor
+// that merged for a card that failed into it, the card the revert takes.
+func TestTakeOffMainNamesEachKeysCard(t *testing.T) {
+	r := newRig(t)
+	planRig(r)
+	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": {{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}}
+	plan, _ := json.Marshal(factoryd.Plan{Summary: "Foundation first.", TakeOffMain: []string{"k2"},
+		Cards: []factoryd.PlanCard{{Key: "foundation", Role: "foundation", Title: "Foundation", Size: "medium"}}})
+	r.tasks.plans["t-plan"][1].Plan = plan
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-c2", Kind: "agent", Status: "failed", Track: "direct", Process: "spec", Objective: "card 2",
+			Repository: "linkshort/linkshort", IssueNumber: 2, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k2"}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: factoryd.SuccessorID("t-c2"), Kind: "agent", Status: "merged", MergeCommit: "m7", Track: "direct",
+			Process: "spec", Objective: "card 2, carried on", Repository: "linkshort/linkshort", IssueNumber: 7, Source: factoryd.SourceSuccessor,
+			Parent: "t-plan", PlanKey: "k2"}})
+	ck, _ := r.loggedIn(t)
+	want := "<button type=\"submit\" name=\"decision\" value=\"confirm\" class=\"primary\" formnovalidate>Confirm reverts #7 from main</button>"
+	if card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you"); !strings.Contains(card, want) {
+		t.Errorf("the plan card lacks %q:\n%s", want, card)
+	}
+}
+
 // A done plan whose revision cannot be read keeps its rollup, and the
 // board says so once.
 func TestDonePlanWithAnUnreadableRevisionKeepsItsRollup(t *testing.T) {
@@ -458,6 +505,28 @@ func TestFailedPlanCardShowsRetry(t *testing.T) {
 	ak, _ := r.as(t, "alice")
 	if strings.Contains(r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ak).Body.String(), "/retry") {
 		t.Error("alice, no approver, sees Retry")
+	}
+}
+
+// The successor that carries a plan card's key is retried as the card is:
+// failed, it shows Retry to an approver, and so does one whose retry
+// stopped before its replacement got an issue.
+func TestAFailedPlanCardsSuccessorShowsRetry(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	succ := func(id string, n int64, key string) factoryd.BoardTask {
+		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "failed", Track: "direct", Process: "spec", Objective: "card again",
+			Repository: "linkshort/linkshort", IssueNumber: n, Source: factoryd.SourceSuccessor, Parent: "t-plan", PlanKey: key}}
+	}
+	replacement := factoryd.BoardTask{Task: factoryd.Task{ID: factoryd.RetryID("t-s9"), Kind: "agent", Status: "queued", Track: "direct", Process: "spec",
+		Objective: "again", Repository: "linkshort/linkshort", Source: factoryd.SourceSuccessor, Parent: "t-plan", PlanKey: "k9"}}
+	r.tasks.tasks = append(planTasks(), succ("t-s8", 18, "k8"), succ("t-s9", 19, ""), replacement)
+	ck, _ := r.loggedIn(t)
+	failed := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Done")
+	for _, id := range []string{"t-s8", "t-s9"} {
+		if !strings.Contains(failed, `action="/tasks/`+id+`/retry"`) {
+			t.Errorf("%s lacks Retry:\n%s", id, failed)
+		}
 	}
 }
 

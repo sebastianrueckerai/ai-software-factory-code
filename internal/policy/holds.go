@@ -126,10 +126,14 @@ const RefusedProjectCap = "refused_project_cap"
 // headroom cannot fit; the gateway serves the call on Big instead.
 const RefusedPremiumCap = "refused_premium_cap"
 
-// Refusal is a call the headroom or a tool cap cannot fit.
+// Refusal is a call the headroom or a tool cap cannot fit. Until, when
+// set, is the reset a refused_provider_limit refusal names: the moment
+// the provider said the class's limit lifts (the gateway's parse plus one
+// minute, from the refusal body's reset).
 type Refusal struct {
 	Decision string // refused_budget, refused_day_cap, refused_month_cap, refused_project_cap, refused_premium_cap, refused_tool_requests, refused_tool_eur or refused_task_status
 	Reason   string
+	Until    time.Time
 }
 
 // refusal is the headroom refusal decision with reason; the month cap's
@@ -374,16 +378,19 @@ type OpeningCall struct {
 	CacheFloor     float64
 }
 
-// Opening is how a session opens on a ref, read for a task. A session's
-// opening is every model call that started before its first one ended,
-// the first the one whose hold was taken first: the harness opens with
-// calls at once, a small one beside the agent's first prompt, so their
-// holds are taken together. Sessions are the openings of the newest
-// openingSessions sessions whose first call was on the ref, newest first,
-// each in the order its holds were taken; a session whose first call has
-// no measure (a swept hold) counts none. With none on the ref, AnyRef:
-// every ref's count, since a session opens with the harness's same calls
-// whatever its model, a call on the first call's ref read as on the ref.
+// Opening is how a session opens on a ref, read for a task: its own
+// sessions alone, another task's openings no hold of its — a task without
+// recorded sessions reads none, whatever the rest of the ledger holds. A
+// session's opening is every model call that started before its first one
+// ended, the first the one whose hold was taken first: the harness opens
+// with calls at once, a small one beside the agent's first prompt, so
+// their holds are taken together. Sessions are the openings of the task's
+// own newest openingSessions sessions whose first call was on the ref,
+// newest first, each in the order its holds were taken; a session whose
+// first call has no measure (a swept hold) counts none. With none of its
+// own on the ref, AnyRef: every ref's count of the task's own sessions,
+// since a session opens with the harness's same calls whatever its model,
+// a call on the first call's ref read as on the ref.
 type Opening struct {
 	Sessions [][]OpeningCall
 	AnyRef   bool
@@ -416,21 +423,23 @@ func (o Opening) Hold(r HoldRequest, price func(ref string) (Price, error)) (flo
 	return most, largest, nil
 }
 
-// ReadOpening reads the opening of a session of taskID on ref.
+// ReadOpening reads the opening of a session of taskID on ref: the
+// task's own sessions alone.
 func ReadOpening(ctx context.Context, q *sql.DB, taskID, ref string) (Opening, error) {
 	var o Opening
 	for _, on := range []string{ref, ""} {
 		// newest first, a call is its session's first when no call of the
-		// session started earlier: the scan ends at the window
+		// session started earlier: the scan ends at the window, the
+		// task's own rows alone
 		rows, err := q.QueryContext(ctx,
 			`WITH first AS (SELECT l.id, l.session, l.ref, l.created_at AS ended FROM ledger l
-			      WHERE l.kind = 'model' AND l.session <> '' AND l.held_at IS NOT NULL AND l.body_bytes > 0 AND (l.ref = $1 OR $1 = '')
+			      WHERE l.task_id = $3 AND l.kind = 'model' AND l.session <> '' AND l.held_at IS NOT NULL AND l.body_bytes > 0 AND (l.ref = $1 OR $1 = '')
 			        AND NOT EXISTS (SELECT 1 FROM ledger e WHERE e.kind = 'model' AND e.session = l.session
 			                        AND (e.held_at < l.held_at OR e.held_at = l.held_at AND e.id < l.id))
 			      ORDER BY l.id DESC LIMIT $2)
 			 SELECT f.id, f.ref, o.ref, o.body_bytes, o.want_out FROM first f
-			 JOIN ledger o ON o.kind = 'model' AND o.session = f.session AND o.held_at < f.ended
-			 ORDER BY f.id DESC, o.held_at, o.id`, on, openingSessions)
+			 JOIN ledger o ON o.task_id = $3 AND o.kind = 'model' AND o.session = f.session AND o.held_at < f.ended
+			 ORDER BY f.id DESC, o.held_at, o.id`, on, openingSessions, taskID)
 		if err != nil {
 			return Opening{}, err
 		}

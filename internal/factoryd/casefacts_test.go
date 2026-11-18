@@ -20,8 +20,9 @@ import (
 )
 
 // factsRig is a runner on a fake store, a fake object store and a Forgejo
-// whose head h2 is green, at noon on 2026-11-03, under a policy where card
-// t1, a large card of demo-app/demo-app, runs the direct track's coder
+// whose head h2 is green and whose fork holds no branch of a card, at noon
+// on 2026-11-03, under a policy where card t1, a large card of
+// demo-app/demo-app, runs the direct track's coder
 // class: 3 sessions, 10 minutes of agent time, task_max_eur 5, floors of
 // 0.30 EUR cheap and 0.60 EUR frontier, and the default pool and card
 // draw. Its last session ran on small, whose recorded opening is two
@@ -42,6 +43,10 @@ func factsAt(hh, mm int) time.Time { return time.Date(2026, 11, 3, hh, mm, 0, 0,
 func newFactsRig(t *testing.T) factsRig {
 	t.Helper()
 	forge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/demo-app/branches/") {
+			http.NotFound(w, r)
+			return
+		}
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/repos/demo-app/demo-app/commits/h2/status" {
 			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -150,7 +155,7 @@ func (g factsRig) timeline(t *testing.T) {
 //     one, less t1's draws of rungs 0 and 1: 1 session, 5 minutes, and
 //     October's 2.00 = 2, 1h25m, 4.00
 //   - the findings' texts are the review's at 09:45 and the audit's at 09:46,
-//     in that order, and the review's own is the 09:45 one's alone
+//     in that order, and each gate's own is its 09:4x one's alone
 //   - the time draw is the newest pool row that raised agent time: the
 //     09:00 extend of 300 s on h1, red, no findings recorded, with the
 //     pushes of s2 and s3 after it
@@ -171,7 +176,8 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 		BudgetEUR: 5, SpentEUR: 4.75, LeftEUR: 0.25, ReserveEUR: 0.4, FloorEUR: got.FloorEUR, CeilingEUR: 5,
 		Findings:     []string{idA, idB},
 		FindingTexts: map[string]string{idA: findingA, idB: findingB}, FindingOrder: []string{idA, idB}, ReviewFindings: []string{idA},
-		LastDrawAt: &drawn, DrawHead: "h2", DrawChecks: "green", DrawFindings: []string{idA, idB}, Pushed: true,
+		AuditFindings: []string{idB},
+		LastDrawAt:    &drawn, DrawHead: "h2", DrawChecks: "green", DrawFindings: []string{idA, idB}, Pushed: true, BranchRead: true,
 		TimeDraw: &DrawFacts{At: factsAt(9, 0), Head: "h1", Checks: "red", Pushed: true},
 		Dependencies: []DepFact{
 			{TaskID: "d1", Issue: 20, Status: "failed", Why: "session error: the pod is gone", Replaced: RetryID("d1")},
@@ -211,6 +217,36 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	}
 }
 
+// The facts read the card's branch on the fork: a branch at c9 whose merge
+// base with main is c1 holds work main lacks, a branch at c9 whose merge
+// base is c9 itself holds none main lacks, no branch holds none, and a
+// compare that fails reads nothing and names its reader.
+func TestTripFactsReadsTheBranch(t *testing.T) {
+	for name, tc := range map[string]struct {
+		branch     string
+		mergeBases map[string]string
+		read       bool
+		head       string
+	}{
+		"a branch ahead of main": {"c9", map[string]string{"c9": "c1"}, true, "c9"},
+		"a branch main holds":    {"c9", map[string]string{"c9": "c9"}, true, ""},
+		"no branch":              {"", nil, true, ""},
+		"a compare that fails":   {"c9", nil, false, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, hub, store := newTestRunner(t, gateTask, newFakeKube(), &fakeObjectStore{})
+			hub.branchHead, hub.mergeBases = tc.branch, tc.mergeBases
+			f, err := r.tripFacts(context.Background(), store.tasks["t1"], "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.BranchRead != tc.read || f.BranchHead != tc.head || slices.Contains(f.Partial, "branch") == tc.read {
+				t.Errorf("branch read %v, head %q, partial %v; want read %v, head %q", f.BranchRead, f.BranchHead, f.Partial, tc.read, tc.head)
+			}
+		})
+	}
+}
+
 // The criteria gate's run on the head is read with its review and its
 // audit: its unmet criterion is one of the findings, its met one none.
 func TestTripFactsReadsTheGatesUnmetCriteria(t *testing.T) {
@@ -230,10 +266,66 @@ func TestTripFactsReadsTheGatesUnmetCriteria(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{idA, idB, findingID(unmet)}
+	want := []string{idA, idB, FindingID(unmet)}
 	slices.Sort(want)
 	if !slices.Equal(got.Findings, want) {
 		t.Fatalf("findings = %v, want the review's, the audit's and the gate's unmet criterion %v", got.Findings, want)
+	}
+}
+
+// A merge conflict stands on the head the newest merge_conflict line
+// names, with that line's refusal: none on a head no line names, none on
+// no head, none on an empty timeline, and none once the pull request's
+// head moved outside the run to another head after it, by the merge
+// gate's line or the synchronize webhook's event.
+func TestStandingConflictIsTheNewestRefusalOnTheHead(t *testing.T) {
+	const conflict = `{"step":"merge_conflict","commit":"aaa","refusal":"X"}` + "\n"
+	one := []byte(conflict + `{"step":"pushed","commit":"bbb"}` + "\n")
+	two := []byte(`{"step":"merge_conflict","commit":"aaa","refusal":"X1"}` + "\n" + `{"step":"merge_conflict","commit":"aaa","refusal":"X2"}` + "\n")
+	webhook := []byte(conflict + `{"step":"event","event":"merge_moved_head","pr":9,"head":"ccc"}` + "\n")
+	gate := []byte(conflict + `{"step":"merge_moved_head","pr":9,"commit":"aaa","head":"ccc","approver":"sebastian"}` + "\n")
+	before := []byte(`{"step":"event","event":"merge_moved_head","pr":9,"head":"ccc"}` + "\n" + conflict)
+	same := []byte(conflict + `{"step":"event","event":"merge_moved_head","pr":9,"head":"aaa"}` + "\n")
+	for _, c := range []struct {
+		name string
+		tl   []byte
+		head string
+		want string
+	}{
+		{"the conflict's head", one, "aaa", "X"},
+		{"the pushed head", one, "bbb", ""},
+		{"no head", one, "", ""},
+		{"two lines on the head", two, "aaa", "X2"},
+		{"no lines", nil, "aaa", ""},
+		{"moved by the webhook", webhook, "aaa", ""},
+		{"the webhook's moved head", webhook, "ccc", ""},
+		{"moved at the merge gate", gate, "aaa", ""},
+		{"moved before the conflict", before, "aaa", "X"},
+		{"moved onto the conflict's head", same, "aaa", "X"},
+	} {
+		if got := standingConflict(c.tl, c.head); got != c.want {
+			t.Errorf("%s: standingConflict = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// The facts of a card whose head Forgejo refused to merge main into hold
+// the refusal; once the pull request is no longer open none stands.
+func TestTripFactsReadTheMergeConflictOnTheHead(t *testing.T) {
+	g := newFactsRig(t)
+	ctx := context.Background()
+	refusal := "the branch conflicts with its base: status 409: merge failed because of conflict"
+	if err := g.tl.Append(ctx, "t1", "merge_conflict", map[string]any{"pr": 9, "commit": "h2", "refusal": refusal}); err != nil {
+		t.Fatal(err)
+	}
+	card := g.store.tasks["t1"]
+	f, err := g.r.tripFacts(ctx, card, "h2", "")
+	if err != nil || f.MergeConflict != refusal {
+		t.Fatalf("facts = %+v, %v; want the conflict %q on h2", f, err, refusal)
+	}
+	card.Status = "merged"
+	if f, err := g.r.tripFacts(ctx, card, "h2", ""); err != nil || f.MergeConflict != "" {
+		t.Fatalf("merged card's conflict = %q, %v; want none", f.MergeConflict, err)
 	}
 }
 
@@ -306,7 +398,7 @@ func TestTripFactsWeighTheFloorOfTheNextSessionsModel(t *testing.T) {
 		if err := json.Unmarshal(b, &facts); err != nil {
 			t.Fatal(err)
 		}
-		if face := tripNext(Case{Kind: CaseContentFilter, Facts: facts}, contentFilterRefusal); strings.Contains(face, "the budget floor next") != want.short {
+		if face := tripNext(Case{Kind: CaseContentFilter, Facts: facts}, ContentFilterRefusal); strings.Contains(face, "the budget floor next") != want.short {
 			t.Errorf("next on %q: face %q", model, face)
 		}
 	}
@@ -338,6 +430,55 @@ func TestTripFactsFundASessionNoPriceWeighs(t *testing.T) {
 	}
 	if why := sessionRoom(f); strings.Contains(why, "fund") {
 		t.Errorf("a resume with no price source = %q, want no fund asked", why)
+	}
+}
+
+// A floor case asks the opening price the run's next session needs: the
+// case's need is the raise the refusal text names, so a fund of exactly
+// it clears SessionFunded, and no premade amount under the raise is
+// offered. Spent 4.40 of 5 with nothing held leaves 0.60, less the 0.40
+// reserve 0.20 for a session, and the recorded opening on small needs
+// 0.607001: the raise and the case's need are both 0.41.
+func TestFloorCaseAsksTheOpeningPrice(t *testing.T) {
+	g := newFactsRig(t)
+	card := g.store.tasks["t1"]
+	card.SpentEUR, card.HeldEUR = 4.4, 0
+	g.store.tasks["t1"] = card
+	ctx := context.Background()
+	f, err := g.r.tripFacts(ctx, card, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if math.Abs(f.FloorEUR-0.607001) > 1e-9 || !f.unfunded() {
+		t.Fatalf("floor %v, short %v; want the opening's 0.607001, short", f.FloorEUR, f.unfunded())
+	}
+	if kind, read := f.noSession(false, false); kind != CaseBudgetFloor || !read {
+		t.Fatalf("noSession = %v, %v; want the budget floor", kind, read)
+	}
+	why, err := g.r.SessionFunded(ctx, "t1", "factory/small")
+	if err != nil || !BudgetRefusal(why) {
+		t.Fatalf("SessionFunded = (%q, %v), want the money ask", why, err)
+	}
+	raise := FundRaise(why, f.LeftEUR, f.ReserveEUR)
+	if raise != fundFor(f.FloorEUR, f.SessionLeft()) || raise != 0.41 {
+		t.Fatalf("raise %v, want the case's need %v at 0.41", raise, fundFor(f.FloorEUR, f.SessionLeft()))
+	}
+	c, _, err := g.r.tripCase(ctx, card, f, TripInput{TaskID: "t1", Reason: why})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Kind != CaseBudgetFloor || c.Money == nil || c.Money.NeedEUR != raise {
+		t.Fatalf("case %v money %+v, want the budget floor asking %v", c.Kind, c.Money, raise)
+	}
+	q := BudgetQuestion(why, g.r.questionFacts(ctx, card, why))
+	if want := []QuestionChoice{{FundChoiceValue(raise), "Fund 0.41 EUR and go on"},
+		{FundChoiceValue(2), "Fund 2.00 EUR and go on"}, {AnswerPark, "Park it"}}; !slices.Equal(q.Choices, want) {
+		t.Fatalf("choices = %v, want the raise and the round 2.00 alone: the 0.30 floor would leave the session refused", q.Choices)
+	}
+	card.BudgetEUR += raise
+	g.store.tasks["t1"] = card
+	if why, err := g.r.SessionFunded(ctx, "t1", "factory/small"); err != nil || why != "" {
+		t.Fatalf("after a fund of %.2f: SessionFunded = (%q, %v), want the session funded", raise, why, err)
 	}
 }
 
@@ -389,7 +530,7 @@ func TestTripFactsWeighTheCapThatBindsFirst(t *testing.T) {
 			if err := json.Unmarshal(b, &facts); err != nil {
 				t.Fatal(err)
 			}
-			face := tripNext(Case{Kind: CaseContentFilter, Facts: facts}, contentFilterRefusal)
+			face := tripNext(Case{Kind: CaseContentFilter, Facts: facts}, ContentFilterRefusal)
 			if day == 100 {
 				if f.CapWait != "" || !strings.Contains(face, "the task asks the budget floor next") {
 					t.Fatalf("cap wait %q, face %q; want no cap and the budget floor", f.CapWait, face)

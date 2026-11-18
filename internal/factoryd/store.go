@@ -22,6 +22,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // Task is a factory task row. factoryd owns these rows; the gateway reads
@@ -167,6 +168,8 @@ type Task struct {
 	// ClosingFinal and ClosingReason are the end the card's run decided,
 	// stored with its move to closing (CloseTask); "" before any.
 	ClosingFinal, ClosingReason string
+	// Hold is a human's hold on the card, nil when it has none.
+	Hold *CardHold
 }
 
 // Accents are the accent colours a human may put on a card, in the order
@@ -344,8 +347,16 @@ type Store interface {
 	MarkStarted(ctx context.Context, id string) error
 	// SetAdmitted stamps task id's admission (admitted_at, once): the
 	// moment it took one of its project's work_in_progress slots. The
-	// same write clears its queue reason and queue_since.
+	// same write clears its queue reason and queue_since. A held card is
+	// stamped not: errHeld.
 	SetAdmitted(ctx context.Context, id string) error
+	// SetCardHold and EndCardHold put a human's hold on a card that has
+	// not started, and end it (PGStore's).
+	SetCardHold(ctx context.Context, id string, h CardHold) (bool, error)
+	EndCardHold(ctx context.Context, id, release string) (bool, error)
+	// HeldOn are the cards a hold keeps (Held) until card release ends
+	// done or merged.
+	HeldOn(ctx context.Context, release string) ([]Task, error)
 	// SetResumeWait parks card id, back from a wait, queued behind the surge
 	// bound with reason, keeping the time its resumption first waited
 	// (ResumedAt, QueueSince). The card holds no slot; MarkStarted ends it.
@@ -480,10 +491,11 @@ type Store interface {
 	// BudgetRefused reports whether a model call of the task's agent since
 	// was refused at the task's own budget (refused_budget).
 	BudgetRefused(ctx context.Context, taskID string, since time.Time) (bool, error)
-	// ProviderRefusal is the reason of the task's agent's first model call
-	// since since when the gateway audited it error_upstream and no model
-	// call of the agent since was allowed; ok false otherwise.
-	ProviderRefusal(ctx context.Context, taskID string, since time.Time) (reason string, ok bool, err error)
+	// ProviderRefusal is the decision and the reason of the task's agent's
+	// first model call since since, ok true, when no later call of the
+	// window was allowed: an outage, not a refusal. providerRefusal, at a
+	// session's end, is its sole caller.
+	ProviderRefusal(ctx context.Context, taskID string, since time.Time) (decision, reason string, ok bool, err error)
 	// ModelAnswered reports whether the task's agent got a model answer
 	// since since: the gateway booked one of its calls allowed.
 	ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error)
@@ -509,7 +521,7 @@ type Store interface {
 	// CalibrateEstimate is model call r calibrated for an estimate of calls
 	// not yet made, and the ref's mean output (policy.CalibrateEstimate).
 	CalibrateEstimate(ctx context.Context, r policy.HoldRequest) (policy.HoldRequest, int, error)
-	// Opening is how the newest sessions opened on ref, read for the task
+	// Opening is how the task's own newest sessions opened on ref
 	// (policy.ReadOpening).
 	Opening(ctx context.Context, taskID, ref string) (policy.Opening, error)
 	// OverHoldCall is the task's agent's newest model call since since
@@ -677,6 +689,13 @@ type Store interface {
 	// PlansBetweenRounds are the done or closed plan cards without a
 	// plan_closed event whose newest revision's outline has parts, by id.
 	PlansBetweenRounds(ctx context.Context) ([]string, error)
+	// PlansAwaitingCriteria are the plan cards done or failed, the plans
+	// the criteria gate can still run for, or closed after a run of the
+	// gate on main's head, which may have withdrawn their rows, without a
+	// plan_closed event, whose newest revision names criteria and no later
+	// round, which filed the integration card of that revision, and whose
+	// cards are all final or merged, by id.
+	PlansAwaitingCriteria(ctx context.Context) ([]string, error)
 	// PlanMerged says whether a card of plan holds an unreverted merge
 	// (a merge commit, or a pull_request_merged row): the rule that opens
 	// the plan's production group.
@@ -833,6 +852,12 @@ type Store interface {
 	// 8): verdict rows on the plan's integration card, one per source, and
 	// the tasks that carry them.
 	PutCriteriaVerdicts(ctx context.Context, taskID, source, by string, rows []CriterionVerdict) error
+	// PutGateVerdicts writes a gate run's rows of source on card taskID as
+	// PutCriteriaVerdicts does, then deletes every row but the approver's
+	// of the criteria of drop, in one transaction. A run on card writer's
+	// pull request (writer not "") writes nothing once writer ended
+	// undelivered (ErrCardEnded), and the end of writer waits for a write.
+	PutGateVerdicts(ctx context.Context, writer, taskID, source string, rows []CriterionVerdict, drop []string) error
 	// ClosePlanWithWaivers writes what prepare decides (a PlanClose) and
 	// ends plan's pending criteria asks in one transaction that locks the
 	// plan's task row, re-checks it is at rest (ErrNotDonePlan) and not
@@ -886,6 +911,7 @@ type Store interface {
 	EnterQueue(ctx context.Context, project, taskID string) (QueueSpot, error)
 	QueueHead(ctx context.Context, project string) (string, bool, error)
 	LeaveQueue(ctx context.Context, taskID string) (project string, left bool, err error)
+	MergeQueuePlaces(ctx context.Context) (map[string]QueuePlace, error)
 	WaitingQueueHeads(ctx context.Context) ([]string, error)
 	// RoutineRunOfTask and EndRoutineRun end the run of a routine's card
 	// when the card ends (taskEnded, RoutineStore).
@@ -969,15 +995,14 @@ const (
 	// answers (Spec a PlanSpec).
 	ApprovalPlan = "plan"
 	// ApprovalCriteria is a plan's gap question (the spec-intake concept,
-	// pieces 7 and 8): its cards ran out with a criterion still open; the
-	// approver grants one more bounded card or waives (Spec a
-	// criteriaSpec).
+	// pieces 7 and 8): every card of it ended with a criterion still open;
+	// the approver grants one more bounded card or waives (Spec a
+	// CriteriaSpec).
 	ApprovalCriteria = "criteria"
-	// ApprovalCriteriaRerun is a plan whose cards ran out with criteria
-	// no verdict row holds, a review that never judged them: the approver
-	// waives, or confirms the delivered cards (Spec a CriteriaSpec). No
-	// Approve runs that review: the gateway takes no hold of a finished
-	// card.
+	// ApprovalCriteriaRerun is a plan every card of which ended with
+	// criteria no verdict row holds, a review that never judged them: the approver
+	// grants one more bounded card, waives, or confirms the delivered cards
+	// (Spec a CriteriaSpec).
 	ApprovalCriteriaRerun = "criteria_rerun"
 )
 
@@ -1130,17 +1155,17 @@ func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
 		return err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
-	if err := insertTask(ctx, tx, t, ""); err != nil {
+	if err := InsertTask(ctx, tx, t, ""); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// insertTask, the package helper, inserts t through db, onConflict the
+// InsertTask, the package helper, inserts t through db, onConflict the
 // insert's conflict clause, so the pool's writers and a retry's
 // transaction (ReplaceFailedCard) reuse it. An issue a live card of the
 // same repository still holds is refused, naming the holder (roadmap 298).
-func insertTask(ctx context.Context, db interface {
+func InsertTask(ctx context.Context, db interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
@@ -1198,18 +1223,18 @@ func insertTask(ctx context.Context, db interface {
 	// (roadmap 271): the tasks_final_finished_at check refuses one without
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, repro_base, kind, issue_number, source, repro_command, created_at, gate, gate_since,
-		                    author, author_writer, parent_task, track, process, plan_key, alert_fingerprint, rung, size, pr_number, carry_pr, ships_ruling, ships_clauses, image, finished_at, roadmap_item, raised_sessions, raised_time_s, extra_lines, ceiling_eur)
+		                    author, author_writer, parent_task, track, process, plan_key, alert_fingerprint, rung, size, pr_number, carry_pr, ships_ruling, ships_clauses, image, finished_at, roadmap_item, raised_sessions, raised_time_s, extra_lines, ceiling_eur, plan_revision)
 	 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14, $15, COALESCE($16, now()),
          CASE WHEN $12 = 'agent' THEN $17 ELSE '' END,
          CASE WHEN $12 = 'agent' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
          NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27, $31, $28, $29::jsonb, $30,
-         CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END, $32, $33, $34, $35, NULLIF($36::numeric, 0))
+         CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END, $32, $33, $34, $35, NULLIF($36::numeric, 0), $37)
 	 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, t.ReproBase, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
 		t.Author, t.AuthorWriter, t.Parent, t.Track, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships, t.Image, t.CarryPR, t.RoadmapItem,
-		t.Usage.RaisedSessions, int64(t.Usage.RaisedTime/time.Second), t.Usage.ExtraLines, t.CeilingEUR)
+		t.Usage.RaisedSessions, int64(t.Usage.RaisedTime/time.Second), t.Usage.ExtraLines, t.CeilingEUR, t.PlanRevision)
 	if err != nil || t.RoadmapItem == 0 || refile == 0 {
 		return err
 	}
@@ -1225,11 +1250,11 @@ func refiledCard(n string) string {
 	return `(status IN ('closed', 'failed') AND ` + n + ` > 0 AND COALESCE(issue_number, 0) = ` + n + `)`
 }
 
-// insertTask, the PGStore method, runs the package's insertTask on the
+// InsertTask, the PGStore method, runs the package's InsertTask on the
 // pool: CreateTask, OpenReportTask, EnsureChatTask and CreatePlanCard
 // pass their conflict clauses through it.
-func (s *PGStore) insertTask(ctx context.Context, t Task, onConflict string) error {
-	return insertTask(ctx, s.db, t, onConflict)
+func (s *PGStore) InsertTask(ctx context.Context, t Task, onConflict string) error {
+	return InsertTask(ctx, s.db, t, onConflict)
 }
 
 // RoadmapHolder names the card of repository that builds roadmap item —
@@ -1255,7 +1280,7 @@ func (s *PGStore) RoadmapHolder(ctx context.Context, repository string, item int
 // prover sessions' opener, is its sole caller; a re-read that finds none
 // errors.
 func (s *PGStore) OpenReportTask(ctx context.Context, t Task) (Task, error) {
-	if err := s.insertTask(ctx, t, `ON CONFLICT (parent_task, source) WHERE parent_task IS NOT NULL AND source IN ('screening', 'sizing', 'prover') DO NOTHING`); err != nil {
+	if err := s.InsertTask(ctx, t, `ON CONFLICT (parent_task, source) WHERE parent_task IS NOT NULL AND source IN ('screening', 'sizing', 'prover') DO NOTHING`); err != nil {
 		return Task{}, err
 	}
 	got, ok, err := s.ReportOf(ctx, t.Parent, t.Source)
@@ -1280,17 +1305,19 @@ func (s *PGStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE parent_task = $1 AND source = $2 AND plan_key IS NOT NULL ORDER BY id`, plan, SourcePlan)
 }
 
-// PlanDelivered says whether every card plan filed is delivered — done
-// or merged, or cut into a successor that is (PlanDelivered).
+// PlanDelivered says whether every card plan filed is delivered — done,
+// merged or closed, or cut into a successor that is (PlanDelivered).
 func (s *PGStore) PlanDelivered(ctx context.Context, plan string) (bool, Task, error) {
 	return PlanDelivered(ctx, s, plan)
 }
 
 // HeldPlanCards are the repository's plan cards waiting on a human's
-// approval, the cards a landed companion pin can wake.
+// approval, a successor that carries a plan card's key among them, the
+// cards a landed companion pin can wake.
 func (s *PGStore) HeldPlanCards(ctx context.Context, repository string) ([]Task, error) {
-	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND source = $2 AND status = $3 AND gate = $4 ORDER BY id`,
-		repository, SourcePlan, "waiting-human", GateApproval)
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND parent_task IS NOT NULL
+		AND (source = $2 OR source = $3 AND plan_key IS NOT NULL) AND status = $4 AND gate = $5 ORDER BY id`,
+		repository, SourcePlan, SourceSuccessor, "waiting-human", GateApproval)
 }
 
 // SetPlanName records plan id's short name; the naming pass is its sole
@@ -1400,7 +1427,8 @@ const taskColumns = `id, priority, required_capabilities, risk_class, round(budg
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''), COALESCE(plan_name, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
-	image, image_digest, image_egress, COALESCE(roadmap_item, 0), queue_reason, queue_since, resumed_at, closing_final, closing_reason`
+	image, image_digest, image_egress, COALESCE(roadmap_item, 0), queue_reason, queue_since, resumed_at, closing_final, closing_reason,
+	hold_at, hold_by, hold_reason, COALESCE(hold_release, '')`
 
 // scanTask scans one taskColumns row into a Task: oneTask and the task
 // lists scan through it here, the console's two reads in console_store.
@@ -1409,14 +1437,21 @@ const taskColumns = `id, priority, required_capabilities, risk_class, round(budg
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
 	var caps, ships, egress []byte
+	var hold CardHold
+	var holdAt *time.Time
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.HeldEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.CarryPR,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ExtraLines, &t.Usage.ProofLines, &t.Usage.RaisedSessions, &t.Usage.RaisedTime, &t.CeilingEUR,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.HumanSummary, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
-		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem, &t.QueueReason, &t.QueueSince, &t.ResumedAt, &t.ClosingFinal, &t.ClosingReason); err != nil {
+		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem, &t.QueueReason, &t.QueueSince, &t.ResumedAt, &t.ClosingFinal, &t.ClosingReason,
+		&holdAt, &hold.By, &hold.Reason, &hold.Release); err != nil {
 		return Task{}, err
+	}
+	if holdAt != nil {
+		hold.At = *holdAt
+		t.Hold = &hold
 	}
 	var err error
 	if t.RequiredCapabilities, err = fromJSON(caps); err != nil {
@@ -1739,11 +1774,13 @@ func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) erro
 	return oneRow(res, err, "task "+id)
 }
 
-// ResetTaskUsage zeroes every usage counter of task id, the console's
-// raises included: BecomePlan and a replan's reopen start the card over.
+// ResetTaskUsage zeroes every usage counter of task id and the console's
+// raised sessions and agent time: BecomePlan and a replan's reopen start
+// the card over. The line raise stays: a planner pushes nothing, and the
+// card that lands the plan row's work inherits it.
 func (s *PGStore) ResetTaskUsage(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = 0, attempts = 0, extra_time_ns = 0, extra_attempts = 0, poster_attempts = 0,
-		last_uncounted = false, retry_time_ns = 0, extra_lines = 0, proof_lines = 0, raised_sessions = 0, raised_time_s = 0 WHERE id = $1`, id)
+		last_uncounted = false, retry_time_ns = 0, proof_lines = 0, raised_sessions = 0, raised_time_s = 0 WHERE id = $1`, id)
 	return oneRow(res, err, "task "+id)
 }
 
@@ -1804,17 +1841,18 @@ func (s *PGStore) SetTaskSizeBudget(ctx context.Context, id, size string, heldCe
 	return nil
 }
 
-// SwitchToPlan moves a still-startable direct card (not of a plan,
-// unmerged) to the plan track — capabilities set, pr_number cleared —
-// and answers whether it moved. BecomePlan, at the to-plan gate, is its
-// sole caller; a card the guard refuses stays direct, false, no error.
+// SwitchToPlan moves a still-startable direct card (not of a plan, nor
+// the successor that carries a plan card's key, unmerged) to the plan
+// track — capabilities set, pr_number cleared — and answers whether it
+// moved. BecomePlan, at the to-plan gate, is its sole caller; a card the
+// guard refuses stays direct, false, no error.
 func (s *PGStore) SwitchToPlan(ctx context.Context, id string, capabilities []string) (bool, error) {
 	caps, err := toJSON(capabilities)
 	if err != nil {
 		return false, err
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET track = 'plan', required_capabilities = $2::jsonb, pr_number = 0
-		WHERE id = $1 AND track = 'direct' AND source <> 'plan' AND merge_commit = '' AND status IN ('queued', 'waiting-deps', 'running')`, id, caps)
+		WHERE id = $1 AND track = 'direct' AND source <> 'plan' AND plan_key IS NULL AND merge_commit = '' AND status IN ('queued', 'waiting-deps', 'running')`, id, caps)
 	if err != nil {
 		return false, err
 	}
@@ -1863,20 +1901,19 @@ func (s *PGStore) BudgetRefused(ctx context.Context, taskID string, since time.T
 	return refused, err
 }
 
-// ProviderRefusal is the first model call's upstream reason since since,
-// ok true, when no later call of the window was allowed: an outage, not
-// a refusal. providerRefusal, at a session's end, is its sole caller.
-func (s *PGStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
-	var reason string
-	err := s.db.QueryRowContext(ctx,
+// ProviderRefusal is the first model call's decision and reason since
+// since, ok true, when no later call of the window was allowed: an outage,
+// not a refusal. providerRefusal, at a session's end, is its sole caller.
+func (s *PGStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (decision, reason string, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx,
 		`WITH calls AS (SELECT id, ts, decision, reason FROM audit WHERE task_id = $1 AND kind = $2 AND tool = '' AND ts >= $3)
-		 SELECT reason FROM (SELECT decision, reason FROM calls ORDER BY ts, id LIMIT 1) first
-		 WHERE decision = 'error_upstream' AND NOT EXISTS (SELECT 1 FROM calls WHERE decision = 'allowed')`,
-		taskID, gateway.AuditKindAgent, since).Scan(&reason)
+		 SELECT decision, reason FROM (SELECT decision, reason FROM calls ORDER BY ts, id LIMIT 1) first
+		 WHERE decision IN ('error_upstream', 'refused_provider_limit') AND NOT EXISTS (SELECT 1 FROM calls WHERE decision = 'allowed')`,
+		taskID, gateway.AuditKindAgent, since).Scan(&decision, &reason)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return "", "", false, nil
 	}
-	return reason, err == nil, err
+	return decision, reason, err == nil, err
 }
 
 // ModelAnswered reports whether a model call of the card was allowed
@@ -2153,33 +2190,92 @@ func (s *PGStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (bool
 	return wrote && err == nil, err
 }
 
-// DrawBoundError refuses a draw past a bound of its rung: the card's draw
-// bound (Card) or the project's pool, with what the bound left when the
-// draw met it.
+// DrawBoundError refuses draw Want past a bound of its rung: the card's
+// draw bound (Card) or the project's pool, with what the bound left when
+// the draw met it, and the largest part of Want every bound of the rung
+// leaves room for (Fit). Least is the smallest draw the answer's action
+// takes when it fits those bounds, so the action stays on offer; while it
+// does not, nothing is a fit. Lines are the lines asked beside the draw,
+// which no bound weighs.
 type DrawBoundError struct {
-	Card bool
-	Left policy.Draw
+	Card                   bool
+	Want, Left, Fit, Least policy.Draw
+	Lines                  int
+}
+
+// newDrawBound is the refusal of draw want, lines beside it, on rung:
+// against cardLeft on rungs 0 and 1 first, then against poolLeft on rungs
+// 0 to 2. need is the smallest draw the answer's action takes (its probe's,
+// Action.need), zero for none. nil when want fits.
+func newDrawBound(rung int, want, need policy.Draw, lines int, cardLeft, poolLeft policy.Draw) *DrawBoundError {
+	within := func(d policy.Draw) bool {
+		return rung > 2 || fitsIn(d, poolLeft) && (rung == 2 || fitsIn(d, cardLeft))
+	}
+	if within(want) {
+		return nil
+	}
+	e := &DrawBoundError{Card: rung <= 1 && !fitsIn(want, cardLeft), Want: want, Left: poolLeft, Fit: want.Min(poolLeft), Lines: lines}
+	if rung <= 1 {
+		e.Fit = e.Fit.Min(cardLeft)
+	}
+	if e.Card {
+		e.Left = cardLeft
+	}
+	if e.Fit.AgentTime < want.AgentTime {
+		// minutesWord rounds: a fit cut to the minute is never named above what is left
+		e.Fit.AgentTime = e.Fit.AgentTime.Truncate(time.Minute)
+	}
+	switch {
+	case need.IsZero():
+	case within(need):
+		e.Least = need
+	default:
+		e.Fit, e.Lines = policy.Draw{}, 0
+	}
+	return e
 }
 
 func (e *DrawBoundError) Error() string {
+	bound := fmt.Sprintf("the escalation pool leaves %s this month: only the human draws more", drawText(e.Left))
 	if e.Card {
-		return fmt.Sprintf("the card's draw bound leaves %s: rung 2 or the human may draw more", drawText(e.Left))
+		bound = fmt.Sprintf("the card's draw bound leaves %s: rung 2 or the human may draw more", drawText(e.Left))
 	}
-	return fmt.Sprintf("the escalation pool leaves %s this month: only the human draws more", drawText(e.Left))
+	var over []string
+	if e.Want.Sessions > e.Left.Sessions {
+		over = append(over, fmt.Sprintf("sessions (asked %d, left %d)", e.Want.Sessions, e.Left.Sessions))
+	}
+	if e.Want.AgentTime > e.Left.AgentTime {
+		over = append(over, fmt.Sprintf("agent time (asked %s, left %s)", minutesWord(e.Want.AgentTime), minutesWord(e.Left.AgentTime)))
+	}
+	if Cents(e.Want.EUR) > Cents(e.Left.EUR) {
+		over = append(over, fmt.Sprintf("EUR (asked %.2f, left %.2f)", e.Want.EUR, e.Left.EUR))
+	}
+	bound += ". This draw does not fit in " + textutil.AndList(over)
+	lines := textutil.Plural(e.Lines, "line", "lines")
+	switch {
+	case e.Fit.IsZero() && e.Lines > 0:
+		return fmt.Sprintf("%s. An extend of the %s alone fits, as lines ride free: ask for that", bound, lines)
+	case e.Fit.IsZero() && !e.Least.IsZero():
+		return fmt.Sprintf("%s, and nothing of it fits, but %s does: ask for that", bound, drawText(e.Least))
+	case e.Fit.IsZero():
+		return bound + ", and nothing of it fits: hand_up with it as the recommendation"
+	case e.Lines > 0:
+		return fmt.Sprintf("%s. The largest draw that fits is %s with %s beside it, as lines ride free: ask for that", bound, drawText(e.Fit), lines)
+	}
+	return fmt.Sprintf("%s. The largest draw that fits is %s: ask for that", bound, drawText(e.Fit))
 }
 
 // drawFits takes the project's pool lock for tx, so draws on one project
 // are weighed one at a time, and refuses d of card taskID past its rung's
-// bounds as drawWithin does: on rungs 0 and 1 the card's rows of those
-// rungs with d against CardBound, on rungs 0 to 2 the month's pool rows
-// with d against Pool, a raise of the ceiling included. The human's draw
-// takes the lock and is refused nothing. A draw whose identity key a row
-// holds already, a retry's after its commit, writes no row and is refused
-// nothing: its own row stands in the pool.
+// bounds as drawWithin does: on rungs 0 and 1 d against what CardBound
+// leaves past the card's rows of those rungs, on rungs 0 to 2 against what
+// Pool leaves past the month's pool rows, a raise of the ceiling included,
+// each part on its own: a part the human drew past its bound refuses only
+// a draw that asks for some of it, and a draw of nothing, or of lines
+// alone, fits. The human's draw takes the lock and is refused nothing. A
+// draw whose identity key a row holds already, a retry's after its commit,
+// writes no row and is refused nothing: its own row stands in the pool.
 func (s *PGStore) drawFits(ctx context.Context, tx *sql.Tx, taskID string, d CaseDraw) error {
-	if d.amount().IsZero() {
-		return nil // a draw of nothing, or of lines alone, is weighed against no bound
-	}
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('pool:' || $1::text))`, d.Event.Repository); err != nil {
 		return err
 	}
@@ -2189,23 +2285,23 @@ func (s *PGStore) drawFits(ctx context.Context, tx *sql.Tx, taskID string, d Cas
 			return err
 		}
 	}
+	var cardLeft, poolLeft policy.Draw
 	if d.Rung <= 1 {
 		drawn, err := cardDrawn(ctx, tx, taskID)
 		if err != nil {
 			return err
 		}
-		if !fitsIn(drawn.Plus(d.amount()), d.CardBound) {
-			return &DrawBoundError{Card: true, Left: d.CardBound.Minus(drawn)}
-		}
+		cardLeft = d.CardBound.Minus(drawn)
 	}
 	if d.Rung <= 2 {
 		drawn, err := poolDrawn(ctx, tx, d.Event.Repository, time.Now())
 		if err != nil {
 			return err
 		}
-		if !fitsIn(drawn.Plus(d.amount()), d.Pool) {
-			return &DrawBoundError{Left: d.Pool.Minus(drawn)}
-		}
+		poolLeft = d.Pool.Minus(drawn)
+	}
+	if e := newDrawBound(d.Rung, d.amount(), d.Need, d.Lines, cardLeft, poolLeft); e != nil {
+		return e
 	}
 	return nil
 }
@@ -2274,11 +2370,12 @@ func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Ta
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1)`, t.ID).Scan(&have); err != nil {
 		return Task{}, false, err
 	}
-	var status *Event
+	var status []Event
 	switch {
 	case have:
 		moved := false
-		if status, moved, err = changeStatusOn(ctx, tx, `kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL, track = NULL, process = NULL`,
+		if status, moved, err = changeStatusOn(ctx, tx, `kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL, track = NULL, process = NULL,
+			hold_at = NULL, hold_by = '', hold_reason = '', hold_release = NULL`,
 			`id = $1 AND kind = 'agent' AND status = 'queued'`, t.ID); err != nil {
 			return Task{}, false, err
 		}
@@ -2296,11 +2393,11 @@ func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Ta
 		if !errors.Is(err, sql.ErrNoRows) {
 			return Task{}, false, err
 		}
-		if err := insertTask(ctx, tx, t, ""); err != nil {
+		if err := InsertTask(ctx, tx, t, ""); err != nil {
 			return Task{}, false, err
 		}
 	default:
-		if err := insertTask(ctx, tx, t, ""); err != nil {
+		if err := InsertTask(ctx, tx, t, ""); err != nil {
 			return Task{}, false, err
 		}
 	}
@@ -2314,9 +2411,7 @@ func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Ta
 	if inserted {
 		s.publish(row)
 	}
-	if status != nil {
-		s.recordStatus(ctx, *status)
-	}
+	s.recordStatus(ctx, status)
 	return t, true, nil
 }
 
@@ -2366,10 +2461,15 @@ func (s *PGStore) Ping(ctx context.Context) error {
 // task, $2 the status it moves to, $3 the statuses it may move from. A
 // card that moves back from a final status (a reopen) is unfinished and
 // unsettled again, and any move ends a wait to resume: the card is no
-// resumed waiter, and its reason and time go with the wait.
+// resumed waiter, and its reason and time go with the wait. A card that
+// ends takes its hold with it.
 const (
 	transitionSet = `status = $2,
 		 finished_at = CASE WHEN $2 IN ('done', 'failed', 'closed', 'merged') THEN now() ELSE NULL END,
+		 hold_at = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE hold_at END,
+		 hold_by = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN '' ELSE hold_by END,
+		 hold_reason = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN '' ELSE hold_reason END,
+		 hold_release = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE hold_release END,
 		 settled_at = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN settled_at ELSE NULL END,
 		 gate = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN '' ELSE gate END,
 		 gate_since = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE gate_since END,
@@ -2433,11 +2533,55 @@ func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
 
 // SetAdmitted stamps the card admitted at now, once — a card already
 // stamped keeps its first stamp — and clears its queue reason in the same
-// write, so no refusal lands between the two. admit, the bound's
-// admission pass, is its sole caller.
+// write, so no refusal lands between the two. A card a hold took since
+// admit read it is stamped not: errHeld. admit, the bound's admission
+// pass, is its sole caller.
 func (s *PGStore) SetAdmitted(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET admitted_at = now(), queue_reason = '', queue_since = NULL WHERE id = $1 AND admitted_at IS NULL`, id)
-	return err
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET admitted_at = now(), queue_reason = '', queue_since = NULL WHERE id = $1 AND admitted_at IS NULL AND hold_at IS NULL`, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n > 0 {
+		return err
+	}
+	var held bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1 AND admitted_at IS NULL AND hold_at IS NOT NULL)`, id).Scan(&held); err != nil || !held {
+		return err
+	}
+	return errHeld
+}
+
+// SetCardHold puts hold h on card id while it has not started: a bound
+// agent card queued and never admitted or resumed, or in waiting-deps on
+// a dependency that has not ended. A hold it holds already is replaced.
+// False: the card is in no such state.
+func (s *PGStore) SetCardHold(ctx context.Context, id string, h CardHold) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET hold_at = $2, hold_by = $3, hold_reason = $4, hold_release = NULLIF($5, '')
+		WHERE id = $1 AND `+boundCards+` AND (status = 'queued' AND admitted_at IS NULL AND resumed_at IS NULL
+		OR status = 'waiting-deps' AND EXISTS (SELECT 1 FROM task_deps d JOIN tasks x ON x.id = d.depends_on
+			WHERE d.task_id = $1 AND x.status NOT IN ('done', 'failed', 'closed')))`, id, h.At, h.By, h.Reason, h.Release) // #nosec G202 -- boundCards is built from constants
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// EndCardHold ends card id's hold while it holds the card (Held): any
+// hold for release "", else only one whose release card is release.
+// False: no such hold holds it.
+func (s *PGStore) EndCardHold(ctx context.Context, id, release string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET hold_at = NULL, hold_by = '', hold_reason = '', hold_release = NULL
+		WHERE id = $1 AND hold_at IS NOT NULL AND status IN ('queued', 'waiting-deps') AND ($2 = '' OR hold_release = $2)`, id, release)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+func (s *PGStore) HeldOn(ctx context.Context, release string) ([]Task, error) {
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE hold_release = $1 AND hold_at IS NOT NULL AND status IN ('queued', 'waiting-deps') ORDER BY id`, release)
 }
 
 // SetResumeWait is the store's: a parked card, or one already waiting to
@@ -2505,43 +2649,49 @@ func (s *PGStore) ListQueuedByRepository(ctx context.Context, repository string)
 // carries it; no row matched answers false. TransitionTask, MarkStarted, SetGate and
 // the heal's lane moves call it; a no-change update records nothing, a failed record never fails it.
 func (s *PGStore) changeStatus(ctx context.Context, set, where string, args ...any) (bool, error) {
-	e, changed, err := changeStatusOn(ctx, s.db, set, where, args...)
-	if e != nil {
-		s.recordStatus(ctx, *e)
-	}
+	events, changed, err := changeStatusOn(ctx, s.db, set, where, args...)
+	s.recordStatus(ctx, events)
 	return changed, err
 }
 
 // changeStatusOn is changeStatus's update on q, a transaction or the
 // pool; alerts.go's escalation close runs it in one. It answers the
-// event to record, nil when the update changed neither status nor gate,
-// and whether where matched a row.
-func changeStatusOn(ctx context.Context, q rowQuerier, set, where string, args ...any) (*Event, bool, error) {
+// events to record, the status move unless the update changed neither
+// status nor gate, and the end of a hold the move took with it, to a
+// final status or to the human lane; and whether where matched a row.
+func changeStatusOn(ctx context.Context, q rowQuerier, set, where string, args ...any) ([]Event, bool, error) {
 	e := Event{Kind: EventTaskStatus, Actor: FactoryDecider, Via: ViaFactoryd}
-	var status, gate, wasStatus, wasGate string
+	var status, gate, wasStatus, wasGate, wasHold string
+	var holdEnded bool
 	err := q.QueryRowContext(ctx, `UPDATE tasks SET `+set+`
-		FROM (SELECT status AS was_status, gate AS was_gate FROM tasks WHERE id = $1 FOR UPDATE) was
-		WHERE `+where+` RETURNING id, repository, issue_number, status, gate, was_status, was_gate`, args...).
-		Scan(&e.TaskID, &e.Repository, &e.IssueNumber, &status, &gate, &wasStatus, &wasGate)
+		FROM (SELECT status AS was_status, gate AS was_gate, hold_at IS NOT NULL AS was_held, hold_reason AS was_hold FROM tasks WHERE id = $1 FOR UPDATE) was
+		WHERE `+where+` RETURNING id, repository, issue_number, status, gate, was_status, was_gate, was_held AND hold_at IS NULL, was_hold`, args...).
+		Scan(&e.TaskID, &e.Repository, &e.IssueNumber, &status, &gate, &wasStatus, &wasGate, &holdEnded, &wasHold)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
-	if status == wasStatus && gate == wasGate {
-		return nil, true, nil
+	var out []Event
+	if status != wasStatus || gate != wasGate {
+		e.Detail = map[string]any{"status": status, "gate": gate}
+		out = append(out, e)
 	}
-	e.Detail = map[string]any{"status": status, "gate": gate}
-	return &e, true, nil
+	if holdEnded {
+		out = append(out, Event{Kind: EventCardHoldEnded, TaskID: e.TaskID, Repository: e.Repository, IssueNumber: e.IssueNumber,
+			Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"reason": wasHold, "card_status": status}})
+	}
+	return out, true, nil
 }
 
-// recordStatus writes changeStatus's event through Record; changeStatus
-// is its sole caller. A failed write is logged, never returned: the
-// status change stands.
-func (s *PGStore) recordStatus(ctx context.Context, e Event) {
-	if _, err := s.Record(ctx, e); err != nil {
-		log.Printf("task %s: event %s: %v", e.TaskID, e.Kind, err)
+// recordStatus writes changeStatusOn's events through Record. A failed
+// write is logged, never returned: the status change stands.
+func (s *PGStore) recordStatus(ctx context.Context, events []Event) {
+	for _, e := range events {
+		if _, err := s.Record(ctx, e); err != nil {
+			log.Printf("task %s: event %s: %v", e.TaskID, e.Kind, err)
+		}
 	}
 }
 
@@ -2908,8 +3058,8 @@ func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, e
 }
 
 // ResolveApprovals decides the task's pending requests of kind ("" =
-// every kind) — status, by whom, why — and resolves a decided merge
-// request's case with them. The gates' merges and refusals, the plan's
+// every kind) — status, by whom, why — and ends the case of a merge or a
+// plan's criteria request it decided; with none decided it ends no case. The gates' merges and refusals, the plan's
 // denials, a switch to plan and the verdict's criteria grants call it;
 // nothing pending is a no-op, no error.
 func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, kind, status, by, note string) error {
@@ -2918,13 +3068,14 @@ func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, kind, status, by
 		return err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
-	var merges int
+	var merges, criteria int
 	if err := tx.QueryRowContext(ctx,
 		`WITH decided AS (
 		     UPDATE approval_requests SET status = $3, decided_by = $4, decided_at = now(), decision_note = $5
 		     WHERE task_id = $1 AND ($2 = '' OR kind = $2) AND status = 'pending' RETURNING kind
 		 )
-		 SELECT count(*) FROM decided WHERE kind = $6`, taskID, kind, status, by, note, ApprovalMerge).Scan(&merges); err != nil {
+		 SELECT count(*) FILTER (WHERE kind = $6), count(*) FILTER (WHERE kind = ANY($7::text[])) FROM decided`,
+		taskID, kind, status, by, note, ApprovalMerge, criteriaKinds).Scan(&merges, &criteria); err != nil {
 		return err
 	}
 	if merges > 0 {
@@ -2932,7 +3083,7 @@ func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, kind, status, by
 			return err
 		}
 	}
-	if kind == "" || slices.Contains(criteriaKinds, kind) {
+	if criteria > 0 {
 		if err := endRequestCase(ctx, tx, taskID, ApprovalCriteria, status, by, note); err != nil {
 			return err
 		}
@@ -2990,8 +3141,12 @@ func (s *PGStore) ReopenApproval(ctx context.Context, taskID, kind, note string)
 // DecideApproval decides one pending approval request of kind, and a
 // merge request's case with it: a human's approve or deny in the
 // console, or the gates' decide-and-signal pass. ErrNotFound when no
-// such request is pending.
+// such request is pending; a criteria request's denial by anyone but a
+// person is ErrNotPerson.
 func (s *PGStore) DecideApproval(ctx context.Context, id int64, kind, status, by, note string) error {
+	if status == "denied" && slices.Contains(criteriaKinds, kind) && !isPerson(by) {
+		return ErrNotPerson
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

@@ -171,6 +171,11 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 	logs := &lockedBuffer{}
 	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(logs, nil))))
 	h := &workflowHarness{env: suite.NewTestWorkflowEnvironment(), logs: logs}
+	// a starved runner (CI runs the whole suite at once) can leave the
+	// workflow goroutine unscheduled past the SDK's 1s wall-clock yield
+	// limit and fail a green test as a false deadlock; a real deadlock
+	// still trips, only later
+	h.env.SetWorkerOptions(worker.Options{DeadlockDetectionTimeout: time.Minute})
 	// every run starts at the same morning: a run that took the wall clock
 	// crossed the UTC day's turn in its first hours after 18:00 UTC, and a
 	// test of a day's cap then read the cap lifted. A test that needs
@@ -212,7 +217,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityGateReproduction: func(ctx context.Context, taskID string, pr int64, commit string) (ReproResult, error) {
 			return ReproResult{}, nil
 		},
-		ActivityGateCriteria: func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
+		ActivityGateCriteria: func(ctx context.Context, taskID string, pr int64, commit, checked string) (CriteriaResult, error) {
 			return CriteriaResult{}, nil
 		},
 		ActivityHoldoutSettlement: func(ctx context.Context, taskID string, pin, pr int64, commit string, reds []HoldoutGateResult) (HoldoutSettlement, error) {
@@ -292,6 +297,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivitySessionFunded:   func(ctx context.Context, taskID, model string) (string, error) { return "", nil },
 		ActivitySessionAnswered: func(ctx context.Context, in SessionAnswerInput) (bool, error) { return true, nil },
 		ActivityCapResume:       func(ctx context.Context, in CapCheck) (CapResumed, error) { return CapResumed{Resume: in.Turned}, nil },
+		ActivityLimitResume:     func(ctx context.Context, taskID, model string) (bool, error) { return false, nil },
 		ActivityEndCase:         func(ctx context.Context, caseID int64, reason string) error { return nil },
 		ActivityCaseState:       func(ctx context.Context, caseID int64) (CaseState, error) { return CaseState{}, nil },
 		ActivityRecordGrant:     func(ctx context.Context, taskID, by string, d policy.Draw, key string) error { return nil },
@@ -633,6 +639,88 @@ func TestWorkflowSessionCarriesTheTasksOwnAgentTimeAndCheckIn(t *testing.T) {
 	}
 }
 
+// A session's own agent time is the card's, sized: a class of 2h gives a
+// large card 3h (2h and half of it), a medium one 2h and a small one 1h,
+// the same as its activity's window, so the session's clock does not stop
+// it before the card's cap. Time added to the card rides it too.
+func TestWorkflowSessionRunsOnTheCardsSizedTime(t *testing.T) {
+	for _, c := range []struct {
+		size  string
+		added time.Duration
+		want  time.Duration
+	}{
+		{"large", 0, 3 * time.Hour},
+		{"medium", 0, 2 * time.Hour},
+		{"small", 0, time.Hour},
+		{"", 30 * time.Minute, 2*time.Hour + 30*time.Minute},
+	} {
+		h := newWorkflowHarness(t)
+		h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+			Stages: testStages(), Queue: policy.QueueNone, AgentTime: 2 * time.Hour}
+		h.state = RunState{Size: c.size, Usage: TaskUsage{ExtraTime: c.added}}
+		var windows []time.Duration
+		h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, in SessionInput) (SessionResult, error) {
+				h.sessions = append(h.sessions, in)
+				windows = append(windows, activity.GetInfo(ctx).StartToCloseTimeout)
+				return pushed("s1", "c1"), nil
+			})
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := h.run(t); final != "done" {
+			t.Fatalf("size %q: final = %q, want done", c.size, final)
+		}
+		if len(h.sessions) != 1 || h.sessions[0].AgentTime != c.want || len(windows) != 1 || windows[0] != c.want+sessionGrace {
+			t.Errorf("size %q, %v added: sessions %+v in windows %v; want one of agent time %v in a window of it and the grace", c.size, c.added, h.sessions, windows, c.want)
+		}
+	}
+}
+
+// A run from before versionSessionTime gives a large card's session the
+// class's 2h, in the card's window of 3h.
+func TestWorkflowSessionTimeBeforeKeepsTheClasssTime(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.env.OnGetVersion("session-time", workflow.DefaultVersion, versionSessionTime).Return(workflow.DefaultVersion)
+	h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+		Stages: testStages(), Queue: policy.QueueNone, AgentTime: 2 * time.Hour}
+	h.state = RunState{Size: "large"}
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if len(h.sessions) != 1 || h.sessions[0].AgentTime != 2*time.Hour {
+		t.Fatalf("sessions %+v, want one of the class's 2h", h.sessions)
+	}
+}
+
+// A large card's session that runs its card's whole 3h and stops on the
+// wall clock asks the agent time's cap card, as the card's cap is reached.
+func TestWorkflowWallClockAtTheSizedCapAsksTheCapCard(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+		Stages: testStages(), Queue: policy.QueueNone, AgentTime: 2 * time.Hour}
+	h.state = RunState{Size: "large"}
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(3 * time.Hour).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return wallClock("s1", ""), nil
+		})
+	h.signalAfter(4*time.Hour, SignalCaseResolved, caseResolved(701, Resolution{Action: ActClose}, 0))
+	h.signalAfter(5*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	h.run(t)
+	if len(h.sessions) != 1 || h.sessions[0].AgentTime != 3*time.Hour {
+		t.Fatalf("sessions %+v, want one of the card's 3h", h.sessions)
+	}
+	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], timeCapReachedLadder) || h.tripUsage[0].AgentTime != 3*time.Hour {
+		t.Fatalf("asked %q after usage %+v, want the agent time's card once, after 3h used", h.escalated, h.tripUsage)
+	}
+}
+
 // The next session is told how its parent stopped: the reason, the
 // outcome and the trip ride its input, for the working state's heading.
 func TestSecondSessionInputNamesHowTheFirstStopped(t *testing.T) {
@@ -816,7 +904,7 @@ func (h *workflowHarness) refusedThenFunded(refusing ...int) map[string]int {
 			reads[activity]++
 			if slices.Contains(refusing, calls) {
 				return fmt.Sprintf("%s: Raise the budget (Fund on the board) and answer, or close the card.\n%.3f EUR of the 2.000 EUR budget remains, and a session on %s needs 0.300000 EUR",
-					budgetRefused, float64(calls)/10, model), nil
+					BudgetRefused, float64(calls)/10, model), nil
 			}
 			return "", nil
 		}
@@ -889,7 +977,7 @@ func TestWorkflowThreeUnansweredSessionsInARowAskAHuman(t *testing.T) {
 	}
 	want := "No session got a model answer: 3 sessions in a row ended without one and took no number of the session cap. " +
 		"Find what kept the model from answering (the gateway, the provider or the session's pod), then answer to start the next session. The last stop: stop 6"
-	if !slices.Equal(h.escalated, []string{want}) || escalationSource(want) != "no_answer" {
+	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(want) != "no_answer" {
 		t.Fatalf("escalations = %q, want %q from source no_answer", h.escalated, want)
 	}
 	if in := h.sessions[6]; in.Model != "factory/big" || len(in.Answers) != 1 || !strings.HasSuffix(in.Answers[0], ": the gateway is back") {
@@ -2096,7 +2184,7 @@ func TestWorkflowSixProviderRefusalsAskAHuman(t *testing.T) {
 	if want := "the model provider refused the first call of 6 sessions in a row (status 429): " + refusedSession.Reason; !slices.Equal(h.escalated, []string{want}) {
 		t.Fatalf("escalations = %q, want %q", h.escalated, want)
 	}
-	if got := escalationSource(h.escalated[0]); got != "provider" {
+	if got := EscalationSource(h.escalated[0]); got != "provider" {
 		t.Fatalf("escalation source = %q, want provider", got)
 	}
 	if len(h.usage) != 0 {
@@ -2275,7 +2363,7 @@ func TestWorkflowDayCapWaitsForTheDayToTurn(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	if !slices.Equal(h.escalated, []string{dayReason}) || escalationSource(h.escalated[0]) != "day_cap" {
+	if !slices.Equal(h.escalated, []string{dayReason}) || EscalationSource(h.escalated[0]) != "day_cap" {
 		t.Fatalf("escalations = %q, want the day cap's refusal once", h.escalated)
 	}
 	if !sameTimes(run.asks, []time.Time{oct(14, 20, 43)}) || !isCheck(run.inputs[0], "factory/small", policy.RefusedDayCap, oct(14, 20, 43)) {
@@ -2319,7 +2407,7 @@ func TestWorkflowDayCapAtTheGateWaitsForTheDay(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	if want := dayQuestion + "\nthe attempt's floor refused the attempt before it started (refused_day_cap): " + state; !slices.Equal(h.escalated, []string{want}) || escalationSource(h.escalated[0]) != "day_cap" {
+	if want := dayQuestion + "\nthe attempt's floor refused the attempt before it started (refused_day_cap): " + state; !slices.Equal(h.escalated, []string{want}) || EscalationSource(h.escalated[0]) != "day_cap" {
 		t.Fatalf("escalations = %q, want the day cap's wait once: %q", h.escalated, want)
 	}
 	if len(run.began) != 1 || !run.began[0].Equal(oct(15, 0, 0)) || h.sessions[0].Attempt != 1 || !sameTimes(run.turns, []time.Time{oct(15, 0, 0)}) || len(run.asks) != 0 {
@@ -2455,7 +2543,7 @@ func TestWorkflowMonthCapResumesOnAPolicyLoad(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	if !slices.Equal(h.escalated, []string{monthReason}) || escalationSource(h.escalated[0]) != SourceMonthCap {
+	if !slices.Equal(h.escalated, []string{monthReason}) || EscalationSource(h.escalated[0]) != SourceMonthCap {
 		t.Fatalf("escalations = %q, want the month cap's wait once, source month_cap: %q", h.escalated, monthReason)
 	}
 	if !sameTimes(run.asks, []time.Time{oct31(23, 22, 52)}) || !isCheck(run.inputs[0], "factory/small", policy.RefusedMonthCap, oct31(23, 22, 52)) {
@@ -2556,7 +2644,7 @@ func TestWorkflowMonthCapAtTheGateWaitsOnItsOwn(t *testing.T) {
 	want := "the month cap is reached: the card resumes on its own once the month's free headroom funds a session, at the latest when the UTC month turns at " +
 		"2026-11-01T00:00:00Z. Raise budget.month_eur in policy.yaml to resume it sooner, or close the card.\n" +
 		"the attempt's floor refused the attempt before it started (refused_month_cap): " + state
-	if !slices.Equal(h.escalated, []string{want}) || escalationSource(h.escalated[0]) != SourceMonthCap {
+	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(h.escalated[0]) != SourceMonthCap {
 		t.Fatalf("escalations = %q, want the month cap's wait once: %q", h.escalated, want)
 	}
 	if len(run.asks) != 0 || !sameTimes(run.checks, []time.Time{oct31(22, 10, 0), oct31(23, 10, 0)}) || len(run.turns) != 0 ||
@@ -2730,7 +2818,7 @@ func TestWorkflowProjectCapWaitsOnItsOwn(t *testing.T) {
 	want := "the project's month cap is reached: the card resumes on its own once the project's free month headroom funds a session, " +
 		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise budget.month_eur in projects/linkshort.yaml to resume it sooner, or close the card.\n" +
 		"the gateway refused this task's spend (refused_project_cap): " + refusal
-	if !slices.Equal(h.escalated, []string{want}) || escalationSource(h.escalated[0]) != "project_cap" {
+	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(h.escalated[0]) != "project_cap" {
 		t.Fatalf("escalations = %q, want the project cap's wait once: %q", h.escalated, want)
 	}
 	if !sameTimes(run.asks, []time.Time{oct31(21, 10, 0)}) || !isCheck(run.inputs[0], "factory/small", policy.RefusedProjectCap, oct31(21, 10, 0)) ||
@@ -2848,6 +2936,122 @@ func TestWorkflowPolicyLoadResumesAMonthCapWait(t *testing.T) {
 	}
 }
 
+// beforeProviderFreeze runs the workflow as a run from before
+// versionProviderFreeze: a refusal with a named reset walks today's
+// providerBackoff ladder.
+func (h *workflowHarness) beforeProviderFreeze() {
+	h.env.OnGetVersion("provider-freeze", workflow.DefaultVersion, versionProviderFreeze).Return(workflow.DefaultVersion)
+}
+
+// limitRefused is a session the provider refused with a named reset
+// (until) and words, as the gateway's parse reaches the workflow.
+func limitRefused(until time.Time, words string) SessionResult {
+	reason := "provider limit for class big: reset " + until.Format(time.RFC3339) + ": " + words
+	return SessionResult{Outcome: OutcomeProviderRefused, SessionID: "s1", Status: 429, Reason: reason, Until: until, Words: words,
+		Findings: []string{"previous session ended without a pushed commit: " + reason}}
+}
+
+// providerLimitHarness answers RunSession with results in order (the last
+// repeats) and records when each session began and every ProviderWait.
+func providerLimitHarness(t *testing.T, results ...SessionResult) (h *workflowHarness, began *[]time.Time, waits *[]ProviderWait) {
+	h, began, waits = newWorkflowHarness(t), &[]time.Time{}, &[]ProviderWait{}
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions, *began = append(h.sessions, in), append(*began, h.env.Now())
+			return results[min(len(h.sessions), len(results))-1], nil
+		})
+	h.env.OnActivity(ActivityProviderWait, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, w ProviderWait) error {
+			*waits = append(*waits, w)
+			return nil
+		})
+	return h, began, waits
+}
+
+// A refusal that names a reset holds the card to it (provider-freeze): the
+// provider_refused event's BackoffS is the seconds to the reset, no ladder
+// climb, no attempt, no session-cap burn and no count toward the six-refusal
+// escalation. Each wake of the cap wait's shape answers once: a policy load
+// whose class's model did not move keeps the hold to the reset, one whose
+// model moved ends it at the load, the retry switch's wake ends it at the
+// press, and a human comment ends it as the hold's answer, which the next
+// session carries; the session after a hold that ran its time starts at the
+// reset, and the next refusal re-freezes to the later reset. A history from
+// before the gate walks today's ladder (2, 4, 8, 16, 30 minutes) and its
+// six-refusal escalation for the same refusal.
+func TestProviderLimitWaitToReset(t *testing.T) {
+	words := "rate limit exceeded until 2026-10-14 18:04:50 (Asia/Singapore)"
+	h, began, waits := providerLimitHarness(t, limitRefused(oct(14, 9, 30), words), limitRefused(oct(14, 9, 55), words),
+		limitRefused(oct(14, 10, 20), words), limitRefused(oct(14, 10, 30), words), pushed("s5", "c1"))
+	var reads []string
+	h.env.OnActivity(ActivityLimitResume, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, model string) (bool, error) {
+			reads = append(reads, model)
+			return len(reads) > 1, nil // the first load moves nothing, the second moves the class's model
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(10*time.Minute, SignalPolicyLoaded, TaskSignal{Author: "factoryd"}) // before the 09:30 reset: the hold keeps
+	h.signalAfter(35*time.Minute, SignalPolicyLoaded, TaskSignal{Author: "factoryd"}) // before the 09:55 reset: the model moved
+	h.signalAfter(40*time.Minute, SignalProviderRetry, TaskSignal{Author: "sebastian"})
+	h.signalAfter(45*time.Minute, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "switch the class to premium", Comment: 620})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if !sameTimes(*began, []time.Time{oct(14, 9, 0), oct(14, 9, 30), oct(14, 9, 35), oct(14, 9, 40), oct(14, 9, 45)}) || len(h.sessions) != 5 {
+		t.Fatalf("sessions began at %v, want 09:00, the reset at 09:30, the load at 09:35, the retry at 09:40 and the answer at 09:45", *began)
+	}
+	for i, in := range h.sessions {
+		if in.Attempt != 1 || in.ParentSessionID != "" || in.Sessions != h.sessions[0].Sessions {
+			t.Fatalf("session %d = %+v, want attempt 1, no parent and the same session cap", i+1, in)
+		}
+	}
+	if len(*waits) != 4 {
+		t.Fatalf("provider waits = %+v, want the four holds", *waits)
+	}
+	for i, want := range []time.Duration{30 * time.Minute, 25 * time.Minute, 45 * time.Minute, 50 * time.Minute} {
+		w := (*waits)[i]
+		if w.Backoff != want || w.Until.IsZero() || w.Words != words || w.Status != 429 {
+			t.Errorf("wait %d = %+v, want backoff %v to the reset with the words", i+1, w, want)
+		}
+		if !(*began)[i].Add(w.Backoff).Equal(w.Until) {
+			t.Errorf("wait %d at %v + %v = %v, want the reset %v", i+1, (*began)[i], w.Backoff, (*began)[i].Add(w.Backoff), w.Until)
+		}
+	}
+	if !slices.Equal(reads, []string{"factory/small", "factory/small"}) {
+		t.Fatalf("LimitResume read %q, want the refused session's model at each load", reads)
+	}
+	if want := []string{`sebastian, to "` + words + `": switch the class to premium`}; !slices.Equal(h.sessions[4].Answers, want) {
+		t.Fatalf("the session after the answer = %q, want the comment as its answer", h.sessions[4].Answers)
+	}
+	if len(h.escalated) != 0 {
+		t.Fatalf("escalations = %q, want none: the hold counts toward no six-refusal ask", h.escalated)
+	}
+	if len(h.usage) == 0 || slices.ContainsFunc(h.usage, func(u TaskUsage) bool { return u.Attempts != 1 }) {
+		t.Fatalf("usage = %+v, want the pushed session's record alone at attempt 1", h.usage)
+	}
+
+	// the same refusal on a history from before the gate: the ladder and
+	// its escalation, as today
+	pre, _, preWaits := providerHarness(t, limitRefused(oct(14, 9, 30), words))
+	pre.beforeProviderFreeze()
+	pre.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := pre.run(t); final != "closed" || len(pre.sessions) != 6 {
+		t.Fatalf("a pre-gate run: final = %q after %d sessions, want closed after 6", final, len(pre.sessions))
+	}
+	var backoffs []int
+	for _, w := range *preWaits {
+		backoffs = append(backoffs, w.detail["backoff_s"].(int))
+	}
+	if !slices.Equal(backoffs, []int{120, 240, 480, 960, 1800}) {
+		t.Fatalf("a pre-gate run's backoffs = %v, want the ladder 120 240 480 960 1800", backoffs)
+	}
+	if want := "the model provider refused the first call of 6 sessions in a row (status 429): " + limitRefused(oct(14, 9, 30), words).Reason; !slices.Equal(pre.escalated, []string{want}) {
+		t.Fatalf("a pre-gate run's escalations = %q, want the six-refusal ask", pre.escalated)
+	}
+}
+
 // providerBackoffs records the backoff of each of h's provider waits.
 func providerBackoffs(h *workflowHarness) *[]int {
 	backoffs := &[]int{}
@@ -2928,7 +3132,7 @@ func TestWorkflowPodsThatNeverStartAskAHumanAtTheBound(t *testing.T) {
 	}
 	want := "No node started the session's pod: 3 sessions in a row waited for it, and no agent ran. Free what it waits on (a node's cpu, " +
 		"memory or ephemeral storage, or the registry of its image), then answer to start the next session. The last wait: " + podPendingWhy("s3")
-	if !slices.Equal(h.escalated, []string{want}) || escalationSource(want) != "capacity" {
+	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(want) != "capacity" {
 		t.Fatalf("escalations = %q, want %q from source capacity", h.escalated, want)
 	}
 	if in := h.sessions[3]; in.Attempt != 1 || len(in.Answers) != 1 || !strings.HasSuffix(in.Answers[0], ": a node is free") {
@@ -3013,7 +3217,7 @@ func TestWorkflowReportSixProviderRefusalsAskAHuman(t *testing.T) {
 		t.Fatalf("finals %v after %d sessions, backoffs %v; want closed after 6", h.finals, len(*began), *backoffs)
 	}
 	want := "the model provider refused the first call of 6 sessions in a row (status 429): " + refusedSession.Reason
-	if !slices.Equal(h.escalated, []string{want}) || escalationSource(h.escalated[0]) != "provider" {
+	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(h.escalated[0]) != "provider" {
 		t.Fatalf("escalations = %q, want %q from source provider", h.escalated, want)
 	}
 }
@@ -3429,7 +3633,7 @@ func TestWorkflowHealedRunKeepsEarlierAnswers(t *testing.T) {
 		t.Fatalf("sessions = %+v, want answers %q", h.sessions, want)
 	}
 	// the re-ask offers the question's choices again
-	if !slices.Equal(h.escalated, []string{healedReason}) || len(h.choices) != 1 || !slices.Equal(h.choices[0], []string{"hello", "bye"}) {
+	if !slices.Equal(h.escalated, []string{HealedReason}) || len(h.choices) != 1 || !slices.Equal(h.choices[0], []string{"hello", "bye"}) {
 		t.Fatalf("escalations = %q with choices %q, want the healed re-ask with hello and bye", h.escalated, h.choices)
 	}
 }
@@ -3503,7 +3707,7 @@ func TestWorkflowAnswerReachesTheSessionDated(t *testing.T) {
 	if final := h.run(t); final != "done" || len(h.escalated) != 1 || len(h.sessions) != 1 {
 		t.Fatalf("final = %q, escalations %q, sessions %d", final, h.escalated, len(h.sessions))
 	}
-	want := fmt.Sprintf("sebastian (2026-10-15), to %q: go on", escalationQuestion(h.escalated[0]))
+	want := fmt.Sprintf("sebastian (2026-10-15), to %q: go on", EscalationQuestion(h.escalated[0]))
 	if !slices.Equal(h.sessions[0].Answers, []string{want}) {
 		t.Fatalf("answers = %q, want %q", h.sessions[0].Answers, want)
 	}
@@ -4153,6 +4357,23 @@ func TestCheckinReplanClosesAPlansChild(t *testing.T) {
 	}
 }
 
+// A plan card's successor is its key's card in its plan: the check-in's
+// replan of it goes to that plan as a plan card's does, and it turns no
+// plan-track.
+func TestCheckinReplanOfAPlanCardsSuccessorGoesToItsPlan(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state.Source, h.state.PlanCard = SourceSuccessor, true
+	became := h.onBecomePlan(PlanSwitchResult{Switched: true})
+	works := h.onReplanChild(ReplanChildResult{Reason: "cut: plan #10 replans its work"})
+	h.onSessions(SessionResult{Outcome: OutcomeReplan, SessionID: "s1", Trip: "size", Reason: "two packages", Replan: "R"})
+	if final := h.run(t); final != "closed" || h.finals[0][1] != "cut: plan #10 replans its work" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if !slices.Equal(*works, []string{"R"}) || *became != 0 || len(h.sessions) != 1 {
+		t.Fatalf("ReplanChild works %q, BecomePlan calls %d, sessions %d; want [R], 0, 1", *works, *became, len(h.sessions))
+	}
+}
+
 // onRequestApproval records the head of each RequestApproval call.
 func (h *workflowHarness) onRequestApproval() *[]string {
 	var heads []string
@@ -4652,6 +4873,50 @@ func TestWorkflowClosesOnItsProofsAtMain(t *testing.T) {
 	}
 	if !slices.Equal(*calls, []string{"t1"}) || len(h.sessions) != 1 {
 		t.Fatalf("calls %q, sessions %+v; want one call on t1 and one session", *calls, h.sessions)
+	}
+}
+
+// The successor that carries a plan card's key, whose session pushes
+// nothing while its key's work is on main, closes done on its proofs at
+// main as the card would. A run from before the change runs none and goes
+// on to its next session.
+func TestWorkflowClosesASuccessorOnItsProofsAtMain(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state.Source, h.state.PlanCard = SourceSuccessor, true
+	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "main holds the work"})
+	calls := h.onProofsAtMain(ProofsAtMain{Head: "29b0d33aa", Met: true, Reason: "proofs met at 29b0d33: size_bound"}, nil)
+	if final := h.run(t); final != "done" || h.finals[0][1] != "proofs met at 29b0d33: size_bound" {
+		t.Fatalf("finals %v, want done on the proofs", h.finals)
+	}
+	if !slices.Equal(*calls, []string{"t1"}) || len(h.sessions) != 1 {
+		t.Fatalf("calls %q, sessions %+v; want one call on t1 and one session", *calls, h.sessions)
+	}
+
+	h = newWorkflowHarness(t)
+	h.state.Source, h.state.PlanCard = SourceSuccessor, true
+	h.env.OnGetVersion("successor-is-its-keys-card", workflow.DefaultVersion, versionSuccessorIsItsKeysCard).Return(workflow.DefaultVersion)
+	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "nothing to push"}, pushed("s2", "c2"))
+	calls = h.onProofsAtMain(ProofsAtMain{Met: true, Reason: "proofs met at 29b0d33: size_bound"}, nil)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" || len(*calls) != 0 || len(h.sessions) != 2 {
+		t.Fatalf("before the change: finals %v, calls %q, sessions %d; want the push merged, no call and two sessions", h.finals, *calls, len(h.sessions))
+	}
+}
+
+// A plan card whose push the line bound refused holds its work on its
+// branch, not on main: its proofs at main are not met, and the card
+// closes into a successor rather than done.
+func TestWorkflowClosesAnOverBoundPlanCardIntoASuccessor(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state.Source = SourcePlan
+	h.onSessions(overBound("s1"))
+	calls := h.onProofsAtMain(ProofsAtMain{}, nil)
+	if final := h.run(t); final != "failed" || len(h.finals) != 1 || h.finals[0][1] != "closed into successor t-succ" {
+		t.Fatalf("final %q, finals %v; want the one close into the successor", final, h.finals)
+	}
+	if !slices.Equal(*calls, []string{"t1"}) || len(h.successions) != 1 || h.successions[0].TaskID != "t1" {
+		t.Fatalf("calls %q, successor filings %+v; want one of each on t1", *calls, h.successions)
 	}
 }
 

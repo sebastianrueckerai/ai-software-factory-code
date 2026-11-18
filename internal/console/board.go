@@ -43,9 +43,6 @@ var funcs = template.FuncMap{
 	},
 	// eur2 is money to the cent, as a card's face reads spend against budget
 	"eur2": func(v float64) string { return fmt.Sprintf("\u20ac%.2f", v) },
-	// kib is a size in bytes rounded up to whole KiB, as a folded
-	// artifact's summary names it
-	"kib": func(n int) string { return fmt.Sprintf("%d KiB", (n+1023)>>10) },
 	// the metrics page's rows (C30): the deck's formatters, the weeks'
 	// spark, and the window-move subtraction
 	"mDur": mDur, "mDurMove": mDurMove, "mPct": mPct, "mPctMove": mPctMove,
@@ -67,6 +64,8 @@ var funcs = template.FuncMap{
 	"maxWaiverNote": func() int { return factoryd.MaxWaiverNote },
 	// maxReplan is the Replan box's bound, the replan step's
 	"maxReplan": func() int { return factoryd.MaxReplanComment },
+	// maxHoldReason is the Hold form's reason bound
+	"maxHoldReason": func() int { return maxHoldReason },
 	// lease renders minutes as whole hours when they are
 	"lease": func(minutes int) string {
 		if minutes%60 == 0 {
@@ -256,7 +255,7 @@ func stageRank(stage string) int {
 func shows(k card, only string) bool {
 	switch only {
 	case "blocked":
-		return k.Blocked > 0 || k.WaitingOn != ""
+		return k.Blocked > 0 || k.WaitingOn != "" || k.HoldLine != ""
 	case "exceptional":
 		return k.Stale || k.Provider || k.NearBudget || k.Retrying
 	case "failed":
@@ -394,7 +393,7 @@ func faceWords(k card, a *approvalCard) string {
 	if k.WaitingOn != "" {
 		w = append(w, "waiting on "+k.WaitingOn)
 	}
-	w = append(w, k.SlotWait)
+	w = append(w, k.SlotWait, k.HoldLine)
 	if k.Checks != "" {
 		w = append(w, k.Checks+" checks")
 	}
@@ -405,7 +404,8 @@ func faceWords(k card, a *approvalCard) string {
 		w = append(w, "retrying")
 	}
 	if k.Provider {
-		w = append(w, providerWords)
+		// a named limit carries the words and the reset it froze the card to
+		w = append(w, cmp.Or(k.Frozen, providerWords))
 	}
 	if k.Stale {
 		w = append(w, "stale")
@@ -462,7 +462,7 @@ func isState(k card, v string) bool {
 	case "failed":
 		return k.Status == "failed"
 	case "blocked":
-		return k.Blocked > 0 || k.WaitingOn != ""
+		return k.Blocked > 0 || k.WaitingOn != "" || k.HoldLine != ""
 	case "stale":
 		return k.Stale
 	case "provider":
@@ -484,6 +484,10 @@ var stateColumns = []struct{ Title, Status string }{
 
 type card struct {
 	factoryd.Task
+	// MergeBehind is the issue of the card ahead in the merge queue, 0 for none.
+	MergeBehind int64
+	// HeldFor is the issue of the open plan this card waits for, 0 for none.
+	HeldFor  int64
 	IssueURL string
 	PRURL    string
 	// RollID is the roll task a merged card waits for.
@@ -542,6 +546,11 @@ type card struct {
 	Retry                     *retry // a failed plan card's Retry, for an approver
 	Activity                  string // the task's newest event as one line, or the escalation's question
 	WaitingForActivity        bool   // the activity line stands for the wait's reason
+	// HoldLine is a human's hold on the card as the board words it, ""
+	// for none; HoldWarn marks one whose release card ended failed or
+	// closed and releases nothing.
+	HoldLine string
+	HoldWarn bool
 	// Title is the face's first line: human_summary when a writer set
 	// one, else the objective's first paragraph, the title as the issue
 	// was filed.
@@ -590,11 +599,16 @@ type card struct {
 	BlockedOn string
 	// Retrying is a card whose newest session ended for a retry and whose
 	// next has not started; Provider a running one whose next session
-	// waits on the model provider (onProvider); Fine are its fine states as
-	// chips.
+	// waits on the model provider (onProvider), and Frozen the freeze it
+	// waits in, the provider's words and the reset it named, "" on the
+	// ladder's short backoff; Fine are its fine states as chips.
 	Retrying bool
 	Provider bool
+	Frozen   string
 	Fine     []fine
+	// endAt is the moment the card's clocks were aged to: now, or its
+	// end once it finished.
+	endAt time.Time
 	// MayWriteSummary is whether the viewer writes the task's project, so
 	// the expanded view carries the summary and accent forms; CSRF is the
 	// session's token for them.
@@ -615,6 +629,10 @@ func (k card) Closes() bool {
 	ownClose := k.Kind == "human" && k.Question != nil && k.Question.Offers(factoryd.AnswerClose)
 	return k.MayWriteSummary && !k.ChoiceCard() && !ownClose && (k.Status == "waiting-human" || k.Status == "failed" || k.DonePlan)
 }
+
+// Holds: the drawer offers its viewer, a writer, the Hold form on a card
+// that has not started, and Release on a held one.
+func (k card) Holds() bool { return k.MayWriteSummary && (k.Holdable() || k.Held()) }
 
 // OpenPhrase counts the done plan's open criteria in words.
 func (k card) OpenPhrase() string { return factoryd.OpenCriteriaPhrase(k.OpenCriteria) }
@@ -650,7 +668,8 @@ func fineStates(k card, wide bool) []fine {
 	var out []fine
 	switch {
 	case k.Provider:
-		out = append(out, fine{providerWords, "st-waiting"})
+		// a named limit carries the words and the reset it froze the card to
+		out = append(out, fine{cmp.Or(k.Frozen, providerWords), "st-waiting"})
 	case k.Retrying:
 		out = append(out, fine{"retrying", "st-running"})
 	case !wide && k.Status == "waiting-poster":
@@ -804,6 +823,8 @@ type checks struct {
 	count              string
 	attempt            string
 	retrying, provider bool
+	frozen             string
+	freeze             []frozenSpan
 	stepAt             time.Time
 	at                 time.Time
 }
@@ -811,8 +832,10 @@ type checks struct {
 // faceTimelines reads the newest checks step onto every card that can
 // have one, a card with a pull request, and whether it is retrying or
 // waits on the provider onto every running card: neither final, at most
-// once per checksTTL. A timeline that cannot be read keeps the card
-// without the chips — the
+// once per checksTTL. A running card frozen on a named provider limit
+// carries the freeze's words and reset, and its stage and total clocks
+// split the frozen time out. A timeline that cannot be read keeps the
+// card without the chips — the
 // object store answers no body for a task that never wrote a timeline,
 // and reading is best-effort here, never a reason to fail the board.
 func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))) {
@@ -826,6 +849,10 @@ func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))
 		}
 		k.Attempt = got.attempt
 		k.Retrying, k.Provider = got.retrying, got.provider && k.Status == "running"
+		if k.Provider {
+			k.Frozen = got.frozen
+		}
+		k.splitClocks(got.freeze)
 		k.stepAt = got.stepAt
 	})
 }
@@ -844,6 +871,7 @@ func (c *Console) timelineFace(ctx context.Context, id string) checks {
 		log.Printf("console: timeline of %s for its checks: %v", id, err)
 	} else {
 		got.count, got.attempt, got.retrying, got.provider = newestChecksCount(steps, pushedHead(steps)), attemptOf(steps), retrying(steps), onProvider(steps)
+		got.freeze, got.frozen = freezeOf(steps, time.Now())
 		got.stepAt = newestStepOf(steps)
 	}
 	c.mu.Lock()
@@ -1568,6 +1596,7 @@ func (c *Console) card(t factoryd.Task) card {
 		k.GateAge, k.GateText = minutes(time.Since(*t.GateSince)), t.Gate
 	}
 	k.StatusClass = statusClass(t.Status)
+	k.endAt = end
 	k.Stage, k.StageAge = stage(t, end)
 	k.Title = cmp.Or(t.HumanSummary, factoryd.TitleClause(t.Objective))
 	k.PlanKey = t.PlanKey
@@ -1586,6 +1615,15 @@ func stage(t factoryd.Task, now time.Time) (string, string) {
 	if !slices.Contains([]string{"planning", "building", "verifying"}, word) {
 		return "", ""
 	}
+	if since := stageStart(t, word); !since.IsZero() {
+		return word, minutes(now.Sub(since))
+	}
+	return word, ""
+}
+
+// stageStart is when t entered its work stage word: the admission, the
+// gate's start for verifying, else the filing.
+func stageStart(t factoryd.Task, word string) time.Time {
 	since := t.CreatedAt
 	if t.AdmittedAt != nil {
 		since = *t.AdmittedAt
@@ -1593,10 +1631,89 @@ func stage(t factoryd.Task, now time.Time) (string, string) {
 	if word == "verifying" && t.GateSince != nil {
 		since = *t.GateSince
 	}
-	if since.IsZero() {
-		return word, ""
+	return since
+}
+
+// frozenLimit is the least backoff a provider_refused step's freeze
+// carries: the ladder answers within half an hour, a named limit's reset
+// lies beyond it.
+const frozenLimit = 30 * time.Minute
+
+// frozenSpan is one provider-limit freeze the card's timeline records:
+// from the refusal to the reset it named.
+type frozenSpan struct{ start, end time.Time }
+
+// frozenIn is how long the freezes lie inside from..to: a freeze that
+// begins before it counts from from, one that ends after it to to.
+func frozenIn(freezes []frozenSpan, from, to time.Time) time.Duration {
+	var sum time.Duration
+	for _, f := range freezes {
+		start, end := f.start, f.end
+		if start.Before(from) {
+			start = from
+		}
+		if end.After(to) {
+			end = to
+		}
+		if end.After(start) {
+			sum += end.Sub(start)
+		}
 	}
-	return word, minutes(now.Sub(since))
+	return sum
+}
+
+// splitClocks splits the card's stage and total clocks at its freezes:
+// the stage reads "building 3 h 12 min, frozen 6 h 48 min", so hours the
+// provider held do not read as work; Total splits the same way.
+func (k *card) splitClocks(freezes []frozenSpan) {
+	if len(freezes) == 0 || k.endAt.IsZero() {
+		return
+	}
+	if k.Stage != "" {
+		if since := stageStart(k.Task, k.Stage); !since.IsZero() {
+			if frozen := frozenIn(freezes, since, k.endAt); frozen > 0 {
+				k.StageAge = minutes(k.endAt.Sub(since)-frozen) + ", frozen " + minutes(frozen)
+			}
+		}
+	}
+	if !k.CreatedAt.IsZero() {
+		if frozen := frozenIn(freezes, k.CreatedAt, k.endAt); frozen > 0 {
+			k.Total = minutes(k.endAt.Sub(k.CreatedAt)-frozen) + ", frozen " + minutes(frozen)
+		}
+	}
+}
+
+// freezeOf is what steps say of a provider-limit freeze: the span of
+// every provider_refused step whose backoff outlasts the ladder's, oldest
+// first, and the newest refusal's words for the chip — "frozen until
+// 17:04 UTC: …" with the provider's words — "" when it is the ladder's
+// short backoff, or its reset has passed.
+func freezeOf(steps []map[string]any, now time.Time) ([]frozenSpan, string) {
+	var spans []frozenSpan
+	last := -1
+	for i, m := range steps {
+		if m["step"] != factoryd.StepProviderRefused {
+			continue
+		}
+		last = i
+		if backoff := time.Duration(numAt(m, "backoff_s")) * time.Second; backoff > frozenLimit {
+			if at := stepTime(m); !at.IsZero() {
+				spans = append(spans, frozenSpan{start: at, end: at.Add(backoff)})
+			}
+		}
+	}
+	if last < 0 {
+		return spans, ""
+	}
+	m, backoff, at := steps[last], time.Duration(numAt(steps[last], "backoff_s"))*time.Second, stepTime(steps[last])
+	if backoff <= frozenLimit || at.IsZero() || !at.Add(backoff).After(now) {
+		return spans, ""
+	}
+	words := "frozen until " + at.Add(backoff).UTC().Format("15:04 UTC")
+	if w := strings.TrimSpace(textAt(m, "words")); w != "" {
+		words += ": " + textutil.Truncate(w, 120)
+	}
+	return spans, words
 }
 
 // minutes is a duration in whole minutes, hours and minutes from an
@@ -1763,11 +1880,12 @@ func (c *Console) readFinishedColumn(w http.ResponseWriter, r *http.Request, f b
 	for _, bt := range page {
 		v.byID[bt.ID] = bt.Task
 	}
-	// a failed plan card's Retry follows its replacement, an open card the
-	// page does not read; boardCard reads it from the board's tasks
+	// a failed plan card's Retry, its successor's too, follows its
+	// replacement, an open card the page does not read; boardCard reads it
+	// from the board's tasks
 	for _, bt := range page {
 		t := bt.Task
-		if t.Status == "failed" && t.Source == factoryd.SourcePlan && t.Parent != "" && t.PlanKey == "" {
+		if t.Status == "failed" && (t.Source == factoryd.SourcePlan || t.Source == factoryd.SourceSuccessor) && t.Parent != "" && t.PlanKey == "" {
 			if rt, ok, err := c.cfg.Tasks.Task(ctx, factoryd.RetryID(t.ID)); err == nil && ok &&
 				rt.Kind != factoryd.KindChat && !factoryd.Final(rt.Status) {
 				v.byID[rt.ID] = rt
@@ -1940,7 +2058,8 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		k.Cover = fmt.Sprintf("live through run %d, %s after merge", bt.ChainGreen,
 			minutes(max(bt.ChainGreenAt.Sub(*bt.FinishedAt), 0)))
 	}
-	k.WaitingOn, k.SlotWait = bt.WaitingOn, bt.SlotWait
+	k.WaitingOn, k.SlotWait, k.MergeBehind, k.HeldFor = bt.WaitingOn, bt.SlotWait, bt.MergeBehind, bt.HeldFor
+	k.HoldLine, k.HoldWarn = bt.HoldView.Line, bt.HoldView.Warn
 	// "blocked by n" counts the dependencies that are not done yet;
 	// WaitingOn already says so for a card in waiting-deps, where the
 	// face shows that chip and never both.
@@ -1962,7 +2081,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		}
 		return k
 	}
-	if t.Source == factoryd.SourcePlan && t.Parent != "" {
+	if t.PlanCard() {
 		var planRepo string
 		k.PlanIssue, k.PlanName, planRepo = c.planIssue(ctx, v.byID, t.Parent)
 		if k.PlanIssue > 0 {
@@ -1970,7 +2089,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		}
 	}
 	if t.Track == policy.TrackPlan && t.Status == "done" {
-		cards, cardsErr := c.cfg.Tasks.PlanCards(ctx, t.ID)
+		cards, cardsErr := factoryd.PlanWaits(ctx, c.cfg.Tasks, t.ID)
 		if cardsErr != nil {
 			log.Printf("console: the cards of plan %s: %v", t.ID, cardsErr)
 			v.problems = append(v.problems, "the cards of plan "+t.ID+" could not be read")
@@ -2011,7 +2130,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	// a card cut into a successor is that card's to answer: RetryCard refuses it
 	replacement, retried := v.byID[factoryd.RetryID(t.ID)]
 	_, cut := v.byID[factoryd.SuccessorID(t.ID)]
-	if t.Status == "failed" && t.Source == factoryd.SourcePlan && t.Parent != "" && (t.PlanKey != "" || retried && replacement.IssueNumber == 0) &&
+	if t.Status == "failed" && (t.PlanCard() && t.PlanKey != "" || retried && replacement.PlanCard() && replacement.IssueNumber == 0) &&
 		!cut && v.approves(t.Repository) {
 		k.Retry = &retry{CSRF: v.csrf}
 	}
@@ -2121,7 +2240,7 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			return at
 		}
 		ring := func(d time.Duration) bool { return d >= factoryd.StaleWindow }
-		live := !factoryd.Final(k.Status) && k.Status != "queued"
+		live := !factoryd.Final(k.Status) && k.Status != "queued" && k.MergeBehind == 0 && k.HeldFor == 0
 		reason := func() string {
 			q, _, _ := strings.Cut(strings.TrimPrefix(k.Reason, factoryd.AgentAsks), "\n")
 			return q
@@ -2130,6 +2249,12 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 		titled := k.Kind == "human" && k.Question != nil
 		if e, ok := newest[k.ID]; ok {
 			k.Activity = activityLine(e)
+			if k.HeldFor > 0 {
+				k.Activity = fmt.Sprintf("waits for plan #%d to close", k.HeldFor)
+			}
+			if k.MergeBehind > 0 {
+				k.Activity = fmt.Sprintf("waits to merge behind #%d", k.MergeBehind)
+			}
 			// the stage began at its status row, when that row is the newest event
 			if k.Stage != "" && e.Kind == factoryd.EventTaskStatus && fmt.Sprint(e.Detail["status"]) == k.Status && !e.At.IsZero() {
 				k.StageAge = minutes(time.Since(e.At))
@@ -2405,7 +2530,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			}
 			if holds {
 				if wide {
-					d.HumanTasks = append(d.HumanTasks, k)
+					// the case face is the one render; the plain card
+					// would double it
 					d.Escalations = append(d.Escalations, row)
 				} else {
 					needs = append(needs, row)
@@ -2424,12 +2550,12 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 				needs = append(needs, n)
 				break
 			}
-			// the wide lane holds an asking card once: its face in Escalations,
-			// whose actions answer it; a card that asks nothing stays a human task
-			if asks {
-				d.Escalations = append(d.Escalations, n)
-			} else {
+			// an asking human task renders once, through its escalation,
+			// which carries the card and its actions
+			if !asks {
 				d.HumanTasks = append(d.HumanTasks, k)
+			} else {
+				d.Escalations = append(d.Escalations, n)
 			}
 		case wide:
 			if i, ok := byStatus[t.Status]; ok {
@@ -2473,9 +2599,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		}
 		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver, true)
 		k.Filter, k.Writer = f, d.Writes
-		if k.Asks = a.Kind == factoryd.ApprovalPlan; k.Asks {
-			k.askOne()
-		}
+		k.buildDecide()
+		k.Asks = a.Kind == factoryd.ApprovalPlan
 		// an escalation from before this revision's request (a cap a
 		// writer granted) no longer holds
 		if e := escalations[a.TaskID]; a.Kind == factoryd.ApprovalPlan && e.EscalatedAt.After(a.CreatedAt) {
@@ -2665,10 +2790,11 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 }
 
 // placeGhosts stands each of the shown project's routines as a ghost at
-// the foot of Queued in the four columns (C16, as the 2026-10-17 ruling
+// the foot of Queued (C16, as the 2026-10-17 ruling
 // has it: needs-you holds only what needs a human's action now, so every
 // routine's preview queues like all scheduled work, and the routine's
-// work reaches needs-you only as its filed card, through the card flow):
+// work reaches needs-you only as its filed card, through the card flow),
+// in the five columns and in the wide lane's queue group alike:
 // the dated ones by their next run, then the merge-counted ones by the
 // merges they lack, then the rest. The board's routines choice hides
 // those whose next run is further away than its period, or all, and each
@@ -2702,12 +2828,6 @@ func (c *Console) placeGhosts(ctx context.Context, d *boardData) {
 	if len(views) == 0 {
 		return
 	}
-	// both views hold a Queued column — the four columns' by state, the
-	// five columns' second — found by its title
-	queued := slices.IndexFunc(d.Columns, func(k column) bool { return k.Title == "Queued" })
-	if queued < 0 {
-		return
-	}
 	d.HasRoutines = true
 	all := d.boardFilter
 	all.Routines = "all"
@@ -2716,12 +2836,18 @@ func (c *Console) placeGhosts(ctx context.Context, d *boardData) {
 	if d.Writes {
 		csrf = d.CSRF
 	}
+	// the queue group: the five columns' Queued, the wide lane's first
+	// state column
+	q := colQueued
+	if d.wide() {
+		q = 0
+	}
 	for _, rv := range views {
 		if d.Routines == "none" || d.Routines == "within" && rv.Next.Sub(now) > d.period() {
-			d.Columns[queued].GhostsHidden++
+			d.Columns[q].GhostsHidden++
 			continue
 		}
-		d.Columns[queued].Ghosts = append(d.Columns[queued].Ghosts, ghostOf(rv, now, d.boardFilter, csrf))
+		d.Columns[q].Ghosts = append(d.Columns[q].Ghosts, ghostOf(rv, now, d.boardFilter, csrf))
 	}
 }
 
@@ -3850,7 +3976,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 			} else {
 				d.PlanSummary, d.PlanRows, d.TakeOffMain = p.Summary, factoryd.PlanRows(p), p.TakeOffLines()
 				if p.Round > 1 || len(p.Outline) > 0 {
-					if cards, err := c.cfg.Tasks.PlanCards(ctx, bt.ID); err != nil {
+					if cards, err := factoryd.PlanWaits(ctx, c.cfg.Tasks, bt.ID); err != nil {
 						problem("plan's cards", "Reload the board.", err)
 					} else {
 						d.PlanRounds = slices.DeleteFunc(factoryd.RoundItems(p, cards), func(i factoryd.RoundItem) bool { return i.Still })
@@ -3863,6 +3989,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 			if a.TaskID == bt.ID && (a.Kind == factoryd.ApprovalMerge || a.Kind == factoryd.ApprovalPlan) {
 				m := c.approvalCard(ctx, a, button(r), v.byID, v.csrf, v.approves(a.Project), false)
 				m.Filter, m.IDSuffix = k.Filter, "-d"
+				m.buildDecide()
 				m.Writer = true // the drawer's route already asked for a writer
 				if a.Kind == factoryd.ApprovalMerge {
 					m.Detail = c.caseBriefOf(ctx, a, v.policy.Document.LinkHosts)
@@ -4011,7 +4138,7 @@ func (c *Console) relatedCards(ctx context.Context, bt factoryd.BoardTask, k car
 			ids, whys = append(ids, dep.TaskID), append(whys, "blocked by")
 		}
 	}
-	if t.Source == factoryd.SourcePlan && t.Parent != "" {
+	if t.PlanCard() {
 		ids, whys = append(ids, t.Parent), append(whys, "part of plan")
 	}
 	var out []related
@@ -4069,11 +4196,18 @@ func (c *Console) prFiles(r *http.Request, repository string, pr int64) ([]prFil
 		fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files?", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), pr), filesPages)
 }
 
+// planReader is the store a plan's open criteria are read from: its cards
+// and rows on the tasks port, its criteria gate's runs on the events port.
+type planReader struct {
+	Tasks
+	Events
+}
+
 // planHold fills k with plan t's production hold: Close is offered while no
 // plan_closed row stands (a closed plan: while criteria are open), and with
 // the note's form while criteria are open.
 func (c *Console) planHold(ctx context.Context, v *boardView, t factoryd.Task, p factoryd.Plan, k *card) {
-	open, openErr := factoryd.PlanOpenCriteria(ctx, c.cfg.Tasks, t.ID, p)
+	open, openErr := factoryd.PlanOpenCriteria(ctx, planReader{c.cfg.Tasks, c.cfg.Events}, t.ID, p)
 	_, closed, closedErr := c.cfg.Tasks.PlanClosed(ctx, t.ID)
 	if err := cmp.Or(openErr, closedErr); err != nil {
 		log.Printf("console: the criteria of %s: %v", t.ID, err)

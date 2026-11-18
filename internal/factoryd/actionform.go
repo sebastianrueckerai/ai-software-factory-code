@@ -18,6 +18,7 @@ var ActionEffects = map[string]string{
 	ActReverify:         "Run the gates again on the head and judge the findings anew.",
 	ActRerunChecks:      "Run the red checks again on the same head.",
 	ActWaitChecks:       "Wait on the stopped checks once more, with no session.",
+	ActConfirmAudit:     "Confirm the audit findings you name, all of them when you name none, as fixtures a person has judged safe; your note is the reason, and the gates run again.",
 	ActExtend:           "Raise the card's sessions, agent time or lines.",
 	ActFund:             "Raise the card's budget by the amount in the fund field.",
 	ActRaiseCeiling:     "Raise the card's ceiling by the amount you enter.",
@@ -38,7 +39,7 @@ var ActionEffects = map[string]string{
 	ActRestartPlan:      "End the plan and file it anew, your note the shape to take.",
 	ActAnswerCriteria:   "Record a verdict on one criterion of the plan.",
 	ActGrantCriteria:    "Grant one more bounded card for the open criteria.",
-	ActConfirmCriteria:  "Confirm the delivered cards meet every open criterion; your note is the evidence.",
+	ActConfirmCriteria:  "Confirm the delivered cards meet every open criterion; your note is the evidence. Waive the ones you cannot confirm first.",
 	ActDenyCriteria:     "Deny the request, your note the reason; waive a criterion instead if it should not hold.",
 }
 
@@ -64,6 +65,7 @@ var ActionArgs = map[string][]ActionArg{
 	ActFileCard:         {{Name: "title", Label: "title"}, {Name: "body", Label: "description"}, {Name: "size", Label: "size", Options: append([]string{""}, policy.CardSizes...)}},
 	ActAnswerCriteria:   {{Name: "criterion", Label: "criterion"}, {Name: "verdict", Label: "verdict", Options: []string{"met", "not_met", "waive"}}},
 	ActDenyMerge:        {{Name: "action", Label: "denial", Options: []string{"request_changes", "reject"}}},
+	ActConfirmAudit:     {{Name: "findings", Label: "the findings to confirm, one per line, empty for all"}},
 }
 
 // ActionLabel is action name as its button reads: "raise_ceiling" is

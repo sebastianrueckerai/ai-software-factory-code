@@ -148,7 +148,7 @@ func (s *PGStore) EnsureChatTask(ctx context.Context, name, repository string, b
 	t := Task{ID: ChatTaskID(name, at), Kind: KindChat, Status: "running", BudgetEUR: budget, Repository: repository,
 		RequiredCapabilities: []string{policy.ClassChat},
 		Objective:            "the project agent's chat of " + name + " in " + at.UTC().Format("2006-01"), Source: "chat"}
-	if err := s.insertTask(ctx, t, `ON CONFLICT (id) DO UPDATE SET budget_eur = EXCLUDED.budget_eur WHERE tasks.budget_eur < EXCLUDED.budget_eur`); err != nil {
+	if err := s.InsertTask(ctx, t, `ON CONFLICT (id) DO UPDATE SET budget_eur = EXCLUDED.budget_eur WHERE tasks.budget_eur < EXCLUDED.budget_eur`); err != nil {
 		return Task{}, err
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'closed', finished_at = now()

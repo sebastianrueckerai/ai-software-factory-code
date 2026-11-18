@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
@@ -45,13 +46,14 @@ func bearer(tokenSHA256 [32]byte, w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// messageHandler serves factoryd's two requests into the pod, each with
-// the session's bearer: POST /message {text}, handed to send, the
-// harness's Message, and POST /push {token}, which gate takes.
+// messageHandler serves factoryd's requests into the pod, each with the
+// session's bearer: POST /message {text}, handed to send, the harness's
+// Message, POST /push {token, name}, which gate takes, and POST /bound
+// {lines}, the card's raised line bound, which the end push reads.
 // messageHandler serves factoryd's messages: text for the agent's next
 // turn, with model when the session continues on another model from then
 // on (roadmap 222, item 5).
-func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe, wip *wipServe) http.Handler {
+func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe, wip *wipServe, bound *atomic.Int64) http.Handler {
 	mux := http.NewServeMux()
 	authorized := func(w http.ResponseWriter, r *http.Request) bool { return bearer(tokenSHA256, w, r) }
 	mux.HandleFunc("POST /message", func(w http.ResponseWriter, r *http.Request) {
@@ -85,15 +87,30 @@ func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.
 		}
 		var in struct {
 			Token string `json:"token"`
+			Name  string `json:"name"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&in); err != nil || in.Token == "" {
 			http.Error(w, "want {\"token\": \"...\"}", http.StatusBadRequest)
 			return
 		}
-		if !gate.take(in.Token) {
+		if !gate.take(pushCred{token: in.Token, name: in.Name}) {
 			http.Error(w, "no push waits for a token", http.StatusConflict)
 			return
 		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /bound", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
+			return
+		}
+		var in struct {
+			Lines int `json:"lines"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&in); err != nil || in.Lines <= 0 {
+			http.Error(w, "want {\"lines\": a positive whole number of changed lines}", http.StatusBadRequest)
+			return
+		}
+		bound.Store(int64(in.Lines))
 		w.WriteHeader(http.StatusNoContent)
 	})
 	ck.serve(mux, authorized)
@@ -103,33 +120,43 @@ func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.
 	return mux
 }
 
-// pushGate hands factoryd's push token to the session's push: it takes a
-// token only while ask waits — the push asks once every agent process is
-// dead, and re-asks until answered — and only one token is ever taken.
+// pushCred is one push credential factoryd answered with: the token
+// secret, and the name it was minted under, which a refused push names in
+// its event.
+type pushCred struct {
+	token, name string
+}
+
+// pushGate hands factoryd's push credentials to the session's push: it
+// takes a credential only while ask waits — the push asks once every agent
+// process is dead, and re-asks, each ask its own ordinal on the wire, until
+// answered — and one credential per ask.
 type pushGate struct {
 	mu     sync.Mutex
 	asking bool
-	token  chan string
-	taken  string // the token handed over, for the session's scrub
+	token  chan pushCred
+	taken  pushCred // the credential handed over, for the session's scrub
+	asks   int      // the asks factoryd answered; the next ask's ordinal
 }
 
-func newPushGate() *pushGate { return &pushGate{token: make(chan string, 1)} }
+func newPushGate() *pushGate { return &pushGate{token: make(chan pushCred, 1)} }
 
 // pushRetryEvery paces the push request's re-asks inside its one window:
 // factoryd's tap answers every ask, so one transient failure on its side
 // costs an interval, not the push.
 var pushRetryEvery = 5 * time.Second
 
-// take hands token to the waiting ask; false when none waits.
-func (g *pushGate) take(token string) bool {
+// take hands cred to the waiting ask; false when none waits.
+func (g *pushGate) take(cred pushCred) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !g.asking {
 		return false
 	}
 	g.asking = false
-	g.taken = token
-	g.token <- token
+	g.asks++
+	g.taken = cred
+	g.token <- cred
 	return true
 }
 
@@ -137,16 +164,18 @@ func (g *pushGate) take(token string) bool {
 func (g *pushGate) sent() string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.taken
+	return g.taken.token
 }
 
 // ask writes the push request for commit on w, the stdout factoryd reads,
-// re-writing it every pushRetryEvery until factoryd's POST /push arrives
-// or wait runs out.
-func (g *pushGate) ask(commit string, wait time.Duration, w io.Writer) (string, error) {
+// its ordinal one past every ask factoryd answered, re-writing it every
+// pushRetryEvery until factoryd's POST /push arrives or wait runs out.
+func (g *pushGate) ask(commit string, wait time.Duration, w io.Writer) (pushCred, error) {
 	deadline := time.NewTimer(wait)
 	defer deadline.Stop()
-	line, _ := json.Marshal(harness.WorkerEnvelope{Type: "push", Push: &harness.PushRequest{Commit: commit}})
+	g.mu.Lock()
+	line, _ := json.Marshal(harness.WorkerEnvelope{Type: "push", Push: &harness.PushRequest{Commit: commit, Own: g.asks + 1}})
+	g.mu.Unlock()
 	for {
 		g.mu.Lock()
 		g.asking = true
@@ -154,9 +183,9 @@ func (g *pushGate) ask(commit string, wait time.Duration, w io.Writer) (string, 
 		fmt.Fprintln(w, string(line))
 		retry := time.NewTimer(pushRetryEvery)
 		select {
-		case token := <-g.token:
+		case cred := <-g.token:
 			retry.Stop()
-			return token, nil
+			return cred, nil
 		case <-retry.C:
 		case <-deadline.C:
 			retry.Stop()
@@ -164,24 +193,30 @@ func (g *pushGate) ask(commit string, wait time.Duration, w io.Writer) (string, 
 			g.asking = false
 			g.mu.Unlock()
 			select {
-			case token := <-g.token:
-				return token, nil
+			case cred := <-g.token:
+				return cred, nil
 			default:
-				return "", fmt.Errorf("no push token from factoryd within %s", wait)
+				return pushCred{}, fmt.Errorf("no push token from factoryd within %s", wait)
 			}
 		}
 	}
 }
 
 // serveMessages serves the session's messageHandler until the returned stop.
-func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe, wip *wipServe, log func(string, ...any)) (stop func(), err error) {
-	return servePort(messageHandler(tokenSHA256, gate, send, ck, wip), log)
+func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe, wip *wipServe, bound *atomic.Int64, log func(string, ...any)) (stop func(), err error) {
+	return servePort(messageHandler(tokenSHA256, gate, send, ck, wip, bound), log)
 }
 
-// servePort serves h on harness.MessagePort until the returned stop, which
-// lets the requests in flight finish.
+// listenPort opens the listener servePort serves on: harness.MessagePort
+// on every interface. A var, so a test can hand it a free loopback port.
+var listenPort = func() (net.Listener, error) {
+	return net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort)) // #nosec G102 -- the harness reaches this endpoint across the pod network; its handler rejects every request without the session token
+}
+
+// servePort serves h on listenPort's listener until the returned stop,
+// which lets the requests in flight finish.
 func servePort(h http.Handler, log func(string, ...any)) (stop func(), err error) {
-	ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort)) // #nosec G102 -- the harness reaches this endpoint across the pod network; its handler rejects every request without the session token
+	ln, err := listenPort()
 	if err != nil {
 		return nil, err
 	}

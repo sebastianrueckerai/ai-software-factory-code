@@ -122,6 +122,32 @@ func TestDrawerShowsTheOpenedProofBesideTheRepositorysVersion(t *testing.T) {
 	}
 }
 
+// The merge card of the successor that carries the integration card's key
+// shows the plan's opened proof as the card's own does.
+func TestDrawerOfAnIntegrationSuccessorShowsTheOpenedProof(t *testing.T) {
+	r := newRig(t)
+	plan, _ := json.Marshal(factoryd.Plan{Summary: "The opening hours", Cards: []factoryd.PlanCard{
+		{Key: "integration", Role: factoryd.RoleIntegration, Title: "Integration"},
+	}})
+	r.tasks.set("",
+		factoryd.Task{ID: "t-plan", Kind: "agent", Status: "done", Process: "spec", Objective: "Opening hours", Repository: "sf/code", IssueNumber: 3},
+		factoryd.Task{ID: "t-int", Kind: "agent", Status: "failed", Repository: "sf/code", IssueNumber: 12, Parent: "t-plan",
+			Source: factoryd.SourcePlan, PlanKey: "integration", PlanRevision: 1},
+		factoryd.Task{ID: "t-is", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 13, Parent: "t-plan",
+			Source: factoryd.SourceSuccessor, PlanKey: "integration", PlanRevision: 1, PRNumber: 14})
+	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan, SHA256: "sha-1"}}}
+	r.tasks.proofs = map[string][]factoryd.PlanProof{"t-plan": {{Idx: 1, Origin: factoryd.ProofOriginCriterion, Criterion: "group_open", ID: "group_open",
+		Path: "acceptance/group_open_test.go", Code: "v1 code", State: factoryd.ProofOpened}}}
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 41, Kind: factoryd.ApprovalMerge, TaskID: "t-is",
+		Project: "sf/code", PRNumber: 14, Status: "pending", Spec: json.RawMessage(`{"risk_class":"normal","head_sha":"8e3a1b0c"}`)})
+	r.fg.rawAt = map[string]string{"8e3a1b0c acceptance/group_open_test.go": "v2 code"}
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-is/drawer?tab=overview", nil), ck).Body.String()
+	if !strings.Contains(body, `<h5>group_open: acceptance/group_open_test.go, changed</h5>`) {
+		t.Fatalf("the successor's drawer lacks the opened proof:\n%s", body)
+	}
+}
+
 // The drawer's pill reads the card's state like the face's: a merged
 // card's drawer says merged, a done card's says done.
 func TestDrawerPillReadsTheState(t *testing.T) {
@@ -248,9 +274,11 @@ func TestAFiledRollCardIsQueued(t *testing.T) {
 
 // A card's press moves the card at once (C31): every column names the
 // statuses it holds, in the four columns and the wide view, and the
-// approval's forms the status of its task, whose card the decided request
-// leaves standing. The press sent by htmx answers with the board's refresh
-// alone; a browser's form keeps its redirect.
+// approval's one decide form the status of its task, whose card the
+// decided request leaves standing. The press is the decide's one send —
+// the answer, the fund and the note ride one POST, landing together in
+// one row — and it answers with the board's refresh alone when htmx
+// sends it; a browser's form keeps its redirect.
 func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 	r := newRig(t)
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-card", Kind: "agent", Status: "in-review",
@@ -266,7 +294,7 @@ func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 	for page, wants := range map[string][]string{
 		"/?project=ai-software-factory-code": {`id="needs-you" data-holds="waiting-human waiting-poster">`,
 			`data-holds="queued waiting-deps waiting-image">`, `data-holds="running closing in-review merged">`, `data-holds="done failed closed"`,
-			`<form method="post" action="/approvals/31/approve" hx-post="/approvals/31/approve" data-to="in-review">`},
+			`<form method="post" action="/approvals/31/approve" hx-post="/approvals/31/approve" class="decide resolve" data-to="in-review">`},
 		"/?project=ai-software-factory-code&view=wide": {`data-holds="queued waiting-deps">`, `data-holds="running closing">`, `data-holds="in-review">`, `data-holds="merged">`,
 			`data-holds="failed"`, `data-holds="closed"`},
 	} {
@@ -277,7 +305,10 @@ func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 			}
 		}
 	}
-	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}
+	// the one send: the answer, the fund and the note ride one POST
+	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"action": {"approve"}, "fund_eur": {"1.50"}, "note": {"the board alone answers"}}
+	before := r.events.count()
 	rec := r.do(htmxPost("/approvals/31/approve", form), ck)
 	if body := rec.Body.String(); rec.Code != http.StatusNoContent || body != "" || rec.Header().Get("HX-Trigger") != "board-refresh" {
 		t.Fatalf("the htmx approve = %d (%q):\n%s", rec.Code, rec.Header().Get("HX-Trigger"), body)
@@ -285,6 +316,13 @@ func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 	if !slices.Equal(approved, []string{"t-card #9 by sebastian"}) {
 		t.Fatalf("the htmx approve merged %v, want t-card #9 by sebastian", approved)
 	}
+	// the one send landed the fund and the note with the answer, one row
+	if k, ok, _ := r.tasks.Task(t.Context(), "t-card"); !ok || k.BudgetEUR != 1.5 {
+		t.Errorf("t-card's budget = %v (ok %v), want the 1.50 the one send carried", k.BudgetEUR, ok)
+	}
+	checkRows(t, r.events, before,
+		wantRow{kind: factoryd.EventMergeApproved, repo: "sf/code", taskID: "t-card",
+			detail: map[string]any{"pr": int64(9), "approval": int64(31), "fund_eur": 1.5, "reason": "the board alone answers"}})
 	if rec := r.do(post("/approvals/31/approve", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code" {
 		t.Fatalf("the browser's approve = %d to %q", rec.Code, rec.Header().Get("Location"))
 	}

@@ -37,11 +37,16 @@ type fakeWorkerEndpoint struct {
 	texts  []string
 	briefs []string // the raw body of each POST /brief
 	lists  []string // the raw body of each POST /proofs
+	bounds []string // the raw body of each POST /bound
 	onPush func()
 	// onTool answers POST /tool with its status and body; tools records
 	// every ask as the tool's name with its args
 	onTool func(name string, args map[string]any) (int, string)
 	tools  []string
+	// messageSeen carries one signal per POST /message: a test that
+	// waits on it observes the worker's posts by synchronization, not
+	// by polling its texts. nil: no signal is sent.
+	messageSeen chan struct{}
 }
 
 func (f *fakeWorkerEndpoint) start(t *testing.T, r *Runner) {
@@ -66,8 +71,16 @@ func (f *fakeWorkerEndpoint) start(t *testing.T, r *Runner) {
 			f.briefs = append(f.briefs, string(b))
 		case "/proofs":
 			f.lists = append(f.lists, string(b))
+		case "/bound":
+			f.bounds = append(f.bounds, string(b))
 		}
 		status := f.status
+		if req.Method == http.MethodPost && req.URL.Path == "/message" && f.messageSeen != nil {
+			select {
+			case f.messageSeen <- struct{}{}:
+			default:
+			}
+		}
 		f.mu.Unlock()
 		if req.URL.Path == "/tool" {
 			if args, err := json.Marshal(in.Args); err == nil {
@@ -184,7 +197,7 @@ func TestRunSessionLoopEndsAfterThreeNudges(t *testing.T) {
 	if got := order(); !slices.Equal(got, []string{"delete pod", "POST /push"}) {
 		t.Fatalf("order = %v, want the push after the stop", got)
 	}
-	want := []string{"POST /brief ", "POST /message " + readNudge, "POST /message " + readNudge, "POST /message " + readNudge, "POST /push tok-task-t2-push-own"}
+	want := []string{"POST /brief ", "POST /message " + readNudge, "POST /message " + readNudge, "POST /message " + readNudge, "POST /push tok-task-t2-push-own-1task-t2-push-own-1"}
 	if !slices.Equal(worker.texts, want) {
 		t.Fatalf("worker got %q, want three nudges and the push token", worker.texts)
 	}
@@ -239,7 +252,7 @@ func TestRunSessionNudgeFallsBackToTheRedirect(t *testing.T) {
 func TestRunSessionUndeliveredNudgeRunsCheckin(t *testing.T) {
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","guidance":"read b.go instead"}`}}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusBadGateway}
 	worker.start(t, runner)
 
@@ -331,7 +344,7 @@ func TestMessageKeepsSessionRunning(t *testing.T) {
 	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
 	runner.cfg.Supervisor.RepetitionEvents = 2
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","guidance":"use the store's New"}`}}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
@@ -373,7 +386,7 @@ func TestRunSessionCheckinMessageArmsStuckRule(t *testing.T) {
 		{Text: `{"decision":"continue","guidance":"use the store's New"}`},
 		{Text: `{"decision":"handover","handover":"` + note + `"}`},
 	}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
@@ -424,7 +437,7 @@ func TestCommandsBufferedDuringTheCheckinDoNotCount(t *testing.T) {
 		{Text: `{"decision":"continue","guidance":"use the store's New"}`},
 		{Text: `{"decision":"handover","handover":"the agent listed the tree again after the message"}`},
 	}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
@@ -453,7 +466,7 @@ func TestStuckTripHandoverClimbs(t *testing.T) {
 		{Text: `{"decision":"continue","guidance":"use the store's New"}`},
 		{Text: `{"decision":"handover","handover":"switch to the edit"}`},
 	}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
@@ -503,7 +516,7 @@ func TestCommandsQueuedDuringTheClimbDoNotCount(t *testing.T) {
 		{Text: `{"decision":"handover","handover":"switch to the edit"}`},
 		{Text: `{"decision":"handover","handover":"the stronger model lists the tree too"}`},
 	}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
@@ -548,7 +561,7 @@ func TestStuckTripHumanAnswerAsksTheHuman(t *testing.T) {
 		{Text: `{"decision":"continue","guidance":"use the store's New"}`},
 		{Text: `{"decision":"hand_up","reason_kind":"goal_conflict","reason":"the objective asks for two stores"}`},
 	}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
@@ -669,7 +682,7 @@ func TestCheckinLiveStatementCarriesMessages(t *testing.T) {
 func TestUndeliveredMessageStops(t *testing.T) {
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	runner.cfg.Supervisor.RepetitionEvents = 2
-	runner.checkin = &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","guidance":"use the store's New"}`}}}
+	runner.Checkin = &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","guidance":"use the store's New"}`}}}
 	worker := &fakeWorkerEndpoint{status: http.StatusNotImplemented}
 	worker.start(t, runner)
 
@@ -712,7 +725,7 @@ func TestStuckTripAsksTheCheckinWithEveryMessage(t *testing.T) {
 		{Text: `{"decision":"continue","guidance":"call New once in the test's setup"}`},
 		{Text: `{"decision":"handover","handover":"two messages did not stop the listing; start from the test's setup"}`},
 	}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
@@ -741,7 +754,13 @@ func TestStuckTripAsksTheCheckinWithEveryMessage(t *testing.T) {
 }
 
 func pushRequestLine(commit string) string {
-	b, _ := json.Marshal(harness.WorkerEnvelope{Type: "push", Push: &harness.PushRequest{Commit: commit}})
+	return pushAskLine(commit, 1)
+}
+
+// pushAskLine is the worker's push request at its ask's own ordinal: a
+// re-ask after a refused push asks at a higher ordinal for a fresh token.
+func pushAskLine(commit string, own int) string {
+	b, _ := json.Marshal(harness.WorkerEnvelope{Type: "push", Push: &harness.PushRequest{Commit: commit, Own: own}})
 	return string(b)
 }
 
@@ -777,13 +796,13 @@ func TestPushTokenMintedAtThePushRequest(t *testing.T) {
 	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c1" {
 		t.Fatalf("result = (%+v, %v), want pushed c1", res, err)
 	}
-	want := []string{"mint task-t1-push-own write:repository factory-agent/x"}
+	want := []string{"mint task-t1-push-own-1 write:repository factory-agent/x"}
 	if len(atStart) != 0 || !slices.Equal(atPost, want) || !slices.Equal(writeMints(hub), want) {
 		t.Fatalf("write mints at the pod's start %v, at the post %v, in all %v; want none, then %v", atStart, atPost, writeMints(hub), want)
 	}
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t1-push-own"}) {
+	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t1-push-own-1task-t1-push-own-1"}) {
 		t.Fatalf("worker got %q, want the minted token on POST /push", worker.texts)
 	}
 	// the session's message bearer, the one whose hash the pod holds
@@ -813,8 +832,81 @@ func TestPushTokenOneFailedAnswerThenASuccess(t *testing.T) {
 	}
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t1-push-own"}) {
+	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t1-push-own-1task-t1-push-own-1"}) {
 		t.Fatalf("worker got %q, want one token, posted on the answered ask", worker.texts)
+	}
+}
+
+// A push refused mid-card re-asks at a higher ordinal, and the answer to
+// each ask is a token minted under a fresh name: a re-mint of the refused
+// name would fail (Forgejo takes one token of a name) and a re-post of the
+// refused secret would die at the next push (issue 1836). A leftover of
+// the name — the session factoryd lost — blocks no fresh mint, and every
+// minted name revokes with the card's other tokens at its end.
+func TestRefusedPushReaskMintsAFreshOwnToken(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
+	kube := newFakeKube()
+	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	hub.tokens = append(hub.tokens, TokenRef{ID: 50, Name: PushTokenName("t1", "own-1")})
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+
+	logs := envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "a.go"}}) + "\n" +
+		pushAskLine("c1", 1) + "\n" + tokenLogs +
+		pushAskLine("c1", 2) + "\n" + tokenLogs + pushedLine("c1") + "\n" + resultLine(true, "pushed c1")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c1" {
+		t.Fatalf("result = (%+v, %v), want pushed c1 on the fresh token", res, err)
+	}
+	want := []string{
+		"mint task-t1-push-own-1 write:repository factory-agent/x",
+		"mint task-t1-push-own-2 write:repository factory-agent/x",
+	}
+	if !slices.Equal(writeMints(hub), want) {
+		t.Fatalf("write mints = %v, want a fresh name per ask %v", writeMints(hub), want)
+	}
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if !slices.Equal(worker.texts, []string{
+		"POST /brief ",
+		"POST /push tok-task-t1-push-own-1task-t1-push-own-1",
+		"POST /push tok-task-t1-push-own-2task-t1-push-own-2",
+	}) {
+		t.Fatalf("worker got %q, want each ask's own token, named", worker.texts)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if !slices.Equal(hub.revoked, []int64{50, 101, 102, 103}) {
+		t.Fatalf("revoked = %v, want the leftover, the read token and both fresh names at the card's end", hub.revoked)
+	}
+}
+
+// The window's paced re-ask lines carry one ordinal: factoryd answers each
+// with the same token, minted once.
+func TestPushTokenOneMintPerAsk(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
+	kube := newFakeKube()
+	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+
+	logs := pushRequestLine("c1") + "\n" + pushRequestLine("c1") + "\n" + tokenLogs + pushedLine("c1") + "\n" + resultLine(true, "pushed c1")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil || res.Outcome != OutcomePushed {
+		t.Fatalf("result = (%+v, %v), want pushed c1", res, err)
+	}
+	want := []string{"mint task-t1-push-own-1 write:repository factory-agent/x"}
+	if !slices.Equal(writeMints(hub), want) {
+		t.Fatalf("write mints = %v, want the ask's one mint %v", writeMints(hub), want)
+	}
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if !slices.Equal(worker.texts, []string{
+		"POST /brief ",
+		"POST /push tok-task-t1-push-own-1task-t1-push-own-1",
+		"POST /push tok-task-t1-push-own-1task-t1-push-own-1",
+	}) {
+		t.Fatalf("worker got %q, want both paced lines answered with the one token", worker.texts)
 	}
 }
 
@@ -873,7 +965,7 @@ func watchStop(t *testing.T, runner *Runner, kube *fakeKube) (*fakeWorkerEndpoin
 func TestCheckinStopAnswersThePushRequest(t *testing.T) {
 	kube := newFakeKube()
 	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
-	runner.checkin = &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"handover","handover":"stop here"}`}}}
+	runner.Checkin = &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"handover","handover":"stop here"}`}}}
 	runner.stopWait = 10 * time.Second
 	worker, order := watchStop(t, runner, kube)
 
@@ -885,7 +977,7 @@ func TestCheckinStopAnswersThePushRequest(t *testing.T) {
 	if got := order(); !slices.Equal(got, []string{"delete pod", "POST /push"}) {
 		t.Fatalf("order = %v, want the push token posted after the stop", got)
 	}
-	if !slices.Equal(withoutWipAsks(worker.texts), []string{"POST /brief ", "POST /push tok-task-t2-push-own"}) || !slices.Equal(writeMints(hub), []string{"mint task-t2-push-own write:repository factory-agent/repo"}) {
+	if !slices.Equal(withoutWipAsks(worker.texts), []string{"POST /brief ", "POST /push tok-task-t2-push-own-1task-t2-push-own-1"}) || !slices.Equal(writeMints(hub), []string{"mint task-t2-push-own-1 write:repository factory-agent/repo"}) {
 		t.Fatalf("worker got %q, write mints %v", worker.texts, writeMints(hub))
 	}
 	if len(hub.revoked) != 2 {
@@ -910,7 +1002,7 @@ func TestWallClockStopAnswersThePushRequest(t *testing.T) {
 	if got := order(); !slices.Equal(got, []string{"delete pod", "POST /push"}) {
 		t.Fatalf("order = %v, want the push token posted after the stop", got)
 	}
-	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t5-push-own"}) || len(hub.revoked) != 2 {
+	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t5-push-own-1task-t5-push-own-1"}) || len(hub.revoked) != 2 {
 		t.Fatalf("worker got %q, revoked %v", worker.texts, hub.revoked)
 	}
 }
@@ -962,7 +1054,7 @@ func TestPushAnsweredDuringACheckin(t *testing.T) {
 		case <-time.After(3 * time.Second):
 		}
 	}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) +
 		pushRequestLine("c1") + "\n" + tokenLogs + pushedLine("c1") + "\n" + resultLine(true, "pushed branch factory/t2 at c1")
@@ -1015,6 +1107,45 @@ func TestMessageSessionReachesTheRunningSession(t *testing.T) {
 	}
 }
 
+// A writer's message to a card whose session is in its start check-in is
+// refused as such, naming since when, not as a card between sessions; the
+// check-in hands over, the agent runs, and once the session ended the
+// card is between sessions again.
+func TestMessageSessionNamesAStartingSession(t *testing.T) {
+	runner, _, _, worker, chat, _, _ := checkinRig(t, `{"decision":"handover","handover":"start from the tests"}`)
+	begun := time.Now()
+	var during error
+	var asked time.Time
+	chat.onCall = func() {
+		asked = time.Now()
+		during = runner.MessageSession(t.Context(), "t2", "anna", "rebase on main first")
+	}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Sessions: 3, Model: "m",
+		CheckInAsk: &CheckInAsk{Moment: CheckInDead, Stop: "wall clock"}}, nil,
+		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed {
+		t.Fatalf("result = (%+v, %v), want the session run after the check-in", res, err)
+	}
+	var starting *SessionStartingError
+	if !errors.Is(during, ErrSessionStarting) || errors.Is(during, ErrNoLiveSession) || !errors.As(during, &starting) {
+		t.Fatalf("MessageSession during the start check-in = %v, want ErrSessionStarting", during)
+	}
+	if starting.Since.Before(begun) || starting.Since.After(asked) {
+		t.Fatalf("the check-in runs since %v, want between the session's call %v and the message %v", starting.Since, begun, asked)
+	}
+	worker.mu.Lock()
+	texts := slices.Clone(worker.texts)
+	worker.mu.Unlock()
+	for _, text := range texts {
+		if strings.HasPrefix(text, "POST /message ") {
+			t.Errorf("worker got %q, want no message during the start check-in", text)
+		}
+	}
+	if err := runner.MessageSession(t.Context(), "t2", "anna", "hello"); !errors.Is(err, ErrNoLiveSession) {
+		t.Fatalf("MessageSession after the session = %v, want ErrNoLiveSession", err)
+	}
+}
+
 // The first message a writer sends through the card's chat carries the
 // factory basics, once: the session reads them before the writer's text.
 // Later messages go in bare, and so does every supervisor message.
@@ -1057,16 +1188,18 @@ func TestFirstHumanMessageCarriesTheFactoryBasics(t *testing.T) {
 	}
 }
 
-// Each attempt's push token carries its own name, so a reattached attempt
-// mints while the attempt it replaced holds one, and a reconcile revokes
-// them all with the card's other tokens, and no other card's: a card whose
-// id only starts with this one's keeps its tokens.
+// Each ask's push token carries its own name, so a re-ask mints while the
+// token it replaced still lives, and a reconcile — a re-cut's cleanup among
+// them — revokes them all with the card's other tokens, and no other
+// card's: a card whose id only starts with this one's, and the live token
+// of the card mid-run beside it, keep theirs.
 func TestReconcileRevokesEveryPushTokenOfTheCardAlone(t *testing.T) {
 	runner, hub, _ := newTestRunner(t, Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/x", Track: "direct"}, newFakeKube(), &fakeObjectStore{})
 	hub.tokens = []TokenRef{
 		{ID: 1, Name: TokenName("t1")}, {ID: 2, Name: BaseTokenName("t1")},
-		{ID: 3, Name: PushTokenName("t1", "old")}, {ID: 4, Name: PushTokenName("t1", "new")},
+		{ID: 3, Name: PushTokenName("t1", "old")}, {ID: 4, Name: PushTokenName("t1", "own-2")},
 		{ID: 5, Name: PushTokenName("t10", "old")}, {ID: 6, Name: TokenName("t10")},
+		{ID: 7, Name: PushTokenName("t10", "own-3")},
 	}
 	if err := runner.completion.reconcile(context.Background(), "t1"); err != nil {
 		t.Fatal(err)
@@ -1074,6 +1207,14 @@ func TestReconcileRevokesEveryPushTokenOfTheCardAlone(t *testing.T) {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
 	if !slices.Equal(hub.revoked, []int64{1, 2, 3, 4}) {
-		t.Fatalf("revoked = %v, want the card's token, its read token and both attempts' push tokens", hub.revoked)
+		t.Fatalf("revoked = %v, want the card's token, its read token and both its asks' push tokens", hub.revoked)
+	}
+	for _, ref := range hub.tokens {
+		if ref.Name == TokenName("t1") || strings.HasPrefix(ref.Name, TokenName("t1")+"-") {
+			t.Fatalf("token %s survived the card's own cleanup", ref.Name)
+		}
+	}
+	if len(hub.tokens) != 3 {
+		t.Fatalf("live tokens = %v, want the other card's read token and both its asks' push tokens still working", hub.tokens)
 	}
 }

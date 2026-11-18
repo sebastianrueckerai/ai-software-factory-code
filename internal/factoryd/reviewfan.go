@@ -44,8 +44,10 @@ type callResult struct {
 // without a call. It bounds the running activity by its waves of calls
 // (boundByParts), and again before the retries with one wave for each of
 // them. end, when set, cuts each call by callTimeout, and a call with no
-// time left is not made: its result is context.DeadlineExceeded. Returns
-// ctx.Err() when ctx ended.
+// time left is not made: its result is context.DeadlineExceeded. A call
+// the class's freeze refused holds the retries to the reset it named
+// (providerLimitUntil): the retry waits at the reset plus the margin.
+// Returns ctx.Err() when ctx ended.
 func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, timeout time.Duration, end time.Time, calls []reviewCall) ([]callResult, error) {
 	waves := (len(calls) + reviewParallel - 1) / reviewParallel
 	boundByParts(ctx, waves)
@@ -77,7 +79,7 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 					return
 				}
 				call(i)
-				if refusedForHeadroom(results[i].Err) {
+				if _, frozen := providerLimitUntil(results[i].Err); frozen || refusedForHeadroom(results[i].Err) {
 					refused.Store(true)
 				}
 			}
@@ -89,7 +91,8 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 	}
 	var retries []int
 	for i := range calls {
-		if !ran[i] || refusedForHeadroom(results[i].Err) {
+		_, frozen := providerLimitUntil(results[i].Err)
+		if !ran[i] || refusedForHeadroom(results[i].Err) || frozen {
 			retries = append(retries, i)
 		}
 	}
@@ -97,6 +100,20 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 		boundByParts(ctx, waves+len(retries))
 	}
 	var again error
+	freeze := time.Time{}
+	for _, i := range retries {
+		if at, ok := providerLimitUntil(results[i].Err); ok && (freeze.IsZero() || at.Before(freeze)) {
+			freeze = at
+		}
+	}
+	if !freeze.IsZero() {
+		// the class is frozen until the reset the refusal named: the retry
+		// waits it out here, so the activity's own retry policy (ten
+		// seconds) lands after the hold lapsed, at the reset, not on it
+		if err := waitUntil(ctx, freeze.Add(freezeWakeMargin)); err != nil {
+			return nil, err
+		}
+	}
 	for _, i := range retries {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()

@@ -40,8 +40,8 @@ func (r *Runner) RungTwoStatement(ctx context.Context, id int64) (text string, e
 	d, derr := r.CardDigest(ctx, t.ID)
 	var choices []QuestionChoice
 	if answersByChoices(c, t.Kind) {
-		ask, _ := r.caseAsk(ctx, c)
-		if choices = askOffers(ask.Detail); choices == nil {
+		ask, _ := r.CaseAsk(ctx, c)
+		if choices = AskOffers(ask.Detail); choices == nil {
 			choices = []QuestionChoice{}
 		}
 	}
@@ -170,7 +170,7 @@ func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, f
 		return c.ID, err
 	}
 	r.atCaseOf(ctx, &f, t, c)
-	_, err = r.climb(ctx, t, c, f, 2, found)
+	_, err = r.Climb(ctx, t, c, f, 2, found)
 	return c.ID, err
 }
 

@@ -105,8 +105,8 @@ type Tasks interface {
 	// PlanCards are the cards plan task plan filed.
 	PlanCards(ctx context.Context, plan string) ([]factoryd.Task, error)
 	// PlanDelivered says whether every card plan filed is delivered —
-	// done or merged, or cut into a successor that is — and the first
-	// card that is not (factoryd.PlanDelivered).
+	// done, merged or closed, or cut into a successor that is — and the
+	// first card that is not (factoryd.PlanDelivered).
 	PlanDelivered(ctx context.Context, plan string) (bool, factoryd.Task, error)
 	// PlanMerged says whether a card of plan holds an unreverted merge.
 	PlanMerged(ctx context.Context, plan string) (bool, error)
@@ -240,7 +240,7 @@ type Config struct {
 	DecideCriterion func(ctx context.Context, id, cid, verdict, by, reason string) error
 	// CheckClosePlan refuses a CloseHeldPlan that would be refused, without
 	// writing (Runner.CheckClosePlan).
-	CheckClosePlan func(ctx context.Context, id, note string, approver bool) error
+	CheckClosePlan func(ctx context.Context, id, by, note string, approver bool) error
 	// CloseHeldPlan waives every open criterion of plan id at rest (done,
 	// failed or closed) with the note, ends its criteria asks and, once
 	// every card is final, records its plan_closed, in one write. It answers
@@ -249,7 +249,8 @@ type Config struct {
 	CloseHeldPlan func(ctx context.Context, id, by, note string, approver bool) (waived int, words string, merged bool, err error)
 	// ConfirmDeliveredCriteria meets every open criterion of plan id on
 	// the human's line (factoryd.ConfirmDeliveredCriteria); a card of the
-	// plan not done or merged is factoryd.ErrChildOpen.
+	// plan not done, merged or closed is factoryd.ErrChildOpen, an empty
+	// line beside a closed card factoryd.ErrNoEvidence.
 	ConfirmDeliveredCriteria func(ctx context.Context, id, by, line string) (int, error)
 	// RetryCard files failed card taskID again for by and returns the
 	// replacement's issue (factoryd's Runner.RetryCard): a refusal is
@@ -259,6 +260,13 @@ type Config struct {
 	// returns its issue (factoryd's Runner.Go): the go of a card that
 	// waits on a person. A refusal is factoryd.ErrNoGo.
 	GoCard func(ctx context.Context, taskID, by string) (int64, error)
+	// HoldCard puts card taskID, which has not started, on hold for by
+	// until a human releases it or release ("" for none) ends done or
+	// merged; ReleaseCardHold ends its hold and wakes it (factoryd's
+	// Runner.HoldCard and Runner.ReleaseCardHold). False: the card is in no
+	// state to take a hold, or holds none.
+	HoldCard        func(ctx context.Context, taskID, release, reason, by string) (bool, error)
+	ReleaseCardHold func(ctx context.Context, taskID string) (bool, error)
 	// RequestImage puts by's ask in the chat of repository for tool, for
 	// need, on the tool card of image, else of one named after the tool
 	// (factoryd's Runner.RequestImage): the card, its image and whether
@@ -602,6 +610,8 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/close", http.HandlerFunc(c.closeCard), nil},
 		{"POST /tasks/{id}/steer", http.HandlerFunc(c.steerCard), nil},
 		{"POST /tasks/{id}/replan", http.HandlerFunc(c.replanCard), nil},
+		{"POST /tasks/{id}/hold", http.HandlerFunc(c.holdCard), nil},
+		{"POST /tasks/{id}/release-hold", http.HandlerFunc(c.releaseHold), nil},
 		{"POST /projects/{name}/deploy-now", http.HandlerFunc(c.deployNow), nil},
 		{"POST /approvals/{id}/approve", http.HandlerFunc(c.approve), nil},
 		{"POST /approvals/{id}/deny", http.HandlerFunc(c.deny), nil},
@@ -694,6 +704,8 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no RetryCard")
 	case cfg.GoCard == nil:
 		return nil, errors.New("console: no GoCard")
+	case cfg.HoldCard == nil || cfg.ReleaseCardHold == nil:
+		return nil, errors.New("console: no HoldCard or ReleaseCardHold")
 	case cfg.CloseCard == nil:
 		return nil, errors.New("console: no CloseCard")
 	case cfg.RerunStall == nil:

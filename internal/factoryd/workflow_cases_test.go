@@ -223,10 +223,10 @@ func TestWorkflowWithdrawsTheCaseWhenTheCapTurns(t *testing.T) {
 func TestWorkflowTripsOnAFailedDependency(t *testing.T) {
 	failed := Dependency{TaskID: "t-a", Issue: 5, Key: "links", Status: "failed"}
 	reason := depFailedReason(failed)
-	if want := "A dependency failed: #5 (links), card t-a, ended failed with no replacement. Retry it, close this card, or answer to start it anyway."; reason != want || escalationSource(reason) != SourceDependencyFailed {
-		t.Fatalf("reason %q of source %q, want %q of %q", reason, escalationSource(reason), want, SourceDependencyFailed)
+	if want := "A dependency failed: #5 (links), card t-a, ended failed with no replacement. Retry it, close this card, or answer to start it anyway."; reason != want || EscalationSource(reason) != SourceDependencyFailed {
+		t.Fatalf("reason %q of source %q, want %q of %q", reason, EscalationSource(reason), want, SourceDependencyFailed)
 	}
-	if kind, _ := caseKindOf(escalationSource(reason), reason); kind != CaseDependencyFailed {
+	if kind, _ := CaseKindOf(EscalationSource(reason), reason); kind != CaseDependencyFailed {
 		t.Fatalf("kind = %s, want %s", kind, CaseDependencyFailed)
 	}
 	deps := func(h *workflowHarness, states ...DepState) *[]time.Duration {
@@ -662,7 +662,7 @@ func TestWorkflowHealedWaitsTakeTheResolution(t *testing.T) {
 		if final := h.run(t); final != "done" {
 			t.Fatalf("final = %q, finals %v", final, h.finals)
 		}
-		if !slices.Equal(h.escalated, []string{healedReason}) || !slices.Equal(checked, []string{"c3"}) || len(h.sessions) != 0 {
+		if !slices.Equal(h.escalated, []string{HealedReason}) || !slices.Equal(checked, []string{"c3"}) || len(h.sessions) != 0 {
 			t.Fatalf("asked %q, checked %q, sessions %d; want the restart's ask, c3 checked, no session", h.escalated, checked, len(h.sessions))
 		}
 	})
@@ -783,7 +783,7 @@ func agentChangeRequestAtTheCap(t *testing.T, agentDraw func() error, first ...T
 // rung 3.
 func TestWorkflowAgentChangeRequestAtAFullPoolAsksAHuman(t *testing.T) {
 	h, steps, grants, draws := agentChangeRequestAtTheCap(t, func() error {
-		return temporal.NewNonRetryableApplicationError("the escalation pool leaves nothing this month: only the human draws more", errDrawRefused, nil)
+		return temporal.NewNonRetryableApplicationError("the escalation pool leaves nothing this month: only the human draws more", ErrDrawRefused, nil)
 	})
 	var waiting TaskUsage
 	h.env.RegisterDelayedCallback(func() {
@@ -841,7 +841,7 @@ func TestWorkflowAgentChangeRequestAtTheCapDrawsRungTwo(t *testing.T) {
 // runs with both requests in its findings.
 func TestWorkflowAPersonsChangeRequestWinsAMixedDrain(t *testing.T) {
 	h, steps, grants, draws := agentChangeRequestAtTheCap(t, func() error {
-		return temporal.NewNonRetryableApplicationError("the escalation pool leaves nothing this month: only the human draws more", errDrawRefused, nil)
+		return temporal.NewNonRetryableApplicationError("the escalation pool leaves nothing this month: only the human draws more", ErrDrawRefused, nil)
 	}, TaskSignal{Author: "sebastian", Body: "rename it", PR: 9})
 
 	if final := h.run(t); final != "done" {
@@ -941,7 +941,7 @@ func TestWorkflowAuditGapAtAnEmptyPoolAsksAHuman(t *testing.T) {
 	g.branchHead = "c2"
 	g.env.OnActivity(ActivityAuditDraw, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, d policy.Draw, key string) error {
-			return temporal.NewNonRetryableApplicationError("the escalation pool is empty: no session left of its bound", errDrawRefused, nil)
+			return temporal.NewNonRetryableApplicationError("the escalation pool is empty: no session left of its bound", ErrDrawRefused, nil)
 		})
 	var steps []string
 	g.onVerify(&steps, []SessionResult{
@@ -1016,7 +1016,7 @@ func TestWorkflowAuditGapAtTheCapFromBeforeAuditDrawBuysUngated(t *testing.T) {
 // and the next session runs.
 func TestWorkflowBudgetFloorWaitsForAFund(t *testing.T) {
 	h := newWorkflowHarness(t)
-	unfunded := budgetRefused + ": 0.080 EUR of the 2.000 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card."
+	unfunded := BudgetRefused + ": 0.080 EUR of the 2.000 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card."
 	funded := false
 	floor := func(ctx context.Context, taskID, model string) (string, error) {
 		if funded {
@@ -1037,7 +1037,7 @@ func TestWorkflowBudgetFloorWaitsForAFund(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
 	}
-	if len(h.escalated) != 2 || !strings.HasPrefix(h.escalated[0], budgetRefused) || !strings.HasPrefix(h.escalated[1], budgetRefused) {
+	if len(h.escalated) != 2 || !strings.HasPrefix(h.escalated[0], BudgetRefused) || !strings.HasPrefix(h.escalated[1], BudgetRefused) {
 		t.Fatalf("asked %q, want the floor asked again after the plain comment", h.escalated)
 	}
 	if len(h.sessions) != 1 || h.sessions[0].Attempt != 1 {
@@ -1431,7 +1431,7 @@ func TestCheckinAskGroupsNamedRepeats(t *testing.T) {
 	const first, second, fresh = "notRunRow skips the row", "the guard drops the audit row", "an unrelated finding"
 	priors := []map[string]CheckVerdict{
 		{first: {State: CheckConfirmed}},
-		{second: {State: CheckConfirmed, Repeats: findingID(first)}},
+		{second: {State: CheckConfirmed, Repeats: FindingID(first)}},
 	}
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
@@ -1444,10 +1444,10 @@ func TestCheckinAskGroupsNamedRepeats(t *testing.T) {
 	if err := env.GetWorkflowResult(&got); err != nil {
 		t.Fatal(err)
 	}
-	if want := []PriorFinding{{ID: findingID(first), Text: first, Confirmed: 2}}; !reflect.DeepEqual(got.Priors, want) {
+	if want := []PriorFinding{{ID: FindingID(first), Text: first, Confirmed: 2}}; !reflect.DeepEqual(got.Priors, want) {
 		t.Fatalf("priors = %+v, want %+v", got.Priors, want)
 	}
-	if got.Findings[0].PriorConfirmed != 2 || got.Findings[0].Group != findingID(first) || got.Findings[1].PriorConfirmed != 0 || got.Findings[1].Group != "" {
+	if got.Findings[0].PriorConfirmed != 2 || got.Findings[0].Group != FindingID(first) || got.Findings[1].PriorConfirmed != 0 || got.Findings[1].Group != "" {
 		t.Fatalf("findings = %+v, want the second wording counting both confirmations and the fresh one none", got.Findings)
 	}
 }
@@ -2219,10 +2219,9 @@ func TestWorkflowFilesTheConsolesAnswerToALateFaceOnce(t *testing.T) {
 // stopBeside withdraws nothing for it, and the face's signal gives it the
 // comment, after which the withdrawal names it.
 func TestStopBesideWithdrawsOnlyAnAskWithItsFaceComment(t *testing.T) {
-	run := func(faced bool) []int64 {
+	run := func(faced bool) (withdrawn []int64, ended []string) {
 		var suite testsuite.WorkflowTestSuite
 		env := suite.NewTestWorkflowEnvironment()
-		var withdrawn []int64
 		env.RegisterActivityWithOptions(func(ctx context.Context, taskID, reason string, comment int64, why string, caseID int64) (int64, error) {
 			if caseID != 7 {
 				return 0, fmt.Errorf("withdrawal named case %d, want 7", caseID)
@@ -2230,6 +2229,13 @@ func TestStopBesideWithdrawsOnlyAnAskWithItsFaceComment(t *testing.T) {
 			withdrawn = append(withdrawn, comment)
 			return 900, nil
 		}, activity.RegisterOptions{Name: ActivityWithdrawQuestion})
+		env.RegisterActivityWithOptions(func(ctx context.Context, caseID int64, reason string) error {
+			if caseID != 7 {
+				return fmt.Errorf("ending named case %d, want 7", caseID)
+			}
+			ended = append(ended, reason)
+			return nil
+		}, activity.RegisterOptions{Name: ActivityEndCase})
 		env.RegisterWorkflowWithOptions(func(ctx workflow.Context) error {
 			short := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: time.Minute})
 			t := &taskRun{ctx: ctx, short: short, taskID: "t1", caseID: 7}
@@ -2251,13 +2257,13 @@ func TestStopBesideWithdrawsOnlyAnAskWithItsFaceComment(t *testing.T) {
 		if err := env.GetWorkflowError(); err != nil {
 			t.Fatal(err)
 		}
-		return withdrawn
+		return withdrawn, ended
 	}
-	if got := run(false); len(got) != 0 {
-		t.Fatalf("withdrawn %v for an ask with no comment, want none", got)
+	if got, ended := run(false); len(got) != 0 || !slices.Equal(ended, []string{"the head went back"}) {
+		t.Fatalf("withdrawn %v ended %v for an ask with no comment, want none withdrawn and case 7 ended", got, ended)
 	}
-	if got := run(true); !slices.Equal(got, []int64{640}) {
-		t.Fatalf("withdrawn %v after the face's signal, want comment 640", got)
+	if got, ended := run(true); !slices.Equal(got, []int64{640}) || len(ended) != 0 {
+		t.Fatalf("withdrawn %v ended %v after the face's signal, want comment 640 and no case ended", got, ended)
 	}
 }
 

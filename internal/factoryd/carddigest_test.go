@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -27,7 +29,8 @@ var digestStart = time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 // digestAt is m minutes into the life of the fixtures' card.
 func digestAt(m int) time.Time { return digestStart.Add(time.Duration(m) * time.Minute) }
 
-// digestRig is a runner on a fake store and a fake object store, with
+// digestRig is a runner on a fake store, a fake object store and a Forgejo
+// that answers every call 404, so the fork holds no branch of a card, with
 // card t1410 filed at digestStart by a webhook: medium, budget 5, running.
 // Its clock stands at digestStart until a test moves it (at).
 type digestRig struct {
@@ -46,8 +49,16 @@ func newDigestRig(change func(*Task)) digestRig {
 	}
 	store.tasks[card.ID] = card
 	return digestRig{r: &Runner{store: store, objects: objects, cfg: testRunnerConfig(), now: func() time.Time { return digestStart },
-		timeline: &Timeline{Objects: objects, Events: store, Store: store}},
+		timeline: &Timeline{Objects: objects, Events: store, Store: store},
+		forgejo:  &Forgejo{BaseURL: "http://forgejo.test", BotUser: "factory-agent", HTTP: &http.Client{Transport: notFoundTrips{}}}},
 		store: store, tl: &Timeline{Objects: objects}}
+}
+
+// notFoundTrips answers every request 404.
+type notFoundTrips struct{}
+
+func (notFoundTrips) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}, Request: r}, nil
 }
 
 // at moves the rig's clock to minute m.
@@ -154,7 +165,7 @@ func TestCardDigestRendersTheSkeleton(t *testing.T) {
 	if got := d.Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
 	}
-	if got := findingID("  MetricDivideReplans\tLACKS   e.repository = $1 "); got != idA {
+	if got := FindingID("  MetricDivideReplans\tLACKS   e.repository = $1 "); got != idA {
 		t.Fatalf("findingID of the spaced, upper-case text = %s, want %s", got, idA)
 	}
 	ask := d.Steps[4]
@@ -405,6 +416,9 @@ func TestCardDigestFlagsTheOtherPatterns(t *testing.T) {
 func TestCardDigestNamesThePlanOfASuccessorsParent(t *testing.T) {
 	g := newDigestRig(func(c *Task) { c.Source, c.Parent, c.PlanKey = SourceSuccessor, "t1344", "k1" })
 	g.store.tasks["t1344"] = Task{ID: "t1344", Kind: "agent", Repository: "sf/app", IssueNumber: 1344, Track: policy.TrackPlan, PlanName: "session-metrics"}
+	if _, err := g.store.AddPlanRevision(context.Background(), "t1344", mustJSON(Plan{Summary: "s", Cards: []PlanCard{{Key: "k1", Role: RoleFeature}}}), "r1"); err != nil {
+		t.Fatal(err)
+	}
 	if h := g.digest(t).Head; h.Plan != 1344 || h.PlanName != "session-metrics" {
 		t.Fatalf("Head = %+v, want plan #1344 session-metrics", h)
 	}
@@ -512,6 +526,47 @@ func TestCardDigestReadsEveryStepKind(t *testing.T) {
 		"flags: none\n"
 	if got := g.digest(t).Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// Two audit findings of one item in one file, at lines a run apart, are one
+// finding of the card: the step lists each id once, sorted. Ids by
+// sha256sum: "secrets at a.go" 99f3acc590cc, "network egress at b.go"
+// e60f60b44189.
+func TestCardDigestCountsAnAuditFindingOnce(t *testing.T) {
+	g := newDigestRig(nil)
+	g.line(t, 1, "audit", map[string]any{"commit": "f00dfeed1234", "verdict": AuditFindings, "findings": []AuditFinding{
+		{Item: "secrets", File: "a.go", Line: 154, Why: "a literal"}, {Item: "secrets", File: "a.go", Line: 155, Why: "the literal"},
+		{Item: "network egress", File: "b.go", Line: 9, Why: "a new host"}}})
+	d := g.digest(t)
+	audit := d.Steps[len(d.Steps)-1]
+	if want := []string{"99f3acc590cc", "e60f60b44189"}; audit.Kind != "audit" || !slices.Equal(audit.Findings, want) ||
+		audit.Outcome != "findings 99f3acc590cc e60f60b44189" {
+		t.Fatalf("audit step = %+v, want the findings %v", audit, want)
+	}
+}
+
+// An audit finding has one id wherever it stands: the audit step, a
+// check-in's verdict on its text and the step's detail all name FindingID
+// of the text, a path's capitals folded like every finding's words. By
+// sha256sum, "policy and workflow files at codeowners" is 86e1569746b6.
+func TestAuditFindingHasTheCheckInsID(t *testing.T) {
+	g := newDigestRig(nil)
+	g.line(t, 10, "audit", map[string]any{"commit": "f00dfeed1234", "verdict": AuditFindings,
+		"findings": []AuditFinding{{Item: "policy and workflow files", File: "CODEOWNERS", Line: 1, Why: "w"}}})
+	g.line(t, 12, "checkin", map[string]any{"round": 1, "decision": CheckHandover,
+		"verdicts": map[string]CheckVerdict{"policy and workflow files at CODEOWNERS": {State: CheckConfirmed}},
+		"record":   CheckInRecord{Moment: CheckInGate, Decision: CheckHandover}})
+	want := []string{"86e1569746b6"}
+	for _, s := range g.digest(t).Steps {
+		if (s.Kind == "audit" || s.Kind == "checkin") && !slices.Equal(s.Findings, want) {
+			t.Errorf("%s step names %v, want %v", s.Kind, s.Findings, want)
+		}
+	}
+	var b strings.Builder
+	writeFields(&b, map[string]any{"findings": []any{map[string]any{"item": "policy and workflow files", "file": "CODEOWNERS"}}})
+	if !strings.Contains(b.String(), "- 86e1569746b6 ") {
+		t.Fatalf("detail = %q, want the finding's id 86e1569746b6", b.String())
 	}
 }
 
@@ -853,6 +908,31 @@ func digestPlanRig(t *testing.T, key string) digestRig {
 		t.Fatal(err)
 	}
 	return g
+}
+
+// The digest of the successor that carries the integration card's key
+// counts the plan's criteria and reads their rows on the plan-filed
+// integration card: at its approval the one criterion no row holds there
+// flags.
+func TestCardDigestOfASuccessorReadsTheIntegrationCardsRows(t *testing.T) {
+	var rows []CriterionVerdict
+	for _, c := range digestPlan().Criteria {
+		if c.ID != "pages_ok" {
+			rows = append(rows, CriterionVerdict{Criterion: c.ID, Verdict: "met", Kind: c.Kind, Source: CriteriaSourceGate,
+				DecidedBy: FactoryDecider, CreatedAt: digestAt(30)})
+		}
+	}
+	g := digestPlanRig(t, "integ")
+	card := g.store.tasks["t1410"]
+	card.Source, card.Status, card.Gate = SourceSuccessor, "in-review", GateApproval
+	g.store.tasks["t1410"] = card
+	g.store.tasks["t-int"] = Task{ID: "t-int", Kind: "agent", Repository: "sf/app", IssueNumber: 1400, Source: SourcePlan, Parent: "plan1",
+		PlanKey: "integ", Status: "failed"}
+	g.store.criteriaVerdicts = map[string][]CriterionVerdict{"t-int": rows}
+	d := g.digest(t)
+	if want := []DigestFlag{{"criterion_unproven", "pages_ok"}}; d.Head.Criteria != 7 || !slices.Equal(d.Flags, want) {
+		t.Fatalf("Head criteria %d, flags %+v; want 7 and %+v", d.Head.Criteria, d.Flags, want)
+	}
 }
 
 // The gate's line with states counts blind and open, a proof's opening is
@@ -1468,6 +1548,64 @@ func TestProviderBackoffAgesFromTheDueRetry(t *testing.T) {
 	}
 }
 
+// A named provider limit freezes the card for the interval its
+// provider_refused line's BackoffS names — 3 h 12 m into the stage a
+// refusal with a reset 6 h 48 m out, held ten hours in all: the owned
+// wait reads provider_limit since the refusal for the whole interval,
+// never run_quiet, with no per-card bound, and a check-in the limit
+// refused and a session that emptied a grant inside the interval flag
+// nothing. Past the reset the ladder's provider_backoff row is back, and
+// a check-in the provider refused outside the interval flags again.
+func TestDigestQuietInsideFreeze(t *testing.T) {
+	g := newDigestRig(nil)
+	g.event(150, EventSessionGranted, "sebastian", map[string]any{"sessions": 1})
+	g.session(t, 180, 192, 1, string(OutcomeProviderRefused))
+	g.line(t, 192, StepProviderRefused, map[string]any{"status": 429, "reason": "provider limit for class big",
+		"backoff_s": 24480, "words": "rate limit exceeded, resets at 17:04:50 UTC"})
+	g.line(t, 300, "checkin", map[string]any{"moment": "gate", "decision": "handover", "reason": CheckinRefusedReason + "class frozen"})
+	for _, at := range []int{193, 300, 420, 599} {
+		g.at(at)
+		d := g.digest(t)
+		if w, ok := d.ownedWait(); !ok || w != (ownedWait{"provider_limit", 0, digestAt(192)}) {
+			t.Fatalf("at +%d: ownedWait = %+v, %t; want provider_limit since +3:12", at, w, ok)
+		}
+		if len(d.Flags) != 0 {
+			t.Fatalf("at +%d: Flags = %v, want none inside the freeze", at, d.Flags)
+		}
+	}
+	g.line(t, 610, "checkin", map[string]any{"moment": "gate", "decision": "handover", "reason": CheckinRefusedReason + "overloaded"})
+	g.at(620)
+	d := g.digest(t)
+	if w, ok := d.ownedWait(); !ok || w != (ownedWait{"provider_backoff", 0, digestAt(600)}) {
+		t.Fatalf("past the reset: ownedWait = %+v, %t; want the ladder's provider_backoff", w, ok)
+	}
+	if want := []DigestFlag{{"checkin_refused", "+10:10"}}; !slices.Equal(d.Flags, want) {
+		t.Fatalf("past the reset: Flags = %v, want the check-in outside the freeze to flag: %v", d.Flags, want)
+	}
+}
+
+// A check-in the provider refused before the freeze arms still flags:
+// suppression is scoped to the freeze's interval, and a check-in stands
+// at its moment, not a span. The same life's newest session — no step
+// after it — is emptied by the freeze, and its grant buys nothing
+// without a push flags not: the limit bought the quiet, not the grant.
+func TestCheckinRefusedBeforeTheFreezeFlags(t *testing.T) {
+	g := newDigestRig(nil)
+	g.event(150, EventSessionGranted, "sebastian", map[string]any{"sessions": 1})
+	g.line(t, 160, "checkin", map[string]any{"moment": "gate", "decision": "handover", "reason": CheckinRefusedReason + "overloaded"})
+	g.session(t, 180, 192, 1, string(OutcomeProviderRefused))
+	g.line(t, 192, StepProviderRefused, map[string]any{"status": 429, "reason": "provider limit for class big",
+		"backoff_s": 24480, "words": "rate limit exceeded, resets at 17:04:50 UTC"})
+	g.at(300)
+	d := g.digest(t)
+	if w, ok := d.ownedWait(); !ok || w != (ownedWait{"provider_limit", 0, digestAt(192)}) {
+		t.Fatalf("ownedWait = %+v, %t; want provider_limit since +3:12", w, ok)
+	}
+	if want := []DigestFlag{{"checkin_refused", "+2:40"}}; !slices.Equal(d.Flags, want) {
+		t.Fatalf("Flags = %v, want the check-in before the freeze to flag and the emptied session to flag nothing: %v", d.Flags, want)
+	}
+}
+
 // A skipped stage's timeline line also writes its events row, which the
 // approval rule reads to leave the stage out.
 func TestSkippedStageWritesItsEventRow(t *testing.T) {
@@ -1491,5 +1629,67 @@ func TestQueuedOverBoundNamesAResumedWait(t *testing.T) {
 	want := []DigestFlag{{"queued_over_bound", "resumed: work bound 7 of 7 live, 1 ahead for 3h"}, {"wait_over_bound", "queued since +1:00"}}
 	if got := g.digest(t).Flags; !slices.Equal(got, want) {
 		t.Fatalf("Flags = %v, want %v", got, want)
+	}
+}
+
+// mergeQueueRig is a card in gate merge-queue since minute 30, with the
+// fake merge queue holding queue's tasks in order; "t1410" is the card.
+func mergeQueueRig(t *testing.T, queue ...string) digestRig {
+	g := newDigestRig(func(c *Task) { c.Status, c.Gate = "in-review", GateMergeQueue })
+	g.store.tasks["t1949"] = Task{ID: "t1949", Kind: "agent", Repository: "sf/app", IssueNumber: 1949, Status: "in-review", Gate: GateMergeQueue}
+	g.event(30, EventTaskStatus, FactoryDecider, map[string]any{"status": "in-review", "gate": GateMergeQueue})
+	for i, id := range queue {
+		g.store.queue = append(g.store.queue, queueEntry{"sf/app", id, digestAt(i)})
+	}
+	g.at(6*60 + 31)
+	return g
+}
+
+func TestWaitBehindAnotherCardInTheMergeQueueRaisesNoFlag(t *testing.T) {
+	g := mergeQueueRig(t, "t1949", "t1410")
+	d := g.digest(t)
+	if len(d.Flags) != 0 {
+		t.Fatalf("Flags = %v, want none for a card that waits behind #1949", d.Flags)
+	}
+	if got, want := d.Head.MergeQueue, (&QueuePlace{Ahead: 1, HeadTask: "t1949", HeadIssue: 1949}); *got != *want {
+		t.Fatalf("MergeQueue = %+v, want %+v", got, want)
+	}
+	if line, _, _ := strings.Cut(d.Render(), "\n"); !strings.HasSuffix(line, "in-review, merge-queue · waits to merge behind #1949") {
+		t.Fatalf("head line = %q, want it to end with the card ahead named", line)
+	}
+}
+
+func TestTheMergeQueueHeadStillOwnsItsGateWait(t *testing.T) {
+	g := mergeQueueRig(t, "t1410", "t1949")
+	d := g.digest(t)
+	if want := []DigestFlag{{"wait_over_bound", "gate since +0:30"}}; !slices.Equal(d.Flags, want) {
+		t.Fatalf("Flags = %v, want %v", d.Flags, want)
+	}
+	if line, _, _ := strings.Cut(d.Render(), "\n"); strings.Contains(line, "waits to merge behind") {
+		t.Fatalf("head line = %q, the front waits behind no card", line)
+	}
+}
+
+func TestAHeldPlanCardRaisesNoFlag(t *testing.T) {
+	g := mergeQueueRig(t)
+	d := g.digest(t)
+	if len(d.Flags) != 0 || d.Head.MergeQueue != nil {
+		t.Fatalf("Flags = %v, MergeQueue = %+v, want none and nil for a card with no queue row", d.Flags, d.Head.MergeQueue)
+	}
+}
+
+// A row the console wrote for the project agent's own decision names the
+// woken human with decider agent: the digest names factory-chat, as
+// factoryd's rows for the same acts do, and a human's row names the human.
+func TestTheDigestNamesTheProjectAgentsRowsAsTheChats(t *testing.T) {
+	g := newDigestRig(nil)
+	g.event(60, EventCardRetried, "sebastian", map[string]any{"replacement": 9, "decider": "agent", "autonomy": "autonomous"})
+	g.event(61, EventCardRetried, "sebastian", map[string]any{"replacement": 10, "decider": "member", "autonomy": "autonomous"})
+	g.at(120)
+	r := g.digest(t).Render()
+	for _, want := range []string{"retried by factory-chat → as #9\n", "retried by sebastian   → as #10\n"} {
+		if !strings.Contains(r, want) {
+			t.Errorf("the steps =\n%s\nwant the line %q", r, want)
+		}
 	}
 }

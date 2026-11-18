@@ -272,7 +272,7 @@ func (r *Runner) nextRound(ctx context.Context, parent string) error {
 		}
 		return endDonePlan(ctx, r.store, r.forgejo, t)
 	}
-	cards, err := planWaits(ctx, r.store, parent)
+	cards, err := PlanWaits(ctx, r.store, parent)
 	if err != nil || !roundComplete(p, cards) {
 		return err
 	}
@@ -356,8 +356,8 @@ func ClosablePlan(t Task) bool {
 // ends closed once its plan_closed row stands (a console Close wrote it
 // with the waivers) or no criterion is open. A plan that still holds
 // production with open criteria stays done, its issue opens again and says
-// once that an approver's Close with a note ends it: a writer's close of
-// the issue waives nothing.
+// once what a Close on the console waives (holdComment): a writer's close
+// of the issue waives nothing.
 func endDonePlan(ctx context.Context, store Store, f *Forgejo, t Task) error {
 	_, closed, err := store.PlanClosed(ctx, t.ID)
 	if err != nil {
@@ -373,31 +373,45 @@ func endDonePlan(ctx context.Context, store Store, f *Forgejo, t Task) error {
 			return err
 		}
 		if len(open) > 0 {
-			return holdDonePlan(ctx, f, t, len(open))
+			waives, _, err := closeOpen(ctx, store, t.ID, p)
+			if err != nil {
+				return err
+			}
+			return holdDonePlan(ctx, f, t, len(open), len(waives))
 		}
 	}
 	return store.TransitionTask(ctx, t.ID, []string{"done"}, "closed")
 }
 
-// holdDonePlan says once that plan t's n open criteria keep it holding
-// production, then opens its issue again: a comment that failed is tried
-// again with the reopen.
-func holdDonePlan(ctx context.Context, f *Forgejo, t Task, n int) error {
+// holdDonePlan says once that plan t's held open criteria keep it holding
+// production, of which a Close waives waives, then opens its issue again:
+// a comment that failed is tried again with the reopen.
+func holdDonePlan(ctx context.Context, f *Forgejo, t Task, held, waives int) error {
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
 		return err
 	}
-	if err := f.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, holdComment(n)); err != nil {
+	if err := f.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, holdComment(held, waives)); err != nil {
 		return err
 	}
 	return f.ReopenIssue(ctx, repo.Owner, repo.Name, t.IssueNumber)
 }
 
 // holdComment is what a plan's issue hears when the plan still holds
-// production with n open criteria.
-func holdComment(n int) string {
-	return fmt.Sprintf("factoryd: this plan still holds production with %s. Closing its issue waives nothing: an approver's Close with a note on the console waives them and ends the plan.",
-		OpenCriteriaPhrase(n))
+// production with held open criteria (planOpen), of which a Close on the
+// console waives waives (closeOpen): the others the criteria gate's last
+// run on main met. A Close that waives none needs no approver and no note
+// (planCloseOpen).
+func holdComment(held, waives int) string {
+	lead := fmt.Sprintf("factoryd: this plan still holds production with %s. Closing its issue waives nothing: ", OpenCriteriaPhrase(held))
+	switch {
+	case waives == 0:
+		return lead + "the criteria gate's last run on main met them, so a Close on the console waives none, needs no note and ends the plan."
+	case waives < held:
+		return lead + fmt.Sprintf("the criteria gate's last run on main met %d of them, so an approver's Close with a note on the console waives only %d and ends the plan.",
+			held-waives, waives)
+	}
+	return lead + "an approver's Close with a note on the console waives them and ends the plan."
 }
 
 // OpenCriteriaPhrase counts n open criteria in words: "1 open criterion",

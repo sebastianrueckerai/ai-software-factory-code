@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"maps"
 	"reflect"
@@ -22,7 +23,8 @@ import (
 // case 7, rung 1's close is refused with what rung 1 may take: route to
 // approval, re-verify, a successor, a replan, a withdrawal and a note. An
 // action the table does not hold is refused with the human's: re-verify,
-// a raise of the ceiling, a successor, a replan, a close and a note. With case 7 live, an
+// a raise of the ceiling, a successor, a replan, a close and a note; no
+// confirm_audit, as the rig's audit finding is at no file. With case 7 live, an
 // answer with no case is refused naming it. Nothing is written.
 func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 	g := newFactsRig(t)
@@ -188,7 +190,8 @@ func TestActReplansAndARefusedReplanLeavesTheCaseOpen(t *testing.T) {
 	if want := ErrNoReplan("Card #7 waits for a person to judge its screening: let it run or close its issue, then replan it."); err != want {
 		t.Fatalf("Act = %v, want %q", err, want)
 	}
-	if store.cases[0].Status != CaseAtHuman || len(store.resolved) != 0 || posted != 0 || len(fj.calls) != calls {
+	wrote := slices.ContainsFunc(fj.calls[calls:], func(c string) bool { return !strings.HasPrefix(c, "GET ") })
+	if store.cases[0].Status != CaseAtHuman || len(store.resolved) != 0 || posted != 0 || wrote {
 		t.Fatalf("case %s, resolved %v, posted %d, forgejo %q; want the case open and nothing posted", store.cases[0].Status, store.resolved, posted, fj.calls[calls:])
 	}
 }
@@ -286,9 +289,10 @@ func retriedTwice(t *testing.T, second ActInput) {
 
 // A card stopped at its agent time cap takes an extend of its agent time,
 // not one of the sessions alone: that raises nothing the stop names, is
-// refused with the stop's own words before it draws — no row, no raise, the
-// case open — so the stop's next answer is not already weighed as a draw
-// that bought nothing. The same extend with its minutes of agent time
+// refused with the stop's own words and the minutes each rung may ask for
+// (the large card's draw of 90 minutes, the pool's 30 hours) before it
+// draws — no row, no raise, the case open — so the stop's next answer is
+// not already weighed as a draw that bought nothing. The same extend with its minutes of agent time
 // raises the card and resolves the stop.
 func TestActRefusesASessionsOnlyExtendAtTheTimeCap(t *testing.T) {
 	g := newFactsRig(t)
@@ -299,7 +303,8 @@ func TestActRefusesASessionsOnlyExtendAtTheTimeCap(t *testing.T) {
 		Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Fund: &policy.Draw{EUR: 1}}}
 	var refused ErrActRefused
 	if _, err := g.r.Act(context.Background(), in); !errors.As(err, &refused) ||
-		!strings.HasPrefix(err.Error(), "this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none") {
+		!strings.HasPrefix(err.Error(), "this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none. "+
+			"The card's draw leaves 90 minutes and the pool 1800 minutes of agent time, so rung 1 may ask for up to 90 minutes, rung 2 for up to 600 minutes and the human for up to 600 minutes, ") {
 		t.Fatalf("a sessions-only extend at the time cap = %v, want the stop's own refusal", err)
 	}
 	if len(g.store.events) != events || g.store.tasks["t1"].Usage != usage || len(g.store.resolved) != 0 ||
@@ -344,7 +349,7 @@ func TestRecordGrantDrawsAgainstThePool(t *testing.T) {
 	ctx := context.Background()
 	before := g.store.tasks["t1"].Usage
 	drawnBefore, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
-	if err := g.r.RecordGrant(ctx, "t1", "sebastian", policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "run-1", "3")); err != nil {
+	if err := g.r.RecordGrant(ctx, "t1", "sebastian", policy.Draw{Sessions: 1}, IdentityKey(EventCardExtended, "run-1", "3")); err != nil {
 		t.Fatal(err)
 	}
 	drawn, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
@@ -369,7 +374,7 @@ func TestAuditDrawIsTheFactoryRungZeroDraw(t *testing.T) {
 	ctx := context.Background()
 	before := g.store.tasks["t1"].Usage
 	drawnBefore, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
-	if err := g.r.AuditDraw(ctx, "t1", policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
+	if err := g.r.AuditDraw(ctx, "t1", policy.Draw{Sessions: 1}, IdentityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
 		t.Fatal(err)
 	}
 	drawn, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
@@ -384,7 +389,7 @@ func TestAuditDrawIsTheFactoryRungZeroDraw(t *testing.T) {
 		t.Fatalf("usage = %+v, want the raises of %+v", u, before)
 	}
 	var app *temporal.ApplicationError
-	if err := g.r.AuditDraw(ctx, "t1", policy.Draw{Sessions: 99}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != errDrawRefused {
+	if err := g.r.AuditDraw(ctx, "t1", policy.Draw{Sessions: 99}, IdentityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != ErrDrawRefused {
 		t.Fatalf("past the bound = %v, want a typed draw-refused", err)
 	}
 }
@@ -398,7 +403,7 @@ func TestAgentDrawIsRungTwosDrawAgainstThePool(t *testing.T) {
 	ctx := context.Background()
 	before := g.store.tasks["t1"].Usage
 	drawnBefore, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
-	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 1}, IdentityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
 		t.Fatal(err)
 	}
 	drawn, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
@@ -414,7 +419,7 @@ func TestAgentDrawIsRungTwosDrawAgainstThePool(t *testing.T) {
 	}
 	rows := len(g.store.events)
 	var app *temporal.ApplicationError
-	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 99}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != errDrawRefused {
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 99}, IdentityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != ErrDrawRefused {
 		t.Fatalf("past the pool = %v, want a typed draw-refused", err)
 	}
 	if len(g.store.events) != rows {
@@ -457,7 +462,7 @@ func TestFakeResolveCaseTakesOverTheWebhooksCopy(t *testing.T) {
 	store := newFakeStore()
 	at := time.Now()
 	store.cases = []Case{{ID: 3, TaskID: "t1", Status: CaseResolved, ResolvedAt: &at,
-		Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: caseAnswer, Args: map[string]any{"answer": "go on", "comment": 77}}}}
+		Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: CaseAnswer, Args: map[string]any{"answer": "go on", "comment": 77}}}}
 	if err := store.ResolveCase(ctx, 3, CaseResolution{By: "ana", Rung: 3, Action: ActContinue, Args: map[string]any{"comment": int64(78)}}, nil, nil, nil); !errors.As(err, new(ErrCaseEnded)) {
 		t.Fatalf("an answer on comment 78 = %v, want the case ended", err)
 	}
@@ -512,5 +517,177 @@ func TestHumanChoiceTakesNoFundAndNoArgs(t *testing.T) {
 		if !strings.Contains(why, "card #12 is a human card") {
 			t.Errorf("%s: refusal %q; want a human card's refusal", name, why)
 		}
+	}
+}
+
+// A park settles the case it answers, on both of its cards. The agent
+// card's press reaches Act as a settle with its choice as the park arg:
+// the case resolves, the ruling is the answer's row, and the run hears
+// case_resolved. The human card's own value settles its choice case the
+// same way, the card keeping its wait with no open case and no run
+// signalled, while the chain stall's rerun_again alone keeps its case
+// live.
+func TestAParkSettlesTheCaseItAnswers(t *testing.T) {
+	g := newFactsRig(t)
+	g.card()
+	g.timeline(t)
+	g.r.timeline = &Timeline{Events: g.store, Store: g.store}
+	ctx := context.Background()
+	g.store.cases = append(g.store.cases, Case{ID: 7, TaskID: "t1", Kind: CaseSessionCap, Status: CaseAtHuman})
+	got, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 7, By: "sebastian", Via: ViaChat, Rung: 3,
+		Res:  Resolution{Action: ActSettle, Args: map[string]any{"park": AnswerPark}, Note: "Park it"},
+		Post: func(context.Context) (int64, error) { return 5, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Case.Status != CaseResolved || got.Comment != 5 || !slices.Equal(g.store.resolved, []int64{7}) || !strings.Contains(got.Text, "resolved with settle") {
+		t.Fatalf("result = %+v, resolved %v; want case 7 settled by the park, the member's comment its own", got, g.store.resolved)
+	}
+	answered := 0
+	for _, e := range g.store.events {
+		if e.Kind == EventQuestionAnswered {
+			answered++
+			if e.TaskID != "t1" || e.Actor != "sebastian" || e.Via != ViaChat || e.Detail["case_id"] != int64(7) ||
+				e.Detail["action"] != ActSettle || e.Detail["comment"] != int64(5) {
+				t.Fatalf("the ruling's row = %+v, want sebastian's settle of case 7 via chat", e)
+			}
+		}
+	}
+	if answered != 1 {
+		t.Fatalf("%d answer rows, want the park's alone", answered)
+	}
+	if !slices.ContainsFunc(g.r.cfg.Workflows.(*fakeWorkflows).signals, func(s string) bool {
+		return strings.HasPrefix(s, "t1 "+SignalCaseResolved+" sebastian")
+	}) {
+		t.Fatalf("signals = %q, want case_resolved to t1's run", g.r.cfg.Workflows.(*fakeWorkflows).signals)
+	}
+
+	g.store.tasks["h1"] = Task{ID: "h1", Kind: "human", Repository: "demo-app/demo-app", IssueNumber: 14, Status: "waiting-human"}
+	for id, tc := range map[int64]struct {
+		value, want string
+	}{9: {AnswerPark, CaseResolved}, 10: {AnswerRerunAgain, CaseAtHuman}} {
+		g.store.cases = append(g.store.cases, Case{ID: id, TaskID: "h1", Kind: CaseHumanCard, Status: CaseAtHuman})
+		g.event("h1", factsNow, EventQuestionAsked, map[string]any{"case_id": int64(id),
+			"offers": []AskOffer{{Value: tc.value, Label: "the choice"}}})
+		got, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: id, By: "sebastian", Rung: 3, Res: Resolution{Action: tc.value, Note: "the choice"}})
+		if err != nil {
+			t.Fatalf("the choice %s: %v", tc.value, err)
+		}
+		if got.Case.Status != tc.want {
+			t.Fatalf("after %s the case is %s, want %s", tc.value, got.Case.Status, tc.want)
+		}
+		if s := g.store.tasks["h1"].Status; s != "waiting-human" {
+			t.Fatalf("after %s the card is %s, want it parked in waiting-human", tc.value, s)
+		}
+	}
+	// the settled park alone recorded its ruling, and no run was signalled
+	answered = 0
+	for _, e := range g.store.events {
+		if e.Kind == EventQuestionAnswered && e.TaskID == "h1" {
+			answered++
+			if e.Actor != "sebastian" || e.Detail["value"] != AnswerPark {
+				t.Fatalf("the ruling's row = %+v, want sebastian's park of the human card's case", e)
+			}
+		}
+	}
+	if answered != 1 || slices.ContainsFunc(g.r.cfg.Workflows.(*fakeWorkflows).signals, func(s string) bool {
+		return strings.HasPrefix(s, "h1 ")
+	}) {
+		t.Fatalf("%d answer rows, signals %q; want the park's alone and none for the human card", answered, g.r.cfg.Workflows.(*fakeWorkflows).signals)
+	}
+}
+
+// The human's confirm_audit on the gate stop's case records the audit
+// findings it names, all of them when it names none, as
+// audit_finding_confirmed steps with who and why, and ends the case; a
+// second one naming a recorded finding, by its text or a start of it,
+// records nothing again. Of the newest audit's two findings, the one at no
+// file is never recorded. The project agent's press, a press without a
+// reason, one naming a finding the audit does not hold and one naming the
+// finding at no file are refused, and write nothing.
+func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
+	g := newFactsRig(t)
+	g.card()
+	g.timeline(t)
+	g.r.timeline = g.tl
+	const rig = "secrets at acceptance/rig_test.go"
+	g.tl.now = func() time.Time { return factsAt(9, 50) }
+	if err := g.tl.Append(context.Background(), "t1", "audit", map[string]any{"commit": "h2", "verdict": "findings", "findings": []AuditFinding{
+		{Item: "secrets", File: "acceptance/rig_test.go", Line: 118, Why: "a rig literal"},
+		{Item: "... and 2 more", Why: "the card lists the first 50 of the parts' findings"}}}); err != nil {
+		t.Fatal(err)
+	}
+	t1 := g.store.tasks["t1"]
+	t1.IssueNumber = 0 // the answer's factoryd comment needs no issue here
+	g.store.tasks["t1"] = t1
+	g.store.cases = append(g.store.cases, Case{ID: 9, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
+		Facts: map[string]any{"head": "h2", "gate": "GateCriteria"}})
+	ctx := context.Background()
+	steps := func() []map[string]any {
+		b, _ := g.tl.Objects.Get(ctx, "sessions/t1/timeline.jsonl")
+		var out []map[string]any
+		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			var m map[string]any
+			if json.Unmarshal([]byte(line), &m) == nil && m["step"] == stepAuditConfirmed {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name string
+		in   ActInput
+		want string // a refusal's prefix, "" for a confirmation
+	}{
+		{"without a reason", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
+			Res: Resolution{Action: ActConfirmAudit}}, "a one-line reason is required"},
+		{"by the project agent", ActInput{TaskID: "t1", CaseID: 9, By: ChatUser, Rung: 2,
+			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures"}}, "rung 2 may not pick confirm_audit: the human may"},
+		{"naming an unknown finding", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
+			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures",
+				Args: map[string]any{"findings": "secrets at acceptance/rig_test.go:118"}}},
+			`the head's audit holds no finding "secrets at acceptance/rig_test.go:118" names`},
+		{"naming the finding at no file", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
+			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures", Args: map[string]any{"findings": "... and 2 more"}}},
+			`"... and 2 more" names a finding at no file, which no confirmation covers`},
+	} {
+		var refused ErrActRefused
+		if _, err := g.r.Act(ctx, tc.in); !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), tc.want) {
+			t.Errorf("%s = %v, want the refusal %q", tc.name, err, tc.want)
+		}
+	}
+	if got := steps(); len(got) != 0 {
+		t.Fatalf("the refusals wrote %v, want nothing", got)
+	}
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
+		Res: Resolution{Action: ActConfirmAudit, Note: "the rig's fakes, not secrets"}}); err != nil {
+		t.Fatal(err)
+	}
+	got := steps()
+	if len(got) != 1 || got[0]["finding"] != rig || got[0]["by"] != "sebastian" || got[0]["why"] != "the rig's fakes, not secrets" {
+		t.Fatalf("confirmations = %v, want %q confirmed by sebastian with the reason", got, rig)
+	}
+	if c, err := g.r.store.CaseByID(ctx, 9); err != nil || c.Status != CaseResolved {
+		t.Fatalf("the case is %s (%v), want it resolved", c.Status, err)
+	}
+	// a finding named as its text, already recorded: the case answers, nothing records again
+	g.store.cases = append(g.store.cases, Case{ID: 10, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
+		Facts: map[string]any{"head": "h2", "gate": "GateCriteria"}})
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 10, By: "sebastian", Rung: 3,
+		Res: Resolution{Action: ActConfirmAudit, Note: "again", Args: map[string]any{"findings": rig}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := steps(); len(got) != 1 {
+		t.Fatalf("confirmations = %v, want the one standing, the second press recording nothing again", got)
+	}
+	// a start of the finding's text names it whole: the recorded text stands, nothing records again
+	g.store.cases = append(g.store.cases, Case{ID: 11, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
+		Facts: map[string]any{"head": "h2", "gate": "GateCriteria"}})
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 11, By: "sebastian", Rung: 3,
+		Res: Resolution{Action: ActConfirmAudit, Note: "once more", Args: map[string]any{"findings": "secrets at accept"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := steps(); len(got) != 1 || got[0]["finding"] != rig {
+		t.Fatalf("confirmations = %v, want %q alone, the start resolved to it", got, rig)
 	}
 }

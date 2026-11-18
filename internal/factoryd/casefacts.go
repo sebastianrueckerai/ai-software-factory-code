@@ -33,6 +33,7 @@ type CaseFacts struct {
 	PR             int64  `json:"pr,omitempty"`
 	Factory        bool   `json:"factory,omitempty"`         // the pull request is one factoryd opened
 	PROpen         bool   `json:"pr_open,omitempty"`         // PR is set and the card neither merged nor ended
+	MergeConflict  string `json:"merge_conflict,omitempty"`  // Forgejo's refusal to merge main into Head, while PROpen (standingConflict)
 	Checks         string `json:"checks,omitempty"`          // green, red, pending or ""
 	ReviewApproved bool   `json:"review_approved,omitempty"` // the newest model_review on Head was reviewed and approved
 	RerunOnHead    bool   `json:"rerun_on_head,omitempty"`   // Head's checks ran again, or a rerun made Head
@@ -72,8 +73,14 @@ type CaseFacts struct {
 	// FindingOrder lists Findings in the order the gates raised them.
 	FindingOrder []string `json:"finding_order,omitempty"`
 	// ReviewFindings are those of Findings Head's newest review raised, the
-	// findings a human's overrule of the review drops.
+	// findings a human's overrule of the review drops; AuditFindings are
+	// those Head's newest audit raised. A money or cap ask leads with them
+	// while they stand unresolved (findingsLead).
 	ReviewFindings []string `json:"review_findings,omitempty"`
+	AuditFindings  []string `json:"audit_findings,omitempty"`
+	// AuditConfirmable are those of AuditFindings at a file, the ones a
+	// human's confirm_audit covers.
+	AuditConfirmable []string `json:"audit_confirmable,omitempty"`
 	// FailedTests are the tests the red checks on Head failed, read when
 	// Checks is red; HeadCommits are the pull request's commits after the
 	// newest session's push, each "<sha8> <author> <subject>".
@@ -112,9 +119,12 @@ type CaseFacts struct {
 	// Criteria: the card is the integration or a delta card of a plan whose
 	// criteria a human judges on its merge
 	Criteria bool `json:"criteria,omitempty"`
-	// ApprovalKind is the kind of the approval request a case of a plan's criteria or a merge holds
-	ApprovalKind string    `json:"approval_kind,omitempty"`
-	Pushed       bool      `json:"pushed,omitempty"` // a session pushed a branch head
+	Pushed   bool `json:"pushed,omitempty"` // a session pushed a branch head
+	// BranchRead: the card's branch on the fork was read. BranchHead is its
+	// head while main lacks it, "" when the fork holds no branch for the
+	// card past its base or main holds its head (workAhead).
+	BranchRead   bool      `json:"branch_read,omitempty"`
+	BranchHead   string    `json:"branch_head,omitempty"`
 	Dependencies []DepFact `json:"dependencies,omitempty"`
 	Planner      bool      `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
 	// PlannerRetry: the plan's automatic second session, topped up to half
@@ -122,16 +132,23 @@ type CaseFacts struct {
 	PlannerRetry bool   `json:"planner_retry,omitempty"`
 	Plan         string `json:"plan,omitempty"` // the plan's task id, for a plan or a plan's card
 	// PlanIssue, PlanName and PlanStatus name the plan of a plan's card and
-	// Siblings are its other cards, by issue; all empty for a direct card.
+	// Siblings are its other keys' cards (PlanWaits), by issue; all empty
+	// for a direct card.
 	PlanIssue    int64         `json:"plan_issue,omitempty"`
 	PlanName     string        `json:"plan_name,omitempty"`
 	PlanStatus   string        `json:"plan_status,omitempty"`
 	Siblings     []SiblingFact `json:"siblings,omitempty"`
 	Running      bool          `json:"running,omitempty"` // a session is live: the card runs and holds a live session row
 	Autonomy     string        `json:"autonomy"`
-	PoolLeft     policy.Draw   `json:"pool_left"`
-	CardDrawLeft policy.Draw   `json:"card_draw_left"`
-	Partial      []string      `json:"partial,omitempty"` // the readers that failed, by name; an entry may carry the read's error after the name and ": "
+	OpenCriteria int           `json:"open_criteria,omitempty"` // the plan's criteria neither met nor waived, as its Close counts them (PlanOpenCriteria)
+	// Hold is the hold that keeps the card from starting, "card #N is " and
+	// its line (HoldView), "" for none; PlanHold is the same of a held card
+	// of its plan, read through the successors its cards were cut into.
+	Hold         string      `json:"hold,omitempty"`
+	PlanHold     string      `json:"plan_hold,omitempty"`
+	PoolLeft     policy.Draw `json:"pool_left"`
+	CardDrawLeft policy.Draw `json:"card_draw_left"`
+	Partial      []string    `json:"partial,omitempty"` // the readers that failed, by name; an entry may carry the read's error after the name and ": "
 	// Flag and Wait are the monitor flag a monitor case holds and the wait it
 	// names; RunGone: the card is live and runs a workflow, and none runs.
 	Flag    string `json:"flag,omitempty"`
@@ -209,7 +226,6 @@ func (f CaseFacts) noSession(refund, waiting bool) (asked CaseKind, read bool) {
 // atCase weighs f for case c: its kind, and the gate a gate stop names.
 func (f *CaseFacts) atCase(c Case) {
 	f.Kind, f.Gate = c.Kind, ""
-	f.ApprovalKind, _ = c.Facts["approval_kind"].(string)
 	f.RiskClass, _ = c.Facts["class"].(string)
 	f.Factory, _ = c.Facts["factory"].(bool)
 	if f.Killed == nil && c.Facts["killed"] != nil {
@@ -314,14 +330,18 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			}
 			return err
 		}},
-		{"timeline", func() error {
+		{partialTimeline, func() error {
 			tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 			if err == nil {
 				lines, _ := lineSteps(r.Scrub, tl)
 				f.Findings, reran = headFindings(lines, f.Head), rerunHeads(tl)
 				f.FindingTexts, f.FindingOrder = headFindingTexts(lines, f.Head, f.Findings)
-				f.ReviewFindings = headReviewFindings(lines, f.Head)
+				review, audit := newestOfKind(lines, f.Head, "review"), newestOfKind(lines, f.Head, "audit")
+				f.ReviewFindings, f.AuditFindings, f.AuditConfirmable = review.Findings, audit.Findings, audit.atFile
 				pushed = pushedCommit(tl)
+				if f.PROpen {
+					f.MergeConflict = standingConflict(tl, f.Head)
+				}
 			}
 			return err
 		}},
@@ -396,11 +416,14 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				f.FloorEUR, f.FloorFree = v.Document.Budget.SessionFloor(f.Model != "" && r.frontier(f.Model)), true
 				return nil
 			}
-			if f.Model == "" {
+			// the model the next session opens on, resolved as the run
+			// resolves it; only none at all falls back to the policy's floor
+			m := sessionModel(v.Document, t, cmp.Or(model, t.ModelAlias))
+			if m == "" {
 				f.FloorEUR = v.Document.Budget.SessionFloor(false)
 				return nil
 			}
-			n, err := r.needOf(ctx, v, t, f.Model, true)
+			n, err := r.needOf(ctx, v, t, m, true)
 			if err == nil && n.unread != "" {
 				err = errors.New(n.unread)
 			}
@@ -409,10 +432,10 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				return err
 			}
 			// the run's own floor, whose caps bind before the card's budget
-			why, err := r.SessionFunded(ctx, t.ID, f.Model)
+			why, err := r.SessionFunded(ctx, t.ID, m)
 			if d, ok := CapDecision(why); ok && err == nil {
 				_, state, _ := strings.Cut(why, "\n")
-				f.CapWait, _, _ = strings.Cut(capWaitReason(d, capFloor(d), state, capTurn(d, r.clock())), "\n")
+				f.CapWait, _, _ = strings.Cut(CapWaitReason(d, capFloor(d), state, capTurn(d, r.Clock())), "\n")
 			}
 			return err
 		}},
@@ -428,7 +451,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			return err
 		}},
 		{"criteria", func() error {
-			if t.Source != SourcePlan || t.Parent == "" {
+			if !t.PlanCard() {
 				return nil
 			}
 			rev, ok, err := r.store.PlanRevision(ctx, t.Parent, 0)
@@ -441,6 +464,11 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			}
 			f.Criteria = len(p.Criteria) > 0 && CriteriaCard(p, t.PlanKey)
 			return nil
+		}},
+		{"branch", func() (err error) {
+			f.BranchHead, err = r.workAhead(ctx, t)
+			f.BranchRead = err == nil
+			return err
 		}},
 		{"dependencies", func() (err error) {
 			f.Dependencies, err = r.depFacts(ctx, t.ID)
@@ -456,6 +484,39 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			})
 			return err
 		}},
+		{"open criteria", func() error {
+			if f.Plan == "" {
+				return nil
+			}
+			rev, ok, err := r.store.PlanRevision(ctx, f.Plan, 0)
+			if err != nil || !ok {
+				return err
+			}
+			var p Plan
+			if err := json.Unmarshal(rev.Plan, &p); err != nil {
+				return err
+			}
+			open, err := PlanOpenCriteria(ctx, r.store, f.Plan, p)
+			f.OpenCriteria = len(open)
+			return err
+		}},
+		{partialHold, func() (err error) {
+			f.Hold, err = r.holdFact(ctx, t)
+			return err
+		}},
+		{partialPlanHold, func() error {
+			if f.Plan == "" {
+				return nil
+			}
+			cards, err := PlanWaits(ctx, r.store, f.Plan)
+			if err != nil {
+				return err
+			}
+			if i := slices.IndexFunc(cards, Task.Held); i >= 0 {
+				f.PlanHold, err = r.holdFact(ctx, cards[i])
+			}
+			return err
+		}},
 		{"siblings", func() error {
 			if f.Plan == "" {
 				return nil
@@ -467,7 +528,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			if err != nil {
 				return err
 			}
-			cards, err := r.store.PlanCards(ctx, f.Plan)
+			cards, err := PlanWaits(ctx, r.store, f.Plan)
 			if err != nil {
 				return err
 			}
@@ -481,7 +542,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			return nil
 		}},
 		{"pool", func() error {
-			drawn, err := r.store.PoolDrawn(ctx, t.Repository, r.clock())
+			drawn, err := r.store.PoolDrawn(ctx, t.Repository, r.Clock())
 			if err == nil {
 				f.PoolLeft = esc.Pool.Minus(drawn)
 			}
@@ -589,7 +650,7 @@ func headFindingTexts(steps []DigestStep, head string, ids []string) (map[string
 	texts, order := map[string]string{}, []string{}
 	for _, s := range slices.Backward(newest) {
 		for _, text := range s.texts {
-			if id := findingID(text); slices.Contains(ids, id) && texts[id] == "" {
+			if id := FindingID(text); slices.Contains(ids, id) && texts[id] == "" {
 				texts[id] = text
 				order = append(order, id)
 			}
@@ -632,18 +693,18 @@ func commitsAfter(commits []PRCommit, head, pushed string, scrub *redact.Scrubbe
 	return out
 }
 
-// headReviewFindings are the finding ids head's newest review raised, nil
-// before a review judged head.
-func headReviewFindings(steps []DigestStep, head string) []string {
+// newestOfKind is head's newest step of kind (review, audit), none before
+// one of that kind judged head.
+func newestOfKind(steps []DigestStep, head, kind string) DigestStep {
 	if head == "" {
-		return nil
+		return DigestStep{}
 	}
 	for _, s := range slices.Backward(steps) {
-		if s.commit == head && s.Kind == "review" {
-			return s.Findings
+		if s.commit == head && s.Kind == kind {
+			return s
 		}
 	}
-	return nil
+	return DigestStep{}
 }
 
 // headFindings are the sorted finding ids that head's newest checks, its
@@ -681,6 +742,40 @@ func rerunHeads(tl []byte) []string {
 		}
 	}
 	return heads
+}
+
+// stepMergeConflict is the timeline's line of Forgejo's refusal to merge
+// main into a head (commit) of the pull request (pr); stepMergeMovedHead
+// is the line, the merge gate's own or the synchronize webhook's event,
+// of the pull request's head moving to head outside the run.
+const (
+	stepMergeConflict  = "merge_conflict"
+	stepMergeMovedHead = "merge_moved_head"
+)
+
+// standingConflict is the refusal of timeline tl's newest merge conflict
+// on head, "" for none. A push or a sync of main moves the run's head, so
+// none stands on the new one; a head moved outside the run leaves the run
+// on head, and the conflict stands no more: a reverify takes the moved
+// head through the gates.
+func standingConflict(tl []byte, head string) string {
+	if head == "" {
+		return ""
+	}
+	for _, raw := range slices.Backward(bytes.Split(tl, []byte("\n"))) {
+		var l struct{ Step, Event, Commit, Head, Refusal string }
+		if json.Unmarshal(raw, &l) != nil {
+			continue
+		}
+		moved := l.Step == stepMergeMovedHead || l.Step == StepEvent && l.Event == stepMergeMovedHead
+		switch {
+		case moved && l.Head != "" && l.Head != head:
+			return ""
+		case l.Step == stepMergeConflict && l.Commit == head:
+			return l.Refusal
+		}
+	}
+	return ""
 }
 
 // checksWord is a head's checks state as the facts name it.
@@ -790,10 +885,10 @@ func (r *Runner) depFactOf(ctx context.Context, id string) (DepFact, error) {
 	return fact, nil
 }
 
-// factsAtCase are the facts Act judges case c of card t on: the card's facts
+// FactsAtCase are the facts Act judges case c of card t on: the card's facts
 // read now, at the case's head and model, with the case's kind. c may be the
 // zero Case, an answer with none.
-func (r *Runner) factsAtCase(ctx context.Context, t Task, c Case) (CaseFacts, error) {
+func (r *Runner) FactsAtCase(ctx context.Context, t Task, c Case) (CaseFacts, error) {
 	head, _ := c.Facts["head"].(string)
 	model, _ := c.Facts["model"].(string)
 	f, err := r.tripFacts(ctx, t, head, model)

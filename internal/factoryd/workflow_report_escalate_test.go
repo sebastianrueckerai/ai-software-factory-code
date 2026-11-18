@@ -137,7 +137,7 @@ func TestWorkflowReportRestartedAtAnOpenStopWaits(t *testing.T) {
 		checks  []time.Time // when CapResume ran
 		check   CapCheck    // the first CapResume's input
 	}{
-		{name: "a gate stop", start: oct(14, 9, 0), state: atGate, answer: time.Hour, final: "done", asked: []string{healedReason},
+		{name: "a gate stop", start: oct(14, 9, 0), state: atGate, answer: time.Hour, final: "done", asked: []string{HealedReason},
 			reports: []time.Time{oct(14, 10, 0)}, answers: [][]string{{`sebastian (2026-11-12), to "` + gate + `": pull from the mirror instead`}}},
 		{name: "a gate stop, from before", start: oct(14, 9, 0), state: atGate, before: true, answer: time.Hour, final: "done",
 			reports: []time.Time{oct(14, 9, 0)}, answers: [][]string{nil}},
@@ -146,7 +146,7 @@ func TestWorkflowReportRestartedAtAnOpenStopWaits(t *testing.T) {
 			asked: []string{dayReason}, reports: []time.Time{oct(15, 0, 0)}, answers: [][]string{nil},
 			checks: slices.Concat([]time.Time{oct(14, 20, 43)}, every(oct(14, 20, 48), oct(14, 23, 58), dayCheck), []time.Time{oct(15, 0, 0)}),
 			check:  CapCheck{TaskID: "t1", Model: "factory/small", Decision: "refused_day_cap"}},
-		{name: "a close at a gate stop", start: oct(14, 9, 0), state: atGate, answer: time.Hour, close: true, final: "closed", asked: []string{healedReason}},
+		{name: "a close at a gate stop", start: oct(14, 9, 0), state: atGate, answer: time.Hour, close: true, final: "closed", asked: []string{HealedReason}},
 	} {
 		h := newWorkflowHarness(t)
 		h.env.SetStartTime(tc.start)

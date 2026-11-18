@@ -107,7 +107,7 @@ func TestStatusPanelListsNoCards(t *testing.T) {
 		t.Error("the four columns do not list the human task and the running card the panel once listed")
 	}
 	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	if !strings.Contains(col(t, wide, "Human tasks"), `data-card="t-h"`) || !strings.Contains(wide, `data-card="t-run"`) {
+	if !strings.Contains(col(t, wide, "Escalations"), `data-card="t-h"`) || !strings.Contains(wide, `data-card="t-run"`) {
 		t.Error("the wide view does not list the human task and the running card the panel once listed")
 	}
 }

@@ -90,8 +90,8 @@ func tripVerdict(a SupervisorAction) string {
 	return VerdictReal
 }
 
-// escalationSource names who asked for the human.
-func escalationSource(reason string) string {
+// EscalationSource names who asked for the human.
+func EscalationSource(reason string) string {
 	switch {
 	case strings.HasPrefix(reason, AgentAsks):
 		return "agent"
@@ -101,7 +101,7 @@ func escalationSource(reason string) string {
 		return SourceMonthCap
 	case strings.HasPrefix(reason, projectCapReached):
 		return "project_cap"
-	case strings.HasPrefix(reason, dayCapReached):
+	case strings.HasPrefix(reason, DayCapReached):
 		return "day_cap"
 	case strings.HasPrefix(reason, providerRefused):
 		return "provider"
@@ -115,9 +115,9 @@ func escalationSource(reason string) string {
 		return "capacity"
 	case strings.HasPrefix(reason, noModelAnswer):
 		return "no_answer"
-	case strings.HasPrefix(reason, contentFilterRefusal):
+	case strings.HasPrefix(reason, ContentFilterRefusal):
 		return "content_filter"
-	case strings.HasPrefix(reason, imageWaited), strings.HasPrefix(reason, toolAskedAgain):
+	case strings.HasPrefix(reason, ImageWaited), strings.HasPrefix(reason, toolAskedAgain):
 		return "image"
 	case strings.HasPrefix(reason, staleQuiet):
 		return "stale"
@@ -285,7 +285,7 @@ func (s *PGStore) CloseClearedCard(ctx context.Context, alertID int64, taskID st
 	if err := oneRow(res, err, "open "+AlertSigNoz+" alert"); err != nil {
 		return err
 	}
-	e, changed, err := changeStatusOn(ctx, tx, transitionSet, transitionWhere, taskID, "closed", []string{"waiting-human"})
+	events, changed, err := changeStatusOn(ctx, tx, transitionSet, transitionWhere, taskID, "closed", []string{"waiting-human"})
 	if err == nil && !changed {
 		err = fmt.Errorf("task %s: %w (not in waiting-human, cannot move to closed)", taskID, ErrNotFound)
 	}
@@ -295,9 +295,7 @@ func (s *PGStore) CloseClearedCard(ctx context.Context, alertID int64, taskID st
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	if e != nil {
-		s.recordStatus(ctx, *e)
-	}
+	s.recordStatus(ctx, events)
 	return nil
 }
 

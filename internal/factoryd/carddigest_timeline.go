@@ -156,10 +156,14 @@ func lineSteps(scrub *redact.Scrubber, tl []byte) ([]DigestStep, []*digestSessio
 			var found []AuditFinding
 			_ = json.Unmarshal(l.Findings, &found)
 			items := make([]string, len(found))
+			var atFile []string
 			for k, f := range found {
-				items[k] = f.Item
+				items[k] = f.Text()
+				if f.File != "" {
+					atFile = append(atFile, items[k])
+				}
 			}
-			step.Kind, step.Findings, step.texts = "audit", textIDs(items), items
+			step.Kind, step.Findings, step.texts, step.atFile = "audit", textIDs(items), items, textIDs(atFile)
 			step.Outcome = cmp.Or(l.Verdict, "no verdict")
 			if len(step.Findings) > 0 {
 				step.Outcome = "findings " + strings.Join(step.Findings, " ")
@@ -178,6 +182,33 @@ type lineMark struct {
 	Step     string    `json:"step"`
 	Time     time.Time `json:"time"`
 	BackoffS float64   `json:"backoff_s"`
+}
+
+// ladderBackoffMax is the longest backoff the refusal ladder waits. A
+// provider_refused line whose backoff runs past it is the provider-limit
+// wait's, whose BackoffS names the seconds from the refusal to the reset
+// the provider set.
+const ladderBackoffMax = 30 * time.Minute
+
+// freezeSpan is one provider-limit freeze of a card's life: from the
+// refusal that named a reset, to that reset.
+type freezeSpan struct{ since, until time.Time }
+
+// freezeSpans are the freezes timeline tl records, oldest first: every
+// provider_refused line whose backoff outlasts the ladder's longest
+// opens one, held to the reset its backoff names.
+func freezeSpans(tl []byte) []freezeSpan {
+	var out []freezeSpan
+	for _, raw := range bytes.Split(tl, []byte("\n")) {
+		var l lineMark
+		if json.Unmarshal(raw, &l) != nil || l.Step != StepProviderRefused || l.Time.IsZero() {
+			continue
+		}
+		if backoff := time.Duration(l.BackoffS * float64(time.Second)); backoff > ladderBackoffMax {
+			out = append(out, freezeSpan{since: l.Time, until: l.Time.Add(backoff)})
+		}
+	}
+	return out
 }
 
 // newestLine is timeline tl's newest line that has a time and, when step
@@ -205,7 +236,7 @@ func (r *Runner) sessionStep(ctx context.Context, taskID string, s, next *digest
 	case next != nil:
 		end, outcome = next.start, "no end"
 	default:
-		end, outcome = r.clock(), "running"
+		end, outcome = r.Clock(), "running"
 	}
 	cost, calls, err := r.store.SpendAndCallsBetween(ctx, taskID, s.start, end)
 	if err != nil {
@@ -248,7 +279,7 @@ func checkinStep(scrub *redact.Scrubber, step DigestStep, l timelineLine) Digest
 	}
 	byState := map[string][]string{}
 	for text, v := range l.Verdicts {
-		byState[v.State] = append(byState[v.State], findingID(text))
+		byState[v.State] = append(byState[v.State], FindingID(text))
 	}
 	var parts []string
 	for _, state := range []string{CheckConfirmed, CheckDropped, CheckRemark} {
@@ -266,7 +297,7 @@ func checkinStep(scrub *redact.Scrubber, step DigestStep, l timelineLine) Digest
 	if l.Record != nil {
 		reason = cmp.Or(l.Record.Reason, reason)
 	}
-	step.refused = strings.HasPrefix(reason, checkinRefusedReason)
+	step.refused = strings.HasPrefix(reason, CheckinRefusedReason)
 	step.Message = messageText(scrub, l.Guidance)
 	step.Outcome = strings.Join(append(parts, shown), ", ")
 	return step
@@ -415,12 +446,12 @@ func findingList(raw json.RawMessage) []string {
 	return texts
 }
 
-// textIDs are the sorted ids of texts.
+// textIDs are the sorted ids of texts, each once.
 func textIDs(texts []string) []string {
 	var out []string
 	for _, t := range texts {
-		out = append(out, findingID(t))
+		out = append(out, FindingID(t))
 	}
 	slices.Sort(out)
-	return out
+	return slices.Compact(out)
 }

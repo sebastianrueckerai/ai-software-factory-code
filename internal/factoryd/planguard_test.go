@@ -143,7 +143,11 @@ func TestActAsksThePlanAnswerGuard(t *testing.T) {
 		if c.noRevision {
 			delete(g.store.plans, "t1")
 		}
-		_, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: k.ID, By: "factory-agent", Rung: c.rung, Res: Resolution{Action: ActNote, Note: "x"}})
+		by := ChatUser
+		if c.rung != 2 {
+			by = "factory-agent"
+		}
+		_, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: k.ID, By: by, Rung: c.rung, Res: Resolution{Action: ActNote, Note: "x"}})
 		steps := g.store.caseSteps[k.ID]
 		if c.want == "" {
 			if err != nil || len(steps) != 1 || steps[0].Rung != 2 || g.store.cases[len(g.store.cases)-1].Status != CaseAtHuman {
@@ -170,10 +174,10 @@ func TestActRefusesAnAgentsReplanOffMain(t *testing.T) {
 		rung               int
 		attach             bool
 	}{
-		{"rung 2 at manual", policy.AutonomyManual, "factory-agent", 2, true},
-		{"rung 2 at assisted", policy.AutonomyAssisted, "factory-agent", 2, true},
-		{"rung 2 at autonomous", policy.AutonomyAutonomous, "factory-agent", 2, true},
-		{"rung 2 at full auto", policy.AutonomyFullAuto, "factory-agent", 2, true},
+		{"rung 2 at manual", policy.AutonomyManual, ChatUser, 2, true},
+		{"rung 2 at assisted", policy.AutonomyAssisted, ChatUser, 2, true},
+		{"rung 2 at autonomous", policy.AutonomyAutonomous, ChatUser, 2, true},
+		{"rung 2 at full auto", policy.AutonomyFullAuto, ChatUser, 2, true},
 	} {
 		g, k := planAskRig(t, c.autonomy, nil)
 		g.store.cases[len(g.store.cases)-1].Kind = CaseSessionCap
@@ -207,7 +211,7 @@ func TestActRefusesAnAgentsReplanOffMain(t *testing.T) {
 func TestActOffersAPlanCaseOnlyTheAnswerAndANote(t *testing.T) {
 	for _, action := range []string{ActRouteApproval, ActClose, ActReplan} {
 		g, k := planAskRig(t, policy.AutonomyFullAuto, nil)
-		_, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: k.ID, By: "factory-agent", Rung: 2, Res: Resolution{Action: action, Note: "x"}})
+		_, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: k.ID, By: ChatUser, Rung: 2, Res: Resolution{Action: action, Note: "x"}})
 		want := "case 7 is the plan's plan confirmation: answer it with the answer tool (revision 1, question 1), note it, or hand it up with attach_analysis; " + action + " resolves no plan case without answering the plan"
 		if err == nil || err.Error() != want || g.store.cases[len(g.store.cases)-1].Status != CaseAtHuman || len(g.store.caseSteps[k.ID]) != 0 {
 			t.Errorf("%s: Act = %v, want %q and the case left open", action, err, want)

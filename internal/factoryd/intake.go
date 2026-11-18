@@ -74,8 +74,11 @@ type Intake struct {
 	// ended at the merge.
 	CloseMerged func(ctx context.Context, taskID, closer string) error
 	// MergeReceipt records a merged card's receipt (roadmap 66): the
-	// runner's RecordMergeReceipt, building the document from the task's
-	// records and storing it, the first write standing. nil records none.
+	// runner's RecordMergeReceiptAndComment, building the document from
+	// the task's records, storing it and posting it as the pull request's
+	// one receipt comment on the run that first wrote it — the first
+	// write stands, and a post that fails never fails the merge. nil
+	// records none.
 	MergeReceipt func(ctx context.Context, taskID string, pr int64) error
 
 	refuseMu sync.Mutex
@@ -1566,9 +1569,11 @@ func (in *Intake) finishHumanTask(ctx context.Context, t Task, final, why, close
 // prDecided ends human card t with its pull request pr, which
 // by merged or closed without a merge, as it reached factoryd via via: by's
 // answer settles the card's ask, and the card ends done on a merge, closed
-// otherwise. A merge records the card's receipt first (roadmap 66), the
-// first write standing, so a redelivered webhook or the heal pass running
-// the same end again writes nothing over it.
+// otherwise. A merge records the card's receipt first (roadmap 66) and
+// posts it as the pull request's one receipt comment on the run that
+// first wrote it, the first write standing, so a redelivered webhook or
+// the heal pass running the same end again writes nothing over it and
+// posts nothing either.
 func (in *Intake) prDecided(ctx context.Context, t Task, pr int64, merged bool, by, via string) error {
 	if merged && in.MergeReceipt != nil {
 		if err := in.MergeReceipt(ctx, t.ID, pr); err != nil {
@@ -1676,7 +1681,7 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	fresh, err := in.decide(ctx, taskID, kind, p.Sender.UserName, p.PullRequest.Index)
 	switch {
 	case fresh && p.PullRequest.Merged:
-		in.humanMerged(ctx, taskID, p.Sender.UserName, p.PullRequest.Index)
+		in.humanMerged(ctx, taskID, p.Sender.UserName, p.PullRequest.Index, p.PullRequest.Head.SHA)
 	case fresh && p.Sender.UserName != in.ProjectsUser:
 		in.intervened(ctx, t, p.Sender.UserName, InterventionReject)
 	}
@@ -1717,14 +1722,15 @@ func (in *Intake) withdrawMovedHead(ctx context.Context, p *pullRequestPayload) 
 	if err := in.Store.ResolveApprovals(ctx, taskID, ApprovalMerge, "denied", FactoryDecider, note); err != nil {
 		log.Printf("task %s: withdraw the merge approval on a moved head: %v", taskID, err)
 	}
-	in.Timeline.recordEvent(ctx, taskID, "merge_moved_head", map[string]any{"pr": p.PullRequest.Index, "head": p.PullRequest.Head.SHA, "note": note})
+	in.Timeline.recordEvent(ctx, taskID, stepMergeMovedHead, map[string]any{"pr": p.PullRequest.Index, "head": p.PullRequest.Head.SHA, "note": note})
 }
 
 // humanMerged records the event pull_request_merged of task taskID's pull
-// request pr merged in Forgejo by by; factory-merge's merges are Merge's.
-func (in *Intake) humanMerged(ctx context.Context, taskID, by string, pr int64) {
+// request pr merged in Forgejo by by at head; factory-merge's merges are
+// Merge's.
+func (in *Intake) humanMerged(ctx context.Context, taskID, by string, pr int64, head string) {
 	if by != MergeUser {
-		in.Timeline.recordEvent(ctx, taskID, EventPullRequestMerged, map[string]any{"pr": pr, "by": by})
+		in.Timeline.recordEvent(ctx, taskID, EventPullRequestMerged, map[string]any{"pr": pr, "by": by, "head": head})
 	}
 }
 
@@ -2133,7 +2139,7 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 		case pr.Merged:
 			var fresh bool
 			if fresh, err = in.decide(ctx, t.ID, "pull_request_merged", healAuthor, t.PRNumber); fresh {
-				in.humanMerged(ctx, t.ID, pr.MergedBy, t.PRNumber)
+				in.humanMerged(ctx, t.ID, pr.MergedBy, t.PRNumber, pr.HeadSHA)
 			}
 		case pr.State == "closed":
 			_, err = in.decide(ctx, t.ID, "pull_request_closed", healAuthor, t.PRNumber)

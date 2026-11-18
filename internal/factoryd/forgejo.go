@@ -232,6 +232,26 @@ func (f *Forgejo) RevokeToken(ctx context.Context, id int64) error {
 	return err
 }
 
+// RevokeTokenNamed revokes the bot's tokens named name, so a mint of that
+// name cannot meet the one-token-per-name limit: the leftover of a session
+// whose cleanup never ran — factoryd lost mid-session, its end detached —
+// must not block the fresh mint its successor's ask names.
+func (f *Forgejo) RevokeTokenNamed(ctx context.Context, name string) error {
+	refs, err := f.ListTokens(ctx)
+	if err != nil {
+		return fmt.Errorf("list tokens: %w", err)
+	}
+	for _, ref := range refs {
+		if ref.Name != name {
+			continue
+		}
+		if err := f.RevokeToken(ctx, ref.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (f *Forgejo) call(ctx context.Context, method, path string, payload []byte, wantStatus int) ([]byte, error) {
 	return f.do(ctx, method, path, payload, wantStatus, f.callAuth())
 }

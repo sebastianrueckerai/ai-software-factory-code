@@ -32,7 +32,7 @@ const briefBatch = 20
 
 // briefTerminal prefixes a brief_error a terminal failure wrote: no retry
 // can fix it, so a pass takes the row no more.
-const briefTerminal = "terminal: "
+const BriefTerminal = "terminal: "
 
 // briefChars and detailChars bound what a card shows of the writer's
 // answer, marked when cut.
@@ -68,6 +68,9 @@ type BriefStore interface {
 	BrieflessCases(ctx context.Context, perRepo int) ([]Case, error)
 	SetCaseBrief(ctx context.Context, id int64, background, recommendation string) error
 	SetCaseBriefError(ctx context.Context, id int64, e string) error
+	// SetCaseWake sets the case's wake, as Store.SetCaseWake does: the
+	// wake the freeze holds a brief to.
+	SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error
 	CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error)
 	// LastAnswerAt is when a human last resolved a case of the card, nil
 	// for never.
@@ -226,20 +229,23 @@ func (b *BriefWriter) failed(ctx context.Context, t Task, err error, prev string
 	text := b.scrub(err.Error())
 	var refusal *policy.Refusal
 	var noBrief *noBriefError
+	var frozen frozenError
 	switch {
 	case errors.Is(err, errJudgmentSpent):
 		text = errJudgmentSpent.Error()
+	case errors.As(err, &frozen):
+		text = frozen.Error()
 	case errors.As(err, &refusal) && refusal.Decision == policy.RefusedBudget:
 		text = errJudgmentSpent.Error()
 	case errors.As(err, &refusal):
 		text = b.scrub(refusal.Decision + ": " + refusal.Reason)
 	case errors.As(err, &noBrief) && strings.HasPrefix(prev, noBriefMark):
-		text = briefTerminal + text
+		text = BriefTerminal + text
 	case errors.As(err, &noBrief):
 		text = noBriefMark + text
 	}
 	if isTerminal(err) {
-		text = briefTerminal + text
+		text = BriefTerminal + text
 	}
 	text = textutil.Truncate(text, 500)
 	if prev == text {
@@ -250,7 +256,8 @@ func (b *BriefWriter) failed(ctx context.Context, t Task, err error, prev string
 		return markErr
 	}
 	detail["error"] = text
-	_, err = b.Store.Record(context.WithoutCancel(ctx), Event{Repository: t.Repository, TaskID: t.ID, Kind: EventBriefFailed,
+	at := b.now()
+	_, err = b.Store.Record(context.WithoutCancel(ctx), Event{Repository: t.Repository, TaskID: t.ID, Kind: EventBriefFailed, At: at,
 		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail})
 	return err
 }
@@ -337,7 +344,7 @@ func (b *BriefWriter) criteriaFacts(ctx context.Context, a ApprovalRequest) ([]c
 // verdicts on its integration card, when t is that card or a delta card;
 // none for any other card.
 func (b *BriefWriter) mergeFacts(ctx context.Context, t Task) ([]criterionFact, error) {
-	if t.Source != SourcePlan || t.Parent == "" {
+	if !t.PlanCard() {
 		return nil, nil
 	}
 	p, err := b.newestPlan(ctx, t.Parent)
@@ -477,9 +484,6 @@ func briefFacts(a ApprovalRequest, t Task, criteria []criterionFact, life string
 		m["verdict_rows_of"] = s.Task
 		m["criteria"] = criteria
 		acts = "Waive ends one criterion with your one-line reason; Approve grants one more bounded card, which the planner drafts for the criteria still open; Confirm records the delivered cards as meeting every criterion, offered once every child card is done. Every criterion met or waived ends the request on the next sweep; no final press."
-		if a.Kind == ApprovalCriteriaRerun {
-			acts = "Waive ends one criterion with your one-line reason; Confirm records the delivered cards as meeting every criterion; Deny ends the request with your reason. No button runs the review that never judged them. Every criterion met or waived ends the request on the next sweep."
-		}
 	default:
 		return nil, "", terminalError("kind %q carries no brief", a.Kind)
 	}
@@ -551,6 +555,36 @@ func lines(s string) string {
 // the card keeps today's text and no brief.
 const EventBriefFailed = "brief_failed"
 
+// frozenError is a brief call the class's freeze refused: the mark names
+// the reset, so one freeze marks the row once and records one row — the
+// retry driver is the case's wake now, not the pass's tick. The incident's
+// 46 brief_failed rows between 16:42:52 and 17:04:01 came from the pass
+// re-reading the failed case every tick (BrieflessCases returns every
+// non-terminally marked case) and the gateway's reason differing per call,
+// so each pass recorded its own row; today the refusal sets the case's
+// wake (SetCaseWake) and the pass skips a case whose wake is in the
+// future, so whatever re-drove the brief inside a freeze waits at the
+// case wake, and the monitor sweep wakes it then.
+type frozenError struct{ at time.Time }
+
+func (e frozenError) Error() string {
+	return "the class is frozen until " + e.at.UTC().Format(time.RFC3339)
+}
+
+// frozen marks the case whose brief call the named refusal refused: the
+// case's wake at the reset plus the margin, then the one brief_failed
+// with the reset as BackoffS, the seconds from the event to it (the wait
+// card's shape), so one freeze records one row.
+func (b *BriefWriter) frozen(ctx context.Context, t Task, c Case, at time.Time) error {
+	wake := at.Add(freezeWakeMargin)
+	if err := b.Store.SetCaseWake(ctx, c.ID, c.OwnerRung, c.WakeOn, &wake); err != nil {
+		return err
+	}
+	return b.failed(ctx, t, frozenError{at}, c.BriefError, func(ctx context.Context, m string) error {
+		return b.Store.SetCaseBriefError(ctx, c.ID, m)
+	}, map[string]any{"case": c.ID, "backoff_s": at.Sub(b.now()).Seconds()})
+}
+
 func (s *PGStore) BrieflessApprovals(ctx context.Context, perProject int) ([]ApprovalRequest, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, kind, task_id, project, COALESCE(pr_number, 0), spec, reason, monthly_eur::float8,
@@ -558,7 +592,7 @@ func (s *PGStore) BrieflessApprovals(ctx context.Context, perProject int) ([]App
 		 FROM (SELECT *, row_number() OVER (PARTITION BY project ORDER BY id) AS n FROM approval_requests
 		       WHERE status = 'pending' AND brief = '' AND kind IN ($3, $4)
 		       AND (brief_error = '' OR brief_error NOT LIKE $2)) a
-		 WHERE n <= $1 ORDER BY id`, perProject, briefTerminal+"%", ApprovalResource, ApprovalPlan)
+		 WHERE n <= $1 ORDER BY id`, perProject, BriefTerminal+"%", ApprovalResource, ApprovalPlan)
 	if err != nil {
 		return nil, err
 	}

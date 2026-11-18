@@ -76,7 +76,7 @@ func seedWipSession(t *testing.T) (h http.Handler, wip *wipServe, dir string, e 
 	}
 	wip = newWipServe(e, dir, base, mainHead, nolog)
 	h = messageHandler(mustHash(t, testMessageHash), newPushGate(), func(context.Context, string, string) error { return nil },
-		newCheckinServe(t.TempDir(), nolog), wip)
+		newCheckinServe(t.TempDir(), nolog), wip, nil)
 	return h, wip, dir, e, base, mainHead, pushURL, holder
 }
 
@@ -187,6 +187,66 @@ func TestInterimPushReplacesTip(t *testing.T) {
 	}
 }
 
+// The /wip answer of an agent reset behind the session's start ships the
+// start's main content with the agent's own change, never a WIP that
+// reverts main, and nothing when the agent added nothing past the reset.
+// Where main's commits conflict with the change, the ask is refused with
+// 409 and the sentence that says to merge main, short enough for the 300
+// bytes factoryd reads of a refused answer.
+func TestWipShipsMainsContentAnAgentResetBehindTheStart(t *testing.T) {
+	write := func(dir, name, body string) { os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644) }
+	a2 := func(dir string) { write(dir, "a.txt", "a2\n") }
+	for _, tc := range []struct {
+		name string
+		main func(dir string)
+		more string // what the agent appends to own.txt after its reset
+		code int
+	}{
+		{name: "reset behind the start", main: a2, more: "more\n", code: http.StatusOK},
+		{name: "nothing past the reset", main: a2, code: http.StatusNoContent},
+		{name: "main's commits conflict with the card's", code: http.StatusConflict, main: func(dir string) {
+			a2(dir)
+			write(dir, "own.txt", "theirs\n")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, e, s, m1 := seedResetBehindTheStart(t, "factory/t-wip", func(dir string) { write(dir, "own.txt", "own\n") }, tc.main)
+			write(dir, "own.txt", "own\n"+tc.more)
+			h := messageHandler(mustHash(t, testMessageHash), newPushGate(), func(context.Context, string, string) error { return nil },
+				newCheckinServe(t.TempDir(), nolog), newWipServe(e, dir, s, m1, nolog), nil)
+
+			code, commit, body := postWip(t, h)
+			if code != tc.code {
+				t.Fatalf("/wip = %d %q, want %d", code, body, tc.code)
+			}
+			switch code {
+			case http.StatusNoContent:
+				return
+			case http.StatusConflict:
+				if text := strings.TrimSpace(string(body)); !strings.HasPrefix(text, "refusing to push: ") || !strings.Contains(text, "`git merge origin/main`") ||
+					!strings.HasSuffix(text, "run the checks") || len(text) > 300 {
+					t.Fatalf("the refusal = %q (%d bytes), want the whole sentence that says to merge main within 300 bytes", text, len(text))
+				}
+				return
+			}
+			path := filepath.Join(t.TempDir(), "wip.bundle")
+			if err := os.WriteFile(path, body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			gitRun(t, "-C", e.pushURL, "fetch", "-q", path, "refs/heads/wip:refs/heads/wip")
+			if got := gitRun(t, "-C", e.pushURL, "rev-list", "--parents", "-n", "1", commit); got != commit+" "+s {
+				t.Fatalf("WIP and parents = %q, want %s on the start %s", got, commit, s)
+			}
+			if got := gitRun(t, "-C", e.pushURL, "show", commit+":a.txt"); got != "a2" {
+				t.Fatalf("the WIP's a.txt = %q, want main's a2 kept", got)
+			}
+			if got := gitRun(t, "-C", e.pushURL, "diff", "--name-only", m1, commit); got != "own.txt" {
+				t.Fatalf("the WIP's change against main = %q, want own.txt alone", got)
+			}
+		})
+	}
+}
+
 // No push token sits in the worker's environment, its files or its
 // children while interim pushes run; the token appears only at the end
 // gate, as today, and the session's scrub masks it in an emitted line.
@@ -255,11 +315,11 @@ func TestWipPushTokenAbsentUntilEnd(t *testing.T) {
 	var out bytes.Buffer
 	emit := s.emitter(&out)
 	var asks int
-	commit, err := commitAndPush(dir, e, base, mainHead, func() error { return nil }, func(commit string) (string, error) {
+	commit, err := commitAndPush(dir, e, base, mainHead, func() error { return nil }, func(commit string) (pushCred, error) {
 		asks++
 		return gate.ask(commit, time.Second, writerFunc(func(p []byte) (int, error) {
 			// factoryd reads the ask and answers it
-			if !gate.take(tok) {
+			if !gate.take(pushCred{token: tok}) {
 				t.Error("no ask waited for factoryd's token")
 			}
 			return len(p), nil

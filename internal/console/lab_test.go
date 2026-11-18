@@ -1500,7 +1500,7 @@ func idleScene(now time.Time) labScene {
 	return s
 }
 
-// criteriaScene is a plan whose cards ran out with three test criteria
+// criteriaScene is a plan every card of which ended with three test criteria
 // partial: its criteria gap card holds a reviewer's long evidence, one
 // unbroken file::test name in it, and a waiver form under each.
 func criteriaScene(now time.Time) labScene {
@@ -1535,7 +1535,7 @@ func criteriaScene(now time.Time) labScene {
 				Evidence: "acceptance/divide_ledger_test.go adds the named test, but exercises only SettleSpendFinal, SessionAnswered starts and AutoMergeNote readings."},
 		}},
 		approvals: []factoryd.ApprovalRequest{{ID: 1040, Kind: factoryd.ApprovalCriteria, TaskID: plan.ID, Project: "sf/code", Status: "pending",
-			Reason: "criteria not met with the plan's cards done: size_bound_escape, window_and_existing_figures, ledger_retry_integrity",
+			Reason: "criteria not met once every card of the plan ended: size_bound_escape, window_and_existing_figures, ledger_retry_integrity",
 			Spec:   json.RawMessage(`{"revision":0,"task":"` + integ.ID + `"}`), CreatedAt: now.Add(-3 * time.Minute)}},
 	}
 }

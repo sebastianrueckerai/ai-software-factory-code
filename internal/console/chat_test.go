@@ -2062,14 +2062,14 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "deployment_health", "resources",
 			"settings", "policy",
 			"project_images", "release_resource", "new_card", "request_image", "answer", "comment", "tell_card", "request_changes", "deny_merge",
-			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "show_doc", "routines",
+			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "hold_card", "release_hold", "read_doc", "write_doc", "show_doc", "routines",
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
 			"active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 		// demo lists no namespaces: it runs nothing in the cluster, so no deployment_health
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "card_step", "board_digest", "diff", "plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session",
 			"session_steps", "session_step", "session_search", "ci", "project_images", "new_card", "request_image", "answer", "comment", "tell_card",
 			"request_changes", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
-			"set_dependency", "read_doc", "write_doc", "show_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
+			"set_dependency", "hold_card", "release_hold", "read_doc", "write_doc", "show_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
 			"attach_analysis", "active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 	} {
 		r, _, g := newChatRig(t)
@@ -4422,6 +4422,18 @@ func TestChatSteerAndComment(t *testing.T) {
 	chatRows(t, r.events, before, "sebastian", commented, steer,
 		factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCommentDeleted, Detail: map[string]any{"comment": int64(1)}})
 	equal(t, "deleted", r.fg.deleted, []string{"/api/v1/repos/sf/code/issues/comments/1"})
+
+	for err, want := range steerRefusals() {
+		r.c.cfg.Steer = func(context.Context, string, string, string) error { return err }
+		before := r.events.count()
+		g.replies = [][]string{{call(1, "steer", `{"task_id":"t-r","text":"Rebase on main first."}`)}, {say("It waits.")}}
+		_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"tell #11 to rebase"}})
+		_, events, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+		equal(t, fmt.Sprintf("the Do it the session refuses with %v", err), events, []string{
+			`tool {"arguments":{"task_id":"t-r","text":"Rebase on main first."},"duration_ms":0,"name":"steer","result":"Refused: ` + want + `"}`,
+			`text {"text":"It waits."}`, `done {}`})
+		chatRows(t, r.events, before, "sebastian")
+	}
 }
 
 // The description the member approves passes the inbound sanitiser, a

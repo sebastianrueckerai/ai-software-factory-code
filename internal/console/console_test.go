@@ -677,7 +677,7 @@ func (s *fakeTasks) PlanCards(_ context.Context, plan string) ([]factoryd.Task, 
 }
 
 // PlanDelivered mirrors factoryd.PlanDelivered: a plan card counts
-// delivered when it is done or merged, or its successor — the row
+// delivered when it is done, merged or closed, or its successor — the row
 // factoryd.SuccessorID names, whatever source it filed under — is.
 func (s *fakeTasks) PlanDelivered(_ context.Context, plan string) (bool, factoryd.Task, error) {
 	s.mu.Lock()
@@ -699,7 +699,7 @@ func (s *fakeTasks) PlanDelivered(_ context.Context, plan string) (bool, factory
 			}
 			c = next
 		}
-		if c.Status != "done" && c.Status != "merged" {
+		if c.Status != "done" && c.Status != "merged" && c.Status != "closed" {
 			if open.ID == "" {
 				open = t.Task
 			}
@@ -788,6 +788,23 @@ func (s *fakeTasks) FinishedTasks(_ context.Context, q factoryd.FinishedQuery) (
 	defer s.mu.Unlock()
 	page, rest := factoryd.FinishedPage(s.tasks, q)
 	return page, rest, nil
+}
+
+// setHold puts hold h on card id, as the store takes one, on a card that
+// has not started; nil ends the hold that holds it. False: the card took
+// none, or no hold held it.
+func (s *fakeTasks) setHold(id string, h *factoryd.CardHold) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := slices.IndexFunc(s.tasks, func(t factoryd.BoardTask) bool { return t.ID == id })
+	if i < 0 || h != nil && !s.tasks[i].Holdable() || h == nil && !s.tasks[i].Held() {
+		return false
+	}
+	s.tasks[i].Hold = h
+	if h == nil {
+		s.tasks[i].HoldView = factoryd.HoldView{}
+	}
+	return true
 }
 
 func (s *fakeTasks) BoardTask(_ context.Context, id string) (factoryd.BoardTask, bool, error) {
@@ -1576,7 +1593,10 @@ func newRig(t *testing.T) *rig {
 					return out, nil
 				}
 			}
-			if in.CaseID == 0 || in.Res.Action == factoryd.ActNote || in.Res.Action == factoryd.ActWithdraw || slices.Contains([]string{factoryd.AnswerRerunAgain, factoryd.AnswerPark, factoryd.AnswerKeepWaiting}, in.Res.Action) {
+			// the real keepsOpen mirrored: a note records a step and ends
+			// nothing, withdraw ends with no answer row, and the chain
+			// stall's re-run alone keeps its case live — a park settles
+			if in.CaseID == 0 || in.Res.Action == factoryd.ActNote || in.Res.Action == factoryd.ActWithdraw || in.Res.Action == factoryd.AnswerRerunAgain {
 				return out, nil
 			}
 			if in.Post != nil {
@@ -1704,6 +1724,12 @@ func newRig(t *testing.T) *rig {
 		GoCard: func(_ context.Context, taskID, by string) (int64, error) {
 			r.handed = append(r.handed, taskID+" by "+by)
 			return 16, r.goErr
+		},
+		HoldCard: func(_ context.Context, taskID, release, reason, by string) (bool, error) {
+			return r.tasks.setHold(taskID, &factoryd.CardHold{Reason: reason, Release: release, By: by}), nil
+		},
+		ReleaseCardHold: func(_ context.Context, taskID string) (bool, error) {
+			return r.tasks.setHold(taskID, nil), nil
 		},
 		RequestImage: func(_ context.Context, repository, tool, need, image, by string, admit func(string) error) (factoryd.ImageAsk, error) {
 			r.imageAsks = append(r.imageAsks, repository+": "+tool+" | "+need+" | "+image+", by "+by)
@@ -2799,18 +2825,44 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		`<p class="need-line"><b>cx33</b> · load test</p>`,
 		`<p class="need-line">5 h · 8.9900 EUR per month, this lease 0.0720 EUR · sf/code</p>`,
 		"a lease of 300 minutes exceeds the envelope&#39;s 4 h", `href="https://git.example/sf/code/issues/21"`,
-		`href="/tasks/t-res/timeline"`, `action="/approvals/3/approve"`, "Approves this task's request once; a wider envelope for the project is a change to its file in Git.",
-		// the merge request: the PR, the chips and the forms; the
-		// five-part ask lives in the drawer
+		`href="/tasks/t-res/timeline"`, `action="/approvals/3/approve"`, `<div class="info"><p>Approves the one request of this task; a wider envelope for the project changes its file in Git.</p>`,
+		// the resource face's five-part ask: the ask with its numbers, the
+		// why, each offer's effect one line
+		`<p class="ask">Commission a cx33 for load test? 8.9900 EUR per month, this lease 0.0720 EUR.</p>`,
+		`<p class="why">a lease of 300 minutes exceeds the envelope&#39;s 4 h</p>`,
+		`<span class="effect">commissions the server for this lease; the project&#39;s envelope is its file&#39;s</span>`,
+		`<span class="effect">refuses the request; the agent is told your reason</span>`,
+		// the merge request: the PR, the chips and the one decide block;
+		// the whole text lives in the drawer
 		`<article class="card approval" data-card="t-m"`,
 		`<a href="#card=t-m" class="open">Merge</a> <a href="https://git.example/sf/code/pulls/9" target="_blank" rel="noopener">PR #9</a>`,
 		`<span class="chip risk">high risk</span>`, `<span class="chip migration">migration</span>`,
 		`<a href="#card=t-m:reviews" class="details">Details</a>`,
-		`action="/approvals/4/approve"`, `action="/approvals/4/deny"`, `name="action" value="request_changes" checked`, `name="action" value="reject"`,
-		`name="csrf" value="` + s.csrf + `"`, `<label for="note-4">`, `<textarea id="note-4" name="note"`,
+		`<p class="ask">Merge PR #9 of t-m? high risk. It carries a migration.</p>`,
+		`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`,
+		`<div class="info"><p>Model review: adds the column safely</p>`,
+		`<p class="recommendation">Recommendation (the model review): Adds the column; merge it.</p>`,
+		`action="/approvals/4/approve"`, `<button type="submit" name="action" value="approve"`, `<button type="submit" name="action" value="deny"`,
+		`sends the pull request back to its agent with your note`,
+		`name="csrf" value="` + s.csrf + `"`, `<label for="note-t-m">Note, posted on the issue as you; the actions marked "stays on the step" keep it there</label>`, `<textarea id="note-t-m" name="note"`,
 	} {
 		if !strings.Contains(lane, want) {
 			t.Errorf("approval lane lacks %q", want)
+		}
+	}
+	// each asking face of the lane holds exactly one decide: one send,
+	// one fund control, one note box (the one-face contract)
+	for _, id := range []string{"t-res", "t-m"} {
+		at := strings.Index(lane, `data-card="`+id+`"`)
+		if at < 0 {
+			t.Fatalf("the lane holds no %s card", id)
+		}
+		begin := strings.LastIndex(lane[:at], "<article")
+		kard := lane[begin : begin+strings.Index(lane[begin:], "</article>")]
+		for what, want := range map[string]int{`<form`: 1, `class="decide resolve"`: 1, `name="fund_eur"`: 1, `<textarea`: 1} {
+			if got := strings.Count(kard, what); got != want {
+				t.Errorf("the %s card's decide carries %s %d times, want %d:\n%s", id, what, got, want, kard)
+			}
 		}
 	}
 	// the drawer carries the merge request's five-part ask: why a
@@ -2928,6 +2980,7 @@ func TestMergeDenyRequestsChangesOrRejectsAsTheHuman(t *testing.T) {
 func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 9}})
 	factory := func(red bool) {
 		r.approvals.mu.Lock()
 		defer r.approvals.mu.Unlock()
@@ -2970,9 +3023,21 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 
 	factory(false)
 	got = item()
-	if !strings.Contains(got, `action="/approvals/4/approve"`) || !strings.Contains(got, `aria-controls="deny-4">Close</button>`) ||
-		strings.Contains(got, `action="/approvals/4/rerun"`) {
-		t.Errorf("the green factory request offers no Approve and Close, or a re-run:\n%s", got)
+	for _, want := range []string{`action="/approvals/4/approve"`, `<button type="submit" name="action" value="approve"`,
+		`<button type="submit" name="action" value="deny" class="secondary" aria-label="Close PR #9 of t-m and its card">Close</button>`,
+		`closes PR #9 and its card with your note: no agent works on a pull request factoryd opened`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the green factory request lacks %q:\n%s", want, got)
+		}
+	}
+	// the one decide: one send, one fund control, one note box
+	for what, want := range map[string]int{`class="decide resolve"`: 1, `name="fund_eur"`: 1, `<textarea`: 1} {
+		if n := strings.Count(got, what); n != want {
+			t.Errorf("the green factory request carries %s %d times, want %d:\n%s", what, n, want, got)
+		}
+	}
+	if strings.Contains(got, `action="/approvals/4/rerun"`) {
+		t.Errorf("the green factory request offers a re-run:\n%s", got)
 	}
 	r.fg.calls = nil
 	rec := r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck)
@@ -2986,6 +3051,23 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 		len(r.fg.calls) != 0 {
 		t.Fatalf("re-run of an agent's pull request = %d %q, calls %q", rec.Code, rec.Body, r.fg.calls)
 	}
+	// the one send: the answer, the fund and the note ride one POST to the
+	// approve endpoint, and land together as one row on the card
+	before := r.events.count()
+	note := "the factory's own pull request, closed by its human"
+	if rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"action": {"approve"}, "fund_eur": {"1.50"}, "note": {note}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the one send = %d: %s", rec.Code, rec.Body)
+	}
+	if a := r.approvals.get(4); a.Status != "approved" || a.DecidedBy != "sebastian" {
+		t.Errorf("the request = %q by %q, want approved by sebastian", a.Status, a.DecidedBy)
+	}
+	if k, ok, _ := r.tasks.Task(t.Context(), "t-m"); !ok || k.BudgetEUR != 1.5 {
+		t.Errorf("t-m's budget = %v (ok %v), want the 1.50 the one send carried", k.BudgetEUR, ok)
+	}
+	checkRows(t, r.events, before,
+		wantRow{kind: factoryd.EventMergeApproved, repo: "sf/code", taskID: "t-m",
+			detail: map[string]any{"pr": int64(9), "approval": int64(4), "fund_eur": 1.5, "reason": note}})
 }
 
 // An agent card's merge request on red checks (#838: the cap reached, the sync

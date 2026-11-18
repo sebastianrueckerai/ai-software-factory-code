@@ -361,7 +361,7 @@ func TestAttachAnalysisReturnsItsRowsCloseError(t *testing.T) {
 
 // approvalAskRow is the criteria request's poke row, as the Poker writes
 // it for card #40, whose title is "Use a replica?".
-const approvalAskRow = `Plan #40 "Use a replica?" waits for you: its cards ran out with a criterion still unmet. Waive one with your reason, grant one more bounded card, or confirm the delivered cards satisfy them.`
+const approvalAskRow = `Plan #40 "Use a replica?" waits for you: every card of it has ended with a criterion still unmet. Waive one with your reason, grant one more bounded card, or confirm the delivered cards satisfy them.`
 
 // seedApprovalAsk seeds over seedAsk's card the criteria approval the gap
 // check opens: the question answered, then the request's event, its
@@ -374,7 +374,7 @@ func seedApprovalAsk(t *testing.T, s *PGStore, repository, taskID string, issue 
 		t.Fatal(err)
 	}
 	id, err := s.OpenApproval(t.Context(), ApprovalRequest{Kind: ApprovalCriteria, TaskID: taskID,
-		Project: repository, Spec: []byte(`{"task":"t-int"}`), Reason: "criteria not met with the plan's cards done: c1"})
+		Project: repository, Spec: []byte(`{"task":"t-int"}`), Reason: "criteria not met once every card of the plan ended: c1"})
 	if err != nil {
 		t.Fatal(err)
 	}

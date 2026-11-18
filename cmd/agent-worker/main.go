@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -175,11 +176,11 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 
 // endPush is deliver's push: the session's end push of the env deliver
 // hands it, its token asked for on stdout once kill stopped every agent
-// process.
+// process, a refused push re-asking for a fresh one.
 func (s *session) endPush(stdout io.Writer, kill func() error) func(workerEnv) (string, error) {
 	return func(e workerEnv) (string, error) {
 		end := s.tel.phase("push")
-		s.commit, s.pushErr = commitAndPush(s.repoDir, e, s.base, s.mainHead, kill, func(commit string) (string, error) {
+		s.commit, s.pushErr = commitAndPush(s.repoDir, e, s.base, s.mainHead, kill, func(commit string) (pushCred, error) {
 			return s.gate.ask(commit, pushWait, stdout)
 		})
 		end(pushFailure(s.pushErr))
@@ -333,7 +334,7 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 			s.oc.SetModel(model)
 		}
 		return s.oc.Message(ctx, text)
-	}, checkin, wip, log)
+	}, checkin, wip, s.env.lineBound, log)
 	if err != nil {
 		return s, startError{"message endpoint", err}
 	}
@@ -518,6 +519,12 @@ const (
 	// pushWait bounds the wait for factoryd's push token: the pod's 60 s
 	// grace period after a stop also holds the commit and the push
 	pushWait = 30 * time.Second
+	// pushReasks bounds the fresh asks after a refused push: each ask
+	// factoryd answers with a token minted under a fresh name, so a push
+	// refused as a revoked credential — a concurrent cleanup's revoke —
+	// retries the push, not the work, on up to 3 more tokens, then fails
+	// naming the refused credential.
+	pushReasks = 3
 )
 
 // workerEnv is the session's contract with factoryd. repoURL/repoToken read
@@ -535,9 +542,10 @@ type workerEnv struct {
 	cheapModel                             string
 	answerTokens, headroomTokens           int
 	steps                                  int
-	// lineBound (LINE_BOUND) is the card's line bound: the changed lines
-	// the pushed diff against its merge base may hold; 0 is off
-	lineBound                            int
+	// lineBound is the card's line bound, LINE_BOUND until factoryd's POST
+	// /bound raises it: the changed lines the pushed diff against its
+	// merge base may hold; nil or 0 is off. Every copy of the env shares it.
+	lineBound                            *atomic.Int64
 	findings, answers, posterInfo, tools []string
 	author, authorStanding               string
 	home                                 string
@@ -652,9 +660,11 @@ func loadEnv() (workerEnv, error) {
 	if e.steps, err = strconv.Atoi(str("STEPS")); err != nil || e.steps <= 0 {
 		return e, fmt.Errorf("STEPS must be a positive step cap, is %q", str("STEPS"))
 	}
-	if e.lineBound, err = strconv.Atoi(str("LINE_BOUND")); err != nil || e.lineBound < 0 {
+	bound, err := strconv.Atoi(str("LINE_BOUND"))
+	if err != nil || bound < 0 {
 		return e, fmt.Errorf("LINE_BOUND must be a non-negative line bound, is %q", str("LINE_BOUND"))
 	}
+	e.lineBound = lineBoundOf(bound)
 	// FINDINGS, ANSWERS, POSTER_INFO, TOOLS, DIRECTORIES, MIGRATION_GLOBS and LEFT_OUT arrive as JSON arrays; absent means none.
 	for name, dst := range map[string]*[]string{"FINDINGS": &e.findings, "ANSWERS": &e.answers, "POSTER_INFO": &e.posterInfo, "TOOLS": &e.tools,
 		"DIRECTORIES": &e.directories, "MIGRATION_GLOBS": &e.migrationGlobs, "LEFT_OUT": &e.leftOut} {
@@ -672,15 +682,32 @@ func loadEnv() (workerEnv, error) {
 	return e, nil
 }
 
+// lineBoundOf is a line bound of n lines.
+func lineBoundOf(n int) *atomic.Int64 {
+	b := new(atomic.Int64)
+	b.Store(int64(n))
+	return b
+}
+
+// bound is the card's line bound now; 0 is off.
+func (e workerEnv) bound() int {
+	if e.lineBound == nil {
+		return 0
+	}
+	return int(e.lineBound.Load())
+}
+
 func authHeader(token string) string {
 	return "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token))
 }
 
 // safeGit is prepended to every worker git command: agent-planted hooks and
-// fsmonitor never run. "-c" reaches nested gits through GIT_CONFIG_PARAMETERS,
-// except upload-pack on a local fetch: git clears that variable for it, so
-// uploadPack puts the flags on its command line.
-var safeGit = []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
+// fsmonitor never run, and no git runs in a repository's alternate to list
+// its refs, under the alternate's own config and without these flags.
+// "-c" reaches nested gits through GIT_CONFIG_PARAMETERS, except upload-pack
+// on a local fetch: git clears that variable for it, so uploadPack puts the
+// flags on its command line.
+var safeGit = []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.alternateRefsCommand=true"}
 
 var uploadPack = "--upload-pack=git " + strings.Join(safeGit, " ") + " upload-pack"
 
@@ -934,22 +961,33 @@ func gitEnv(extra []string) []string {
 // a caller reads. A failure carries both streams, the token scrubbed,
 // because worker stderr reaches the factoryd log.
 func (e workerEnv) runGitCtx(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+	out, cut, err := e.runGitCapped(ctx, dir, env, maxGitOutput, args...)
+	if err != nil {
+		return "", err
+	}
+	if cut {
+		return "", fmt.Errorf("git %s: output past %d bytes", strings.Join(args, " "), maxGitOutput)
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// runGitCapped answers git's raw stdout up to max bytes, and whether git
+// printed more, for a caller that can use the first max bytes.
+func (e workerEnv) runGitCapped(ctx context.Context, dir string, env []string, max int, args ...string) (out string, cut bool, err error) {
 	cmd := exec.CommandContext(ctx, gitBin, append(append([]string(nil), safeGit...), args...)...) // #nosec G204 -- exec.CommandContext, no shell; args are fixed git subcommands plus this worker's own task-scoped values
 	if dir != "" {
 		cmd.Dir = dir
 	}
 	cmd.Env = append(gitEnv(e.gitTrace), env...)
-	out, errOut := &capBuffer{max: maxGitOutput}, &capBuffer{max: maxGitOutput}
-	cmd.Stdout, cmd.Stderr = out, errOut
-	err := cmd.Run()
-	if err != nil {
+	stdout, stderr := &capBuffer{max: max}, &capBuffer{max: max}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	// a program git started can outlive it holding the pipes
+	cmd.WaitDelay = 5 * time.Second
+	if err := cmd.Run(); err != nil {
 		scrub := redact.New(e.repoToken, e.pushToken).String
-		return "", fmt.Errorf("git %s: %v: %s", scrub(strings.Join(args, " ")), err, scrub(strings.TrimSpace(out.String()+"\n"+errOut.String())))
+		return "", false, fmt.Errorf("git %s: %w: %s", scrub(strings.Join(args, " ")), err, scrub(strings.TrimSpace(stdout.String()+"\n"+stderr.String())))
 	}
-	if out.cut {
-		return "", fmt.Errorf("git %s: output past %d bytes", strings.Join(args, " "), maxGitOutput)
-	}
-	return strings.TrimSpace(out.String()), nil
+	return stdout.String(), stdout.cut, nil
 }
 
 // capBuffer keeps the first max bytes written to it and says whether it cut.
@@ -1038,10 +1076,12 @@ const (
 // their ids, stages the agent's work tree on top under the worker's own
 // config (so no agent filter, hook or fsmonitor runs), commits any
 // leftovers, and pushes to the task URL if the result moved past base,
-// with the token pushToken gets for the commit. killAgent runs before
+// with the credential pushToken gets for the commit: a push refused as a
+// dead credential re-asks — each ask's token factoryd mints fresh — so the
+// push retries, the work does not (issue 1836). killAgent runs before
 // pushToken, so no agent process is alive once a token is in the worker.
 // Returns the pushed commit, empty when there was nothing to push.
-func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAgent func() error, pushToken func(commit string) (string, error)) (string, error) {
+func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAgent func() error, pushToken func(commit string) (pushCred, error)) (string, error) {
 	own, err := os.MkdirTemp(filepath.Dir(agentRepo), ".push-")
 	if err != nil {
 		return "", err
@@ -1095,7 +1135,14 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	if err := os.WriteFile(filepath.Join(send, ".git", "objects", "info", "alternates"), []byte(filepath.Join(own, ".git", "objects")+"\n"), 0o600); err != nil {
 		return "", err
 	}
-	parents, guard := sessionParents(e, send, base, mainHead, agent)
+	bases := factoryd.ReadMainBases(pushRulesGit{context.Background(), e}, send, base, mainHead, agent)
+	if tree, err = factoryd.SyncOnMain(pushRulesGit{context.Background(), e}, send, bases, base, agent, tree); err != nil {
+		return "", err
+	}
+	if tree == baseTree && !e.startWip {
+		return "", nil
+	}
+	parents, guard := sessionParents(e, send, base, bases)
 	guardTree, err := e.git(send, "rev-parse", guard+"^{tree}")
 	if err != nil {
 		return "", err
@@ -1114,7 +1161,7 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	if err != nil {
 		return "", err
 	}
-	if head, guard, err = fitBound(e, send, head, tree, base, guard, mainHead, e.lineBound); err != nil {
+	if head, guard, err = fitBound(e, send, head, tree, base, guard, mainHead, e.bound()); err != nil {
 		if tree == baseTree && errors.Is(err, errPushOverBound) {
 			// the start is over the bound and the session added nothing
 			return "", startOverBound{err}
@@ -1127,17 +1174,50 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	if err := refuseMisnamedMigrations(e, send, guard, head); err != nil {
 		return "", err
 	}
-	if e.pushToken, err = pushToken(head); err != nil {
-		return "", err
-	}
-	// the forced refspec: an interim push (factoryd's POST /wip half) may
-	// have replaced the task branch's tip with a WIP commit since the
-	// session's start, and the end push — the session's own commit — lands
-	// on that tip, not refused as non-fast-forward
-	if err := e.gitAuth(e.pushToken, "", "--git-dir="+filepath.Join(send, ".git"), "push", "-q", e.pushURL, "+"+head+":refs/heads/"+e.branch); err != nil {
-		return "", err
+	var cred pushCred
+	for asks := 0; ; asks++ {
+		if cred, err = pushToken(head); err != nil {
+			return "", err
+		}
+		e.pushToken = cred.token
+		// the forced refspec: an interim push (factoryd's POST /wip half) may
+		// have replaced the task branch's tip with a WIP commit since the
+		// session's start, and the end push — the session's own commit — lands
+		// on that tip, not refused as non-fast-forward
+		if err = e.gitAuth(e.pushToken, "", "--git-dir="+filepath.Join(send, ".git"), "push", "-q", e.pushURL, "+"+head+":refs/heads/"+e.branch); err == nil {
+			break
+		}
+		if asks == pushReasks || !refusedPushCredential(e, err) {
+			if refusedPushCredential(e, err) {
+				// the retried push still refused names the credential that died:
+				// Git renders a refused token as a missing repository, and the
+				// record must tell the two apart (issue 1836)
+				err = fmt.Errorf("push credential %s refused by %s: %w", cred.name, e.pushURL, err)
+			}
+			return "", err
+		}
 	}
 	return head, nil
+}
+
+// refusedPushCredential reports a push refusal a dead credential produces.
+// Git renders a token Forgejo refuses as the repository being missing, so
+// the signature alone cannot tell a revoked token from a missing
+// repository: the credential is refused only when the refused push also
+// names the repository the token was minted for — the fork, PUSH_URL, the
+// same repository the session reads at REPO_URL.
+func refusedPushCredential(e workerEnv, err error) bool {
+	msg := err.Error()
+	if !strings.Contains(msg, "Repository not found") && !strings.Contains(msg, "Authentication failed") {
+		return false
+	}
+	return sameRepoPath(e.pushURL, e.repoURL)
+}
+
+// sameRepoPath reports two git URLs ending in the same repository name.
+func sameRepoPath(a, b string) bool {
+	a, b = path.Base(a), path.Base(b)
+	return a != "" && a != "." && a != "/" && a == b
 }
 
 // The push rules live in internal/factoryd/pushrules.go now — one rule
@@ -1145,13 +1225,19 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 // and the local names stay as thin aliases delegating to factoryd's, so
 // commitAndPush and its tests read as today.
 
-// pushRulesGit is the worker's hardened git as the push rules run it.
-type pushRulesGit struct{ e workerEnv }
+// pushRulesGit is the worker's hardened git as the push rules run it,
+// bounded by ctx.
+type pushRulesGit struct {
+	ctx context.Context
+	e   workerEnv
+}
 
-func (p pushRulesGit) Git(dir string, args ...string) (string, error) { return p.e.git(dir, args...) }
+func (p pushRulesGit) Git(dir string, args ...string) (string, error) {
+	return p.e.runGitCtx(p.ctx, dir, nil, args...)
+}
 
 func (p pushRulesGit) RunGit(dir string, env []string, args ...string) (string, error) {
-	return p.e.runGit(dir, env, args...)
+	return p.e.runGitCtx(p.ctx, dir, env, args...)
 }
 
 // errPushOverBound is the named refusal of the card's line bound, now
@@ -1161,46 +1247,57 @@ var errPushOverBound = factoryd.ErrPushOverBound
 // fitBound is the card's line-bound rule on the end push, with the
 // worker's own merge commit: the session's attribution message.
 func fitBound(e workerEnv, send, head, tree, base, guard, mainHead string, bound int) (string, string, error) {
-	return factoryd.FitBound(pushRulesGit{e}, send, head, tree, base, guard, mainHead, bound, botIdentity, commitMessage(e))
+	return factoryd.FitBound(pushRulesGit{context.Background(), e}, send, head, tree, base, guard, mainHead, bound, botIdentity, commitMessage(e))
 }
 
 // changedLines is the insertions plus deletions between two commits,
 // trees or both; a diff git cannot run is an error, never zero lines.
 func changedLines(e workerEnv, send, a, b string) (int, error) {
-	return factoryd.ChangedLines(pushRulesGit{e}, send, a, b)
+	return factoryd.ChangedLines(pushRulesGit{context.Background(), e}, send, a, b)
 }
 
 // sessionParents answers the pushed commit's parents and the commit whose
-// workflow directories it must keep. The start commit is the parent, unless
-// the agent pulled main commits newer than the one the start is on (the
-// merge base of its HEAD and mainHead descends from the start's): then
-// that newest main commit is the parent, next to the start when the start
-// is a resumed session's pushed work in progress, so main's changes stay
-// main's in the pull request's diff. The agent holds no token, so the main
-// it can pull is the clone's.
-func sessionParents(e workerEnv, send, base, mainHead, agent string) ([]string, string) {
-	start, err := e.git(send, "merge-base", base, mainHead)
-	if err != nil {
+// workflow directories it must keep. The start commit base is the parent,
+// unless the agent pulled main commits newer than the one the start is on
+// (the merge base of its HEAD and main's head descends from the start's,
+// as bases tell): then that newest main commit is the parent, next to the
+// start when the start is a resumed session's pushed work in progress, so
+// main's changes stay main's in the pull request's diff. The agent holds
+// no token, so the main it can pull is the clone's.
+func sessionParents(e workerEnv, send, base string, bases factoryd.MainBases) ([]string, string) {
+	start, tip := pulledMain(pushRulesGit{context.Background(), e}, send, bases)
+	switch {
+	case tip == "":
 		return []string{"-p", base}, base
-	}
-	tip, err := e.git(send, "merge-base", agent, mainHead)
-	if err != nil || tip == start {
-		return []string{"-p", base}, base
-	}
-	if _, err := e.git(send, "merge-base", "--is-ancestor", start, tip); err != nil {
-		return []string{"-p", base}, base
-	}
-	if start == base {
+	case start == base:
 		return []string{"-p", tip}, tip
 	}
 	return []string{"-p", base, "-p", tip}, tip
+}
+
+// pulledMain is the main commit the start is on (bases' Start) and the
+// newer one the agent pulled past it (bases' Fork, when that descends from
+// the start's), tip "" when it pulled none or a merge base could not be
+// read.
+func pulledMain(g factoryd.PushGit, dir string, bases factoryd.MainBases) (start, tip string) {
+	if bases.StartErr != nil {
+		return "", ""
+	}
+	start, tip = bases.Start, bases.Fork
+	if bases.ForkErr != nil || tip == start {
+		return start, ""
+	}
+	if _, err := g.Git(dir, "merge-base", "--is-ancestor", start, tip); err != nil {
+		return start, ""
+	}
+	return start, tip
 }
 
 // refuseWorkflowDirChange is the workflow-directory rule, now factoryd's
 // (pushrules.go): no agent changes a workflow directory, and the refusal
 // names the action.
 func refuseWorkflowDirChange(e workerEnv, own, base, head string) error {
-	return factoryd.RefuseWorkflowDirChange(pushRulesGit{e}, own, base, head)
+	return factoryd.RefuseWorkflowDirChange(pushRulesGit{context.Background(), e}, own, base, head)
 }
 
 // workflowDirGuard watches the session's file-change events and, at the
@@ -1285,7 +1382,7 @@ func workflowDirMessage(dir, file string) string {
 // (pushrules.go): it judges the added .sql files under the policy's
 // migration directory globs.
 func refuseMisnamedMigrations(e workerEnv, own, base, head string) error {
-	return factoryd.RefuseMisnamedMigrations(pushRulesGit{e}, e.migrationGlobs, own, base, head)
+	return factoryd.RefuseMisnamedMigrations(pushRulesGit{context.Background(), e}, e.migrationGlobs, own, base, head)
 }
 
 var botIdentity = []string{
@@ -1351,19 +1448,24 @@ type diffStat struct{ Files, Insertions, Deletions int }
 
 // checkpointer measures the agent's diff against the base commit for the
 // supervisor's churn detector and progress digest. Like the push path it
-// never runs git with the agent repo as its repository: store holds the
-// base objects, fetched before the agent starts, and every measurement
-// indexes the agent's work tree into a fresh repo of the worker's own that
-// borrows those objects. Hooks and fsmonitor are off, diffs run without
-// external diff or textconv, system and global config are ignored, and
-// no token is in the environment. The agent runs under the same uid and
+// never runs git with the agent repo as its repository. store holds the
+// base and main objects, fetched before the agent starts; no git runs in it
+// after that, for the agent can write to it. Every measurement makes a
+// fresh repo of the worker's own that borrows the store's objects, and any
+// the agent adds to the store's alternates, but never its refs or config:
+// its own refs name base and main, and safeGit keeps git from listing an
+// alternate's refs. It fetches the agent's HEAD there the push's way and
+// indexes the agent's work tree. Hooks and fsmonitor are off, diffs run
+// without external diff or textconv, system and global config are ignored,
+// and no token is in the environment. The agent runs under the same uid and
 // could still write to a fresh repo while it exists; what it could plant
 // there runs with the rights it already has.
 type checkpointer struct {
-	e                       workerEnv
-	work, store, base, fork string
-	// stage runs the checkpoint's git commands. It defaults to the worker's
-	// own runGitCtx; only a test replaces it, to make one staging step fail.
+	e                             workerEnv
+	work, store, base, main, fork string
+	// stage runs the checkpoint's git commands but the capped reads of the
+	// patch and the names. It defaults to the worker's own runGitCtx; only a
+	// test replaces it, to make one staging step fail.
 	stage func(ctx context.Context, dir string, env []string, args ...string) (string, error)
 }
 
@@ -1387,7 +1489,7 @@ func newCheckpointer(agentRepo string, e workerEnv, base, mainHead string) (*che
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint store: %w", err)
 	}
-	return &checkpointer{e: e, work: agentRepo, store: store, base: base, fork: fork}, nil
+	return &checkpointer{e: e, work: agentRepo, store: store, base: base, main: mainHead, fork: fork}, nil
 }
 
 // maxPatch bounds the diff text a checkpoint carries, and maxCheckpointFiles
@@ -1430,35 +1532,79 @@ func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch 
 	// work tree as it was at the moment of staging, a valid snapshot, and
 	// the diff against the base below stays correct.
 	_, _ = run(ctx, tmp, env, "add", "-A")
-	diff := []string{"diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color"}
+	diff := []string{"diff", "--cached", "--no-ext-diff", "--no-textconv", "-M", "--no-color"}
 	short, err := run(ctx, tmp, env, append(diff, "--shortstat", c.base)...)
 	if err != nil {
 		return diffStat{}, diffStat{}, "", nil, err
 	}
-	cardShort, err := run(ctx, tmp, env, append(diff, "--shortstat", c.fork)...)
+	tree, err := run(ctx, tmp, env, "write-tree")
 	if err != nil {
 		return diffStat{}, diffStat{}, "", nil, err
 	}
-	patch, err = run(ctx, tmp, env, append(diff, c.base)...)
+	from, to := c.cardTrees(ctx, run, tmp, tree)
+	cardShort, err := run(ctx, tmp, nil, "diff", "--no-ext-diff", "--no-textconv", "-M", "--no-color", "--shortstat", from, to)
 	if err != nil {
 		return diffStat{}, diffStat{}, "", nil, err
 	}
-	names, err := run(ctx, tmp, env, append(diff, "--name-only", "-z", c.base)...)
+	patch, cut, err := c.e.runGitCapped(ctx, tmp, env, maxPatch, append(diff, c.base)...)
+	if err != nil {
+		return diffStat{}, diffStat{}, "", nil, err
+	}
+	if cut {
+		patch += "\n… (diff truncated)"
+	}
+	// --no-renames after -M lists both paths of a move
+	names, cut, err := c.e.runGitCapped(ctx, tmp, env, maxGitOutput, append(diff, "--name-only", "-z", "--no-renames", c.base)...)
 	if err != nil {
 		return diffStat{}, diffStat{}, "", nil, err
 	}
 	files = strings.Split(strings.TrimSuffix(names, "\x00"), "\x00")
-	if files[0] == "" {
+	if cut {
+		files = files[:len(files)-1]
+	}
+	if len(files) > 0 && files[0] == "" {
 		files = nil
 	}
 	files = files[:min(len(files), maxCheckpointFiles)]
 	for i, f := range files {
 		files[i] = textutil.Truncate(f, maxCheckpointName)
 	}
-	if len(patch) > maxPatch {
-		patch = patch[:maxPatch] + "\n… (diff truncated)"
-	}
 	return parseShortstat(short), parseShortstat(cardShort), patch, files, nil
+}
+
+// cardTrees are the two sides of the card's diff as the push bills it: the
+// main commit the push stands on (the start's, or a newer one the agent
+// pulled, as sessionParents picks it) and the tree the push takes
+// (SyncOnMain), so an agent reset behind the start is not measured for
+// main's lines it lacks. Where the push refuses the tree until the agent
+// merges main, the agent's own lines since its fork are the card's; with
+// no fork or no HEAD to read, the work tree's against the start's main.
+func (c *checkpointer) cardTrees(ctx context.Context, run func(context.Context, string, []string, ...string) (string, error), tmp, tree string) (from, to string) {
+	// the fetch's haves, so only the agent's new objects transfer
+	for ref, id := range map[string]string{"refs/heads/base": c.base, "refs/heads/main": c.main} {
+		if _, err := run(ctx, tmp, nil, "update-ref", ref, id); err != nil {
+			return c.fork, tree
+		}
+	}
+	if _, err := run(ctx, tmp, nil, "fetch", "-q", "--no-tags", uploadPack, c.work, "+HEAD:refs/heads/agent"); err != nil {
+		return c.fork, tree
+	}
+	agent, err := run(ctx, tmp, nil, "rev-parse", "refs/heads/agent")
+	if err != nil {
+		return c.fork, tree
+	}
+	g := pushRulesGit{ctx, c.e}
+	bases := factoryd.ReadMainBases(g, tmp, c.base, c.main, agent)
+	if synced, err := factoryd.SyncOnMain(g, tmp, bases, c.base, agent, tree); err == nil {
+		if _, tip := pulledMain(g, tmp, bases); tip != "" {
+			return tip, synced
+		}
+		return c.fork, synced
+	}
+	if bases.ForkErr == nil {
+		return bases.Fork, tree
+	}
+	return c.fork, tree
 }
 
 var shortstatPart = regexp.MustCompile(`(\d+) (file|insertion|deletion)`)

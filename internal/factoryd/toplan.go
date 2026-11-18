@@ -65,7 +65,13 @@ func (r *Runner) BecomePlan(ctx context.Context, taskID string, sw PlanSwitch) (
 			return PlanSwitchResult{}, err
 		}
 		class, planTrack := trackClass(p, policy.TrackPlan)
-		if why := planRefusal(t, planTrack); why != "" {
+		var plan Task
+		if t.PlanCard() {
+			if plan, _, err = r.task(ctx, t.Parent); err != nil {
+				return PlanSwitchResult{}, err
+			}
+		}
+		if why := planRefusal(t, plan.IssueNumber, planTrack); why != "" {
 			return PlanSwitchResult{Refused: why}, nil
 		}
 		if work, err = r.workSoFar(ctx, taskID, sw); err != nil {
@@ -80,7 +86,7 @@ func (r *Runner) BecomePlan(ctx context.Context, taskID string, sw PlanSwitch) (
 				return PlanSwitchResult{}, err
 			}
 			if t.Track != policy.TrackPlan {
-				return PlanSwitchResult{Refused: cmp.Or(planRefusal(t, planTrack), statusRefusal(t))}, nil
+				return PlanSwitchResult{Refused: cmp.Or(planRefusal(t, plan.IssueNumber, planTrack), statusRefusal(t))}, nil
 			}
 		} else {
 			pr = t.PRNumber
@@ -178,9 +184,10 @@ func (r *Runner) workSoFar(ctx context.Context, taskID string, sw PlanSwitch) (s
 	return work + sw.Work + "\nReason for the switch: " + sw.Reason, nil
 }
 
-// planRefusal is why card t may not turn plan-track, "" when it may;
-// planTrack is whether its project's process has a plan track.
-func planRefusal(t Task, planTrack bool) string {
+// planRefusal is why card t may not turn plan-track, "" when it may; plan
+// is the issue of the plan whose card a successor carries on, planTrack
+// whether its project's process has a plan track.
+func planRefusal(t Task, plan int64, planTrack bool) string {
 	card := fmt.Sprintf("Card #%d", t.IssueNumber)
 	switch {
 	case t.Kind != "agent":
@@ -189,6 +196,8 @@ func planRefusal(t Task, planTrack bool) string {
 		return fmt.Sprintf("%s is on track %q, not the direct track%sfile its work as a direct card first.", card, t.Track, cannotPlan)
 	case t.Source == SourcePlan:
 		return card + " belongs to a plan" + cannotPlan + "revise the plan instead."
+	case t.PlanCard():
+		return fmt.Sprintf("%s carries plan #%d's card %s: its work goes back to plan #%d's planner: replan plan #%d.", card, plan, t.PlanKey, plan, plan)
 	case t.Unbound():
 		return unboundRefusal(t)
 	case t.MergeCommit != "":

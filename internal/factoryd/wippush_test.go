@@ -26,6 +26,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/http/cgi"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -73,7 +74,7 @@ func wipGitRun(dir string, env []string, args ...string) (string, error) {
 	}, env...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, out)
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -221,47 +222,201 @@ func TestPushRuleFitsOrRefusesTheCardBound(t *testing.T) {
 // The rule's merge: a tree that already holds main's content — a sync
 // performed without main's ancestry — is recorded as the merge it is,
 // with the pusher's own message on the merge commit, so main's commits
-// stay main's in the pull request's diff.
+// stay main's in the pull request's diff. A sync that also deletes
+// gone.txt, which main left alone, is the same merge: the rule's three-way
+// merge deletes a path one side deletes and the other leaves alone.
 func TestPushRuleRecordsTheSyncAsItsOwnMerge(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		delete bool // the session also deletes gone.txt
+		diff   string
+	}{
+		{name: "a sync", diff: "own.txt\nown2.txt"},
+		{name: "a sync that deletes a file main left alone", delete: true, diff: "gone.txt\nown.txt\nown2.txt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			dir := t.TempDir()
+			wipRun(t, "init", "-q", "-b", "main", dir)
+			os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("keep\n"), 0o644)
+			os.WriteFile(filepath.Join(dir, "gone.txt"), []byte("gone\n"), 0o644)
+			wipCommit(t, dir, "m0")
+
+			wipRun(t, "-C", dir, "checkout", "-q", "-b", "task")
+			os.WriteFile(filepath.Join(dir, "own.txt"), []byte("own\n"), 0o644)
+			p1 := wipCommit(t, dir, "the pushed start")
+
+			wipRun(t, "-C", dir, "checkout", "-q", "main")
+			os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("kept, changed on main\n"), 0o644)
+			m1 := wipCommit(t, dir, "main moves")
+
+			wipRun(t, "-C", dir, "checkout", "-q", "task")
+			wipRun(t, "-C", dir, "checkout", "-q", "main", "--", "keep.txt")
+			os.WriteFile(filepath.Join(dir, "own2.txt"), []byte("own2\n"), 0o644)
+			if tc.delete {
+				os.Remove(filepath.Join(dir, "gone.txt"))
+			}
+			head := wipCommit(t, dir, "the session synced main without its ancestry")
+			tree := wipRun(t, "-C", dir, "rev-parse", head+"^{tree}")
+
+			merged, guard, err := FitBound(wipGit{}, dir, head, tree, p1, p1, m1, 100, ruleIdentity, "wip merge")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if merged == head {
+				t.Fatalf("FitBound kept the flat head %s, want the rule's merge", merged)
+			}
+			if guard != m1 {
+				t.Fatalf("guard = %q, want main's head %s", guard, m1)
+			}
+			if got := wipRun(t, "-C", dir, "rev-list", "--parents", "-n", "1", merged); got != merged+" "+p1+" "+m1 {
+				t.Fatalf("the rule's merge and its parents = %q, want %s parented by the start %s and main %s", got, merged, p1, m1)
+			}
+			if got, err := (wipGit{}).Git(dir, "log", "-1", "--format=%s", merged); err != nil || got != "wip merge" {
+				t.Fatalf("the rule's merge message = %q (%v), want the pusher's own", got, err)
+			}
+			if got := wipRun(t, "-C", dir, "diff", "--name-only", m1+"..."+merged); got != tc.diff {
+				t.Fatalf("the merge's diff against main = %q, want only the branch's own files %q", got, tc.diff)
+			}
+		})
+	}
+}
+
+// SyncOnMain on a hand-built history: m0 holds a.txt "a" and b.txt "b", the
+// card's c1 adds own.txt "own" on m0, main's m1 writes a.txt "a2", and the
+// start s merges the two. An agent reset behind s to c1 holds a tree that
+// lacks a2; the synced tree is s's main content plus the agent's own
+// change, one line against m1. Without the sync the tree is 3 lines off m1
+// (own +1, a -1 +1), a revert that fits any bound of 100 unseen. A HEAD that
+// shares no history with main is refused; one git cannot read passes its
+// tree through.
+func TestSyncOnMainRestoresMainsContentAFalseSyncDiscarded(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	write := func(dir, name, body string) { os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644) }
+	own := func(dir string) { write(dir, "own.txt", "own\n") }
+	a2 := func(dir string) { write(dir, "a.txt", "a2\n") }
+	for _, tc := range []struct {
+		name       string
+		task, main func(dir string) // the card's c1 on m0, main's m1 on m0
+		// head is the agent's HEAD: c1 (""), the start, an orphan root
+		// commit of c1's tree, or a commit git does not hold
+		head     string
+		mainPast bool     // main's m2 writes b.txt "b2" past the start
+		files    string   // the tree's files; "" = refused, or untouched (head "unknown")
+		lines    int      // the tree's changed lines against m1
+		refused  []string // what the refusal names: the state and the action
+	}{
+		{name: "reset behind the start", task: own, main: a2, files: "a.txt=a2 b.txt=b own.txt=own", lines: 1},
+		{name: "HEAD on the start", task: own, main: a2, head: "start", files: "a.txt=a2 b.txt=b own.txt=own", lines: 1},
+		{name: "main moved past the start", task: own, main: a2, mainPast: true, files: "a.txt=a2 b.txt=b own.txt=own", lines: 1},
+		{name: "the card's own deletion", main: a2, task: func(dir string) {
+			own(dir)
+			os.Remove(filepath.Join(dir, "b.txt"))
+		}, files: "a.txt=a2 own.txt=own", lines: 2},
+		{name: "main's commits conflict with the card's", task: own, main: func(dir string) {
+			a2(dir)
+			write(dir, "own.txt", "theirs\n")
+		}, refused: []string{"your branch and main both change some of the same files", "run `git merge origin/main`"}},
+		{name: "an orphan HEAD", task: own, main: a2, head: "orphan", refused: []string{"your branch shares no history with main", "run `git reset --soft "}},
+		{name: "a HEAD git cannot read", task: own, main: a2, head: "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			wipRun(t, "init", "-q", "-b", "main", dir)
+			write(dir, "a.txt", "a\n")
+			write(dir, "b.txt", "b\n")
+			wipCommit(t, dir, "m0")
+			wipRun(t, "-C", dir, "checkout", "-q", "-b", "task")
+			tc.task(dir)
+			c1 := wipCommit(t, dir, "the card's work")
+			wipRun(t, "-C", dir, "checkout", "-q", "main")
+			tc.main(dir)
+			m1 := wipCommit(t, dir, "main moves on")
+			wipRun(t, "-C", dir, "checkout", "-q", "task")
+			wipRun(t, "-C", dir, "-c", "user.name=test", "-c", "user.email=test@test", "merge", "-q", "--no-edit", "-X", "ours", "main")
+			s := wipRun(t, "-C", dir, "rev-parse", "HEAD")
+			mainHead := m1
+			if tc.mainPast {
+				wipRun(t, "-C", dir, "checkout", "-q", "main")
+				write(dir, "b.txt", "b2\n")
+				mainHead = wipCommit(t, dir, "main moves past the start")
+			}
+			agent, tree := c1, wipRun(t, "-C", dir, "rev-parse", c1+"^{tree}")
+			switch tc.head {
+			case "start":
+				agent, tree = s, wipRun(t, "-C", dir, "rev-parse", s+"^{tree}")
+			case "orphan":
+				agent = wipRun(t, "-C", dir, "-c", "user.name=test", "-c", "user.email=test@test", "commit-tree", tree, "-m", "orphaned")
+			case "unknown":
+				agent = strings.Repeat("0", 40)
+			}
+
+			got, err := SyncOnMain(wipGit{}, dir, ReadMainBases(wipGit{}, dir, s, mainHead, agent), s, agent, tree)
+			if tc.refused != nil {
+				if !errors.Is(err, ErrPushRefused) || len(err.Error()) > 300 || !strings.Contains(err.Error(), tc.refused[0]) || !strings.Contains(err.Error(), tc.refused[1]) {
+					t.Fatalf("SyncOnMain = %q, %v (%d bytes); want the refusal naming %q within 300 bytes", got, err, len(fmt.Sprint(err)), tc.refused)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (tc.head == "start" || tc.head == "unknown") && got != tree {
+				t.Fatalf("SyncOnMain = %s, want the tree %s untouched", got, tree)
+			}
+			if tc.files == "" {
+				return
+			}
+			var files []string
+			for _, name := range strings.Split(wipRun(t, "-C", dir, "ls-tree", "--name-only", got), "\n") {
+				files = append(files, name+"="+wipRun(t, "-C", dir, "cat-file", "-p", got+":"+name))
+			}
+			if strings.Join(files, " ") != tc.files {
+				t.Fatalf("the synced tree's files = %q, want %q", strings.Join(files, " "), tc.files)
+			}
+			if n, err := ChangedLines(wipGit{}, dir, m1, got); err != nil || n != tc.lines {
+				t.Fatalf("the synced tree's lines against main's m1 = %d (%v), want %d", n, err, tc.lines)
+			}
+		})
+	}
+}
+
+// moveFixture is the 100-line a/x.go the move tests start from, and what a
+// move to b/x.go writes there: the file with one line changed.
+func moveFixture() (base, moved func(dir string)) {
+	var body strings.Builder
+	for i := range 100 {
+		fmt.Fprintf(&body, "line %d\n", i+1)
+	}
+	write := func(dir, name, text string) {
+		os.MkdirAll(filepath.Join(dir, filepath.Dir(name)), 0o755)
+		os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644)
+	}
+	return func(dir string) { write(dir, "a/x.go", body.String()) },
+		func(dir string) {
+			os.Remove(filepath.Join(dir, "a", "x.go"))
+			write(dir, "b/x.go", strings.Replace(body.String(), "line 50\n", "line fifty\n", 1))
+		}
+}
+
+// The push rule bills a move by its changed lines as the worker's
+// checkpoint counts it, whatever the repository's diff.renames says: the
+// move with one line changed is 2 lines, not the 200 of a deleted and an
+// added file.
+func TestChangedLinesCountsAMoveAsTheCheckpointDoes(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	wipRun(t, "init", "-q", "-b", "main", dir)
-	os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("keep\n"), 0o644)
-	wipCommit(t, dir, "m0")
-
-	wipRun(t, "-C", dir, "checkout", "-q", "-b", "task")
-	os.WriteFile(filepath.Join(dir, "own.txt"), []byte("own\n"), 0o644)
-	p1 := wipCommit(t, dir, "the pushed start")
-
-	wipRun(t, "-C", dir, "checkout", "-q", "main")
-	os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("kept, changed on main\n"), 0o644)
-	m1 := wipCommit(t, dir, "main moves")
-
-	wipRun(t, "-C", dir, "checkout", "-q", "task")
-	wipRun(t, "-C", dir, "checkout", "-q", "main", "--", "keep.txt")
-	os.WriteFile(filepath.Join(dir, "own2.txt"), []byte("own2\n"), 0o644)
-	head := wipCommit(t, dir, "the session synced main without its ancestry")
-	tree := wipRun(t, "-C", dir, "rev-parse", head+"^{tree}")
-
-	merged, guard, err := FitBound(wipGit{}, dir, head, tree, p1, p1, m1, 100, ruleIdentity, "wip merge")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if merged == head {
-		t.Fatalf("FitBound kept the flat head %s, want the rule's merge", merged)
-	}
-	if guard != m1 {
-		t.Fatalf("guard = %q, want main's head %s", guard, m1)
-	}
-	if got := wipRun(t, "-C", dir, "rev-list", "--parents", "-n", "1", merged); got != merged+" "+p1+" "+m1 {
-		t.Fatalf("the rule's merge and its parents = %q, want %s parented by the start %s and main %s", got, merged, p1, m1)
-	}
-	if got, err := (wipGit{}).Git(dir, "log", "-1", "--format=%s", merged); err != nil || got != "wip merge" {
-		t.Fatalf("the rule's merge message = %q (%v), want the pusher's own", got, err)
-	}
-	if got := wipRun(t, "-C", dir, "diff", "--name-only", m1+"..."+merged); got != "own.txt\nown2.txt" {
-		t.Fatalf("the merge's diff against main = %q, want only the branch's own files", got)
+	wipRun(t, "-C", dir, "config", "diff.renames", "false")
+	base, moved := moveFixture()
+	base(dir)
+	from := wipCommit(t, dir, "base")
+	moved(dir)
+	to := wipCommit(t, dir, "move")
+	if n, err := ChangedLines(wipGit{}, dir, from, to); err != nil || n != 2 {
+		t.Fatalf("ChangedLines = %d (%v), want the move's 2 changed lines", n, err)
 	}
 }
 
@@ -514,7 +669,7 @@ func TestInterimPushReplacesTheTaskBranchTipAtEachCheckin(t *testing.T) {
 		func(dir string) { os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644) },
 		func(dir string) { os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\ntwo\n"), 0o644) })
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue, wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+commands(24, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -598,7 +753,7 @@ func TestInterimPushRefusesAWorkflowDirChangeAndRunsOn(t *testing.T) {
 	}
 	runner, objects, serve := wipRig(t, ci("gate: true\n"), ci("gate: false\n"))
 	chat := &scriptedChat{answers: []CheckinResponse{wipGoOn}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	var logs bytes.Buffer
 	defer log.SetOutput(log.Writer())
 	log.SetOutput(&logs)
@@ -649,7 +804,7 @@ func TestInterimPushToleratesAPodThatFailsOrHangs(t *testing.T) {
 			})
 			tc.serve(serve)
 			chat := &scriptedChat{answers: []CheckinResponse{wipGoOn}}
-			runner.checkin = chat
+			runner.Checkin = chat
 			var logs bytes.Buffer
 			defer log.SetOutput(log.Writer())
 			log.SetOutput(&logs)
@@ -695,7 +850,7 @@ func TestInterimPushRefusesABodyThatIsNoBundle(t *testing.T) {
 		return commit, []byte("gitdir: " + filepath.Join(serve.seed, ".git") + "\n"), nil
 	}
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -765,7 +920,7 @@ func TestInterimPushRefusesAMalformedObject(t *testing.T) {
 				return bad, b, err
 			}
 			chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-			runner.checkin = chat
+			runner.Checkin = chat
 
 			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 				commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -858,7 +1013,7 @@ func TestInterimPushRefusesAZipBomb(t *testing.T) {
 			}
 			serve.ship = func(i int, tree string) (string, []byte, error) { return id, bomb, nil }
 			chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-			runner.checkin = chat
+			runner.Checkin = chat
 
 			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 				commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -1014,7 +1169,7 @@ func TestInterimPushRefusesTooLargeWorkBeforeReadingIt(t *testing.T) {
 			runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil }
 			calls := gitSpy(t)
 			chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-			runner.checkin = chat
+			runner.Checkin = chat
 
 			if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 				commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1053,7 +1208,7 @@ func TestInterimPushLandsALargePack(t *testing.T) {
 		}
 	})
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1118,7 +1273,7 @@ func TestInterimPushLandsAPackWithDeltas(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "data.txt"), []byte(strings.Replace(text, "line 7 ", "edited 7 ", 1)), 0o644)
 	})
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1144,7 +1299,7 @@ func TestInterimPushBaseFetchRunsUnderTheCap(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
 	})
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1175,7 +1330,7 @@ func TestInterimPushLosesTheLeaseToAnEndPush(t *testing.T) {
 	os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nif [ \"$1\" = commit-tree ] && [ \"${*#*Factory-Role}\" != \"$*\" ]; then '"+realGit+"' --git-dir='"+serve.fork+"' update-ref refs/heads/factory/t2 "+end+"; fi\nexec '"+realGit+"' \"$@\"\n"), 0o755)
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1206,7 +1361,7 @@ func TestInterimPushDoesNotFollowARedirect(t *testing.T) {
 	})
 	serve.redirect = target.URL + "/admin"
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1235,7 +1390,7 @@ func TestInterimPushRefusalTextIsScrubbed(t *testing.T) {
 	runner.cfg.Policy = func() policy.Version { return version }
 	runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil }
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1263,7 +1418,7 @@ func TestInterimPushBoundsANonHexCommitHeader(t *testing.T) {
 		return "--" + strings.Repeat("x", 5000), []byte("body"), nil
 	}
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1288,7 +1443,7 @@ func TestInterimPushUndeliveredRefusalErrorIsScrubbed(t *testing.T) {
 	serve.status = http.StatusInternalServerError
 	serve.msgBody = "upstream https://user:hunter2pass@example.com/x failed; Authorization: Bearer abcdefghij0123456789xyz"
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	var logs bytes.Buffer
 	defer log.SetOutput(log.Writer())
 	log.SetOutput(&logs)
@@ -1323,7 +1478,7 @@ func TestInterimPushScrubsItsFailureText(t *testing.T) {
 	})
 	serve.wipStatus, serve.wipBody = http.StatusBadGateway, "upstream https://user:hunter2pass@example.com/x failed; Authorization: Bearer abcdefghij0123456789xyz"
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	var logs bytes.Buffer
 	defer log.SetOutput(log.Writer())
 	log.SetOutput(&logs)
@@ -1349,7 +1504,7 @@ func TestInterimPushRefusalNotDeliveredIsNotNamedAsGuidance(t *testing.T) {
 	})
 	serve.status = http.StatusInternalServerError
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1392,7 +1547,7 @@ func TestInterimPushRefusesAWipFromAnotherHistory(t *testing.T) {
 		return rogue, b, err
 	}
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -1445,7 +1600,7 @@ func TestInterimPushBuildsItsOwnCommitFromTheShippedTree(t *testing.T) {
 		return forged, b, err
 	}
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -1492,7 +1647,7 @@ func TestInterimPushFiresBeforeTheCheckinAndNamesItsHead(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
 	})
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{{ToolName: "card_facts"}, wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -1537,7 +1692,7 @@ func TestInterimPushRefusalReachesTheSessionAndItsCheckin(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, ".forgejo", "workflows", "ci.yml"), []byte("gate: false\n"), 0o644)
 	})
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -1582,6 +1737,31 @@ func TestInterimPushRefusalReachesTheSessionAndItsCheckin(t *testing.T) {
 	}
 }
 
+// The worker's staging refuses work that would revert main and does not
+// merge with it, with 409 and the refusal's sentence: the sentence reaches
+// the session as the interim push's refusal, and the timeline records it at
+// the ask.
+func TestInterimPushDeliversTheWorkersRefusal(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil)
+	serve.wipStatus = http.StatusConflict
+	serve.wipBody = "refusing to push: your HEAD forks from main at 1111111, behind main's 2222222 that the start already holds: run `git merge origin/main`"
+	runner.Checkin = &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	serve.mu.Lock()
+	msgs := slices.Clone(serve.msgs)
+	serve.mu.Unlock()
+	if want := "factoryd's interim push of your work in progress was refused: " + serve.wipBody; len(msgs) != 1 || msgs[0] != want {
+		t.Fatalf("the pod was messaged %q, want exactly %q", msgs, want)
+	}
+	if step := timelineStep(t, objects, "t2", "wip_push_failed"); step["at"] != "ask" || step["error"] != serve.wipBody {
+		t.Fatalf("the wip_push_failed step = %v, want the worker's refusal at the ask", step)
+	}
+}
+
 // A session that dies without a result line — OOMKilled, no worker push
 // — still hands its next session the interim head: the result carries
 // the last head the check-in's interim push landed, so the card resumes
@@ -1591,7 +1771,7 @@ func TestASessionThatDiesCarriesItsInterimHeadInItsResult(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
 	})
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, commands(0, 24))
 	if err != nil {
@@ -1643,7 +1823,7 @@ func TestASessionThatRevertsItsWorkSaysWhatTheBranchHolds(t *testing.T) {
 				serve.base = prior
 			}
 			chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-			runner.checkin = chat
+			runner.Checkin = chat
 			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 				commands(0, 24)+resultLine(true, "no changes to push"))
 			if err != nil {
@@ -1667,6 +1847,126 @@ func TestGitConfigHoldsTheCapSettings(t *testing.T) {
 	}
 }
 
+// forgejoGit serves the rig's repositories over git's smart HTTP as Forgejo
+// serves them, and points the runner's git at it: the bot's private fork
+// answers the Authorization forkLogin alone ("" refuses every login), the
+// task's repository every login, and a refused login gets the 404 git
+// prints as "remote: Repository not found". paths are the requests' paths.
+// The projects user has a login of its own, which the fork refuses.
+type forgejoGit struct {
+	mu    sync.Mutex
+	paths []string
+}
+
+func serveForgejoGit(t *testing.T, runner *Runner, serve *wipServe, forkLogin string) *forgejoGit {
+	t.Helper()
+	exe, err := exec.Command("git", "--exec-path").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &cgi.Handler{Path: filepath.Join(strings.TrimSpace(string(exe)), "git-http-backend"),
+		Env: []string{"GIT_PROJECT_ROOT=" + filepath.Dir(filepath.Dir(serve.fork)), "GIT_HTTP_EXPORT_ALL=1", "REMOTE_USER=factory-agent"}}
+	g := &forgejoGit{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		g.mu.Lock()
+		g.paths = append(g.paths, r.URL.Path)
+		g.mu.Unlock()
+		if strings.HasPrefix(r.URL.Path, "/factory-agent/") && (forkLogin == "" || r.Header.Get("Authorization") != forkLogin) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, "Repository not found")
+			return
+		}
+		backend.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	runner.cfg.GitBaseURL = srv.URL
+	runner.cfg.ProjectsUser, runner.forgejo.ProjectsToken = "factory-projects", "projects-tok"
+	return g
+}
+
+// botLogin is the test runner's bot login, factory-agent:bot-pw, as git
+// sends it.
+const botLogin = "Basic ZmFjdG9yeS1hZ2VudDpib3QtcHc="
+
+// The interim push logs in to the bot's private fork as the bot: on a fork
+// that answers no other login, it lands, and the timeline holds the landed
+// commit and no failure.
+func TestInterimPushLogsInToTheForkAsTheBot(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	serveForgejoGit(t, runner, serve, botLogin)
+	runner.Checkin = &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2")
+	if step := timelineStep(t, objects, "t2", "wip_pushed"); tip == serve.base || step["commit"] != tip {
+		t.Fatalf("the wip_pushed step = %v, task branch = %s; want the landed head past the base %s; timeline %s", step, tip, serve.base, objGet(objects, "sessions/t2/timeline.jsonl"))
+	}
+	if n := wipSteps(t, objects, "t2", "wip_push_failed"); n != 0 {
+		t.Fatalf("wip_push_failed steps = %d, want none; timeline %s", n, objGet(objects, "sessions/t2/timeline.jsonl"))
+	}
+}
+
+// A fork that answers the task branch's fetch with "Repository not found"
+// fails the push with that fetch's own failure: an access refusal is no
+// first push, and main is never fetched in its place.
+func TestInterimPushFailsOnAForkItCannotRead(t *testing.T) {
+	runner, _, serve := wipRig(t, nil)
+	g := serveForgejoGit(t, runner, serve, "")
+
+	_, _, err := runner.pushWip(context.Background(), supervisedTask("t2"), sessionSpec{repo: Repo{Owner: "sf", Name: "repo"}, startRef: serve.base},
+		serve.base, filepath.Join(t.TempDir(), "never-read.bundle"))
+	if err == nil || !strings.HasPrefix(err.Error(), "fetch the task branch:") || !strings.Contains(err.Error(), "Repository not found") {
+		t.Fatalf("pushWip = %v, want the task branch's fetch failure", err)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !slices.ContainsFunc(g.paths, func(p string) bool { return strings.HasPrefix(p, "/factory-agent/") }) ||
+		slices.ContainsFunc(g.paths, func(p string) bool { return strings.HasPrefix(p, "/sf/") }) {
+		t.Fatalf("requests = %q, want the fork's fetch alone, no fetch of main", g.paths)
+	}
+}
+
+// A session that starts from a predecessor's branch has its start only on
+// the fork's task branch: the interim push reads it there, and lands on it.
+func TestInterimPushLandsOnACarriedStart(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	os.WriteFile(filepath.Join(serve.seed, "carried.txt"), []byte("carried\n"), 0o644)
+	carried := wipCommit(t, serve.seed, "the predecessor's work")
+	wipRun(t, "-C", serve.seed, "push", "-q", "-f", serve.fork, carried+":refs/heads/factory/t2")
+	serve.hub.mu.Lock()
+	serve.hub.branches = map[string]string{"factory/t2": carried}
+	serve.hub.mu.Unlock()
+	serve.base = carried
+	serveForgejoGit(t, runner, serve, botLogin)
+	runner.Checkin = &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	if n := wipSteps(t, objects, "t2", "wip_push_failed"); n != 0 {
+		t.Fatalf("wip_push_failed steps = %d, want none; timeline %s", n, objGet(objects, "sessions/t2/timeline.jsonl"))
+	}
+	tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2")
+	if got := wipRun(t, "-C", serve.fork, "rev-list", "--parents", "-n", "1", tip); got != tip+" "+carried {
+		t.Fatalf("the landed head and its parents = %q, want %s on the carried start %s", got, tip, carried)
+	}
+	if got := wipRun(t, "-C", serve.fork, "ls-tree", "--name-only", tip); got != "README.md\nb.txt\ncarried.txt" {
+		t.Fatalf("the landed head's files = %q, want the carried work and the session's", got)
+	}
+	if step := timelineStep(t, objects, "t2", "wip_pushed"); step["commit"] != tip {
+		t.Fatalf("the wip_pushed step = %v, want the landed head %s", step, tip)
+	}
+}
+
 // A first push, when the fork has no task branch yet, falls back to main
 // as the start and creates the branch.
 func TestInterimPushFallsBackToMainWhenTheForkHasNoBranch(t *testing.T) {
@@ -1674,8 +1974,9 @@ func TestInterimPushFallsBackToMainWhenTheForkHasNoBranch(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
 	})
 	wipRun(t, "-C", serve.fork, "update-ref", "-d", "refs/heads/factory/t2")
+	serveForgejoGit(t, runner, serve, botLogin)
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1736,7 +2037,7 @@ func TestInterimPushBoundsTheResponseHeaders(t *testing.T) {
 		return strings.Repeat("x", 100<<10), []byte("body"), nil
 	}
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1787,7 +2088,7 @@ func TestInterimPushRefusesABundleWithAMissingPrerequisite(t *testing.T) {
 		return w, b, err
 	}
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1900,7 +2201,7 @@ func TestInterimPushBoundsTheBundleHeaderBeforeGit(t *testing.T) {
 			serve.ship = func(int, string) (string, []byte, error) { return id, []byte(tc.body), nil }
 			calls := gitSpy(t)
 			chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-			runner.checkin = chat
+			runner.Checkin = chat
 
 			if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 				commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1953,7 +2254,7 @@ func TestSizeTripPushesWorkOverTheBoundInParts(t *testing.T) {
 	runner.cfg.Policy = func() policy.Version { return version }
 	runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil }
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{{ToolName: "card_facts"}, wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		cardDiffLine(250, 120)+"\n"+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1997,6 +2298,20 @@ func TestInterimPushNamesThePartsOfTheCardsWholeDiff(t *testing.T) {
 	want := wipParts{list: []wipPart{{"a.txt", 200}, {"b.txt", 30}}}
 	if out.head == "" || !reflect.DeepEqual(out.parts, want) {
 		t.Fatalf("outcome = %+v, want a landed head and the parts %+v", out, want)
+	}
+}
+
+// A move is one part at its new path, by its changed lines: a/x.go moved
+// to b/x.go with one line changed is b/x.go's 1 added and 1 deleted line.
+func TestInterimPushListsAMoveAsOnePart(t *testing.T) {
+	base, moved := moveFixture()
+	runner, _, serve := wipRig(t, base, moved)
+	runner.kube.(*fakeKube).pods["ns/pod"] = &fakePod{ns: "ns", name: "pod", phase: "Running"}
+	spec := sessionSpec{id: "s-1", startRef: serve.base, repo: Repo{Owner: "sf", Name: "repo"}, messageToken: "tok"}
+	out := runner.interimPush(context.Background(), supervisedTask("t2"), spec, "ns", "pod", nil)
+	want := wipParts{list: []wipPart{{"b/x.go", 2}}}
+	if out.head == "" || !reflect.DeepEqual(out.parts, want) {
+		t.Fatalf("outcome = %+v, want a landed head and the one part %+v", out, want)
 	}
 }
 
@@ -2143,7 +2458,7 @@ func TestEndPushRefusedOverTheBoundDuringACheckinTakesTheWork(t *testing.T) {
 		func(dir string) { os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644) },
 		func(dir string) { os.WriteFile(filepath.Join(dir, "c.txt"), []byte(strings.Repeat("c\n", 350)), 0o644) })
 	chat := &waitChat{serve: serve}
-	runner.checkin = chat
+	runner.Checkin = chat
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushRefusedOverTheBound()+resultLine(false, "push failed: "+ErrPushOverBound.Error())); err != nil {
 		t.Fatal(err)
@@ -2405,7 +2720,7 @@ func TestStaleAttemptSendsNoInterimRefusal(t *testing.T) {
 	}
 	runner, _, serve := wipRig(t, ci("gate: true\n"), ci("gate: false\n"))
 	chat := &scriptedChat{answers: []CheckinResponse{wipGoOn}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	runner.store = &takeAtStore{Store: runner.store, n: 2}
 	_, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, commands(0, 24)+hangLogs)
 	var app *temporal.ApplicationError

@@ -211,16 +211,16 @@ func queryAll[T any](ctx context.Context, db *sql.DB, query string, args []any, 
 	return out, rows.Err()
 }
 
-// caseSignalTries is how many failed sends of one pending case signal end
+// CaseSignalTries is how many failed sends of one pending case signal end
 // it, at a failure no retry cures: a frontend that is down or slow never
-// ends a row. caseSignalLogEvery is how many failed sends pass between one
-// row's log lines, one an hour at the heal's minute. caseSignalWait is how
+// ends a row. CaseSignalLogEvery is how many failed sends pass between one
+// row's log lines, one an hour at the heal's minute. CaseSignalWait is how
 // long a row waits for its own sender before the heal pass sends it, and
 // caseSignalBatch how many one pass sends.
 const (
-	caseSignalTries    = 60
-	caseSignalLogEvery = 60
-	caseSignalWait     = time.Minute
+	CaseSignalTries    = 60
+	CaseSignalLogEvery = 60
+	CaseSignalWait     = time.Minute
 	caseSignalBatch    = 100
 )
 
@@ -230,7 +230,7 @@ const (
 // send no retry cures fails it once it failed caseSignalTries times. A run
 // takes a second copy of either signal as a no-op.
 func resendCaseSignals(ctx context.Context, store Store, wf Workflows, now time.Time) {
-	rows, err := store.PendingCaseSignals(ctx, now.Add(-caseSignalWait), caseSignalBatch)
+	rows, err := store.PendingCaseSignals(ctx, now.Add(-CaseSignalWait), caseSignalBatch)
 	if err != nil {
 		log.Printf("heal pass: pending case signals: %s", maskedErr(err))
 		return
@@ -243,11 +243,11 @@ func resendCaseSignals(ctx context.Context, store Store, wf Workflows, now time.
 			done = err == nil
 			switch {
 			case err == nil:
-			case !retryableSignal(err) && p.Tries+1 >= caseSignalTries:
+			case !retryableSignal(err) && p.Tries+1 >= CaseSignalTries:
 				log.Printf("heal pass: case %d's %s to task %s: no send delivered it in %d tries, it ends: %s", p.CaseID, p.Name, p.TaskID, p.Tries+1,
 					scrub.String(err.Error()))
 				done = true
-			case p.Tries%caseSignalLogEvery == 0:
+			case p.Tries%CaseSignalLogEvery == 0:
 				log.Printf("heal pass: case %d's %s to task %s failed %d times, now: %s", p.CaseID, p.Name, p.TaskID, p.Tries+1, scrub.String(err.Error()))
 			}
 		}

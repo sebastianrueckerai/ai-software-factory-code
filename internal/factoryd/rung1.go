@@ -74,6 +74,12 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 	var b strings.Builder
 	line := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
 	line("%s", r.Scrub.String(c.Problem))
+	if f.MergeConflict != "" {
+		line("The pull request does not merge into main: %s. Neither reverify nor route_approval clears it: %s, or the card closes as superseded.",
+			cut(f.MergeConflict), conflictFit(f))
+	} else if opened, _ := c.Facts["merge_conflict"].(string); opened != "" && f.PROpen && !slices.Contains(f.Partial, partialTimeline) {
+		line("The merge conflict standing when this case opened no longer stands: the pull request's head moved since.")
+	}
 	if why, _ := c.Facts["closed_why"].(string); why != "" {
 		line("The dependency was closed: %s", cut(why))
 	}
@@ -93,7 +99,7 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 		}
 	}
 	if len(f.FailedTests) > 0 {
-		line("%s", r.Scrub.String(checksLog(f, 0)))
+		line("%s", r.Scrub.String(ChecksLog(f, 0)))
 	}
 	if len(f.HeadCommits) > 0 {
 		line("Commits on the head after the newest session's push, oldest first:")
@@ -152,7 +158,7 @@ func planAsk(c Case) bool {
 
 // caseAsk is the newest question_asked of case c, read through the events
 // the face reads its ask from; false when it has none.
-func (r *Runner) caseAsk(ctx context.Context, c Case) (CaseAsk, bool) {
+func (r *Runner) CaseAsk(ctx context.Context, c Case) (CaseAsk, bool) {
 	events, err := r.store.TaskEventsOfKind(ctx, c.TaskID, EventQuestionAsked, 50)
 	if err != nil {
 		log.Printf("case %d: its ask: %v", c.ID, err)
@@ -213,13 +219,13 @@ func failedLine(t FailedTest) string {
 	return "- " + name + ": " + t.Kind
 }
 
-// checksLogCut is the most characters of the checks log a session's note
+// ChecksLogCut is the most characters of the checks log a session's note
 // carries.
-const checksLogCut = 800
+const ChecksLogCut = 800
 
-// checksLog lists the tests the red checks on f's head failed, cut at n
+// ChecksLog lists the tests the red checks on f's head failed, cut at n
 // characters (0 for no cut).
-func checksLog(f CaseFacts, n int) string {
+func ChecksLog(f CaseFacts, n int) string {
 	lines := []string{fmt.Sprintf("The checks on %s are red:", f.Head[:min(8, len(f.Head))])}
 	for _, t := range f.FailedTests {
 		lines = append(lines, failedLine(t))
@@ -237,14 +243,14 @@ var sessionActions = []string{ActResume, ActContinue, ActHandover, ActExtend}
 
 // The parts of a session's note that code writes are bounded: at most
 // leadFindings findings of leadFindingCut characters lead it, the checks
-// log ends at checksLogCut and the kill line at killCut. The note of the
+// log ends at checksLogCut and the kill line at KillCut. The note of the
 // answer, from whichever rung or the human, keeps the room that is left
 // inside the run's cut of an answer at MaxAnswer (and is cut at the
 // handover cap), so the code-written parts are never cut.
 const (
 	leadFindings   = 5
 	leadFindingCut = 200
-	killCut        = 400
+	KillCut        = 400
 )
 
 // handoverCap is the cap of a note that starts a session.
@@ -284,10 +290,10 @@ func (r *Runner) sessionParts(f CaseFacts, in ActInput) (before, after []string)
 		}
 	}
 	if f.Checks == "red" && len(f.FailedTests) > 0 {
-		after = append(after, r.scrub(checksLog(f, checksLogCut)))
+		after = append(after, r.scrub(ChecksLog(f, ChecksLogCut)))
 	}
 	if f.Killed != nil {
-		after = append(after, textutil.Truncate(r.scrub(fmt.Sprintf("The sandbox killed the last session for its memory while it ran: %s", f.Killed.Command)), killCut))
+		after = append(after, textutil.Truncate(r.scrub(fmt.Sprintf("The sandbox killed the last session for its memory while it ran: %s", f.Killed.Command)), KillCut))
 	}
 	return before, after
 }
@@ -317,13 +323,13 @@ const rungToolsLine = "Your tools: transcript_search (search the newest session'
 
 // caseEvidence are the tools rung 1 may call: the check-in's, without the
 // ones that need the session's workspace.
-func caseEvidence() []CheckinTool {
+func CaseEvidence() []CheckinTool {
 	return slices.DeleteFunc(slices.Clone(checkinTools), func(t CheckinTool) bool { return t.Name == "git_log" })
 }
 
-// caseTools answers rung 1's tools from factoryd's own reads: the card's
+// CaseTools answers rung 1's tools from factoryd's own reads: the card's
 // records and the repository through the forge, with no pod.
-type caseTools struct {
+type CaseTools struct {
 	r    *Runner
 	t    Task
 	c    Case
@@ -343,16 +349,16 @@ type caseTools struct {
 	}
 }
 
-func (p *caseTools) close() {
+func (p *CaseTools) close() {
 	if p.checkout.cleanup != nil {
 		p.checkout.cleanup()
 	}
 }
 
 // newestRecord is the card's newest session's record.
-func (p *caseTools) newestRecord(ctx context.Context) ([]byte, error) {
+func (p *CaseTools) newestRecord(ctx context.Context) ([]byte, error) {
 	p.once.Do(func() {
-		sessions, err := p.r.store.RecentSessions(ctx, p.t.ID, p.r.clock().Add(time.Minute), 1)
+		sessions, err := p.r.store.RecentSessions(ctx, p.t.ID, p.r.Clock().Add(time.Minute), 1)
 		switch {
 		case err != nil:
 			p.recErr = err
@@ -366,7 +372,7 @@ func (p *caseTools) newestRecord(ctx context.Context) ([]byte, error) {
 	return p.record, p.recErr
 }
 
-func (p *caseTools) Tool(ctx context.Context, name string, args map[string]any) (string, bool, error) {
+func (p *CaseTools) Tool(ctx context.Context, name string, args map[string]any) (string, bool, error) {
 	out, err := p.read(ctx, name, args)
 	if err != nil {
 		return "", false, err
@@ -375,7 +381,7 @@ func (p *caseTools) Tool(ctx context.Context, name string, args map[string]any) 
 	return out, cut, nil
 }
 
-func (p *caseTools) read(ctx context.Context, name string, args map[string]any) (string, error) {
+func (p *CaseTools) read(ctx context.Context, name string, args map[string]any) (string, error) {
 	switch name {
 	case "transcript_search", "transcript_read":
 		rec, err := p.newestRecord(ctx)
@@ -441,7 +447,7 @@ func (p *caseTools) read(ctx context.Context, name string, args map[string]any) 
 
 // readFile reads a file of the repository at the case's head, at main when
 // the case has none.
-func (p *caseTools) readFile(ctx context.Context, args map[string]any) (string, error) {
+func (p *CaseTools) readFile(ctx context.Context, args map[string]any) (string, error) {
 	raw, _ := args["path"].(string)
 	path := pathpkg.Clean(strings.TrimPrefix(raw, "/workspace/"))
 	if path == "." || path == ".." || strings.HasPrefix(path, "../") || strings.HasPrefix(path, "/") {
@@ -464,7 +470,7 @@ func (p *caseTools) readFile(ctx context.Context, args map[string]any) (string, 
 
 // grep searches the checkout of the head and main, or of main alone for a
 // case with no pull request, for a fixed string as a whole word.
-func (p *caseTools) grep(ctx context.Context, args map[string]any) (string, error) {
+func (p *CaseTools) grep(ctx context.Context, args map[string]any) (string, error) {
 	pattern, _ := args["pattern"].(string)
 	if pattern == "" {
 		return "", errors.New("grep needs a pattern")
@@ -476,7 +482,7 @@ func (p *caseTools) grep(ctx context.Context, args map[string]any) (string, erro
 		if p.f.PR > 0 && p.f.Head != "" {
 			pr = p.f.PR
 		}
-		p.checkout.dir, p.checkout.refs, p.checkout.cleanup, p.checkout.err = checkoutRefs(ctx, p.r.forgejo, p.repo, pr, p.f.Head)
+		p.checkout.dir, p.checkout.refs, p.checkout.cleanup, p.checkout.err = CheckoutRefs(ctx, p.r.forgejo, p.repo, pr, p.f.Head)
 	})
 	if p.checkout.err != nil {
 		return "", fmt.Errorf("the repository could not be fetched: %w", p.checkout.err)
@@ -597,7 +603,7 @@ func (r *Runner) startRung1(ctx context.Context, t Task, c Case, limit int) (sta
 	if err != nil || slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 1 }) {
 		return false, false, err
 	}
-	due := r.clock().Add(r.cfg.Policy().WaitsOf(t.Repository).RungAnswer)
+	due := r.Clock().Add(r.cfg.Policy().WaitsOf(t.Repository).RungAnswer)
 	id, atLimit, err := r.store.StartRung1Step(ctx, t.ID, limit, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepInProgress, DueAt: &due})
 	if err != nil || atLimit {
 		return false, atLimit, err
@@ -704,10 +710,10 @@ func (r *Runner) rung1Run(ctx context.Context, caseID, stepID int64) {
 	}
 }
 
-// judgmentTask is the project's chat task of this month, which pays the
+// JudgmentTask is the project's chat task of this month, which pays the
 // judgment calls: rung 1's and the check-in moments'.
-func (r *Runner) judgmentTask(ctx context.Context, t Task) (Task, error) {
-	return judgmentTaskOf(ctx, r.store, r.cfg.Policy(), t.Repository, r.clock())
+func (r *Runner) JudgmentTask(ctx context.Context, t Task) (Task, error) {
+	return judgmentTaskOf(ctx, r.store, r.cfg.Policy(), t.Repository, r.Clock())
 }
 
 // judgmentTaskOf is the chat task of repository's project for the month of
@@ -734,15 +740,15 @@ func (r *Runner) rungConversation(ctx context.Context, t Task, repo Repo, c Case
 	d, derr := r.CardDigest(ctx, t.ID)
 	statement := r.rungStatement(c, f, DigestText(r.Scrub, d, derr), steps, 1)
 	v := r.cfg.Policy()
-	chat, err := r.judgmentTask(ctx, t)
+	chat, err := r.JudgmentTask(ctx, t)
 	if err != nil {
 		return RungOutcome{}, err
 	}
-	tools := &caseTools{r: r, t: t, c: c, f: f, repo: repo}
+	tools := &CaseTools{r: r, t: t, c: c, f: f, repo: repo}
 	defer tools.close()
 	limits := v.Document.Limits
-	out := r.runRung(ctx, r.checkin, chat.ID, r.callModel(t, policy.PurposeCheckin), f, 1, rungSystem+" "+rungToolsLine, statement,
-		caseEvidence(), tools, limits.CheckinCallCap(), limits.CheckinTimeCap())
+	out := r.runRung(ctx, r.Checkin, chat.ID, r.callModel(t, policy.PurposeCheckin), f, 1, rungSystem+" "+rungToolsLine, statement,
+		CaseEvidence(), tools, limits.CheckinCallCap(), limits.CheckinTimeCap())
 	for i := range out.Read {
 		out.Read[i].Args = r.scrub(out.Read[i].Args)
 	}
@@ -761,7 +767,7 @@ func (r *Runner) rungUp(ctx context.Context, t Task, c Case, f CaseFacts, stepID
 		return
 	}
 	if err == nil {
-		_, err = r.climb(ctx, t, c, f, 1, found)
+		_, err = r.Climb(ctx, t, c, f, 1, found)
 	}
 	if err != nil {
 		log.Printf("case %d: rung 1's hand-up: %v", c.ID, r.scrub(err.Error()))

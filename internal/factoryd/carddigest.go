@@ -36,18 +36,23 @@ type CardDigest struct {
 	// the steps of the card's live cases, and at is when the digest was
 	// built, the time its waits are aged to. A running card's lastCallAt
 	// is its newest model call's time, and its retryDue the time the
-	// newest provider_refused line's backoff ends. cases are the card's
+	// newest provider_refused line's backoff ends. refusedAt and
+	// refusedBackoff are that line's time and backoff, and freezes the
+	// card's provider-limit freezes (freezeSpans). cases are the card's
 	// cases, issueCloses whether Finish closes the issue of the card's end
 	// (finishClosesIssue), and issueClosed whether its events hold its
 	// issue's close, which the webhook records on an ended card.
-	lastStep    string
-	caseSteps   []CaseStep
-	at          time.Time
-	lastCallAt  time.Time
-	retryDue    time.Time
-	cases       []Case
-	issueCloses bool
-	issueClosed bool
+	lastStep       string
+	caseSteps      []CaseStep
+	at             time.Time
+	lastCallAt     time.Time
+	retryDue       time.Time
+	refusedAt      time.Time
+	refusedBackoff time.Duration
+	freezes        []freezeSpan
+	cases          []Case
+	issueCloses    bool
+	issueClosed    bool
 }
 
 // DigestHead is where the card stands: its issue, its plan's issue and
@@ -68,6 +73,12 @@ type DigestHead struct {
 	QueueReason                   string
 	QueueSince                    *time.Time
 	Blind, Criteria               int
+	// MergeQueue is the card's place in its project's merge queue, nil
+	// when it holds no queue row.
+	MergeQueue *QueuePlace
+	// Hold is the line of a human's hold on the card (HoldView), "" when
+	// none holds it: the wait is the human's, no owned one.
+	Hold string
 }
 
 // DigestStep is one step of the card's life. Actor is who acted; for a
@@ -101,6 +112,9 @@ type DigestStep struct {
 	// texts are the finding texts of a checks, proofs, review or audit line,
 	// in the order the gate raised them
 	texts []string
+	// atFile are the ids of an audit line's findings at a file, the ones a
+	// confirmation covers
+	atFile []string
 	// refused marks a check-in whose every call was refused, which ended
 	// as a handover with no note
 	refused bool
@@ -181,13 +195,11 @@ func (r *Runner) readCard(ctx context.Context, taskID string) (cardRows, error) 
 		}
 		rows.caseSteps = append(rows.caseSteps, steps...)
 	}
-	if rows.verdicts, err = r.store.CriteriaVerdicts(ctx, taskID); err != nil {
-		return cardRows{}, err
-	}
 	if rows.timeline, err = r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl"); err != nil {
 		return cardRows{}, fmt.Errorf("read the timeline: %w", err)
 	}
-	if t.Source == SourcePlan && t.Parent != "" {
+	home := taskID
+	if t.PlanCard() {
 		p, _, err := planOfStore(ctx, r.store, t.Parent, taskID)
 		if err != nil {
 			return cardRows{}, err
@@ -195,6 +207,12 @@ func (r *Runner) readCard(ctx context.Context, taskID string) (cardRows, error) 
 		if roleOf(p, t.PlanKey) == RoleIntegration {
 			rows.criteria = p.Criteria
 		}
+		if home, err = verdictHome(ctx, r.store, t, p); err != nil {
+			return cardRows{}, err
+		}
+	}
+	if rows.verdicts, err = r.store.CriteriaVerdicts(ctx, home); err != nil {
+		return cardRows{}, err
 	}
 	if t.Track != policy.TrackPlan {
 		return rows, nil
@@ -250,7 +268,7 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 	for i := range steps {
 		steps[i].N, steps[i].Offset, steps[i].Count = i+1, steps[i].At.Sub(steps[0].At), 1
 	}
-	d := CardDigest{Head: head, Steps: steps, Waits: r.cfg.Policy().WaitsOf(t.Repository), caseSteps: rows.caseSteps, at: r.clock(), cases: rows.cases,
+	d := CardDigest{Head: head, Steps: steps, Waits: r.cfg.Policy().WaitsOf(t.Repository), caseSteps: rows.caseSteps, at: r.Clock(), cases: rows.cases,
 		issueCloses: finishClosesIssue(t, t.Status, mergedBefore(rows.events)),
 		issueClosed: slices.ContainsFunc(rows.events, func(e Event) bool { return e.Kind == EventIssueClosed })}
 	newest := newestLine(rows.timeline, "")
@@ -260,9 +278,12 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 			return CardDigest{}, err
 		}
 		if refused := newestLine(rows.timeline, StepProviderRefused); !refused.Time.IsZero() {
-			d.retryDue = refused.Time.Add(time.Duration(refused.BackoffS * float64(time.Second)))
+			d.refusedAt = refused.Time
+			d.refusedBackoff = time.Duration(refused.BackoffS * float64(time.Second))
+			d.retryDue = refused.Time.Add(d.refusedBackoff)
 		}
 	}
+	d.freezes = freezeSpans(rows.timeline)
 	var unproven []string
 	if t.Gate == GateApproval {
 		for _, c := range neverJudged(Plan{Criteria: rows.criteria}, rows.verdicts) {
@@ -276,10 +297,17 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 // digestHead is card t's head. Its events, oldest first, give its
 // status's since.
 func (r *Runner) digestHead(ctx context.Context, t Task, events []Event) (DigestHead, error) {
-	h := DigestHead{Issue: int(t.IssueNumber), BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, SlotHeld: holdsSlot(t),
+	h := DigestHead{Issue: int(t.IssueNumber), BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, SlotHeld: HoldsSlot(t),
 		Status: t.Status, Gate: t.Gate, StatusSince: t.CreatedAt, QueueReason: t.QueueReason, QueueSince: t.QueueSince}
 	if t.GateSince != nil {
 		h.Since = *t.GateSince
+	}
+	if t.Held() {
+		v, err := holdView(ctx, r.store, t)
+		if err != nil {
+			return DigestHead{}, err
+		}
+		h.Hold = v.Line
 	}
 	for _, e := range events {
 		if e.Kind == EventTaskStatus {
@@ -303,11 +331,18 @@ func (r *Runner) digestHead(ctx context.Context, t Task, events []Event) (Digest
 		return DigestHead{}, err
 	}
 	h.HoldsEUR = own.Held
+	places, err := r.store.MergeQueuePlaces(ctx)
+	if err != nil {
+		return DigestHead{}, err
+	}
+	if p, ok := places[t.ID]; ok {
+		h.MergeQueue = &p
+	}
 	return h, nil
 }
 
-// holdsSlot is CountAdmitted's rule for one card.
-func holdsSlot(t Task) bool {
+// HoldsSlot is CountAdmitted's rule for one card.
+func HoldsSlot(t Task) bool {
 	if defaultKind(t.Kind) != "agent" || t.TakesNoSlot() {
 		return false
 	}
@@ -358,7 +393,7 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 		word := func(k string) string { s, _ := e.Detail[k].(string); return s }
 		number := func(k string) int { n, _ := toInt(e.Detail[k]); return n }
 		amount, _ := e.Detail["amount_eur"].(float64)
-		s := DigestStep{At: e.At, Actor: e.Actor, Ref: DigestRef{Event: strconv.FormatInt(e.ID, 10)}}
+		s := DigestStep{At: e.At, Actor: eventActor(e), Ref: DigestRef{Event: strconv.FormatInt(e.ID, 10)}}
 		comment := number("comment")
 		if comment > 0 {
 			s.Ref.Comment = strconv.Itoa(comment)
@@ -413,6 +448,19 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 				continue
 			}
 			s.Kind, s.Outcome = "criteria", word("criterion")+" not met"
+		case EventCardHeld:
+			s.Kind, s.Outcome = "held", digestText(scrub, word("reason"))
+			if n := number("release"); n > 0 {
+				s.Outcome = fmt.Sprintf("until #%d is merged or done: %s", n, s.Outcome)
+			}
+		case EventCardHoldEnded:
+			s.Kind, s.Outcome = "hold ended", "released"
+			if n := number("release"); n > 0 {
+				s.Outcome = fmt.Sprintf("#%d %s", n, word("status"))
+			}
+			if moved := word("card_status"); moved != "" {
+				s.Outcome = "the card moved to " + moved
+			}
 		case EventDependencySet:
 			s.Kind, s.Outcome = "dependency", "depends on "+issueOf(word("depends_on"))
 			if removed, _ := e.Detail["removed"].(bool); removed {
@@ -575,7 +623,7 @@ func proofsEventStep(s DigestStep, e Event) DigestStep {
 // askOutcome is an ask's case kind and words, as the events writer files
 // its case (caseFromAsk).
 func askOutcome(scrub *redact.Scrubber, t Task, e Event) string {
-	c, err := caseFromAsk(t, e, "")
+	c, err := CaseFromAsk(t, e, "")
 	if err != nil {
 		return "an ask with no words"
 	}
@@ -594,7 +642,7 @@ func askCaseIndex(t Task, e Event, cases []Case) int {
 	if comment, _ := toInt(e.Detail["comment"]); comment > 0 {
 		return slices.IndexFunc(cases, func(c Case) bool { return c.CommentID == int64(comment) })
 	}
-	want, err := caseFromAsk(t, e, "")
+	want, err := CaseFromAsk(t, e, "")
 	if err != nil {
 		return -1
 	}
@@ -655,10 +703,10 @@ func digestText(scrub *redact.Scrubber, s string) string { return firstLineCut(s
 // already scrubbed.
 func firstLineCut(s string) string { return textutil.Truncate(FirstLine(s), 120) }
 
-// findingID names a finding by its words alone: the first 12 hex of the
+// FindingID names a finding by its words alone: the first 12 hex of the
 // sha256 of its text lowercased, runs of white space one space, trimmed.
 // A review's finding and a check-in's verdict on it get the same id.
-func findingID(text string) string {
+func FindingID(text string) string {
 	sum := sha256.Sum256([]byte(strings.Join(strings.Fields(strings.ToLower(text)), " ")))
 	return hex.EncodeToString(sum[:])[:12]
 }

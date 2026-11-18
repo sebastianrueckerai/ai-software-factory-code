@@ -55,7 +55,7 @@ func askCap(t *testing.T, s *PGStore, comment int64) {
 	t.Helper()
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
 		"question": capAsk, "ask": capAsk, "comment": comment, "source": "cap",
-		"reason": capReached + "\nlast: the review asked for changes",
+		"reason": CapReached + "\nlast: the review asked for changes",
 		"why":    "the card used its 3 sessions", "info": "a grant buys one session",
 		"choices": []string{"Grant one session", "Leave it waiting"}})
 }
@@ -135,7 +135,7 @@ func TestAHealedReAskAppendsAStepAndOpensNoSecondCase(t *testing.T) {
 	// a restart asks again as Escalate does: the earlier reason's first
 	// line, with no five parts and the source of its own reason
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
-		"question": capReached, "comment": int64(27002), "source": "supervisor", "reason": healedReason})
+		"question": CapReached, "comment": int64(27002), "source": "supervisor", "reason": HealedReason})
 	askCap(t, s, 27003)
 
 	c := onlyOpenCase(t, s)
@@ -155,10 +155,10 @@ func TestAHealedReAskAppendsAStepAndOpensNoSecondCase(t *testing.T) {
 func TestAHealedAskWithNoLiveAskOpensAnOtherCase(t *testing.T) {
 	s := caseEventStore(t)
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
-		"question": capReached, "comment": int64(27002), "source": "supervisor", "reason": healedReason})
+		"question": CapReached, "comment": int64(27002), "source": "supervisor", "reason": HealedReason})
 
 	c := onlyOpenCase(t, s)
-	if c.Kind != CaseOther || c.Status != CaseAtHuman || c.Problem != capReached || c.CommentID != 27002 {
+	if c.Kind != CaseOther || c.Status != CaseAtHuman || c.Problem != CapReached || c.CommentID != 27002 {
 		t.Fatalf("case = %+v; want the restart's ask at the human as other", c)
 	}
 	if steps := caseStepsOf(t, s, c.ID); len(steps) != 1 || steps[0].Found != "asked again after a restart" || steps[0].Outcome != StepInProgress {
@@ -182,22 +182,22 @@ func TestAnAskWithNoWordsKeepsItsEventAndOpensNoCase(t *testing.T) {
 func TestAnAnswerResolvesTheNewestOpenAskCase(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
-	askCap(t, s, 27001)
-	capCase := onlyOpenCase(t, s)
-	recordCaseEvent(t, s, EventQuestionAnswered, "sebastian", ViaConsole, map[string]any{"answer": "Grant one session", "comment": int64(27001)})
+	askAgent(t, s, "Which file should change?", 27001)
+	ask := onlyOpenCase(t, s)
+	recordCaseEvent(t, s, EventQuestionAnswered, "sebastian", ViaConsole, map[string]any{"answer": "the shared one", "comment": int64(27001)})
 
-	got := caseByID(t, s, capCase.ID)
-	want := &CaseResolution{By: "sebastian", Rung: 3, Action: "answer", Args: map[string]any{"answer": "Grant one session", "comment": float64(27001)}}
+	got := caseByID(t, s, ask.ID)
+	want := &CaseResolution{By: "sebastian", Rung: 3, Action: "answer", Args: map[string]any{"answer": "the shared one", "comment": float64(27001)}}
 	if got.Status != CaseResolved || !reflect.DeepEqual(got.Resolution, want) {
 		t.Fatalf("answered case = %+v, resolution %+v; want resolved by %+v", got, got.Resolution, want)
 	}
-	if steps := caseStepsOf(t, s, capCase.ID); len(steps) != 1 || steps[0].Outcome != StepResolved || steps[0].EndedAt == nil {
+	if steps := caseStepsOf(t, s, ask.ID); len(steps) != 1 || steps[0].Outcome != StepResolved || steps[0].EndedAt == nil {
 		t.Fatalf("steps = %+v; want the one step resolved", steps)
 	}
 
 	// two live asks: an answer ends the newer; a grant at the session cap
 	// is the console's answer, as question_answered is the webhook's
-	askAgent(t, s, "Which file should change?", 27002)
+	askAgent(t, s, "Which store?", 27002)
 	agent := onlyOpenCase(t, s)
 	askCap(t, s, 27003)
 	recordCaseEvent(t, s, EventSessionGranted, "sebastian", ViaButton, map[string]any{"comment": int64(27004)})
@@ -309,6 +309,9 @@ func TestARowNamingAnotherCardsCaseEndsNothing(t *testing.T) {
 	}
 }
 
+// The webhook's copy of a comment on the card's issue resolves no cap ask
+// (a reply alone starts none), so the second ask opens a second live case
+// beside the cap's, and the card's newest live ask is the newer one.
 func TestASecondAskAfterAnAnswerOpensASecondCase(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
@@ -321,11 +324,128 @@ func TestASecondAskAfterAnAnswerOpensASecondCase(t *testing.T) {
 		t.Fatalf("CasesOf = %+v, %v; want two cases", all, err)
 	}
 	first, second := all[0], all[1]
-	if first.Status != CaseResolved || first.Kind != CaseSessionCap {
-		t.Fatalf("first case = %+v; want the cap resolved", first)
+	if first.Status != CaseAtHuman || first.Kind != CaseSessionCap || first.Resolution != nil {
+		t.Fatalf("first case = %+v; want the cap still at the human: a reply alone starts none", first)
 	}
-	if second.Status != CaseAtHuman || second.Kind != CaseAgentEscalate || second.Follows != first.ID || second.StateKey != "7987915008e1e10e" || second.Money != nil {
-		t.Fatalf("second case = %+v; want the agent's ask at the human, following %d", second, first.ID)
+	if second.Status != CaseAtHuman || second.Kind != CaseAgentEscalate || second.Follows != 0 || second.StateKey != "7987915008e1e10e" || second.Money != nil {
+		t.Fatalf("second case = %+v; want the agent's ask at the human beside the cap", second)
+	}
+	if ask, err := s.NewestAskCase(ctx, caseTask); err != nil || ask.ID != second.ID {
+		t.Fatalf("NewestAskCase = %+v, %v; want the agent's ask %d", ask, err, second.ID)
+	}
+}
+
+// seededAsk opens task taskID's live ask case of kind by recording its
+// ask as the kind's own source writes it, and tells the case's ask
+// sentence.
+func seededAsk(t *testing.T, s *PGStore, taskID string, issue int64, kind CaseKind, comment int64) Case {
+	t.Helper()
+	ctx := context.Background()
+	if err := s.CreateTask(ctx, Task{ID: taskID, Kind: "agent", Status: "waiting-human", Objective: "x", Repository: "sf/r",
+		IssueNumber: issue, Track: "direct", BudgetEUR: 5}); err != nil {
+		t.Fatalf("CreateTask %s: %v", taskID, err)
+	}
+	source, reason := "cap", CapReached
+	switch kind {
+	case CaseAgentTimeCap:
+		reason = timeCapReached
+	case CaseDayCap:
+		source, reason = "day_cap", DayCapReached+" for 2026-11-02"
+	case CaseMonthCap:
+		source, reason = SourceMonthCap, monthCapReached+" for 2026-11"
+	case CaseProjectCap:
+		source, reason = "project_cap", projectCapReached+" for sf/r"
+	case CaseBudgetFloor:
+		source, reason = "budget", BudgetRefused+": 0.02 EUR left"
+	}
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: taskID, IssueNumber: issue, Kind: EventQuestionAsked,
+		Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"question": reason, "ask": reason,
+			"comment": comment, "source": source, "reason": reason}}); err != nil {
+		t.Fatalf("Record %s's ask: %v", taskID, err)
+	}
+	open, err := s.OpenCasesOf(ctx, taskID)
+	if err != nil || len(open) != 1 || open[0].Kind != kind {
+		t.Fatalf("%s's cases = %+v, %v; want one live %s ask", taskID, open, err, kind)
+	}
+	return open[0]
+}
+
+// answerOn records taskID's answer row: kind, actor, via and detail.
+func answerOn(t *testing.T, s *PGStore, taskID string, issue int64, kind, actor, via string, detail map[string]any) {
+	t.Helper()
+	if _, err := s.Record(context.Background(), Event{Repository: "sf/r", TaskID: taskID, IssueNumber: issue, Kind: kind,
+		Actor: actor, Via: via, Detail: detail}); err != nil {
+		t.Fatalf("Record %s's %s: %v", taskID, kind, err)
+	}
+}
+
+// The reply-alone contract, seeded as a table of all six kinds: a live
+// ask of every kind whose ladder line reads "A reply alone starts none" —
+// the five caps and the budget floor — stays at the human under a
+// question_answered row that names no action, the webhook's copy of a
+// comment on the card's issue, and each card's newest live ask is
+// unchanged, the budget floor's fund ask included.
+func TestAnEmptyAnswerKeepsAReplyAloneAskLive(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	kinds := []struct {
+		task string
+		kind CaseKind
+	}{
+		{"t-at", CaseAgentTimeCap}, {"t-sc", CaseSessionCap}, {"t-dc", CaseDayCap},
+		{"t-mc", CaseMonthCap}, {"t-pc", CaseProjectCap}, {"t-bf", CaseBudgetFloor},
+	}
+	live := map[CaseKind]Case{}
+	for n, k := range kinds {
+		live[k.kind] = seededAsk(t, s, k.task, int64(1600+n), k.kind, int64(28100+n))
+	}
+	for n, k := range kinds {
+		// the webhook's copy of a comment on the card's issue: only the
+		// comment id, no action
+		answerOn(t, s, k.task, int64(1600+n), EventQuestionAnswered, "sebastian", ViaWebhook,
+			map[string]any{"comment": int64(28200 + n)})
+	}
+	for _, k := range kinds {
+		want := live[k.kind]
+		got := caseByID(t, s, want.ID)
+		if got.Status != CaseAtHuman || got.Resolution != nil || got.ResolvedAt != nil {
+			t.Fatalf("%s's %s case = %+v; want it still at the human, unresolved", k.task, k.kind, got)
+		}
+		ask, err := s.NewestAskCase(ctx, k.task)
+		if err != nil || ask.ID != want.ID || ask.Kind != k.kind {
+			t.Fatalf("%s's newest live ask = %+v, %v; want case %d, the ask that stood", k.task, ask, err, want.ID)
+		}
+	}
+}
+
+// An answer that carries its action still answers a cap ask: a
+// question_answered row naming extend with agent time resolves the
+// agent-time cap case, and a session_granted row at a session cap
+// resolves it as today, a grant being itself the action.
+func TestAnActionBearingAnswerStillResolvesACapAsk(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	timeCap := seededAsk(t, s, "t-at", 1610, CaseAgentTimeCap, 28110)
+	sessionCap := seededAsk(t, s, "t-sc", 1611, CaseSessionCap, 28111)
+
+	answerOn(t, s, "t-at", 1610, EventQuestionAnswered, "sebastian", ViaChat, map[string]any{
+		"action": ActExtend, "agent_time_s": 1800, "comment": int64(28210)})
+	answerOn(t, s, "t-sc", 1611, EventSessionGranted, "sebastian", ViaButton, map[string]any{"comment": int64(28211)})
+
+	got := caseByID(t, s, timeCap.ID)
+	extend := &CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend, Args: map[string]any{"answer": "", "comment": float64(28210)}}
+	if got.Status != CaseResolved || !reflect.DeepEqual(got.Resolution, extend) {
+		t.Fatalf("the agent-time cap = %s, %+v; want resolved by %+v", got.Status, got.Resolution, extend)
+	}
+	grant := caseByID(t, s, sessionCap.ID)
+	want := &CaseResolution{By: "sebastian", Rung: 3, Action: CaseAnswer, Args: map[string]any{"answer": "", "comment": float64(28211)}}
+	if grant.Status != CaseResolved || !reflect.DeepEqual(grant.Resolution, want) {
+		t.Fatalf("the session cap = %s, %+v; want resolved by %+v", grant.Status, grant.Resolution, want)
+	}
+	for _, taskID := range []string{"t-at", "t-sc"} {
+		if ask, err := s.NewestAskCase(ctx, taskID); err != nil || ask.ID != 0 {
+			t.Fatalf("%s's newest live ask = %+v, %v; want none", taskID, ask, err)
+		}
 	}
 }
 
@@ -334,7 +454,7 @@ func TestAWithdrawalWithdrawsTheCase(t *testing.T) {
 	askCap(t, s, 27001)
 	c := onlyOpenCase(t, s)
 	recordCaseEvent(t, s, EventQuestionWithdrawn, FactoryDecider, ViaFactoryd, map[string]any{
-		"question": capReached, "comment": int64(27001), "reason": "the checks passed while the question waited"})
+		"question": CapReached, "comment": int64(27001), "reason": "the checks passed while the question waited"})
 
 	got := caseByID(t, s, c.ID)
 	if got.Status != CaseWithdrawn || got.Resolution == nil || got.Resolution.Reason != "the checks passed while the question waited" {
@@ -385,11 +505,11 @@ func TestAnApprovalRequestOpensAMergeCaseAndItsDecisionResolvesIt(t *testing.T) 
 		t.Fatalf("merge case after an answer = %+v; want it at the human", got)
 	}
 
-	if err := s.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+	if err := s.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", ConsoleApproved); err != nil {
 		t.Fatalf("DecideApproval: %v", err)
 	}
 	got := caseByID(t, s, c.ID)
-	if want := (&CaseResolution{By: "sebastian", Rung: 3, Action: ActApproveMerge, Reason: consoleApproved}); got.Status != CaseResolved ||
+	if want := (&CaseResolution{By: "sebastian", Rung: 3, Action: ActApproveMerge, Reason: ConsoleApproved}); got.Status != CaseResolved ||
 		!reflect.DeepEqual(got.Resolution, want) {
 		t.Fatalf("decided merge case = %+v, resolution %+v; want %+v", got, got.Resolution, want)
 	}
@@ -461,7 +581,7 @@ func TestUndecideApprovalReopensTheMergeCaseItsDecisionResolved(t *testing.T) {
 	if err := s.SetCaseBrief(ctx, c.ID, "the brief before the undo", "grounds"); err != nil {
 		t.Fatalf("SetCaseBrief: %v", err)
 	}
-	if err := s.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+	if err := s.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", ConsoleApproved); err != nil {
 		t.Fatalf("DecideApproval: %v", err)
 	}
 	if err := s.UndecideApproval(ctx, id, "no workflow for t1410"); err != nil {
@@ -580,7 +700,7 @@ func TestIdenticalPlanRefileResolvesItsCase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.askConfirmation(ctx, task, 2, testPlan()); err != nil {
+	if err := r.AskConfirmation(ctx, task, 2, testPlan()); err != nil {
 		t.Fatalf("askConfirmation: %v", err)
 	}
 	cs, err := s.CasesOf(ctx, caseTask)
@@ -604,38 +724,38 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 		want           CaseKind
 		facts          map[string]any
 	}{
-		{"cap", run.sessionCapCard(capReached, "the review asked for changes", []string{"the test is red"}), CaseSessionCap, nil},
+		{"cap", run.sessionCapCard(CapReached, "the review asked for changes", []string{"the test is red"}), CaseSessionCap, nil},
 		{"cap", run.sessionCapCard(timeCapReached, "the session ran out of time", nil), CaseAgentTimeCap, nil},
 		{"cap", run.plannerTimeCard(TaskUsage{}), CaseAgentTimeCap, nil},
 		{"supervisor", "check-in: " + CheckPolicyClass + ": the change touches a migration", CasePolicyClass, map[string]any{"reason_kind": CheckPolicyClass}},
 		{"supervisor", "check-in: " + CheckAccess + ": the card needs a key the factory lacks", CaseCheckinHuman, map[string]any{"reason_kind": CheckAccess}},
 		{"supervisor", "check-in: " + CheckSpend + ": " + spentStop + " (0.40 of 0.40 EUR)", CaseCheckinShare, nil},
-		{"supervisor", checkinSpendAsk + deadlockAskMark + ": the head c1 and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.",
+		{"supervisor", CheckinSpendAsk + DeadlockAskMark + ": the head c1 and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.",
 			CaseFindingsRepeated, nil},
-		{"supervisor", gateStopped + ActivityModelReview + " after 3 tries: the review timed out", CaseGateStop, map[string]any{"gate": ActivityModelReview}},
+		{"supervisor", GateStopped + ActivityModelReview + " after 3 tries: the review timed out", CaseGateStop, map[string]any{"gate": ActivityModelReview}},
 		{"supervisor", screeningAsks + "the report asks for a token", CaseScreeningSuspect, nil},
-		{"supervisor", depEndedReason(Dependency{Issue: 1400, Key: "api", Status: "closed"}), CaseDependencyClosed, nil},
-		{"supervisor", healedReason, CaseOther, nil},
-		{"budget", budgetRefused + ": 0.02 EUR left", CaseBudgetFloor, nil},
+		{"supervisor", DepEndedReason(Dependency{Issue: 1400, Key: "api", Status: "closed"}), CaseDependencyClosed, nil},
+		{"supervisor", HealedReason, CaseOther, nil},
+		{"budget", BudgetRefused + ": 0.02 EUR left", CaseBudgetFloor, nil},
 		{SourceMonthCap, monthCapReached + " for 2026-11", CaseMonthCap, nil},
 		{"project_cap", projectCapReached + " for sf/r", CaseProjectCap, nil},
-		{"day_cap", dayCapReached + " for 2026-11-02", CaseDayCap, nil},
+		{"day_cap", DayCapReached + " for 2026-11-02", CaseDayCap, nil},
 		{"provider", providerRefused + "glm-5", CaseProviderRefused, nil},
 		{"queue", leftQueue, CaseGateStop, nil},
 		{"capacity", podNeverStarted + "3 tries", CasePodNeverStarted, nil},
 		{"no_answer", noModelAnswer + "3 sessions", CaseNoAnswer, nil},
-		{"content_filter", contentFilterRefusal + "the prompt", CaseContentFilter, nil},
-		{"image", imageWaited + "sf/img:1", CaseImageWait, nil},
+		{"content_filter", ContentFilterRefusal + "the prompt", CaseContentFilter, nil},
+		{"image", ImageWaited + "sf/img:1", CaseImageWait, nil},
 		{"agent", AgentAsks + "Which file should change?", CaseAgentEscalate, nil},
 		{"stale", staleQuiet + "2 h 0 min while running: is its run gone?", CaseWaitExpired, nil},
 		{SourceChat, "Should the API keep v1?", CaseAgentEscalate, nil},
 		{"start", startRefused + "c1: the image pull failed", CaseOther, nil},
 		{"", "anything", CaseOther, nil},
 	} {
-		if escalated := tc.source != SourceChat && tc.source != ""; escalated && escalationSource(tc.reason) != tc.source {
-			t.Errorf("escalationSource(%q) = %q, want %q", tc.reason, escalationSource(tc.reason), tc.source)
+		if escalated := tc.source != SourceChat && tc.source != ""; escalated && EscalationSource(tc.reason) != tc.source {
+			t.Errorf("escalationSource(%q) = %q, want %q", tc.reason, EscalationSource(tc.reason), tc.source)
 		}
-		kind, facts := caseKindOf(tc.source, tc.reason)
+		kind, facts := CaseKindOf(tc.source, tc.reason)
 		if kind != tc.want || !reflect.DeepEqual(facts, tc.facts) {
 			t.Errorf("caseKindOf(%q, %q) = %s, %v; want %s, %v", tc.source, tc.reason, kind, facts, tc.want, tc.facts)
 		}
@@ -644,7 +764,7 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 
 func TestCaseKindOfNamesTheBoardCardsBySource(t *testing.T) {
 	for source, want := range map[string]CaseKind{SourceProductionHeld: CaseRollHeld, SourceConfig: CaseConfigRefused, SourceStillRed: CaseRedMain} {
-		if kind, facts := caseKindOf(source, "the ask"); kind != want || facts != nil {
+		if kind, facts := CaseKindOf(source, "the ask"); kind != want || facts != nil {
 			t.Errorf("caseKindOf(%q) = %s, %v; want %s", source, kind, facts, want)
 		}
 	}
@@ -652,11 +772,11 @@ func TestCaseKindOfNamesTheBoardCardsBySource(t *testing.T) {
 
 func TestCaseFromAskNamesAHumanCardsAskAndRefusesNoAsk(t *testing.T) {
 	human := Task{ID: "h1", Kind: "human", Repository: "sf/r", BudgetEUR: 1}
-	c, err := caseFromAsk(human, Event{Kind: EventQuestionAsked, Detail: map[string]any{"question": "Roll  the release?", "source": SourceRollRefused}}, "c1")
+	c, err := CaseFromAsk(human, Event{Kind: EventQuestionAsked, Detail: map[string]any{"question": "Roll  the release?", "source": SourceRollRefused}}, "c1")
 	if err != nil || c.Kind != CaseHumanCard || c.StateKey != "bec366272b7d4a4f@c1" || c.Problem != "Roll  the release?" || c.Money != nil || c.Status != CaseAtHuman {
 		t.Fatalf("caseFromAsk of a human card = %+v, %v", c, err)
 	}
-	if _, err := caseFromAsk(human, Event{Kind: EventQuestionAsked, Detail: map[string]any{"source": "agent"}}, ""); err == nil {
+	if _, err := CaseFromAsk(human, Event{Kind: EventQuestionAsked, Detail: map[string]any{"source": "agent"}}, ""); err == nil {
 		t.Fatal("caseFromAsk of an ask with no words = nil error")
 	}
 }
@@ -694,7 +814,7 @@ func TestNewestAskCaseIsTheCardsLiveAsk(t *testing.T) {
 
 func TestCaseFromAskCarriesTheRecommendedAnswer(t *testing.T) {
 	task := Task{ID: "t-plan", Kind: "agent"}
-	c, err := caseFromAsk(task, Event{Kind: EventQuestionAsked, Detail: map[string]any{"question": "Which?", "choices": []any{"a", "b"},
+	c, err := CaseFromAsk(task, Event{Kind: EventQuestionAsked, Detail: map[string]any{"question": "Which?", "choices": []any{"a", "b"},
 		"recommended": "b", "grounds": "because", "revision": 1, "index": 1}}, "")
 	if err != nil || c.Kind != CasePlanQuestion || c.Facts["recommended"] != "b" || c.Facts["grounds"] != "because" {
 		t.Fatalf("case %+v (%v), want a plan_question with recommended b and its grounds in the facts", c, err)
@@ -877,5 +997,43 @@ func TestCreateHumanCardWritesTheCardAndItsAskOrNeither(t *testing.T) {
 	}
 	if evs, err := s.TaskEvents(ctx, "t-p1", 10); err != nil || len(evs) != 1 || evs[0].IssueNumber != 41 {
 		t.Fatalf("plan card events = %+v, %v; want its one ask on #41", evs, err)
+	}
+}
+
+// The criteria pass resolves a plan's criteria_rerun requests on every pass;
+// with none pending it decides nothing, so the plan's criteria case, which
+// its pending criteria request owns, stays at the human until that request
+// is decided.
+func TestAResolveWithNothingDecidedLeavesThePlansCriteriaCase(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done', track = 'plan', finished_at = now() WHERE id = $1`, caseTask); err != nil {
+		t.Fatal(err)
+	}
+	spec, _ := json.Marshal(CriteriaSpec{Task: caseTask})
+	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: caseTask, Project: "sf/r", Spec: spec,
+		Reason: "criteria not met once every card of the plan ended: c1"})
+	if err != nil {
+		t.Fatalf("OpenApproval: %v", err)
+	}
+	recordCaseEvent(t, s, EventApprovalRequested, FactoryDecider, ViaFactoryd, map[string]any{"approval": id, "kind": ApprovalCriteria})
+	c := onlyOpenCase(t, s)
+	if c.Kind != CasePlanCriteria || c.Status != CaseAtHuman {
+		t.Fatalf("case = %+v; want the plan's criteria case at the human", c)
+	}
+
+	if err := s.ResolveApprovals(ctx, caseTask, ApprovalCriteriaRerun, "approved", FactoryDecider, "every criterion has a verdict row"); err != nil {
+		t.Fatalf("ResolveApprovals rerun: %v", err)
+	}
+	if got := caseByID(t, s, c.ID); got.Status != CaseAtHuman || got.Resolution != nil {
+		t.Fatalf("case after a rerun resolve with none pending = %+v, resolution %+v; want it at the human", got, got.Resolution)
+	}
+
+	if err := s.ResolveApprovals(ctx, caseTask, ApprovalCriteria, "approved", "sebastian", "granted one card"); err != nil {
+		t.Fatalf("ResolveApprovals criteria: %v", err)
+	}
+	want := &CaseResolution{By: "sebastian", Rung: 3, Action: ActAnswerCriteria, Reason: "granted one card"}
+	if got := caseByID(t, s, c.ID); got.Status != CaseResolved || !reflect.DeepEqual(got.Resolution, want) {
+		t.Fatalf("case after its request's decision = %+v, resolution %+v; want resolved %+v", got, got.Resolution, want)
 	}
 }

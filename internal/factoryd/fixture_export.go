@@ -142,7 +142,7 @@ func remapFindingIDs(f *Fixture) error {
 	for i := range f.Gates {
 		for j := range f.Gates[i].Findings {
 			fd := &f.Gates[i].Findings[j]
-			id := findingID(fd.Text)
+			id := FindingID(fd.Text)
 			if old, ok := owner[id]; ok && old != fd.ID {
 				return fmt.Errorf("findings %s and %s mask to one text: their verdicts cannot keep apart", old, fd.ID)
 			}
@@ -286,10 +286,15 @@ func fixtureRole(rung int, actor, via string) string {
 func (r *fixtureRun) card(ctx context.Context) (FixtureCard, error) {
 	t := r.t
 	_, project, _ := r.Policy.ProjectOf(t.Repository)
+	// a plan card's successor carries the planner's brief
+	author := briefAuthor(t.Source)
+	if t.PlanCard() {
+		author = briefAuthor(SourcePlan)
+	}
 	c := FixtureCard{Issue: t.IssueNumber, TaskID: t.ID, Repository: t.Repository, Kind: t.Kind, Track: t.Track, Source: t.Source,
-		Size: t.Size, Rung: t.Rung, BudgetEUR: t.BudgetEUR, CeilingEUR: t.CeilingEUR, Objective: written(briefAuthor(t.Source), t.Objective),
+		Size: t.Size, Rung: t.Rung, BudgetEUR: t.BudgetEUR, CeilingEUR: t.CeilingEUR, Objective: written(author, t.Objective),
 		DependsOn: []FixtureDep{}, Autonomy: cmp.Or(project.Autonomy, policy.AutonomyManual), MergeRule: cmp.Or(project.MergeRule, policy.MergeHuman)}
-	if t.Source == SourcePlan && t.Parent != "" {
+	if t.PlanCard() {
 		plan, ok, err := r.Store.Task(ctx, t.Parent)
 		if err != nil {
 			return c, err
@@ -380,7 +385,7 @@ func fixtureAskKind(t Task, ask Event, cases map[int64]Case) string {
 	if kind := detailText(ask, "case_kind"); kind != "" {
 		return kind
 	}
-	if c, err := caseFromAsk(t, ask, ""); err == nil {
+	if c, err := CaseFromAsk(t, ask, ""); err == nil {
 		return string(c.Kind)
 	}
 	return ""
@@ -639,7 +644,7 @@ func gateTexts(l fixtureLine) []string {
 		_ = json.Unmarshal(l.Findings, &found)
 		texts := make([]string, len(found))
 		for i, a := range found {
-			texts[i] = a.Item
+			texts[i] = a.Text()
 		}
 		return texts
 	}
@@ -652,7 +657,7 @@ func gateTexts(l fixtureLine) []string {
 func (r *fixtureRun) findings(texts []string) []FixtureFinding {
 	out := make([]FixtureFinding, 0, len(texts))
 	for _, s := range texts {
-		out = append(out, FixtureFinding{Text: r.text(s), ID: findingID(s)})
+		out = append(out, FixtureFinding{Text: r.text(s), ID: FindingID(s)})
 	}
 	return out
 }
@@ -664,7 +669,7 @@ func (r *fixtureRun) checkin(l fixtureLine) *FixtureCheckIn {
 		c.Decision, c.ReasonKind, c.Reason = cmp.Or(rec.Decision, c.Decision), cmp.Or(rec.ReasonKind, c.ReasonKind), cmp.Or(r.text(rec.Reason), c.Reason)
 	}
 	for text, v := range l.Verdicts {
-		c.Verdicts[findingID(text)] = v.State
+		c.Verdicts[FindingID(text)] = v.State
 	}
 	return c
 }

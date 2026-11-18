@@ -298,9 +298,8 @@ func TestCaseFaceMasksEveryTextItReads(t *testing.T) {
 	}
 }
 
-// The face's info is the ask's alone — the last answer's time rides the
-// row's own line, not the info — and the card's life loads on demand
-// behind a fold.
+// The face's info is the ask's, without a processed-at line, and the
+// card's life loads on demand behind a fold.
 func TestCaseFaceInfoIsTheAsksAndTheLifeLoadsOnDemand(t *testing.T) {
 	r := newRig(t)
 	seatCases(r)
@@ -314,8 +313,8 @@ func TestCaseFaceInfoIsTheAsksAndTheLifeLoadsOnDemand(t *testing.T) {
 			t.Errorf("the face lacks %q:\n%s", want, needs)
 		}
 	}
-	if strings.Contains(needs, "Last answer processed") {
-		t.Errorf("the face holds the last answer's time:\n%s", needs)
+	if strings.Contains(needs, "Last answer processed:") {
+		t.Errorf("the face carries a processed-at line:\n%s", needs)
 	}
 }
 

@@ -267,7 +267,7 @@ func (r *Runner) withdrawQuestion(ctx context.Context, taskID, reason string, co
 			return 0, err
 		}
 	}
-	detail := map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": comment, "reason": why}
+	detail := map[string]any{"question": textutil.Truncate(EscalationQuestion(reason), 300), "comment": comment, "reason": why}
 	if id != 0 {
 		detail["withdrawal"] = id
 	}

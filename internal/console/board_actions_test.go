@@ -52,8 +52,9 @@ func equalInput(a, b factoryd.ActInput) bool {
 }
 
 // The escalation face's one send answers the card in one request: the
-// choice its button names, the fund beside it and the note land in one
-// answer, the single call Act takes for the card.
+// choice its button names settles the card's ask with the choice as the
+// settle's park arg, the fund beside it and the note land in one answer,
+// the single call Act takes for the card.
 func TestEscalationFaceSendLandsChoiceFundNoteInOneAnswer(t *testing.T) {
 	r := newRig(t)
 	seatBoardFixture(t, r, "board-agent-escalate.json")
@@ -65,7 +66,8 @@ func TestEscalationFaceSendLandsChoiceFundNoteInOneAnswer(t *testing.T) {
 	}
 	got, _ := actedOnce(t, r)
 	want := factoryd.ActInput{TaskID: "t-board-escalate", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActNote, Note: "the schema change is mine to make", Fund: &policy.Draw{EUR: 1.5}}, Detail: got.Detail}
+		Res: factoryd.Resolution{Action: factoryd.ActSettle, Args: map[string]any{"park": factoryd.AnswerPark},
+			Note: "the schema change is mine to make", Fund: &policy.Draw{EUR: 1.5}}, Detail: got.Detail}
 	if !equalInput(got, want) {
 		t.Fatalf("Act took %+v, want the choice, its note and the fund in one answer: %+v", got, want)
 	}
@@ -342,7 +344,7 @@ func TestRestartPlanClosesThePlanAndSaysWhenTheNewOneCannotBeFiled(t *testing.T)
 		Repository: "sf/code", IssueNumber: 50, Objective: "Build the stats.\n\nCount the hits."}})
 	r.tasks.mu.Unlock()
 	var closes []string
-	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
 	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, bool, error) {
 		closes = append(closes, id+" by "+by+": "+note)
 		return 0, factoryd.PlanCloseWords(by, note, false), false, nil
@@ -488,7 +490,7 @@ func TestRestartPlanFilesTheNewPlan(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-br", Kind: "agent", Status: "done", Track: policy.TrackPlan,
 		Repository: "linkshort/linkshort", Objective: "Build the stats.\n\nCount the hits."}})
 	r.tasks.mu.Unlock()
-	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
 	var leftToAct bool
 	r.c.cfg.CloseHeldPlan = func(ctx context.Context, _, by, note string, _ bool) (int, string, bool, error) {
 		leftToAct = factoryd.CaseLeftToAct(ctx)

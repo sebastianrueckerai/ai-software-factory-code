@@ -47,7 +47,7 @@ func (r *Runner) runRung(ctx context.Context, chat checkinChat, taskID, alias st
 		System:    system,
 		Statement: statement,
 		Evidence:  evidence,
-		Answer:    CheckinTool{Name: checkinAnswerTool, Description: "the rung's answer, one JSON object as this tool's arguments", Parameters: AnswerSchema(f, rung)},
+		Answer:    CheckinTool{Name: CheckinAnswerTool, Description: "the rung's answer, one JSON object as this tool's arguments", Parameters: AnswerSchema(f, rung)},
 		Parse: func(text string) error {
 			a, err := ParseRungAnswer(f, rung, text)
 			parsed = a

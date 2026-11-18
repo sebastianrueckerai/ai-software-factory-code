@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -13,9 +14,10 @@ import (
 
 // BoundedWorkflows is Workflows under the work bound (roadmap 225), the
 // one admission step every start passes: a queued card starts only while
-// fewer than its project's work_in_progress cards hold a work slot, every
-// card it depends on is done (or one ended closed, which its workflow takes
-// to a person), and its project's month budget has headroom; else it stays
+// fewer than its project's work_in_progress cards hold a work slot, no
+// human's hold keeps it (CardHold), every card it depends on is done (or
+// one ended closed, which its workflow takes to a person), and its
+// project's month budget has headroom; else it stays
 // queued, holding no slot, until a slot frees (a finished or parked card
 // hands its slot to the oldest queued card of its project, the pull) or
 // the heal pass's sweep re-derives the same admission every minute. A card
@@ -132,6 +134,9 @@ func (w BoundedWorkflows) admit(ctx context.Context, taskID string) (bool, error
 		}
 	}
 	if err := w.Store.SetAdmitted(ctx, taskID); err != nil {
+		if errors.Is(err, errHeld) {
+			return false, nil
+		}
 		return false, err
 	}
 	return true, nil
@@ -174,9 +179,10 @@ func waitsForSlot(t Task) bool {
 }
 
 // admissionWait is what keeps card t, one waitsForSlot names, from a
-// work slot before any count of slots, at now: "no issue", "waits on #N"
-// (the first of its open dependencies, unless one ended closed, which its
-// workflow takes to a person) or "project month cap"; "" when none does.
+// work slot before any count of slots, at now: "no issue", its hold's
+// line (cardHoldWait), "waits on #N" (the first of its open dependencies,
+// unless one ended closed, which its workflow takes to a person) or
+// "project month cap"; "" when none does.
 // admit runs it and records its answer on the card, which the board digest
 // reads.
 func admissionWait(ctx context.Context, store Store, tree policy.Tree, now time.Time, t Task) (string, error) {
@@ -185,6 +191,9 @@ func admissionWait(ctx context.Context, store Store, tree policy.Tree, now time.
 	// starts it. A report card never reaches here: it is unbound.
 	if t.IssueNumber == 0 {
 		return "no issue", nil
+	}
+	if held, err := cardHoldWait(ctx, store, t); err != nil || held != "" {
+		return held, err
 	}
 	deps, err := store.OpenDependencies(ctx, t.ID)
 	if err != nil {

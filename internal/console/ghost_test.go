@@ -110,13 +110,7 @@ func TestBoardPlacesGhostsAtTheFootOfTheirLane(t *testing.T) {
 		t.Fatal("the board's head has no routines control")
 	}
 	// t-781 waits on a human: the five columns show it as its case's row, so its face is read in the wide view's column
-	wideBody := r.do(httptest.NewRequest(http.MethodGet, codeBoard+"&view=wide", nil), ck).Body.String()
-	wide := col(t, wideBody, "Waiting on a human")
-	// the wide view's own Queued stands its ghosts too, at its foot
-	wq := col(t, wideBody, "Queued")
-	if !strings.Contains(wq, `data-ghost="ai-software-factory-code/weekly-bump"`) || !strings.Contains(wq, `data-ghost="ai-software-factory-code/audit"`) {
-		t.Fatalf("the wide view's Queued holds no ghosts:\n%s", wq)
-	}
+	wide := col(t, r.do(httptest.NewRequest(http.MethodGet, codeBoard+"&view=wide", nil), ck).Body.String(), "Waiting on a human")
 	for id, board := range map[string]string{"t-792": body, "t-781": wide} {
 		if !strings.Contains(faceOf(t, board, id), `<span class="chip routine">↻ routine</span>`) {
 			t.Fatalf("%s wears no routine chip:\n%s", id, faceOf(t, board, id))
@@ -270,20 +264,18 @@ func TestBoardShowsNoGhostForARemovedRoutine(t *testing.T) {
 	}
 }
 
-// The wide view has no four columns to stand the ghosts in, so its own
-// Queued holds them at its foot, the strip keeps its cell and the head
-// keeps the control; only a filter hides them. A member who reads the
-// project but does not write it sees the ghosts without acts.
+// The wide lane's queue group stands the ghosts, as the five columns'
+// Queued does (the census: a wide user sees the routines), with the
+// control in the board's head. A member who reads the project but does
+// not write it sees the ghosts without acts.
 func TestGhostsInTheWideViewAndForAReader(t *testing.T) {
 	r := newRig(t)
 	r.routines.views = []factoryd.RoutineView{audit(), soonBump()}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, codeBoard+"&view=wide", nil), ck).Body.String()
-	queued := col(t, body, "Queued")
-	if !strings.Contains(body, `<span class="cell routine">↻ bump in 20 min</span>`) || !strings.Contains(body, "routines-ctl") ||
-		!strings.Contains(queued, `data-ghost="ai-software-factory-code/weekly-bump"`) || !strings.Contains(queued, `data-ghost="ai-software-factory-code/audit"`) ||
-		strings.Contains(body, "ghosts-hidden") {
-		t.Fatalf("the wide view: want the cell, the control and the ghosts in its Queued:\n%s", queued)
+	if !strings.Contains(body, `<span class="cell routine">↻ bump in 20 min</span>`) || !strings.Contains(col(t, body, "Queued"), `data-ghost="ai-software-factory-code/weekly-bump"`) ||
+		!strings.Contains(body, "routines-ctl") {
+		t.Fatal("the wide view: want the cell, the ghosts in the queue group and the control")
 	}
 
 	ak, _ := r.readerOfCode(t, "anna")

@@ -366,13 +366,13 @@ var commitValue = regexp.MustCompile(`(- name: FACTORY_COMMIT\n\s+value: )"[0-9a
 // pinnedCommit captures the sha of factoryd's FACTORY_COMMIT.
 var pinnedCommit = regexp.MustCompile(`- name: FACTORY_COMMIT\n\s+value: "([0-9a-f]{40})"`)
 
-// fullSHA is a commit's full sha.
-var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
+// FullSHA is a commit's full sha.
+var FullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // setCommit points factoryd's FACTORY_COMMIT in its manifest at sha, the
 // commit whose images the roll pins, and changes nothing else.
 func setCommit(content []byte, sha string) ([]byte, error) {
-	if !fullSHA.MatchString(sha) {
+	if !FullSHA.MatchString(sha) {
 		return nil, fmt.Errorf("commit %q is no full sha", sha)
 	}
 	if n := len(commitValue.FindAll(content, -1)); n != 1 {
@@ -1912,11 +1912,11 @@ func (r *Runner) AwaitRollout(ctx context.Context, taskID string, pr int64, boun
 	if err != nil {
 		return RolloutResult{}, err
 	}
-	until := r.clock().Add(bound)
+	until := r.Clock().Add(bound)
 	for {
 		confirmed, names, err := r.rolloutConfirmed(ctx, repo, pr)
 		if err != nil {
-			if !r.clock().Before(until) {
+			if !r.Clock().Before(until) {
 				return RolloutResult{}, err
 			}
 			log.Printf("roll %s: rollout: %v", taskID, err)
@@ -1924,7 +1924,7 @@ func (r *Runner) AwaitRollout(ctx context.Context, taskID string, pr int64, boun
 			slices.Sort(names)
 			return RolloutResult{Confirmed: true, Live: names}, nil
 		}
-		now := r.clock()
+		now := r.Clock()
 		if !now.Before(until) {
 			return RolloutResult{}, nil
 		}

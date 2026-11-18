@@ -120,15 +120,19 @@ activities, each with a timeline step and a comment on the pull request:
    fixed checklist:
    secrets, network egress, RBAC and ServiceAccounts, policy and workflow
    files, migrations that drop or widen, the sandbox contract. An answer
-   without a verdict is a finding. A refused call is one finding for its
-   refusal, failed calls one for each status (`status 429`), each naming
-   its parts, and the parts' findings keep the first 50 and a line that
-   counts the rest. A diff past 8 MiB, or calls
+   without a verdict, a part's among them, is a finding that no cap cuts
+   and that records the attempt as not run. A refused call is one finding
+   for its refusal, failed calls one for each status (`status 429`), each
+   naming its parts, and the parts' findings keep the first 50 and a line
+   that counts the rest. A diff past 8 MiB, or calls
    the card's free headroom cannot pay for (estimated as the review's),
    is one finding and no call. The findings go to the card's
    "Security audit" section and the timeline step `audit` (verdict,
    model, deployment), never to the pull request; on the merge rule auto
-   they send the merge to the card. A roll task skips the stage.
+   they send the merge to the card. A finding at a file a human confirmed
+   (`audit_finding_confirmed`) holds no verdict: the step lists it under
+   `covered`, on the head it covered, beside the confirmation in
+   `confirmed`. A roll task skips the stage.
    From change id
    `review-verdict` on (backlog 68), a review stage that ran and gave no
    verdict puts "review: the review gave no verdict: <note>" on the card
@@ -147,11 +151,23 @@ activities, each with a timeline step and a comment on the pull request:
    reaches it over the message port under a bearer of which it holds the
    hash alone. Each entry is bounded by `REPRO_TIMEOUT`, the whole run by
    `PROOFS_BUDGET` (35 minutes), and neither mounts the project's shared
-   cache: Go and npm build cold under `/build`.
+   cache: Go and npm build cold under `/build`. A worker that ran no
+   entry and says why, as a fetch that failed for good, ran no
+   criterion: it is the start escalation, with no row, and the answer
+   runs the gate again.
    Per entry the worker writes the proof's file into the tree and runs
    `bash check test <suite> [<name>]` there by exec, with `CHECK_REPORT`
    and `CHECK_ARTIFACTS` bound, and one stdout line answers the exit, the
-   output's tail, the gzipped JUnit report and the artifacts.
+   output's tail, the gzipped JUnit report and the artifacts. If an
+   entry has no file, names a test and names a suite of one directory,
+   and no `*_test.go` file in that directory declares `func <name>(`,
+   the worker searches the tree. If exactly one directory declares the
+   test, the entry runs there and its line names both directories:
+   "TestX in ./b passed (the criterion names ./a)". If two or more
+   directories declare it, the entry runs in its own suite and its line
+   names them: "no test TestX in ./a (declared in ./b, ./c)". The search
+   skips the directories go skips and reads only regular files inside
+   the tree.
    `readReport` reads that report: a suite passes when no case failed and
    one ran, a named test is read by its own case (a case of its name that
    failed fails, no case of its name is missing, every one skipped
@@ -167,7 +183,12 @@ activities, each with a timeline step and a comment on the pull request:
    The rows land in `criteria_verdicts` on the plan's integration card,
    source `gate`, one per test and invariant criterion: met for a passed
    run, unmet for any other, the run's line the evidence, opening
-   `blind: ` or `open: ` when the proof has a state. A green stored proof
+   `blind: ` or `open: ` when the proof has a state. A run on the pull
+   request of a card that ended undelivered (closed, failed, or done with
+   nothing merged), as an attempt still running after a human closed the
+   card, writes no row: each write reads the card's row under a share
+   lock, so the card's end waits for a write, and a write after the end
+   is refused. A green stored proof
    is met, blind, and stays stored. Any other outcome opens it:
    `OpenPlanProof` turns its row opened, the event `proof_opened` lands
    on the card and the plan once per head, and a finding hands the
@@ -197,6 +218,31 @@ activities, each with a timeline step and a comment on the pull request:
    main's head: every one passed ends the card done with "proofs met at
    <head>: <ids>", anything else is the next session's finding, naming
    the criteria not met by id alone. It opens nothing and writes no row.
+   A plan's close settles a criterion on the rows only while they judge
+   main: the plan's newest criteria card (its newest delta card, else its
+   integration card) merged its own pull request at the head its gate
+   judged (its newest `criteria_judged` record and its `pull_request_merged`
+   record name the same head), not reverted, and no
+   card merged (by its `pull_request_merged` event, else its finish with a
+   merge commit) or was reverted after it, or a run of the gate on main's
+   head is on record for the plan as it stands: its newest revision and
+   each card's status, finish and revert. Otherwise only an approver's
+   row settles it; the production hold and a plan's Close count open
+   criteria the same way, except that a Close, the human's decision, runs
+   no gate again and waives no criterion the newest run on main met
+   (`met` on the newest record of a run's outcome) while that met row
+   stands, no card of the plan merged after the run started, and no card
+   is reverted that the run's record did not mark reverted, however the
+   revert is dated.
+   Once every card is final and a gate criterion has no row that settles
+   it, the close runs the gate on the integration card: at its pull
+   request's head when its rows judge main, else at main's head, the commit
+   fetched by itself, with no comment, after it withdraws every row but the
+   approver's (`criteria_rows_withdrawn` on the plan's timeline); each
+   record of a run's outcome names the criteria it left met (`met`). A failed
+   card is final as any other. Each state of the plan gets at most two
+   attempts; a card that ends or is reverted after the last run, or a new
+   revision, makes the gate due again.
 6. `AutoMerge` decides:
    the project's merge rule is `auto` (`projects.merge_rule`, read by
    `GatePolicy`; the factory's own repositories are `human`), the risk
@@ -640,7 +686,9 @@ in gate `dependencies` (the board reads `waiting on #3, #5`) and waits
 for the signal `dep_ended`, which `task_ended` sends to every card
 waiting on the task, or 10 minutes, then asks again. The heal pass starts
 every waiting card's workflow and signals `dep_ended` to each whose wait
-would end.
+would end. A card a human holds stays in the wait whatever its
+dependencies, none of them asked, until the hold ends; a human's release
+signals `dep_ended` to it.
 
 The planner (`internal/factoryd/plan.go`): a card on
 the plan track runs report-mode sessions of its class (the `planner`) on the

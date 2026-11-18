@@ -186,7 +186,8 @@ type ImageAsk struct {
 // elsewhere is the fitting action of an ask refused for its project.
 const elsewhere = " Ask for the tool in the chat of the project whose cards need it."
 
-// RequestImage puts the ask of member by in the project chat of
+// RequestImage puts the ask of by, a human or the project agent, in the
+// project chat of
 // repository for tool, for need, on the tool card of image image, else of
 // one named after the tool (toolImage), as a session's ask goes on it
 // (ParkForTool) with no card that waits: it joins the open card of the
@@ -267,7 +268,8 @@ func (r *Runner) toolCardOf(ctx context.Context, repository, target, self string
 }
 
 // toolAsker is who asks a tool card for a tool on repository: card, which
-// parks on the image, or, card nil, member by in the project chat.
+// parks on the image, or, card nil, by in the project chat: a human's
+// login or ChatUser, the project agent.
 type toolAsker struct {
 	repository string
 	card       *Task
@@ -280,7 +282,7 @@ func cardAsker(t Task) toolAsker { return toolAsker{repository: t.Repository, ca
 // askLine opens the tool card of a's ask p: who needs which tool and why.
 func (a toolAsker) askLine(p ImagePark) string {
 	if a.card == nil {
-		return fmt.Sprintf("Requested in the project chat by %s: %s, %s.", a.by, p.Tool, strings.TrimSuffix(p.Need, "."))
+		return fmt.Sprintf("Requested in the project chat by %s: %s, %s.", answerer(a.by), p.Tool, strings.TrimSuffix(p.Need, "."))
 	}
 	return fmt.Sprintf("Card #%d (%s) needs %s, which its sandbox lacks: %s", a.card.IssueNumber, a.card.ID, p.Tool, p.Need)
 }
@@ -288,7 +290,7 @@ func (a toolAsker) askLine(p ImagePark) string {
 // joinLine is a's ask p on the open tool card it joins.
 func (a toolAsker) joinLine(p ImagePark) string {
 	if a.card == nil {
-		return fmt.Sprintf("Requested in the project chat by %s: %s in image %s too: %s.", a.by, p.Tool, p.Target, strings.TrimSuffix(p.Need, "."))
+		return fmt.Sprintf("Requested in the project chat by %s: %s in image %s too: %s.", answerer(a.by), p.Tool, p.Target, strings.TrimSuffix(p.Need, "."))
 	}
 	return fmt.Sprintf("Card #%d (%s) needs %s in image %s too: %s", a.card.IssueNumber, a.card.ID, p.Tool, p.Target, p.Need)
 }
@@ -626,21 +628,21 @@ func (r *Runner) ImageArrived(ctx context.Context, taskID, image, tool string) (
 	return fmt.Sprintf("The tool %s arrived: this session runs on image %s.", tool, image), nil
 }
 
-// imageWaited opens the question of a card that waited imageWait for its
+// ImageWaited opens the question of a card that waited imageWait for its
 // image; toolAskedAgain that of an ask for an image refused before.
 const (
-	imageWaited    = "The card has waited 24 h for image "
+	ImageWaited    = "The card has waited 24 h for image "
 	toolAskedAgain = "The agent asks again for a tool: "
 )
 
 // imageWaitAsk is the question of park p after imageWait.
 func imageWaitAsk(p ImagePark) string {
 	if p.ToolTask == "" {
-		return fmt.Sprintf(imageWaited+"%[1]s, which has no pin in force: is its build stuck, or is it no longer declared?\n"+
+		return fmt.Sprintf(ImageWaited+"%[1]s, which has no pin in force: is its build stuck, or is it no longer declared?\n"+
 			"Why: the card names image %[1]s and starts once the factory pins it.\n"+
 			"Recommendation: see that %[2]s declares %[1]s and the image builds; answer to try the session again, or close this issue to end the card.", p.Target, imagesPath)
 	}
-	return fmt.Sprintf(imageWaited+"%[1]s, which tool card #%[2]d adds %[3]s to: is #%[2]d or the image's build stuck?\n"+
+	return fmt.Sprintf(ImageWaited+"%[1]s, which tool card #%[2]d adds %[3]s to: is #%[2]d or the image's build stuck?\n"+
 		"Why: the card restarts on image %[1]s once #%[2]d has merged and the factory has built and pinned the image.\n"+
 		"Recommendation: see that #%[2]d merges and the image builds; answer to run the next session on the card's image as it is, or close this issue to end the card.",
 		p.Target, p.ToolIssue, p.Tool)
@@ -719,7 +721,7 @@ func (t *taskRun) awaitImage(p ImagePark, since time.Time, asked string) (final,
 	}
 	if ready.sig == nil {
 		if asked != "" {
-			if err := t.ask(healedReason, asked, nil); err != nil {
+			if err := t.ask(HealedReason, asked, nil); err != nil {
 				t.leavePark(p)
 				return "failed", escalateFailed + errMessage(err), nil, nil
 			}

@@ -53,6 +53,28 @@ func TestSiblingsFactsLeaveTheCardOut(t *testing.T) {
 	}
 }
 
+// The siblings a case reads are each key's card: a key whose card failed
+// into a running successor lists the successor, and a case on the
+// successor lists neither it nor the card it carried on.
+func TestSiblingsFactsReadEachKeysCard(t *testing.T) {
+	ctx := context.Background()
+	g := siblingRig()
+	succ := SuccessorID("ta")
+	g.store.tasks[succ] = Task{ID: succ, Kind: "agent", Repository: "sf/app", IssueNumber: 1413, Source: SourceSuccessor, Parent: "t1344", PlanKey: "metrics-c", Status: "running"}
+	for _, c := range []struct {
+		id   string
+		want []SiblingFact
+	}{
+		{"t1410", []SiblingFact{{Issue: 1411, Key: "metrics-b", Status: "done"}, {Issue: 1413, Key: "metrics-c", Status: "running"}}},
+		{succ, []SiblingFact{{Issue: 1410, Key: "metrics-a", Status: "running"}, {Issue: 1411, Key: "metrics-b", Status: "done"}}},
+	} {
+		f, err := g.r.tripFacts(ctx, g.store.tasks[c.id], "", "")
+		if err != nil || !slices.Equal(f.Siblings, c.want) {
+			t.Errorf("the siblings of %s = %+v, %v; want %+v", c.id, f.Siblings, err, c.want)
+		}
+	}
+}
+
 func TestRung1StatementReadsCard(t *testing.T) {
 	g := siblingRig()
 	ctx := context.Background()
@@ -104,6 +126,55 @@ func TestRung1StatementOrderMoneyAndRefusals(t *testing.T) {
 		if strings.Contains(got, rung2) {
 			t.Errorf("rung 1 statement lists %q:\n%s", rung2, got)
 		}
+	}
+}
+
+// A pull request that no longer merges into main is said right after the
+// problem, with Forgejo's refusal, and route_approval and reverify are
+// listed as not offered for it.
+func TestRung1StatementSaysThePullRequestNoLongerMerges(t *testing.T) {
+	f := rungFacts
+	f.ReviewApproved, f.MergeConflict = true, "the branch conflicts with its base: status 409"
+	got := (&Runner{}).rungStatement(Case{Kind: CaseGateStop, Problem: "PROBLEM"}, f, "DIGEST", nil, 1)
+	said := "The pull request does not merge into main: the branch conflicts with its base: status 409. Neither reverify nor route_approval clears it:" +
+		" extend the card for a session that merges main into the branch, or the card closes as superseded."
+	refusal := func(name string) string {
+		return "- " + name + ": not offered: the pull request no longer merges into main (Forgejo refused to merge main into c1), so " + name +
+			" only runs the gates into the same refusal at the merge queue: extend the card for a session that merges main into the branch," +
+			" or the card closes as superseded when main already carries its work\n"
+	}
+	for _, w := range []string{"PROBLEM\n" + said + "\n", refusal(ActRouteApproval), refusal(ActReverify), "- extend\n"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("statement lacks %q:\n%s", w, got)
+		}
+	}
+}
+
+// A case that opened on a merge conflict whose pull request's head moved
+// since says the conflict no longer stands, and offers the reverify; a
+// conflict that stands, a case that opened on none, or a timeline that
+// could not be read, which leaves the conflict unknown, says nothing of it.
+func TestRung1StatementSaysAConflictNoLongerStands(t *testing.T) {
+	cleared := "The merge conflict standing when this case opened no longer stands: the pull request's head moved since.\n"
+	f := rungFacts
+	f.ReviewApproved = true
+	opened := Case{Kind: CaseGateStop, Problem: "PROBLEM", Facts: map[string]any{"merge_conflict": "the branch conflicts with its base"}}
+	got := (&Runner{}).rungStatement(opened, f, "DIGEST", nil, 1)
+	if !strings.Contains(got, "PROBLEM\n"+cleared) || !strings.Contains(got, "- reverify\n") {
+		t.Errorf("cleared conflict: statement lacks %q right after the problem, or the reverify:\n%s", cleared, got)
+	}
+	standing := f
+	standing.MergeConflict = "the branch conflicts with its base"
+	if got := (&Runner{}).rungStatement(opened, standing, "DIGEST", nil, 1); strings.Contains(got, cleared) {
+		t.Errorf("standing conflict: statement says it no longer stands:\n%s", got)
+	}
+	if got := (&Runner{}).rungStatement(Case{Kind: CaseGateStop, Problem: "PROBLEM"}, f, "DIGEST", nil, 1); strings.Contains(got, cleared) {
+		t.Errorf("no conflict at the opening: statement says one no longer stands:\n%s", got)
+	}
+	unread := f
+	unread.Partial = []string{"timeline"}
+	if got := (&Runner{}).rungStatement(opened, unread, "DIGEST", nil, 1); strings.Contains(got, cleared) {
+		t.Errorf("unread timeline: statement says the conflict no longer stands:\n%s", got)
 	}
 }
 
@@ -310,7 +381,7 @@ func askedReason(t *testing.T) (asked string) {
 	g.r.Scrub = redact.New("hunter2-configured-secret")
 	g.r.forgejo = &Forgejo{}
 	reason := AgentAsks + "Which file?\nWhy: " + strings.Repeat("x", 250) + " hunter2-configured-secret"
-	if _, err := g.r.askHuman(context.Background(), g.store.tasks["t1410"], Case{}, reason, "next", nil, nil); err != nil {
+	if _, err := g.r.AskHuman(context.Background(), g.store.tasks["t1410"], Case{}, reason, "next", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, e := range g.store.events {
@@ -365,7 +436,7 @@ func TestFlagCaseOpensForARefusedCheckin(t *testing.T) {
 // which the trip reads as a provider_refused case. No flag is needed.
 func TestAPlannersRefusedSessionsOpenAProviderRefusedCase(t *testing.T) {
 	ask := "the model provider refused the first call of 6 sessions in a row (status 429): " + refusedSession.Reason
-	if kind, _ := caseKindOf(escalationSource(ask), ask); kind != CaseProviderRefused {
+	if kind, _ := CaseKindOf(EscalationSource(ask), ask); kind != CaseProviderRefused {
 		t.Fatalf("the plan loop's ask opens a %s case, want provider_refused", kind)
 	}
 }

@@ -428,3 +428,16 @@ func TestRoutineEditsKeepTheComments(t *testing.T) {
 	out, err = editProjectFile(raw, func(doc *yaml.Node) error { return dropRoutine(doc, "audit") })
 	equal(t, "the second deleted", []any{string(out), err}, []any{top + bump + tail, error(nil)})
 }
+
+// The agent's own skip, at autonomous with no Do it, reaches the port as
+// the project agent's, so the run's note never names the woken human.
+func TestTheAgentsRoutineSkipIsTheChatUsers(t *testing.T) {
+	r, _ := newWritesRig(t)
+	r.routines.views = []factoryd.RoutineView{weeklyBump()}
+	_, s := r.loggedIn(t)
+	agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyAutonomous}
+	if _, err := r.c.doRoutineSkip(t.Context(), agent, "ai-software-factory-code", "weekly-bump", false); err != nil {
+		t.Fatal(err)
+	}
+	equal(t, "the skip's by", r.routines.skips["ai-software-factory-code/weekly-bump"], factoryd.ChatUser)
+}

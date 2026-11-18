@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -30,6 +31,49 @@ func offeredNames(f CaseFacts, rung int) []string {
 		out = append(out, a.Name)
 	}
 	return out
+}
+
+// requireStoredDecisionsOnTheRungsNames guards the stored-decision proofs:
+// every name a moment offers is one of the rungs' action names, and the
+// names the store wrote before the change — human, dropped_all, message —
+// are none of the rungs' own, folding onto hand_up, reverify and continue
+// the way the run reads them back, so the stored rows and the rungs hold
+// one vocabulary.
+// rungReadBackNames are the decision names the run reads back: every name
+// the three moments offer, gathered once.
+func rungReadBackNames() []string {
+	var out []string
+	for _, moment := range []string{CheckInSession, CheckInGate, CheckInDead} {
+		out = append(out, momentDecisions(moment, true)...)
+	}
+	return out
+}
+
+func requireStoredDecisionsOnTheRungsNames(t *testing.T) {
+	t.Helper()
+	readBack := rungReadBackNames()
+	for _, c := range []struct{ legacy, rung string }{
+		{"human", RungHandUp},
+		{"dropped_all", ActReverify},
+		{"message", ActContinue},
+	} {
+		if _, ok := ActionByName(c.legacy); ok {
+			t.Fatalf("the stored decision %q is still a name on the rungs' action list", c.legacy)
+		}
+		if !slices.Contains(readBack, c.rung) {
+			t.Fatalf("the stored decision %q folds onto %q, which is no name the run reads back", c.legacy, c.rung)
+		}
+	}
+	for _, moment := range []string{CheckInSession, CheckInGate, CheckInDead} {
+		for _, d := range momentDecisions(moment, true) {
+			if d == RungHandUp {
+				continue
+			}
+			if _, ok := ActionByName(d); !ok {
+				t.Fatalf("the %s moment offers %q, which is no name on the rungs' action list", moment, d)
+			}
+		}
+	}
 }
 
 // A resume needs no session running, an attempt under the cap, agent time
@@ -159,8 +203,8 @@ func TestRerunChecksOnceOnAHead(t *testing.T) {
 func TestExtendRefusesWhenTheLastDrawBoughtNothing(t *testing.T) {
 	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
 	stuck := CaseFacts{Head: "h1", PR: 9, PROpen: true, Checks: "red", Findings: []string{idA}, LastDrawAt: &at, DrawHead: "h1", DrawChecks: "red",
-		DrawFindings: []string{idA},
-		PoolLeft:     policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 20}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4},
+		DrawFindings: []string{idA}, Attempts: 2,
+		PoolLeft: policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 20}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4},
 		BudgetEUR: 5, CeilingEUR: 10}
 	const refused = "the last draw at 10:04 UTC bought nothing, with no push since and the head, the checks and the findings unchanged: " +
 		"hand over, start a successor, replan or close"
@@ -196,31 +240,175 @@ func TestExtendRefusesWhenTheLastDrawBoughtNothing(t *testing.T) {
 func TestDrawWithinByRung(t *testing.T) {
 	f := CaseFacts{PoolLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 60 - 59.7}, BudgetEUR: 5, CeilingEUR: 8}
 	one := policy.Draw{Sessions: 1}
-	if got, want := drawWithin(f, 1, one, false), "the card's draw bound leaves 0 sessions, 0 seconds of agent time and 0.00 EUR: rung 2 or the human may draw more"; got != want {
+	if got, want := drawWithin(f, 1, one, policy.Draw{}, 0, false), "the card's draw bound leaves 0 sessions, 0 seconds of agent time and 0.00 EUR: rung 2 or the human may draw more. "+
+		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand_up with it as the recommendation"; got != want {
 		t.Errorf("rung 1 = %q, want %q", got, want)
 	}
-	if got := drawWithin(f, 2, one, false); got != "" {
+	if got := drawWithin(f, 2, one, policy.Draw{}, 0, false); got != "" {
 		t.Errorf("rung 2 within the pool = %q, want none", got)
 	}
 	past := policy.Draw{Sessions: 3}
-	if got, want := drawWithin(f, 2, past, false), "the escalation pool leaves 2 sessions, 60 minutes of agent time and 0.30 EUR this month: only the human draws more"; got != want {
+	if got, want := drawWithin(f, 2, past, policy.Draw{}, 0, false), "the escalation pool leaves 2 sessions, 60 minutes of agent time and 0.30 EUR this month: only the human draws more. "+
+		"This draw does not fit in sessions (asked 3, left 2). The largest draw that fits is 2 sessions, 0 seconds of agent time and 0.00 EUR: ask for that"; got != want {
 		t.Errorf("rung 2 past the pool = %q, want %q", got, want)
 	}
-	if got := drawWithin(f, 3, past, false); got != "" {
+	if got := drawWithin(f, 3, past, policy.Draw{}, 0, false); got != "" {
 		t.Errorf("rung 3 past the pool = %q, want none", got)
 	}
 	// 60 - 59.7 is 0.29999999999999716 in floats: 30 cents, which 0.30 EUR fits
-	if got := drawWithin(f, 2, policy.Draw{EUR: 0.3}, true); got != "" {
+	if got := drawWithin(f, 2, policy.Draw{EUR: 0.3}, policy.Draw{}, 0, true); got != "" {
 		t.Errorf("rung 2 drawing the pool's last 30 cents = %q, want none", got)
 	}
-	if got, want := drawWithin(f, 3, policy.Draw{EUR: 4}, true), "4.00 EUR more takes the budget of 5.00 EUR past the card's ceiling of 8.00 EUR: raise the ceiling first"; got != want {
+	if got, want := drawWithin(f, 3, policy.Draw{EUR: 4}, policy.Draw{}, 0, true), "4.00 EUR more takes the budget of 5.00 EUR past the card's ceiling of 8.00 EUR: raise the ceiling first"; got != want {
 		t.Errorf("rung 3 past the ceiling = %q, want %q", got, want)
 	}
-	if got := drawWithin(f, 3, policy.Draw{EUR: 3}, true); got != "" {
+	if got := drawWithin(f, 3, policy.Draw{EUR: 3}, policy.Draw{}, 0, true); got != "" {
 		t.Errorf("rung 3 up to the ceiling = %q, want none", got)
 	}
-	if got, want := drawWithin(f, 4, one, false), "there is no rung 4"; got != want {
+	if got, want := drawWithin(f, 4, one, policy.Draw{}, 0, false), "there is no rung 4"; got != want {
 		t.Errorf("rung 4 = %q, want %q", got, want)
+	}
+}
+
+// A refused extend names the part past the bound, with what it asked and
+// what the bound left, and the largest draw that fits every bound of the
+// rung: on rungs 0 and 1 the card's draw and the pool together. A fit is
+// named only while the extend's smallest answer at the case (its probe: a
+// minute at an agent time cap, else a session) fits too, so the extend
+// stays on offer; else nothing fits. Lines ride beside the fit, or alone.
+// The facts are case 6354's at an agent time cap: the card's draw holds 3
+// sessions, 90 minutes and 6 EUR, the pool 924 minutes alone.
+func TestDrawBoundNamesThePartAndTheFit(t *testing.T) {
+	const pool924 = "the escalation pool leaves 0 sessions, 924 minutes of agent time and 0.00 EUR this month: only the human draws more. "
+	const pool5 = "the escalation pool leaves 5 sessions, 0 seconds of agent time and 10.00 EUR this month: only the human draws more. "
+	timeCap := CaseFacts{Kind: CaseAgentTimeCap, CardDrawLeft: policy.Draw{Sessions: 3, AgentTime: 90 * time.Minute, EUR: 6},
+		PoolLeft: policy.Draw{AgentTime: 924*time.Minute + 6*time.Second}}
+	empty, sessionsOnly, gate, odd, sessionCap := timeCap, timeCap, timeCap, timeCap, timeCap
+	empty.PoolLeft = policy.Draw{}
+	sessionsOnly.PoolLeft = policy.Draw{Sessions: 5, EUR: 10}
+	gate.Kind = CaseGateStop
+	sessionCap.Kind = CaseSessionCap
+	gateSessions, noCase := sessionsOnly, sessionsOnly
+	gateSessions.Kind, noCase.Kind = CaseGateStop, ""
+	odd.PoolLeft.AgentTime = 924*time.Minute + 40*time.Second
+	extend, _ := ActionByName(ActExtend)
+	for _, c := range []struct {
+		name  string
+		f     CaseFacts
+		rung  int
+		d     policy.Draw
+		lines int
+		want  string
+	}{
+		{"rung 2's session past the pool", timeCap, 2, policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, 0,
+			pool924 + "This draw does not fit in sessions (asked 1, left 0). The largest draw that fits is 0 sessions, 30 minutes of agent time and 0.00 EUR: ask for that"},
+		{"rung 2's minutes alone", timeCap, 2, policy.Draw{AgentTime: 30 * time.Minute}, 0, ""},
+		// the card's bound fails first, on minutes; the fit takes its minutes
+		// from the card's 90 and its sessions from the pool's 0
+		{"rung 1 past the card's minutes", timeCap, 1, policy.Draw{Sessions: 1, AgentTime: 120 * time.Minute}, 0,
+			"the card's draw bound leaves 3 sessions, 90 minutes of agent time and 6.00 EUR: rung 2 or the human may draw more. " +
+				"This draw does not fit in agent time (asked 120 minutes, left 90 minutes). The largest draw that fits is 0 sessions, 90 minutes of agent time and 0.00 EUR: ask for that"},
+		{"an empty pool", empty, 2, policy.Draw{AgentTime: 30 * time.Minute}, 0,
+			"the escalation pool leaves 0 sessions, 0 seconds of agent time and 0.00 EUR this month: only the human draws more. " +
+				"This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: hand_up with it as the recommendation"},
+		{"a session without minutes at the agent time cap", sessionsOnly, 2, policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, 200,
+			pool5 + "This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: hand_up with it as the recommendation"},
+		// a gate stop's extend is probed with a session, which the pool lacks
+		{"lines beside a session at a gate stop", gate, 2, policy.Draw{Sessions: 1}, 200,
+			pool924 + "This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand_up with it as the recommendation"},
+		{"a session at the session cap", sessionCap, 2, policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, 0,
+			pool924 + "This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand_up with it as the recommendation"},
+		{"lines beside a session and minutes at a gate stop", gateSessions, 2, policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, 200,
+			pool5 + "This draw does not fit in agent time (asked 30 minutes, left 0 seconds). The largest draw that fits is 1 session, 0 seconds of agent time and 0.00 EUR with 200 lines beside it, as lines ride free: ask for that"},
+		{"lines beside minutes at a gate stop", gateSessions, 2, policy.Draw{AgentTime: 30 * time.Minute}, 200,
+			pool5 + "This draw does not fit in agent time (asked 30 minutes, left 0 seconds). An extend of the 200 lines alone fits, as lines ride free: ask for that"},
+		{"minutes at a gate stop", gateSessions, 2, policy.Draw{AgentTime: 30 * time.Minute}, 0,
+			pool5 + "This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits, but 1 session, 0 seconds of agent time and 0.00 EUR does: ask for that"},
+		// 924m40s reads as 925 minutes left, and the fit is cut to 924 whole
+		// minutes, which the pool holds
+		{"a fit cut to the minute", odd, 2, policy.Draw{AgentTime: 1000 * time.Minute}, 0,
+			"the escalation pool leaves 0 sessions, 925 minutes of agent time and 0.00 EUR this month: only the human draws more. " +
+				"This draw does not fit in agent time (asked 1000 minutes, left 925 minutes). The largest draw that fits is 0 sessions, 924 minutes of agent time and 0.00 EUR: ask for that"},
+		{"two parts past the pool", noCase, 2, policy.Draw{Sessions: 6, EUR: 12}, 0,
+			pool5 + "This draw does not fit in sessions (asked 6, left 5) and EUR (asked 12.00, left 10.00). The largest draw that fits is 5 sessions, 0 seconds of agent time and 10.00 EUR: ask for that"},
+	} {
+		if got := drawWithin(c.f, c.rung, c.d, extend.need(c.f), c.lines, false); got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
+		}
+	}
+}
+
+// An extend at the agent time cap that names no minutes is refused with
+// the minutes each rung may ask for: rung 1 the least of the card's draw
+// and the pool, rung 2 the pool's, each at most 600 at once.
+func TestExtendAtATimeCapNamesTheMinutesThatFit(t *testing.T) {
+	f := CaseFacts{Kind: CaseAgentTimeCap, CardDrawLeft: policy.Draw{Sessions: 3, AgentTime: 90 * time.Minute, EUR: 6},
+		PoolLeft: policy.Draw{AgentTime: 924*time.Minute + 6*time.Second}}
+	want := "this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none. " +
+		"The card's draw leaves 90 minutes and the pool 924 minutes of agent time, so rung 1 may ask for up to 90 minutes, rung 2 for up to 600 minutes and the human for up to 600 minutes"
+	if got := applies(t, ActExtend, f, Resolution{Args: map[string]any{"sessions": 1}}); got != want {
+		t.Errorf("an extend of a session at the agent time cap:\n got %q\nwant %q", got, want)
+	}
+}
+
+// A rung's refused extend names a fit, "ask for that", exactly while the
+// extend stays on offer to it, and sends it up with hand_up only while it
+// does not: at case 6354's agent time cap and at a gate stop, whose extend
+// is probed with a session.
+func TestARefusedExtendIsOfferedOnlyWhileAFitRemains(t *testing.T) {
+	timeCap := CaseFacts{Kind: CaseAgentTimeCap, Attempts: 1, SessionCap: 3, AgentTimeS: 7220, AgentTimeCapS: 10800,
+		CardDrawLeft: policy.Draw{Sessions: 3, AgentTime: 90 * time.Minute, EUR: 6}, PoolLeft: policy.Draw{AgentTime: 924*time.Minute + 6*time.Second}}
+	emptyPool, gate := timeCap, timeCap
+	emptyPool.PoolLeft = policy.Draw{}
+	gate.Kind = CaseGateStop
+	gateSessions := gate
+	gateSessions.PoolLeft = policy.Draw{Sessions: 5, EUR: 10}
+	for _, c := range []struct {
+		name string
+		f    CaseFacts
+		args map[string]any
+		fit  bool
+	}{
+		{"6354's session and 30 minutes", timeCap, map[string]any{"sessions": 1, "agent_time_s": 1800}, true},
+		{"30 minutes on an empty pool", emptyPool, map[string]any{"agent_time_s": 1800}, false},
+		{"a session and lines at a gate stop, the pool's sessions gone", gate, map[string]any{"sessions": 1, "lines": 200}, false},
+		{"minutes at a gate stop, the pool's minutes gone", gateSessions, map[string]any{"agent_time_s": 1800}, true},
+		{"minutes and lines at a gate stop, the pool's minutes gone", gateSessions, map[string]any{"agent_time_s": 1800, "lines": 200}, true},
+	} {
+		got := actRefusal(c.f, ActInput{CaseID: 6354, Rung: 2, Res: Resolution{Action: ActExtend, Args: c.args}}, "#2109")
+		_, list, _ := strings.Cut(got, ", and rung 2 may take ")
+		offered := slices.Contains(strings.Split(strings.ReplaceAll(list, " and ", ", "), ", "), ActExtend)
+		if strings.Contains(got, ": ask for that") != c.fit || strings.Contains(got, "hand_up") == c.fit || offered != c.fit {
+			t.Errorf("%s: %q; want a fit and the extend on offer %v", c.name, got, c.fit)
+		}
+	}
+	got := actRefusal(timeCap, ActInput{CaseID: 6354, Rung: 2, Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1, "agent_time_s": 1800}}}, "#2109")
+	if !strings.Contains(got, "The largest draw that fits is 0 sessions, 30 minutes of agent time and 0.00 EUR: ask for that, and rung 2 may take extend") {
+		t.Errorf("6354's refusal = %q, want the fit and the extend on offer", got)
+	}
+}
+
+// An answer's draw carries the smallest draw its action takes on the case,
+// the extend's probe, so the store's own refusal names a fit by it as
+// drawWithin does: a minute at an agent time cap, a session at a gate stop,
+// a cent for a fund.
+func TestCaseDrawCarriesTheActionsNeed(t *testing.T) {
+	g := newFactsRig(t)
+	card := g.store.tasks["t1"]
+	extend := Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1, "agent_time_s": 1800}}
+	for _, c := range []struct {
+		kind CaseKind
+		res  Resolution
+		want policy.Draw
+	}{
+		{CaseAgentTimeCap, extend, policy.Draw{AgentTime: time.Minute}},
+		{CaseGateStop, extend, policy.Draw{Sessions: 1}},
+		{CaseBudgetFloor, Resolution{Action: ActFund, Args: map[string]any{"eur": 2.0}}, policy.Draw{EUR: 0.01}},
+	} {
+		d := g.r.caseDraw(card, CaseFacts{Kind: c.kind}, Case{ID: 7, Kind: c.kind}, ActInput{Rung: 2, Res: c.res}, ViaChat)
+		if d == nil || d.Need != c.want {
+			t.Errorf("%s's %s draw = %+v, want the need %+v", c.kind, c.res.Action, d, c.want)
+		}
 	}
 }
 
@@ -285,6 +473,20 @@ func TestOfferedFollowsTheTable(t *testing.T) {
 	}
 }
 
+// A card with no open pull request, no push and no head is offered a
+// successor while its branch holds work main lacks, which the successor
+// continues; with none on its branch the successor is refused.
+func TestSuccessorOfferedOnBranchWork(t *testing.T) {
+	f := CaseFacts{BranchRead: true, BranchHead: "c9", Autonomy: policy.AutonomyFullAuto}
+	if why := applies(t, ActSuccessor, f, Resolution{}); why != "" || !slices.Contains(offeredNames(f, 3), ActSuccessor) {
+		t.Errorf("a branch at c9: successor refused %q, offered %v; want it offered", why, offeredNames(f, 3))
+	}
+	f.BranchHead = ""
+	if why, want := applies(t, ActSuccessor, f, Resolution{}), "no pull request is open and the card's branch holds no work"; why != want || slices.Contains(offeredNames(f, 3), ActSuccessor) {
+		t.Errorf("no work on the branch: successor refused %q, offered %v; want refused %q", why, offeredNames(f, 3), want)
+	}
+}
+
 // A retry takes a failed dependency nobody retried whose end a retry can
 // fix, and a named one a retry replaced already, whose answer names the
 // replacement; any other named one is refused with its state.
@@ -333,7 +535,8 @@ func TestRefusalBoundsEveryMoneyPart(t *testing.T) {
 	raiseBy := func(eur float64, beside *policy.Draw) Resolution {
 		return Resolution{Action: ActRaiseCeiling, Args: map[string]any{"eur": eur}, Fund: beside}
 	}
-	const pool = "the escalation pool leaves 5 sessions, 300 minutes of agent time and 10.00 EUR this month: only the human draws more"
+	const pool = "the escalation pool leaves 5 sessions, 300 minutes of agent time and 10.00 EUR this month: only the human draws more. This draw does not fit in EUR "
+	const fit = ". The largest draw that fits is 0 sessions, 0 seconds of agent time and 10.00 EUR: ask for that"
 	for _, c := range []struct {
 		name string
 		rung int
@@ -342,8 +545,8 @@ func TestRefusalBoundsEveryMoneyPart(t *testing.T) {
 	}{
 		{"rung 3 raises past the pool", 3, raiseBy(20, nil), ""},
 		{"rung 2 raises within it", 2, raiseBy(8, nil), ""},
-		{"rung 2 raises within it and funds past it", 2, raiseBy(8, &policy.Draw{EUR: 5}), pool},
-		{"rung 2 raises past it", 2, raiseBy(12, nil), pool},
+		{"rung 2 raises within it and funds past it", 2, raiseBy(8, &policy.Draw{EUR: 5}), pool + "(asked 13.00, left 10.00)" + fit},
+		{"rung 2 raises past it", 2, raiseBy(12, nil), pool + "(asked 12.00, left 10.00)" + fit},
 		// budget 5 at a ceiling of 6: the raise of 3 is written first, so a
 		// fund beside it meets a ceiling of 9, which 4 more fits and 5 more
 		// passes
@@ -384,7 +587,7 @@ func TestRefusalBoundsEveryMoneyPart(t *testing.T) {
 func TestRaiseCeilingIsNoDrawThatBuys(t *testing.T) {
 	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
 	stuck := CaseFacts{Head: "h1", Checks: "red", Findings: []string{idA}, LastDrawAt: &at, DrawHead: "h1", DrawChecks: "red",
-		DrawFindings: []string{idA}, PoolLeft: policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 20}, BudgetEUR: 5, CeilingEUR: 6}
+		DrawFindings: []string{idA}, Attempts: 2, PoolLeft: policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 20}, BudgetEUR: 5, CeilingEUR: 6}
 	raise, _ := ActionByName(ActRaiseCeiling)
 	byTwo := Resolution{Action: ActRaiseCeiling, Args: map[string]any{"eur": 2.0}}
 	beside := byTwo
@@ -411,7 +614,7 @@ func TestRaiseCeilingIsNoDrawThatBuys(t *testing.T) {
 // head and the checks alone, never taken as one whose findings went.
 func TestBoughtNothingWeighsHeadAndChecksWhenTheTimelineIsUnread(t *testing.T) {
 	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
-	f := CaseFacts{Head: "h1", Checks: "red", LastDrawAt: &at, DrawHead: "h1", DrawChecks: "red", DrawFindings: []string{idA}}
+	f := CaseFacts{Head: "h1", Checks: "red", LastDrawAt: &at, DrawHead: "h1", DrawChecks: "red", DrawFindings: []string{idA}, Attempts: 1}
 	if boughtNothing(f) {
 		t.Error("the timeline read with no findings against idA at the draw: the draw bought something")
 	}
@@ -451,7 +654,7 @@ func TestExtendRefusesLinesBelowZero(t *testing.T) {
 // every part it may take.
 func TestExtendOfLinesAloneApplies(t *testing.T) {
 	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
-	stuck := CaseFacts{Head: "h1", Checks: "red", LastDrawAt: &at, DrawHead: "h1", DrawChecks: "red"}
+	stuck := CaseFacts{Head: "h1", Checks: "red", LastDrawAt: &at, DrawHead: "h1", DrawChecks: "red", Attempts: 1}
 	lines := Resolution{Action: ActExtend, Args: map[string]any{"lines": 200}}
 	if got := applies(t, ActExtend, stuck, lines); got != "" {
 		t.Errorf("an extend of 200 lines after a draw that bought nothing = %q, want it to apply", got)
@@ -497,15 +700,15 @@ func TestExtendAnswersACapAlone(t *testing.T) {
 // takes.
 func TestExtendAtATimeCapTakesAgentTime(t *testing.T) {
 	timeCap := CaseFacts{Kind: CaseAgentTimeCap, SessionCap: 5, AgentTimeCapS: 1200, AgentTimeS: 1200}
+	const noMinutes = "this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none. " +
+		"The card's draw leaves 0 minutes and the pool 0 minutes of agent time, so rung 1 may ask for none, rung 2 for none and the human for up to 600 minutes"
 	for _, tc := range []struct {
 		name string
 		r    Resolution
 		want string
 	}{
-		{"sessions alone", Resolution{Args: map[string]any{"sessions": 1}},
-			"this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none"},
-		{"lines alone", Resolution{Args: map[string]any{"lines": 200}},
-			"this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none"},
+		{"sessions alone", Resolution{Args: map[string]any{"sessions": 1}}, noMinutes},
+		{"lines alone", Resolution{Args: map[string]any{"lines": 200}}, noMinutes},
 		{"agent time", Resolution{Args: map[string]any{"agent_time_s": 600}}, ""},
 		{"agent time past the bound", Resolution{Args: map[string]any{"agent_time_s": 36001}}, "an extend raises at most 600 minutes of agent time at once"},
 		{"agent time and sessions", Resolution{Args: map[string]any{"agent_time_s": 600, "sessions": 1}}, ""},
@@ -631,7 +834,7 @@ func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 		t.Errorf("a close of an ended card's monitor case = %q, want it taken", got)
 	}
 	if got, want := applies(t, ActSettle, CaseFacts{Kind: CaseSessionCap}, Resolution{}),
-		"settle ends a monitor flag's case alone, and this case is no monitor flag's"; got != want {
+		"settle ends a monitor flag's case alone or the ask a park settles, and this case is neither"; got != want {
 		t.Errorf("a settle of a cap case = %q, want %q", got, want)
 	}
 }
@@ -662,7 +865,7 @@ func TestTripMoneyRoundsTheNeedUp(t *testing.T) {
 // nothing the stop names.
 func TestBoughtNothingWeighsAPlannerOnItsRevision(t *testing.T) {
 	at := time.Date(2026, 11, 10, 11, 29, 0, 0, time.UTC)
-	f := CaseFacts{Kind: CaseAgentTimeCap, TimeDraw: &DrawFacts{At: at}}
+	f := CaseFacts{Kind: CaseAgentTimeCap, Attempts: 1, TimeDraw: &DrawFacts{At: at}}
 	if !boughtNothing(f) {
 		t.Error("a draw of agent time, no push and no revision since: want bought nothing")
 	}
@@ -696,7 +899,7 @@ func TestEventFactsWeighTheTimeDrawBesideAFund(t *testing.T) {
 	revision := Event{At: factsAt(11, 40), Kind: EventPlanRevision}
 	var f CaseFacts
 	f.eventFacts([]Event{fund, extend})
-	f.Kind = CaseAgentTimeCap
+	f.Kind, f.Attempts = CaseAgentTimeCap, 1
 	if f.LastDrawAt == nil || f.TimeDraw == nil || f.TimeDraw.Revised || !boughtNothing(f) {
 		t.Fatalf("facts %+v; want the extend's time draw weighed and bought nothing", f)
 	}
@@ -706,7 +909,7 @@ func TestEventFactsWeighTheTimeDrawBesideAFund(t *testing.T) {
 	}
 	var after CaseFacts
 	after.eventFacts([]Event{revision, fund, extend})
-	after.Kind = CaseAgentTimeCap
+	after.Kind, after.Attempts = CaseAgentTimeCap, 1
 	if !after.TimeDraw.Revised || boughtNothing(after) {
 		t.Errorf("a revision filed after both rows: facts %+v, want the draw bought", after)
 	}
@@ -742,11 +945,11 @@ func TestBoughtNothingTextNamesTheDrawAndWhatItWasMeasuredOn(t *testing.T) {
 		f    CaseFacts
 		want string
 	}{
-		{"planner at a time stop", CaseFacts{Kind: CaseAgentTimeCap, Planner: true, TimeDraw: &DrawFacts{At: at}},
+		{"planner at a time stop", CaseFacts{Kind: CaseAgentTimeCap, Planner: true, Attempts: 1, TimeDraw: &DrawFacts{At: at}},
 			"the last agent-time draw at 11:29" + fmt.Sprintf(tail, "plan revision")},
-		{"agent at a time stop", CaseFacts{Kind: CaseAgentTimeCap, TimeDraw: &DrawFacts{At: at}},
+		{"agent at a time stop", CaseFacts{Kind: CaseAgentTimeCap, Attempts: 1, TimeDraw: &DrawFacts{At: at}},
 			"the last agent-time draw at 11:29" + fmt.Sprintf(tail, "push")},
-		{"agent at a session cap", CaseFacts{Kind: CaseSessionCap, LastDrawAt: &at},
+		{"agent at a session cap", CaseFacts{Kind: CaseSessionCap, Attempts: 1, LastDrawAt: &at},
 			"the last draw at 11:29" + fmt.Sprintf(tail, "push")},
 	} {
 		if got := boughtNothingText(tc.f); got != tc.want {
@@ -945,6 +1148,142 @@ func TestRouteApprovalAtAPolicyClassNeedsNoApprovingReview(t *testing.T) {
 	}
 }
 
+// A pull request that no longer merges into main refuses the answers that
+// only run the gates again into the same refusal, each naming the conflict
+// and the answer that fits the stop's kind: an extend at a cap, a fund at
+// the budget floor, the cap's turn at a cap wait, else a continue. With no
+// conflict each applies, and an extend at the cap applies with the
+// conflict too.
+func TestAMergeConflictRefusesTheAnswersThatRerunTheGates(t *testing.T) {
+	ready := CaseFacts{Kind: CaseSessionCap, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true,
+		Attempts: 3, SessionCap: 3, AuditFindings: []string{idA}, AuditConfirmable: []string{idA}, FindingTexts: map[string]string{idA: "the migration runs outside its transaction"}}
+	conflict := ready
+	conflict.MergeConflict = "the branch conflicts with its base: status 409: merge failed because of conflict"
+	note := Resolution{Note: "a fixture the human judged safe"}
+	for _, name := range []string{ActRouteApproval, ActReverify, ActConfirmAudit} {
+		if got := applies(t, name, ready, note); got != "" {
+			t.Errorf("no conflict: %s applies = %q, want it to apply", name, got)
+		}
+		want := "the pull request no longer merges into main (Forgejo refused to merge main into abcdef1), so " + name +
+			" only runs the gates into the same refusal at the merge queue: extend the card for a session that merges main into the branch," +
+			" or the card closes as superseded when main already carries its work"
+		if got := applies(t, name, conflict, note); got != want {
+			t.Errorf("conflict: %s applies = %q, want %q", name, got, want)
+		}
+	}
+	for kind, fit := range map[CaseKind]string{
+		CaseAgentTimeCap:  "extend the card for a session that merges main into the branch",
+		CaseBudgetFloor:   "fund the card for a session that merges main into the branch",
+		CaseMonthCap:      "the card's next session, once the cap turns, merges main into the branch",
+		CaseAgentEscalate: "continue the card with a note for a session that merges main into the branch",
+	} {
+		f := conflict
+		f.Kind = kind
+		want := "the pull request no longer merges into main (Forgejo refused to merge main into abcdef1), so reverify" +
+			" only runs the gates into the same refusal at the merge queue: " + fit + ", or the card closes as superseded when main already carries its work"
+		if got := applies(t, ActReverify, f, note); got != want {
+			t.Errorf("conflict at %s: reverify applies = %q, want %q", kind, got, want)
+		}
+	}
+	if got := applies(t, ActExtend, conflict, Resolution{Args: map[string]any{"sessions": 1}}); got != "" {
+		t.Errorf("conflict: an extend of one session at the cap applies = %q, want it to apply", got)
+	}
+}
+
+// A timeline that could not be read leaves a merge conflict and the head's
+// audit unknown: route_approval and reverify, which would run the gates on
+// a head that may not merge, and confirm_audit, which judges the audit's
+// findings, are refused naming the unread timeline and what fits, never a
+// reverify that runs the audit again. A rung below the human may hand the
+// case up; the human, with no rung above, tries again. Rung 0's
+// route_approval does not fire then; read, it does.
+func TestAnUnreadTimelineRefusesTheGatesReruns(t *testing.T) {
+	ready := CaseFacts{Kind: CaseSessionCap, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true, Partial: []string{"timeline"}}
+	const unread = "the card's timeline could not be read, so it is unknown whether the pull request still merges into main, which "
+	for _, tc := range []struct {
+		action string
+		rung   int
+		r      Resolution
+		want   string
+	}{
+		{ActRouteApproval, 2, Resolution{}, unread + "route_approval needs: try again in a minute, or hand it up"},
+		{ActReverify, 1, Resolution{}, unread + "reverify needs: try again in a minute, or hand it up"},
+		{ActReverify, 3, Resolution{}, unread + "reverify needs: try again in a minute"},
+		{ActConfirmAudit, 3, Resolution{Note: "fixtures"}, "the card's timeline could not be read, so the head's audit findings and whether the pull request still merges into main are unknown: try again in a minute"},
+	} {
+		a, _ := ActionByName(tc.action)
+		tc.r.Action = tc.action
+		if got := a.refusal(ready, tc.rung, tc.r); got != tc.want {
+			t.Errorf("rung %d's %s = %q, want %q", tc.rung, tc.action, got, tc.want)
+		}
+	}
+	c := Case{Kind: CaseSessionCap}
+	if res, _ := rung0[0].Fire(context.Background(), nil, c, ready); res != nil {
+		t.Errorf("rung 0 fired %+v on an unread timeline", res)
+	}
+	read := ready
+	read.Partial = nil
+	if res, _ := rung0[0].Fire(context.Background(), nil, c, read); res == nil || res.Action != ActRouteApproval {
+		t.Errorf("rung 0 fired %+v on a read timeline, want route_approval", res)
+	}
+}
+
+// Rung 0 takes nothing on facts read in part, except where a fact's own
+// actions refuse while it is unread: a hold that could not be read refuses
+// the starts and closes it guards (holdRefusal), so rung 0 goes on to its
+// rows, and an unread timeline stops it.
+func TestRungZeroGoesOnPastAnUnreadHold(t *testing.T) {
+	c := Case{Kind: CaseDependencyFailed}
+	for _, tc := range []struct {
+		partial []string
+		want    string
+	}{
+		{[]string{partialHold, partialPlanHold}, "no resolver fits"},
+		{[]string{partialHold, "timeline"}, "facts read partly: timeline, so rung 0 took nothing"},
+	} {
+		res, found, err := new(Runner).rungZero(context.Background(), Task{ID: "t1"}, c, CaseFacts{Kind: CaseDependencyFailed, Partial: tc.partial}, nil)
+		if err != nil || res != nil || found != tc.want {
+			t.Errorf("partial %v: rung 0 = %+v, %q, %v; want nothing, %q", tc.partial, res, found, err, tc.want)
+		}
+	}
+	// its retry of a failed dependency stands on an unread hold
+	i := slices.IndexFunc(rung0, func(r resolver) bool { return r.Name == "retry_dependency" })
+	failed := CaseFacts{Kind: CaseDependencyFailed, Partial: []string{partialHold, partialPlanHold}, Dependencies: []DepFact{{TaskID: "t-a", Status: "failed"}}}
+	if res, _ := rung0[i].Fire(context.Background(), nil, Case{Kind: CaseDependencyFailed, StateKey: "t-a"}, failed); res == nil || res.Action != ActRetry {
+		t.Errorf("rung 0's retry on an unread hold = %+v, want the retry of t-a", res)
+	}
+}
+
+// confirm_audit names a finding at a file of the head's newest audit by
+// its whole text, or by a start of it no other such finding shares: a text
+// that is another's start still names its own finding, a start of two is
+// refused with how many it names, a start of none is refused, and so is
+// the count of findings past the card's list, which is at no file.
+func TestConfirmAuditNamesOneFindingWhole(t *testing.T) {
+	texts := map[string]string{"a": "secrets at a.go", "b": "secrets at a.go.orig", "c": "network egress at b.go", "d": "... and 3 more"}
+	f := CaseFacts{Kind: CaseGateStop, AuditFindings: []string{"a", "b", "c", "d"}, AuditConfirmable: []string{"a", "b", "c"}, FindingTexts: texts}
+	for _, tc := range []struct{ named, key, refusal string }{
+		{"secrets at a.go", "secrets at a.go", ""},
+		{"secrets at a.go.o", "secrets at a.go.orig", ""},
+		{"network", "network egress at b.go", ""},
+		{"secrets", "", `"secrets" starts 2 findings of the head's audit; name each one whole, one per line, or none to confirm them all`},
+		{"secrets at a.go:154", "", `the head's audit holds no finding "secrets at a.go:154" names; name each finding as the case lists it, its item at its file, or none to confirm them all`},
+		{"... and", "", `"... and" names a finding at no file, which no confirmation covers; name the findings at a file, or none to confirm them all`},
+	} {
+		if key, _ := f.auditFindingNamed(tc.named); key != tc.key {
+			t.Errorf("%q names %q, want %q", tc.named, key, tc.key)
+		}
+		if got := applies(t, ActConfirmAudit, f, Resolution{Note: "fixtures", Args: map[string]any{"findings": tc.named}}); got != tc.refusal {
+			t.Errorf("%q: confirm_audit applies = %q, want %q", tc.named, got, tc.refusal)
+		}
+	}
+	f.AuditFindings, f.AuditConfirmable = []string{"d"}, nil
+	if got, want := applies(t, ActConfirmAudit, f, Resolution{Note: "fixtures"}),
+		"the head's newest audit holds no finding at a file a human could confirm: reverify runs the audit on the head again"; got != want {
+		t.Errorf("only the count past the list: confirm_audit applies = %q, want %q", got, want)
+	}
+}
+
 // A decision's riding draw counts before the cap check. At a cap of 3
 // reached with 3 attempts, a handover that draws one session applies (the
 // cap becomes 4), one that draws nothing does not, and a draw of agent time
@@ -1047,6 +1386,54 @@ func TestBoardRowsApplyOnTheirPreconditions(t *testing.T) {
 	}
 }
 
+// Settling a plan's criteria by word is a human's act. On a criteria case
+// and on the merge of a criteria card, rung 2 takes no verdict (waive, met,
+// not_met), no confirmation and no denial: each is refused with the
+// hand-up, and its statement lists each as not offered with that reason.
+// The human takes all of them, and rung 2 keeps the grant, which buys a
+// card and waives nothing.
+func TestSettlingCriteriaByWordIsTheHumans(t *testing.T) {
+	const want = "settling a plan's criteria by word is the human's: hand it up with your recommendation; the human waives, denies or confirms"
+	criteria := CaseFacts{Kind: CasePlanCriteria}
+	merge := CaseFacts{Kind: CaseMergeApproval, Criteria: true, Head: "h1", PR: 9, PROpen: true, Checks: "green"}
+	verdict := func(v, note string) Resolution {
+		return Resolution{Args: map[string]any{"criterion": "k1", "verdict": v}, Note: note}
+	}
+	for _, c := range []struct {
+		name, action string
+		f            CaseFacts
+		r            Resolution
+	}{
+		{"waive", ActAnswerCriteria, criteria, verdict("waive", "out of scope")},
+		{"met on a merge", ActAnswerCriteria, merge, verdict("met", "")},
+		{"not_met on a merge", ActAnswerCriteria, merge, verdict("not_met", "the page breaks")},
+		{"confirm", ActConfirmCriteria, criteria, Resolution{Note: "main holds every page"}},
+		{"deny", ActDenyCriteria, criteria, Resolution{Note: "not now"}},
+	} {
+		a, _ := ActionByName(c.action)
+		c.r.Action = c.action
+		if got := a.refusal(c.f, 2, c.r); got != want {
+			t.Errorf("%s: rung 2's refusal = %q, want %q", c.name, got, want)
+		}
+		if got := a.refusal(c.f, 3, c.r); got != "" {
+			t.Errorf("%s: the human's refusal = %q, want none", c.name, got)
+		}
+	}
+	grant, _ := ActionByName(ActGrantCriteria)
+	if got := grant.refusal(criteria, 2, Resolution{Action: ActGrantCriteria}); got != "" {
+		t.Errorf("rung 2's grant = %q, want it taken", got)
+	}
+	text := new(Runner).rungStatement(Case{Kind: CasePlanCriteria, Problem: "criteria not met: k1"}, criteria, "", nil, 2)
+	for _, name := range []string{ActAnswerCriteria, ActConfirmCriteria, ActDenyCriteria} {
+		if line := "- " + name + ": not offered: " + want + "\n"; !strings.Contains(text, line) {
+			t.Errorf("rung 2's statement lacks %q:\n%s", line, text)
+		}
+	}
+	if !strings.Contains(text, "- "+ActGrantCriteria+"\n") {
+		t.Errorf("rung 2's statement does not offer the grant:\n%s", text)
+	}
+}
+
 // A merge approval whose change is a migration, the runner's or a class the
 // policy marks human keeps a human on its merge at full auto: rung 2's
 // approve_merge is refused naming the class and the hand-up, and not
@@ -1102,5 +1489,88 @@ func TestRungZeroIsOfferedNoExtend(t *testing.T) {
 				t.Errorf("%s: rung %d is offered %v, want the extend", f.Kind, rung, got)
 			}
 		}
+	}
+}
+
+// A plan with open criteria is restarted by no rung 2: the restart's close
+// waives them, and a waiver drops a requirement of the spec, the human's.
+// Rung 2's restart_plan is refused naming the hand-up and is not offered,
+// and so it is when the count could not be read; the human may pick it,
+// and a plan with none open stays rung 2's.
+func TestRestartPlanOverOpenCriteriaIsTheHumansAlone(t *testing.T) {
+	a, _ := ActionByName(ActRestartPlan)
+	const why = ", which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: hand it up with restart_plan as the recommendation"
+	for _, c := range []struct {
+		name    string
+		open    int
+		partial []string
+		want    string
+	}{
+		{"none open", 0, nil, ""},
+		{"one open", 1, nil, "the plan holds 1 open criterion" + why},
+		{"three open", 3, nil, "the plan holds 3 open criteria" + why},
+		{"the count unread", 0, []string{"open criteria"},
+			"the plan's open criteria could not be read, so rung 2 cannot tell whether a restart's close waives any, and a waiver is the human's: hand it up with restart_plan as the recommendation"},
+	} {
+		f := CaseFacts{Kind: CaseDependencyFailed, Plan: "p", PlanStatus: "done", OpenCriteria: c.open, Partial: c.partial}
+		if got := a.refusal(f, 2, Resolution{Action: ActRestartPlan, Note: "one card"}); got != c.want {
+			t.Errorf("%s: rung 2's restart_plan = %q, want %q", c.name, got, c.want)
+		}
+		if got := slices.ContainsFunc(Offered(f, 2), func(o Action) bool { return o.Name == ActRestartPlan }); got != (c.want == "") {
+			t.Errorf("%s: restart_plan offered to rung 2 = %v, want %v", c.name, got, c.want == "")
+		}
+		if got := a.refusal(f, 3, Resolution{Action: ActRestartPlan, Note: "one card"}); got != "" {
+			t.Errorf("%s: the human's restart_plan = %q, want none", c.name, got)
+		}
+	}
+}
+
+// The case facts of the successor that carries a plan card's key name its
+// plan, so a replan while it runs goes to that plan, and the integration
+// key's successor answers the plan's criteria on its merge approval.
+func TestCaseFactsOfAPlanCardsSuccessorNameItsPlan(t *testing.T) {
+	ctx := context.Background()
+	r, s, _ := tenCriteriaPlan(t, "failed")
+	succ := SuccessorID("card-1")
+	s.tasks[succ] = Task{ID: succ, Kind: "agent", Repository: "linkshort/linkshort", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "card-1",
+		Status: "running", Track: policy.TrackDirect}
+	f, err := r.tripFacts(ctx, s.tasks[succ], "", "")
+	if err != nil || f.Plan != "t-plan" || !f.Criteria {
+		t.Fatalf("the successor's facts: plan %q, criteria %v, %v; want t-plan and true", f.Plan, f.Criteria, err)
+	}
+	a, _ := ActionByName(ActReplan)
+	if why := a.refusal(f, 2, Resolution{Action: ActReplan}); why != "" {
+		t.Fatalf("replan of the running successor = %q, want it offered", why)
+	}
+}
+
+// The case facts of a plan and of its card count the plan's open criteria
+// by its Close's rule. On the plan's wait on its failed card, Act refuses
+// rung 2's restart_plan over them with the table's reason; once every
+// criterion is waived the count is 0.
+func TestCaseFactsCountThePlansOpenCriteria(t *testing.T) {
+	ctx := context.Background()
+	r, s, _ := tenCriteriaPlan(t, "done", "failed")
+	for _, id := range []string{"t-plan", "card-1"} {
+		if f, err := r.tripFacts(ctx, s.tasks[id], "", ""); err != nil || f.OpenCriteria != 10 {
+			t.Fatalf("tripFacts of %s = %d open criteria, %v; want 10", id, f.OpenCriteria, err)
+		}
+	}
+	s.cases = []Case{{ID: 9, TaskID: "t-plan", Kind: CaseDependencyFailed, Status: CaseOpen}}
+	_, err := r.Act(ctx, ActInput{TaskID: "t-plan", CaseID: 9, By: "sebastian", Rung: 2, Res: Resolution{Action: ActRestartPlan, Note: "one card"}})
+	want := "the plan holds 10 open criteria, which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: hand it up with restart_plan as the recommendation"
+	var refused ErrActRefused
+	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("rung 2's restart_plan = %v, want the refusal %q", err, want)
+	}
+	var waivers []CriterionVerdict
+	for i := 1; i <= 10; i++ {
+		waivers = append(waivers, CriterionVerdict{Criterion: fmt.Sprintf("k%d", i), Verdict: "waived", Evidence: "x", Kind: CriterionInvariant})
+	}
+	if err := s.PutCriteriaVerdicts(ctx, "card-1", CriteriaSourceApprover, "sebastian", waivers); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := r.tripFacts(ctx, s.tasks["card-1"], "", ""); err != nil || f.OpenCriteria != 0 {
+		t.Fatalf("tripFacts after the waivers = %d open criteria, %v; want 0", f.OpenCriteria, err)
 	}
 }

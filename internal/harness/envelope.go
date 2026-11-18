@@ -16,9 +16,14 @@ type WorkerEnvelope struct {
 
 // PushRequest is the worker asking for its push token once every agent
 // process is dead and Commit is made: factoryd mints the token then and
-// posts it to the worker's POST /push on MessagePort.
+// posts it to the worker's POST /push on MessagePort. Own is the ask's
+// ordinal, the first ask's 1: the worker raises it when git refused its
+// push as a dead credential and it asks for a fresh token, and the answer
+// to each ordinal is a token minted under a fresh name (task-<id>-push-own-
+// <Own>), so a refused push retries the push, not the work.
 type PushRequest struct {
 	Commit string `json:"commit"`
+	Own    int    `json:"own,omitempty"`
 }
 
 // Repro is the worker's reproduction mode's report: the command's exit
@@ -52,7 +57,10 @@ type ProofFile struct {
 // large for the line), and the regular files it wrote under
 // CHECK_ARTIFACTS, each cut at 256 KiB on a character boundary, as many
 // as the line holds. Output names a report left out; Dropped names the
-// artifacts the line had no room for.
+// artifacts the line had no room for. Suite is the directory check test
+// ran in when the entry's suite declares its test no more and exactly one
+// other directory does; Declared names the directories when two or more
+// do, and the entry ran in its own suite.
 type ProofRun struct {
 	ID        string            `json:"id"`
 	Started   bool              `json:"started,omitempty"`
@@ -61,6 +69,8 @@ type ProofRun struct {
 	Report    []byte            `json:"report,omitempty"`
 	Artifacts map[string][]byte `json:"artifacts,omitempty"`
 	Dropped   []string          `json:"dropped,omitempty"`
+	Suite     string            `json:"suite,omitempty"`
+	Declared  []string          `json:"declared,omitempty"`
 }
 
 // Proofs ends the proofs mode's report: Error says why no entry ran.

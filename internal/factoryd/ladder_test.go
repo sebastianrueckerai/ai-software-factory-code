@@ -106,6 +106,7 @@ func TestRungZeroRowsFireOnTheirFacts(t *testing.T) {
 		want *Resolution
 	}{
 		{"green and approved", CaseSessionCap, head("green", true), &Resolution{Action: ActRouteApproval}},
+		{"green and approved, no longer merging into main", CaseSessionCap, func() CaseFacts { f := head("green", true); f.MergeConflict = "conflict"; return f }(), nil},
 		{"green, not approved", CaseGateStop, head("green", false), nil},
 		{"red", CaseBudgetFloor, head("red", false), &Resolution{Action: ActRerunChecks}},
 		{"red, run again", CaseCheckinShare, func() CaseFacts { f := head("red", false); f.RerunOnHead = true; return f }(), nil},
@@ -171,7 +172,7 @@ func TestHandedUpByReadsAMomentsHandUpStepAsTheHandUp(t *testing.T) {
 		{Rung: 0, Outcome: StepHandedUp, Found: "no resolver fits"},
 		{Rung: 1, Outcome: StepHandedUp, Decision: RungHandUp, Grounds: "a goal conflict: the objective contradicts the review"},
 	}
-	up := handedUpBy(steps, 0, "")
+	up := HandedUpBy(steps, 0, "")
 	if up == nil || up.Action != "" || up.Grounds != "" || up.Found != "a goal conflict: the objective contradicts the review" || up.Rung != 1 {
 		t.Fatalf("hand-up = %+v, want the moment's grounds found, no action, rung 1", up)
 	}
@@ -235,6 +236,8 @@ func TestRungZeroTakesNothingOnFactsReadPartly(t *testing.T) {
 			case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/demo-app/demo-app/issues/12/comments":
 				w.WriteHeader(http.StatusCreated)
 				fmt.Fprint(w, `{"id": 501}`)
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/factory-agent/demo-app/branches/factory/t1":
+				http.NotFound(w, r)
 			default:
 				fmt.Fprint(w, `[]`)
 			}
@@ -246,7 +249,7 @@ func TestRungZeroTakesNothingOnFactsReadPartly(t *testing.T) {
 		if unread {
 			g.r.objects = unreadable{ObjectStore: g.r.objects, key: "sessions/t1/timeline.jsonl"}
 		}
-		out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: capReached + "\nlast: no session produced a result", Head: "h2"}, tripAttempt{N: 1})
+		out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: CapReached + "\nlast: no session produced a result", Head: "h2"}, tripAttempt{N: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -269,4 +272,78 @@ func TestRungZeroTakesNothingOnFactsReadPartly(t *testing.T) {
 			t.Fatalf("case %+v, steps %+v; want it at the human, rung 0 handing up on the unread timeline", c, steps)
 		}
 	})
+}
+
+// The lead of a money or cap ask names the review and audit findings
+// standing on the head, in the order the gates raised them, and stands
+// before no such finding: not for another kind, not for findings the
+// checks alone raised, and cut past the fifth finding.
+func TestFindingsLead(t *testing.T) {
+	f := CaseFacts{Head: "h2", Findings: []string{"r1", "a1", "c1"},
+		FindingTexts: map[string]string{"r1": "the review's finding", "a1": "the audit's finding", "c1": "the checks' finding"},
+		FindingOrder: []string{"c1", "r1", "a1"}, ReviewFindings: []string{"r1"}, AuditFindings: []string{"a1"}}
+	if got := FindingsLead(CaseSessionCap, f); got != `The review or the audit left 2 findings unresolved on the head h2: "the review's finding"; "the audit's finding".` {
+		t.Fatalf("lead = %q", got)
+	}
+	if got := FindingsLead(CaseGateStop, f); got != "" {
+		t.Fatalf("a gate stop leads %q, want nothing", got)
+	}
+	f.ReviewFindings, f.AuditFindings = nil, nil
+	if got := FindingsLead(CaseBudgetFloor, f); got != "" {
+		t.Fatalf("the checks' findings alone lead %q, want nothing", got)
+	}
+	f.ReviewFindings, f.AuditFindings = []string{"r1"}, []string{"a1"}
+	f.FindingOrder = nil
+	f.Findings = []string{"r1", "r2", "r3", "r4", "r5", "r6", "a1"}
+	for id, text := range map[string]string{"r2": "two", "r3": "three", "r4": "four", "r5": "five", "r6": "six"} {
+		f.FindingTexts[id] = text
+		f.ReviewFindings = append(f.ReviewFindings, id)
+	}
+	if got := FindingsLead(CaseAgentTimeCap, f); !strings.HasSuffix(got, `"five"; and 2 more.`) || !strings.HasPrefix(got, "The review or the audit left 7 findings unresolved on the head h2:") {
+		t.Fatalf("lead = %q, want the findings cut past the fifth", got)
+	}
+}
+
+// A stop at the head, or a repeat of the findings, leads with a merge
+// conflict standing on the head; a human card's ask and an agent's
+// question do not, nor does a head with no conflict.
+func TestConflictLead(t *testing.T) {
+	f := CaseFacts{Head: "h2", MergeConflict: "the branch conflicts with its base"}
+	want := "The pull request no longer merges into main: Forgejo refused to merge main into head h2. " +
+		"Only a session that merges main into the branch clears it, and no gate rerun does."
+	for _, kind := range []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseGateStop, CaseFindingsRepeated} {
+		if got := conflictLead(kind, f); got != want {
+			t.Errorf("%s leads %q, want %q", kind, got, want)
+		}
+	}
+	for _, kind := range []CaseKind{CaseHumanCard, CaseAgentEscalate} {
+		if got := conflictLead(kind, f); got != "" {
+			t.Errorf("%s leads %q, want nothing", kind, got)
+		}
+	}
+	if got := conflictLead(CaseSessionCap, CaseFacts{Head: "h2"}); got != "" {
+		t.Errorf("no conflict leads %q, want nothing", got)
+	}
+}
+
+// A session cap on a head that no longer merges into main and holds an
+// audit finding leads with the conflict, then the finding, then the cap's
+// own ask; the case stores that lead for the human's ask.
+func TestTripCaseLeadsWithTheConflictThenTheFindings(t *testing.T) {
+	g := newFactsRig(t)
+	f := CaseFacts{Head: "h2", PR: 9, PROpen: true, MergeConflict: "the branch conflicts with its base",
+		Findings: []string{"a1"}, AuditFindings: []string{"a1"}, FindingTexts: map[string]string{"a1": "the migration runs outside its transaction"}}
+	c, _, err := g.r.tripCase(context.Background(), g.store.tasks["t1"], f, TripInput{TaskID: "t1", Reason: CapReached + "\nlast: the pull request no longer merges into main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lead := "The pull request no longer merges into main: Forgejo refused to merge main into head h2. " +
+		"Only a session that merges main into the branch clears it, and no gate rerun does. " +
+		`The review or the audit left one finding unresolved on the head h2: "the migration runs outside its transaction".`
+	if c.Kind != CaseSessionCap || !strings.HasPrefix(c.Problem, lead+" ") || len(c.Problem) == len(lead)+1 {
+		t.Fatalf("case %s problem = %q, want the session cap's ask led by %q", c.Kind, c.Problem, lead)
+	}
+	if got := c.Facts["ask_lead"]; got != lead {
+		t.Fatalf("ask_lead = %v, want %q", got, lead)
+	}
 }

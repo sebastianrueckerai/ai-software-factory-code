@@ -74,6 +74,7 @@ type memStore struct {
 	mu     sync.Mutex
 	tasks  map[string]Task
 	audits []AuditRow
+	events []EventRow
 	spends map[string]float64
 	ledger []ledgerRow
 	usages []policy.Usage // each ledger row's
@@ -281,6 +282,19 @@ func (m *memStore) auditRows() []AuditRow {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]AuditRow(nil), m.audits...)
+}
+
+func (m *memStore) InsertEvent(_ context.Context, row EventRow) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.events = append(m.events, row)
+	return nil
+}
+
+func (m *memStore) eventRows() []EventRow {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]EventRow(nil), m.events...)
 }
 
 func (m *memStore) spentOf(id string) (float64, bool) {
@@ -3051,5 +3065,357 @@ func TestASessionsCallHoldsTheGateReserveOut(t *testing.T) {
 	rr, store = call(Identity{TaskID: "a", SAUID: "u"})
 	if rr.Code != http.StatusOK || len(store.reqs) != 1 || store.reqs[0].ReserveEUR != 0 {
 		t.Fatalf("factoryd call = %d %s with requests %+v, want 200 and no reserve", rr.Code, rr.Body.String(), store.reqs)
+	}
+}
+
+// providerLimitPolicy is testPolicy with the provider-limit section: zai
+// reads Asia/Singapore, utc reads nothing but the default set, and custom
+// replaces the default set with its own wording.
+func providerLimitPolicy() policy.Version {
+	pv := testPolicy(1, 20)
+	pv.Document.ProviderLimits = map[string]policy.ProviderLimit{
+		"zai":    {TZ: "Asia/Singapore"},
+		"utc":    {},
+		"custom": {TZ: "UTC", Patterns: []string{`(?i)next window opens (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})`}},
+	}
+	pv.Document.Classes["big"] = policy.Class{Models: []string{"big"}, Provider: "zai"}
+	pv.Document.Classes["utc-class"] = policy.Class{Models: []string{"big"}, Provider: "utc"}
+	pv.Document.Classes["custom-class"] = policy.Class{Models: []string{"big"}, Provider: "custom"}
+	return pv
+}
+
+// runProviderLimitCall serves one chat call on alias big under policy pv
+// and the upstream answer resp, and returns the recorder and the store.
+func runProviderLimitCall(t *testing.T, pv *policy.Version, resp stubResp) (*httptest.ResponseRecorder, *memStore) {
+	t.Helper()
+	stub := newStubUpstream(t)
+	stub.setResp(resp)
+	store := newMemStore()
+	task := Task{Classes: []string{"big"}, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running", ModelAlias: "big"}
+	store.tasks[task.ID] = task
+	if pv != nil {
+		store.setPolicy(*pv)
+	}
+	s := NewServer(ServerOptions{
+		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
+		Store:      store,
+		Minter:     &fakeMinter{},
+		LiteLLMURL: stub.URL,
+		Prices:     testPrices,
+	})
+	rr := doChat(t, s.Routes("test"), chatBody("big"))
+	return rr, store
+}
+
+func TestProviderLimitZaiBodyFreeze(t *testing.T) {
+	pv := providerLimitPolicy()
+	tests := []struct {
+		name       string
+		classes    string // the policy class the task holds
+		resp       stubResp
+		wantReset  string
+		wantStatus int
+	}{
+		{
+			// today's zai body: the naive stamp reads Asia/Singapore and
+			// the reset carries the minute's margin
+			name:       "zai body reads Asia/Singapore",
+			classes:    "big",
+			resp:       stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"Usage limit reached for 5 hour. Your limit will reset at 2026-11-15 01:04:50","type":"rate_limit_error","param":null,"code":"429"}}`},
+			wantReset:  "2026-11-14T17:05:50Z",
+			wantStatus: http.StatusTooManyRequests,
+		},
+		{
+			// a naive stamp with no zone of its own reads UTC
+			name:       "a naive stamp with no tz reads UTC",
+			classes:    "utc-class",
+			resp:       stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"Your limit will reset at 2026-11-15 01:04:50"}}`},
+			wantReset:  "2026-11-15T01:05:50Z",
+			wantStatus: http.StatusTooManyRequests,
+		},
+		{
+			// a stamp with an offset reads as is
+			name:    "an offset reset header reads as is",
+			classes: "big",
+			resp: stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"rate limited"}}`,
+				headers: map[string]string{"x-ratelimit-reset": "2026-11-15T01:04:50+08:00"}},
+			wantReset:  "2026-11-14T17:05:50Z",
+			wantStatus: http.StatusTooManyRequests,
+		},
+		{
+			// a reset header beats an HTTP-date Retry-After
+			name:    "a reset header beats a dated Retry-After",
+			classes: "big",
+			resp: stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"rate limited"}}`,
+				headers: map[string]string{"Retry-After": "Mon, 02 Nov 2026 01:04:50 GMT", "x-ratelimit-reset": "2026-11-15T01:04:50+08:00"}},
+			wantReset:  "2026-11-14T17:05:50Z",
+			wantStatus: http.StatusTooManyRequests,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := pv.Tree.Document
+			store := newMemStore()
+			task := Task{Classes: []string{tt.classes}, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running", ModelAlias: "big"}
+			store.tasks[task.ID] = task
+			store.setPolicy(policy.Version{ID: pv.ID, Commit: pv.Commit, Tree: policy.Tree{Document: doc}})
+			stub := newStubUpstream(t)
+			stub.setResp(tt.resp)
+			s := NewServer(ServerOptions{
+				Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
+				Store:      store,
+				Minter:     &fakeMinter{},
+				LiteLLMURL: stub.URL,
+				Prices:     testPrices,
+			})
+			rr := doChat(t, s.Routes("test"), chatBody("big"))
+			if rr.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rr.Code, tt.wantStatus, rr.Body.String())
+			}
+			if got := rr.Header().Get(HeaderDecision); got != RefusedProviderLimit {
+				t.Fatalf("decision = %q, want %q (body %s)", got, RefusedProviderLimit, rr.Body.String())
+			}
+			words := upstreamMessage([]byte(tt.resp.body))
+			var body struct {
+				Error struct{ Message string }
+				Class string
+				Reset string
+				Words string
+			}
+			if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body %s: %v", rr.Body.String(), err)
+			}
+			if body.Class != tt.classes || body.Reset != tt.wantReset || body.Words != words || body.Error.Message != words {
+				t.Fatalf("body = {class %q reset %q words %q message %q}, want class %q reset %q words %q", body.Class, body.Reset, body.Words, body.Error.Message, tt.classes, tt.wantReset, words)
+			}
+			last := store.auditRows()
+			if len(last) == 0 || last[len(last)-1].Decision != RefusedProviderLimit {
+				t.Fatalf("audit rows %+v, want a %s row", last, RefusedProviderLimit)
+			}
+			if want := "provider limit for class " + tt.classes + ": reset " + tt.wantReset + ": " + words; last[len(last)-1].Reason != want {
+				t.Fatalf("reason = %q, want %q", last[len(last)-1].Reason, want)
+			}
+		})
+	}
+}
+
+func TestProviderLimitUndatedKeepsLadder(t *testing.T) {
+	pv := providerLimitPolicy()
+	tests := []struct {
+		name        string
+		resp        stubResp
+		wantStatus  int
+		wantReason  string
+		wantErrType string
+	}{
+		{
+			name:        "a bare 429",
+			resp:        stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"rate limited","type":"rate_limit_error","param":null,"code":"429"}}`},
+			wantStatus:  http.StatusTooManyRequests,
+			wantReason:  "upstream 429",
+			wantErrType: "rate_limit_error",
+		},
+		{
+			name:        "a relative hint in words",
+			resp:        stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"rate limited, try again in 1 second","type":"rate_limit_error","param":null,"code":"429"}}`},
+			wantStatus:  http.StatusTooManyRequests,
+			wantReason:  "upstream 429",
+			wantErrType: "rate_limit_error",
+		},
+		{
+			name:        "a 402 with no readable datetime",
+			resp:        stubResp{status: http.StatusPaymentRequired, body: `{"error":{"message":"payment required","type":"insufficient_quota","param":null,"code":"402"}}`},
+			wantStatus:  http.StatusPaymentRequired,
+			wantReason:  "upstream 402",
+			wantErrType: "insufficient_quota",
+		},
+		{
+			// the seconds form of Retry-After is a relative hint
+			name: "a seconds-form Retry-After",
+			resp: stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"rate limited","type":"rate_limit_error","param":null,"code":"429"}}`,
+				headers: map[string]string{"Retry-After": "30"}},
+			wantStatus:  http.StatusTooManyRequests,
+			wantReason:  "upstream 429",
+			wantErrType: "rate_limit_error",
+		},
+		{
+			// OpenAI's relative reset headers never freeze
+			name: "an x-ratelimit-reset-requests relative hint",
+			resp: stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"rate limited","type":"rate_limit_error","param":null,"code":"429"}}`,
+				headers: map[string]string{"x-ratelimit-reset-requests": "1s", "x-ratelimit-reset-tokens": "6m0s"}},
+			wantStatus:  http.StatusTooManyRequests,
+			wantReason:  "upstream 429",
+			wantErrType: "rate_limit_error",
+		},
+		{
+			// Google's relative retryDelay never freezes
+			name:        "a retryDelay relative hint",
+			resp:        stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"Resource has been exhausted, retryDelay: 32s","type":"rate_limit_error","param":null,"code":"429"}}`},
+			wantStatus:  http.StatusTooManyRequests,
+			wantReason:  "upstream 429",
+			wantErrType: "rate_limit_error",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rr, store := runProviderLimitCall(t, &pv, tt.resp)
+			if rr.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rr.Code, tt.wantStatus, rr.Body.String())
+			}
+			// the passthrough names no decision header
+			if got := rr.Header().Get(HeaderDecision); got != "" {
+				t.Fatalf("decision header = %q, want none (body %s)", got, rr.Body.String())
+			}
+			rows := store.auditRows()
+			if len(rows) == 0 || rows[len(rows)-1].Decision != "error_upstream" || rows[len(rows)-1].Reason != tt.wantReason {
+				t.Fatalf("audit rows %+v, want error_upstream %q", rows, tt.wantReason)
+			}
+			if !strings.Contains(rr.Body.String(), tt.wantErrType) {
+				t.Fatalf("body %s does not pass the upstream error through", rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestProviderLimitPatternSets(t *testing.T) {
+	zaiBody := `{"error":{"message":"Your limit will reset at 2026-11-15 01:04:50"}}`
+	newWording := `{"error":{"message":"next window opens 2026-11-15 01:04:50"}}`
+	pv := providerLimitPolicy()
+
+	// the custom set is used alone: its own wording freezes
+	rr, _ := runProviderLimitCall(t, setClass(pv, "custom-class"), stubResp{status: http.StatusTooManyRequests, body: newWording})
+	if rr.Header().Get(HeaderDecision) != RefusedProviderLimit {
+		t.Fatalf("custom wording decision = %q, want %q (body %s)", rr.Header().Get(HeaderDecision), RefusedProviderLimit, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "2026-11-15T01:05:50Z") {
+		t.Fatalf("custom wording body %s, want the UTC reset", rr.Body.String())
+	}
+	// and a default-set wording does not freeze under the custom set
+	rr, store := runProviderLimitCall(t, setClass(pv, "custom-class"), stubResp{status: http.StatusTooManyRequests, body: zaiBody})
+	if got := rr.Header().Get(HeaderDecision); got != "" {
+		t.Fatalf("default wording under the custom set decision header = %q, want none", got)
+	}
+	if rows := store.auditRows(); len(rows) == 0 || rows[len(rows)-1].Reason != "upstream 429" {
+		t.Fatalf("audit rows %+v, want upstream 429", rows)
+	}
+	// an entry without patterns freezes on the default set
+	rr, _ = runProviderLimitCall(t, setClass(pv, "utc-class"), stubResp{status: http.StatusTooManyRequests, body: zaiBody})
+	if rr.Header().Get(HeaderDecision) != RefusedProviderLimit || !strings.Contains(rr.Body.String(), "2026-11-15T01:05:50Z") {
+		t.Fatalf("no-patterns entry decision = %q body %s, want the default set's freeze at the UTC reset", rr.Header().Get(HeaderDecision), rr.Body.String())
+	}
+}
+
+// setClass points the task's class at the named policy class.
+func setClass(pv policy.Version, class string) *policy.Version {
+	pv.Tree.Document.Classes = map[string]policy.Class{"big": pv.Tree.Document.Classes[class]}
+	return &pv
+}
+
+// TestProviderLimitHoldLocalRefusal: the class hold arms on the first
+// dated refusal, every later work call inside the freeze is answered
+// locally with the same named refusal and no upstream request, a call
+// after the lapse probes once and re-arms on the new reset, and the
+// class_frozen and class_resumed events land with class, reset and words.
+func TestProviderLimitHoldLocalRefusal(t *testing.T) {
+	stub := newStubUpstream(t)
+	store := newMemStore()
+	task := Task{Classes: []string{"big"}, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running", ModelAlias: "big", Repository: "sf/code"}
+	store.tasks[task.ID] = task
+	pv := providerLimitPolicy()
+	store.setPolicy(pv)
+	s := NewServer(ServerOptions{
+		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
+		Store:      store,
+		Minter:     &fakeMinter{},
+		LiteLLMURL: stub.URL,
+		Prices:     testPrices,
+	})
+	base := time.Date(2026, 11, 14, 16, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return base }
+	h := s.Routes("test")
+
+	// the first call reaches the upstream and arms the hold: zai's
+	// Singapore reset 2026-11-15 01:04:50 reads 2026-11-14T17:04:50Z,
+	// answered with its minute's margin
+	first := `{"error":{"message":"Usage limit reached for 5 hour. Your limit will reset at 2026-11-15 01:04:50","type":"rate_limit_error","param":null,"code":"429"}}`
+	stub.setResp(stubResp{status: http.StatusTooManyRequests, body: first})
+	if rr := doChat(t, h, chatBody("big")); rr.Header().Get(HeaderDecision) != RefusedProviderLimit {
+		t.Fatalf("the arming call = %d %q: %s, want a refused_provider_limit", rr.Code, rr.Header().Get(HeaderDecision), rr.Body.String())
+	}
+	wantReset := "2026-11-14T17:05:50Z"
+	if hits := len(stub.auths); hits != 1 {
+		t.Fatalf("upstream hits after the arming call = %d, want 1", hits)
+	}
+
+	// a second call inside the freeze is answered locally: the same
+	// until, no upstream request on the wire
+	s.now = func() time.Time { return base.Add(time.Minute) }
+	rr := doChat(t, h, chatBody("big"))
+	if rr.Code != http.StatusTooManyRequests || rr.Header().Get(HeaderDecision) != RefusedProviderLimit {
+		t.Fatalf("the held call = %d %q: %s, want a local 429 refused_provider_limit", rr.Code, rr.Header().Get(HeaderDecision), rr.Body.String())
+	}
+	var body struct {
+		Error struct{ Message string }
+		Class string
+		Reset string
+		Words string
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("the held call's body %s: %v", rr.Body.String(), err)
+	}
+	if body.Class != "big" || body.Reset != wantReset || body.Error.Message != body.Words || !strings.Contains(body.Words, "reset at 2026-11-15 01:04:50") {
+		t.Fatalf("the held call's body = {class %q reset %q words %q}, want class big reset %s and the provider's words", body.Class, body.Reset, body.Words, wantReset)
+	}
+	if hits := len(stub.auths); hits != 1 {
+		t.Fatalf("upstream hits after the held call = %d, want 1: the freeze answers locally", hits)
+	}
+	if rows := store.auditRows(); len(rows) != 2 || rows[1].Decision != RefusedProviderLimit || !strings.Contains(rows[1].Reason, "provider limit hold for class big") {
+		t.Fatalf("audit rows %+v, want a local refused_provider_limit row on the held call", rows)
+	}
+
+	// a call after the lapse (now past until: the arm plus provider_recheck,
+	// 15 minutes here) probes the upstream exactly once; the stub serves a
+	// new dated refusal and the hold re-arms at the new reset
+	s.now = func() time.Time { return base.Add(16 * time.Minute) }
+	renewed := `{"error":{"message":"Usage limit reached for 5 hour. Your limit will reset at 2026-11-15 05:04:50","type":"rate_limit_error","param":null,"code":"429"}}`
+	stub.setResp(stubResp{status: http.StatusTooManyRequests, body: renewed})
+	rr = doChat(t, h, chatBody("big"))
+	if rr.Header().Get(HeaderDecision) != RefusedProviderLimit {
+		t.Fatalf("the post-lapse call = %d %q: %s, want refused_provider_limit", rr.Code, rr.Header().Get(HeaderDecision), rr.Body.String())
+	}
+	if hits := len(stub.auths); hits != 2 {
+		t.Fatalf("upstream hits after the post-lapse call = %d, want 2: one probe", hits)
+	}
+	if !strings.Contains(rr.Body.String(), "2026-11-14T21:05:50Z") {
+		t.Fatalf("the post-lapse call's body %s, want the new reset 2026-11-14T21:05:50Z", rr.Body.String())
+	}
+
+	// and the freeze is back: a further call is answered locally again
+	s.now = func() time.Time { return base.Add(17 * time.Minute) }
+	if rr := doChat(t, h, chatBody("big")); !strings.Contains(rr.Body.String(), "2026-11-14T21:05:50Z") {
+		t.Fatalf("the re-frozen call's body %s, want the re-armed reset", rr.Body.String())
+	}
+	if hits := len(stub.auths); hits != 2 {
+		t.Fatalf("upstream hits after the re-frozen call = %d, want 2", hits)
+	}
+
+	// both events land with class, reset and words: frozen on the arm,
+	// resumed on the lapse, frozen again on the re-arm
+	events := store.eventRows()
+	if len(events) != 3 {
+		t.Fatalf("events = %+v, want frozen, resumed, frozen", events)
+	}
+	kinds := []string{"class_frozen", "class_resumed", "class_frozen"}
+	resets := []string{wantReset, wantReset, "2026-11-14T21:05:50Z"}
+	for i, e := range events {
+		if e.Kind != kinds[i] || e.TaskID != "42" || e.Repository != "sf/code" {
+			t.Fatalf("event %d = %+v, want kind %s on task 42 (sf/code)", i, e, kinds[i])
+		}
+		if e.Detail["class"] != "big" || e.Detail["reset"] != resets[i] {
+			t.Fatalf("event %d detail = %+v, want class big and reset %s", i, e.Detail, resets[i])
+		}
+		if w, _ := e.Detail["words"].(string); !strings.Contains(w, "reset at") {
+			t.Fatalf("event %d detail = %+v, want the provider's words", i, e.Detail)
+		}
 	}
 }

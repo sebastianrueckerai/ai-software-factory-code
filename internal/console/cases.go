@@ -200,8 +200,8 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		if a.TaskID != shown.TaskID {
 			continue
 		}
-		// a plan's approval is the body of a plan case that has no slot,
-		// whose face then shows its one ask under the carousel
+		// a plan's approval is the body of a plan case that has no slot, whose
+		// questions it then asks itself
 		slotless := a.Kind == factoryd.ApprovalPlan && planCase(shown) && row.Plan == nil
 		own := slotless || a.Kind != factoryd.ApprovalPlan && slices.ContainsFunc(cases, func(o factoryd.Case) bool { return approvalOf(a, o) })
 		if own && !approvalOf(a, shown) {
@@ -209,7 +209,21 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		}
 		ap := c.approvalCard(ctx, a, act, v.byID, v.csrf, v.approves(k.Repository), true)
 		ap.Filter, ap.Writer = v.filter, v.writes
+		ap.buildDecide()
+		ap.Asks = slotless
 		if own {
+			ap.Hosted = true // its case's parts div shows the ask
+			if d := ap.Decide; d != nil {
+				// the case's parts div shows the approval's own five
+				// parts — the ask with its numbers, the why of the ask —
+				// keeping what the case itself wrote: its brief as the
+				// info, its recommendation with its writer
+				row.Face.Ask, row.Face.Why = d.Ask, d.Why
+				row.Face.Money, row.Face.Info = cmp.Or(row.Face.Money, d.Money), cmp.Or(row.Face.Info, d.Info)
+				if row.Face.Recommendation == "" {
+					row.Face.Recommendation, row.Face.Source = d.Recommendation, d.Source
+				}
+			}
 			row.Approval = &ap
 		} else {
 			row.Extras = append(row.Extras, ap)
@@ -221,12 +235,9 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 // planSlotOf is the slot of plan case k of card bt: its face's ask and why
 // are the plan's one line, never the revision's text, and its choices are
 // the question's, the one the face recommends checked.
-// A case whose facts name no revision and index derives theirs.
+// A case that names no revision and no index has no slot.
 func (c *Console) planSlotOf(ctx context.Context, face *factoryd.Face, bt factoryd.BoardTask, k factoryd.Case, cases []factoryd.Case) *planSlot {
 	revision, index := factInt(k, "revision"), factInt(k, "index")
-	if revision == 0 || index == 0 {
-		revision, index = c.planSlotFacts(ctx, k)
-	}
 	if revision == 0 || index == 0 {
 		return nil
 	}
@@ -277,30 +288,6 @@ func (c *Console) planSlotOf(ctx context.Context, face *factoryd.Face, bt factor
 	return slot
 }
 
-// planSlotFacts are the revision and index plan case k derives when its
-// facts name neither: the revision from its state key's head, the index
-// its ask's place among that revision's questions, so the one-question
-// slot stays the plan's only face.
-func (c *Console) planSlotFacts(ctx context.Context, k factoryd.Case) (int, int) {
-	_, head, _ := strings.Cut(k.StateKey, "@")
-	revision, _ := strconv.Atoi(strings.TrimPrefix(head, "r"))
-	if revision <= 0 {
-		return 0, 0
-	}
-	qs, err := c.cfg.Tasks.PlanQuestions(ctx, k.TaskID, revision)
-	if err != nil {
-		log.Printf("console: the questions of %s revision %d: %v", k.TaskID, revision, err)
-		return 0, 0
-	}
-	ask := strings.Join(strings.Fields(k.Problem), " ")
-	for i, q := range qs {
-		if strings.Join(strings.Fields(q.Text), " ") == ask {
-			return revision, i + 1
-		}
-	}
-	return 0, 0
-}
-
 // casesInView reads the case each card showed, which a board read names
 // by case=<card>:<case>.
 func casesInView(r *http.Request) map[string]int64 {
@@ -315,13 +302,17 @@ func casesInView(r *http.Request) map[string]int64 {
 }
 
 // approvalOf says whether approval request a is the body of case k: a
-// merge request of the merge case that names it, a plan's of its plan
-// question or confirmation, which the case's own form answers.
+// merge request of the merge case that names it, a resource request of
+// its case of the resource kind — the export's shape, as the store opens
+// no case of its own for one — a plan's of its plan question or
+// confirmation, which the case's own form answers.
 func approvalOf(a factoryd.ApprovalRequest, k factoryd.Case) bool {
 	switch k.Kind {
 	case factoryd.CaseMergeApproval:
 		id, _ := json.Marshal(k.Facts["approval"])
 		return a.Kind == factoryd.ApprovalMerge && string(id) == strconv.FormatInt(a.ID, 10)
+	case factoryd.CaseKind(factoryd.ApprovalResource):
+		return a.Kind == factoryd.ApprovalResource
 	case factoryd.CasePlanCriteria:
 		id, _ := json.Marshal(k.Facts["approval"])
 		return slices.Contains([]string{factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun}, a.Kind) && string(id) == strconv.FormatInt(a.ID, 10)
@@ -400,7 +391,12 @@ type offer struct {
 	Args                []offerArg
 	Recommended         bool
 	By                  string // who recommended it
-	NoteOnStep          bool   // the note stays on the case's step: no comment goes on the issue
+	// Aria names the row the button decides: an approval face's buttons
+	// repeat across the board's cards, so each says which request of
+	// which task it answers. Empty leaves the label as the partial
+	// builds it.
+	Aria       string
+	NoteOnStep bool // the note stays on the case's step: no comment goes on the issue
 }
 
 type offerArg struct {

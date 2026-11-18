@@ -23,6 +23,17 @@ var fixtureStart = time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 
 func fixtureAt(m int) time.Time { return fixtureStart.Add(time.Duration(m) * time.Minute) }
 
+// recordAll moved to the pg package with draws_pg_test.go; this copy stays
+// for the fixture seeds that still record here.
+func recordAll(t *testing.T, s *PGStore, events ...Event) {
+	t.Helper()
+	for _, e := range events {
+		if _, err := s.Record(context.Background(), e); err != nil {
+			t.Fatalf("Record %+v: %v", e, err)
+		}
+	}
+}
+
 type fixtureSeed struct {
 	store *PGStore
 	tl    *Timeline
@@ -647,6 +658,22 @@ func TestExportFixtureRefusalNamesTheClassPositionAndAction(t *testing.T) {
 	}
 }
 
+// The fixture of the successor that carries a plan card's key names its
+// plan, and its brief is the planner's.
+func TestExportFixtureOfAPlanCardsSuccessorNamesItsPlan(t *testing.T) {
+	ctx := context.Background()
+	g := newFixtureSeed(t, "t-sc", 1430)
+	g.extra(t, Task{ID: "t-plan", IssueNumber: 1400, Track: "plan", Source: "webhook"})
+	if _, err := g.store.db.ExecContext(ctx, `UPDATE tasks SET plan_name = 'divide panels' WHERE id = 't-plan';
+		UPDATE tasks SET source = 'successor', parent_task = 't-plan', plan_key = 'panels' WHERE id = 't-sc'`); err != nil {
+		t.Fatal(err)
+	}
+	fx, _ := g.export(t, 1430)
+	if p := fx.Card.Plan; p == nil || p.Issue != 1400 || p.Name != "divide panels" || fx.Card.Objective != "[written by a model, 39 bytes]" {
+		t.Fatalf("the successor's plan %+v, brief %q; want plan #1400 divide panels and the planner's brief", p, fx.Card.Objective)
+	}
+}
+
 // The brief's label names who wrote it.
 func TestExportFixtureLabelsABriefByItsAuthor(t *testing.T) {
 	for source, want := range map[string]string{
@@ -911,11 +938,11 @@ func TestExportFixtureMasksRulingCitationsAndKeepsIdsOfTheMaskedText(t *testing.
 	if len(got.Gates) != 1 || len(got.Gates[0].Findings) != 1 {
 		t.Fatalf("gates = %+v, want one review with one finding", got.Gates)
 	}
-	if f := got.Gates[0].Findings[0]; f.Text != masked || f.ID != findingID(masked) {
-		t.Errorf("finding = %+v, want text %q with the id of that text, %s", f, masked, findingID(masked))
+	if f := got.Gates[0].Findings[0]; f.Text != masked || f.ID != FindingID(masked) {
+		t.Errorf("finding = %+v, want text %q with the id of that text, %s", f, masked, FindingID(masked))
 	}
-	if v := got.Sessions[0].CheckIn.Verdicts; len(v) != 1 || v[findingID(masked)] != "confirmed" {
-		t.Errorf("verdicts = %v, want one on %s", v, findingID(masked))
+	if v := got.Sessions[0].CheckIn.Verdicts; len(v) != 1 || v[FindingID(masked)] != "confirmed" {
+		t.Errorf("verdicts = %v, want one on %s", v, FindingID(masked))
 	}
 }
 
@@ -928,8 +955,8 @@ func TestExportFixtureRefusesFindingsThatMaskToOneText(t *testing.T) {
 	g.line(t, "t-cl", 12, "model_review", map[string]any{"commit": "1111111", "verdict": "concerns", "findings": []string{a, b}, "round": 1})
 	g.event(t, "t-cl", 1563, 12, EventModelReview, FactoryDecider, ViaFactoryd, map[string]any{"commit": "1111111", "round": 1, "reviewed": true, "verdict": "concerns"})
 	_, err := g.ex.Export(context.Background(), "sf/r", 1563)
-	if err == nil || !strings.Contains(err.Error(), findingID(a)) || !strings.Contains(err.Error(), findingID(b)) {
-		t.Fatalf("Export = %v, want a refusal naming %s and %s", err, findingID(a), findingID(b))
+	if err == nil || !strings.Contains(err.Error(), FindingID(a)) || !strings.Contains(err.Error(), FindingID(b)) {
+		t.Fatalf("Export = %v, want a refusal naming %s and %s", err, FindingID(a), FindingID(b))
 	}
 }
 

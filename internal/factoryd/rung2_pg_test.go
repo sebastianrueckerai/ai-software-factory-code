@@ -32,7 +32,7 @@ func rungTwoRig(t *testing.T, judgment string) (rungRig, *Waker, *fakeWakeStarte
 	v.Projects = map[string]policy.ProjectConfig{"demo-app": p}
 	g.r.cfg.Policy = func() policy.Version { return v }
 	starter := &fakeWakeStarter{}
-	w := &Waker{Store: g.s, Start: starter, Now: g.r.clock, Current: g.r.cfg.Policy,
+	w := &Waker{Store: g.s, Start: starter, Now: g.r.Clock, Current: g.r.cfg.Policy,
 		Statement: g.r.RungTwoStatement, Board: g.r.BoardText}
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("the seeding pass: %v", err)
@@ -92,7 +92,7 @@ func TestRung1HandUpGoesToRung2WhichAnswers(t *testing.T) {
 
 	g.atAutonomy(policy.AutonomyAutonomous) // at manual the extend is a proposal
 	reads := []CaseRead{{Tool: "card_facts", Bytes: 10}}
-	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaChat, Rung: 2,
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: ChatUser, Via: ViaChat, Rung: 2,
 		Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Note: "one more session"}, Read: reads}); err != nil {
 		t.Fatalf("Act: %v", err)
 	}
@@ -236,11 +236,11 @@ func TestRung2ExpiryFacesTheHumanOnce(t *testing.T) {
 	own := g.stepsOfRung(t, out.CaseID, 2)
 	g.r.now = func() time.Time { return own[0].DueAt.Add(time.Minute) }
 	for range 2 {
-		expired, err := g.s.ExpireSteps(ctx, g.r.clock())
+		expired, err := g.s.ExpireSteps(ctx, g.r.Clock())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := g.r.climbExpired(ctx, expired); err != nil {
+		if err := g.r.ClimbExpired(ctx, expired); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -449,7 +449,7 @@ func TestRung2ExtendsAPlannerWithTheCutAsGuidance(t *testing.T) {
 // offered as if a session could start now, and its refusal names the cap.
 func TestRung2DoesNotOfferResumeWhileACapBinds(t *testing.T) {
 	until := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
-	line, _, _ := strings.Cut(capWaitReason(policy.RefusedDayCap, "the gateway", "the day's cap", until), "\n")
+	line, _, _ := strings.Cut(CapWaitReason(policy.RefusedDayCap, "the gateway", "the day's cap", until), "\n")
 	f := CaseFacts{Kind: CaseSessionCap, FloorEUR: 1, LeftEUR: 0.2, SessionCap: 3, Attempts: 1, AgentTimeS: 100, AgentTimeCapS: 1200, SessionLeastS: 300,
 		CapWait: line, PoolLeft: policy.Draw{Sessions: 10, AgentTime: 5 * time.Hour}}
 	resume, _ := ActionByName(ActResume)
@@ -504,11 +504,11 @@ func (g rungRig) afterRung2(t *testing.T, id int64) {
 		t.Fatalf("rung 2 steps = %+v, want one with a bound", own)
 	}
 	g.r.now = func() time.Time { return own[0].DueAt.Add(time.Minute) }
-	expired, err := g.s.ExpireSteps(ctx, g.r.clock())
+	expired, err := g.s.ExpireSteps(ctx, g.r.Clock())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.r.climbExpired(ctx, expired); err != nil {
+	if err := g.r.ClimbExpired(ctx, expired); err != nil {
 		t.Fatal(err)
 	}
 	g.settle()
@@ -652,7 +652,7 @@ func TestRung2ReadsTheCutAChildsReplanCarriedToItsPlan(t *testing.T) {
 	const cut = "land one card that compiles, then one card per proof"
 	work := replanText(&Trip{Kind: TripSize, Detail: "1774 lines against 1742"},
 		Decision{Action: ActionReplan, Reason: strings.Repeat("r", 354), Guidance: cut + " " + secretURL + " " + strings.Repeat("é", 450)})
-	if _, err := g.r.timeline.AppendUnlessPending(ctx, "t1", stepReplan, cutReplanDetail("c1587", work, 1), replanClosers...); err != nil {
+	if _, err := g.r.timeline.AppendUnlessPending(ctx, "t1", stepReplan, CutReplanDetail("c1587", work, 1), replanClosers...); err != nil {
 		t.Fatal(err)
 	}
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
@@ -721,7 +721,7 @@ func TestRung1ThatDidNotJudgeLeavesTheMark(t *testing.T) {
 			t.Fatal(err)
 		}
 		task, _, _ := g.r.task(ctx, "t1")
-		if _, err := g.r.climb(ctx, task, c, CaseFacts{}, 1, found); err != nil {
+		if _, err := g.r.Climb(ctx, task, c, CaseFacts{}, 1, found); err != nil {
 			t.Fatal(err)
 		}
 		if got := caseByID(t, g.s, c.ID); got.Problem != "stuck"+unjudgedSuffix {

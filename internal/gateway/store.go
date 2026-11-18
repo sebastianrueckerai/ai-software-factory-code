@@ -87,6 +87,21 @@ func (row AuditRow) kind() string { return cmp.Or(row.Kind, AuditKindAgent) }
 // AuditKindAgent is the audit kind of an agent's call.
 const AuditKindAgent = "agent"
 
+// EventRow is one row on the events table the gateway shares with
+// factoryd (schema's factoryd/20261010230000_events.sql): factoryd's
+// freeze card and the retry switch read the class_frozen and
+// class_resumed rows by repository and task.
+type EventRow struct {
+	// Repository and TaskID are the task's owner/name and id; the events
+	// table holds repository NOT NULL, so a task without one writes "".
+	Repository string
+	TaskID     string
+	// Kind is "class_frozen" on an arm and "class_resumed" on an end.
+	Kind string
+	// Detail carries the class, the reset and the provider's words.
+	Detail map[string]any
+}
+
 // Store is the task and audit state every gateway decision reads and writes.
 // The production implementation is Postgres; tests use an in-memory fake.
 type Store interface {
@@ -96,6 +111,9 @@ type Store interface {
 	// false when no task row holds id.
 	TaskCosts(ctx context.Context, id string) (TaskCosts, bool, error)
 	InsertAudit(ctx context.Context, row AuditRow) error
+	// InsertEvent writes one row on the events table factoryd reads;
+	// best-effort on the caller's side.
+	InsertEvent(ctx context.Context, row EventRow) error
 	CurrentPolicy(ctx context.Context) (policy.Version, bool, error)
 	// TakeHold admits a call into the free task and day headroom (see
 	// policy.TakeHold); a *policy.Refusal when it does not fit.
@@ -169,6 +187,18 @@ func (s *PGStore) InsertAudit(ctx context.Context, row AuditRow) error {
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, `+policy.AuditAuthorSQL("$1")+`)`, // #nosec G202 -- the author clause is policy's constant SQL around the task's placeholder
 		row.TaskID, row.Decision, row.Reason, row.ModelAlias, row.Tool, row.SpendEUR, row.PolicyVersion, row.OutputLimit, row.HoldEUR, row.OverHold, row.kind(), row.Deployment,
 		row.PromptTokens, row.CachedTokens, row.OutputTokens, row.CallCostEUR, row.DurationMS, row.Status, row.Thread)
+	return err
+}
+
+// InsertEvent writes row on the shared events table factoryd reads.
+func (s *PGStore) InsertEvent(ctx context.Context, row EventRow) error {
+	detail, err := json.Marshal(row.Detail)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO events (repository, task_id, kind, actor, via, detail) VALUES ($1, $2, $3, 'gateway', 'gateway', $4)`,
+		row.Repository, row.TaskID, row.Kind, detail)
 	return err
 }
 

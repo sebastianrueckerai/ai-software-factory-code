@@ -154,14 +154,14 @@ func takeOffReasonFindings(p Plan) []string {
 }
 
 // PlanCriterion is one criterion of the spec, a piece of its proof (the
-// spec-intake concept, piece 1), stated at the feature's surface and
-// naming no test: kind test names its claim, its inputs and the numbers
-// it expects; invariant names a suite, a package path whose tests stay
-// green, and carries nothing else; judgement names the claim a model
-// judges, in inputs what the artifact a test writes must show, and the
-// pinned prompt; human names the claim only a person settles, with the
-// evidence the approver will see. The kind names the fields it uses, the
-// rest stay empty.
+// spec-intake concept, piece 1), stated at the feature's surface: kind
+// test names its claim, its inputs, the numbers it expects, its suite
+// and its test's name; invariant names a suite, a package path whose
+// tests stay green, and carries nothing else; judgement names the claim
+// a model judges, in inputs what the artifact a test writes must show,
+// and the pinned prompt; human names the claim only a person settles,
+// with the evidence the approver will see. The kind names the fields it
+// uses, the rest stay empty.
 type PlanCriterion struct {
 	ID       string `json:"id"`
 	Kind     string `json:"kind"`
@@ -169,6 +169,7 @@ type PlanCriterion struct {
 	Inputs   string `json:"inputs,omitempty"`
 	Expected string `json:"expected,omitempty"`
 	Suite    string `json:"suite,omitempty"`
+	Name     string `json:"name,omitempty"`
 	Prompt   string `json:"prompt,omitempty"`
 	Evidence string `json:"evidence,omitempty"`
 	// Replaces names the id this criterion revises (piece 10): a changed
@@ -668,6 +669,49 @@ func citations(p Plan) map[string][]string {
 	return out
 }
 
+// suiteFindings are a suite's findings, an invariant's and a test's
+// alike: a package path inside the repository (suitePath) that go test
+// reads, with no .. segment. An empty suite is its kind's own finding.
+func suiteFindings(suite string) []string {
+	switch {
+	case slices.Contains(strings.Split(suite, "/"), ".."):
+		return []string{fmt.Sprintf("suite %q: a package path inside the repository, with no .. segment", suite)}
+	case suite != "" && !suitePath.MatchString(suite):
+		return []string{fmt.Sprintf("suite %q: a package path such as ./...", suite)}
+	}
+	return nil
+}
+
+// carried tells whether a kind test criterion k of p is carried: a card
+// whose acceptance cites it and whose directories hold its suite, a
+// path.Clean prefix match like deployOwner's. The integration card
+// carries only when its round holds no other card: a one-card round's
+// own integration is the citing builder card, so it owns its tests; a
+// multi-card round's integration merges others' work and never carries,
+// whatever its round's other cards depend on - a proof card is filed
+// instead.
+func carried(p Plan, k PlanCriterion) bool {
+	rounds := map[int][]PlanCard{}
+	for _, c := range p.Cards {
+		rounds[c.Round] = append(rounds[c.Round], c)
+	}
+	suite := path.Clean("/" + k.Suite)
+	for _, c := range p.Cards {
+		if c.Role == RoleIntegration && len(rounds[c.Round]) > 1 {
+			continue
+		}
+		if !slices.ContainsFunc(c.Acceptance, func(it PlanItem) bool { return it.Criterion == k.ID }) {
+			continue
+		}
+		for _, d := range c.Directories {
+			if dir := path.Clean("/" + d); suite == dir || strings.HasPrefix(suite, dir+"/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // specFindings are the spec block's findings: a spec plan (a plan this
 // process gives an integration card) drafts the spec the members confirm
 // (piece 5), the outcome in a few sentences and a glossary that names
@@ -688,9 +732,13 @@ func specFindings(p Plan, shape policy.PlanShape) []string {
 // citation of the round's cards names a criterion of the plan, every card
 // of the round but the foundation cites one, and the integration card's
 // items are the criteria, one item per criterion by id. Once no later
-// round is left, every criterion is cited by a card of some round. A plan
-// without criteria passes the citation rules; a shape without an
-// integration card does not ask for criteria.
+// round is left, every criterion is cited by a card of some round, and
+// every kind test criterion is carried by a card whose acceptance cites
+// it and whose directories hold its suite, the integration card only
+// when its round holds no other card. A plan without criteria passes the
+// citation rules; a shape without an integration card does not ask for
+// criteria and refuses the ones it holds: only the integration or a
+// delta card runs the criteria gate, and the plan has neither.
 func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 	var out []string
 	if n := len(p.Criteria); n > MaxCardAcceptance || (shape.Integration && n < 1) {
@@ -699,6 +747,9 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 			want = "1 to " + strconv.Itoa(MaxCardAcceptance)
 		}
 		out = append(out, fmt.Sprintf("plan: %d criteria; want %s", n, want))
+	}
+	if !shape.Integration && len(p.Criteria) > 0 {
+		out = append(out, "plan: criteria want an integration card: no card of this plan runs the criteria gate")
 	}
 	ids := map[string]int{}
 	for i, c := range p.Criteria {
@@ -716,20 +767,25 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 		}
 		switch c.Kind {
 		case CriterionTest:
-			if c.Claim == "" || c.Inputs == "" || c.Expected == "" {
-				add("kind test names its claim, its inputs and its expected numbers")
+			if c.Claim == "" || c.Inputs == "" || c.Expected == "" || c.Suite == "" || c.Name == "" {
+				add("kind test names its claim, its inputs, its expected numbers, its suite and its test's name")
 			}
-			if c.Suite != "" || c.Prompt != "" || c.Evidence != "" {
-				add("kind test carries no suite, prompt or evidence")
+			for _, f := range suiteFindings(c.Suite) {
+				add("%s", f)
+			}
+			if c.Name != "" && !proofName.MatchString(c.Name) {
+				const name = "a test's name of letters, digits, _ and the / of a subtest, such as TestSizeBound or TestSizeBound/over"
+				add("name %q: %s", c.Name, name)
+			}
+			if c.Prompt != "" || c.Evidence != "" {
+				add("kind test carries no prompt or evidence")
 			}
 		case CriterionInvariant:
-			switch {
-			case c.Suite == "":
+			if c.Suite == "" {
 				add("kind invariant names its suite")
-			case slices.Contains(strings.Split(c.Suite, "/"), ".."):
-				add("suite %q: a package path inside the repository, with no .. segment", c.Suite)
-			case !suitePath.MatchString(c.Suite):
-				add("suite %q: a package path such as ./...", c.Suite)
+			}
+			for _, f := range suiteFindings(c.Suite) {
+				add("%s", f)
 			}
 			if c.Inputs != "" || c.Expected != "" || c.Claim != "" || c.Prompt != "" || c.Evidence != "" {
 				add("kind invariant carries no inputs, expected numbers, claim, prompt or evidence")
@@ -766,6 +822,9 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 		for _, k := range p.Criteria {
 			if len(cited[k.ID]) == 0 {
 				out = append(out, fmt.Sprintf("plan: criterion %s is cited by no card", k.ID))
+			}
+			if k.Kind == CriterionTest && k.Suite != "" && k.Name != "" && !carried(p, k) {
+				out = append(out, fmt.Sprintf("plan: criterion %s: its test %s in %s is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test", k.ID, k.Name, k.Suite))
 			}
 		}
 	}
@@ -1131,9 +1190,9 @@ func QuestionLine(n int, q PlanQuestion) string {
 }
 
 // criterionNames is what criterion c names, the fields its kind uses
-// joined with ": ": the claim, the inputs and the expected numbers for a
-// test, the suite for an invariant, the claim for a judgement or a human
-// criterion.
+// joined with ": ": the claim, the inputs, the expected numbers, the
+// suite and the test's name for a test, the suite for an invariant, the
+// claim for a judgement or a human criterion.
 func criterionNames(c PlanCriterion) string {
 	join := func(fields ...string) string {
 		var out []string
@@ -1146,13 +1205,13 @@ func criterionNames(c PlanCriterion) string {
 	}
 	switch c.Kind {
 	case CriterionTest:
-		return join(c.Claim, c.Inputs, c.Expected)
+		return join(c.Claim, c.Inputs, c.Expected, c.Suite, c.Name)
 	case CriterionInvariant:
 		return c.Suite
 	case CriterionJudgement, CriterionHuman:
 		return c.Claim
 	}
-	return join(c.Claim, c.Inputs, c.Expected, c.Suite, c.Prompt, c.Evidence)
+	return join(c.Claim, c.Inputs, c.Expected, c.Suite, c.Name, c.Prompt, c.Evidence)
 }
 
 // cardDirectories keys a plan card's directories line.
@@ -1184,19 +1243,23 @@ func cardFacts(c PlanCard, criteria []PlanCriterion) string {
 
 // cardBody is card c's issue body before its marker: card i of n of of
 // (plan #n), filed for author, with the issues of the cards it depends on
-// (deps, their keys by issue; a card not filed yet by its key alone), the
-// plan's criteria its items cite, and start, the line on the old card's
-// work it starts from, after the facts ("" for none). The integration
-// card carries the plan's spec (piece 7: its brief already does), spec
-// the rendered spec block or "".
+// (deps, their keys by issue; a card not filed yet by its key alone; a
+// met one with the successor that delivered it), the plan's criteria its
+// items cite, and start, the line on the old card's work it starts from,
+// after the facts ("" for none). The integration card carries the plan's
+// spec (piece 7: its brief already does), spec the rendered spec block or
+// "".
 func cardBody(c PlanCard, criteria []PlanCriterion, of string, i, n int, author string, deps []Dependency, spec, start string) string {
 	on := make([]string, 0, len(deps))
 	for _, d := range deps {
-		if d.Issue == 0 {
+		switch {
+		case d.Issue == 0:
 			on = append(on, d.Key)
-			continue
+		case d.DeliveredBy != 0:
+			on = append(on, fmt.Sprintf("#%d (%s, delivered by #%d)", d.Issue, d.Key, d.DeliveredBy))
+		default:
+			on = append(on, fmt.Sprintf("#%d (%s)", d.Issue, d.Key))
 		}
-		on = append(on, fmt.Sprintf("#%d (%s)", d.Issue, d.Key))
 	}
 	directories, facts, _ := strings.Cut(cardFacts(c, criteria), "\n")
 	body := fmt.Sprintf("Card %s of %s (%d of %d), filed for %s. Written by the planner.\n\n%s\n\n%s\nDepends on: %s\n%s",
@@ -1260,7 +1323,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"Split the work into the cards of a plan. " +
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
-		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
+		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "name": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
 		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."], "recommended": "<one of the choices, verbatim>", "grounds": "why, in one sentence"}]}. ` +
 		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
 		"outline: the parts of the work a later round plans, one short line each, in the order they come; leave it out when this round's cards finish the feature. " +
@@ -1271,7 +1334,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
 		"Each criterion has an id in snake_case and a kind naming the fields it uses, and states what the feature does for a caller at a surface that stays put while the cards are built: " +
 		"its HTTP API, its command line, its store as a test seeds and reads it, or the files and output it writes; never how it is built inside. " +
-		"kind test names its claim, its inputs and the numbers it expects, and no test: a separate session writes its test, which runs in the sandbox bash check runs, " +
+		"kind test names its claim, its inputs and the numbers it expects, and its suite and its test's name: the citing card - or a proof card the planner files - lands the test, a card whose directories hold the suite writes its test, which runs in the sandbox bash check runs, " +
 		"so no browser, no device and no outside service; a want beyond the sandbox becomes a human criterion or waits as a note; " +
 		"kind invariant names its suite, a package path such as ./..., whose tests stay green, and nothing else; " +
 		"kind judgement names the claim a model judges, in inputs what the artifact a test writes must show, and the pinned prompt; " +
@@ -1313,6 +1376,8 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"questions: open points the spec leaves to the human; their answers come back to you with your last plan, " +
 		"and a plan with open questions waits for their answers, while a plan with none files its cards at once. " +
 		"Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. " +
+		"A card whose round lands no changes names bash check static in its brief, not bash check changed, and every brief keeps the shell tool's bounds: " +
+		"no command and no timeout it names may exceed the shell tool's 600000 ms maximum. " +
 		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: " +
 		"answer it again."
 }
@@ -1531,6 +1596,10 @@ func storePlanAnswers(ctx context.Context, store Store, taskID string, revision 
 	return nil
 }
 
+// errNoPlanWaiting is pendingPlan's refusal of a task with no pending
+// request of kind plan, as against a store that could not be read.
+var errNoPlanWaiting = errors.New("has no plan waiting for answers")
+
 // pendingPlan is the task's pending approval request of kind plan.
 func pendingPlan(ctx context.Context, store Store, taskID string) (ApprovalRequest, error) {
 	pending, err := store.ApprovalRequests(ctx, "pending")
@@ -1542,7 +1611,7 @@ func pendingPlan(ctx context.Context, store Store, taskID string) (ApprovalReque
 			return a, nil
 		}
 	}
-	return ApprovalRequest{}, fmt.Errorf("task %s has no plan waiting for answers", taskID)
+	return ApprovalRequest{}, fmt.Errorf("task %s %w", taskID, errNoPlanWaiting)
 }
 
 func (s *PGStore) AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error) {
@@ -1815,7 +1884,7 @@ func (s *PGStore) OpenPlanQuestions(ctx context.Context, id string, revision int
 }
 
 func (s *PGStore) CreatePlanCard(ctx context.Context, t Task) (Task, error) {
-	if err := s.insertTask(ctx, t, `ON CONFLICT (parent_task, plan_key) WHERE source = 'plan' DO NOTHING`); err != nil {
+	if err := s.InsertTask(ctx, t, `ON CONFLICT (parent_task, plan_key) WHERE source = 'plan' DO NOTHING`); err != nil {
 		return Task{}, err
 	}
 	got, ok, err := s.oneTask(ctx, `parent_task = $1 AND source = $2 AND plan_key = $3`, t.Parent, SourcePlan, t.PlanKey)
@@ -1951,10 +2020,12 @@ func (t *taskRun) switchFromWait(sw PlanSwitch, step ReplanStep, back string) (f
 // (OutcomeReplan) to the planner: a direct card, cut by the check-in or
 // stopped by a person, turns plan-track and the plan loop runs on, a
 // person's replan that came with a cut joining it; a
-// plan's child goes back to its plan and ends closed. done with the run's
-// end, else refused says why not, for a person.
+// plan's child, or a plan card's successor (versionSuccessorReplansItsPlan),
+// goes back to its plan and ends closed. done with the run's end, else
+// refused says why not, for a person.
 func (t *taskRun) replanCut(res SessionResult) (final, refused string, done bool, err error) {
-	if t.source == SourcePlan {
+	if t.source == SourcePlan || t.planCard &&
+		workflow.GetVersion(t.ctx, "successor-replans-its-plan", workflow.DefaultVersion, versionSuccessorReplansItsPlan) >= versionSuccessorReplansItsPlan {
 		var rc ReplanChildResult
 		if err := workflow.ExecuteActivity(t.short, ActivityReplanChild, t.taskID, res.Replan).Get(t.ctx, &rc); err != nil {
 			final, err := t.finish("failed", "replan child: "+errMessage(err))
@@ -1989,7 +2060,7 @@ func (t *taskRun) replanCut(res SessionResult) (final, refused string, done bool
 // its answers; the last answer or a writer's comment sends the planner
 // back with the last plan, a closed issue ends the task closed. Every
 // session counts against the session cap, where the card waits for a
-// human and a writer's comment buys one more.
+// human; a person's answer to a revision buys the session it asks for.
 func (t *taskRun) planLoop() (string, error) {
 	// the plan loop reads no opening floor: its trips carry no model
 	t.floorModel = nil
@@ -2039,7 +2110,7 @@ func (t *taskRun) planLoop() (string, error) {
 	// wait's branch below takes the time the answer bought
 	if healed && !wait {
 		if short, retry := t.plannerTime(u); short && !retry {
-			ask = healedReason
+			ask = HealedReason
 		}
 	}
 	if healed && st.Cap != "" && workflow.Now(t.ctx).Before(st.CapUntil) {
@@ -2050,13 +2121,24 @@ func (t *taskRun) planLoop() (string, error) {
 	floor := t.escalation
 	stopsAwaited := false
 	// named are the findings the last ask named; waited: the pass before
-	// was a wait, whose answer the next pass weighs
+	// was a wait, whose answer the next pass weighs; asked: an ask opened
+	// that wait, a cap's or a stop's; by: the person who ended it
 	var named []string
-	waited := false
+	waited, asked, by := false, false, ""
 	for {
 		// the draw is the row's, read before every cap check, an
 		// extend made while a session ran included
 		t.readRaise(&u)
+		if waited && !asked && by != "" && t.planAsksAgain(u) &&
+			workflow.GetVersion(t.ctx, "plan-answer-grant", workflow.DefaultVersion, versionPlanAnswerGrant) >= versionPlanAnswerGrant {
+			before := u
+			if u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() {
+				t.grant(&u)
+			} else {
+				t.grantTime(&u)
+			}
+			t.recordGrant(by, policy.Draw{Sessions: u.ExtraAttempts - before.ExtraAttempts, AgentTime: u.ExtraTime - before.ExtraTime}, u)
+		}
 		if waited && t.planAsksAgain(u) {
 			// the answer bought nothing: its words wait for the session
 			// a draw starts, and the ask again names what the planner left
@@ -2066,14 +2148,14 @@ func (t *taskRun) planLoop() (string, error) {
 		if !wait && ask == "" && u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() {
 			ask = t.sessionCapCard(t.capHead(), reason, findings)
 			if healed {
-				ask = healedReason
+				ask = HealedReason
 			}
 		}
 		if ask != "" {
-			if err := t.ask(ask, escalationQuestion(ask), nil); err != nil {
+			if err := t.ask(ask, EscalationQuestion(ask), nil); err != nil {
 				return t.finish("failed", escalateFailed+errMessage(err))
 			}
-			ask, wait = "", true
+			ask, wait, asked = "", true, true
 		}
 		healed = false
 		if wait {
@@ -2081,9 +2163,10 @@ func (t *taskRun) planLoop() (string, error) {
 			var final, why string
 			var next []string
 			answered := false
+			by = ""
 			// rung 0 took the stop: no one was asked
 			if t.resolution == nil {
-				final, why, next, answered = t.awaitPlan(&ref, floor, onCap)
+				final, why, next, answered, by = t.awaitPlan(&ref, floor, onCap)
 				if t.resolution == nil {
 					t.leavePlanWait(final, why, answered, onCap)
 				}
@@ -2123,11 +2206,11 @@ func (t *taskRun) planLoop() (string, error) {
 					}
 					findings = append(findings, next...)
 				} else {
-					wait = true
+					wait, asked = true, false
 				}
 			}
 			// the draw is the row's: an extend raised it and the loop's top
-			// reads the caps again, so a plain answer asks again
+			// reads the caps again, so a plain answer to an ask asks again
 			waited = !wait
 			onCap = nil
 			continue
@@ -2164,7 +2247,7 @@ func (t *taskRun) planLoop() (string, error) {
 		var res PlanResult
 		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunPlan, t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings)
 		if err == nil && !decided && res.Refused.Status != 0 {
-			ask = t.providerRefused(&refusals, res.Refused)
+			ask = t.providerRefused(&refusals, res.Refused, t.cfg.Models.Stronger)
 			if final, why, ok := t.decided(); ok {
 				final, why, _ = closedBeforeStart(final, why)
 				return t.finish(final, why)
@@ -2252,7 +2335,7 @@ func (t *taskRun) planLoop() (string, error) {
 			reason, findings = "the plan's revision filed no cards", next
 			continue
 		}
-		t.escalation, findings, wait = ref.Comment, nil, true
+		t.escalation, findings, wait, asked = ref.Comment, nil, true, false
 		t.approvalRequested = workflow.Now(t.ctx)
 		reason = fmt.Sprintf("plan revision %d waits for its answers", ref.Revision)
 	}
@@ -2384,8 +2467,9 @@ func planRequested(ref *PlanRef) (final, why string, findings []string, stop boo
 // planComments takes the writers' comments signalled so far: each newer
 // than floor, the comment the session answered, asks for changes, except
 // the note of the replan that reopened the plan, posted as its person's.
-// heard are the comments that ask.
-func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
+// heard are the comments that ask, by the newest person among their
+// writers, "" for none.
+func (t *taskRun) planComments(floor int64) (out []string, heard []int64, by string) {
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
 		detail := map[string]any{"signal": SignalHumanComment, "author": sig.Author, "comment": sig.Comment}
@@ -2400,12 +2484,15 @@ func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
 			out = append(out, "writer "+sig.Author+" asked for changes to the plan: "+sig.Body)
 			heard = append(heard, sig.Comment)
 			t.planTaken = append(t.planTaken, sig.Comment)
+			if isPerson(sig.Author) {
+				by = sig.Author
+			}
 		}
 		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
 			workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
 		}
 	}
-	return out, heard
+	return out, heard, by
 }
 
 // leavePlanWait ends the case of the plan wait that ended with no answer of
@@ -2432,7 +2519,7 @@ func (t *taskRun) leavePlanWait(final, why string, answered bool, onCap *capWait
 // opens: a writer's change request in parts reaches the
 // next planner session whole. final is the task's end meanwhile.
 func (t *taskRun) planCommentsWhole(floor int64) (final, why string, out []string) {
-	out, heard := t.planComments(floor)
+	out, heard, _ := t.planComments(floor)
 	if len(heard) == 0 {
 		return "", "", out
 	}
@@ -2441,7 +2528,7 @@ func (t *taskRun) planCommentsWhole(floor int64) (final, why string, out []strin
 		if final, why, ended = t.planEnded(); ended {
 			return nil, true
 		}
-		more, heard := t.planComments(floor)
+		more, heard, _ := t.planComments(floor)
 		out = append(out, more...)
 		return heard, false
 	}, heard)
@@ -2490,7 +2577,9 @@ func (t *taskRun) planEnded() (final, why string, ok bool) {
 // planner, as does the end of onCap, a wait on a cap, on its own.
 // The resolution of the case the plan waits on ends the
 // wait at once (versionCases), taken as t.resolution, its note a finding.
-func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, why string, findings []string, answered bool) {
+// by is the newest person among the writers of the answers to revision ref
+// and of the comments that asked, "" for none.
+func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, why string, findings []string, answered bool, by string) {
 	onCap.start(t)
 	defer onCap.stop()
 	wake := []string{SignalIssueClosed, SignalHumanComment}
@@ -2504,14 +2593,14 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, w
 		}
 		notes, ok := t.planResolution()
 		findings, resolved = append(findings, notes...), resolved || ok
-		ok, err := t.planAnswered(ref)
+		ok, answerer, err := t.planAnswered(ref)
 		if err != nil {
 			final, why = "failed", "count the plan's open questions: "+errMessage(err)
 			return nil, true
 		}
 		answered = answered || ok
-		out, heard := t.planComments(floor)
-		findings = append(findings, out...)
+		out, heard, writer := t.planComments(floor)
+		findings, by = append(findings, out...), cmp.Or(writer, answerer, by)
 		return heard, false
 	}
 	for {
@@ -2524,20 +2613,21 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, w
 		heard, stop := pass()
 		if stop || !resolved && len(heard) > 0 && t.awaitBurst(wake, pass, heard) {
 			if final != "" {
-				return final, why, nil, false
+				return final, why, nil, false, ""
 			}
-			return "", "", findings, answered
+			return "", "", findings, answered, by
 		}
 		if answered || len(findings) > 0 || resolved || onCap.over() {
-			return "", "", findings, answered
+			return "", "", findings, answered, by
 		}
 	}
 }
 
-// planAnswered takes the members' answers signalled so far: whether one
+// planAnswered takes the answers signalled so far: whether one
 // answered a question of revision ref and none of its questions is open
-// any more. An answer to another revision is recorded and ignored.
-func (t *taskRun) planAnswered(ref *PlanRef) (bool, error) {
+// any more, and by the newest person among those who answered it, "" for
+// none. An answer to another revision is recorded and ignored.
+func (t *taskRun) planAnswered(ref *PlanRef) (ok bool, by string, err error) {
 	current := false
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalPlanAnswered).ReceiveAsync(&sig) {
@@ -2551,16 +2641,19 @@ func (t *taskRun) planAnswered(ref *PlanRef) (bool, error) {
 			t.approvalRequested = time.Time{}
 		}
 		current = current || sig.Revision == ref.Revision
+		if sig.Revision == ref.Revision && isPerson(sig.Author) {
+			by = sig.Author
+		}
 		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
 			workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
 		}
 	}
 	if !current {
-		return false, nil
+		return false, "", nil
 	}
 	var open int
-	err := workflow.ExecuteActivity(t.short, ActivityOpenPlanQuestions, t.taskID, ref.Revision).Get(t.ctx, &open)
-	return err == nil && open == 0, err
+	err = workflow.ExecuteActivity(t.short, ActivityOpenPlanQuestions, t.taskID, ref.Revision).Get(t.ctx, &open)
+	return err == nil && open == 0, by, err
 }
 
 // OpenPlanQuestions is how many of plan revision's questions have no
@@ -2643,11 +2736,12 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	}
 	var answers []string
 	if last != nil {
-		step, _, err := pendingIn(tl, taskID)
+		step, pending, err := pendingIn(tl, taskID)
 		if err != nil {
 			return PlanResult{}, err
 		}
-		cards, err := r.store.PlanCards(ctx, taskID)
+		// the record the filing settles its keys by
+		cards, err := r.oldCardsOf(ctx, t, step, pending)
 		if err != nil {
 			return PlanResult{}, err
 		}
@@ -2930,6 +3024,11 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		found = revisionFindings(revisions, p)
 	}
 	found = append(found, takeOffReasonFindings(p)...)
+	held, err := r.heldFindings(ctx, st, p)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	found = append(found, held...)
 	if found = append(found, replanFindings(st, p)...); len(found) > 0 {
 		return refuse(found)
 	}
@@ -3085,15 +3184,16 @@ func replacesNothing(p Plan, id string) bool {
 }
 
 // restartChildren runs the restart rules a new revision carries (piece
-// 10): the checks re-ran with the filing, every card that never started
-// takes the new revision's brief, image, rung and size, with the line on
-// the old card's work it starts from kept, one the new plan drops ends
-// closed with its issue unless it merged (Finish leaves a merged card to
-// its chain, which ends it done), a started open card the new plan drops
-// (dropped) stops as for a replan, its work kept on its branch, a started
-// card it keeps runs on, and a final card never reopens.
+// 10) on each key's card (PlanWaits): the checks re-ran with the filing,
+// every card that never started takes the new revision's brief, image,
+// rung and size, with the line on the old card's work it starts from
+// kept, one the new plan drops ends closed with its issue unless it merged
+// (Finish leaves a merged card to its chain, which ends it done), a
+// started open card the new plan drops (dropped) stops as for a replan,
+// its work kept on its branch, a started card it keeps runs on, and a
+// final card never reopens.
 func (r *Runner) restartChildren(ctx context.Context, t Task, repo Repo, revision int, p Plan) {
-	cards, err := r.store.PlanCards(ctx, t.ID)
+	cards, err := PlanWaits(ctx, r.store, t.ID)
 	if err != nil {
 		log.Printf("plan %s revision %d: restart its cards: %v", t.ID, revision, err)
 		return
@@ -3252,10 +3352,10 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int, p
 			return PlanRef{}, err
 		}
 	}
-	if err := r.askQuestions(ctx, t, rev.Revision, p.Questions); err != nil {
+	if err := r.AskQuestions(ctx, t, rev.Revision, p.Questions); err != nil {
 		return PlanRef{}, err
 	}
-	if err := r.askConfirmation(ctx, t, rev.Revision, p); err != nil {
+	if err := r.AskConfirmation(ctx, t, rev.Revision, p); err != nil {
 		return PlanRef{}, err
 	}
 	ref := PlanRef{Revision: rev.Revision, SHA256: rev.SHA256}
@@ -3328,7 +3428,7 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int, p
 // comment), records one question_asked row each when it stored them, and
 // writes them to the recording rule's ledger as the planner's catches: a
 // self-attack question's catch carries the attack's kind (piece 5).
-func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []PlanQuestion) error {
+func (r *Runner) AskQuestions(ctx context.Context, t Task, revision int, qs []PlanQuestion) error {
 	if len(qs) == 0 {
 		return nil
 	}
@@ -3363,20 +3463,33 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 		}
 	}
 	for i, q := range asked {
-		row := map[string]any{"question": q.Text, "choices": q.Choices, "recommended": q.Recommended, "grounds": q.Grounds, "revision": revision, "index": i + 1}
-		offers := make([]QuestionChoice, len(q.Choices))
-		for j, c := range q.Choices {
-			offers[j] = QuestionChoice{Value: c, Label: c}
-		}
-		if len(offers) > 0 {
-			row["offers"] = offers
-		}
-		if q.Recommended != "" && q.Grounds != "" {
-			row["recommendation"], row["recommended_by"] = q.Recommended+": "+q.Grounds, "the planner"
-		}
-		r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, row)
+		r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, planAskRow(revision, i+1, q))
 	}
 	return nil
+}
+
+// planAskRow is the question_asked row of question idx (from 1) of plan
+// revision revision, whose case keys on its words and the revision: a
+// confirmation's kind, else a question's choices as offers and the
+// planner's recommendation.
+func planAskRow(revision, idx int, q PlanQuestion) map[string]any {
+	row := map[string]any{"question": q.Text, "revision": revision, "index": idx}
+	if q.Kind == QuestionConfirmation {
+		row["kind"] = QuestionConfirmation
+		return row
+	}
+	row["choices"], row["recommended"], row["grounds"] = q.Choices, q.Recommended, q.Grounds
+	offers := make([]QuestionChoice, len(q.Choices))
+	for j, c := range q.Choices {
+		offers[j] = QuestionChoice{Value: c, Label: c}
+	}
+	if len(offers) > 0 {
+		row["offers"] = offers
+	}
+	if q.Recommended != "" && q.Grounds != "" {
+		row["recommendation"], row["recommended_by"] = q.Recommended+": "+q.Grounds, "the planner"
+	}
+	return row
 }
 
 // askConfirmation appends the confirmation question to revision's stored
@@ -3389,7 +3502,7 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 // the newest confirmed one (an identical re-file) is asked too, and the
 // factory answers it at once in the same filing: its ask row says so,
 // which pokes no one, and its answer resolves the ask's case.
-func (r *Runner) askConfirmation(ctx context.Context, t Task, revision int, p Plan) error {
+func (r *Runner) AskConfirmation(ctx context.Context, t Task, revision int, p Plan) error {
 	ask, same, err := r.confirms(ctx, t, p)
 	switch {
 	case err != nil:
@@ -3401,14 +3514,14 @@ func (r *Runner) askConfirmation(ctx context.Context, t Task, revision int, p Pl
 	case !ask && same == 0:
 		return nil
 	}
-	q := PlanQuestion{Text: r.untrusted(t, confirmationQuestion(revision, p))}
+	q := PlanQuestion{Text: r.untrusted(t, confirmationQuestion(revision, p)), Kind: QuestionConfirmation}
 	idx, inserted, err := r.store.PutPlanConfirmation(ctx, t.ID, revision, q)
 	if err != nil {
 		return err
 	}
 	answer := fmt.Sprintf("the same plan as revision %d, confirmed there", same)
 	if inserted {
-		asked := map[string]any{"question": q.Text, "revision": revision, "index": idx, "kind": "confirmation"}
+		asked := planAskRow(revision, idx, q)
 		if same > 0 {
 			asked["settled"] = answer
 		}
@@ -3447,7 +3560,7 @@ func (r *Runner) confirmedRow(ctx context.Context, t Task, revision int) error {
 	}
 	return r.timeline.RecordFactRow(ctx, Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Kind: EventPlanQuestionAnswered,
 		Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"revision": revision, "index": idx, "answer": qs[idx-1].Answer, "decision": DecisionConfirm},
-		IdentityKey: identityKey(EventPlanQuestionAnswered, t.ID, strconv.Itoa(revision), strconv.Itoa(idx))})
+		IdentityKey: IdentityKey(EventPlanQuestionAnswered, t.ID, strconv.Itoa(revision), strconv.Itoa(idx))})
 }
 
 // confirms reports whether plan p of task t asks the confirmation: it
@@ -3682,7 +3795,7 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 	if len(p.TakeOffMain) == 0 {
 		return nil
 	}
-	cards, err := r.store.PlanCards(ctx, t.ID)
+	cards, err := PlanWaits(ctx, r.store, t.ID)
 	if err != nil {
 		return err
 	}
@@ -3721,9 +3834,12 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 // issues found by their markers or filed,
 // records the edges in Forgejo and task_deps, then starts each under the
 // work bound, where a card waits for the cards it depends on (plans do not
-// nest: a plan's card is never a plan). approver authors the cards, with
-// writer as its standing: a plan's are its card's, whose spec an outside
-// account may have written; the cards in filing order. A card whose from
+// nest: a plan's card is never a plan). A card cut into successors whose
+// chain ends done or merged delivered its work: an edge on it is met, so
+// none is recorded, and the issue names the successor. approver authors
+// the cards, with writer as its standing: a plan's are its card's, whose
+// spec an outside account may have written; the cards in filing order. A
+// card whose from
 // names one of old, the plan's record (oldCards), starts from its work,
 // unless a row of its key started or ended: it files at the old card's
 // base, and its branch is the old card's before its issue exists; an old
@@ -3757,6 +3873,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 	}
 	fork := r.forgejo.Fork(repo)
 	cards := map[string]Task{}
+	on := map[string]Dependency{} // each key's dependency, read once
 	var all []webhookIssue
 	for i, c := range order {
 		if c.Round < p.Round {
@@ -3769,7 +3886,20 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		}
 		var deps []Dependency
 		for _, d := range dependsOn(order, edges, c.Key) {
-			deps = append(deps, Dependency{TaskID: cards[d].ID, Issue: cards[d].IssueNumber, Key: d})
+			dep, read := on[d]
+			if !read {
+				k := cards[d]
+				dep = Dependency{TaskID: k.ID, Issue: k.IssueNumber, Key: d}
+				end, ok, err := throughSuccessors(ctx, r.store, k)
+				if err != nil {
+					return nil, err
+				}
+				if ok && end.ID != k.ID && (end.Status == "done" || end.Status == "merged") {
+					dep.DeliveredBy = end.IssueNumber
+				}
+				on[d] = dep
+			}
+			deps = append(deps, dep)
 		}
 		title := r.untrusted(t, c.Title)
 		spec := ""
@@ -3883,11 +4013,13 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		}
 		// the card's dependencies are stored before its issue exists: the
 		// issue's label event can start it, and the start must find them
-		if len(deps) > 0 {
-			ids := make([]string, len(deps))
-			for j, d := range deps {
-				ids[j] = d.TaskID
+		var ids []string
+		for _, d := range deps {
+			if d.DeliveredBy == 0 {
+				ids = append(ids, d.TaskID)
 			}
+		}
+		if len(ids) > 0 {
 			if err := r.store.AddTaskDeps(ctx, card.ID, ids); err != nil {
 				return nil, err
 			}
@@ -3903,10 +4035,8 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		}
 		if fresh {
 			r.timeline.recordEvent(ctx, card.ID, EventCardCreated, map[string]any{"by": approver, "issue": card.IssueNumber, "plan": t.ID, "track": policy.TrackDirect, "budget_eur": card.BudgetEUR})
-			if inherits && (card.Usage.RaisedSessions > 0 || card.Usage.RaisedTime > 0 || card.Usage.ExtraLines > 0 || card.CeilingEUR > 0) {
-				r.timeline.recordEvent(ctx, card.ID, EventCardExtended, map[string]any{"inherited_from": from.ID, "inherited_issue": from.IssueNumber, "pool": false,
-					"sessions": card.Usage.RaisedSessions, "agent_time_s": int64(card.Usage.RaisedTime / time.Second), "lines": card.Usage.ExtraLines,
-					"amount_eur": 0.0, "ceiling_eur": card.CeilingEUR})
+			if inherits {
+				r.recordInherited(ctx, from, card)
 			}
 		}
 		cards[c.Key] = card
@@ -3921,8 +4051,8 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			return nil, err
 		}
 		for _, d := range dependsOn(order, edges, c.Key) {
-			if dep := cards[d]; !dependsOnIssue(have, repo, dep.IssueNumber) {
-				if err := r.forgejo.AddIssueDependency(ctx, repo, child.IssueNumber, dep.IssueNumber); err != nil {
+			if dep := on[d]; dep.DeliveredBy == 0 && !dependsOnIssue(have, repo, dep.Issue) {
+				if err := r.forgejo.AddIssueDependency(ctx, repo, child.IssueNumber, dep.Issue); err != nil {
 					return nil, err
 				}
 			}
@@ -3940,6 +4070,16 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		}
 	}
 	return out, nil
+}
+
+// recordInherited records the raises card took over from old card from,
+// when it holds any: a card_extended row that is no pool draw.
+func (r *Runner) recordInherited(ctx context.Context, from, card Task) {
+	if u := card.Usage; u.RaisedSessions > 0 || u.RaisedTime > 0 || u.ExtraLines > 0 || card.CeilingEUR > 0 {
+		r.timeline.recordEvent(ctx, card.ID, EventCardExtended, map[string]any{"inherited_from": from.ID, "inherited_issue": from.IssueNumber, "pool": false,
+			"sessions": u.RaisedSessions, "agent_time_s": int64(u.RaisedTime / time.Second), "lines": u.ExtraLines,
+			"amount_eur": 0.0, "ceiling_eur": card.CeilingEUR})
+	}
 }
 
 // EditIssueComment replaces comment id's body.
@@ -4050,11 +4190,12 @@ func (r *Runner) filedPlan(ctx context.Context, parent, child string) (Plan, err
 	return p, nil
 }
 
-// planOf is plan card t's plan, its section "The spec and the plan" (its
-// plan's issue text and the plan's summary), its role and its plan row's
-// directories; the zero plan, "" and none for a task no plan filed.
+// planOf is plan card t's plan (Task.PlanCard), its section "The spec and
+// the plan" (its plan's issue text and the plan's summary), its role and
+// its plan row's directories; the zero plan, "" and none for a task no
+// plan filed.
 func (r *Runner) planOf(ctx context.Context, t Task) (p Plan, spec, role string, dirs []string, err error) {
-	if t.Source != SourcePlan || t.Parent == "" {
+	if !t.PlanCard() {
 		return Plan{}, "", "", nil, nil
 	}
 	plan, _, err := r.task(ctx, t.Parent)

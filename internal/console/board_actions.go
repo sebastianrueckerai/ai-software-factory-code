@@ -87,7 +87,8 @@ func (c *Console) boardWork(ctx context.Context, a actor, t factoryd.Task, k fac
 		}
 		switch res.Action {
 		case factoryd.ActApproveMerge:
-			return c.approveMerge(ctx, a, q)
+			fund, _ := res.Args["fund_eur"].(float64)
+			return c.approveMerge(ctx, a, q, fund, res.Note)
 		case factoryd.ActDenyMerge:
 			return c.denyMerge(ctx, a, q, arg("action"), res.Note)
 		case factoryd.ActGrantCriteria:

@@ -783,7 +783,7 @@ func TestMetricsFactEventIdentities(t *testing.T) {
 	conflicted := PlanFilingFact{Plan: "t-plan", Revision: 7, Origin: ReplanCut}
 	revExtras := map[string]any{"revision": 9, "origin": ReplanPerson, "card": 77, "key": "forged", "round": 3, "by": "ana"}
 	revRow := conflicted.Event("sf/code", 41, revExtras)
-	if revRow.IdentityKey != identityKey(EventPlanReplanned, "t-plan", "7") {
+	if revRow.IdentityKey != IdentityKey(EventPlanReplanned, "t-plan", "7") {
 		t.Fatalf("the revision row's identity %q, want the fact's revision", revRow.IdentityKey)
 	}
 	if revRow.Detail["revision"] != 7 || revRow.Detail["origin"] != ReplanCut {
@@ -817,7 +817,7 @@ func TestMetricsFactEventIdentities(t *testing.T) {
 	clicked.Card, clicked.Key = 71, "clicks"
 	cardExtras := map[string]any{"revision": 9, "origin": ReplanRound, "card": 88, "key": "retold", "round": 3, "by": "ana"}
 	clickedRow := clicked.Event("sf/code", 71, cardExtras)
-	if clickedRow.IdentityKey != identityKey(EventPlanReplanned, "t-plan", "7 clicks") {
+	if clickedRow.IdentityKey != IdentityKey(EventPlanReplanned, "t-plan", "7 clicks") {
 		t.Fatalf("the card row's identity %q, want the fact's revision and key", clickedRow.IdentityKey)
 	}
 	if clickedRow.Detail["revision"] != 7 || clickedRow.Detail["origin"] != ReplanCut ||

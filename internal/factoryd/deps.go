@@ -37,22 +37,28 @@ const stepDepsStarted = "dependencies_started"
 // depRecheck is how often a waiting card asks again without a dep_ended.
 const depRecheck = 10 * time.Minute
 
-// Dependency is a card another waits on, with its status.
+// Dependency is a card another waits on, with its status. DeliveredBy,
+// set at a plan's filing only, is the issue of the successor that
+// delivered the card's work: the dependency is met and no edge stands.
 type Dependency struct {
-	TaskID string
-	Issue  int64
-	Key    string // its plan key
-	Status string
+	TaskID      string
+	Issue       int64
+	Key         string // its plan key
+	Status      string
+	DeliveredBy int64
 }
 
 // DepState is where a card's dependencies stand: Ended, one that ended
 // closed; else Waiting, the open ones' issues ascending, a failed one's
 // included until it is retried; neither: the card starts. Failed is the
-// first that failed and has no replacement (RetryID) yet.
+// first that failed and has no replacement (RetryID) yet. Hold is the
+// line of a human's hold, which keeps the card waiting whatever its
+// dependencies, none of them asked.
 type DepState struct {
 	Waiting []int64
 	Ended   *Dependency
 	Failed  *Dependency
+	Hold    string
 }
 
 // ended is the first dependency that ended closed: a failed one waits
@@ -154,7 +160,7 @@ func (s *PGStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (boo
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1)`, t.ID).Scan(&replaced); err != nil || replaced {
 		return false, err
 	}
-	if err := insertTask(ctx, tx, t, ""); err != nil {
+	if err := InsertTask(ctx, tx, t, ""); err != nil {
 		return false, err
 	}
 	if err := takeOverEdges(ctx, tx, id, t.ID); err != nil {
@@ -169,7 +175,7 @@ func (s *PGStore) CreateSuccessor(ctx context.Context, id string, t Task) error 
 		return err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
-	if err := insertTask(ctx, tx, t, ""); err != nil {
+	if err := InsertTask(ctx, tx, t, ""); err != nil {
 		return err
 	}
 	if err := takeOverEdges(ctx, tx, id, t.ID); err != nil {
@@ -179,20 +185,24 @@ func (s *PGStore) CreateSuccessor(ctx context.Context, id string, t Task) error 
 }
 
 // takeOverEdges gives card to, inside tx, every dependency of card from,
-// and points every card that waits on from at to.
+// and points every card that waits on from at to, a hold whose release
+// card from is too.
 func takeOverEdges(ctx context.Context, tx *sql.Tx, from, to string) error {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO task_deps (task_id, depends_on) SELECT $2, depends_on FROM task_deps WHERE task_id = $1`,
 		from, to); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE task_deps SET depends_on = $2 WHERE depends_on = $1`, from, to)
+	if _, err := tx.ExecContext(ctx, `UPDATE task_deps SET depends_on = $2 WHERE depends_on = $1`, from, to); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE tasks SET hold_release = $2 WHERE hold_release = $1`, from, to)
 	return err
 }
 
 func (s *PGStore) MoveDependents(ctx context.Context, from, to string) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `WITH moved AS (
-			DELETE FROM task_deps d USING tasks t
-			WHERE d.depends_on = $1 AND t.id = d.task_id AND t.source = 'plan' AND t.parent_task = $2
+			DELETE FROM task_deps d USING tasks c
+			WHERE d.depends_on = $1 AND c.id = d.task_id AND `+planCardRow+` AND c.parent_task = $2
 			RETURNING d.task_id),
 		added AS (INSERT INTO task_deps (task_id, depends_on) SELECT task_id, $2 FROM moved ON CONFLICT DO NOTHING)
 		SELECT task_id FROM moved ORDER BY task_id`, from, to)
@@ -217,39 +227,47 @@ func (s *PGStore) MoveDependents(ctx context.Context, from, to string) ([]string
 // dependency that failed, which now waits for its retry, enters
 // waiting-deps in gate dependencies (once: the gate keeps the wait's
 // start) and hands its work slot to the next queued card. One whose wait
-// is over records its end.
+// is over records its end. A held card waits as long as its hold
+// (cardHoldWait), asking nothing of its dependencies; its dependencies
+// are read before the card, so a hold set while one was open is read
+// here.
 func (r *Runner) Dependencies(ctx context.Context, taskID string) (DepState, error) {
-	t, _, err := r.task(ctx, taskID)
-	if err != nil {
-		return DepState{}, err
-	}
 	deps, err := r.store.OpenDependencies(ctx, taskID)
 	if err != nil {
 		return DepState{}, err
 	}
+	t, _, err := r.task(ctx, taskID)
+	if err != nil {
+		return DepState{}, err
+	}
 	var st DepState
-	for _, d := range deps {
-		if d.Status != "failed" {
-			continue
-		}
-		_, retried, err := r.store.Task(ctx, RetryID(d.TaskID))
-		if err != nil {
-			return DepState{}, err
-		}
-		if !retried {
-			st.Failed = &d
-			break
-		}
+	if st.Hold, err = cardHoldWait(ctx, r.store, t); err != nil {
+		return DepState{}, err
 	}
-	if d := ended(deps); d != nil {
-		st.Ended = d
-		return st, nil
-	}
-	if len(deps) == 0 {
-		if t.Status == "waiting-deps" {
-			r.record(ctx, taskID, "dependencies_done", gateEnd(t, GateDependencies, map[string]any{}))
+	if st.Hold == "" {
+		for _, d := range deps {
+			if d.Status != "failed" {
+				continue
+			}
+			_, retried, err := r.store.Task(ctx, RetryID(d.TaskID))
+			if err != nil {
+				return DepState{}, err
+			}
+			if !retried {
+				st.Failed = &d
+				break
+			}
 		}
-		return DepState{}, nil
+		if d := ended(deps); d != nil {
+			st.Ended = d
+			return st, nil
+		}
+		if len(deps) == 0 {
+			if t.Status == "waiting-deps" {
+				r.record(ctx, taskID, "dependencies_done", gateEnd(t, GateDependencies, map[string]any{}))
+			}
+			return DepState{}, nil
+		}
 	}
 	for _, d := range deps {
 		st.Waiting = append(st.Waiting, d.Issue)
@@ -269,12 +287,16 @@ func (r *Runner) Dependencies(ctx context.Context, taskID string) (DepState, err
 		return DepState{}, err
 	}
 	mirrorTaskState(ctx, r.forgejo, t, "waiting-deps")
-	r.record(ctx, taskID, "dependencies_wait", map[string]any{"on": st.Waiting})
+	wait := map[string]any{"on": st.Waiting}
+	if st.Hold != "" {
+		wait["hold"] = st.Hold
+	}
+	r.record(ctx, taskID, "dependencies_wait", wait)
 	return st, nil
 }
 
-// depEndedReason is the card's question when dependency d ended closed.
-func depEndedReason(d Dependency) string {
+// DepEndedReason is the card's question when dependency d ended closed.
+func DepEndedReason(d Dependency) string {
 	return fmt.Sprintf("dependency #%d (%s) ended %s: close this card, or answer to start it anyway", d.Issue, d.Key, d.Status)
 }
 
@@ -327,8 +349,18 @@ func signalDependents(ctx context.Context, store Store, wf Workflows, taskID str
 }
 
 // healDependencyWait signals dep_ended to waiting card t when its wait
-// would end: every dependency done, or one ended closed.
+// would end: every dependency done, or one ended closed, and no hold
+// keeps it but one its release card ended.
 func healDependencyWait(ctx context.Context, store Store, wf Workflows, t Task) {
+	if t.Held() {
+		v, err := holdView(ctx, store, t)
+		if err != nil {
+			log.Printf("heal pass: the hold of %s: %s", t.ID, maskedErr(err))
+		}
+		if err != nil || !v.Released {
+			return
+		}
+	}
 	deps, err := store.OpenDependencies(ctx, t.ID)
 	if err != nil {
 		log.Printf("heal pass: dependencies of %s: %s", t.ID, maskedErr(err))
@@ -359,7 +391,8 @@ func (t *taskRun) waitsForDependencies(st RunState, u TaskUsage) bool {
 // is a trip of its own (versionCases): a retry or a replan of it, rung 0's
 // or a human's, puts the card back in the wait on what replaced it, a
 // close waits for the issue's close, and any other answer starts the card
-// as a closed one's does.
+// as a closed one's does. A human's hold keeps the card in the wait, with
+// no question, until it ends (versionCardHold).
 func (t *taskRun) awaitDependencies(st RunState) (final, why string, findings []string) {
 	switch {
 	case st.IssueClosed:
@@ -380,12 +413,12 @@ func (t *taskRun) awaitDependencies(st RunState) (final, why string, findings []
 			if failed {
 				reason = depFailedReason(*d.Failed)
 			} else {
-				reason = depEndedReason(*d.Ended)
+				reason = DepEndedReason(*d.Ended)
 			}
 			var final, why string
 			var answer []string
 			if healed {
-				final, why, answer = t.awaitHumanAgain(escalationQuestion(reason), nil)
+				final, why, answer = t.awaitHumanAgain(EscalationQuestion(reason), nil)
 			} else {
 				final, why, answer = t.awaitHuman(reason, nil)
 			}
@@ -404,7 +437,8 @@ func (t *taskRun) awaitDependencies(st RunState) (final, why string, findings []
 			}
 			return "", "", append([]string{reason}, answer...)
 		}
-		if len(d.Waiting) == 0 {
+		held := d.Hold != "" && workflow.GetVersion(t.ctx, "card-hold", workflow.DefaultVersion, versionCardHold) >= versionCardHold
+		if len(d.Waiting) == 0 && !held {
 			return "", "", nil
 		}
 		// back in the wait, a later question is the dependency's own
@@ -454,8 +488,9 @@ func retryMarker(id string) string {
 }
 
 // RetryCard files failed work card taskID again for by (item 119): a
-// card on the direct track that a person, a routine or a plan filed, and
-// not cut into a successor, which it names in its refusal. The
+// card on the direct track that a person, a routine or a plan filed, or
+// that carries a plan card's key (Task.PlanCard), and not cut into a
+// successor, which it names in its refusal. The
 // replacement keeps the card's source, its plan and its key, if any, and
 // its size, so it is not sized again. One transaction puts the
 // replacement, by its deterministic id RetryID, in its place, once: the
@@ -487,7 +522,7 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d is a plan: ask for changes to it, or replan it.", old.IssueNumber))
 	case old.Report():
 		return 0, ErrNoRetry(fmt.Sprintf("Task %s is the %s report of task %s, not a work card: retry that card if it failed.", old.ID, old.Source, old.Parent))
-	case old.Track != policy.TrackDirect || !(old.Source == SourcePlan && old.Parent != "" || slices.Contains([]string{"webhook", "api", SourceRoutine}, old.Source)):
+	case old.Track != policy.TrackDirect || !(old.PlanCard() || slices.Contains([]string{"webhook", "api", SourceRoutine}, old.Source)):
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d is no work card of a person, a routine or a plan: file the work as a new card if it is still needed.", old.IssueNumber))
 	case old.Status != "failed":
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d did not fail: it is %s.", old.IssueNumber, old.Status))

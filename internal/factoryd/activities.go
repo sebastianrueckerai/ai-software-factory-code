@@ -53,10 +53,10 @@ func WorkflowDir(name string) (string, bool) {
 // heartbeat, so within this. The heartbeat timeout is 2 minutes.
 const HeartbeatEvery = 10 * time.Second
 
-// contentFilterRefusal opens the escalation of a session the model provider
+// ContentFilterRefusal opens the escalation of a session the model provider
 // refused with its content check: every next session sends the same brief and
 // is refused the same way, so only a human changing the wording helps.
-const contentFilterRefusal = "the model provider's content filter refused this session's model call (z.ai error 1301): "
+const ContentFilterRefusal = "the model provider's content filter refused this session's model call (z.ai error 1301): "
 
 // contentFiltered reports whether a failed session's summary carries z.ai's
 // refusal of filtered content: business code 1301, HTTP 400, "System detected
@@ -151,6 +151,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivitySessionFunded:               r.SessionFunded,
 		ActivitySessionAnswered:             r.SessionAnswered,
 		ActivityCapResume:                   r.CapResume,
+		ActivityLimitResume:                 r.LimitResume,
 		ActivityEndCase:                     r.EndCase,
 		ActivityCaseState:                   r.CaseState,
 		ActivityRecordGrant:                 r.RecordGrant,
@@ -431,8 +432,8 @@ type SuccessorInput struct {
 }
 
 // SourceSuccessor is a card a stuck card closed into, carrying the patch
-// and the findings: it starts from main's tip, or from the old card's
-// branch when that holds the old card's work over its line bound.
+// and the findings: it continues the old card's branch, or starts from
+// main's tip when the old card has none.
 const SourceSuccessor = "successor"
 
 // successorFindings heads the findings a successor's objective carries.
@@ -486,13 +487,17 @@ func successorMarker(id string) string {
 // Successor files the successor of the stuck card in (task 6): a card of
 // the same objective with the findings so far, the carried pull request
 // and the card's size and budget, queued on the direct track under the
-// work bound. Its first session starts from main's tip, with no base of
-// its own, unless the findings' first line, factoryd's note, says the old
-// card's work over its line bound is an interim commit on its branch: then
-// the successor continues that branch with the old card's base. The row
-// lands first, with the old card's dependencies and its dependents, and its
-// issue after, so a filing that stops part way runs again to the same one
-// card: the row's identity holds the card and the marker holds the issue.
+// work bound; a plan card's successor carries its key and the revision it
+// ran against in its plan. It continues the old card's branch with the old
+// card's base, as a plan card that goes on from another does, so its first
+// session starts at that head and its clone holds the work: an interim
+// commit the line bound refused, or work the old card took on through its
+// from. An old card with no branch leaves it to start from main's tip. A
+// successor that carries work, a pull request or a branch, keeps the old
+// card's line raise. The row lands first, with the old card's dependencies
+// and its dependents, and its issue after, so a filing that stops part way
+// runs again to the same one card: the row's identity holds the card and
+// the marker holds the issue.
 func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, error) {
 	old, repo, err := r.task(ctx, in.TaskID)
 	if err != nil {
@@ -511,6 +516,10 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		if !ok {
 			return "", errNoTrack(p)
 		}
+		head, err := r.ContinueBranch(ctx, old, Task{ID: SuccessorID(old.ID)})
+		if err != nil && !errors.Is(err, ErrNoBranch) {
+			return "", err
+		}
 		var lines []string
 		if in.Findings != "" {
 			lines = append(lines, successorFindings+in.Findings)
@@ -522,20 +531,12 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 			lines = append(lines, "Size: "+old.Size)
 		}
 		lines = append(lines, fmt.Sprintf("Budget: %.2f EUR", old.BudgetEUR))
-		// work an end push the line bound refused sits on the old card's
-		// branch as an interim commit: the successor continues that branch,
-		// as a plan card that goes on from another does, so its first session
-		// starts at that head and its clone holds the work
-		head, err := "", error(nil)
-		if strings.HasPrefix(in.Findings, "\n- "+overBoundNote) {
-			head, err = r.ContinueBranch(ctx, old, Task{ID: SuccessorID(old.ID)})
-			if err != nil && !errors.Is(err, ErrNoBranch) {
-				return "", err
-			}
+		if head != "" {
+			lines = append(lines, workLine(old))
 		}
 		if t, err = fileEntry(p, Task{ID: SuccessorID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass,
 			BudgetEUR: old.BudgetEUR, Size: old.Size, Objective: old.Objective + "\n\n" + r.untrusted(old, strings.Join(lines, "\n")),
-			Repository: old.Repository, Source: SourceSuccessor, Parent: old.Parent, PlanKey: old.PlanKey, Rung: old.Rung,
+			Repository: old.Repository, Source: SourceSuccessor, Parent: old.Parent, PlanKey: old.PlanKey, PlanRevision: old.PlanRevision, Rung: old.Rung,
 			Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter, CarryPR: pr}); err != nil {
 			return "", err
 		}
@@ -544,6 +545,9 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		t.Process = old.Process
 		if head != "" {
 			t.SHA = old.SHA
+		}
+		if pr > 0 || head != "" {
+			t.Usage.ExtraLines = old.Usage.ExtraLines
 		}
 		if err := r.store.CreateSuccessor(ctx, old.ID, t); err != nil {
 			return "", err
@@ -574,6 +578,7 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 			return "", fmt.Errorf("the successor of %s: link its issue #%d: %w", old.ID, t.IssueNumber, err)
 		}
 		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": r.forgejo.BotUser, "issue": t.IssueNumber, "successor_of": old.ID, "track": t.Track, "budget_eur": t.BudgetEUR})
+		r.recordInherited(ctx, old, t)
 	}
 	if err := r.cfg.Workflows.Start(ctx, t.ID); err != nil {
 		log.Printf("task %s: start the successor %s: %v", old.ID, t.ID, err)
@@ -614,7 +619,17 @@ func (r *Runner) personAnswered(ctx context.Context, id string) bool {
 		return false
 	}
 	i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventQuestionAnswered || e.Kind == EventSessionGranted })
-	return i >= 0 && events[i].Detail["decider"] != "agent" && isPerson(events[i].Actor)
+	return i >= 0 && isPerson(eventActor(events[i]))
+}
+
+// eventActor is who acted in row e: the console writes the project
+// agent's own decision in a human's turn or a wake under that human's
+// login with decider agent, and that row's actor is the chat user.
+func eventActor(e Event) string {
+	if e.Detail["decider"] == "agent" {
+		return ChatUser
+	}
+	return e.Actor
 }
 
 // capRefusals open the card of a task whose attempt the day's, the
@@ -772,7 +787,7 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 	// stop names (fundFor) covers that part too
 	ceiling := policy.SessionHeadroom(own.Free(), req.ReserveEUR)
 	left := math.Floor(ceiling*1000+1e-6) / 1000
-	opens, state := budgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", max(left, 0), t.BudgetEUR)
+	opens, state := BudgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", max(left, 0), t.BudgetEUR)
 	if free.Reserve > 0 {
 		state = fmt.Sprintf("The card spent %.2f EUR of its %.2f EUR budget", own.Spent, t.BudgetEUR)
 	}
@@ -938,7 +953,7 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 			return CapResumed{}, nil
 		}
 		v := r.cfg.Policy()
-		if settles := v.ActivatedAt.Add(gateway.PolicyTTL); r.clock().Before(settles) {
+		if settles := v.ActivatedAt.Add(gateway.PolicyTTL); r.Clock().Before(settles) {
 			return CapResumed{Settles: settles}, nil
 		} else if !in.RefusedAt.IsZero() && !in.RefusedAt.Before(settles) {
 			return CapResumed{}, nil
@@ -1027,9 +1042,10 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		s.pull = t.CarryPR
 		s.spec += fmt.Sprintf("\n\nThis card carries pull request #%[1]d: its head is in your clone as branch pull/%[1]d. The sandbox holds no git credential and cannot fetch it, so work from that branch.", t.CarryPR)
 	}
-	// a plan card's first session pins the revision it runs against
-	// (piece 10); the merge refuses a card the plan has since passed
-	if t.Source == SourcePlan && t.Parent != "" && t.PlanRevision == 0 {
+	// a plan card's first session, its successor's too, pins the revision
+	// it runs against (piece 10); the merge refuses a card the plan has
+	// since passed
+	if t.PlanCard() && t.PlanRevision == 0 {
 		rev, ok, err := r.store.PlanRevision(ctx, t.Parent, 0)
 		if err != nil {
 			return SessionResult{}, named("plan revision", err)
@@ -1041,7 +1057,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			t.PlanRevision = rev.Revision
 		}
 	}
-	if t.Source != SourcePlan && t.Standing() == harness.StandingWriter {
+	if !t.PlanCard() && t.Standing() == harness.StandingWriter {
 		_, body, _ := strings.Cut(t.Objective, "\n\n")
 		s.directories = askedDirectories(body)
 	}
@@ -1050,7 +1066,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	// a plan's work its first revert took off main is on its salvage
 	// branch, which a card that lands it again applies from
-	if t.Source == SourcePlan && t.Parent != "" {
+	if t.PlanCard() {
 		pair, err := r.salvagePair(ctx, repo, t.Parent)
 		if err != nil {
 			return SessionResult{}, named("salvage branch", err)
@@ -1242,6 +1258,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		}
 		if refused.Status != 0 {
 			res.Outcome, res.Status, res.Reason = OutcomeProviderRefused, refused.Status, refused.Reason
+			res.Until, res.Words = refused.Until, refused.Words
 		}
 	}
 	if res.Outcome == OutcomeNoPush && strings.Contains(res.Summary, pushOverBoundMark) && continuesOverBoundWork(t) {
@@ -1312,13 +1329,58 @@ func (r *Runner) sessionTranscript(ctx context.Context, taskID, session string) 
 }
 
 // providerRefusal is the provider's refusal of the session begun at since
-// (Status 0: none), with the worker's message said, else the audit's.
+// (Status 0: none), with the worker's message said, else the audit's. A
+// refusal the gateway audited refused_provider_limit carries the named
+// limit's reset and the provider's words; its reset is what the card
+// holds to (versionProviderFreeze).
 func (r *Runner) providerRefusal(ctx context.Context, taskID string, since time.Time, said string) (ProviderWait, error) {
-	reason, ok, err := r.store.ProviderRefusal(ctx, taskID, since)
-	if err != nil || !ok || providerStatus(reason) == 0 {
+	decision, reason, ok, err := r.store.ProviderRefusal(ctx, taskID, since)
+	if err != nil || !ok {
 		return ProviderWait{}, err
 	}
+	if decision == gateway.RefusedProviderLimit {
+		// the reset the gateway read is what the card holds to
+		// (versionProviderFreeze); a reason whose reset does not read
+		// again — a version the gateway writes and this factoryd does not
+		// — names no moment, so the refusal keeps today's ladder
+		until, words := limitReset(reason)
+		return ProviderWait{Status: http.StatusTooManyRequests, Reason: cmp.Or(said, reason), Until: until, Words: words}, nil
+	}
+	if providerStatus(reason) == 0 {
+		return ProviderWait{}, nil
+	}
 	return ProviderWait{Status: providerStatus(reason), Reason: cmp.Or(said, reason)}, nil
+}
+
+// limitReset reads the reset and the provider's words out of a
+// refused_provider_limit audit's reason, "provider limit for class c:
+// reset <RFC3339>: <words>", the one shape the gateway writes it in
+// (server.go); an unreadable reason names no reset.
+func limitReset(reason string) (time.Time, string) {
+	_, rest, ok := strings.Cut(reason, ": reset ")
+	if !ok {
+		return time.Time{}, ""
+	}
+	stamp, words, _ := strings.Cut(rest, ": ")
+	t, err := time.Parse(time.RFC3339, stamp)
+	if err != nil {
+		return time.Time{}, ""
+	}
+	return t, words
+}
+
+// LimitResume tells a card holding a provider-limit wait whether the
+// version in force still runs its class on model: the policy load wake
+// ends the hold when the class's model moved, and keeps it when it did
+// not. model is the model the refused session ran on, which may carry the
+// opencode provider prefix ("factory/small"), while the class's models
+// are the aliases the gateway sees ("small").
+func (r *Runner) LimitResume(ctx context.Context, taskID, model string) (bool, error) {
+	tc, err := r.TaskConfig(ctx, taskID, 0)
+	if err != nil {
+		return false, err
+	}
+	return model != "" && !slices.Contains(tc.ClassModels, aliasOf(model)), nil
 }
 
 // startRef is where a session starts: the branch's head, else the given
@@ -1491,7 +1553,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 		if !out.result.Success && contentFiltered(res.Summary) {
 			// the same brief is refused the same way: only a human helps
 			res.Outcome = OutcomeEscalate
-			res.Reason = contentFilterRefusal + res.Summary + ". Close this card and file it again with the wording changed, or answer to try once more."
+			res.Reason = ContentFilterRefusal + res.Summary + ". Close this card and file it again with the wording changed, or answer to try once more."
 			return res
 		}
 	default:
@@ -1723,8 +1785,13 @@ func (r *Runner) RecordNotRun(ctx context.Context, taskID, kind string, pr int64
 
 // ProviderWait records that the task waits w.Backoff on the model
 // provider; its schedule puts the task in gate provider (activityGates).
+// A named limit's words ride the row, for the face and the life to read.
 func (r *Runner) ProviderWait(ctx context.Context, taskID string, w ProviderWait) error {
-	return r.timeline.Append(ctx, taskID, StepProviderRefused, map[string]any{"status": w.Status, "reason": w.Reason, "backoff_s": int(w.Backoff.Seconds())})
+	detail := map[string]any{"status": w.Status, "reason": w.Reason, "backoff_s": int(w.Backoff.Seconds())}
+	if w.Words != "" {
+		detail["words"] = w.Words
+	}
+	return r.timeline.Append(ctx, taskID, StepProviderRefused, detail)
 }
 
 // finishClosesIssue reports whether Finish closes the issue of card t as
@@ -1749,8 +1816,8 @@ func earliest(a, b time.Time) time.Time {
 
 // sessionDeadline is a session's overall deadline: the earlier of
 // activityDeadline (with sessionGrace to record the outcome after) and now
-// plus agentTime, the task's resolved agent time (SessionInput.AgentTime,
-// or the pinned policy's limits when the task carries none).
+// plus agentTime, the card's agent time (SessionInput.AgentTime, or the
+// pinned policy's limits when the input carries none).
 func sessionDeadline(activityDeadline time.Time, agentTime time.Duration) time.Time {
 	return earliest(activityDeadline.Add(-sessionGrace), time.Now().Add(agentTime))
 }
@@ -2006,6 +2073,7 @@ func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (Task
 		tc.Class = track.Class
 	}
 	tc.Session = v.Document.Classes[tc.Class].Session
+	tc.ClassModels = v.Document.Classes[tc.Class].Models
 	tc.Stronger = tc.Session == policy.SessionCode && (project.Model == policy.ModelStronger || t.Rung == RungFrontier)
 	// stronger_after is 1 for a medium or large card (roadmap 222, item 5)
 	if t.Size == "medium" || t.Size == "large" {
@@ -2029,7 +2097,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		return RunState{}, err
 	}
 	st := RunState{Status: t.Status, Usage: t.Usage, Size: t.Size, Standing: t.Standing(), Report: t.Report(), Stronger: t.Source == SourceScreening,
-		Roll: t.Source == SourceRoll, FactoryPR: factoryPRSources(t.Source), Source: t.Source}
+		Roll: t.Source == SourceRoll, FactoryPR: factoryPRSources(t.Source), Source: t.Source, PlanCard: t.PlanCard()}
 	if t.Status == "closing" {
 		st.ClosingFinal, st.ClosingReason = t.ClosingFinal, t.ClosingReason
 	}
@@ -2042,7 +2110,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		if err != nil {
 			return RunState{}, err
 		}
-		st.Answers, _, _ = answersFrom(nil, nil, cases)
+		st.Answers, _, _ = AnswersFrom(nil, nil, cases)
 		// a stop whose case is still open is the question the run waits on
 		open, err := r.store.NewestAskCase(ctx, t.ID)
 		if err != nil {
@@ -2050,7 +2118,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		}
 		if open.ID != 0 {
 			reason, choices := faceOf(open)
-			st.Question, st.Choices = escalationQuestion(reason), choices
+			st.Question, st.Choices = EscalationQuestion(reason), choices
 			if d := capWaitDecision(reason); d != "" {
 				// a cap's stop also ends at the turn of the cap's period
 				st.Cap, st.CapUntil = reason, capTurn(d, open.OpenedAt)
@@ -2132,7 +2200,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	if err != nil {
 		return RunState{}, err
 	}
-	st.Answers, st.Question, st.Choices = answersFrom(events, asks, cases)
+	st.Answers, st.Question, st.Choices = AnswersFrom(events, asks, cases)
 	st.Cap, st.CapUntil = capWaitOf(asks)
 	st.Screening = waitsOnScreening(asks)
 	st.ScreeningAnswered = st.Screening && screeningAnswered(events, asks)
@@ -2142,24 +2210,24 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	} else if ok {
 		st.Park = &p
 	}
-	st.CheckinMark = checkinMarkOf(cases)
+	st.CheckinMark = CheckinMarkOf(cases)
 	r.record(ctx, taskID, "reconcile", map[string]any{"status": st.Status, "pr": st.PR.Number, "head": st.Head,
 		"merged": st.Merged, "pr_closed": st.PRClosed, "issue_closed": st.IssueClosed, "skip": st.Skip, "findings": len(st.Findings),
 		"answers": len(st.Answers)})
 	return st, nil
 }
 
-// checkinMarkOf is the mark the newest of cases, oldest first, keeps of
+// CheckinMarkOf is the mark the newest of cases, oldest first, keeps of
 // its check-in stop, nil for none. A call cap's or a time cap's stop that
 // an answer resolved and the run went on from bought a restart: the mark
 // holds Granted, as checkinAnswer sets it in the run.
-func checkinMarkOf(cases []Case) *checkinStopMark {
+func CheckinMarkOf(cases []Case) *CheckinStopMark {
 	for _, c := range slices.Backward(cases) {
-		raw, ok := c.Facts[factCheckinMark]
+		raw, ok := c.Facts[FactCheckinMark]
 		if !ok {
 			continue
 		}
-		var m checkinStopMark
+		var m CheckinStopMark
 		if b, err := json.Marshal(raw); err != nil || json.Unmarshal(b, &m) != nil {
 			continue
 		}
@@ -2195,13 +2263,14 @@ func stageMemoryOf(tl []byte, st *RunState) {
 	for line := range strings.SplitSeq(string(tl), "\n") {
 		var step struct {
 			Step, Stage, To, Verdict, Summary, Note, Reason string
-			By, Finding, Why                                string
+			By, Finding, Why, TurnedFrom                    string
 			Round, Attempt                                  int
 			Answer                                          bool
 			Findings                                        []string
 			Verdicts                                        map[string]CheckVerdict
 			Dropped                                         []Dropped
 			Unsettled, Upheld                               []string
+			Pending                                         []PendingClaim
 			Time                                            time.Time
 		}
 		if json.Unmarshal([]byte(line), &step) != nil {
@@ -2225,8 +2294,8 @@ func stageMemoryOf(tl []byte, st *RunState) {
 		case "screening":
 			st.ScreeningPassed = st.ScreeningPassed || !step.Answer && step.Verdict == ScreenClear
 		case "model_review":
-			st.Reviews = append(st.Reviews, Review{Verdict: step.Verdict, Summary: step.Summary, Findings: step.Findings, Note: step.Note,
-				Dropped: step.Dropped, Unsettled: step.Unsettled, Upheld: step.Upheld})
+			st.Reviews = append(st.Reviews, Review{Verdict: step.Verdict, Summary: step.Summary, Findings: step.Findings, Note: step.Note, TurnedFrom: step.TurnedFrom,
+				Dropped: step.Dropped, Unsettled: step.Unsettled, Upheld: step.Upheld, Pending: step.Pending})
 			st.Round = max(st.Round, step.Round)
 		case "checkin":
 			if step.Round >= 1 && step.Round <= len(st.Reviews) {
@@ -2276,7 +2345,7 @@ func screeningAnswered(events []IntakeEvent, asks []AskAnchor) bool {
 // (resolvedNotes), in answerKey's order. question is the last one asked,
 // choices the answers its agent offered. The live run tags and keys its
 // answers alike (awaitHuman, awaitHumanAgain, resolutionKey).
-func answersFrom(events []IntakeEvent, asks []AskAnchor, cases []Case) (answers []string, question string, choices []string) {
+func AnswersFrom(events []IntakeEvent, asks []AskAnchor, cases []Case) (answers []string, question string, choices []string) {
 	anchors, question, choices := escalationAnchors(events, asks)
 	got := resolvedNotes(cases)
 	for _, e := range events {
@@ -2315,7 +2384,7 @@ func resolvedNotes(cases []Case) (got []keyedAnswer) {
 			continue
 		}
 		got = append(got, keyedAnswer{answerKey{escalation: c.CommentID, caseID: c.ID},
-			answerText(res.By, escalationQuestion(askBody(c)), strings.TrimSpace(res.Reason), *c.ResolvedAt)})
+			answerText(res.By, EscalationQuestion(askBody(c)), strings.TrimSpace(res.Reason), *c.ResolvedAt)})
 	}
 	return got
 }

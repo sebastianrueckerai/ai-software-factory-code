@@ -289,6 +289,9 @@ func (p Process) Validate() error {
 	if g := p.Merge.Groups; g != "" && !slices.Contains(GroupsValues, g) {
 		bad("merge", "groups %q, want one of %v", g, GroupsValues)
 	}
+	if p.Tracks.Plan != nil && p.Merge.Queue == QueueNone {
+		bad("tracks.plan", "needs merge.queue project: with queue none no card's branch is synced with main before its merge, so the head the criteria gate judged need not be the code main holds; set merge: {queue: project}")
+	}
 	if p.Merge.Groups == GroupsOneAtATime && p.Merge.Queue != QueueProject {
 		bad("merge", "groups one_at_a_time needs queue project: the merge queue admits one plan's cards at a time")
 	}

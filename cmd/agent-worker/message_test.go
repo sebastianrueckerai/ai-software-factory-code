@@ -60,7 +60,7 @@ func TestMessageEndpoint(t *testing.T) {
 		}
 		sent = append(sent, text)
 		return answer
-	}, newCheckinServe(t.TempDir(), nolog), nil)
+	}, newCheckinServe(t.TempDir(), nolog), nil, nil)
 	post := func(auth, body string) int {
 		req := httptest.NewRequest(http.MethodPost, "/message", strings.NewReader(body))
 		if auth != "" {
@@ -100,6 +100,40 @@ func TestMessageEndpoint(t *testing.T) {
 	}
 }
 
+// POST /bound sets the card's line bound the end push reads, under the
+// session's bearer, and takes nothing but a positive whole number of
+// lines.
+func TestBoundEndpoint(t *testing.T) {
+	bound := lineBoundOf(600)
+	h := messageHandler(mustHash(t, testMessageHash), newPushGate(), func(context.Context, string, string) error { return nil },
+		newCheckinServe(t.TempDir(), nolog), nil, bound)
+	post := func(auth, body string) int {
+		req := httptest.NewRequest(http.MethodPost, "/bound", strings.NewReader(body))
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	for name, auth := range map[string]string{"no bearer": "", "wrong bearer": "Bearer session-secreT"} {
+		if code := post(auth, `{"lines":1200}`); code != http.StatusUnauthorized {
+			t.Errorf("%s: status %d, want 401", name, code)
+		}
+	}
+	for _, body := range []string{`{"lines":0}`, `{"lines":-5}`, `{"lines":1.5}`, `{"lines":"1200"}`, `{"lines":null}`, `{}`, `1200`, `not json`} {
+		if code := post("Bearer session-secret", body); code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", body, code)
+		}
+	}
+	if got := bound.Load(); got != 600 {
+		t.Fatalf("bound after the refused posts = %d, want still 600", got)
+	}
+	if code := post("Bearer session-secret", `{"lines":1200}`); code != http.StatusNoContent || bound.Load() != 1200 {
+		t.Fatalf("status %d, bound %d; want 204 and 1200", code, bound.Load())
+	}
+}
+
 // The push token reaches the worker only on POST /push with the session's
 // bearer, and only once the worker asks for it: after killOthers returned
 // and the commit is made. The endpoint takes one token; before the ask,
@@ -107,7 +141,7 @@ func TestMessageEndpoint(t *testing.T) {
 func TestPushTokenOnlyAfterTheAgentIsGone(t *testing.T) {
 	dir, e, base, mainHead, fork := changedSession(t)
 	gate := newPushGate()
-	h := messageHandler(mustHash(t, testMessageHash), gate, func(context.Context, string, string) error { return nil }, newCheckinServe(t.TempDir(), nolog), nil)
+	h := messageHandler(mustHash(t, testMessageHash), gate, func(context.Context, string, string) error { return nil }, newCheckinServe(t.TempDir(), nolog), nil, nil)
 	post := func(auth, body string) int {
 		req := httptest.NewRequest(http.MethodPost, "/push", strings.NewReader(body))
 		req.Header.Set("Authorization", auth)
@@ -121,14 +155,14 @@ func TestPushTokenOnlyAfterTheAgentIsGone(t *testing.T) {
 	commit, err := commitAndPush(dir, e, base, mainHead, func() error {
 		codes = append(codes, post(bearer, tokW))
 		return nil
-	}, func(commit string) (string, error) {
+	}, func(commit string) (pushCred, error) {
 		tok, err := gate.ask(commit, time.Second, writerFunc(func(p []byte) (int, error) {
 			// factoryd reads the request and answers it
 			request = string(p)
 			codes = append(codes, post("Bearer session-secreT", tokW), post(bearer, `{"token":""}`), post(bearer, tokW), post(bearer, `{"token":"tok-x"}`))
 			return len(p), nil
 		}))
-		got = tok
+		got = tok.token
 		return tok, err
 	})
 	codes = append(codes, post(bearer, tokW))
@@ -142,7 +176,7 @@ func TestPushTokenOnlyAfterTheAgentIsGone(t *testing.T) {
 	if got != "tok-w" {
 		t.Fatalf("the push got token %q, want tok-w", got)
 	}
-	if want := `{"type":"push","push":{"commit":"` + commit + `"}}` + "\n"; request != want {
+	if want := `{"type":"push","push":{"commit":"` + commit + `","own":1}}` + "\n"; request != want {
 		t.Fatalf("push request = %q, want %q", request, want)
 	}
 	if out, _ := exec.Command("git", "-C", fork, "rev-parse", "refs/heads/factory/t1").Output(); strings.TrimSpace(string(out)) != commit {
@@ -158,7 +192,7 @@ func TestPushTokenReaskedInsideTheWindow(t *testing.T) {
 	t.Cleanup(func() { pushRetryEvery = previous })
 	gate := newPushGate()
 	var lines atomic.Int32
-	asked := make(chan string, 1)
+	asked := make(chan pushCred, 1)
 	go func() {
 		tok, err := gate.ask("c1", 2*time.Second, writerFunc(func(p []byte) (int, error) {
 			lines.Add(1)
@@ -176,10 +210,10 @@ func TestPushTokenReaskedInsideTheWindow(t *testing.T) {
 	if n := lines.Load(); n < 2 {
 		t.Fatalf("push request written %d times, want a re-ask", n)
 	}
-	if !gate.take("tok-r") {
+	if !gate.take(pushCred{token: "tok-r"}) {
 		t.Fatal("no ask waited for the re-asked token")
 	}
-	if tok := <-asked; tok != "tok-r" {
-		t.Fatalf("the push got token %q, want tok-r", tok)
+	if tok := <-asked; tok.token != "tok-r" {
+		t.Fatalf("the push got token %q, want tok-r", tok.token)
 	}
 }

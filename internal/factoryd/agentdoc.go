@@ -98,7 +98,7 @@ func agentDocJSON(s string) string {
 // agentDocInputLead is the heading every JSON-mode call's user message
 // opens with.
 var agentDocInputLead = agentdoc.Span{Name: "the input heading", Symbol: "factoryd.chatInputLead", Kind: agentdoc.KindBuilder,
-	Place: agentdoc.PlaceUser, Text: chatInputLead}
+	Place: agentdoc.PlaceUser, Text: ChatInputLead}
 
 // agentDocFiles is the fixture diff one file wide, the review and audit
 // captures both read.
@@ -143,7 +143,7 @@ func agentDocCheckin(ctx context.Context, gwURL string, v policy.Version, hc *ht
 	timeCap := callsLeft * policy.CheckinCallTime
 	spans := []agentdoc.Span{
 		{Name: "session persona", Symbol: "factoryd.checkinSystemFor", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
-			Text: checkinSystemFor(ask.Moment, ask.Replan)},
+			Text: checkinSystemFor(ask)},
 		{Name: "the statement", Symbol: "factoryd.checkinStatement", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap)},
 		{Name: "the answer deadline", Symbol: "factoryd.checkinDueLine", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
@@ -165,7 +165,7 @@ func agentDocCheckin(ctx context.Context, gwURL string, v policy.Version, hc *ht
 	if err != nil {
 		return nil, err
 	}
-	spans = append(spans, agentdoc.Span{Name: "tool " + checkinAnswerTool, Symbol: "factoryd.momentAnswerTool", Kind: agentdoc.KindBuilder,
+	spans = append(spans, agentdoc.Span{Name: "tool " + CheckinAnswerTool, Symbol: "factoryd.momentAnswerTool", Kind: agentdoc.KindBuilder,
 		Place: agentdoc.PlaceTools, Text: string(answerTool)})
 	(&Runner{}).runCheckin(ctx, agentDocTask, alias, ask, parent,
 		&checkinGateway{URL: gwURL, Token: "agentdoc", HTTP: hc}, agentDocPodTools{}, callsLeft, eurLeft, 1, handoverCap, timeCap)

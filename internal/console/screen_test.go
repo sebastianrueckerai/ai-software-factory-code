@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"golang.org/x/net/html"
 )
@@ -500,6 +501,50 @@ func TestCardWaitingOnTheProvider(t *testing.T) {
 	}
 }
 
+// A running card frozen on a named provider limit splits its clocks: a
+// ten-hour building stage with six hours and 48 minutes of it frozen
+// reads "3 h 12 min, frozen 6 h 48 min", Total the same way, and its chip
+// carries the provider's words and the reset it named.
+func TestCardFrozenOnAProviderLimitSplitsItsClocks(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	// the stage's start lands on a minute, so the face's whole minutes
+	// hold however long the render takes
+	admitted := time.Now().Truncate(time.Minute).Add(-10 * time.Hour)
+	r.tasks.set("", factoryd.Task{ID: "t-frozen", Kind: "agent", Status: "running", Track: "direct", Repository: "sf/code",
+		Objective: "t-frozen", CreatedAt: admitted, AdmittedAt: &admitted})
+	refused := admitted.Add(192 * time.Minute) // 3 h 12 m into the stage
+	reset := refused.Add(7 * time.Hour)
+	line, err := json.Marshal(map[string]any{"step": "provider_refused", "time": refused.UTC().Format(time.RFC3339Nano),
+		"status": 429, "backoff_s": 25200, "words": "rate limit exceeded"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.objects["sessions/t-frozen/timeline.jsonl"] = append([]byte(`{"step":"session_start","attempt":1}
+{"step":"session_end","attempt":1,"outcome":"provider_refused"}
+`), append(line, '\n')...)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	for _, want := range []string{
+		`<span class="elapsed">3 h 12 min, frozen 6 h 48 min</span>`,
+		`<span class="pill fine st-waiting">frozen until ` + reset.UTC().Format("15:04 UTC") + `: rate limit exceeded</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the board lacks %s", want)
+		}
+	}
+	// the drawer's clocks split the same way, and its life records the
+	// frozen interval with the provider's words and the reset
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-frozen/drawer?tab=overview", nil), ck).Body.String()
+	for _, want := range []string{
+		`<dd>building, 3 h 12 min, frozen 6 h 48 min, 3 h 12 min, frozen 6 h 48 min in all</dd>`,
+		`frozen on the provider limit until ` + reset.UTC().Format("15:04 UTC") + `: rate limit exceeded`,
+	} {
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the drawer lacks %s", want)
+		}
+	}
+}
+
 // The wide view keeps the board as it was, a column per state and no
 // lane column (roadmap 225), under the human lane, with the status line;
 // the view rides on the poll, the script's swaps and every form, and the
@@ -955,6 +1000,25 @@ func TestDrawerSteer(t *testing.T) {
 		len(steered) != 2 || r.events.count() != before {
 		t.Errorf("a steer to a card in review = %d, steered %q, %d rows: %s", rec.Code, steered, r.events.count()-before, rec.Body)
 	}
+	for err, want := range steerRefusals() {
+		r.c.cfg.Steer = func(context.Context, string, string, string) error { return err }
+		before = r.events.count()
+		if rec := r.do(post("/tasks/t-run/steer", url.Values{"csrf": {s.csrf}, "text": {"hello"}}), ck); rec.Code != http.StatusConflict ||
+			strings.TrimSpace(rec.Body.String()) != want || r.events.count() != before {
+			t.Errorf("a steer the session refuses with %v = %d, %d rows: %q, want 409 %q", err, rec.Code, r.events.count()-before, rec.Body, want)
+		}
+	}
+}
+
+// steerRefusals are the session states a steer to card #11 meets, each
+// with the refusal that names it: a start check-in since 17:31 UTC, no
+// session, a session that ended.
+func steerRefusals() map[error]string {
+	return map[error]string{
+		&factoryd.SessionStartingError{Since: time.Date(2026, 11, 17, 17, 31, 24, 0, time.UTC)}: "Card #11 is in its start check-in since 17:31, which decides whether the agent starts. Send it once the agent starts, or comment on the card.",
+		factoryd.ErrNoLiveSession: "Card #11 is between sessions. Comment on the card, and the next session reads it.",
+		harness.ErrNotRunning:     "Card #11's session just ended. Comment on the card, and the next session reads it.",
+	}
 }
 
 // The drawer and its steer are its project's writers': 403 to anyone
@@ -1020,42 +1084,77 @@ func TestOldVerdictEventsStillRender(t *testing.T) {
 
 // The approval cards' forms carry the board's filter and land on it: an
 // approval of another project's merge goes back to that project's board.
+// Each card's one decide send carries the answer, the fund and the note
+// in one request — an approve takes all three, a deny takes no fund —
+// and the decision lands on the card: its request decided by the sender,
+// the fund on the task's budget, and one row holding all three.
 func TestApprovalFormsKeepTheBoard(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
 	ck, s := r.loggedIn(t)
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 30, Kind: factoryd.ApprovalMerge, TaskID: "t-lm", Project: "linkshort/linkshort",
 		PRNumber: 12, Status: "pending", Spec: json.RawMessage(`{"risk_class":"low","head_sha":"def456","review":{"verdict":"approve"}}`)})
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-lm", Kind: "agent", Status: "in-review", Repository: "linkshort/linkshort", IssueNumber: 12}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-res", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 21}})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
 	start := strings.Index(body, `aria-labelledby="approval-30"`)
 	card := body[start : start+strings.Index(body[start:], "</article>")]
 	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort">`
-	if strings.Count(card, filter) != 2 {
-		t.Errorf("the merge card's approve and deny forms do not both carry the filter:\n%s", card)
+	if got := strings.Count(card, filter); got != 1 {
+		t.Errorf("the merge card's one decide form carries the filter %d times, want one:\n%s", got, card)
 	}
+	before := r.events.count()
 	for _, tc := range []struct {
 		path string
 		form url.Values
 		want string
 	}{
-		{"/approvals/30/approve", url.Values{"project": {"linkshort"}}, "/?project=linkshort"},
-		{"/approvals/3/deny", url.Values{"project": {"ai-software-factory-code"}, "view": {"wide"}, "note": {"not now"}}, "/?project=ai-software-factory-code&view=wide"},
-		{"/approvals/4/approve", url.Values{"project": {"ai-software-factory-code"}}, "/?project=ai-software-factory-code"},
+		{"/approvals/30/approve", url.Values{"project": {"linkshort"}, "action": {"approve"}, "fund_eur": {"1.50"}, "note": {"ship it"}}, "/?project=linkshort"},
+		{"/approvals/3/approve", url.Values{"project": {"ai-software-factory-code"}, "view": {"wide"}, "action": {"approve"}, "fund_eur": {"1.50"}, "note": {"load away"}}, "/?project=ai-software-factory-code&view=wide"},
+		{"/approvals/4/approve", url.Values{"project": {"ai-software-factory-code"}, "action": {"deny"}, "note": {"not now"}}, "/?project=ai-software-factory-code"},
 	} {
 		tc.form.Set("csrf", s.csrf)
 		if rec := r.do(post(tc.path, tc.form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != tc.want {
 			t.Errorf("POST %s = %d to %q, want 303 to %q: %s", tc.path, rec.Code, rec.Header().Get("Location"), tc.want, rec.Body)
 		}
 	}
+	// every send landed on its request, decided by the one who sent it —
+	// the deny on the approve path answers deny, not approve
+	for id, want := range map[int64][2]string{
+		30: {"approved", ""},
+		3:  {"approved", "load away"},
+		4:  {"denied", "changes requested: not now"},
+	} {
+		if a := r.approvals.get(id); a.Status != want[0] || a.DecidedBy != "sebastian" || a.DecisionNote != want[1] {
+			t.Errorf("approval %d = %q by %q, note %q, want %s by sebastian, note %q", id, a.Status, a.DecidedBy, a.DecisionNote, want[0], want[1])
+		}
+	}
+	// each approve's fund reached its task's budget in the same request
+	for _, id := range []string{"t-lm", "t-res"} {
+		if k, ok, _ := r.tasks.Task(t.Context(), id); !ok || k.BudgetEUR != 1.5 {
+			t.Errorf("%s's budget = %v (ok %v), want the 1.50 its approve's one send carried", id, k.BudgetEUR, ok)
+		}
+	}
+	// one row per send: the answer, the fund and the note together on the
+	// card, the deny's row its request changes
+	checkRows(t, r.events, before,
+		wantRow{kind: factoryd.EventMergeApproved, repo: "linkshort/linkshort", taskID: "t-lm",
+			detail: map[string]any{"pr": int64(12), "approval": int64(30), "fund_eur": 1.5, "reason": "ship it"}},
+		wantRow{kind: factoryd.EventMergeApproved, repo: "sf/code", taskID: "t-res",
+			detail: map[string]any{"approval": int64(3), "kind": "resource", "fund_eur": 1.5, "reason": "load away"}},
+		wantRow{kind: factoryd.EventMergeDenied, repo: "sf/code", taskID: "t-m",
+			detail: map[string]any{"pr": int64(9), "action": "request_changes"}})
 }
 
-// The merge item on the four-column board stays small, like a
-// question's face: the headline with the risk and migration chips, the
-// Approve and Deny controls and the foot links. The five-part ask —
-// why a human, the model review's verdict and summary, the
-// recommendation — and the facts wall (the migration files, the
-// earlier reviews, the audit) live in the drawer, which the item's
-// Details link opens (item 4).
+// The merge item on the four-column board stays small while it decides
+// through the one face: the headline with the risk and migration chips,
+// the five parts of the ask at one bounded line each (the ask, why a
+// human, the model review, the recommendation), and the one decide form
+// whose two offers, fund and note apply together. The facts wall (the
+// migration files, the earlier reviews, the audit) and every part's
+// whole text live in the drawer, which the item's Details link opens
+// (item 4).
 func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -1064,12 +1163,24 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 	start := strings.Index(body, `aria-labelledby="approval-4"`)
 	card := body[start : start+strings.Index(body[start:], "</article>")]
 	for _, want := range []string{`<span class="chip risk">high risk</span> <span class="chip migration">migration</span>`,
-		`action="/approvals/4/approve"`, `<button type="button" class="deny" aria-expanded="false" aria-controls="deny-4">Deny</button>`, `<form method="post" action="/approvals/4/deny" hx-post="/approvals/4/deny" data-to="in-review" class="deny-box" id="deny-4" hidden>`, `<a href="#card=t-m:reviews" class="details">Details</a>`} {
+		`<p class="ask">Merge PR #9 of t-m? high risk. It carries a migration.</p>`,
+		`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`,
+		`<div class="info"><p>Model review: adds the column safely</p>`,
+		`<p class="recommendation">Recommendation (the model review): Adds the column; merge it.</p>`,
+		`action="/approvals/4/approve"`, `<button type="submit" name="action" value="approve"`, `<button type="submit" name="action" value="deny"`,
+		`<span class="effect">merges PR #9: factoryd merges it</span>`,
+		`sends the pull request back to its agent with your note`,
+		`<a href="#card=t-m:reviews" class="details">Details</a>`} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the merge item lacks %s:\n%s", want, card)
 		}
 	}
-	for _, gone := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`, "0018_x.sql", "Earlier review", "Security audit", "Why a human", "<details", "<dt>"} {
+	for what, want := range map[string]int{`class="decide resolve"`: 1, `name="fund_eur"`: 1, `<textarea`: 1} {
+		if got := strings.Count(card, what); got != want {
+			t.Errorf("the merge item's decide carries %s %d times, want %d:\n%s", what, got, want, card)
+		}
+	}
+	for _, gone := range []string{`<form method="post" action="/approvals/4/deny"`, `name="action" value="request_changes"`, "0018_x.sql", "Earlier review", "Security audit", "Why a human", "<details", "<dt>"} {
 		if strings.Contains(card, gone) {
 			t.Errorf("the merge item shows %s, which the drawer holds:\n%s", gone, card)
 		}

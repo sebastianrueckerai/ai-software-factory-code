@@ -47,7 +47,7 @@ const ChoiceRerun = "Re-run the checks"
 // pokeKinds are the events a poke may answer.
 var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventApprovalRequested, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
 	EventCardFiled, EventCardRetried, EventSessionGranted, EventRoutineRan, EventChatBudgetSpent,
-	EventPullRequestMerged}
+	EventPullRequestMerged, EventCardHoldStranded}
 
 // budgetSources are the escalation sources of a card stopped by money.
 var budgetSources = []string{"budget", "cap", SourceMonthCap, "project_cap", "day_cap"}
@@ -226,7 +226,7 @@ func deliveryLevel(m ChatMessage) string {
 	switch m.BirthKind {
 	case EventTaskEnded, EventAllChildrenDone:
 		return LevelAll
-	case EventChatBudgetSpent:
+	case EventChatBudgetSpent, EventCardHoldStranded:
 		return LevelNeedsYou
 	}
 	return ""
@@ -320,6 +320,18 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		}
 	case EventAllChildrenDone:
 		m.Content = fmt.Sprintf("Plan %s is done: all %d cards.", ref, num("cards"))
+	case EventCardHoldStranded:
+		// a hold the human released, or one a retry's card took over,
+		// before the pass strands nothing
+		if !t.Held() || t.Hold.Release != str("release_task") {
+			return m, false
+		}
+		fit := "Release the hold, or hold it again with another release card."
+		if str("status") == "failed" {
+			// a retry of the release card takes the hold over (takeOverEdges)
+			fit = fmt.Sprintf("Retry #%d, whose retry takes the hold over, or release the hold, or hold it again with another release card.", num("release_issue"))
+		}
+		m.Content = fmt.Sprintf("%s stays on hold: its release card %s ended %s and releases nothing. %s", TitledRef(ref, t), str("release"), str("status"), fit)
 	case EventChatBudgetSpent:
 		// the chat's own task is no card
 		m.TaskID = ""
@@ -392,9 +404,9 @@ func approvalPoke(e Event, t Task) (string, []string, bool) {
 	case ApprovalPlan:
 		return fmt.Sprintf("Plan %s %q waits for your answers: revision %d, %d cards; the planner revises it with them.", ref, CardTitle(t), num("revision"), num("cards")), nil, true
 	case ApprovalCriteria:
-		return fmt.Sprintf("Plan %s %q waits for you: its cards ran out with a criterion still unmet. Waive one with your reason, grant one more bounded card, or confirm the delivered cards satisfy them.", ref, CardTitle(t)), nil, true
+		return fmt.Sprintf("Plan %s %q waits for you: every card of it has ended with a criterion still unmet. Waive one with your reason, grant one more bounded card, or confirm the delivered cards satisfy them.", ref, CardTitle(t)), nil, true
 	case ApprovalCriteriaRerun:
-		return fmt.Sprintf("Plan %s %q waits for you: its cards are done and criteria were never judged. Waive one with your reason, or confirm the delivered cards satisfy them.", ref, CardTitle(t)), nil, true
+		return fmt.Sprintf("Plan %s %q waits for you: its cards have ended and no verdict on main settles its criteria. Waive one with your reason, grant one more bounded card, or confirm with your evidence that the delivered cards meet them.", ref, CardTitle(t)), nil, true
 	}
 	return "", nil, false
 }

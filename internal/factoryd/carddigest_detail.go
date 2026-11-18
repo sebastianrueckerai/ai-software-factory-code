@@ -273,10 +273,10 @@ func checkinDetail(b *strings.Builder, raw []byte) {
 		}
 		b.WriteString("reason: " + reason + "\n")
 	}
-	texts := slices.SortedFunc(maps.Keys(l.Verdicts), func(a, c string) int { return strings.Compare(findingID(a), findingID(c)) })
+	texts := slices.SortedFunc(maps.Keys(l.Verdicts), func(a, c string) int { return strings.Compare(FindingID(a), FindingID(c)) })
 	for _, text := range texts {
 		v := l.Verdicts[text]
-		fmt.Fprintf(b, "- %s %s: %s\n", findingID(text), v.State, text)
+		fmt.Fprintf(b, "- %s %s: %s\n", FindingID(text), v.State, text)
 		if v.Evidence != "" {
 			b.WriteString("  evidence: " + v.Evidence + "\n")
 		}
@@ -320,7 +320,7 @@ func proofsDetail(b *strings.Builder, raw []byte) {
 	}
 	for _, f := range l.Findings {
 		if !slices.ContainsFunc(l.Proofs, func(p gateProof) bool { return p.Line == f }) {
-			fmt.Fprintf(b, "- %s %s\n", findingID(f), f)
+			fmt.Fprintf(b, "- %s %s\n", FindingID(f), f)
 		}
 	}
 	if l.StartFailed != "" {
@@ -448,12 +448,15 @@ func writeFields(b *strings.Builder, m map[string]any) {
 		b.WriteString("findings:\n")
 		for _, f := range items {
 			text, ok := f.(string)
-			shown := text
+			id, shown := FindingID(text), text
 			if !ok {
 				item, _ := f.(map[string]any)
-				text, shown = fmt.Sprint(item["item"]), valueText(f)
+				var audit AuditFinding
+				audit.Item, _ = item["item"].(string)
+				audit.File, _ = item["file"].(string)
+				id, shown = FindingID(audit.Text()), valueText(f)
 			}
-			fmt.Fprintf(b, "- %s %s\n", findingID(text), shown)
+			fmt.Fprintf(b, "- %s %s\n", id, shown)
 		}
 	}
 }

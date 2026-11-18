@@ -161,8 +161,8 @@ func TestChatAnswerCarriesActionAndFund(t *testing.T) {
 	}
 }
 
-// The chat's fund is the agent's own decision on rung 2, and a human's on
-// rung 3 once they confirmed it.
+// The chat's fund is the agent's own decision on rung 2, as the chat user,
+// and a human's on rung 3 once they confirmed it, as their login.
 func TestAgentFundIsRungTwo(t *testing.T) {
 	for decider, rung := range map[string]int{"agent": 2, "member": 3} {
 		r := newRig(t)
@@ -171,7 +171,8 @@ func TestAgentFundIsRungTwo(t *testing.T) {
 			t.Fatalf("%s: %v", decider, err)
 		}
 		got, _ := actedOnce(t, r)
-		want := factoryd.ActInput{TaskID: "t-e", CaseID: 5, By: "sebastian", Via: factoryd.ViaChat, Rung: rung,
+		by := map[int]string{2: factoryd.ChatUser, 3: "sebastian"}[rung]
+		want := factoryd.ActInput{TaskID: "t-e", CaseID: 5, By: by, Via: factoryd.ViaChat, Rung: rung,
 			Res: factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": 1.0}, Note: "the replica is worth it"}}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s: Act took %+v, want %+v", decider, got, want)
@@ -229,7 +230,7 @@ func TestBoardShowsThePoolInThreeParts(t *testing.T) {
 		t.Fatalf("the board lacks %q or says overdrawn:\n%s", within, page)
 	}
 	r.drawn.Sessions = 11
-	const over = "11 of 10 sessions, 1 h 20 min of 5 h agent time and €12.50 of €20.00 drawn this UTC month, overdrawn in sessions: only the human draws more until the month turns"
+	const over = "11 of 10 sessions, 1 h 20 min of 5 h agent time and €12.50 of €20.00 drawn this UTC month, overdrawn in sessions: only the human draws more of that part until the month turns"
 	if page := board(); !strings.Contains(page, over) {
 		t.Fatalf("the board lacks %q:\n%s", over, page)
 	}
@@ -548,10 +549,10 @@ func TestChatAnswerPassesItsArgs(t *testing.T) {
 // question, each choice value that question offers reaches Act on rung 3
 // as an action the real table gives the human on hand-built facts of the
 // kind: factoryd.Offered holds it, and its own rule takes the answer's
-// arguments. A note and a continue carry the note their rule reads, which
-// Offered's probes do not, so their rule alone judges them. A human card's
-// choice is its question's to take, and its note (park) is a note on rung
-// 3 that the table takes. The pairs the table refuses stay away from Act:
+// arguments. A note, a continue and a park's settle carry what their rule
+// reads, which Offered's probes do not — the note's words, and the
+// settle's park arg — so their rule alone judges them. A human card's
+// choice is its question's to take. The pairs the table refuses stay away from Act:
 // words at a session cap would be a continue with no room, which the
 // console turns into a grant, and a grant on an ask is an extend the
 // table does not offer there.
@@ -572,7 +573,7 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 			return "no action " + res.Action
 		case !a.Rungs[3]:
 			return "not the human's"
-		case res.Action != factoryd.ActNote && res.Action != factoryd.ActContinue &&
+		case res.Action != factoryd.ActNote && res.Action != factoryd.ActContinue && res.Action != factoryd.ActSettle &&
 			!slices.ContainsFunc(factoryd.Offered(f, 3), func(o factoryd.Action) bool { return o.Name == res.Action }):
 			return "not offered"
 		}
@@ -1011,4 +1012,24 @@ func TestTheAgentsCardWritesGoOutAsTheChatBot(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The agent's own acts outside Act carry the chat user, never the login
+// of the human whose turn woke it: its steer reaches the session as the
+// project agent's, a human's steer as theirs.
+func TestTheAgentsSteerIsTheChatUsers(t *testing.T) {
+	r, _ := newWritesRig(t)
+	_, s := r.loggedIn(t)
+	var by []string
+	r.c.cfg.Steer = func(_ context.Context, _, user, _ string) error {
+		by = append(by, user)
+		return nil
+	}
+	for _, decider := range []string{"agent", "member"} {
+		a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: decider, level: policy.AutonomyAutonomous}
+		if _, err := r.c.doSteer(t.Context(), a, "t-r", "rebase first"); err != nil {
+			t.Fatalf("%s's steer: %v", decider, err)
+		}
+	}
+	equal(t, "the steers' senders", by, []string{factoryd.ChatUser, "sebastian"})
 }

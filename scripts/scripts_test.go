@@ -1,12 +1,16 @@
 package scripts
 
 import (
+	"bufio"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -238,16 +242,16 @@ func TestCheckModes(t *testing.T) {
 }
 
 // checkRun(t, "with-gotestsum", "test", "./a", "TestA/sub") logs
-// "pg-test.sh gotestsum --junitfile r.xml -- -count=1 -run ^TestA$/^sub$ ./a\n";
+// "pg-test.sh gotestsum --junitfile r.xml -- -count=1 -timeout 30m -run ^TestA$/^sub$ ./a\n";
 // with no gotestsum on PATH (t.Skip when exec.LookPath("gotestsum") finds
 // the host's), checkRun(t, "test", "./a") logs
-// "pg-test.sh go run gotest.tools/gotestsum@v1.13.0 --junitfile r.xml -- -count=1 ./a\n".
+// "pg-test.sh go run gotest.tools/gotestsum@v1.13.0 --junitfile r.xml -- -count=1 -timeout 30m ./a\n".
 func TestCheckTestRunsTheImagesGotestsum(t *testing.T) {
 	log, err := checkRun(t, "with-gotestsum", "test", "./a", "TestA/sub")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "pg-test.sh gotestsum --junitfile r.xml -- -count=1 -run ^TestA$/^sub$ ./a\n"; log != want {
+	if want := "pg-test.sh gotestsum --junitfile r.xml -- -count=1 -timeout 30m -run ^TestA$/^sub$ ./a\n"; log != want {
 		t.Errorf("bash check test with gotestsum ran %q, want %q", log, want)
 	}
 	if _, err := exec.LookPath("gotestsum"); err == nil {
@@ -257,7 +261,7 @@ func TestCheckTestRunsTheImagesGotestsum(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "pg-test.sh go run gotest.tools/gotestsum@v1.13.0 --junitfile r.xml -- -count=1 ./a\n"; log != want {
+	if want := "pg-test.sh go run gotest.tools/gotestsum@v1.13.0 --junitfile r.xml -- -count=1 -timeout 30m ./a\n"; log != want {
 		t.Errorf("bash check test without gotestsum ran %q, want %q", log, want)
 	}
 }
@@ -300,5 +304,108 @@ func TestCIVolumeUseReadsEachVolume(t *testing.T) {
 		if want := sizes[dir]; m[i+1] != strconv.Itoa(want) && m[i+1] != strconv.Itoa(want+1) {
 			t.Errorf("%s read %s MiB, want %d or %d", dir, m[i+1], want, want+1)
 		}
+	}
+}
+
+// pgRun starts pg-test.sh on the shell command under base as TMPDIR, in a
+// process group of its own, once the command has printed its first line.
+func pgRun(t *testing.T, base, command string) (*exec.Cmd, io.WriteCloser) {
+	t.Helper()
+	cmd := exec.Command("bash", "pg-test.sh", "sh", "-c", command)
+	cmd.Env = append(os.Environ(), "TMPDIR="+base)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bufio.NewReader(out).ReadString('\n'); err != nil {
+		t.Fatalf("pg-test.sh %q printed no line: %v", command, err)
+	}
+	return cmd, stdin
+}
+
+// pgDirs are the directories pg-test.sh left under base.
+func pgDirs(t *testing.T, base string) []string {
+	t.Helper()
+	dirs, err := filepath.Glob(filepath.Join(base, "pg-test.*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dirs
+}
+
+// alive reports whether process pid runs: it exists and is no zombie.
+func alive(pid int) bool {
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	fields := strings.Fields(string(stat[strings.LastIndexByte(string(stat), ')')+1:]))
+	return len(fields) > 0 && fields[0] != "Z"
+}
+
+// A run killed outright, as a tool's timeout kills its process group,
+// skips its trap: its server runs on and its directory stays. The next run
+// ends both, and leaves a run still going alone.
+func TestPGTestEndsTheServersOfKilledRuns(t *testing.T) {
+	if _, err := os.Stat("/usr/lib/postgresql/17/bin/initdb"); err != nil {
+		t.Skip("PostgreSQL 17 is not installed")
+	}
+	base, err := os.MkdirTemp("", "pgt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(base) })
+	if os.Geteuid() == 0 {
+		// run as root, the script runs the server as nobody
+		if err := os.Chmod(base, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	killed, _ := pgRun(t, base, "echo up; exec sleep 600")
+	if err := syscall.Kill(-killed.Process.Pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	killed.Wait()
+	left := pgDirs(t, base)
+	if len(left) != 1 || !strings.HasPrefix(filepath.Base(left[0]), fmt.Sprintf("pg-test.%d.", killed.Process.Pid)) {
+		t.Fatalf("directories after the kill = %v, want one named pg-test.%d.*", left, killed.Process.Pid)
+	}
+	pidFile, err := os.ReadFile(filepath.Join(left[0], "data", "postmaster.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := strconv.Atoi(strings.SplitN(string(pidFile), "\n", 2)[0])
+	if err != nil || !alive(server) {
+		t.Fatalf("the killed run's server %q is not running: %v", pidFile, err)
+	}
+
+	live, stdin := pgRun(t, base, "echo up; read line || true")
+	next := exec.Command("bash", "pg-test.sh", "true")
+	next.Env = append(os.Environ(), "TMPDIR="+base)
+	if out, err := next.CombinedOutput(); err != nil {
+		t.Fatalf("the next run: %v\n%s", err, out)
+	}
+	if alive(server) {
+		t.Errorf("the killed run's server %d still runs after the next run", server)
+	}
+	if dirs := pgDirs(t, base); len(dirs) != 1 || !strings.HasPrefix(filepath.Base(dirs[0]), fmt.Sprintf("pg-test.%d.", live.Process.Pid)) {
+		t.Errorf("directories after the next run = %v, want the live run's pg-test.%d.* alone", dirs, live.Process.Pid)
+	}
+
+	stdin.Close()
+	if err := live.Wait(); err != nil {
+		t.Fatalf("the live run: %v", err)
+	}
+	if dirs := pgDirs(t, base); len(dirs) != 0 {
+		t.Errorf("directories after every run ended = %v, want none", dirs)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"slices"
@@ -58,7 +59,7 @@ type approvalCard struct {
 	Resource      cloudres.ResourceSpec
 	// a plan's criteria gap: the spec, the open criteria with their
 	// standing verdicts, whether every card of the plan is delivered
-	// (done or merged), which the confirm button keys on, and whether a
+	// (done, merged or closed), which the confirm button keys on, and whether a
 	// criterion is still open, which the grant answers
 	CriteriaSpec factoryd.CriteriaSpec
 	// Criteria are the card's rows the carousel pages (one-face 6b): one
@@ -118,6 +119,16 @@ type approvalCard struct {
 	// OpenedUnread: they could not be read, and the card says so.
 	Opened       []openedView
 	OpenedUnread bool
+	// Decide is the merge or resource face's decide view-model, built on
+	// the shared decide struct and its builder (decide.go): the partial
+	// case-decide renders it in the five-part shape, and its send POSTs
+	// the chosen action, the fund amount and the note to the approve
+	// endpoint in one request. Nil on every other kind and for a viewer
+	// who may not decide. Hosted: the card renders inside its case, whose
+	// own parts div already shows the ask, so the approval's copy does
+	// not repeat them.
+	Decide *decide
+	Hosted bool
 }
 
 // openedView is an opened proof as the drawer shows it: the original
@@ -218,8 +229,8 @@ func (q planQuestion) ChoiceWords() string {
 // that applies all three. The planner's text is masked as the slot masks
 // it. nil while no ask waits.
 func (k approvalCard) AskDecide() *decide {
-	d := &decide{TaskID: k.TaskID, CSRF: k.CSRF, Suffix: k.IDSuffix, Filter: k.Filter,
-		IssueNumber: k.Issue, IssueURL: k.IssueURL}
+	d := newDecide(k.TaskID, k.CSRF, k.IDSuffix, k.Filter, "")
+	d.IssueNumber, d.IssueURL = k.Issue, k.IssueURL
 	plan := fmt.Sprintf("Plan #%d, revision %d", k.Issue, k.PlanSpec.Revision)
 	if k.Confirm != nil {
 		d.Ask = "Confirm the spec and the criteria, or request changes."
@@ -351,11 +362,74 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 	return k
 }
 
-// openedOf are the opened proofs of plan card t's plan when t is its
-// integration card or a delta card, each read at head in project as a's
-// human; nil for any other card.
+// buildDecide sets the card's decide view-model on the fields its caller
+// has settled: the board's filter among them, whose hidden inputs the one
+// send carries so a press keeps the board it came from. Call it once the
+// card's Filter, Writer and IDSuffix stand; it leaves every other kind,
+// and a viewer who may not decide, without one.
+func (k *approvalCard) buildDecide() {
+	if (k.Kind == factoryd.ApprovalMerge || k.Kind == factoryd.ApprovalResource) && k.Approver && !k.Rerun() && !k.Returns() && len(k.Unsettled) == 0 {
+		k.Decide = approvalDecide(k)
+	}
+}
+
+// approvalDecide builds merge or resource approval card k's decide
+// view-model on the shared decide struct and its builder (decide.go): the
+// five parts of the ask — the ask with its numbers, the why, what the call
+// needs, the recommendation with its source — and the answers it offers,
+// whose one send POSTs the chosen action, the fund amount and the note to
+// the approve endpoint in one request.
+func approvalDecide(k *approvalCard) *decide {
+	d := newDecide(k.TaskID, k.CSRF, k.IDSuffix, k.Filter, k.Waiting())
+	d.ApprovalID = k.ID
+	d.Action = fmt.Sprintf("/approvals/%d/approve", k.ID)
+	d.DataTo = k.TaskStatus
+	d.IssueNumber, d.IssueURL = k.Issue, k.IssueURL
+	switch k.Kind {
+	case factoryd.ApprovalMerge:
+		migration := ""
+		if k.Merge.Migration {
+			migration = " It carries a migration."
+		}
+		d.Ask = fmt.Sprintf("Merge PR #%d of %s? %s risk.%s", k.PRNumber, k.TaskID, k.Merge.RiskClass, migration)
+		d.Why = strings.Join(k.Merge.WhyHuman, "; ")
+		d.Info = "Model review: " + k.Merge.VerdictSummary
+		d.Recommendation, d.Source = k.Merge.Recommendation, "the model review"
+		// a factory pull request has no agent to send it back to: its one
+		// deny closes it and its card with the note; an agent's pull
+		// request goes back to its agent
+		deny := offer{Name: "deny", Label: "Deny", Effect: "sends the pull request back to its agent with your note",
+			Aria: fmt.Sprintf("Deny merge PR #%d of %s", k.PRNumber, k.TaskID)}
+		if k.Merge.Factory {
+			deny = offer{Name: "deny", Label: "Close",
+				Effect: fmt.Sprintf("closes PR #%d and its card with your note: no agent works on a pull request factoryd opened", k.PRNumber),
+				Aria:   fmt.Sprintf("Close PR #%d of %s and its card", k.PRNumber, k.TaskID)}
+		}
+		d.Offers = []offer{
+			{Name: "approve", Label: "Approve", Effect: fmt.Sprintf("merges PR #%d: factoryd merges it", k.PRNumber), Recommended: true, By: "the model review",
+				Aria: fmt.Sprintf("Approve merge PR #%d of %s", k.PRNumber, k.TaskID)},
+			deny,
+		}
+	case factoryd.ApprovalResource:
+		d.Ask = fmt.Sprintf("Commission a %s for %s? %.4f EUR per month, this lease %.4f EUR.",
+			k.Resource.ServerType, k.Resource.Purpose, k.Monthly, k.Resource.ReservationEUR)
+		d.Why = strings.Join(k.Resource.BeyondEnvelope, "; ")
+		d.Info = "Approves the one request of this task; a wider envelope for the project changes its file in Git."
+		d.Offers = []offer{
+			{Name: "approve", Label: "Approve", Effect: "commissions the server for this lease; the project's envelope is its file's", Recommended: true,
+				Aria: fmt.Sprintf("Approve resource request %d of %s", k.ID, k.TaskID)},
+			{Name: "deny", Label: "Deny", Effect: "refuses the request; the agent is told your reason",
+				Aria: fmt.Sprintf("Deny resource request %d of %s", k.ID, k.TaskID)},
+		}
+	}
+	return d
+}
+
+// openedOf are the opened proofs of plan card t's plan (Task.PlanCard)
+// when t is its integration card or a delta card, each read at head in
+// project as a's human; nil for any other card.
 func (c *Console) openedOf(ctx context.Context, a actor, t factoryd.Task, project, head string) ([]openedView, error) {
-	if t.Source != factoryd.SourcePlan || t.Parent == "" || head == "" {
+	if !t.PlanCard() || head == "" {
 		return nil, nil
 	}
 	_, p, ok, err := c.planTable(ctx, t.Parent, 0)
@@ -488,12 +562,12 @@ func (c *Console) planRows(ctx context.Context, t factoryd.Task) (rows []criteri
 	return rows, open, true, nil
 }
 
-// planVerdicts are plan card t's plan's criteria with their standing rows
-// on its integration card home, and open, the human criteria with no
-// verdict, which hold the card's Approve; ok false when t is not the
-// integration card or a delta card of a plan with criteria.
+// planVerdicts are plan card t's plan's criteria (Task.PlanCard) with
+// their standing rows on its integration card home, and open, the human
+// criteria with no verdict, which hold the card's Approve; ok false when
+// t is not the integration card or a delta card of a plan with criteria.
 func (c *Console) planVerdicts(ctx context.Context, t factoryd.Task) (rows []criterionRow, open []string, home string, ok bool, err error) {
-	if t.Source != factoryd.SourcePlan || t.Parent == "" {
+	if !t.PlanCard() {
 		return nil, nil, "", false, nil
 	}
 	_, p, ok, err := c.planTable(ctx, t.Parent, 0)
@@ -602,31 +676,14 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	return nil
 }
 
-// askOne folds a plan card's questions to the one its asking face shows,
-// as a case's slot does: the waiting confirmation's two forms (Confirm),
-// else the first open question. The drawer's copy holds them all.
-func (k *approvalCard) askOne() {
-	if k.Confirm != nil {
-		k.Questions = nil
-		return
-	}
-	for i, q := range k.Questions {
-		if !q.Answered() {
-			k.Questions = k.Questions[i : i+1]
-			return
-		}
-	}
-	k.Questions = nil
-}
-
-// takeOffOf are the cards plan p of task id takes off main, each as the
-// confirm button's line reads it (#its issue, else its key), and the
-// reason each gave.
+// takeOffOf are the cards plan p of task id takes off main, each key's
+// card (factoryd.PlanWaits) as the confirm button's line reads it (#its
+// issue, else its key), and the reason each gave.
 func (c *Console) takeOffOf(ctx context.Context, id string, p factoryd.Plan) (refs, whys []string, err error) {
 	if len(p.TakeOffMain) == 0 {
 		return nil, nil, nil
 	}
-	cards, err := c.cfg.Tasks.PlanCards(ctx, id)
+	cards, err := factoryd.PlanWaits(ctx, c.cfg.Tasks, id)
 	if err != nil {
 		return nil, nil, fmt.Errorf("the cards of plan %s: %w", id, err)
 	}
@@ -647,6 +704,27 @@ func (c *Console) takeOffOf(ctx context.Context, id string, p factoryd.Plan) (re
 	return refs, whys, nil
 }
 
+// waivesCriteria reports whether a close of card id waives criteria: it is
+// a plan at rest whose criteria stand open, and a waiver drops a
+// requirement of the spec, so the chat proposes that close at every
+// autonomy level and only the human's press runs it. A read that fails
+// counts as a waiver.
+func (c *Console) waivesCriteria(ctx context.Context, id string) bool {
+	k, ok, err := c.cfg.Tasks.Task(ctx, id)
+	if err != nil {
+		return true
+	}
+	if !ok || !factoryd.ClosablePlan(k) {
+		return false
+	}
+	_, p, _, err := c.planTable(ctx, k.ID, 0)
+	if err != nil {
+		return true
+	}
+	open, err := factoryd.PlanOpenCriteria(ctx, planReader{c.cfg.Tasks, c.cfg.Events}, k.ID, p)
+	return err != nil || len(open) > 0
+}
+
 // planTable is revision n (0 the newest) of plan task id's plan: the
 // revision and its plan; false when there is none.
 func (c *Console) planTable(ctx context.Context, id string, n int) (factoryd.PlanRevision, factoryd.Plan, bool, error) {
@@ -661,9 +739,34 @@ func (c *Console) planTable(ctx context.Context, id string, n int) (factoryd.Pla
 	return rev, p, true, nil
 }
 
-// approve approves the approval request the path names (doApprove).
+// approve decides the approval request the path names: the chosen action,
+// the fund amount and the note ride one POST (doApprove, doDeny).
 func (c *Console) approve(w http.ResponseWriter, r *http.Request) {
-	c.decideButton(w, r, c.doApprove)
+	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
+		var fund float64
+		if v := strings.TrimSpace(r.PostFormValue("fund_eur")); v != "" {
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil || !(f > 0) || math.IsInf(f, 0) {
+				return "", refuse(http.StatusBadRequest, "fund_eur is an amount in EUR above zero")
+			}
+			fund = f
+		}
+		note := r.PostFormValue("note")
+		switch action := r.PostFormValue("action"); action {
+		case "deny", "reject", "request_changes":
+			if fund > 0 {
+				return "", refuse(http.StatusBadRequest, "a deny takes no fund: clear the fund box, or approve")
+			}
+			if action == "deny" {
+				action = "request_changes" // the face's one deny sends the pull request back
+			}
+			return c.doDeny(ctx, a, id, action, note)
+		case "", "approve":
+			return c.doApprove(ctx, a, id, note, fund)
+		default:
+			return "", refuse(http.StatusBadRequest, "the action "+action+" is not one the face offers")
+		}
+	})
 }
 
 // deny denies the approval request the path names with the human's
@@ -730,11 +833,11 @@ func (c *Console) criterionFragment(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// confirm records the member's confirmation that the plan's delivered
-// cards meet its criteria (doConfirmCriteria).
+// confirm records the human's confirmation that the plan's delivered
+// cards meet its criteria, their note the evidence (doConfirmCriteria).
 func (c *Console) confirm(w http.ResponseWriter, r *http.Request) {
 	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
-		return c.doConfirmCriteria(ctx, a, id, "")
+		return c.doConfirmCriteria(ctx, a, id, r.PostFormValue("note"))
 	})
 }
 

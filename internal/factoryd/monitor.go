@@ -132,7 +132,7 @@ func (m *Monitor) Sweep(ctx context.Context) error {
 	if err != nil {
 		errs = append(errs, fmt.Errorf("expire steps: %w", err))
 	}
-	if err := m.Runner.climbExpired(ctx, expired); err != nil {
+	if err := m.Runner.ClimbExpired(ctx, expired); err != nil {
 		errs = append(errs, fmt.Errorf("climb after expired steps: %w", err))
 	}
 	due, err := m.Store.DueCases(ctx, now, monitorBatch)

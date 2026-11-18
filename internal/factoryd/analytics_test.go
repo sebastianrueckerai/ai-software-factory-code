@@ -232,7 +232,7 @@ func TestRecordGrantCountsAPersonsTimeAlone(t *testing.T) {
 			m, reader := testMetrics(t)
 			g.r.cfg.Metrics = m
 			for range c.runs {
-				if err := g.r.RecordGrant(context.Background(), "t1", c.by, c.d, identityKey(EventCardExtended, "run-1", "4")); err != nil {
+				if err := g.r.RecordGrant(context.Background(), "t1", c.by, c.d, IdentityKey(EventCardExtended, "run-1", "4")); err != nil {
 					t.Fatal(err)
 				}
 			}
