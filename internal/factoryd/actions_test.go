@@ -248,7 +248,7 @@ func TestDrawWithinByRung(t *testing.T) {
 		t.Errorf("rung 2 within the pool = %q, want none", got)
 	}
 	past := policy.Draw{Sessions: 3}
-	if got, want := drawWithin(f, 2, past, policy.Draw{}, 0, false), "the escalation pool leaves 2 sessions, 60 minutes of agent time and 0.30 EUR this month: only the human draws more. "+
+	if got, want := drawWithin(f, 2, past, policy.Draw{}, 0, false), "the escalation pool leaves 2 sessions, 1 hour of agent time and 0.30 EUR this month: only the human draws more. "+
 		"This draw does not fit in sessions (asked 3, left 2). The largest draw that fits is 2 sessions, 0 seconds of agent time and 0.00 EUR: ask for that"; got != want {
 		t.Errorf("rung 2 past the pool = %q, want %q", got, want)
 	}
@@ -307,7 +307,7 @@ func TestDrawBoundNamesThePartAndTheFit(t *testing.T) {
 		// from the card's 90 and its sessions from the pool's 0
 		{"rung 1 past the card's minutes", timeCap, 1, policy.Draw{Sessions: 1, AgentTime: 120 * time.Minute}, 0,
 			"the card's draw bound leaves 3 sessions, 90 minutes of agent time and 6.00 EUR: rung 2 or the human may draw more. " +
-				"This draw does not fit in agent time (asked 120 minutes, left 90 minutes). The largest draw that fits is 0 sessions, 90 minutes of agent time and 0.00 EUR: ask for that"},
+				"This draw does not fit in agent time (asked 2 hours, left 90 minutes). The largest draw that fits is 0 sessions, 90 minutes of agent time and 0.00 EUR: ask for that"},
 		{"an empty pool", empty, 2, policy.Draw{AgentTime: 30 * time.Minute}, 0,
 			"the escalation pool leaves 0 sessions, 0 seconds of agent time and 0.00 EUR this month: only the human draws more. " +
 				"This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: `hand_up` with it as the recommendation"},
@@ -557,7 +557,7 @@ func TestRefusalBoundsEveryMoneyPart(t *testing.T) {
 	raiseBy := func(eur float64, beside *policy.Draw) Resolution {
 		return Resolution{Action: ActRaiseCeiling, Args: map[string]any{"eur": eur}, Fund: beside}
 	}
-	const pool = "the escalation pool leaves 5 sessions, 300 minutes of agent time and 10.00 EUR this month: only the human draws more. This draw does not fit in EUR "
+	const pool = "the escalation pool leaves 5 sessions, 5 hours of agent time and 10.00 EUR this month: only the human draws more. This draw does not fit in EUR "
 	const fit = ". The largest draw that fits is 0 sessions, 0 seconds of agent time and 10.00 EUR: ask for that"
 	for _, c := range []struct {
 		name string

@@ -1032,7 +1032,7 @@ func TestFreezeCardAdoptedAfterItSpokeStaysQuiet(t *testing.T) {
 		}
 	}
 	got := store.tasks["t-old-freeze"].Objective
-	if !strings.HasSuffix(got, "\n\nThe provider's limit has held the big class for more than 1440 minutes. "+
+	if !strings.HasSuffix(got, "\n\nThe provider's limit has held the big class for more than 24 hours. "+
 		"Add a fallback for the class, switch the class's model in policy, or keep waiting. The work cards ask nothing.") ||
 		strings.Count(got, "Add a fallback") != 1 || strings.Contains(got, "waits.provider_limit") {
 		t.Errorf("the adopted card's face:\n%s", got)
@@ -1065,7 +1065,7 @@ func TestFreezeCardRestartAfterItSpokeStaysQuiet(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	const said = "The provider's limit has held the big class for more than 1440 minutes."
+	const said = "The provider's limit has held the big class for more than 24 hours."
 	comments := 0
 	for _, c := range fj.comments {
 		comments += strings.Count(c, said)
@@ -1121,7 +1121,7 @@ func TestFreezeCardAskKnowsTheFaceAsItStands(t *testing.T) {
 		t.Fatal(err)
 	}
 	card, _, _ := store.Task(ctx, cardOfClass(store, repo, "big"))
-	if got := info(); !strings.HasSuffix(got, "The provider's limit has held the big class for more than 1440 minutes. "+
+	if got := info(); !strings.HasSuffix(got, "The provider's limit has held the big class for more than 24 hours. "+
 		"Add a fallback for the class, switch the class's model in policy, or keep waiting. The work cards ask nothing.") ||
 		card.Objective != "Model calls of the big class wait for the provider's limit to reset\n\n"+got {
 		t.Fatalf("after the card spoke the ask knows:\n%s\nand the face:\n%s", got, card.Objective)

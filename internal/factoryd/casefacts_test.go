@@ -755,3 +755,23 @@ func TestNoIssueHoldsOnlyForAQueuedWorkCardNeverLinked(t *testing.T) {
 		})
 	}
 }
+
+// A limit of whole hours reads in hours, any other in whole minutes, and
+// one under a minute in seconds.
+func TestMinutesWordSaysWholeHoursInHours(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		time.Second:                     "1 second",
+		30 * time.Second:                "30 seconds",
+		time.Minute:                     "1 minute",
+		59 * time.Minute:                "59 minutes",
+		59*time.Minute + 40*time.Second: "1 hour",
+		time.Hour:                       "1 hour",
+		90 * time.Minute:                "90 minutes",
+		2 * time.Hour:                   "2 hours",
+		24 * time.Hour:                  "24 hours",
+	} {
+		if got := minutesWord(d); got != want {
+			t.Errorf("%s reads %q, want %q", d, got, want)
+		}
+	}
+}

@@ -687,7 +687,7 @@ func TestAnAgentsQuestionAtEveryCapIsTheCapsFace(t *testing.T) {
 			[]string{"Add money", "End the card", "Not now"}},
 		{"session cap", func(f *factoryd.CaseFacts) { f.Attempts = f.SessionCap }, "The card used all 3 sessions. How should it go on?",
 			[]string{"Allow more sessions", "End the card", "Not now"}},
-		{"agent time cap", func(f *factoryd.CaseFacts) { f.AgentTimeS = f.AgentTimeCapS }, "The card used its agent time of 120 minutes. How should it go on?",
+		{"agent time cap", func(f *factoryd.CaseFacts) { f.AgentTimeS = f.AgentTimeCapS }, "The card used its agent time of 2 hours. How should it go on?",
 			[]string{"Allow more sessions", "End the card", "Not now"}},
 	} {
 		y := x

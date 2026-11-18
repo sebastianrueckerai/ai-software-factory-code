@@ -1037,18 +1037,16 @@ func (r *Runner) runGone(ctx context.Context, t Task) bool {
 }
 
 // minutesWord says a duration in whole minutes, as a card's reader counts
-// agent time, and one under a minute in seconds.
+// agent time: whole hours in hours, and one under a minute in seconds.
 func minutesWord(d time.Duration) string {
 	if d < time.Minute {
-		if n := int(d.Round(time.Second) / time.Second); n != 1 {
-			return fmt.Sprintf("%d seconds", n)
-		}
-		return "1 second"
+		return plural(int(d.Round(time.Second)/time.Second), "second")
 	}
-	if n := int(d.Round(time.Minute) / time.Minute); n != 1 {
-		return fmt.Sprintf("%d minutes", n)
+	m := int(d.Round(time.Minute) / time.Minute)
+	if m%60 == 0 {
+		return plural(m/60, "hour")
 	}
-	return "1 minute"
+	return plural(m, "minute")
 }
 
 // fundFor is the raise in EUR, rounded up to a cent, that lifts a session

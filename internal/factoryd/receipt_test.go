@@ -167,7 +167,7 @@ func TestBuildMergeReceiptDerivesEveryFactFromTheRecords(t *testing.T) {
 			CostEUR: 3.5, // the task row's settled spend
 			Decisions: []ReceiptDecision{ // the human's, oldest first: the approval, the case it answered
 				{Kind: ApprovalMerge, Decision: "approved", By: "sebastian", Note: "the strict improvement holds", At: &receiptApprovedAt},
-				{Kind: "case", Decision: ActExtend, By: "sebastian", Draw: "2 sessions and 60 minutes of agent time",
+				{Kind: "case", Decision: ActExtend, By: "sebastian", Draw: "2 sessions and 1 hour of agent time",
 					Note: "the flaky checkout needs two more sessions", At: &receiptAnsweredAt},
 			},
 		},
@@ -470,7 +470,7 @@ func TestRecordReceiptPostsTheCommentOnce(t *testing.T) {
 		"Gate policy: auto", "Gate reproduction: not run", "Gate reproduction: bash check (exit 0): passed",
 		"Cost: 3.50 EUR",
 		"Decision: merge approved by sebastian — the strict improvement holds",
-		"Decision: case extend by sebastian, drew 2 sessions and 60 minutes of agent time — the flaky checkout needs two more sessions",
+		"Decision: case extend by sebastian, drew 2 sessions and 1 hour of agent time — the flaky checkout needs two more sessions",
 	} {
 		if !strings.Contains(facts, want) {
 			t.Fatalf("the comment's facts miss %q:\n%s", want, body)

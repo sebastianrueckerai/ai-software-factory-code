@@ -27,7 +27,7 @@ func TestWorkAsksTellTheirStory(t *testing.T) {
 			Happened: "It spent 1.12 of 2.00 EUR in all 3 sessions it was given. Before the last session, 3 review findings were open.",
 			Left:     "2 findings are open, and the checks failed. One more session costs about 0.41 EUR."},
 		factoryd.CaseAgentTimeCap: {Planned: "This card builds “Gateway: count the provider's 429s per model”.",
-			Happened: "It spent 1.12 of 2.00 EUR in 2 sessions. Its sessions used all 120 minutes of agent time it was given.", Left: green},
+			Happened: "It spent 1.12 of 2.00 EUR in 2 sessions. Its sessions used all 2 hours of agent time it was given.", Left: green},
 		factoryd.CaseBudgetFloor: {Planned: "This card builds “The three faults end to end: priced, asked, funded”.",
 			Happened: "It spent 5.36 of 5.70 EUR in 2 sessions.",
 			Left:     "8 findings are open, and the checks failed. One more session costs about 2.62 EUR."},
