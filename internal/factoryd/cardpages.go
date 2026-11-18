@@ -401,10 +401,11 @@ func withDeps(c Case, t BoardTask) Case {
 
 // ShowsCases says card t shows its cases at the human, cases: an open
 // card shows them all, a finished one only for a plan's wait, its
-// criteria, a held plan or a helper's case.
+// criteria, a held plan, its issue left open after its end or a helper's
+// case.
 func ShowsCases(t Task, cases []Case) bool {
 	return slices.ContainsFunc(cases, func(o Case) bool {
-		return !Final(t.Status) || PlanWaitCase(o, t) || o.Kind == CasePlanCriteria || o.Kind == CasePlanHeld || o.TaskID != t.ID
+		return !Final(t.Status) || PlanWaitCase(o, t) || o.Kind == CasePlanCriteria || o.Kind == CasePlanHeld || EndedCardCase(o, t) || o.TaskID != t.ID
 	})
 }
 

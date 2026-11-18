@@ -448,16 +448,9 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 }
 
 // holds says card t holds a case at the human that its row of Needs you
-// shows: a live card's, a done plan's wait on its failed card, its
-// criteria request and a closed plan's ask to close it, an ended card's
-// open issue, and its helper task's whatever its state. The board, a
-// card's swap and its opened card read it alike.
-func (cs caseSet) holds(t factoryd.Task) bool {
-	return slices.ContainsFunc(cs.byCard[t.ID], func(o factoryd.Case) bool {
-		return !factoryd.Final(t.Status) || factoryd.PlanWaitCase(o, t) || o.Kind == factoryd.CasePlanCriteria || o.Kind == factoryd.CasePlanHeld ||
-			factoryd.EndedCardCase(o, t) || o.TaskID != t.ID
-	})
-}
+// shows (factoryd.ShowsCases, through the cases cs read for it). The
+// board, a card's swap and its opened card read it alike.
+func (cs caseSet) holds(t factoryd.Task) bool { return len(cs.byCard[t.ID]) > 0 }
 
 // askOf is the ask block of face on card k: the question and its why in
 // the factory's words with their terms marked into seen, and the story,
