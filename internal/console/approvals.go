@@ -485,9 +485,8 @@ func (c *Console) review(ctx context.Context, a actor, q factoryd.ApprovalReques
 // same head's checks turn green (#1013: a re-run) and may merge then. An
 // actor that carries no session — the pulse's render, which no member
 // asked for — fails closed as unread instead of following the nil
-// session: a member session is not required to paint a card. Green
-// mirrors factoryd's checksResult: a head that reports no statuses
-// is still pending, and warning and skipped count as green.
+// session: a member session is not required to paint a card. Green is
+// factoryd.ChecksGreen.
 func (c *Console) headChecksGreen(ctx context.Context, a actor, project, sha string) (bool, error) {
 	if a.s == nil {
 		return false, &forgejoRefusal{what: "read the head's checks", err: errors.New("the actor carries no session, so the head's current checks were not read")}
@@ -501,5 +500,5 @@ func (c *Console) headChecksGreen(ctx context.Context, a actor, project, sha str
 	if err := c.as(ctx, a.s, http.MethodGet, path, nil, http.StatusOK, &cs); err != nil {
 		return false, &forgejoRefusal{what: "read the head's checks", err: err}
 	}
-	return len(cs.Statuses) > 0 && (cs.State == "success" || cs.State == "warning" || cs.State == "skipped"), nil
+	return factoryd.ChecksGreen(cs), nil
 }

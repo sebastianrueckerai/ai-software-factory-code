@@ -4,8 +4,12 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"slices"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // PromiseRow is one promise of a plan as its rows stand now: the plan's
@@ -422,6 +426,71 @@ func CardCases(card BoardTask, live []Case) []Case {
 	return out
 }
 
+// AskingCards are the cards that show cases at the human among live which
+// cards, a board's read, does not hold: a finished card past Done's pages,
+// such as a done plan whose prover asks. Each is read once, by the first
+// of its cases, a helper's parent in its place. A card that would not show
+// its cases even as a plan needs no read. A read that fails leaves its
+// card out, and the failed reads come back joined.
+func AskingCards(ctx context.Context, s interface {
+	TaskStatuses(ctx context.Context, ids []string) (map[string]string, error)
+	BoardTask(ctx context.Context, id string) (BoardTask, bool, error)
+}, live []Case, cards []BoardTask) ([]BoardTask, error) {
+	held := map[string]bool{}
+	hold := func(b BoardTask) {
+		held[b.ID] = true
+		for _, h := range b.Helpers {
+			held[h.ID] = true
+		}
+	}
+	for _, b := range cards {
+		hold(b)
+	}
+	atHuman := map[string][]Case{}
+	for _, c := range live {
+		if c.Status == CaseAtHuman && !held[c.TaskID] {
+			atHuman[c.TaskID] = append(atHuman[c.TaskID], c)
+		}
+	}
+	if len(atHuman) == 0 {
+		return nil, nil
+	}
+	ids := slices.Sorted(maps.Keys(atHuman))
+	statuses, err := s.TaskStatuses(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	var errs []error
+	read := func(id string) (BoardTask, bool) {
+		b, ok, err := s.BoardTask(ctx, id)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("the card %s: %w", id, err))
+		}
+		return b, ok && err == nil
+	}
+	var out []BoardTask
+	for _, id := range ids {
+		if held[id] || !ShowsCases(Task{ID: id, Status: statuses[id], Track: policy.TrackPlan}, atHuman[id]) {
+			continue
+		}
+		b, ok := read(id)
+		if ok && b.Report() {
+			if held[b.Parent] {
+				continue
+			}
+			b, ok = read(b.Parent)
+		}
+		if !ok {
+			continue
+		}
+		hold(b)
+		if len(CardCases(b, live)) > 0 {
+			out = append(out, b)
+		}
+	}
+	return out, errors.Join(errs...)
+}
+
 // PlanCase says case c is a plan's question or its confirmation.
 func PlanCase(c Case) bool { return c.Kind == CasePlanQuestion || c.Kind == CasePlanConfirmation }
 
@@ -533,18 +602,18 @@ func CardPages(card BoardTask, cases []Case, asks map[int64]CaseAsk, pending []A
 		}
 		parts := r.parts(c)
 		for i, p := range parts {
-			out = append(out, casePage(card, owner, p, i+1, r, asks))
+			out = append(out, casePage(owner, p, i+1, r, asks))
 		}
 		if len(parts) == 0 || c.Kind != CasePlanCriteria {
-			out = append(out, casePage(card, owner, c, 0, r, asks))
+			out = append(out, casePage(owner, c, 0, r, asks))
 		}
 	}
 	return out
 }
 
-// casePage is part (0 for the whole) c of a case of owner on card, which
-// request r answers, with the facts and the ask its face reads.
-func casePage(card, owner BoardTask, c Case, part int, r *Request, asks map[int64]CaseAsk) CardPage {
+// casePage is part (0 for the whole) c of a case of owner, which request r
+// answers, with the facts and the ask its face reads.
+func casePage(owner BoardTask, c Case, part int, r *Request, asks map[int64]CaseAsk) CardPage {
 	k := withDeps(c, owner)
 	if r != nil && r.Kind == ApprovalPlan {
 		k = OnPlan(k, r.planFacts())

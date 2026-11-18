@@ -2,9 +2,11 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -31,8 +33,11 @@ func storedFaceRow(ask, why string, labels ...string) map[string]any {
 // human whose ask is a statement over 110 characters with one button,
 // #2004 out of money under a title of two statements with more buttons
 // than four, and #2090 a human's own issue moved into the plan with no why
-// line, which keeps its text as written. The same board with the accepted
-// briefs and the register's faces has no finding.
+// line, which keeps its text as written. A helper's ask with one button
+// counts on its card, #2100, and on #2110, a finished card the board shows
+// for its helper's ask. The same board with the accepted briefs, the
+// register's faces and a request no case holds has no finding. A read the
+// audit could not make fails it, naming what it read.
 func TestAuditBoardFindsTheNamedFaults(t *testing.T) {
 	ctx := context.Background()
 	dsn := schematest.DSN(t, "boardaudit")
@@ -89,6 +94,19 @@ func TestAuditBoardFindsTheNamedFaults(t *testing.T) {
 		create(c)
 	}
 	ask(c2101, storedFaceRow("Is the work of this card done?", c2101.Why, "Done"))
+	c2110 := Task{ID: "live-2110", Kind: "agent", Track: policy.TrackDirect, Status: "done", Repository: "sf/live", IssueNumber: 2110, Source: SourcePlan,
+		Parent: "live-plan", RiskClass: "standard", Objective: "Count the hits on the stats page", Why: "So a human sees which links people use.",
+		Summary: "The stats page counts each link's hits. A test opens two links and reads the counts."}
+	create(c2110)
+	for _, h := range []struct {
+		card       Task
+		source, at string
+	}{{c2100, SourceSizing, "Size the card again?"}, {c2110, SourceProver, "Read the proof again?"}} {
+		helper := Task{ID: h.card.ID + "-" + h.source, Kind: "agent", Track: policy.TrackDirect, Status: "running", Repository: "sf/live",
+			Source: h.source, Parent: h.card.ID, RiskClass: "standard", Objective: h.at}
+		create(helper)
+		ask(helper, storedFaceRow(h.at, "The helper waits for a human.", "Not now"))
+	}
 	ask(c2004, storedFaceRow("Fund it, or park it?", "The card ran out of money with review findings open.",
 		"Add money", "Park it", "Successor", "Confirm audit", "End the card"))
 
@@ -111,20 +129,23 @@ func TestAuditBoardFindsTheNamedFaults(t *testing.T) {
 		{Issue: 2100, Field: "title", Refusal: verb},
 		{Issue: 2100, Field: "why", Refusal: why},
 		{Issue: 2100, Field: "summary", Refusal: summary},
+		{Issue: 2100, Field: "answers", Refusal: `An ask offers 2 to 4 answers, and "Size the card again?" offers 1: Not now.`},
 		{Issue: 2101, Field: "title", Refusal: "The ask has 111 characters. Keep it under 110."},
 		{Issue: 2101, Field: "title", Refusal: plainWords(": the red goes green and the merge records the six verdicts")},
 		{Issue: 2101, Field: "title", Refusal: "An ask is one question or one instruction."},
 		{Issue: 2101, Field: "answers", Refusal: `An ask offers 2 to 4 answers, and "Is the work of this card done?" offers 1: Done.`},
+		{Issue: 2110, Field: "answers", Refusal: `An ask offers 2 to 4 answers, and "Read the proof again?" offers 1: Not now.`},
 	}
-	got, err := AuditBoard(ctx, ro, "sf/live", briefRefs{})
+	green := func(context.Context, string, string) (bool, error) { return true, nil }
+	got, err := AuditBoard(ctx, ro, "sf/live", briefRefs{}, green)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("the live board's findings:\n%s\nwant:\n%s", findingLines(got), findingLines(want))
 	}
-	if _, err := AuditBoard(ctx, ro, "sf/live", downRefs{}); err == nil {
-		t.Error("a read of the references that failed passed the audit")
+	if _, err := AuditBoard(ctx, ro, "sf/live", downRefs{}, green); err == nil || !strings.Contains(err.Error(), "the references of #") {
+		t.Errorf("a read of the references that failed = %v, want the audit failed naming the card", err)
 	}
 
 	plan, c2100, c2101, c2004, c2090 := board("sf/accepted", "ok")
@@ -141,13 +162,28 @@ func TestAuditBoardFindsTheNamedFaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	ask(c2004, map[string]any{"question": "Add 2.00 EUR to finish the card, or end it?", "source": "budget"})
-	got, err = AuditBoard(ctx, ro, "sf/accepted", briefRefs{})
+	if _, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalResource, TaskID: c2100.ID, Project: "sf/accepted", Spec: json.RawMessage(`{}`),
+		Reason: "The card needs a server for its load test."}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = AuditBoard(ctx, ro, "sf/accepted", briefRefs{}, green)
 	if err != nil || len(got) > 0 {
 		t.Errorf("the accepted board's findings:\n%s\nerror %v, want none", findingLines(got), err)
 	}
 	desk, err := s.CaseDesk(ctx, "sf/accepted")
 	if err != nil || len(desk.Cases) != 2 || slices.ContainsFunc(desk.Cases, func(c Case) bool { return c.Status != CaseAtHuman }) {
 		t.Fatalf("the accepted board holds the cases %+v, %v; want the asks of #2101 and #2004 at the human", desk.Cases, err)
+	}
+
+	broken := Task{ID: "broken-3001", Kind: "agent", Track: policy.TrackDirect, Status: "in-review", Repository: "sf/broken", IssueNumber: 3001,
+		Source: SourcePlan, RiskClass: "standard", Objective: acceptedBrief.Title, Why: acceptedBrief.Why, Summary: acceptedBrief.Summary}
+	create(broken)
+	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: broken.ID, Project: "sf/broken", PRNumber: 7, Spec: json.RawMessage(`[]`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AuditBoard(ctx, ro, "sf/broken", briefRefs{}, green); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("approval request %d: spec", id)) {
+		t.Errorf("a request whose spec does not read = %v, want the audit failed naming the request", err)
 	}
 }
 

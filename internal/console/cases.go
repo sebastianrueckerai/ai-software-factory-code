@@ -4,14 +4,12 @@ import (
 	"cmp"
 	"context"
 	"log"
-	"maps"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 )
 
@@ -75,20 +73,19 @@ func (r caseRow) Waiting() string {
 
 // caseSet is what one board read holds of its repository's cases: the
 // desk, the cases at the human each card read shows, its helpers' among
-// them (factoryd.CardCases), each task's live ask, the newest live case an
-// answer on the task ends, and the helper tasks whose cases a card holds.
-// The minute pass withdraws an older ask the live one replaced.
+// them (factoryd.CardCases), and each task's live ask, the newest live
+// case an answer on the task ends. The minute pass withdraws an older ask
+// the live one replaced.
 type caseSet struct {
 	desk    factoryd.CaseDesk
 	byCard  map[string][]factoryd.Case
 	liveAsk map[string]factoryd.Case
-	helpers map[string]factoryd.BoardTask
 }
 
 // caseSetOf reads repository's case set with the cases cards show.
 func (c *Console) caseSetOf(ctx context.Context, repository string, cards ...factoryd.BoardTask) (caseSet, error) {
 	desk, err := c.cfg.CaseDesk(ctx, repository)
-	cs := caseSet{desk: desk, byCard: map[string][]factoryd.Case{}, liveAsk: map[string]factoryd.Case{}, helpers: map[string]factoryd.BoardTask{}}
+	cs := caseSet{desk: desk, byCard: map[string][]factoryd.Case{}, liveAsk: map[string]factoryd.Case{}}
 	if err != nil {
 		return cs, err
 	}
@@ -105,74 +102,18 @@ func (c *Console) caseSetOf(ctx context.Context, repository string, cards ...fac
 func (cs caseSet) adopt(cards ...factoryd.BoardTask) {
 	for _, bt := range cards {
 		cs.byCard[bt.ID] = factoryd.CardCases(bt, cs.desk.Cases)
-		for _, h := range bt.Helpers {
-			cs.helpers[h.ID] = h
-		}
 	}
 }
 
-// askingCards are the cards that hold a case at the human in cs but that
-// cards, the board's read, does not hold: a finished card past Done's
-// pages, such as a done plan whose prover asks. Each is read once, by the
-// first of its cases, a helper's parent in its place, and cs files the
-// read card's helpers' cases among its own, so Needs you holds the row
-// whatever page the card is on and whichever id comes first. A card that
-// would not hold its cases even as a plan needs no read.
+// askingCards are the cards that show a case at the human in cs but that
+// cards, the board's read, does not hold (factoryd.AskingCards), filed in
+// cs, so Needs you holds the row whatever page the card is on.
 func (c *Console) askingCards(ctx context.Context, cs caseSet, cards []factoryd.BoardTask) []factoryd.BoardTask {
-	held := map[string]bool{}
-	for _, bt := range cards {
-		held[bt.ID] = true
-		for _, h := range bt.Helpers {
-			held[h.ID] = true
-		}
-	}
-	atHuman := map[string][]factoryd.Case{}
-	for _, k := range cs.desk.Cases {
-		if k.Status == factoryd.CaseAtHuman && !held[k.TaskID] {
-			atHuman[k.TaskID] = append(atHuman[k.TaskID], k)
-		}
-	}
-	ids := slices.Collect(maps.Keys(atHuman))
-	if len(ids) == 0 {
-		return nil
-	}
-	slices.Sort(ids)
-	statuses, err := c.cfg.Tasks.TaskStatuses(ctx, ids)
+	out, err := factoryd.AskingCards(ctx, c.cfg.Tasks, cs.desk.Cases, cards)
 	if err != nil {
 		log.Printf("console: the cards of the cases at the human: %v", err)
-		return nil
 	}
-	read := func(id string) (factoryd.BoardTask, bool) {
-		bt, ok, err := c.cfg.Tasks.BoardTask(ctx, id)
-		if err != nil {
-			log.Printf("console: the card of a case at the human, %s: %v", id, err)
-		}
-		return bt, ok && err == nil
-	}
-	var out []factoryd.BoardTask
-	for _, id := range ids {
-		if held[id] || !factoryd.ShowsCases(factoryd.Task{ID: id, Status: statuses[id], Track: policy.TrackPlan}, atHuman[id]) {
-			continue
-		}
-		bt, ok := read(id)
-		if ok && bt.Report() {
-			if held[bt.Parent] {
-				continue
-			}
-			bt, ok = read(bt.Parent)
-		}
-		if !ok {
-			continue
-		}
-		held[bt.ID] = true
-		cs.adopt(bt)
-		for _, h := range bt.Helpers {
-			held[h.ID] = true
-		}
-		if cs.holds(bt.Task) {
-			out = append(out, bt)
-		}
-	}
+	cs.adopt(out...)
 	return out
 }
 

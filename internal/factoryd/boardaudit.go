@@ -21,6 +21,19 @@ func BotRefs(ctx context.Context, f *Forgejo, tree policy.Tree, repository strin
 	return refs, nil
 }
 
+// BotChecks reads a commit's checks as f's bot, green as the gates read
+// them (ChecksGreen).
+func BotChecks(f *Forgejo) ChecksRead {
+	return func(ctx context.Context, project, sha string) (bool, error) {
+		repo, err := SplitRepo(project)
+		if err != nil {
+			return false, err
+		}
+		cs, err := f.CombinedStatus(ctx, repo.Owner, repo.Name, sha)
+		return err == nil && ChecksGreen(cs), err
+	}
+}
+
 // BoardFinding is one break of the card contract on a card of the board:
 // the card's issue, the field (title, why, summary, text or answers) and
 // the refusal in plain words. HumanIssue marks a finding on the text of a
@@ -31,13 +44,16 @@ type BoardFinding struct {
 	HumanIssue     bool
 }
 
-// AuditBoard is every finding on repository's board, by issue: the filing
-// door's checks over the brief of each open card and of each card that
-// asks, field by field, with refs resolving the references; a card of a
-// plan without a why line; and an ask at the human whose face offers other
-// than 2 to 4 answers. A reference refs could not read fails the audit.
-func AuditBoard(ctx context.Context, s *PGStore, repository string, refs RefResolver) ([]BoardFinding, error) {
-	board, err := s.BoardTasks(ctx, repository)
+// AuditBoard is every finding on repository's board outside Done, by
+// issue. Its cards are the open ones, each finished card that shows a case
+// (AskingCards) and each card a pending request names. Over each card's
+// brief it runs the filing door's checks field by field, with refs
+// resolving the references, and asks a plan's card for a why line; over
+// each page of the asks the board shows (CardPages) it counts 2 to 4
+// answers. checks reads a red merge head's checks. A read that fails
+// fails the audit.
+func AuditBoard(ctx context.Context, s *PGStore, repository string, refs RefResolver, checks ChecksRead) ([]BoardFinding, error) {
+	cards, err := s.BoardTasks(ctx, repository)
 	if err != nil {
 		return nil, err
 	}
@@ -45,39 +61,80 @@ func AuditBoard(ctx context.Context, s *PGStore, repository string, refs RefReso
 	if err != nil {
 		return nil, err
 	}
-	var cards []Task
-	for _, b := range board {
-		cards = append(cards, b.Task)
+	asking, err := AskingCards(ctx, s, desk.Cases, cards)
+	if err != nil {
+		return nil, err
+	}
+	cards = append(cards, asking...)
+	all, err := s.ApprovalRequests(ctx, "pending")
+	if err != nil {
+		return nil, err
+	}
+	pending := slices.DeleteFunc(all, func(a ApprovalRequest) bool { return a.Project != repository })
+	var readErr error
+	task := func(id string) Task {
+		for _, b := range cards {
+			if b.ID == id {
+				return b.Task
+			}
+			if i := slices.IndexFunc(b.Helpers, func(h BoardTask) bool { return h.ID == id }); i >= 0 {
+				return b.Helpers[i].Task
+			}
+		}
+		t, ok, err := s.Task(ctx, id)
+		if err == nil && !ok {
+			err = fmt.Errorf("the card %s: %w", id, ErrNotFound)
+		}
+		readErr = cmp.Or(readErr, err)
+		return t
+	}
+	read := func(a ApprovalRequest) Request {
+		r, err := ReadRequest(ctx, s, a, task(a.TaskID), checks)
+		if err != nil {
+			readErr = cmp.Or(readErr, fmt.Errorf("approval request %d: %w", a.ID, err))
+		}
+		return r
 	}
 	var out []BoardFinding
-	for _, c := range desk.Cases {
-		if c.Status != CaseAtHuman {
-			continue
-		}
-		// a helper's case asks on its parent's card, on the helper's facts
-		own, card, err := askingCards(ctx, s, c.TaskID)
-		if err != nil {
-			return nil, err
-		}
-		if !slices.ContainsFunc(cards, func(t Task) bool { return t.ID == card.ID }) {
-			cards = append(cards, card)
-		}
-		face := CaseFace(c, own, desk.Asks[c.ID])
-		if n := len(face.Offers); n < 2 || n > mostAnswers {
-			refusal := fmt.Sprintf("An ask offers 2 to 4 answers, and %q offers %d", face.Ask, n)
-			var labels []string
-			for _, o := range face.Offers {
-				labels = append(labels, o.Label)
+	answers := func(card Task, pages []CardPage) {
+		for _, p := range pages {
+			if n := len(p.Face.Offers); n < 2 || n > mostAnswers {
+				refusal := fmt.Sprintf("An ask offers 2 to 4 answers, and %q offers %d", p.Face.Ask, n)
+				var labels []string
+				for _, o := range p.Face.Offers {
+					labels = append(labels, o.Label)
+				}
+				if n > 0 {
+					refusal += ": " + strings.Join(labels, ", ")
+				}
+				out = append(out, BoardFinding{Issue: int(card.IssueNumber), Field: "answers", Refusal: refusal + "."})
 			}
-			if n > 0 {
-				refusal += ": " + strings.Join(labels, ", ")
-			}
-			out = append(out, BoardFinding{Issue: int(card.IssueNumber), Field: "answers", Refusal: refusal + "."})
 		}
 	}
+	shows := map[string]bool{}
+	for _, b := range cards {
+		if cases := CardCases(b, desk.Cases); len(cases) > 0 {
+			shows[b.ID] = true
+			answers(b.Task, CardPages(b, cases, desk.Asks, pending, read))
+		}
+	}
+	// a request its card holds no case for asks on a card of its own
+	for _, a := range pending {
+		if shows[a.TaskID] {
+			continue
+		}
+		t := task(a.TaskID)
+		if !slices.ContainsFunc(cards, func(b BoardTask) bool { return b.ID == t.ID }) {
+			cards = append(cards, BoardTask{Task: t})
+		}
+		answers(t, CardPages(BoardTask{Task: t}, nil, nil, []ApprovalRequest{a}, read))
+	}
+	if readErr != nil {
+		return nil, readErr
+	}
 	var briefs []BoardFinding
-	for _, t := range cards {
-		found, err := auditBrief(ctx, s, t, refs)
+	for _, b := range cards {
+		found, err := auditBrief(ctx, s, b.Task, refs)
 		if err != nil {
 			return nil, err
 		}
@@ -86,23 +143,6 @@ func AuditBoard(ctx context.Context, s *PGStore, repository string, refs RefReso
 	out = append(briefs, out...)
 	slices.SortStableFunc(out, func(a, b BoardFinding) int { return cmp.Compare(a.Issue, b.Issue) })
 	return out, nil
-}
-
-// askingCards are the task of a case, id, and the card it asks on: its
-// own, or a helper's parent.
-func askingCards(ctx context.Context, s *PGStore, id string) (own, card Task, err error) {
-	own, ok, err := s.Task(ctx, id)
-	if err != nil || !ok {
-		return Task{}, Task{}, cmp.Or(err, fmt.Errorf("the case's card %s: %w", id, ErrNotFound))
-	}
-	if !own.Report() || own.Parent == "" {
-		return own, own, nil
-	}
-	card, ok, err = s.Task(ctx, own.Parent)
-	if err != nil || !ok {
-		return Task{}, Task{}, cmp.Or(err, fmt.Errorf("the parent %s of %s: %w", own.Parent, id, ErrNotFound))
-	}
-	return own, card, nil
 }
 
 // auditBrief is the findings on card t's brief: CheckBrief's refusals by

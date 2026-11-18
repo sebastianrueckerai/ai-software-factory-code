@@ -2815,6 +2815,11 @@ func (r *Runner) headBranch(ctx context.Context, t Task, repo Repo) (*Forgejo, R
 	return nil, Repo{}, "", terminalError("pull request #%d's head is on %s, a fork factoryd does not write: its checks run again from Forgejo's run page", t.PRNumber, pr.HeadRepo)
 }
 
+// ChecksGreen says combined status cs reads green as the gates read it: a
+// head that reports no statuses is still pending, and warning and skipped
+// count as green.
+func ChecksGreen(cs CombinedStatus) bool { return checksResult(cs, "", nil).State == ChecksSuccess }
+
 // checksResult maps a combined status onto a verdict; empty means still
 // pending (no status reported yet counts as pending, not as success). For
 // each failed status, logOf's answer (nil skips fetching entirely, an

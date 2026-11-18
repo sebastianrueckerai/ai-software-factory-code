@@ -71,8 +71,9 @@ func runAuditBoard(ctx context.Context, args []string, stdout, stderr io.Writer,
 }
 
 // boardAuditFrom opens the daemon's database for reading only and reads
-// the cards' references in Forgejo as the bot, with GET calls alone. It
-// prints card text, so it takes every secret the daemon's scrubber knows.
+// the cards' references and a red merge head's checks in Forgejo as the
+// bot, with GET calls alone. It prints card text, so it takes every secret
+// the daemon's scrubber knows.
 func boardAuditFrom(secrets map[string]string) func(context.Context) (boardAudit, func(), error) {
 	return func(ctx context.Context) (boardAudit, func(), error) {
 		if unset := unsetSecrets(secrets); len(unset) > 0 {
@@ -96,7 +97,7 @@ func boardAuditFrom(secrets map[string]string) func(context.Context) (boardAudit
 			if err != nil {
 				return nil, err
 			}
-			return factoryd.AuditBoard(ctx, store, repository, refs)
+			return factoryd.AuditBoard(ctx, store, repository, refs, factoryd.BotChecks(forgejo))
 		}}
 		for _, name := range slices.Sorted(maps.Keys(v.Tree.Projects)) {
 			if repo := v.Tree.Projects[name].Repository; repo != "" {
