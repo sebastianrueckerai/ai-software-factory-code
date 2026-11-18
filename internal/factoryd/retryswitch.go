@@ -37,22 +37,27 @@ type RetrySwitch struct {
 }
 
 // RetryFreeze ends class's freeze, pressed from card taskID, on whose row
-// the gateway writes the class_resumed event. A hold the gateway did not
-// clear moves nothing else. With no hold armed and no frozen card it is a
-// quiet success.
+// the gateway writes the class_resumed event. It reads the frozen cards
+// first, so a read that fails moves nothing, and a hold the gateway did
+// not clear moves nothing else. With no hold armed and no frozen card it
+// is a quiet success.
 func (s *RetrySwitch) RetryFreeze(ctx context.Context, taskID, class string) error {
+	cards, err := s.Freeze.classCards(ctx, class)
+	if err != nil {
+		return fmt.Errorf("list the %s class's frozen cards: %w", class, err)
+	}
 	if err := s.clearHold(ctx, taskID, class); err != nil {
 		return fmt.Errorf("clear the %s class's hold: %w", class, err)
 	}
-	return s.retryFreeze(ctx, class)
+	return s.retryFreeze(ctx, class, cards)
 }
 
 // retryFreeze follows a cleared hold: the hold is the class's in every
 // repository, so every repository's open freeze card of the class closes,
-// then every running card the hold froze is woken. The cards close before
-// any probe can answer, so a probe's dated refusal re-arms the same card.
-// One failed close or wake does not stop the others.
-func (s *RetrySwitch) retryFreeze(ctx context.Context, class string) error {
+// then every running card of cards, the ones the hold froze, is woken.
+// The cards close before any probe can answer, so a probe's dated refusal
+// re-arms the same card. One failed close or wake does not stop the others.
+func (s *RetrySwitch) retryFreeze(ctx context.Context, class string, cards []Task) error {
 	var errs []error
 	repos, err := s.Freeze.openCardRepositories(ctx, class)
 	if err != nil {
@@ -65,10 +70,6 @@ func (s *RetrySwitch) retryFreeze(ctx context.Context, class string) error {
 			continue
 		}
 		closed++
-	}
-	cards, err := s.Freeze.classCards(ctx, class)
-	if err != nil {
-		return errors.Join(append(errs, fmt.Errorf("list the %s class's frozen cards: %w", class, err))...)
 	}
 	woken, frozen := 0, 0
 	for _, c := range cards {

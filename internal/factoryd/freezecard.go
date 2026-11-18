@@ -3,6 +3,7 @@ package factoryd
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -78,6 +79,10 @@ type FreezeCardStore interface {
 	CloseFreezeCard(ctx context.Context, repository, class string) (Task, bool, error)
 }
 
+// errNoPolicyReader refuses a freeze watcher wired without its policy
+// reader, which would count no frozen card and wake none.
+var errNoPolicyReader = errors.New("the freeze card watcher has no policy reader (FreezeCard.Current): it cannot tell which cards a class's hold freezes")
+
 // FreezeCard is the watcher in the month alarm's cap-card shape: the
 // first class_frozen for a class files ONE card naming the provider's
 // words, the class, the reset with its countdown and how many cards wait;
@@ -89,8 +94,10 @@ type FreezeCardStore interface {
 type FreezeCard struct {
 	Store   FreezeCardStore
 	Forgejo *Forgejo
-	// Current hands the policy version in force, whose waits.provider_limit
-	// bounds the silence; nil reads the defaults.
+	// Current hands the policy version in force: its classes say which
+	// cards a class's hold freezes, its waits.provider_limit bounds the
+	// silence. Required: Check and the frozen cards' read refuse a watcher
+	// without it (errNoPolicyReader).
 	Current func() policy.Version
 	// Timeline records the card's card_created; nil records none.
 	Timeline *Timeline
@@ -136,6 +143,9 @@ func (w *FreezeCard) Loop(ctx context.Context, every time.Duration) {
 // classes' clocks: the five-minute resume hold and the provider-limit
 // bound.
 func (w *FreezeCard) Check(ctx context.Context) error {
+	if w.Current == nil {
+		return errNoPolicyReader
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.classes == nil {
@@ -223,21 +233,36 @@ func freezeResumeStamp(objective string) (time.Time, bool) {
 	return t, true
 }
 
-// event applies one gateway row to its class's state.
+// event applies one gateway row: an arm to its repository's card of the
+// class, an end to every repository's open card of the class, as the
+// gateway's hold is the class's in all of them.
 func (w *FreezeCard) event(ctx context.Context, ev FreezeEvent) error {
-	key := ev.Repository + "/" + ev.Class
-	st := w.classes[key]
-	if st == nil {
-		st = &freezeClass{repo: ev.Repository, class: ev.Class}
-		w.classes[key] = st
-	}
 	switch ev.Kind {
 	case "class_frozen":
-		return w.frozen(ctx, st, ev)
+		return w.frozen(ctx, w.class(ev.Repository, ev.Class), ev)
 	case "class_resumed":
-		return w.resumed(ctx, st, ev)
+		repos, err := w.openCardRepositories(ctx, ev.Class)
+		if err != nil {
+			return err
+		}
+		for _, repo := range repos {
+			if err := w.resumed(ctx, w.class(repo, ev.Class), ev); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+// class is the watcher's memory of repository's card of class.
+func (w *FreezeCard) class(repository, class string) *freezeClass {
+	key := repository + "/" + class
+	st := w.classes[key]
+	if st == nil {
+		st = &freezeClass{repo: repository, class: class}
+		w.classes[key] = st
+	}
+	return st
 }
 
 // frozen files the class's card on a first arm and updates it on a re-arm
@@ -406,14 +431,14 @@ func (w *FreezeCard) openCardRepositories(ctx context.Context, class string) ([]
 // repository: the running and queued cards the policy in force holds
 // under class, by the gateway's own rule (policy.Document.ProviderLimitOf).
 func (w *FreezeCard) classCards(ctx context.Context, class string) ([]Task, error) {
+	if w.Current == nil {
+		return nil, errNoPolicyReader
+	}
 	cards, err := w.Store.ListFrozenCards(ctx, class)
 	if err != nil {
 		return nil, err
 	}
-	var doc policy.Document
-	if w.Current != nil {
-		doc = w.Current().Document
-	}
+	doc := w.Current().Document
 	return slices.DeleteFunc(cards, func(t Task) bool {
 		held, _ := doc.ProviderLimitOf(t.RequiredCapabilities)
 		return held != class
@@ -462,11 +487,8 @@ func (w *FreezeCard) tick(ctx context.Context) error {
 }
 
 // providerLimit is repository's waits.provider_limit, the default's when
-// no version stands.
+// the version in force names none.
 func (w *FreezeCard) providerLimit(repository string) time.Duration {
-	if w.Current == nil {
-		return policy.DefaultWaits.ProviderLimit
-	}
 	if d := w.Current().Tree.WaitsOf(repository).ProviderLimit; d > 0 {
 		return d
 	}

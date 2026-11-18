@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -327,5 +328,35 @@ func TestRetryPressBeforeASessionEndsNoLaterWait(t *testing.T) {
 				t.Fatalf("provider waits = %+v, want the 2m ladder step, then 84m to the 10:30 reset", waits)
 			}
 		})
+	}
+}
+
+// A freeze watcher wired without its policy reader cannot tell which cards
+// a hold freezes: its check refuses before it files a card, and a press
+// through it refuses before it clears the hold, closes or wakes anything.
+func TestFreezeCardRefusesAWatcherWithoutItsPolicyReader(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	now := oct(14, 9, 0)
+	w := freezeWatcher(store, forgejo, &now)
+	w.Current = nil
+	if err := store.CreateTask(ctx, Task{ID: "t1", Kind: "agent", Track: policy.TrackDirect, Status: "running",
+		Repository: "sf/acme", RequiredCapabilities: []string{"big"}}); err != nil {
+		t.Fatal(err)
+	}
+	g := &retryGateway{store: store, armed: map[string]string{}}
+	g.arm("sf/acme", "big", "2026-10-14T09:30:00Z")
+	if err := w.Check(ctx); !errors.Is(err, errNoPolicyReader) || len(fj.issues) != 0 {
+		t.Fatalf("Check = %v over %d issues, want the missing policy reader named and no card", err, len(fj.issues))
+	}
+	var signalled []string
+	p := &RetrySwitch{Freeze: w, GatewayURL: "http://gateway", Token: "gateway-token", HTTP: &http.Client{Transport: handlerTransport{g}},
+		Signal: func(_ context.Context, id string) error { signalled = append(signalled, id); return nil }}
+	if err := p.RetryFreeze(ctx, "t1", "big"); !errors.Is(err, errNoPolicyReader) {
+		t.Fatalf("RetryFreeze = %v, want the missing policy reader named", err)
+	}
+	if g.armed["big"] == "" || len(g.cleared) != 0 || len(signalled) != 0 || len(store.rows) != 1 {
+		t.Fatalf("the refused press moved something: armed %q, cleared %q, woke %q, rows %q", g.armed, g.cleared, signalled, rowKinds(store))
 	}
 }

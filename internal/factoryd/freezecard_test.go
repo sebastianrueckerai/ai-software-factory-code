@@ -617,3 +617,59 @@ func TestFreezeCardRestartMidFreezeSpeaksOnce(t *testing.T) {
 		}
 	}
 }
+
+// The gateway's hold is the class's in every repository, and its lapse
+// writes one class_resumed, on the repository of the call that found it
+// lapsed. Two repositories hold an open card of the big class; the one
+// class_resumed on sf/acme resumes both: the held time on each face, then
+// five minutes, then each closes on its own.
+func TestFreezeCardSelfResumeClosesEveryRepositorysCard(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	w := freezeWatcher(store, forgejo, &now)
+	const words = "free quota exhausted, resets 2026-11-22 01:04:50"
+	for i, repo := range []string{"sf/acme", "sf/other"} {
+		store.rows = append(store.rows, FreezeEvent{ID: int64(i + 1), Repository: repo, At: base, Kind: "class_frozen",
+			Class: "big", Reset: base.Add(time.Duration(5+i) * time.Hour).Format(time.RFC3339), Words: words})
+	}
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cards := map[string]Task{}
+	for _, c := range store.tasks {
+		if c.Source == SourceFreezeCard {
+			cards[c.Repository] = c
+		}
+	}
+	if len(cards) != 2 || len(fj.issues) != 2 {
+		t.Fatalf("freeze cards = %+v over %d issues, want one in each repository", cards, len(fj.issues))
+	}
+	now = base.Add(90 * time.Minute)
+	store.rows = append(store.rows, FreezeEvent{ID: 3, Repository: "sf/acme", At: now, Kind: "class_resumed",
+		Class: "big", Reset: base.Add(6 * time.Hour).Format(time.RFC3339)})
+	stand := func(want string) {
+		t.Helper()
+		if err := w.Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+		for repo, c := range cards {
+			got, _, _ := store.Task(ctx, c.ID)
+			if got.Status != want || !strings.Contains(got.Objective, "the freeze held 1h 30m") {
+				t.Fatalf("at %s %s's card stands %s, want %s on the resumed face:\n%s", now, repo, got.Status, want, got.Objective)
+			}
+		}
+	}
+	stand("waiting-human")
+	now = now.Add(4 * time.Minute)
+	stand("waiting-human")
+	now = now.Add(2 * time.Minute)
+	stand("done")
+	for repo, c := range cards {
+		if !slices.Contains(fj.closed, c.IssueNumber) {
+			t.Errorf("%s's issue #%d stands open", repo, c.IssueNumber)
+		}
+	}
+}
