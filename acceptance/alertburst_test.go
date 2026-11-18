@@ -14,7 +14,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -96,8 +95,9 @@ func TestCIQueueAlertRequiresSustainedHighQueue(t *testing.T) {
 // alert whose rule carries the capacity label files a human card even on a
 // project with agents — a coding agent can only raise a limit, the
 // decision needs evidence. The webhook is posted as SigNoz posts it; the
-// issue, its labels and the task row are read back from the intake's own
-// Forgejo and store.
+// card waits for its face with no issue, and its question and the task row
+// are read back from the intake's own store, the intake's Forgejo holding
+// no issue.
 func TestCapacityAlertRoutesToHuman(t *testing.T) {
 	rig := newIntakeRig(t)
 	rig.projects.m["demo-app"] = demoProjectWithAgents()
@@ -105,28 +105,25 @@ func TestCapacityAlertRoutesToHuman(t *testing.T) {
 	rig.post(t, map[string]string{"alertname": "CI queue p95 above 5 minutes", "namespace": "demo-staging",
 		"severity": "warning", "service": "factoryd", "capacity": "true"}, "fp-capacity")
 
-	if len(rig.fj.issues) != 1 {
-		t.Fatalf("issues %d, want 1", len(rig.fj.issues))
-	}
-	if want := "SigNoz fires the alert CI queue p95 above 5 minutes on service factoryd in demo-staging of demo-app since 2026-10-12T10:00:00Z: handle it, or wait for it to clear?"; !strings.HasPrefix(rig.fj.issues[0], want+"\n") {
-		t.Fatalf("issue\n%s\nwant the ask %q as its title", rig.fj.issues[0], want)
-	}
-	if want := "Why: a capacity alert needs a person's evidence: a coding agent can only raise a limit"; !strings.Contains(rig.fj.issues[0], want) {
-		t.Fatalf("issue\n%s\nwant %q", rig.fj.issues[0], want)
-	}
-	if got := rig.fj.labels[1]; !slices.Equal(got, []string{"human", "bug", "state/waiting-human"}) {
-		t.Fatalf("issue labels %v, want [human bug state/waiting-human]", got)
+	if len(rig.fj.issues) != 0 {
+		t.Fatalf("issues %d, want none before the card's face", len(rig.fj.issues))
 	}
 	row := rig.store.alertRowByFingerprint("fp-capacity")
 	task, ok := rig.store.taskByID(row.TaskID)
 	if !ok {
 		t.Fatalf("the alert row names no task: %+v", row)
 	}
+	if want := "SigNoz fires the alert CI queue p95 above 5 minutes on service factoryd in demo-staging of demo-app since 2026-10-12T10:00:00Z: handle it, or wait for it to clear?"; !strings.HasPrefix(task.Objective, want+"\n") {
+		t.Fatalf("card\n%s\nwant the ask %q as its title", task.Objective, want)
+	}
+	if want := "Why: a capacity alert needs a person's evidence: a coding agent can only raise a limit"; !strings.Contains(task.Objective, want) {
+		t.Fatalf("card\n%s\nwant %q", task.Objective, want)
+	}
 	if task.Kind != "human" {
 		t.Errorf("task kind %q, want human", task.Kind)
 	}
-	if task.Status != "waiting-human" {
-		t.Errorf("task status %q, want waiting-human", task.Status)
+	if task.Status != "waiting-agent" || task.IssueNumber != 0 {
+		t.Errorf("task status %q on issue %d, want waiting-agent with none", task.Status, task.IssueNumber)
 	}
 	if task.Source != factoryd.SourceAlert || task.AlertFingerprint != "fp-capacity" {
 		t.Errorf("task source %q fingerprint %q, want alert and fp-capacity", task.Source, task.AlertFingerprint)

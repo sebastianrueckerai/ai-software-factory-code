@@ -55,6 +55,11 @@ decimals: a task's model calls cost fractions of a cent.
   shows the task's time in all (from the
   issue's `created_at`) and the gate it is in with the gate's age, from the
   row's `gate` and `gate_since`; a plan child's drawer has a Plan row: the plan's `#n`, its name and the card's key.
+  factoryd's own human card sits in In progress (Running in the wide
+  view) while it is `waiting-agent`, and counts as working, not in Needs
+  you: its case climbs to the project agent first. An answer on it is
+  refused, naming its case, until its face moves it to `waiting-human`;
+  rung 2's own turn on the case answers it.
 - The production hold: while a plan's group is open on the project's main,
   for the factory's own project or a project whose CI asked `/release`,
   the status strip shows the cell `production held · <time>` after the
@@ -86,6 +91,9 @@ decimals: a task's model calls cost fractions of a cent.
   case: it runs at autonomous and full auto and is a proposal at
   assisted and manual. A human's press runs the same action. The ask
   closes itself once no plan is open on main and after a Deploy now.
+  The ask waits for its case's face like every factoryd human card: rung
+  2 may deploy, and may wait only once no plan is open on main; its
+  issue is filed only when the case reaches the human.
   Each release of held production is recorded as the project's
   `production_released` row: `how` (`closed` when the last plan closed,
   by factoryd; `deploy_now` with the `commit` and its `decider`),

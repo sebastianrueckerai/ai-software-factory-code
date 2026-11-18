@@ -687,6 +687,9 @@ func (s *accBatchStore) QueuePause(ctx context.Context, project string) (factory
 func (s *accBatchStore) SetQueuePauseRevert(ctx context.Context, project, taskID string) error {
 	panic("unused")
 }
+func (s *accBatchStore) ChainHeadRow(ctx context.Context, repository string) (string, string, bool, error) {
+	panic("unused")
+}
 func (s *accBatchStore) ClearQueuePause(ctx context.Context, project string) error { panic("unused") }
 func (s *accBatchStore) PutLiveSession(ctx context.Context, l factoryd.LiveSession) error {
 	panic("unused")

@@ -287,8 +287,8 @@ func (r *Roller) stillRed(ctx context.Context, pause QueuePause, run ActionRun, 
 	if fix.ID == "" || fixMerged || fix.Status != "failed" && !stoppable(fix) {
 		return true, nil
 	}
-	return true, closeIssueAsFactory(ctx, r.Store, r.Forgejo, fix, fmt.Sprintf("factoryd: main is still red at %s after %s merged: the human card #%d replaces this card. Closing this issue.",
-		run.CommitSHA[:min(7, len(run.CommitSHA))], remedy, t.IssueNumber))
+	return true, closeIssueAsFactory(ctx, r.Store, r.Forgejo, fix, fmt.Sprintf("factoryd: main is still red at %s after %s merged: the human card %s replaces this card. Closing this issue.",
+		run.CommitSHA[:min(7, len(run.CommitSHA))], remedy, cardName(t)))
 }
 
 // newestMain is main's newest push run among runs, nil without one.
@@ -510,7 +510,7 @@ func (r *Roller) endFixCard(ctx context.Context, pause QueuePause, green string)
 	switch {
 	case err != nil || !ok:
 		return err
-	case humanPauseCard(t) && t.Status == "waiting-human":
+	case humanPauseCard(t) && slices.Contains(humanCardWaits, t.Status):
 		return closeIssueAsFactory(ctx, r.Store, r.Forgejo, t, green+": the merge queue's pause has ended. Closing this issue.")
 	case t.Source != SourceMainFix || t.Status != "failed" && !stoppable(t):
 		return nil
@@ -838,6 +838,6 @@ func (r *Roller) replaceFix(ctx context.Context, pause QueuePause, fix, rev Task
 	if err != nil || botCloseRecorded(events, fix) {
 		return err
 	}
-	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, fix, fmt.Sprintf("factoryd: no fix landed by %s: the revert #%d replaces this card. Closing this issue.",
-		pause.Since.Add(mainRedBound).UTC().Format(time.RFC3339), rev.IssueNumber))
+	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, fix, fmt.Sprintf("factoryd: no fix landed by %s: the revert %s replaces this card. Closing this issue.",
+		pause.Since.Add(mainRedBound).UTC().Format(time.RFC3339), cardName(rev)))
 }

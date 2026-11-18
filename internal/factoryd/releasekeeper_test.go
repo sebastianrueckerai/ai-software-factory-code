@@ -103,6 +103,18 @@ func askOfHold(t *testing.T, store *fakeStore) (Task, HumanQuestion) {
 	return card, HumanQuestion{}
 }
 
+// holdAsks are the hold's asks the keeper filed, oldest first: each ask
+// card's question_asked row.
+func holdAsks(store *fakeStore) []Event {
+	var out []Event
+	for _, e := range store.events {
+		if e.Kind == EventQuestionAsked && e.Detail["source"] == SourceProductionHeld {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 func releasedRows(store *fakeStore) []Event {
 	var out []Event
 	for _, e := range store.events {
@@ -133,21 +145,24 @@ func TestReleaseKeeperStartsTheClockAtTheFirstMerge(t *testing.T) {
 	}
 }
 
+// The hold's ask comes 6 hours into the hold, a card waiting for its face
+// with no issue, and again 6 hours after the last one closed.
 func TestReleaseKeeperAsksAfterSixHours(t *testing.T) {
 	f := &chainForgejo{}
 	k, store, clock := newKeeper(t, f)
 	*clock = keeperAt(15, 59)
 	keeperPass(t, k)
-	if len(f.issues) != 0 {
-		t.Fatalf("issues %q at 15:59, want none", f.issues)
+	if asks := holdAsks(store); len(asks) != 0 {
+		t.Fatalf("asks %+v at 15:59, want none", asks)
 	}
 
 	*clock = keeperAt(16, 0)
 	keeperPass(t, k)
-	if len(f.issues) != 1 {
-		t.Fatalf("issues %q at 16:00, want one", f.issues)
+	asks := holdAsks(store)
+	if len(asks) != 1 {
+		t.Fatalf("asks %+v at 16:00, want one", asks)
 	}
-	title, body, _ := strings.Cut(f.issues[0], "\n\n")
+	title, body, _ := strings.Cut(store.tasks[asks[0].TaskID].Objective, "\n\n")
 	if want := "Production of sf-demo-app has waited 6 hours: plan #12 is open on main. Wait, deploy anyway, or replan?"; title != want {
 		t.Errorf("title %q, want %q", title, want)
 	}
@@ -157,8 +172,8 @@ func TestReleaseKeeperAsksAfterSixHours(t *testing.T) {
 		}
 	}
 	card, q := askOfHold(t, store)
-	if card.Kind != "human" || card.Status != "waiting-human" || card.IssueNumber != 31 {
-		t.Errorf("ask card %+v, want a human card waiting on #31", card)
+	if card.Kind != "human" || card.Status != "waiting-agent" || card.IssueNumber != 0 || len(f.issues) != 0 {
+		t.Errorf("ask card %+v, issues %q; want a human card waiting for its face with no issue", card, f.issues)
 	}
 	want := HumanQuestion{
 		Ask:     title,
@@ -175,21 +190,21 @@ func TestReleaseKeeperAsksAfterSixHours(t *testing.T) {
 
 	*clock = keeperAt(16, 1)
 	keeperPass(t, k)
-	if len(f.issues) != 1 {
-		t.Fatalf("issues %d at 16:01, want the one standing ask", len(f.issues))
+	if n := len(holdAsks(store)); n != 1 {
+		t.Fatalf("asks %d at 16:01, want the one standing ask", n)
 	}
 
 	card.Status, card.FinishedAt = "closed", keeperAtPtr(17, 0)
 	store.tasks[card.ID] = card
 	*clock = keeperAt(22, 59)
 	keeperPass(t, k)
-	if len(f.issues) != 1 {
-		t.Fatalf("issues %d at 22:59, want none new 6 hours less a minute after the ask closed", len(f.issues))
+	if n := len(holdAsks(store)); n != 1 {
+		t.Fatalf("asks %d at 22:59, want none new 6 hours less a minute after the ask closed", n)
 	}
 	*clock = keeperAt(23, 0)
 	keeperPass(t, k)
-	if len(f.issues) != 2 {
-		t.Fatalf("issues %d at 23:00, want a second ask 6 hours after the first closed", len(f.issues))
+	if n := len(holdAsks(store)); n != 2 || len(f.issues) != 0 {
+		t.Fatalf("asks %d, issues %q at 23:00; want a second ask 6 hours after the first closed, with no issue", n, f.issues)
 	}
 }
 
@@ -205,22 +220,22 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 	}
 	fix("t-fix", SourceAlert, 40, keeperAtPtr(10, 45))
 	keeperPass(t, k)
-	if len(f.issues) != 1 {
-		t.Fatalf("issues %q, want the fix's ask at once", f.issues)
+	if asks := holdAsks(store); len(asks) != 1 {
+		t.Fatalf("asks %+v, want the fix's ask at once", asks)
 	}
-	if title, _, _ := strings.Cut(f.issues[0], "\n\n"); title != "Fix #40 merged, but production of sf-demo-app is held: plan #12 is open on main. Deploy anyway, wait, or replan?" {
+	if title := holdAsks(store)[0].Detail["ask"]; title != "Fix #40 merged, but production of sf-demo-app is held: plan #12 is open on main. Deploy anyway, wait, or replan?" {
 		t.Errorf("title %q", title)
 	}
 	if _, q := askOfHold(t, store); q.Why != "#40 fixes an alert. "+holdWhy {
 		t.Errorf("why %q", q.Why)
 	}
 
+	// the standing ask waits for its face: it has no issue to say it on
 	fix("t-fix2", SourceMainFix, 41, keeperAtPtr(11, 10))
 	*clock = keeperAt(11, 15)
 	keeperPass(t, k)
-	wantComments := []string{demoRepo + "#31 factoryd: fix #41 merged too and waits for production."}
-	if len(f.issues) != 1 || !slices.Equal(f.comments, wantComments) {
-		t.Fatalf("issues %d, comments %q; want one issue and %q", len(f.issues), f.comments, wantComments)
+	if len(holdAsks(store)) != 1 || len(f.issues) != 0 || len(f.comments) != 0 {
+		t.Fatalf("asks %d, issues %q, comments %q; want the one ask and nothing said", len(holdAsks(store)), f.issues, f.comments)
 	}
 	if got := releaseRow(store, demoRepo).AskedAt; !got.Equal(keeperAt(11, 15)) {
 		t.Errorf("AskedAt %v, want 11:15", got)
@@ -230,8 +245,8 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 	fix("t-revert", SourceRevert, 39, keeperAtPtr(11, 20))
 	*clock = keeperAt(11, 25)
 	keeperPass(t, k)
-	if len(f.issues) != 1 || !slices.Equal(f.comments, wantComments) {
-		t.Fatalf("issues %d, comments %q; want nothing new for no new fix and for a revert", len(f.issues), f.comments)
+	if len(holdAsks(store)) != 1 || len(f.comments) != 0 {
+		t.Fatalf("asks %d, comments %q; want nothing new for no new fix and for a revert", len(holdAsks(store)), f.comments)
 	}
 
 	// the ask closed, two fixes at once ask again with both
@@ -242,15 +257,19 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 	fix("t-fix4", SourceAlert, 44, keeperAtPtr(11, 41))
 	*clock = keeperAt(11, 45)
 	keeperPass(t, k)
-	if len(f.issues) != 2 {
-		t.Fatalf("issues %d, want a second ask", len(f.issues))
+	if asks := holdAsks(store); len(asks) != 2 {
+		t.Fatalf("asks %+v, want a second ask", asks)
 	}
-	if title, _, _ := strings.Cut(f.issues[1], "\n\n"); title != "Fixes #42 and #44 merged, but production of sf-demo-app is held: plan #12 is open on main. Deploy anyway, wait, or replan?" {
+	if title := holdAsks(store)[1].Detail["ask"]; title != "Fixes #42 and #44 merged, but production of sf-demo-app is held: plan #12 is open on main. Deploy anyway, wait, or replan?" {
 		t.Errorf("title %q", title)
 	}
-	if _, q := askOfHold(t, store); q.Why != "#42 fixes a red main. #44 fixes an alert. "+holdWhy {
+	card, q := askOfHold(t, store)
+	if q.Why != "#42 fixes a red main. #44 fixes an alert. "+holdWhy {
 		t.Errorf("why %q", q.Why)
 	}
+	// its face filed issue #32: a standing ask that has one hears of each fix
+	card.Status, card.IssueNumber = "waiting-human", 32
+	store.tasks[card.ID] = card
 	fix("t-fix5", SourceAlert, 49, keeperAtPtr(11, 50))
 	fix("t-fix6", SourceMainFix, 50, keeperAtPtr(11, 51))
 	*clock = keeperAt(11, 55)
@@ -291,11 +310,12 @@ func TestReleaseKeeperOffersTheReplansOfTheLongestHeldPlan(t *testing.T) {
 			}
 			*clock = keeperAt(16, 0)
 			keeperPass(t, k)
-			if len(f.issues) != 1 {
-				t.Fatalf("issues %d, want one ask", len(f.issues))
+			asks := holdAsks(store)
+			if len(asks) != 1 {
+				t.Fatalf("asks %+v, want one", asks)
 			}
-			if !strings.Contains(f.issues[0], c.others) {
-				t.Errorf("body %q does not name the other plans with %q", f.issues[0], c.others)
+			if body := store.tasks[asks[0].TaskID].Objective; !strings.Contains(body, c.others) {
+				t.Errorf("body %q does not name the other plans with %q", body, c.others)
 			}
 			_, q := askOfHold(t, store)
 			want := HumanQuestion{
@@ -351,7 +371,7 @@ func TestReleaseKeeperFilesNoAskWhereItsWriteLost(t *testing.T) {
 	// rig holds demoRepo since 10:00, last asked at asked (zero: never, else
 	// that ask's card closed at 10:30), and passes at 16:30 with race run
 	// between the pass's read and its write
-	rig := func(t *testing.T, asked time.Time, race func(*fakeStore)) (*chainForgejo, *fakeStore) {
+	rig := func(t *testing.T, asked time.Time, race func(*fakeStore)) (*fakeStore, *fakeStore) {
 		f := &chainForgejo{}
 		k, store, clock := newKeeper(t, f)
 		if _, err := store.PutReleaseHold(ctx, demoRepo, keeperAt(10, 0), asked, time.Time{}, time.Time{}); err != nil {
@@ -366,29 +386,32 @@ func TestReleaseKeeperFilesNoAskWhereItsWriteLost(t *testing.T) {
 		}
 		*clock = keeperAt(16, 30)
 		keeperPass(t, k)
-		return f, store
+		if len(f.issues) != 0 {
+			t.Fatalf("issues %q, want none: an ask waits for its face", f.issues)
+		}
+		return store, store
 	}
 	deployNow := func(s *fakeStore) { s.SetDeployNow(ctx, demoRepo, demoCommit, keeperAt(16, 30), Event{}) }
 	pressed := Release{Repository: demoRepo, AsksAt: keeperAt(9, 0), HeldSince: keeperAt(16, 30), DeployNow: demoCommit}
 	for name, asked := range map[string]time.Time{"the first ask": {}, "a later ask": keeperAt(10, 20)} {
 		t.Run(name, func(t *testing.T) {
-			if f, _ := rig(t, asked, nil); len(f.issues) != 1 {
-				t.Fatalf("issues %d with no writer between, want the ask", len(f.issues))
+			if store, _ := rig(t, asked, nil); len(holdAsks(store)) != 1 {
+				t.Fatalf("asks %d with no writer between, want the ask", len(holdAsks(store)))
 			}
-			f, store := rig(t, asked, deployNow)
-			if len(f.issues) != 0 {
-				t.Errorf("issues %q, want none after a Deploy now landed mid-pass", f.issues)
+			_, store := rig(t, asked, deployNow)
+			if asks := holdAsks(store); len(asks) != 0 {
+				t.Errorf("asks %+v, want none after a Deploy now landed mid-pass", asks)
 			}
 			if got := releaseRow(store, demoRepo); !reflect.DeepEqual(got, pressed) {
 				t.Errorf("row %+v, want the Deploy now's %+v", got, pressed)
 			}
 		})
 	}
-	f, store := rig(t, keeperAt(10, 20), func(s *fakeStore) {
+	_, store := rig(t, keeperAt(10, 20), func(s *fakeStore) {
 		s.PutReleaseHold(ctx, demoRepo, keeperAt(10, 0), keeperAt(16, 30), keeperAt(10, 20), keeperAt(10, 0))
 	})
-	if card, _, _ := store.ChainCard(ctx, demoRepo, SourceProductionHeld); len(f.issues) != 0 || card.ID != "t-ask0" {
-		t.Errorf("issues %q, newest ask %s; want no ask after another pass asked mid-pass", f.issues, card.ID)
+	if card, _, _ := store.ChainCard(ctx, demoRepo, SourceProductionHeld); len(holdAsks(store)) != 0 || card.ID != "t-ask0" {
+		t.Errorf("asks %+v, newest ask %s; want no ask after another pass asked mid-pass", holdAsks(store), card.ID)
 	}
 }
 
@@ -419,14 +442,12 @@ func TestReleaseKeeperAsksAgainAfterAFailedFiling(t *testing.T) {
 		t.Fatalf("AskedAt %v after the failed filing, want it put back", got)
 	}
 	*clock = keeperAt(16, 1)
-	title, _, _ := strings.Cut(f.issues[0], "\n\n")
-	f.open = map[string][]map[string]any{demoRepo: {{"number": 31, "title": title, "user": map[string]any{"login": "factory-agent"}}}}
 	keeperPass(t, k)
 	if _, ok, _ := store.ChainCard(context.Background(), demoRepo, SourceProductionHeld); !ok || !releaseRow(store, demoRepo).AskedAt.Equal(keeperAt(16, 1)) {
 		t.Errorf("ask card %v, AskedAt %v; want the ask at 16:01", ok, releaseRow(store, demoRepo).AskedAt)
 	}
-	if len(f.issues) != 1 || len(f.closed) != 0 {
-		t.Errorf("issues %d, closed %q; want the failed filing's #31 taken on, one ask open", len(f.issues), f.closed)
+	if len(holdAsks(store)) != 1 || len(f.issues) != 0 {
+		t.Errorf("asks %d, issues %q; want the one ask, waiting for its face with no issue", len(holdAsks(store)), f.issues)
 	}
 }
 
@@ -454,6 +475,13 @@ type cancelAfterAsk struct {
 	cancel context.CancelFunc
 }
 
+func (s *cancelAfterAsk) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Task{}, false, err
+	}
+	return s.fakeStore.CreateHumanCard(ctx, t, ask)
+}
+
 func (s *cancelAfterAsk) PutReleaseHold(ctx context.Context, repository string, since, asked, was, wasHeld time.Time) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -465,39 +493,57 @@ func (s *cancelAfterAsk) PutReleaseHold(ctx context.Context, repository string, 
 	return landed, err
 }
 
-// An ask Forgejo refuses for good keeps its time: no retry each minute,
-// the next ask comes HoldAskAfter later, and the refusal is logged.
-func TestReleaseKeeperKeepsTheAskTimeOfARefusedFiling(t *testing.T) {
+// A standing ask's note Forgejo refuses for good keeps the ask's time: no
+// retry each minute, and the refusal is logged. The ask, filed on fix #40,
+// has its issue, #31, from its face; fix #41 merges at 11:10 and its note is
+// refused at 11:15; at 11:16 no fix merged since 11:15, so nothing is said.
+func TestReleaseKeeperKeepsTheAskTimeOfARefusedNote(t *testing.T) {
+	ctx := context.Background()
 	logs := captureLog(t)
-	f := &chainForgejo{fileIssue: http.StatusUnprocessableEntity}
+	f := &chainForgejo{}
 	k, store, clock := newKeeper(t, f)
-	*clock = keeperAt(16, 0)
-	keeperPass(t, k)
-	if got := releaseRow(store, demoRepo).AskedAt; !got.Equal(keeperAt(16, 0)) {
-		t.Errorf("AskedAt %v, want 16:00 kept", got)
+	if _, err := store.PutReleaseHold(ctx, demoRepo, keeperAt(10, 0), time.Time{}, time.Time{}, time.Time{}); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(logs.String(), "release keeper: sf/demo-app: Forgejo refused the ask, which is not filed: ") {
+	fix := func(id string, issue int64, merged *time.Time) {
+		store.tasks[id] = Task{ID: id, Source: SourceAlert, IssueNumber: issue, Repository: demoRepo, Status: "merged", MergeCommit: "f" + id, FinishedAt: merged}
+	}
+	fix("t-fix", 40, keeperAtPtr(10, 45))
+	keeperPass(t, k)
+	card, _ := askOfHold(t, store)
+	card.Status, card.IssueNumber = "waiting-human", 31
+	store.tasks[card.ID] = card
+	fix("t-fix2", 41, keeperAtPtr(11, 10))
+	f.noteFail = http.StatusUnprocessableEntity
+	*clock = keeperAt(11, 15)
+	keeperPass(t, k)
+	if got := releaseRow(store, demoRepo).AskedAt; !got.Equal(keeperAt(11, 15)) {
+		t.Errorf("AskedAt %v, want 11:15 kept", got)
+	}
+	if !strings.Contains(logs.String(), "release keeper: sf/demo-app: Forgejo refused the standing ask's note for good: ") {
 		t.Errorf("log %q, want the refusal said", logs.String())
 	}
-	f.fileIssue = 0
-	*clock = keeperAt(16, 1)
+	f.noteFail = 0
+	*clock = keeperAt(11, 16)
 	keeperPass(t, k)
-	if len(f.issues) != 0 {
-		t.Errorf("issues %q at 16:01, want none before 22:00", f.issues)
+	if len(f.comments) != 0 || len(holdAsks(store)) != 1 {
+		t.Errorf("comments %q, asks %d at 11:16; want nothing new", f.comments, len(holdAsks(store)))
 	}
 }
 
 // A Deploy now that lands between the ask's write and its filing closes the
 // ask just filed: the pass reads the row again, and its ask time is gone.
+// The ask waits for its face with no issue, so its close is the record.
 func TestReleaseKeeperClosesAnAskADeployNowOvertook(t *testing.T) {
 	f := &chainForgejo{}
 	k, store, clock := newKeeper(t, f)
 	k.Store = &deployNowAfterAsk{store}
 	*clock = keeperAt(16, 0)
 	keeperPass(t, k)
-	note := demoRepo + "#31 factoryd: Deploy now sent main at 9d9d9d9 to production while this ask was filed. Closing this issue."
-	if len(f.issues) != 1 || !slices.Equal(f.closed, []string{demoRepo + "#31"}) || !slices.Equal(f.comments, []string{note}) {
-		t.Errorf("issues %d, closed %q, comments %q; want #31 filed and closed with %q", len(f.issues), f.closed, f.comments, note)
+	note := "factoryd: Deploy now sent main at 9d9d9d9 to production while this ask was filed. Closing this issue."
+	asks := holdAsks(store)
+	if len(asks) != 1 || len(f.issues) != 0 || len(f.closed) != 0 || len(f.comments) != 0 || !slices.Equal(factoryCloses(store, asks[0].TaskID), []string{note}) {
+		t.Errorf("asks %d, issues %d, closed %q, comments %q; want the one ask's close recorded alone as %q", len(asks), len(f.issues), f.closed, f.comments, note)
 	}
 	want := Release{Repository: demoRepo, AsksAt: keeperAt(9, 0), HeldSince: keeperAt(16, 0), DeployNow: demoCommit}
 	if got := releaseRow(store, demoRepo); !reflect.DeepEqual(got, want) {
@@ -673,8 +719,8 @@ func TestReleaseKeeperAsksInTheNextHoldAfterAnAskThatCannotClose(t *testing.T) {
 	keeperPass(t, k)
 	*clock = keeperAt(18, 30).Add(HoldAskAfter)
 	keeperPass(t, k)
-	if card, ok, _ := store.ChainCard(context.Background(), demoRepo, SourceProductionHeld); len(f.issues) != 1 || !ok || card.ID == "t-ask" {
-		t.Errorf("issues %q, newest ask %+v; want the next hold's ask filed", f.issues, card)
+	if card, ok, _ := store.ChainCard(context.Background(), demoRepo, SourceProductionHeld); len(f.issues) != 0 || !ok || card.ID == "t-ask" || card.Status != "waiting-agent" {
+		t.Errorf("issues %q, newest ask %+v; want the next hold's ask filed, waiting for its face", f.issues, card)
 	}
 }
 

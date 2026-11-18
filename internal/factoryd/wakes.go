@@ -261,6 +261,9 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 		if revision, _ := toInt(e.Detail["revision"]); e.Kind == EventQuestionAsked && revision > 0 {
 			continue // a plan's question, the planner's row or its face's: its case climbs to rung 2 on case_climbed
 		}
+		if held, _ := e.Detail["held"].(bool); e.Kind == EventQuestionAsked && held {
+			continue // factoryd's own human card's ask: its case climbs to rung 2 on case_climbed
+		}
 		if e.Kind == EventCaseClimbed || e.Kind == EventQuestionAsked && judges {
 			if worked, err := w.staleCaseEvent(ctx, e); err != nil {
 				return err
@@ -553,8 +556,12 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk, repository strin
 			continue
 		}
 		end := fmt.Sprintf("End case %d with answer and its case_id, or with attach_analysis, its case_id and the recommended action.", id)
-		if kind := a.e.Detail["kind"]; kind == string(CasePlanQuestion) || kind == string(CasePlanConfirmation) {
+		kind, _ := a.e.Detail["kind"].(string)
+		switch {
+		case kind == string(CasePlanQuestion) || kind == string(CasePlanConfirmation):
 			end = fmt.Sprintf("End case %d with answer on the plan's revision and question, with no case_id, or with attach_analysis, case_id %d and the recommended answer.", id, id)
+		case ChoiceKind(CaseKind(kind)):
+			end = fmt.Sprintf("End case %d with answer, its case_id and one of the card's choices as text, or with attach_analysis, case_id %d and a choice's value as the recommended answer.", id, id)
 		}
 		fmt.Fprintf(&b, "\n%s\n%s", statement, end)
 	}

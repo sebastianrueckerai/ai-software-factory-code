@@ -343,7 +343,7 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 			// it ended before a window let it file: the rollout's own
 			return in.Store.ResolveAlert(ctx, row.ID, AlertSigNoz, VerdictNoise, "factoryd", map[string]any{"resolved_at": at})
 		}
-		if filed && ok && !(a.swept && Final(t.Status)) && row.Detail["event"] != true {
+		if filed && ok && t.IssueNumber != 0 && !(a.swept && Final(t.Status)) && row.Detail["event"] != true {
 			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: resolved at "+at); err != nil {
 				return err
 			}
@@ -394,8 +394,10 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 	}
 	if !Final(t.Status) {
 		msg := "factoryd: the alert fired again at " + at + ".\n\n" + fenced(sanitize.Outbound("value="+oneLine(a.Annotations["value"]), in.hostsFor(p)))
-		if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
-			return err
+		if t.IssueNumber != 0 {
+			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
+				return err
+			}
 		}
 		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"starts_at": at})
 	}
@@ -559,9 +561,10 @@ func (in *AlertIntake) CloseCleared(ctx context.Context) error {
 
 // touched reports whether a person acted on human card t: an intake row, an
 // answer or park, a comment on its issue by anyone but the bot, or the
-// noise label, a verdict that waits on the person's close.
+// noise label, a verdict that waits on the person's close. A card with no
+// issue has only its rows.
 func (in *AlertIntake) touched(ctx context.Context, t Task, repo Repo) (bool, error) {
-	if touched, err := in.Store.TouchedByPerson(ctx, t.ID, in.Forgejo.BotUser); err != nil || touched {
+	if touched, err := in.Store.TouchedByPerson(ctx, t.ID, in.Forgejo.BotUser); err != nil || touched || t.IssueNumber == 0 {
 		return touched, err
 	}
 	comments, err := in.Forgejo.ListIssueComments(ctx, repo.Owner, repo.Name, t.IssueNumber)
@@ -577,7 +580,7 @@ func (in *AlertIntake) touched(ctx context.Context, t Task, repo Repo) (bool, er
 
 func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) error {
 	t, ok, err := in.Store.Task(ctx, row.TaskID)
-	if err != nil || !ok || t.Kind != "human" || t.Status != "waiting-human" {
+	if err != nil || !ok || t.Kind != "human" || !slices.Contains(humanCardWaits, t.Status) {
 		return err
 	}
 	repo, err := SplitRepo(t.Repository)
@@ -654,7 +657,7 @@ func (in *AlertIntake) CloseCompletedJobs(ctx context.Context) error {
 
 func (in *AlertIntake) closeCompletedJob(ctx context.Context, row Alert, jobsOf func(string) ([]JobState, error)) error {
 	t, ok, err := in.Store.Task(ctx, row.TaskID)
-	if err != nil || !ok || t.Kind != "human" || t.Status != "waiting-human" {
+	if err != nil || !ok || t.Kind != "human" || !slices.Contains(humanCardWaits, t.Status) {
 		return err
 	}
 	name := rowLabel(row, "k8s.object.name")

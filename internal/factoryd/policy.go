@@ -885,9 +885,13 @@ func (a *ConfigAlarm) ReadFailing(ctx context.Context, err error) error {
 // rejection is fixed: each issue gets a comment naming the commit and is
 // closed as the bot, its task ends done, and its alert is judged real.
 func (a *ConfigAlarm) Resolve(ctx context.Context, v policy.Version) error {
-	open, err := a.Store.ListTasksByStatus(ctx, "waiting-human")
-	if err != nil {
-		return err
+	var open []Task
+	for _, status := range humanCardWaits {
+		waiting, err := a.Store.ListTasksByStatus(ctx, status)
+		if err != nil {
+			return err
+		}
+		open = append(open, waiting...)
 	}
 	for _, t := range open {
 		if t.Source != SourceConfig || t.Repository != a.Repo.String() {
@@ -906,7 +910,7 @@ func (a *ConfigAlarm) Resolve(ctx context.Context, v policy.Version) error {
 		if err := closeIssueAsFactory(ctx, a.Store, a.Forgejo, t, msg); err != nil {
 			return err
 		}
-		if err := a.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
+		if err := a.Store.TransitionTask(ctx, t.ID, humanCardWaits, "done"); err != nil {
 			return err
 		}
 		countOutcome(ctx, a.Metrics, a.Store, t, "done")

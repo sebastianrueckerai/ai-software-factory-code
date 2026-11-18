@@ -97,7 +97,7 @@ func TestWideViewHasNoLaneColumn(t *testing.T) {
 			t.Errorf("the wide view still has %s", gone)
 		}
 	}
-	if !strings.Contains(body, `data-holds="queued waiting-deps"`) || !strings.Contains(body, `data-holds="running closing"`) {
+	if !strings.Contains(body, `data-holds="queued waiting-deps"`) || !strings.Contains(body, `data-holds="running closing waiting-agent"`) {
 		t.Errorf("Queued does not hold waiting-deps, or Running closing:\n%s", body)
 	}
 	code := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()

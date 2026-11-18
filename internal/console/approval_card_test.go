@@ -31,6 +31,46 @@ func TestMergeApprovalYieldsTheCardInNeedsYou(t *testing.T) {
 	}
 }
 
+// factoryd's own human card waits out of sight for its face: in
+// waiting-agent, its case climbing, it is in no row of Needs you and adds
+// nothing to the figure, and In progress holds it as working. At its face,
+// waiting on a human on its issue with its case at the human, it is one row
+// of Needs you, counted once.
+func TestAHeldHumanCardWaitsInProgressUntilItsFace(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	r.tasks.set("", factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-agent", Repository: "linkshort/linkshort", Source: factoryd.SourceChainStall,
+		Objective: "The chain is pending. Re-run it?"})
+	r.openCases = map[string][]factoryd.Case{"t-h": {{ID: 51, TaskID: "t-h", Repository: "linkshort/linkshort", Kind: factoryd.CaseHumanCard,
+		Status: factoryd.CaseOpen, OwnerRung: 2, Problem: "The chain is pending. Re-run it?"}}}
+	ck, _ := r.loggedIn(t)
+	board := func() string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	}
+	body := board()
+	if needs := col(t, body, "Needs you"); strings.Contains(needs, `data-card="t-h"`) {
+		t.Fatalf("Needs you lists the card while its case climbs:\n%s", needs)
+	}
+	if !strings.Contains(col(t, body, "In progress"), `data-card="t-h"`) {
+		t.Fatal("In progress lacks the card whose case climbs")
+	}
+	for _, want := range []string{`<b class="n">0</b> need you`, `<b class="n">1</b> working`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the status line lacks %q while the case climbs", want)
+		}
+	}
+	r.tasks.set("", factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "linkshort/linkshort", Source: factoryd.SourceChainStall,
+		IssueNumber: 33, Objective: "The chain is pending. Re-run it?"})
+	r.openCases["t-h"][0].Status = factoryd.CaseAtHuman
+	body = board()
+	if !strings.Contains(col(t, body, "Needs you"), `data-card="t-h"`) || strings.Contains(col(t, body, "In progress"), `data-card="t-h"`) {
+		t.Fatalf("at its face the card is not in Needs you alone:\n%s", body)
+	}
+	if !strings.Contains(body, `<b class="n">1</b> need you`) {
+		t.Fatal("the status line does not count the card at its face once")
+	}
+}
+
 // A merge request waits for its case's face: while the case is open on its
 // rungs Needs you lists no approval for the card, which stays in In
 // progress, and the card's drawer offers no merge, neither Approve nor
@@ -414,9 +454,9 @@ func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	for page, wants := range map[string][]string{
 		"/?project=ai-software-factory-code": {`id="needs-you" data-holds="waiting-human waiting-poster">`,
-			`data-holds="queued waiting-deps waiting-image">`, `data-holds="running closing in-review merged">`, `data-holds="done failed closed"`,
+			`data-holds="queued waiting-deps waiting-image">`, `data-holds="running closing waiting-agent in-review merged">`, `data-holds="done failed closed"`,
 			`<form method="post" action="/approvals/31/approve" hx-post="/approvals/31/approve" class="decide resolve" data-to="in-review">`},
-		"/?project=ai-software-factory-code&view=wide": {`data-holds="queued waiting-deps">`, `data-holds="running closing">`, `data-holds="in-review">`, `data-holds="merged">`,
+		"/?project=ai-software-factory-code&view=wide": {`data-holds="queued waiting-deps">`, `data-holds="running closing waiting-agent">`, `data-holds="in-review">`, `data-holds="merged">`,
 			`data-holds="failed"`, `data-holds="closed"`},
 	} {
 		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()

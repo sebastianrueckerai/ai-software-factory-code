@@ -734,11 +734,12 @@ func TestForgejoConfigRefusesSymbolicLinks(t *testing.T) {
 	}
 }
 
-// A refused commit files one human-lane issue on the infra repository and
-// one open alerts row, however often it is raised; the alerts row, the
-// dedupe key, is written before the issue, so a failed filing is tried
-// again without a second issue. The next valid commit closes the issue,
-// ends the task and judges the alert real.
+// A refused commit files one human-lane card on the infra repository,
+// waiting for its face with no issue, and one open alerts row, however
+// often it is raised; the alerts row, the dedupe key, is written before
+// the card, so a failed filing is tried again without a second card. The
+// next valid commit records the card's close, ends the task and judges the
+// alert real.
 func TestConfigAlarm(t *testing.T) {
 	forgejo, fj := infraForgejo(t, nil)
 	store := newFakeStore()
@@ -747,7 +748,7 @@ func TestConfigAlarm(t *testing.T) {
 	ctx := context.Background()
 	reason := errors.New("processes/maintenance.yaml: stages.policy: on_findings \"maybe\", want one of [agent human fail]")
 	current := policy.Version{ID: 12, Commit: "c8c8c8c8c8c8"}
-	fj.failNext = 1
+	store.recordFails = map[string]int{EventQuestionAsked: 1}
 	if err := alarm.Raise(ctx, "c9c9c9c9c9c9c9c9", reason, current, true); err == nil {
 		t.Fatal("a failed filing raised nothing")
 	}
@@ -756,17 +757,8 @@ func TestConfigAlarm(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(fj.issues) != 1 {
-		t.Fatalf("issues = %d, want 1", len(fj.issues))
-	}
-	for _, want := range []string{"config: factory/ at c9c9c9c9c9 rejected: fix the files and push.\n\n", "https://git.example/sf/ai-software-factory-infra/src/commit/c9c9c9c9c9c9c9c9/factory",
-		"Version 12 (commit c8c8c8c8c8c8) stays current.", "on_findings \"maybe\""} {
-		if !strings.Contains(fj.issues[0], want) {
-			t.Errorf("issue lacks %q:\n%s", want, fj.issues[0])
-		}
-	}
-	if got := fj.labels[41]; !slices.Equal(got, []string{"human", "state/waiting-human"}) {
-		t.Errorf("labels = %v", got)
+	if len(fj.issues) != 0 || len(fj.labels) != 0 {
+		t.Fatalf("issues = %d, labels %v; want none before the card's face", len(fj.issues), fj.labels)
 	}
 	if len(store.tasks) != 1 {
 		t.Fatalf("tasks = %d, want 1", len(store.tasks))
@@ -774,12 +766,18 @@ func TestConfigAlarm(t *testing.T) {
 	var task Task
 	for _, task = range store.tasks {
 	}
-	if task.Kind != "human" || task.Status != "waiting-human" || task.Repository != "sf/ai-software-factory-infra" || task.IssueNumber != 41 ||
+	for _, want := range []string{"config: factory/ at c9c9c9c9c9 rejected: fix the files and push.\n\n", "https://git.example/sf/ai-software-factory-infra/src/commit/c9c9c9c9c9c9c9c9/factory",
+		"Version 12 (commit c8c8c8c8c8c8) stays current.", "on_findings \"maybe\""} {
+		if !strings.Contains(task.Objective, want) {
+			t.Errorf("the card lacks %q:\n%s", want, task.Objective)
+		}
+	}
+	if task.Kind != "human" || task.Status != "waiting-agent" || task.Repository != "sf/ai-software-factory-infra" || task.IssueNumber != 0 ||
 		task.Source != SourceConfig || task.SHA != "c9c9c9c9c9c9c9c9" || len(task.RequiredCapabilities) != 0 {
 		t.Fatalf("task = %+v", task)
 	}
 	a, ok, _ := store.AlertByFingerprint(ctx, AlertConfigRejected, "c9c9c9c9c9c9c9c9")
-	if !ok || a.TaskID != task.ID || a.Verdict != "" || a.Detail["issue"] != int64(41) || a.Detail["current"] != int64(12) || len(store.alertRows()) != 1 {
+	if !ok || a.TaskID != task.ID || a.Verdict != "" || a.Detail["issue"] != int64(0) || a.Detail["current"] != int64(12) || len(store.alertRows()) != 1 {
 		t.Fatalf("alert = %+v, %v (%d rows), want one open row on the task", a, ok, len(store.alertRows()))
 	}
 
@@ -789,9 +787,9 @@ func TestConfigAlarm(t *testing.T) {
 	wantSums(t, sums(t, reader, "factory.task.outcome"), map[string]float64{
 		"attempts=0,merge_rule=human,model_alias=none,process=none,project=sf-ai-software-factory-infra,state=done,track=none": 1,
 	})
-	if !slices.Equal(fj.closed, []int64{41}) || len(fj.comments) != 1 ||
-		!strings.Contains(fj.comments[0], "#41 factoryd loaded commit cacacacacaca (version 13)") {
-		t.Fatalf("closed %v, comments %q", fj.closed, fj.comments)
+	if closes := factoryCloses(store, task.ID); len(fj.closed) != 0 || len(fj.comments) != 0 ||
+		!slices.Equal(closes, []string{"factoryd loaded commit cacacacacaca (version 13); this rejection is resolved."}) {
+		t.Fatalf("closed %v, comments %q, records %q; want the card's close recorded alone", fj.closed, fj.comments, closes)
 	}
 	if got := store.tasks[task.ID]; got.Status != "done" || got.FinishedAt == nil {
 		t.Fatalf("task after the fix = %+v, want done", got)
@@ -801,13 +799,13 @@ func TestConfigAlarm(t *testing.T) {
 		t.Fatalf("alert after the fix = %+v", a)
 	}
 	// nothing open: a second resolve does nothing
-	if err := alarm.Resolve(ctx, policy.Version{ID: 14, Commit: "cbcb"}); err != nil || len(fj.closed) != 1 {
-		t.Fatalf("second resolve = %v, closed %v", err, fj.closed)
+	if err := alarm.Resolve(ctx, policy.Version{ID: 14, Commit: "cbcb"}); err != nil || len(fj.closed) != 0 || len(factoryCloses(store, task.ID)) != 1 {
+		t.Fatalf("second resolve = %v, closed %v, records %q", err, fj.closed, factoryCloses(store, task.ID))
 	}
 }
 
 // A close that fails leaves the card waiting, and its alert is judged real
-// already: the heal pass may close the issue before the next load, which
+// already: the heal pass may end the card before the next load, which
 // would then never list the card again.
 func TestConfigAlarmJudgesTheAlertBeforeTheClose(t *testing.T) {
 	forgejo, fj := infraForgejo(t, nil)
@@ -817,13 +815,14 @@ func TestConfigAlarmJudgesTheAlertBeforeTheClose(t *testing.T) {
 	if err := alarm.Raise(ctx, "d1d1d1d1d1d1", errors.New("bad"), policy.Version{ID: 5, Commit: "d0d0"}, true); err != nil {
 		t.Fatal(err)
 	}
-	fj.failClose = 1
+	store.failIntakeEvent = errors.New("the store is down")
 	if err := alarm.Resolve(ctx, policy.Version{ID: 6, Commit: "d2d2"}); err == nil {
 		t.Fatal("a failed close resolved")
 	}
+	store.failIntakeEvent = nil
 	for _, task := range store.tasks {
-		if task.Status != "waiting-human" {
-			t.Fatalf("task after the failed close = %q, want waiting-human", task.Status)
+		if task.Status != "waiting-agent" {
+			t.Fatalf("task after the failed close = %q, want waiting-agent", task.Status)
 		}
 	}
 	a, _, _ := store.AlertByFingerprint(ctx, AlertConfigRejected, "d1d1d1d1d1d1")
@@ -834,8 +833,8 @@ func TestConfigAlarmJudgesTheAlertBeforeTheClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, _, _ = store.AlertByFingerprint(ctx, AlertConfigRejected, "d1d1d1d1d1d1")
-	if a.Detail["fixed_by"] != "d2d2" || !slices.Equal(fj.closed, []int64{41}) {
-		t.Fatalf("after the retry: alert %+v, closed %v, want the first judgment kept and #41 closed", a, fj.closed)
+	if len(store.intakeEvents) != 1 || len(fj.closed) != 0 || a.Detail["fixed_by"] != "d2d2" {
+		t.Fatalf("after the retry: alert %+v, records %+v, closed %v; want the first judgment kept and the card's close recorded", a, store.intakeEvents, fj.closed)
 	}
 }
 

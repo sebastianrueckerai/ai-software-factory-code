@@ -154,7 +154,7 @@ func TestPGStoreCardHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	// the held t-noissue moves to the human lane, where no hold holds
-	if _, moved, err := s.CreateHumanCard(ctx, Task{ID: "t-noissue", Kind: "human", Status: "waiting-human", Repository: "sf/r", BudgetEUR: 1, Objective: "x"},
+	if _, moved, err := s.CreateHumanCard(ctx, Task{ID: "t-noissue", Kind: "human", Repository: "sf/r", BudgetEUR: 1, Objective: "x"},
 		HumanAsk{Q: HumanQuestion{Ask: "Which?"}, By: "factoryd", Asker: "webhook", Via: ViaFactoryd}); err != nil || !moved {
 		t.Fatalf("the move to the human lane = %v, %v", moved, err)
 	}
@@ -177,7 +177,7 @@ func TestPGStoreCardHold(t *testing.T) {
 		}
 		ends = append(ends, e)
 	}
-	if want := []string{"t-q2 factoryd after #2063 closed", "t-noissue factoryd needs the finished pg split waiting-human"}; !slices.Equal(ends, want) {
+	if want := []string{"t-q2 factoryd after #2063 closed", "t-noissue factoryd needs the finished pg split waiting-agent"}; !slices.Equal(ends, want) {
 		t.Fatalf("the hold-end rows = %q, want %q", ends, want)
 	}
 }

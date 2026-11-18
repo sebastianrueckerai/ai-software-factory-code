@@ -438,8 +438,8 @@ func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
 	for _, tk := range store.tasks {
 		task = tk
 	}
-	if task.Kind != "human" || task.IssueNumber != 9 || task.Status != "waiting-human" || len(task.RequiredCapabilities) != 0 {
-		t.Fatalf("task = %+v, want a human-lane task waiting on its human from the start", task)
+	if task.Kind != "human" || task.IssueNumber != 9 || task.Status != "waiting-agent" || len(task.RequiredCapabilities) != 0 {
+		t.Fatalf("task = %+v, want a human-lane task waiting for its face", task)
 	}
 	if task.SHA != "" {
 		t.Fatalf("sha = %q, want empty: the human lane never runs the agent", task.SHA)
@@ -451,11 +451,10 @@ func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
 			t.Fatalf("forgejo was called to resolve the agent's branch/SHA for a human-lane issue: %v", *requests)
 		}
 	}
-	// the human lane gets its own consistent label
-	// (architecture 5.6's "waiting on a human" board column), not
-	// state/queued, since no runner will ever claim a human-lane task.
-	if labels := issueLabels(t, in.Forgejo, 9); !slices.Contains(labels, "state/waiting-human") {
-		t.Fatalf("labels = %v, want state/waiting-human", labels)
+	// the human lane's issue mirrors the card's status, not state/queued,
+	// since no runner will ever claim a human-lane task
+	if labels := issueLabels(t, in.Forgejo, 9); !slices.Contains(labels, "state/waiting-agent") {
+		t.Fatalf("labels = %v, want state/waiting-agent", labels)
 	}
 	if len(store.askedRows(task.ID)) != 1 {
 		t.Fatalf("asks = %+v, want the ask's one", store.askedRows(task.ID))
@@ -538,7 +537,7 @@ func TestIntakeIssueTracks(t *testing.T) {
 		{"outsider", []string{"improvement"}, "", "", "", false, ""},
 		{"sebastian", []string{"question"}, "queued", "agent", "direct", true, "state/queued"},
 		{"sebastian", []string{"improvement"}, "", "", "", true, ""},
-		{"sebastian", []string{"human"}, "waiting-human", "human", "", true, "state/waiting-human"},
+		{"sebastian", []string{"human"}, "waiting-agent", "human", "", true, "state/waiting-agent"},
 		// Forgejo applies any label an outsider's new-issue form posts:
 		// the writers' track labels do not count from them
 		{"outsider", []string{"human"}, "queued", "agent", "direct", false, "state/queued"},
@@ -1471,7 +1470,7 @@ func TestIntakeResyncIssuesTakesInWhatTheWebhooksMissed(t *testing.T) {
 	_, unvouched := byIssue[14]
 	if len(store.tasks) != 5 || wish || unvouched || agent.Kind != "agent" || agent.Status != "queued" || agent.Track != "direct" ||
 		agent.Priority != 2 || agent.SHA != "sha-main-head" || agent.Objective != "Add the runner\n\nobjective body" || human.Kind != "human" ||
-		human.Status != "waiting-human" || bug.Status != "queued" || bug.Author != "outsider" || bug.AuthorWriter ||
+		human.Status != "waiting-agent" || bug.Status != "queued" || bug.Author != "outsider" || bug.AuthorWriter ||
 		taken.Track != "direct" || taken.Author != "outsider" || taken.AuthorWriter {
 		t.Fatalf("tasks = %+v, want #10's plus agent tasks for #7, the unlabelled #11 and #13, whose agent label a writer added, "+
 			"a human one for #9, none for the improvements #12 and #14", store.tasks)
@@ -2275,7 +2274,7 @@ func TestIntakeRefusesASandboxBreakingRepro(t *testing.T) {
 			in, store, _ := trackIntake(t, "maintenance", maintenanceTracks)
 			post(t, in, "issues", issueOpenedBody(issue, "sebastian", []string{"agent"}, "A card", "Fix it.\n\n```repro\n"+tc.cmd+"\n```\n"))
 			got := card(store, issue)
-			if got.Kind != "human" || got.Status != "waiting-human" || got.Track != "" || got.ReproCommand != "" || len(store.tasks) != 1 {
+			if got.Kind != "human" || got.Status != "waiting-agent" || got.Track != "" || got.ReproCommand != "" || len(store.tasks) != 1 {
 				t.Fatalf("card = %+v, %d tasks; want one person's card with no reproduction command", got, len(store.tasks))
 			}
 			if started := workflowsOf(in).started; len(started) != 0 {
@@ -2508,7 +2507,7 @@ func TestIntakeAgentsNoneIsTheHumanLane(t *testing.T) {
 	for _, tk := range store.tasks {
 		task = tk
 	}
-	if task.Kind != "human" || task.Status != "waiting-human" || task.IssueNumber != 21 || task.SHA != "" || len(task.RequiredCapabilities) != 0 ||
+	if task.Kind != "human" || task.Status != "waiting-agent" || task.IssueNumber != 21 || task.SHA != "" || len(task.RequiredCapabilities) != 0 ||
 		len(workflowsOf(in).started) != 0 || !task.AuthorWriter {
 		t.Fatalf("task = %+v, started %v; want a human-lane task, its writer author, no workflow", task, workflowsOf(in).started)
 	}
@@ -2608,7 +2607,7 @@ func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 			in.Projects = projectList{none}
 			HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store}, noneCompleted, nil)
 		}
-		if got := store.tasks["t-q"]; got.Kind != "human" || got.Status != "waiting-human" || slices.Contains(workflowsOf(in).started, "t-q") {
+		if got := store.tasks["t-q"]; got.Kind != "human" || got.Status != "waiting-agent" || slices.Contains(workflowsOf(in).started, "t-q") {
 			t.Fatalf("%s: task %+v, started %v", via, got, workflowsOf(in).started)
 		}
 		asks := store.askedRows("t-q")
@@ -2881,7 +2880,7 @@ func TestIntakeFilesAWorkflowOnlyCardForAHuman(t *testing.T) {
 				}
 				return
 			}
-			if got.Kind != "human" || got.Status != "waiting-human" || got.Track != "" || len(started) != 0 || got.EnforcedSpent() != 0 {
+			if got.Kind != "human" || got.Status != "waiting-agent" || got.Track != "" || len(started) != 0 || got.EnforcedSpent() != 0 {
 				t.Fatalf("card = %+v, started %q; want a human's card, no start, no spend", got, started)
 			}
 			var asks []HumanQuestion

@@ -339,6 +339,35 @@ func TestAHumanCardChoiceRunsItsWorkOnlyWhereActAccepts(t *testing.T) {
 	}
 }
 
+// factoryd's own human card takes no answer while its case climbs, but rung
+// 2's own: a human's press is refused naming the case, and nothing is acted
+// on or closed; rung 2's choice in its wake on the case goes to its work
+// through Act on rung 2, and the card, which has no issue, closes with no
+// forge call.
+func TestAHeldHumanCardTakesOnlyRungTwosAnswerBeforeItsFace(t *testing.T) {
+	r := newRig(t)
+	held := stallCard()
+	held.Status, held.IssueNumber = "waiting-agent", 0
+	r.tasks.tasks = []factoryd.BoardTask{held}
+	r.openCases = map[string][]factoryd.Case{"t-stall": {{ID: 51, TaskID: "t-stall", Repository: "sf/code", Kind: factoryd.CaseHumanCard,
+		Status: factoryd.CaseOpen, OwnerRung: 2}}}
+	_, s := r.loggedIn(t)
+	human := actor{s: s, repository: "sf/code", via: factoryd.ViaButton, decider: "member", level: policy.AutonomyAutonomous}
+	_, err := r.c.doAnswerCase(t.Context(), human, "t-stall", 51, "", factoryd.AnswerCheckAgain, nil, 0)
+	want := "Card t-stall waits on its case 51, open at rung 2: rung 2 decides it or hands it up, and only then is it the human's, in Needs you."
+	if err == nil || err.Error() != want || len(r.acted) != 0 || len(r.closed) != 0 {
+		t.Fatalf("the human's press = %v, Act calls %+v, closed %v; want %q and nothing done", err, r.acted, r.closed, want)
+	}
+	agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyAutonomous, wake: true, birth: factoryd.EventCaseClimbed}
+	if _, err := r.c.doAnswerCase(t.Context(), agent, "t-stall", 51, "", factoryd.AnswerCheckAgain, nil, 0); err != nil {
+		t.Fatalf("rung 2's answer: %v", err)
+	}
+	if len(r.acted) != 1 || r.acted[0].Rung != 2 || r.acted[0].Res.Action != factoryd.AnswerCheckAgain || len(r.closed) != 1 ||
+		!strings.HasPrefix(r.closed[0], "t-stall by ") || len(r.fg.patched) != 0 {
+		t.Fatalf("Act calls %+v, closed %v, patched %v; want rung 2's check_again closing the card with no forge call", r.acted, r.closed, r.fg.patched)
+	}
+}
+
 // Every model call the turn makes counts, not only the main stream: a wake
 // whose first call the provider refuses for its context compacts the thread
 // (a second call, a compaction) and answers on a third. The compaction costs

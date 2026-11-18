@@ -4002,12 +4002,12 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		human := workflowOnly(c.Directories)
 		if human {
 			continues, inherits = false, false
-			row.Kind, row.Status, row.Track, row.Process, row.RequiredCapabilities, row.SHA = "human", "waiting-human", "", "", nil, ""
+			row.Kind, row.Status, row.Track, row.Process, row.RequiredCapabilities, row.SHA = "human", HumanCardStatus(row.Source), "", "", nil, ""
 			row.Usage, row.CeilingEUR = TaskUsage{}, 0
 		}
 		labels := []string{LabelAgent, "state/queued"}
 		if human {
-			labels = []string{LabelHuman, "state/waiting-human"}
+			labels = []string{LabelHuman, "state/" + row.Status}
 		}
 		// file is the moment the card's filing is: its issue, found by its
 		// marker or filed, its plan_replanned row and its labels, before the

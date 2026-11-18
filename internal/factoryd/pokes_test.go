@@ -19,6 +19,9 @@ func TestPokeOf(t *testing.T) {
 	child := card
 	child.Parent = "t-plan"
 	plan := Task{ID: "t-plan", Kind: "agent", IssueNumber: 558, Objective: "Members page", Track: "plan"}
+	held := Task{ID: "t-h", Kind: "human", Status: "waiting-agent", Objective: "main is still red", Source: SourceStillRed}
+	faced := held
+	faced.Status, faced.IssueNumber = "waiting-human", 70
 	agentDid := func(kind, level string, more map[string]any) Event {
 		d := map[string]any{"autonomy": level, "merge_rule": "human", "decider": "agent"}
 		for k, v := range more {
@@ -72,6 +75,17 @@ func TestPokeOf(t *testing.T) {
 			"choices": []any{"Postgres", "SQLite"}}}, plan,
 			ChatMessage{Kind: MessageEscalation, Content: "#558 - Members page needs you: Which database?\nWhy: Plan revision 2 asks it: the planner revises the plan with the answers.",
 				Choices: []string{"Postgres", "SQLite"}}, true},
+		// factoryd's own human card climbs first: its held row pokes nobody,
+		// its face's row asks
+		{"a held human card's ask", Event{Kind: EventQuestionAsked, TaskID: "t-h", Detail: map[string]any{"question": "main is still red at abc1234: a person decides.",
+			"source": SourceStillRed, "held": true, "case_id": float64(40)}}, held, ChatMessage{}, false},
+		{"a human card's face", Event{Kind: EventQuestionAsked, TaskID: "t-h", Detail: map[string]any{"question": "main is still red at abc1234: a person decides.",
+			"source": SourceStillRed, "case_id": float64(40), "why": "the remedy merged and main stayed red"}}, faced,
+			ChatMessage{Kind: MessageEscalation, Content: "#70 - main is still red needs you: main is still red at abc1234: a person decides.\nWhy: the remedy merged and main stayed red"}, true},
+		// a held card's withdrawn ask reached nobody, so its withdrawal
+		// tells nobody either
+		{"a held card's withdrawal", Event{Kind: EventQuestionWithdrawn, TaskID: "t-h", Detail: map[string]any{"reason": "factoryd closed pull request #1: x",
+			"held": true}}, held, ChatMessage{}, false},
 		// a criteria request's case climbs first: its face's ask is the poke
 		{"a criteria gap", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria"}}, plan, ChatMessage{}, false},
 		{"criteria never judged", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria_rerun"}}, plan, ChatMessage{}, false},

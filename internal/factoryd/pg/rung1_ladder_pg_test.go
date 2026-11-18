@@ -331,10 +331,11 @@ func TestRung1MomentHumanIsItsStep(t *testing.T) {
 }
 
 // A human card and a merge approval reach the trip but run no rung 1: Act
-// refuses rung 1 an answer on them. A human card faces at once; a merge
-// goes to rung 2 for its analysis, and its decision on full auto.
+// refuses rung 1 an answer on them. Both go to rung 2, a human card for
+// rung 2's decision or analysis, a merge for its analysis and its decision
+// on full auto.
 func TestRung1SkipsHumanCardsAndMergeApprovals(t *testing.T) {
-	for kind, rung := range map[CaseKind]int{CaseHumanCard: 3, CaseMergeApproval: 2} {
+	for kind, rung := range map[CaseKind]int{CaseHumanCard: 2, CaseMergeApproval: 2} {
 		g := newRungRig(t, "success")
 		out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: "a stop of " + string(kind), Kind: kind, StateKey: "k"}, tripAttempt{N: 1})
 		if err != nil {

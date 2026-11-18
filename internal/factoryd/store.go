@@ -541,6 +541,9 @@ type Store interface {
 	// the revert card, ClearQueuePause ends it.
 	PauseQueue(ctx context.Context, p QueuePause) (bool, error)
 	QueuePause(ctx context.Context, project string) (QueuePause, bool, error)
+	// ChainHeadRow reads repository's chain head row, the facts a stall or
+	// repair card stands on.
+	ChainHeadRow(ctx context.Context, repository string) (sha, status string, ok bool, err error)
 	SetQueuePauseRevert(ctx context.Context, project, taskID string) error
 	ClearQueuePause(ctx context.Context, project string) error
 	// PauseQueueForRevert pauses the queue for a plan's group revert; false
@@ -2357,13 +2360,15 @@ func (s *PGStore) SetTaskAccent(ctx context.Context, id, accent string) error {
 
 // CreateHumanCard stores human card t and its ask's question_asked row in
 // one transaction: a failure leaves neither, and the caller's own retry (the
-// activity's, the webhook's redelivery, the heal pass) files both. A card of
-// t's id that is a queued agent card moves to the human lane (kind human,
-// waiting-human, its track, process and gate cleared); one that is not
-// queued answers itself and false, with no ask written; a plan's card whose
-// key already has its row answers that row and false, with no second ask.
+// activity's, the webhook's redelivery, the heal pass) files both. The card
+// takes the status its source files in (HumanCardStatus). A card of t's id
+// that is a queued agent card moves to the human lane (kind human, that
+// status, its track, process and gate cleared); one that is not queued
+// answers itself and false, with no ask written; a plan's card whose key
+// already has its row answers that row and false, with no second ask.
 // Otherwise it inserts t.
 func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error) {
+	t.Kind, t.Status = "human", HumanCardStatus(t.Source)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Task{}, false, err
@@ -2377,9 +2382,9 @@ func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Ta
 	switch {
 	case have:
 		moved := false
-		if status, moved, err = changeStatusOn(ctx, tx, `kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL, track = NULL, process = NULL,
+		if status, moved, err = changeStatusOn(ctx, tx, `kind = 'human', status = $2, gate = '', gate_since = NULL, track = NULL, process = NULL,
 			hold_at = NULL, hold_by = '', hold_reason = '', hold_release = NULL`,
-			`id = $1 AND kind = 'agent' AND status = 'queued'`, t.ID); err != nil {
+			`id = $1 AND kind = 'agent' AND status = 'queued'`, t.ID, t.Status); err != nil {
 			return Task{}, false, err
 		}
 		if !moved {

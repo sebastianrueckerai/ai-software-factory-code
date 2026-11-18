@@ -840,7 +840,10 @@ func TestFaceAfterRung2ExpiryKeepsTheMomentsReasonAndRungOnesExpiry(t *testing.T
 
 // pokeRows are the inbox rows the Poker wrote about card t1, by the kind of
 // the event each was born of, after one pass over every event on record.
-func (g rungRig) pokeRows(t *testing.T) []string {
+func (g rungRig) pokeRows(t *testing.T) []string { return g.pokeRowsOf(t, "t1") }
+
+// pokeRowsOf is pokeRows of card taskID.
+func (g rungRig) pokeRowsOf(t *testing.T, taskID string) []string {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := g.s.PgDB().ExecContext(ctx, `TRUNCATE chat_poke_cursor; INSERT INTO chat_poke_cursor (event_id) VALUES (0)`); err != nil {
@@ -850,7 +853,7 @@ func (g rungRig) pokeRows(t *testing.T) []string {
 	if err := poker.Pass(ctx); err != nil {
 		t.Fatalf("Poker.Pass: %v", err)
 	}
-	rows, err := g.s.PgDB().QueryContext(ctx, `SELECT birth_kind FROM chat_messages WHERE task_id = 't1' AND kind = $1 ORDER BY id`, MessageEscalation)
+	rows, err := g.s.PgDB().QueryContext(ctx, `SELECT birth_kind FROM chat_messages WHERE task_id = $2 AND kind = $1 ORDER BY id`, MessageEscalation, taskID)
 	if err != nil {
 		t.Fatal(err)
 	}

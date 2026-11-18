@@ -83,7 +83,7 @@ func TestMigration0032KeepsTheMintedTokens(t *testing.T) {
 	var row string
 	if err := s.db.QueryRowContext(ctx, `SELECT kind || ' ' || status || ' ' || gate || ' ' || (gate_since IS NULL) || ' ' || COALESCE(track, '-') || ' ' || COALESCE(process, '-')
 		FROM tasks WHERE id = 't-q'`).Scan(&row); err != nil ||
-		row != "human waiting-human  true - -" {
+		row != "human waiting-agent  true - -" {
 		t.Fatalf("t-q = %q, %v", row, err)
 	}
 }

@@ -866,7 +866,11 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) s
 		return fmt.Sprintf("card %s is a human card, so its answer draws nothing: answer it without the fund", cardName(t))
 	case len(in.Res.Args) > 0:
 		return fmt.Sprintf("card %s is a human card, so its answer is one of its choices and takes no args: answer it without them", cardName(t))
-	case in.Res.Action == ActClose:
+	}
+	if why := r.heldRefusal(ctx, t, in); why != "" {
+		return why
+	}
+	if in.Res.Action == ActClose {
 		return "" // a human card closes whatever it asks, as its Close button does
 	}
 	ask, _ := r.CaseAsk(ctx, c)
@@ -878,6 +882,81 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) s
 		return ""
 	}
 	return choiceRefusal(t, offers)
+}
+
+// heldEnds are the choices that end a human card on no work of their own:
+// they hold only once the card's condition is gone.
+var heldEnds = []string{AnswerClose, AnswerCheckAgain, AnswerHoldWait, AnswerDismiss}
+
+// heldRefusal is why rung 2 may not take in on factoryd's own human card t,
+// which waits out of sight for its face: a choice that ends the card while
+// factoryd finds its condition standing, or with no check of it, and one
+// that leaves the card waiting where no human sees it. "" when rung 2 may.
+func (r *Runner) heldRefusal(ctx context.Context, t Task, in ActInput) string {
+	choice := in.Res.Action
+	if t.Status != "waiting-agent" || in.Rung != 2 {
+		return ""
+	}
+	up := "hand it up with attach_analysis and " + choice + " as the recommended action"
+	if choice == AnswerPark || choice == AnswerKeepWaiting {
+		return fmt.Sprintf("card %s waits out of sight until a human is asked, so %s would leave it there: %s", cardName(t), choice, up)
+	}
+	if !slices.Contains(heldEnds, choice) {
+		return ""
+	}
+	gone, why, err := r.conditionGone(ctx, t)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("card %s's condition could not be read (%s), so %s ends nothing: %s", cardName(t), r.scrub(err.Error()), choice, up)
+	case !gone:
+		return why + ": " + up
+	}
+	return ""
+}
+
+// conditionGone tells whether the condition human card t was filed for is
+// gone, read from the fact its source's own closer ends it on; why says
+// what stands, or that no code checks a source with no such fact.
+func (r *Runner) conditionGone(ctx context.Context, t Task) (gone bool, why string, err error) {
+	stands := func(format string, args ...any) string {
+		return fmt.Sprintf("card %s's condition stands: ", cardName(t)) + fmt.Sprintf(format, args...)
+	}
+	short := t.SHA[:min(7, len(t.SHA))]
+	switch t.Source {
+	case SourceChainStall, SourceChainRepair:
+		sha, status, ok, err := r.store.ChainHeadRow(ctx, t.Repository)
+		if err != nil || !ok {
+			// with no head row no chain stands
+			return err == nil, "", err
+		}
+		standing := status == "pending" || status == "stalled"
+		if t.Source == SourceChainRepair {
+			standing = status != "success"
+		}
+		return sha != t.SHA || !standing, stands("the chain of %s is %s at %s", t.Repository, status, short), nil
+	case SourceStillRed, SourceRerun:
+		pause, paused, err := r.store.QueuePause(ctx, t.Repository)
+		return !paused || pause.FixTask != t.ID, stands("main of %s is red and its merge queue paused on it", t.Repository), err
+	case SourceConfig:
+		row, ok, err := r.store.AlertByFingerprint(ctx, AlertConfigRejected, t.SHA)
+		if err != nil || !ok {
+			return false, stands("the rejection of %s is not on record", short), err
+		}
+		current, _ := toInt(row.Detail["current"])
+		return row.Verdict != "" || r.cfg.Policy().ID > int64(current), stands("no valid commit loaded after %s", short), nil
+	case SourceProductionHeld:
+		groups, err := r.store.OpenGroups(ctx)
+		return len(groups[t.Repository]) == 0, stands("a plan is open on main of %s", t.Repository), err
+	case SourceAlert:
+		row, ok, err := r.store.AlertByFingerprint(ctx, AlertSigNoz, t.AlertFingerprint)
+		if err != nil || !ok {
+			return false, stands("its alert is not on record"), err
+		}
+		resolved, _ := row.Detail["resolved_at"].(string)
+		_, firing := firingSince(row)
+		return row.Detail["event"] != true && resolved != "" && !firing, stands("its alert fires, or is an event no resolve clears"), nil
+	}
+	return false, fmt.Sprintf("no code checks card %s's condition", cardName(t)), nil
 }
 
 // choiceRefusal says card t takes one of offers, with a note beside it.

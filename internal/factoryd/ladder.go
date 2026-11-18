@@ -641,10 +641,10 @@ func boardLevel(c Case) bool {
 
 // rungTwoTakes reports whether rung 2 takes case c: at every autonomy
 // level, where below autonomous its answer is a proposal the human
-// confirms (Proposes), every kind but a human card and the judgment
-// budget's. A case only a human decides is taken for its analysis alone.
+// confirms (Proposes), every kind but the judgment budget's. A case only a
+// human decides is taken for its analysis alone.
 func rungTwoTakes(c Case) bool {
-	return c.Kind != CaseHumanCard && c.Kind != CaseJudgmentBudget
+	return c.Kind != CaseJudgmentBudget
 }
 
 // startRung2 hands case c to rung 2 as a step in progress due after the
@@ -1619,19 +1619,23 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		choices[i] = r.untrusted(t, c)
 	}
 	question := EscalationQuestion(reason)
+	held := r.heldAsk(ctx, t, c)
 	var shaped *HumanQuestion
 	if (!askedAgain(reason) || c.Status == CaseOpen) && !strings.HasPrefix(reason, screeningAsks) {
 		// the deterministic stops shape their five-part question from the
 		// stop's own numbers; every other ask gets the same five parts
 		// from its reason, so no card asks with words alone
-		switch c.Kind {
-		case CaseMonitorFlag:
+		switch {
+		case held != nil:
+			// factoryd's own human card asks its held row's question
+			shaped = questionOfAsk(held)
+		case c.Kind == CaseMonitorFlag:
 			shaped = r.monitorFace(t, reason)
-		case CasePlanCriteria:
+		case c.Kind == CasePlanCriteria:
 			shaped = criteriaQuestion(c.Problem, reason)
-		case CaseMergeApproval:
+		case c.Kind == CaseMergeApproval:
 			shaped = mergeQuestion(c)
-		case CasePlanQuestion, CasePlanConfirmation:
+		case planAsk(c):
 			shaped = planQuestion(c)
 		default:
 			qf, held := r.questionFacts(ctx, t, reason), factsOf(c)
@@ -1677,6 +1681,12 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		shaped.Info = strings.TrimLeft(shaped.Info, "\n")
 		question = shaped.Ask
 	}
+	if held != nil && shaped != nil && t.IssueNumber == 0 {
+		// its issue is the face: the body asks, and no comment repeats it
+		if t, err = r.fileFace(ctx, t, repo, *shaped, held); err != nil {
+			return 0, err
+		}
+	}
 	if askedAgain(reason) {
 		// the sentence asks nothing: the row names the question it asks again
 		asks, err := r.store.AskAnchors(ctx, t.ID)
@@ -1703,6 +1713,12 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 	}
 	if c.Kind == CasePlanCriteria {
 		asked["approval"] = c.Facts["approval"]
+	}
+	for _, k := range []string{"source", "decider_line", "labels"} {
+		// the held row's own: the poke's line, and the asker its refreshes find
+		if v, ok := held[k]; ok {
+			asked[k] = v
+		}
 	}
 	if planAsk(c) {
 		// the planner's row again, which the plan's answer settles by its
@@ -1772,6 +1788,55 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 	return id, nil
 }
 
+// heldAsk is the held question_asked row of case c of card t: factoryd's
+// own human card's ask, which its face asks again; nil for any other case.
+func (r *Runner) heldAsk(ctx context.Context, t Task, c Case) map[string]any {
+	if t.Kind != "human" || c.ID == 0 {
+		return nil
+	}
+	events, err := r.store.TaskEventsOfKind(ctx, t.ID, EventQuestionAsked, 50)
+	if err != nil {
+		log.Printf("case %d: its held ask: %v", c.ID, err)
+		return nil
+	}
+	for _, e := range events {
+		if id, _ := toInt(e.Detail["case_id"]); int64(id) == c.ID && e.Detail["held"] == true && questionOfAsk(e.Detail) != nil {
+			return e.Detail
+		}
+	}
+	return nil
+}
+
+// fileFace files the issue of factoryd's own human card t, which has none,
+// at its face: question q asked by the held row's asker, labelled with the
+// row's labels and the wait on a human. A face that failed after its issue
+// was filed takes that issue on again. A routine's run follows its card to
+// the issue.
+func (r *Runner) fileFace(ctx context.Context, t Task, repo Repo, q HumanQuestion, held map[string]any) (Task, error) {
+	by, _ := held["by"].(string)
+	labels := stringsOf(held["labels"])
+	title := askTitle(q)
+	reuse, err := strandedIssue(ctx, r.store, r.forgejo, repo, title)
+	if err != nil {
+		return t, err
+	}
+	asking := t
+	asking.Status = "waiting-human"
+	filed, _, err := fileOnIssue(ctx, r.forgejo, repo, title, questionBody(q, factorydFooter(by)), labels, asking, reuse, func(f Task) (Task, error) {
+		return f, r.store.SetTaskIssue(ctx, f.ID, f.IssueNumber)
+	})
+	if err != nil {
+		return t, err
+	}
+	t.IssueNumber = filed.IssueNumber
+	if t.Source == SourceRoutine && r.Routines != nil {
+		if err := r.Routines.RepointRoutineRun(ctx, t.ID, t.ID, t.IssueNumber); err != nil {
+			log.Printf("task %s: the routine run's issue #%d: %v", t.ID, t.IssueNumber, err)
+		}
+	}
+	return t, nil
+}
+
 // faceKeys are the keys of a question_asked row that make its face.
 var faceKeys = []string{"info", "recommendation", "recommended_by", "choices", "offers", "preselected"}
 
@@ -1810,13 +1875,17 @@ func (r *Runner) waitOnHuman(ctx context.Context, t Task) error {
 	// queued: the screening stage's suspect verdict, before any session;
 	// waiting-deps: a dependency ended failed or closed; waiting-poster:
 	// the author's answer screened suspect, or a cap reached on it;
-	// waiting-image: the image did not come within imageWait
-	if err := r.store.TransitionTask(ctx, t.ID, []string{"queued", "waiting-deps", "running", "in-review", "waiting-poster", "waiting-image"}, "waiting-human"); err != nil {
+	// waiting-image: the image did not come within imageWait;
+	// waiting-agent: factoryd's own human card at its face
+	if err := r.store.TransitionTask(ctx, t.ID, []string{"queued", "waiting-deps", "running", "in-review", "waiting-poster", "waiting-image", "waiting-agent"}, "waiting-human"); err != nil {
 		return terminalError("task %s is %s, cannot wait for a human: %v", t.ID, t.Status, err)
 	}
 	mirrorTaskState(ctx, r.forgejo, t, "waiting-human")
-	// a parked card holds no slot: the next queued card takes it
-	pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
+	if t.Kind != "human" {
+		// a parked card holds no slot: the next queued card takes it; a
+		// human card never held one
+		pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
+	}
 	return nil
 }
 

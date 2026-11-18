@@ -94,10 +94,12 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 // its comment and appends the human's step, while the case is live and
 // the asking card's. One that names none, another card's case or a case
 // that ended goes by its words, but a plan's face whose case ended opens
-// none: its answer ended it. A planner's row opens its case open at rung
-// 0, due at the row, with no step: it climbs to its face. One the factory
-// answered as it asked it (settled) has no wake, for that answer comes in
-// the same filing.
+// none: its answer ended it. A planner's row and factoryd's own human
+// card's held row open their case open at rung 0, due at the row, with no
+// step: it climbs to its face. One the factory answered as it asked it
+// (settled) has no wake, for that answer comes in the same filing. The
+// chat's escalation opens its case at the human with the agent's filing as
+// rung 2's step: the agent worked the problem and chose to ask.
 func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	if id, _ := toInt(e.Detail["case_id"]); id != 0 {
 		comment, _ := toInt(e.Detail["comment"])
@@ -174,6 +176,13 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	if err := stampAsk(ctx, tx, e, step.CaseID); err != nil || onRungs {
 		return opened, err
 	}
+	if opened && e.Via == ViaChat {
+		recommendation, _ := e.Detail["recommendation"].(string)
+		why, _ := e.Detail["why"].(string)
+		if _, err := appendCaseStep(ctx, tx, CaseStep{CaseID: step.CaseID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp, Grounds: recommendation, Found: why}); err != nil {
+			return opened, err
+		}
+	}
 	_, err = appendCaseStep(ctx, tx, step)
 	return opened, err
 }
@@ -214,7 +223,8 @@ var cardMoneyKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloo
 // or appends to; head is the task's newest gate head, "" for none. A plan
 // question's case keys on its words and its revision, which its answer
 // finds it by: a later revision asking the same words opens its own. It
-// opens open, to climb to its face; every other ask's at the human.
+// opens open, to climb to its face, and so does factoryd's own human
+// card's held ask; every other ask's at the human.
 func CaseFromAsk(t Task, e Event, head string) (Case, error) {
 	ask := askSentence(e)
 	if strings.TrimSpace(ask) == "" {
@@ -234,7 +244,10 @@ func CaseFromAsk(t Task, e Event, head string) (Case, error) {
 		var named map[string]any
 		kind, named = CaseKindOf(str("source"), cmp.Or(str("reason"), ask))
 		maps.Copy(facts, named)
-		kind, status = HumanCardKind(kind, t), CaseAtHuman
+		kind = HumanCardKind(kind, t)
+		if held, _ := e.Detail["held"].(bool); !held {
+			status = CaseAtHuman
+		}
 	}
 	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: caseStateKey(kind, ask, head), Status: status,
 		Problem: ask, Facts: facts}

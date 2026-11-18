@@ -345,8 +345,8 @@ func (s *PGStore) RetryableRoll(ctx context.Context, repository string, backoff 
 // escalates twice while it does, and its answer, when one comes, is the
 // card's to consume.
 func (s *PGStore) StandingQuestion(ctx context.Context, repository, marker string) (Task, bool, error) {
-	return s.oneTask(ctx, `repository = $1 AND kind = 'human' AND status = 'waiting-human' AND objective LIKE '%' || $2 || '%'`,
-		repository, marker)
+	return s.oneTask(ctx, `repository = $1 AND kind = 'human' AND status = ANY($3) AND objective LIKE '%' || $2 || '%'`,
+		repository, marker, humanCardWaits)
 }
 
 // bumpDigest points the one pinned reference to image in a manifest at

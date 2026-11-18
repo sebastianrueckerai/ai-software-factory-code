@@ -332,11 +332,12 @@ func TestSchemaCopierFilesCard(t *testing.T) {
 }
 
 // A schema pull request on a project without agents, the infra project,
-// gets a human card: no workflow runs there to carry it, so
-// the card asks a person to merge it in Forgejo. The card links the pull
-// request, labelled human, its question names the pull request with its
-// link, and its one question_asked row is the needs-you poke; the second
-// pass finds the card and files none.
+// gets a human card: no workflow runs there to carry it, so the card asks
+// a person to merge it in Forgejo once its case reaches one. The card
+// links the pull request and waits for its face with no issue, its
+// question names the pull request with its link, and its one
+// question_asked row is held, labelled human for the face, and pokes
+// nobody; the second pass finds the card and files none.
 func TestSchemaCopierFilesAHumanCardWithoutAgents(t *testing.T) {
 	ctx := context.Background()
 	fj, c, store, wf := cardRig(t)
@@ -353,7 +354,7 @@ func TestSchemaCopierFilesAHumanCardWithoutAgents(t *testing.T) {
 		t.Fatalf("cards %+v, CreateTask %d times; want one card", cards, store.createCalls)
 	}
 	card := cards[0]
-	if card.Kind != "human" || card.Status != "waiting-human" || card.PRNumber != 1 || card.IssueNumber != 1 ||
+	if card.Kind != "human" || card.Status != "waiting-agent" || card.PRNumber != 1 || card.IssueNumber != 0 ||
 		card.Repository != cardUpstream || card.SHA != "0123456789ab" || card.Author != "factory-agent" || len(wf.started) != 0 {
 		t.Fatalf("card %+v, started %v; want a human card on pull request #1 with no workflow", card, wf.started)
 	}
@@ -364,9 +365,9 @@ func TestSchemaCopierFilesAHumanCardWithoutAgents(t *testing.T) {
 		!slices.Equal(q.Choices, []QuestionChoice{{AnswerClose, "Handled, close"}}) {
 		t.Fatalf("question %+v, objective %q; want the merge ask, the pull request's link and the close", q, card.Objective)
 	}
-	issues, labels, _, prs := fj.snapshot()
-	if len(prs) != 1 || len(issues) != 1 || issues[0].title != ask || !slices.Equal(labels[1], []string{"human", "state/waiting-human"}) {
-		t.Fatalf("pull requests %v, issues %+v, labels %v; want one pull request and its human card", prs, issues, labels)
+	issues, _, _, prs := fj.snapshot()
+	if len(prs) != 1 || len(issues) != 0 || !slices.Equal(heldLabels(store, card.ID), []string{"human"}) {
+		t.Fatalf("pull requests %v, issues %+v, held labels %v; want one pull request and its held human card", prs, issues, heldLabels(store, card.ID))
 	}
 	var asked []Event
 	for _, e := range store.events {
@@ -377,17 +378,17 @@ func TestSchemaCopierFilesAHumanCardWithoutAgents(t *testing.T) {
 	if len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Detail["source"] != SourceSchemaCopy {
 		t.Fatalf("question_asked rows %+v, want the card's one", asked)
 	}
-	if m, ok := pokeOf(asked[0], card); !ok || m.Kind != MessageEscalation || !strings.HasPrefix(m.Content, "#1 - "+CardTitle(card)+" needs you: "+ask) ||
-		deliveryLevel(m) != LevelNeedsYou {
-		t.Fatalf("the poke = %+v, %v; want the card's needs-you", m, ok)
+	if m, ok := pokeOf(asked[0], card); ok {
+		t.Fatalf("the poke = %+v; want none before the face", m)
 	}
 }
 
 // The copier's own close of a schema pull request ends its human card
 // whichever build filed it: no workflow sees the bot's close,
 // so the copier ends the card through the intake. The ask is withdrawn by
-// factoryd, the card ends closed naming the close, and its issue closes
-// with a comment.
+// factoryd, the card ends closed naming the close, and factoryd records
+// the close of the held card, which has no issue, with no forge call for
+// it; its ask reached nobody, so its withdrawal pokes nobody.
 func TestSchemaCopierWithdrawsTheHumanCardOfAPullRequestItCloses(t *testing.T) {
 	ctx := context.Background()
 	fj, c, store, wf := cardRig(t)
@@ -429,13 +430,14 @@ func TestSchemaCopierWithdrawsTheHumanCardOfAPullRequestItCloses(t *testing.T) {
 	if len(withdrawn) != 1 || withdrawn[0].Actor != FactoryDecider || withdrawn[0].Via != ViaFactoryd || withdrawn[0].Detail["reason"] != reason {
 		t.Fatalf("question_withdrawn %+v, want factoryd's one", withdrawn)
 	}
-	if m, ok := pokeOf(withdrawn[0], store.tasks[card.ID]); !ok || m.Content != "#1 needs you no more: its question is withdrawn because "+reason+"." {
-		t.Fatalf("the poke %+v, %v", m, ok)
+	if m, ok := pokeOf(withdrawn[0], store.tasks[card.ID]); ok {
+		t.Fatalf("the poke %+v; want none for a held card", m)
 	}
 	fj.mu.Lock()
 	defer fj.mu.Unlock()
-	if !slices.Equal(fj.closedIssues, []int64{1}) || !slices.Contains(fj.comments, "1: factoryd: "+reason+"; this card ends with it.") {
-		t.Fatalf("closed issues %v, comments %q; want the card's #1 closed with its comment", fj.closedIssues, fj.comments)
+	if want := []string{"factoryd: " + reason + "; this card ends with it."}; !slices.Equal(factoryCloses(store, card.ID), want) ||
+		len(fj.closedIssues) != 0 || slices.ContainsFunc(fj.comments, func(c string) bool { return strings.Contains(c, "this card ends with it") }) {
+		t.Fatalf("factory closes %q, closed issues %v, comments %q; want %q recorded and no issue closed", factoryCloses(store, card.ID), fj.closedIssues, fj.comments, want)
 	}
 }
 
@@ -586,8 +588,8 @@ func TestSchemaCopierWithoutCardsLeavesTheHumanCard(t *testing.T) {
 	if err := c.SyncOnce(ctx, 1, 0); err != nil {
 		t.Fatal(err)
 	}
-	if got := store.tasks[card.ID].Status; got != "waiting-human" {
-		t.Fatalf("status %q, want the card left waiting", got)
+	if got := store.tasks[card.ID].Status; got != "waiting-agent" {
+		t.Fatalf("status %q, want the card left waiting for its face", got)
 	}
 }
 

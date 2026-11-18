@@ -42,7 +42,8 @@ func TestFromJSONSurfacesDecodeErrors(t *testing.T) {
 
 // fakeStore is the in-memory Store for tests of everything that persists.
 type fakeStore struct {
-	pending         []PendingSignal // the case signals no send delivered
+	heads           map[string][2]string // each repository's chain head row: its commit and status
+	pending         []PendingSignal      // the case signals no send delivered
 	refusals        map[string][]IntakeRefusal
 	released        map[string]bool
 	tasks           map[string]Task
@@ -1381,12 +1382,13 @@ func (s *fakeStore) SetAgentSummary(ctx context.Context, id, summary string) err
 // CreateHumanCard files card t and its ask as PGStore.CreateHumanCard does,
 // all or nothing: a failed row or a failed ask leaves no card.
 func (s *fakeStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error) {
+	t.Kind, t.Status = "human", HumanCardStatus(t.Source)
 	if have, ok := s.tasks[t.ID]; ok {
 		if have.Kind != "agent" || have.Status != "queued" {
 			return have, false, nil
 		}
 		moved := have
-		moved.Kind, moved.Status, moved.Gate, moved.GateSince, moved.Track, moved.Process, moved.Hold = "human", "waiting-human", "", nil, "", "", nil
+		moved.Kind, moved.Status, moved.Gate, moved.GateSince, moved.Track, moved.Process, moved.Hold = "human", t.Status, "", nil, "", "", nil
 		s.tasks[t.ID] = moved
 		if _, err := s.Record(ctx, ask.Event(t)); err != nil {
 			s.tasks[t.ID] = have
@@ -2591,6 +2593,11 @@ func (s *fakeStore) QueuePause(ctx context.Context, project string) (QueuePause,
 	return p, ok, nil
 }
 
+func (s *fakeStore) ChainHeadRow(ctx context.Context, repository string) (string, string, bool, error) {
+	h, ok := s.heads[repository]
+	return h[0], h[1], ok, nil
+}
+
 func (s *fakeStore) SetQueuePauseRevert(ctx context.Context, project, taskID string) error {
 	if p, ok := s.pauses[project]; ok {
 		p.RevertTask = taskID
@@ -2859,13 +2866,13 @@ func (s *fakeStore) CloseClearedCard(ctx context.Context, alertID int64, taskID 
 	s.alertsMu.Lock()
 	open := slices.ContainsFunc(s.alerts, func(a Alert) bool { return a.ID == alertID && a.Kind == AlertSigNoz && a.Verdict == "" })
 	s.alertsMu.Unlock()
-	if !ok || t.Status != "waiting-human" || !open {
+	if !ok || !slices.Contains(humanCardWaits, t.Status) || !open {
 		return fmt.Errorf("task %s or alert %d: %w", taskID, alertID, ErrNotFound)
 	}
 	if err := s.ResolveAlert(ctx, alertID, AlertSigNoz, VerdictUnjudged, FactoryDecider, map[string]any{"closed": "cleared"}); err != nil {
 		return err
 	}
-	return s.TransitionTask(ctx, taskID, []string{"waiting-human"}, "closed")
+	return s.TransitionTask(ctx, taskID, humanCardWaits, "closed")
 }
 
 func (s *fakeStore) AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error) {

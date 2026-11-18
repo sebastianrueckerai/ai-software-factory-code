@@ -274,6 +274,16 @@ func (s *PGStore) ChainLadder(ctx context.Context, repository, sha string) (Chai
 	return l, err
 }
 
+// ChainHeadRow is repository's head row: the commit the chain is at and
+// its status; false with none.
+func (s *PGStore) ChainHeadRow(ctx context.Context, repository string) (sha, status string, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx, `SELECT sha, status FROM chain_runs WHERE repository = $1 AND pr_number = 0`, repository).Scan(&sha, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	return sha, status, err == nil, err
+}
+
 // MarkChainRerun stamps repository's head row of sha re-run now.
 func (s *PGStore) MarkChainRerun(ctx context.Context, repository, sha string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE chain_runs SET rerun_at = now()
@@ -1516,7 +1526,7 @@ func (p *ChainPoller) settleChainCards(ctx context.Context, repository, sha, ver
 			log.Printf("chain poller: %s: read the %s card: %v", repository, source, err)
 			continue
 		}
-		if !ok || Final(card.Status) || card.IssueNumber == 0 {
+		if !ok || Final(card.Status) || card.IssueNumber == 0 && card.Kind != "human" {
 			continue
 		}
 		repair := source == SourceChainRepair

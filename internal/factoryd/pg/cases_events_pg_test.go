@@ -923,7 +923,8 @@ func TestTheBoardReadsOnlyTheAskRowsOfItsOwnCard(t *testing.T) {
 // an ask the store refuses leaves no card, the ask row carries the card's id
 // and issue, a card of the id that stands answers itself and writes no
 // second ask, a plan card whose key already has its row answers that row and
-// writes no second ask, and the ask opens its case at the human.
+// writes no second ask, and the ask of the card, held for its face, opens
+// its case on the rungs.
 func TestCreateHumanCardWritesTheCardAndItsAskOrNeither(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
@@ -940,8 +941,8 @@ func TestCreateHumanCardWritesTheCardAndItsAskOrNeither(t *testing.T) {
 	if _, created, err := s.CreateHumanCard(ctx, card, ask); err != nil || !created {
 		t.Fatalf("CreateHumanCard = %v, %v", created, err)
 	}
-	if cs, err := s.CasesOf(ctx, "t-h"); err != nil || len(cs) != 1 || cs[0].Status != CaseAtHuman {
-		t.Fatalf("cases = %+v, %v; want the ask's case at the human", cs, err)
+	if cs, err := s.CasesOf(ctx, "t-h"); err != nil || len(cs) != 1 || cs[0].Status != CaseOpen {
+		t.Fatalf("cases = %+v, %v; want the held ask's case open on the rungs", cs, err)
 	}
 	second := card
 	second.IssueNumber = 32

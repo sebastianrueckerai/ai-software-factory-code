@@ -193,6 +193,26 @@ func TestChatEscalateRefusalNamesTheError(t *testing.T) {
 		"Try again, or post the question on the card's issue.")
 }
 
+// In a wake on a case escalate is refused naming the case: the case reaches
+// the human by its hand-up, and a card of its own would ask a second time.
+// Nothing is filed.
+func TestChatEscalateInACaseWakeNamesTheCase(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	_, s := r.loggedIn(t)
+	filed := 0
+	r.c.cfg.Escalate = func(context.Context, string, factoryd.HumanQuestion, string) (int64, error) {
+		filed++
+		return 42, nil
+	}
+	var events []string
+	trn := r.chatTurnOf(t, s, &events)
+	trn.a.wake, trn.a.birth = true, factoryd.EventCaseClimbed
+	r.c.books.add(trn.key(), []int64{61})
+	_, err := trn.escalate("Which store?", "the ledger is short", "the pool is dry", "Postgres", []string{"Postgres", "SQLite"})
+	refusedAs(t, err, http.StatusConflict, "You hold case 61: hand it up with attach_analysis, its case_id and your recommendation, and it reaches the human with your analysis; a second card would ask twice.")
+	equal(t, "filings", filed, 0)
+}
+
 // An answer that approves a merge needs an approver, as the board's
 // button and the chat's tool do: a writer on the notify list who presses
 // Approve on the merge case's face hears the refusal, and the request

@@ -122,9 +122,12 @@ func newActRig(t *testing.T) actRig {
 }
 
 // rows are card t1's events of kind, oldest first.
-func (g actRig) rows(t *testing.T, kind string) []Event {
+func (g actRig) rows(t *testing.T, kind string) []Event { return taskRows(t, g.s, "t1", kind) }
+
+// taskRows are card taskID's rows of kind, oldest first.
+func taskRows(t *testing.T, s *PGStore, taskID, kind string) []Event {
 	t.Helper()
-	events, err := g.s.TaskEvents(context.Background(), "t1", 100)
+	events, err := s.TaskEvents(context.Background(), taskID, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
