@@ -122,6 +122,11 @@ const (
 	// HeaderFactoryThread names the chat thread a factoryd call serves
 	// (roadmap 239): its audit row carries it, the thread's token read.
 	HeaderFactoryThread = "X-Factory-Thread"
+	// HeaderFactoryCard names the classes of the card a factoryd call on
+	// the project's chat task runs for, comma-separated: the brief's and
+	// the check-in's, which the provider-limit hold holds under the card's
+	// class (policy.Document.HeldClass).
+	HeaderFactoryCard = "X-Factory-Card"
 )
 
 // RefusedContext is the decision of a call the provider refused for a
@@ -387,12 +392,18 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// the provider-limit hold speaks first: a class frozen by a dated
 	// refusal answers every work call locally, no upstream call, until
 	// the hold lapses
-	if class, _ := pv.Document.ProviderLimitOf(task.Classes); class != "" {
-		if h := s.holdFor(ctx, task, class); h != nil {
+	var card []string
+	if purpose != "" {
+		card = strings.Split(r.Header.Get(HeaderFactoryCard), ",")
+	}
+	held, heldLimit := pv.Document.HeldClass(task.Classes, purpose, chatReq.Model, card)
+	held = policyClass(&pv.Document, held)
+	if held != "" {
+		if h := s.holdFor(ctx, task, held); h != nil {
 			s.audit(pid, task.ID, purpose, RefusedProviderLimit,
-				"provider limit hold for class "+class+": reset "+h.reset+": "+h.words, chatReq.Model, &task.SpentEUR)
+				"provider limit hold for class "+held+": reset "+h.reset+": "+h.words, chatReq.Model, &task.SpentEUR)
 			w.Header().Set(HeaderDecision, RefusedProviderLimit)
-			writeProviderLimit(w, class, h.reset, h.words)
+			writeProviderLimit(w, held, h.reset, h.words)
 			return
 		}
 	}
@@ -486,7 +497,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, pid, id.TaskID, purpose, "error_store", err.Error(), chatReq.Model, http.StatusInternalServerError, "server_error")
 		return
 	}
-	call := &modelCall{pid: pid, task: task, hold: hold, alias: served, kind: purpose,
+	call := &modelCall{pid: pid, task: task, hold: hold, alias: served, kind: purpose, held: held, heldLimit: heldLimit,
 		slot: slot, saUID: id.SAUID, models: models, pv: pv, started: s.now(), imgStripped: chatReq.image.stripped, note: note}
 	if purpose != "" && purpose != auditFactoryd {
 		// read only behind factoryd's token: a sandbox names no thread
@@ -1021,12 +1032,17 @@ func (s *Server) block(slot string, k *liveKey) {
 
 // modelCall is one admitted call: its hold is released exactly once.
 type modelCall struct {
-	pid        *int64
-	task       Task
-	hold       policy.Hold
-	alias      string
-	kind       string // the factoryd purpose, "" for an agent's call
-	thread     string // the chat thread a factoryd call serves, "" for none
+	pid    *int64
+	task   Task
+	hold   policy.Hold
+	alias  string
+	kind   string // the factoryd purpose, "" for an agent's call
+	thread string // the chat thread a factoryd call serves, "" for none
+	// held is the class a dated refusal of the call freezes and heldLimit
+	// its provider's entry, read at the door on the requested model
+	// (policy.Document.HeldClass): "" and nil when the call holds none
+	held       string
+	heldLimit  *policy.ProviderLimit
 	slot       string // the key slot: the task, or the task's factoryd slot
 	saUID      string // what the slot's key was minted for, to re-mint it
 	models     []string
@@ -1230,7 +1246,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 			// a dated provider limit freezes the class: the parse reads an
 			// absolute reset, a bare or relative error keeps the ladder
 			if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusPaymentRequired {
-				if class, entry := c.pv.Document.ProviderLimitOf(c.task.Classes); entry != nil {
+				if class, entry := c.held, c.heldLimit; entry != nil {
 					if reset, ok := ParseProviderReset(res.Header, respBody, entry); ok {
 						until := reset.Add(time.Minute).UTC().Format(time.RFC3339)
 						words := upstreamMessage(respBody)
