@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -221,14 +224,48 @@ func (g rungRig) rows(t *testing.T, kind string) []Event { return actRig{s: g.s}
 
 func (g rungRig) steps(t *testing.T, id int64) []CaseStep { return caseStepsOf(t, g.s, id) }
 
-func (g rungRig) signalsOf(name string) []reopenCall {
-	g.signals.mu.Lock()
-	defer g.signals.mu.Unlock()
-	var out []reopenCall
-	for _, s := range g.signals.got {
-		if s.signal == name {
-			out = append(out, s)
-		}
+// policyRungsOff is v with every project at manual under escalation.judgment
+// autonomous_and_above: no rung judges, so a stop faces the human at once.
+func policyRungsOff(v policy.Version) policy.Version {
+	projects := maps.Clone(v.Projects)
+	for name, p := range projects {
+		p.Autonomy = policy.AutonomyManual
+		p.Escalation = judgesAtAutonomous
+		projects[name] = p
 	}
-	return out
+	v.Projects = projects
+	return v
+}
+
+func rungsOff(r *Runner) {
+	v := policyRungsOff(r.cfg.Policy())
+	r.cfg.Policy = func() policy.Version { return v }
+}
+
+func (g rungRig) stepsOfRung(t *testing.T, id int64, rung int) []CaseStep {
+	t.Helper()
+	return slices.DeleteFunc(g.steps(t, id), func(s CaseStep) bool { return s.Rung != rung })
+}
+
+// afterRung2 lets rung 2's step on case id run past its bound, as the sweep
+// finds it: the step ends handed up and the case climbs to the human.
+func (g rungRig) afterRung2(t *testing.T, id int64) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE case_steps SET started_at = due_at - interval '35 minutes' WHERE case_id = $1 AND rung = 2`, id); err != nil {
+		t.Fatal(err)
+	}
+	own := g.stepsOfRung(t, id, 2)
+	if len(own) != 1 || own[0].DueAt == nil {
+		t.Fatalf("rung 2 steps = %+v, want one with a bound", own)
+	}
+	g.r.now = func() time.Time { return own[0].DueAt.Add(time.Minute) }
+	expired, err := g.s.ExpireSteps(ctx, g.r.Clock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.r.ClimbExpired(ctx, expired); err != nil {
+		t.Fatal(err)
+	}
+	g.settle()
 }
