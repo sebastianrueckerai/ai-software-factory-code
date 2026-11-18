@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -31,11 +32,11 @@ func outsidePlanRig(t *testing.T) (*Runner, *fakeStore, *planForgejo) {
 // Outside a plan rung 0 files a failed dependency again, once: card B's
 // trip on A runs RetryCard and its case resolves with retry. When A's
 // replacement fails too, B's trip keys on the replacement, rung 0 retries
-// no retry, and the human is asked.
+// no retry, rung 2 hands it on, and the human is asked.
 func TestOpenTripRetriesAFailedDependencyOnce(t *testing.T) {
 	ctx := context.Background()
 	r, store, fj := outsidePlanRig(t)
-	rungsOff(r)
+	rung1Off(r)
 	first, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}, tripAttempt{N: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -62,14 +63,15 @@ func TestOpenTripRetriesAFailedDependencyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	second = rung2Faces(t, r, "t-b", second)
 	if second.Resolution != nil || second.Comment == 0 || second.Rung != 3 {
 		t.Fatalf("second outcome = %+v, want the human asked", second)
 	}
 	c, _ = store.CaseByID(ctx, second.CaseID)
 	steps, _ := store.CaseSteps(ctx, c.ID)
-	if c.StateKey != again || c.Status != CaseAtHuman || len(steps) != 2 || steps[0].Found != "no resolver fits" || steps[0].Outcome != StepHandedUp ||
-		steps[1].Rung != 3 || steps[1].CommentID != second.Comment {
-		t.Fatalf("case %+v, steps %+v; want the replacement's failure at the human, rung 0 finding no resolver, then the face at comment %d", c, steps, second.Comment)
+	if c.StateKey != again || c.Status != CaseAtHuman || len(steps) != 3 || steps[0].Found != "no resolver fits" || steps[0].Outcome != StepHandedUp ||
+		steps[1].Rung != 2 || steps[2].Rung != 3 || steps[2].CommentID != second.Comment {
+		t.Fatalf("case %+v, steps %+v; want the replacement's failure at the human, rung 0 finding no resolver, rung 2's hand-up, then the face at comment %d", c, steps, second.Comment)
 	}
 	if _, ok := store.tasks[RetryID(again)]; ok {
 		t.Fatal("the replacement was retried in turn")
@@ -179,21 +181,22 @@ func TestHandedUpByReadsAMomentsHandUpStepAsTheHandUp(t *testing.T) {
 }
 
 // A row whose action fails part way hands the case up with why: the close
-// of the failed card's issue fails after the replacement is filed, and the
-// human is asked.
+// of the failed card's issue fails after the replacement is filed, rung 2
+// hands it on, and the human is asked.
 func TestOpenTripHandsUpARowThatFails(t *testing.T) {
 	ctx := context.Background()
 	r, store, fj := outsidePlanRig(t)
-	rungsOff(r)
+	rung1Off(r)
 	fj.failCall = "PATCH issues/5"
 	out, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}, tripAttempt{N: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
+	out = rung2Faces(t, r, "t-b", out)
 	c, _ := store.CaseByID(ctx, out.CaseID)
 	steps, _ := store.CaseSteps(ctx, c.ID)
-	if out.Resolution != nil || out.Comment == 0 || c.Status != CaseAtHuman || len(steps) != 2 ||
-		!strings.HasPrefix(steps[0].Found, "retry_dependency failed: ") || steps[0].Outcome != StepHandedUp || steps[1].Rung != 3 || steps[1].CommentID != out.Comment {
+	if out.Resolution != nil || out.Comment == 0 || c.Status != CaseAtHuman || len(steps) != 3 ||
+		!strings.HasPrefix(steps[0].Found, "retry_dependency failed: ") || steps[0].Outcome != StepHandedUp || steps[1].Rung != 2 || steps[2].Rung != 3 || steps[2].CommentID != out.Comment {
 		t.Fatalf("outcome %+v, case %+v, steps %+v; want the retry's failure handed up, then the face the human is asked on", out, c, steps)
 	}
 }
@@ -223,17 +226,19 @@ func TestOpenTripRetriedAfterRungZeroCarriesItsResolution(t *testing.T) {
 
 // A session cap on pull request #9 at h2, green and approved: with every
 // fact read rung 0 routes it to the approval. When the timeline cannot be
-// read, rung 0 takes nothing, its step names the read that failed, and
-// the human is asked.
+// read, rung 0 takes nothing, its step names the read that failed, rung 2
+// hands it on, and the human is asked.
 func TestRungZeroTakesNothingOnFactsReadPartly(t *testing.T) {
+	var posted atomic.Int32
 	trip := func(t *testing.T, unread bool) (factsRig, TripOutcome) {
 		g := newFactsRig(t)
-		rungsOff(g.r)
+		rung1Off(g.r)
 		forge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch {
 			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/demo-app/demo-app/commits/h2/status":
 				fmt.Fprint(w, `{"state":"success","statuses":[{"status":"success","context":"ci / test"}]}`)
 			case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/demo-app/demo-app/issues/12/comments":
+				posted.Add(1)
 				w.WriteHeader(http.StatusCreated)
 				fmt.Fprint(w, `{"id": 501}`)
 			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/factory-agent/demo-app/branches/factory/t1":
@@ -263,13 +268,17 @@ func TestRungZeroTakesNothingOnFactsReadPartly(t *testing.T) {
 	})
 	t.Run("the timeline unread", func(t *testing.T) {
 		g, out := trip(t, true)
-		if out.Resolution != nil || out.Comment != 501 || out.Rung != 3 {
-			t.Fatalf("outcome = %+v, want the human asked on comment 501", out)
+		if out.Resolution != nil || out.Rung != 2 {
+			t.Fatalf("outcome = %+v, want rung 2 holding the case", out)
+		}
+		if out = rung2Faces(t, g.r, "t1", out); out.Rung != 3 || posted.Load() != 1 {
+			t.Fatalf("after rung 2's hand-up: outcome %+v, %d comments; want the human asked on one comment", out, posted.Load())
 		}
 		c, _ := g.store.CaseByID(context.Background(), out.CaseID)
 		steps, _ := g.store.CaseSteps(context.Background(), out.CaseID)
-		if c.Status != CaseAtHuman || len(steps) != 1 || steps[0].Found != "facts read partly: timeline, so rung 0 took nothing" || steps[0].Outcome != StepHandedUp {
-			t.Fatalf("case %+v, steps %+v; want it at the human, rung 0 handing up on the unread timeline", c, steps)
+		if c.Status != CaseAtHuman || len(steps) != 2 || steps[0].Found != "facts read partly: timeline, so rung 0 took nothing" || steps[0].Outcome != StepHandedUp ||
+			steps[1].Rung != 2 {
+			t.Fatalf("case %+v, steps %+v; want it at the human, rung 0 handing up on the unread timeline, then rung 2", c, steps)
 		}
 	})
 }

@@ -147,21 +147,122 @@ func asRefused(err error, target *ErrActRefused) bool {
 	return ok
 }
 
-// With judgment autonomous_and_above on a manual project nothing judges: the
-// face at once, no case_climbed, no step of rung 2.
-func TestRung2DoesNotWakeWhereTheRungsDoNotJudge(t *testing.T) {
+// With judgment autonomous_and_above on an assisted project rung 1 does not
+// judge, and rung 2 takes the case all the same: a trip of kind other has
+// no rung 1 step, one rung 2 step in progress and one case_climbed row, on
+// which the Waker starts one case_climbed turn.
+func TestRung2TakesACaseWhereRung1DoesNotJudge(t *testing.T) {
 	g, w, starter := rungTwoRig(t, policy.JudgmentAutonomousAndAbove)
-	g.chat.answers = []CheckinResponse{g.handUp(t)}
-	out := g.trip(t, tripCap)
+	g.atAutonomy(policy.AutonomyAssisted)
+	out := g.trip(t, "the run stopped on something no rule names")
 	g.settle()
-	if out.Rung != 3 || len(g.forge.comments) != 1 || len(g.rows(t, EventCaseClimbed)) != 0 || len(g.stepsOfRung(t, out.CaseID, 2)) != 0 {
-		t.Fatalf("outcome %+v, comments %d; want the face at once and no rung 2", out, len(g.forge.comments))
+	if c := caseByID(t, g.s, out.CaseID); c.Kind != CaseOther || c.Status != CaseOpen || out.Rung != 2 {
+		t.Fatalf("outcome %+v, case %s %s; want the other case open with rung 2", out, c.Kind, c.Status)
+	}
+	if one, two := g.stepsOfRung(t, out.CaseID, 1), g.stepsOfRung(t, out.CaseID, 2); len(one) != 0 || len(two) != 1 || two[0].Outcome != StepInProgress {
+		t.Fatalf("rung 1 steps %+v, rung 2 steps %+v; want none and one in progress", one, two)
+	}
+	if rows := g.rows(t, EventCaseClimbed); len(rows) != 1 || rows[0].Detail["case_id"] != float64(out.CaseID) || len(g.forge.comments) != 0 {
+		t.Fatalf("case_climbed rows %+v, comments %d; want one for case %d and no face", rows, len(g.forge.comments), out.CaseID)
 	}
 	if err := drainPass(t, w); err != nil {
 		t.Fatal(err)
 	}
-	if calls := starter.recorded(); len(calls) != 0 {
-		t.Fatalf("wakes = %+v, want none: the rungs do not judge here", calls)
+	if calls := starter.recorded(); len(calls) != 1 || calls[0].birth != EventCaseClimbed || !slices.Equal(calls[0].cases, []int64{out.CaseID}) {
+		t.Fatalf("wakes = %+v, want one case_climbed turn on case %d", calls, out.CaseID)
+	}
+}
+
+// A plan's wait on its failed card sits beside the plan, so its case lives
+// on after the plan is done: its rung 2 step past its due ends in the
+// case-wake pass, and the case reaches its face, one comment on the
+// plan's issue, at the human.
+func TestAPlanWaitCaseOnADonePlanReachesItsFace(t *testing.T) {
+	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+	ctx := context.Background()
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET track = 'plan', status = 'done', finished_at = now() WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	reason := planCardFailedReason(Task{ID: "t-a", IssueNumber: 7, PlanKey: "api"})
+	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseDependencyFailed, StateKey: "t-a",
+		Problem: reason, Facts: map[string]any{"reason": reason, "face": reason}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	due := time.Now().Add(-time.Minute)
+	if _, err := g.s.StartRungStep(ctx, CaseStep{CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepInProgress, DueAt: &due}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE case_steps SET started_at = due_at - interval '35 minutes' WHERE case_id = $1`, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	v := g.r.PgCfg().Policy()
+	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: time.Now}
+	if err := m.WakeCases(ctx); err != nil {
+		t.Fatalf("WakeCases: %v", err)
+	}
+	if got := caseByID(t, g.s, c.ID); got.Status != CaseAtHuman || len(g.forge.comments) != 1 {
+		t.Fatalf("case %s with %d comments, want it at the human with one face", got.Status, len(g.forge.comments))
+	}
+}
+
+// refusedTrip is a trip on the rung 2 rig whose check-in's one call the
+// provider refuses: rung 1's step ends "not judged: the model provider
+// refused: provider refused", and rung 2's is in progress.
+func refusedTrip(t *testing.T) (rungRig, int64) {
+	t.Helper()
+	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+	out := g.trip(t, tripCap)
+	g.settle()
+	one, two := g.stepsOfRung(t, out.CaseID, 1), g.stepsOfRung(t, out.CaseID, 2)
+	if len(one) != 1 || one[0].Found != "not judged: the model provider refused: provider refused" || len(two) != 1 || two[0].Outcome != StepInProgress {
+		t.Fatalf("rung 1 steps %+v, rung 2 steps %+v; want rung 1's refused and rung 2 in progress", one, two)
+	}
+	return g, out.CaseID
+}
+
+const refusedMark = " (not judged: the model provider refused)"
+
+// Both rungs refused: the provider refuses rung 1's call and rung 2's wake
+// turn, whose refusal hands the case up at once. The face comes in that
+// call: one comment, the problem and the ask ending in the mark, rung 2's
+// step ended with the refusal as its finding.
+func TestBothRungsRefusedFaceMarkedNotJudged(t *testing.T) {
+	g, id := refusedTrip(t)
+	if err := g.r.RefusedRung2(context.Background(), []int64{id}, "the model refused the call (400): bad request"); err != nil {
+		t.Fatalf("RefusedRung2: %v", err)
+	}
+	c := caseByID(t, g.s, id)
+	asks := g.asks(t)
+	if c.Status != CaseAtHuman || !strings.HasSuffix(c.Problem, refusedMark) || len(g.forge.comments) != 1 || len(asks) != 1 {
+		t.Fatalf("case %s %q, comments %d, asks %d; want one face, the problem ending %q", c.Status, c.Problem, len(g.forge.comments), len(asks), refusedMark)
+	}
+	if ask, _ := asks[0].Detail["ask"].(string); !strings.HasSuffix(ask, refusedMark) {
+		t.Fatalf("the face's ask %q, want it ending %q", ask, refusedMark)
+	}
+	if two := g.stepsOfRung(t, id, 2); len(two) != 1 || two[0].Outcome != StepHandedUp ||
+		two[0].Found != "not judged: the model provider refused: the model refused the call (400): bad request" {
+		t.Fatalf("rung 2 steps %+v, want one handed up with the refusal", two)
+	}
+}
+
+// Rung 1 refused, rung 2 judged: its hand-up faces the human with its
+// finding and a line for the rung that could not judge, and no mark.
+func TestARung2HandUpAfterARefusedRung1FacesUnmarked(t *testing.T) {
+	g, id := refusedTrip(t)
+	if _, err := g.r.HandUpRung2(context.Background(), "t1", id, "the card's work is merged on main", RungTwoRecommendation{}, nil); err != nil {
+		t.Fatalf("HandUpRung2: %v", err)
+	}
+	c := caseByID(t, g.s, id)
+	asks := g.asks(t)
+	if c.Status != CaseAtHuman || strings.Contains(c.Problem, "(not judged") || len(asks) != 1 {
+		t.Fatalf("case %s %q, asks %d; want one face and no mark", c.Status, c.Problem, len(asks))
+	}
+	info, _ := asks[0].Detail["info"].(string)
+	if ask, _ := asks[0].Detail["ask"].(string); strings.Contains(ask, "(not judged") ||
+		!strings.Contains(info, "The factory agent found: the card's work is merged on main") ||
+		!strings.Contains(info, "The check-in did not judge it: the model provider refused.") {
+		t.Fatalf("ask %q, info %q; want no mark, rung 2's finding and the check-in's line", ask, info)
 	}
 }
 
@@ -437,8 +538,8 @@ func TestRung2DoesNotOfferResumeWhileACapBinds(t *testing.T) {
 	}
 }
 
-func (g monitorRig) rungsOff() {
-	rungsOff(g.m.Runner)
+func (g monitorRig) rung1Off() {
+	rung1Off(g.m.Runner)
 	g.m.Policy = func() policy.Tree { return g.m.Runner.PgCfg().Policy().Tree }
 }
 

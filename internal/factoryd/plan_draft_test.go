@@ -167,7 +167,7 @@ const timeCapAsk = "the planner used its agent time and its automatic second ses
 // other ask, nothing is added.
 func TestTimeCapAskNamesTheDraft(t *testing.T) {
 	r, store, fj := outsidePlanRig(t)
-	rungsOff(r)
+	rung1Off(r)
 	r.timeline.Events = store
 	ctx := context.Background()
 	if got, err := r.planDraftNote(ctx, "t-b", timeCapAsk); err != nil || got != "" {
@@ -181,6 +181,9 @@ func TestTimeCapAskNamesTheDraft(t *testing.T) {
 	}
 	want := "The planner's last refused filing is kept as a draft, refused for 2 findings."
 	first, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: timeCapAsk}, tripAttempt{N: 1})
+	if err == nil {
+		first = rung2Faces(t, r, "t-b", first)
+	}
 	if err != nil || first.CaseID == 0 || first.Comment == 0 {
 		t.Fatalf("first trip %+v, %v", first, err)
 	}

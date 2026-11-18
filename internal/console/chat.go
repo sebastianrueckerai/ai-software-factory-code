@@ -1307,6 +1307,7 @@ func (t *turn) run(id, notice string) {
 				return
 			}
 			if errors.As(err, &refusal) {
+				t.refused("the gateway refused the call: " + refusal.Reason)
 				t.fail("The gateway refused the call: " + refusal.Reason)
 				return
 			}
@@ -1315,6 +1316,7 @@ func (t *turn) run(id, notice string) {
 			// aside: those pass, the router already retried them)
 			if errors.As(err, &status) && status.Code >= 400 && status.Code < 500 &&
 				status.Code != http.StatusTooManyRequests && status.Code != http.StatusRequestTimeout {
+				t.refused("the model refused the call (" + strconv.Itoa(status.Code) + "): " + status.Body)
 				t.fail("The model refused the call (" + strconv.Itoa(status.Code) + "): " + status.Body +
 					" Retrying will not change it; the refusal needs a fix.")
 				return

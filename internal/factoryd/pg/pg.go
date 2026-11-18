@@ -10,8 +10,10 @@ var (
 	holdsSlot            = factoryd.PgHoldsSlot
 	errHeld              = factoryd.PgErrHeld
 	toInt                = factoryd.PgToInt
-	rungsOff             = factoryd.PgRungsOff
+	rung1Off             = factoryd.PgRung1Off
 	monthCapCardQuestion = factoryd.PgMonthCapCardQuestion
+	depFailedReason      = factoryd.PgDepFailedReason
+	planCardFailedReason = factoryd.PgPlanCardFailedReason
 )
 
 type tripAttempt = factoryd.PgTripAttempt

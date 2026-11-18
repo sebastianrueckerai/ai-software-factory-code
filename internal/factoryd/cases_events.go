@@ -570,22 +570,24 @@ func caseRung(by string) int {
 
 // pendFaced writes the case_faced of case id's face at comment as pending,
 // in the transaction that gives the case that comment, for a card whose run
-// waits on the case: none for a monitor flag's case, which sits beside the
-// run, or a human card's, which runs none.
+// hears the case (runHears) and waits on its face: none for a case beside
+// the run (caseBesideRun).
 func pendFaced(ctx context.Context, tx *sql.Tx, id, comment int64) error {
 	if comment == 0 {
 		return nil
 	}
-	var taskID string
-	err := tx.QueryRowContext(ctx, `SELECT c.task_id FROM cases c JOIN tasks t ON t.id = c.task_id WHERE c.id = $1 AND c.kind <> $2 AND t.kind <> 'human'`,
-		id, CaseMonitorFlag).Scan(&taskID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
+	c, err := scanCase(tx.QueryRowContext(ctx, `SELECT `+caseColumns+` FROM cases WHERE id = $1`, id))
 	if err != nil {
 		return err
 	}
-	return pendCaseSignal(ctx, tx, id, taskID, SignalCaseFaced, facedSignal(id, comment))
+	t, err := scanTask(tx.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = $1`, c.TaskID).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil || !runHears(t, c) || caseBesideRun(c, t) {
+		return err
+	}
+	return pendCaseSignal(ctx, tx, id, t.ID, SignalCaseFaced, facedSignal(id, comment))
 }
 
 // caseEnded drops ErrNotFound from err: the case had ended already.

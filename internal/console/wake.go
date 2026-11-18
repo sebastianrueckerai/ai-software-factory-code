@@ -134,6 +134,28 @@ func (b *wakeBooks) drop(key string, cases []int64) {
 	}
 }
 
+// cases are the cases the thread's unsettled wakes named.
+func (b *wakeBooks) cases(key string) []int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if w := b.by[key]; w != nil {
+		return slices.Clone(w.cases)
+	}
+	return nil
+}
+
+// refused hands up the cases the thread's wakes named, whose turn the model
+// provider refused with detail: no rung 2 answer can come of it.
+func (t *turn) refused(detail string) {
+	cases := t.c.books.cases(t.key())
+	if t.c.cfg.RefusedRung2 == nil || len(cases) == 0 {
+		return
+	}
+	if err := t.c.cfg.RefusedRung2(context.WithoutCancel(t.r.Context()), cases, detail); err != nil {
+		log.Printf("console: hand up the cases %v of thread %d on %s: %v", cases, t.conv, t.p.Repository, err)
+	}
+}
+
 // spend adds eur to the thread's book; when settle, it takes the book out and
 // answers it.
 func (b *wakeBooks) spend(key string, eur float64, settle bool) (wakeBook, bool) {

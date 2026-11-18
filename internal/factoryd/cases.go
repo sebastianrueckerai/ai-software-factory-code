@@ -129,9 +129,11 @@ const caseLive = `status IN ` + caseLiveStatuses
 
 // Case is one problem on a card, from its opening to its end. Follows is
 // the case it comes after, 0 for none; CommentID is the comment of its newest
-// face, read from its face steps, 0 for none. OwnerRung is the rung that owns its next move, 3 on opening;
-// WakeOn are the events that end its wait, and NextWakeAt is when the
-// sweep wakes it if none does, nil for never. SetCaseWake sets all three.
+// face, read from its face steps, 0 for none. OwnerRung is the rung that
+// owns its next move: 0 on an open opening, 3 on one at the human. WakeOn
+// are the events that end its wait, and NextWakeAt is when the case-wake
+// pass wakes it if none does, nil for never; an opener gives it.
+// SetCaseWake sets all three.
 type Case struct {
 	ID         int64
 	TaskID     string
@@ -261,8 +263,9 @@ func scanCase(row rowScanner) (Case, error) {
 
 // OpenCase inserts c unless an open or at_human case with the same
 // task, kind and state key exists; then it returns that case and false,
-// and changes nothing on it. An empty Status opens the case as open; a
-// status other than open or at_human is refused.
+// and changes nothing on it. An empty Status opens the case as open, owned
+// by rung 0, and at_human owns it to the human; it is due at c.NextWakeAt.
+// A status other than open or at_human is refused.
 func (s *PGStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
 	return openCase(ctx, s.db, c)
 }
@@ -285,15 +288,19 @@ func openCase(ctx context.Context, q rowQuerier, c Case) (Case, bool, error) {
 			return Case{}, false, err
 		}
 	}
+	owner := 3
+	if c.Status == CaseOpen {
+		owner = 0
+	}
 	// the live case the insert met may end before the select reads it:
 	// then the insert goes in on its second try
 	for try := 0; ; try++ {
 		got, err := scanCase(q.QueryRowContext(ctx,
-			`INSERT INTO cases (task_id, repository, kind, state_key, status, problem, facts, money, follows)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NULLIF($9::bigint, 0))
+			`INSERT INTO cases (task_id, repository, kind, state_key, status, problem, facts, money, follows, owner_rung, next_wake_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NULLIF($9::bigint, 0), $10, $11)
 			 ON CONFLICT (task_id, kind, state_key) WHERE `+caseLive+` DO NOTHING
 			 RETURNING `+caseColumns,
-			c.TaskID, c.Repository, c.Kind, c.StateKey, c.Status, c.Problem, facts, money, c.Follows))
+			c.TaskID, c.Repository, c.Kind, c.StateKey, c.Status, c.Problem, facts, money, c.Follows, owner, c.NextWakeAt))
 		if !errors.Is(err, sql.ErrNoRows) {
 			return got, err == nil, err
 		}
@@ -433,7 +440,7 @@ func (s *PGStore) AppendCaseProblem(ctx context.Context, id int64, suffix string
 
 // StartRungStep appends st, the in-progress step of a rung that works on its
 // case until st.DueAt, and makes that rung the case's owner with its wake at
-// the due, in one transaction: no step holds a case the sweep would not wake.
+// the due, in one transaction: no step holds a case the case-wake pass would not wake.
 // ErrNotFound when the case is not live.
 func (s *PGStore) StartRungStep(ctx context.Context, st CaseStep) (int64, error) {
 	var id int64
@@ -500,7 +507,7 @@ func (s *PGStore) SettleCaseSignal(ctx context.Context, caseID int64, name strin
 }
 
 // SetCaseWake sets who owns the next move on live case id, the events that
-// end its wait, and when the sweep wakes it if none does; a nil at clears
+// end its wait, and when the case-wake pass wakes it if none does; a nil at clears
 // the wake. ErrNotFound when the case is not live.
 func (s *PGStore) SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE cases SET owner_rung = $2, wake_on = $3, next_wake_at = $4 WHERE id = $1 AND `+caseLive,

@@ -412,6 +412,28 @@ func (g tripRig) trip(t *testing.T, reason string) TripOutcome {
 	return out
 }
 
+// faced is trip with rung 2's turn after it (rung2Faces).
+func (g tripRig) faced(t *testing.T, reason string) TripOutcome {
+	t.Helper()
+	return g.rung2Faces(t, g.trip(t, reason))
+}
+
+// rung2Faces is trip outcome out of card t1 after rung 2's turn: a case
+// rung 2 holds is handed up with nothing found, so it faces the human, and
+// the outcome names that face as a trip's names it. Any other outcome
+// stands.
+func (g tripRig) rung2Faces(t *testing.T, out TripOutcome) TripOutcome {
+	t.Helper()
+	if out.Rung != 2 {
+		return out
+	}
+	if _, err := g.r.HandUpRung2(context.Background(), "t1", out.CaseID, "", RungTwoRecommendation{}, nil); err != nil {
+		t.Fatalf("rung 2's hand-up of case %d: %v", out.CaseID, err)
+	}
+	c := caseByID(t, g.s, out.CaseID)
+	return TripOutcome{CaseID: c.ID, Comment: c.CommentID, Rung: 3}
+}
+
 // asks are t1's question_asked rows, oldest first.
 func (g tripRig) asks(t *testing.T) []Event { return actRig{s: g.s}.rows(t, EventQuestionAsked) }
 

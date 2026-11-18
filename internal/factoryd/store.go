@@ -952,7 +952,7 @@ type Store interface {
 	// once: a problem that ends with suffix already stays as it is.
 	AppendCaseProblem(ctx context.Context, id int64, suffix string) error
 	// SetCaseWake sets who owns the next move on case id, the events that
-	// end its wait, and when the sweep wakes it if none does.
+	// end its wait, and when the case-wake pass wakes it if none does.
 	SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error
 	// DueCases lists the live cases whose next_wake_at passed, oldest
 	// first.

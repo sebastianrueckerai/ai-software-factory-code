@@ -1790,8 +1790,8 @@ var _ Store = (*fakeStore)(nil)
 
 // OpenCase opens c as PGStore.OpenCase does: unless a live case of its
 // task, kind and key exists, which it answers with false, it inserts c
-// with the next id, open when it names no status, owned by rung 3 with no
-// wake.
+// with the next id, open when it names no status, owned by rung 0 when
+// open and by rung 3 at the human, due at its own wake.
 func (s *fakeStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
 	live := func(o Case) bool { return o.Status == CaseOpen || o.Status == CaseAtHuman }
 	if i := slices.IndexFunc(s.cases, func(o Case) bool {
@@ -1804,7 +1804,10 @@ func (s *fakeStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
 	}
 	c.ID++
 	c.Status = cmp.Or(c.Status, CaseOpen)
-	c.OwnerRung, c.NextWakeAt, c.WakeOn = 3, nil, []string{}
+	c.OwnerRung, c.WakeOn = 3, []string{}
+	if c.Status == CaseOpen {
+		c.OwnerRung = 0
+	}
 	s.cases = append(s.cases, c)
 	return c, true, nil
 }

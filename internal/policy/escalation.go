@@ -32,11 +32,12 @@ type Escalation struct {
 	// the pool in each part. Absent or 0: the part takes policy.yaml's
 	// figure, and in policy.yaml 2 sessions, 1h, 4 EUR.
 	CardDraw Draw `yaml:"card_draw,omitempty" json:"card_draw"`
-	// Judgment is when the check-in and the factory agent judge a case the
-	// code did not resolve. With always they judge it at every autonomy
-	// level. With autonomous_and_above they judge it at autonomous and full
-	// auto only, and at manual and assisted it goes straight to a human.
-	// Absent: always.
+	// Judgment is when the check-in judges a case the code did not resolve.
+	// With always it judges at every autonomy level. With
+	// autonomous_and_above it judges at autonomous and full auto only. The
+	// factory agent takes the case at every level either way, and at manual
+	// and assisted its answer is a proposal a human confirms. Absent:
+	// always.
 	Judgment string `yaml:"judgment,omitempty" json:"judgment,omitempty"`
 	// Rung1Runs is the most rung 1 conversations one card gets over its
 	// life. Absent or 0: 6.
@@ -52,8 +53,8 @@ const (
 // JudgmentValues are the judgment values a file may name.
 var JudgmentValues = []string{JudgmentAlways, JudgmentAutonomousAndAbove}
 
-// Judges is true when the rungs judge a case at autonomy state: always at
-// every state, else at autonomous and full auto only.
+// Judges is true when the check-in judges a case at autonomy state: always
+// at every state, else at autonomous and full auto only.
 func (e Escalation) Judges(autonomyState string) bool {
 	return cmp.Or(e.Judgment, JudgmentAlways) == JudgmentAlways || autonomyState == AutonomyAutonomous || autonomyState == AutonomyFullAuto
 }
