@@ -67,6 +67,13 @@ func TestAHumanCardsWayOutAndItsPullRequest(t *testing.T) {
 	}
 
 	const merge = "POST /api/v1/repos/sf/code/pulls/14/merge Bearer access-1"
+	for kind, value := range map[string]string{"workflow-files card": factoryd.ActHandBack, "factory pull request on a project without agents": factoryd.ActApproveMerge} {
+		r, ck, csrf, card := seat(t, kind)
+		r.ledger.approvers = []string{"alice"}
+		if rec := answer(r, ck, csrf, card, value, why); rec.Code != http.StatusForbidden || len(r.acted) != 0 || slices.Contains(r.fg.calls, merge) {
+			t.Errorf("a writer's %s = %d %q, %d Act calls, Forgejo %q; want 403 and nothing done", value, rec.Code, rec.Body, len(r.acted), r.fg.calls)
+		}
+	}
 	r, ck, csrf, card = seat(t, "factory pull request on a project without agents")
 	if rec := answer(r, ck, csrf, card, factoryd.ActApproveMerge, ""); rec.Code != http.StatusSeeOther {
 		t.Fatalf("Merge it = %d %q", rec.Code, rec.Body)
@@ -324,18 +331,19 @@ func TestRollFailedCardAnswers(t *testing.T) {
 	got, posts = actedOnce(t, r)
 	equal(t, "the park", []any{got, posts}, []any{act(factoryd.AnswerPark, "Park"), false})
 
-	r, ev, before, code, body := click(t, factoryd.AnswerClose, "")
+	const why = "The images roll with the next merge."
+	r, ev, before, code, body := click(t, factoryd.AnswerClose, why)
 	if code != http.StatusSeeOther {
 		t.Fatalf("close = %d %q, want 303", code, body)
 	}
-	if !slices.Equal(r.fg.patched, closed) || r.fg.comments[comments] != "Close" {
-		t.Fatalf("close: patched %v, comment %q; want the card closed", r.fg.patched, r.fg.comments[comments])
+	if !slices.Equal(r.fg.patched, closed) || r.fg.comments[comments] != why {
+		t.Fatalf("close: patched %v, comment %q; want the card closed with the human's note", r.fg.patched, r.fg.comments[comments])
 	}
 	got, posts = actedOnce(t, r)
-	equal(t, "the close", []any{got, posts}, []any{act(factoryd.AnswerClose, "Close"), true})
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-roll", detail: map[string]any{"note": "Close"}},
+	equal(t, "the close", []any{got, posts}, []any{act(factoryd.AnswerClose, why), true})
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-roll", detail: map[string]any{"note": why}},
 		wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-roll",
-			detail: map[string]any{"action": factoryd.AnswerClose, "case_id": int64(1), "answer": "Close", "value": factoryd.AnswerClose, "comment": int64(1)}})
+			detail: map[string]any{"action": factoryd.AnswerClose, "case_id": int64(1), "answer": why, "value": factoryd.AnswerClose, "comment": int64(1)}})
 
 }
 
@@ -363,8 +371,8 @@ func TestRollFailedCardAnswersInTheChat(t *testing.T) {
 }
 
 // A human card's answers act by its choices: park keeps the card, posts
-// nothing and leaves a note on its case, close ends it on the label and
-// resolves its case with the value, free words on a card that offers no
+// nothing and leaves a note on its case, "I did it" ends it on its label
+// and close on the human's words, each resolving its case with the value, free words on a card that offers no
 // choice are the human's comment and a note, and the card keeps waiting;
 // on a card that offers choices, words that match none and a value the
 // question does not offer are refused with the labels. The go choice is
@@ -372,7 +380,7 @@ func TestRollFailedCardAnswersInTheChat(t *testing.T) {
 func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 	const comments = "/api/v1/repos/sf/code/issues/51/comments"
 	choices := []factoryd.QuestionChoice{{Value: "go", Label: "Have the factory do it"},
-		{Value: "park", Label: "Wait for it"}, {Value: "close", Label: "Done"}}
+		{Value: "park", Label: "Wait for it"}, {Value: factoryd.AnswerDone, Label: "I did it"}}
 	clickOn := func(t *testing.T, form url.Values, choices ...factoryd.QuestionChoice) (*rig, *fakeEvents, int, int, string) {
 		t.Helper()
 		r, ev := newRigWithEvents(t)
@@ -398,12 +406,19 @@ func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 	got, _ := actedOnce(t, r)
 	equal(t, "the park", got, act(factoryd.AnswerPark, "Wait for it"))
 
-	r, _, _, code, _ = click(t, url.Values{"value": {"close"}})
-	if code != http.StatusSeeOther || r.fg.comments[comments] != "Done" || !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
-		t.Errorf("close = %d, comment %q, patched %v; want the label as the note and the issue closed", code, r.fg.comments[comments], r.fg.patched)
+	r, _, _, code, _ = click(t, url.Values{"value": {factoryd.AnswerDone}})
+	if code != http.StatusSeeOther || r.fg.comments[comments] != "I did it" || !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
+		t.Errorf("I did it = %d, comment %q, patched %v; want the label as the note and the issue closed", code, r.fg.comments[comments], r.fg.patched)
 	}
 	got, _ = actedOnce(t, r)
-	equal(t, "the close", got, act(factoryd.AnswerClose, "Done"))
+	equal(t, "I did it", got, act(factoryd.AnswerDone, "I did it"))
+
+	r, _, _, code, _ = click(t, url.Values{"value": {factoryd.AnswerClose}, "answer": {"Moved to the ops board."}})
+	if code != http.StatusSeeOther || r.fg.comments[comments] != "Moved to the ops board." || !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
+		t.Errorf("close = %d, comment %q, patched %v; want the human's words as the note and the issue closed", code, r.fg.comments[comments], r.fg.patched)
+	}
+	got, _ = actedOnce(t, r)
+	equal(t, "the close", got, act(factoryd.AnswerClose, "Moved to the ops board."))
 
 	r, _, _, code, _ = clickOn(t, url.Values{"answer": {"Use Postgres."}})
 	if code != http.StatusSeeOther || r.fg.comments[comments] != "Use Postgres." || len(r.fg.patched) != 0 {

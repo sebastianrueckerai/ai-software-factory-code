@@ -2591,7 +2591,7 @@ func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 	none := seedProject("sf/ai-software-factory-code")
 	none.Agents = "none"
 	want := HumanQuestion{Ask: "Add the runner", Why: "filed by sebastian for an agent, and the project runs no agents now", Info: "objective body",
-		Choices: []QuestionChoice{{Value: AnswerClose, Label: "I did it"}, {Value: AnswerPark, Label: "Not now"}}}
+		Choices: []QuestionChoice{{Value: AnswerDone, Label: "I did it"}, {Value: AnswerPark, Label: "Not now"}}}
 	for _, via := range []string{"redelivery", "heal pass"} {
 		in, store, _ := newTestIntake(t)
 		in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: store, Store: store}

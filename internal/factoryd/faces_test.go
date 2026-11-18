@@ -371,7 +371,7 @@ func TestAOneAnswerFaceAddsNoSecondEnd(t *testing.T) {
 	if got, want := face(factoryd.AnswerPark, "Not now"), []string{"Not now", "End the card"}; !slices.Equal(got, want) {
 		t.Errorf("a card that keeps waiting: answers %v, want %v", got, want)
 	}
-	if got, want := face(factoryd.ActClose, "I did it"), []string{"I did it", "Not now"}; !slices.Equal(got, want) {
+	if got, want := face(factoryd.AnswerDone, "I did it"), []string{"I did it", "Not now"}; !slices.Equal(got, want) {
 		t.Errorf("a card that ends: answers %v, want %v", got, want)
 	}
 }

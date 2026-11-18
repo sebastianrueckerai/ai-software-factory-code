@@ -246,26 +246,26 @@ func TestWordsGrantASessionOnlyAtASessionCap(t *testing.T) {
 }
 
 // An answer with an action meets every answer's gates before Act, on
-// every entry: the chat's close on a human card runs the close's work, its
-// label posted and the issue closed, and resolves the card's case with the
-// choice, handing Act the comment the close posted. The real Act is the
+// every entry: the chat's close on a human card runs the close's work, the
+// human's words posted and the issue closed, and resolves the card's case
+// with the close, handing Act the comment the close posted. The real Act is the
 // only gate: it takes the chat's extend on a running card with no case
 // open, a draw, and refuses the button's words on a card that holds no
 // case, a continue.
 func TestAnActionMeetsTheAnswersGates(t *testing.T) {
 	r := newRig(t)
 	r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerGo, Label: "Have the factory do it"},
-		factoryd.QuestionChoice{Value: factoryd.AnswerClose, Label: "Done"})}
-	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-hq", Action: factoryd.ActClose}); err != nil {
+		factoryd.QuestionChoice{Value: factoryd.AnswerDone, Label: "I did it"})}
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-hq", Action: factoryd.ActClose, Text: "Moved to the ops board."}); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments"), []string{"Done"}) ||
+	if !slices.Equal(r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments"), []string{"Moved to the ops board."}) ||
 		!slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
-		t.Fatalf("comments %q, patched %v; want the label posted and the issue closed", r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments"), r.fg.patched)
+		t.Fatalf("comments %q, patched %v; want the words posted and the issue closed", r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments"), r.fg.patched)
 	}
 	got, posts := actedOnce(t, r)
 	equal(t, "the close", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-hq", CaseID: 1, By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActClose, Note: "Done"}}, true})
+		Res: factoryd.Resolution{Action: factoryd.ActClose, Note: "Moved to the ops board."}}, true})
 
 	r = newRig(t)
 	run := factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 11, Track: policy.TrackDirect, BudgetEUR: 5}
@@ -305,9 +305,9 @@ func TestAnActionMeetsTheAnswersGates(t *testing.T) {
 func TestAHumanChoiceAndItsWebhookCopyInEitherOrder(t *testing.T) {
 	const comments = "/api/v1/repos/sf/code/issues/51/comments"
 	press := func(r *rig) *httptest.ResponseRecorder {
-		r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerClose, Label: "Done"})}
+		r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerDone, Label: "I did it"})}
 		ck, s := r.loggedIn(t)
-		return r.do(post("/tasks/t-hq/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerClose}}), ck)
+		return r.do(post("/tasks/t-hq/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerDone}}), ck)
 	}
 
 	r := newRig(t)

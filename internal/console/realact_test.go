@@ -365,6 +365,105 @@ func TestAHumanCardCloseOrdersItsWorkAndMeetsTheLevel(t *testing.T) {
 	}
 }
 
+// "I did it" on a card that waits for another card meets the real Act's
+// refusal at every door, the card's press (a form drawn before the wait
+// among them) and the chat's answer, the human's and the project agent's
+// at full auto alike: the line names the card it waits for and the answers
+// that fit, and nothing is posted or closed. End the card ends the card
+// with the human's own words, never "I did it".
+func TestIDidItWaitsAndEndTheCardTakesTheHumansWords(t *testing.T) {
+	q := factoryd.PlanHumanAsk(factoryd.Task{ID: "t-plan", IssueNumber: 12}, "Change two lines in the runner's build files").Q
+	const comments = "/api/v1/repos/sf/code/issues/51/comments"
+	newCard := func(t *testing.T) (*rig, *realAct) {
+		r := newRig(t)
+		r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hd", 51, q.Choices...)}
+		ra := newRealAct(t, "t-hd", 51, "", q, policy.AutonomyFullAuto)
+		ra.seed(t, factoryd.Task{ID: "t-dep", Kind: "agent", Track: policy.TrackPlan, Status: "queued", IssueNumber: 50, Objective: "the build files"})
+		if err := ra.pg.AddTaskDeps(t.Context(), "t-hd", []string{"t-dep"}); err != nil {
+			t.Fatal(err)
+		}
+		ra.wire(r, "t-hd", false)
+		return r, ra
+	}
+	const why = "card #51 waits for #50 (queued), so its work cannot be done yet: answer Not now (park) until it is done, or End the card (close) with your note"
+	nothing := func(t *testing.T, door string, r *rig, ra *realAct, err error) {
+		t.Helper()
+		no := refusedWith(err)
+		if no == nil || no.status != http.StatusConflict || no.msg != why || len(r.fg.patched) != 0 || len(r.fg.commentBodies(comments)) != 0 || ra.caseNow(t).Status != factoryd.CaseAtHuman {
+			t.Fatalf("%s: err %v, patched %v, comments %q, case %s; want %q and nothing done", door, err, r.fg.patched, r.fg.commentBodies(comments), ra.caseNow(t).Status, why)
+		}
+	}
+
+	r, ra := newCard(t)
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-hd/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerDone}, "case": {fmt.Sprint(ra.caseID)}}), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "card #51 waits for #50 (queued)") || len(r.fg.patched) != 0 || ra.caseNow(t).Status != factoryd.CaseAtHuman {
+		t.Fatalf("the press = %d %q, patched %v, case %s; want the 409 and nothing done", rec.Code, rec.Body, r.fg.patched, ra.caseNow(t).Status)
+	}
+	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-hd", CaseID: ra.caseID, Action: factoryd.AnswerDone})
+	nothing(t, "the human's chat", r, ra, err)
+	agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyFullAuto, wake: true, birth: factoryd.WakeAsk}
+	_, err = r.c.doAnswerCase(t.Context(), agent, "t-hd", ra.caseID, "", factoryd.AnswerDone, nil, 0)
+	nothing(t, "the project agent", r, ra, err)
+
+	const words = "The runner team changed the build files in their own repository."
+	rec = r.do(post("/tasks/t-hd/resolve", url.Values{"csrf": {s.csrf}, "action": {factoryd.ActClose}, factoryd.ActClose + ".note": {words}}), ck)
+	k := ra.caseNow(t)
+	if rec.Code != http.StatusSeeOther || !slices.Equal(r.fg.commentBodies(comments), []string{words}) ||
+		!slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) ||
+		k.Status != factoryd.CaseResolved || k.Resolution == nil || k.Resolution.Action != factoryd.ActClose {
+		t.Fatalf("End the card = %d %q, comments %q, patched %v, case %s %+v; want the human's words posted, the issue closed and the case resolved by close",
+			rec.Code, rec.Body, r.fg.commentBodies(comments), r.fg.patched, k.Status, k.Resolution)
+	}
+
+	r, ra = newCard(t)
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-hd", CaseID: ra.caseID, Action: factoryd.ActClose, Text: words}); err != nil ||
+		!slices.Equal(r.fg.commentBodies(comments), []string{words}) || ra.caseNow(t).Status != factoryd.CaseResolved {
+		t.Fatalf("the chat's End the card: err %v, comments %q, case %s; want the human's words posted and the case resolved", err, r.fg.commentBodies(comments), ra.caseNow(t).Status)
+	}
+}
+
+// No pull request the factory opened merges or closes without a human: the
+// project agent's Merge it and Reject and close it are refused at every
+// level, full auto among them, with the line that names the state and says
+// a human presses it; no merge runs and the case stays at the human. The
+// human's Merge it merges as the human.
+func TestTheFactorysPullRequestWaitsForAHumansPress(t *testing.T) {
+	q := factoryd.FactoryPRQuestion(factoryd.BriefText{Title: "Update the project from its template go-service"}, 14, "https://git.example/sf/code/pulls/14")
+	const why = "Pull request #14 of card #51 was opened by the factory, and no gate checked it: a human must press Merge it or Reject and close it on the card. Record your analysis and recommended option with attach_analysis."
+	const merge = "POST /api/v1/repos/sf/code/pulls/14/merge Bearer access-1"
+	newCard := func(t *testing.T, level string) (*rig, *realAct) {
+		r := newRig(t)
+		bt := humanAsk("t-pr", 51, q.Choices...)
+		bt.PRNumber = 14
+		r.tasks.tasks = []factoryd.BoardTask{bt}
+		ra := newRealAct(t, "t-pr", 51, factoryd.SourceTemplateUpdate, q, level)
+		if err := ra.pg.SetTaskPR(t.Context(), "t-pr", 14); err != nil {
+			t.Fatal(err)
+		}
+		ra.wire(r, "t-pr", false)
+		return r, ra
+	}
+	for _, level := range []string{policy.AutonomyManual, policy.AutonomyAssisted, policy.AutonomyAutonomous, policy.AutonomyFullAuto} {
+		for _, value := range []string{factoryd.ActApproveMerge, factoryd.ActDenyMerge} {
+			r, ra := newCard(t, level)
+			_, s := r.loggedIn(t)
+			agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: level, wake: true, birth: factoryd.WakeAsk}
+			_, err := r.c.doAnswerCase(t.Context(), agent, "t-pr", ra.caseID, "The change is the template's own.", value, nil, 0)
+			if no := refusedWith(err); no == nil || no.status != http.StatusConflict || no.msg != why ||
+				slices.Contains(r.fg.calls, merge) || len(r.fg.closed) != 0 || ra.caseNow(t).Status != factoryd.CaseAtHuman {
+				t.Fatalf("%s/%s: err %v, calls %q, closed %v, case %s; want %q and nothing done", level, value, err, r.fg.calls, r.fg.closed, ra.caseNow(t).Status, why)
+			}
+		}
+	}
+	r, ra := newCard(t, policy.AutonomyFullAuto)
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-pr/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.ActApproveMerge}, "case": {fmt.Sprint(ra.caseID)}}), ck)
+	if rec.Code != http.StatusSeeOther || !slices.Contains(r.fg.calls, merge) || ra.caseNow(t).Status != factoryd.CaseResolved {
+		t.Fatalf("the human's Merge it = %d %q, calls %q, case %s; want the merge as the human and the case resolved", rec.Code, rec.Body, r.fg.calls, ra.caseNow(t).Status)
+	}
+}
+
 // A press whose case ended before Act read it (the webhook's copy resolved
 // it, the heal pass withdrew it) runs none of the work, at every level, for
 // rung 2 and for a human: the console still reads the case as live, Act

@@ -131,13 +131,17 @@ func (a HumanAsk) Event(t Task) Event {
 	return Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: a.Via, Detail: asked}
 }
 
-// Question choice values a question's buttons post: close ends the card,
-// go resumes it, and park and keep waiting record the answer and leave the
-// card waiting on its human, no comment posted, because a posted comment
-// would start the attempt the human declined to start.
+// Question choice values a question's buttons post: close ends the card
+// with the human's note, done says the human did the card's work, noted
+// that the human read the notice, go resumes the card, and park and keep
+// waiting record the answer and leave the card waiting on its human, no
+// comment posted, because a posted comment would start the attempt the
+// human declined to start.
 const (
 	AnswerPark        = "park"
 	AnswerClose       = "close"
+	AnswerDone        = "done"
+	AnswerNoted       = "noted"
 	AnswerKeepWaiting = "keep_waiting"
 	AnswerGo          = "go"
 )

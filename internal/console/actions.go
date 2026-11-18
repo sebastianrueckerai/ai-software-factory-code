@@ -1667,11 +1667,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		}
 		if value == factoryd.ActApproveMerge {
 			work = func(ctx context.Context) (int64, error) {
-				poster, err := c.posterOf(ctx, a, t.Repository)
-				if err != nil {
-					return 0, err
-				}
-				if err := c.mergePull(ctx, poster.s, repo, t.PRNumber); err != nil {
+				if err := c.mergePull(ctx, a.s, repo, t.PRNumber); err != nil {
 					return 0, &forgejoRefusal{what: fmt.Sprintf("merge pull request #%d", t.PRNumber), err: err}
 				}
 				return 0, nil
@@ -1685,6 +1681,17 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		res.Note, res.Args = text, nil
 		work = func(ctx context.Context) (int64, error) { return 0, c.rejectPull(ctx, a, repo, t.PRNumber, text) }
 		note = fmt.Sprintf("Closed pull request #%d with your reason. The card ends with it.", t.PRNumber)
+	case value == factoryd.AnswerClose:
+		if q.ChoiceValue(text) != "" {
+			text = "" // End the card posts the human's own words, never a choice's label
+		}
+		res.Note = text
+		work = func(ctx context.Context) (int64, error) {
+			var posted int64
+			var err error
+			note, posted, err = c.closeHumanCard(ctx, a, t, text)
+			return posted, err
+		}
 	case value == factoryd.AnswerPark || value == factoryd.AnswerKeepWaiting:
 		note = fmt.Sprintf("The ask is settled: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber)
 	case value == factoryd.AnswerGo:

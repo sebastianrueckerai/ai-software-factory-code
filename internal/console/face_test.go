@@ -1058,7 +1058,7 @@ func TestAHumanCardsOpenedCardRendersItsQuestionsParts(t *testing.T) {
 	r, _ := newRigWithEvents(t)
 	q := factoryd.HumanQuestion{Ask: "Renew the certificate?", Why: "The certificate expires on Friday.",
 		Info:    "## What each answer does\n- Done closes the card\n\n```sh\nrenew --now\n```",
-		Choices: []factoryd.QuestionChoice{{Value: factoryd.AnswerClose, Label: "Done"}, {Value: factoryd.AnswerPark, Label: "Not now"}}}
+		Choices: []factoryd.QuestionChoice{{Value: factoryd.AnswerDone, Label: "I did it"}, {Value: factoryd.AnswerPark, Label: "Not now"}}}
 	card := factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/code", IssueNumber: 16, Objective: "Renew the certificate"}
 	r.tasks.tasks = []factoryd.BoardTask{{Task: card, Escalation: q.Ask, Question: &q}}
 	detail := factoryd.HumanAsk{Q: q, By: "sebastian", Asker: "agent", Via: factoryd.ViaChat}.Event(card).Detail
@@ -1468,6 +1468,25 @@ func humanAsk(id string, issue int64, choices ...factoryd.QuestionChoice) factor
 			Recommendation: "Postgres", Source: "the agent", Choices: choices}}
 }
 
+// A human card whose stored ask reads as no question, and whose title
+// makes none either, asks whether the work is done on its opened card; its
+// small card leads with the card's title, so Needs you names the work.
+func TestAFallbackAskLeadsTheSmallCardWithTheTitle(t *testing.T) {
+	r := newRig(t)
+	const title = "Board export: keep the nightly snapshots"
+	hq := humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerDone, Label: "I did it"})
+	hq.Objective, hq.Question.Ask, hq.Escalation = title+"\n\nWrite the board to a snapshot every night.", title, title
+	r.tasks.tasks = []factoryd.BoardTask{hq}
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-hq"); !strings.Contains(face, `<strong class="title">`+title+`</strong>`) || strings.Contains(face, "Is the work of this card done?") {
+		t.Errorf("the small card does not lead with the card's title:\n%s", face)
+	}
+	if esc := askBlockOf(t, drawer(t, r, ck, "t-hq", "overview")); !strings.Contains(esc, `<p class="o-question">Is the work of this card done?</p>`) {
+		t.Errorf("the opened card does not ask whether the work is done:\n%s", esc)
+	}
+}
+
 // A human card shows the question a chat escalation files it from
 // (values are the labels in the "say:" namespace): the whole ask once, as
 // its small card's title; its opened card asks it with one answer per
@@ -1509,15 +1528,15 @@ func TestAHumanCardShowsItsQuestion(t *testing.T) {
 	}
 }
 
-// A human card's go and close choices take it off the board and post to
+// A human card's go and done choices take it off the board and post to
 // the answer route; park keeps it.
 func TestAHumanCardChoicesLeaveTheBoardOrStay(t *testing.T) {
 	r := newRig(t)
 	r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: "go", Label: "Have the factory do it"},
-		factoryd.QuestionChoice{Value: "park", Label: "Wait for it"}, factoryd.QuestionChoice{Value: "close", Label: "Done"})}
+		factoryd.QuestionChoice{Value: "park", Label: "Wait for it"}, factoryd.QuestionChoice{Value: factoryd.AnswerDone, Label: "I did it"})}
 	ck, _ := r.loggedIn(t)
 	esc := escalationOf(t, r, ck, "t-hq")
-	for value, to := range map[string]string{"go": ` data-to="off"`, "close": ` data-to="off"`, "park": ""} {
+	for value, to := range map[string]string{"go": ` data-to="off"`, factoryd.AnswerDone: ` data-to="off"`, "park": ""} {
 		if want := `<form method="post" action="/tasks/t-hq/answer" hx-post="/tasks/t-hq/answer" class="answer" data-answer="choice:` + value + `"` + to + `>`; !strings.Contains(esc, want) {
 			t.Errorf("the choice %s lacks %s:\n%s", value, want, esc)
 		}
@@ -1598,7 +1617,7 @@ func TestDonePlanRowCarriesTheName(t *testing.T) {
 func TestHumanCardOffersTheAnswerBoxOnlyWithoutChoices(t *testing.T) {
 	r := newRig(t)
 	r.tasks.tasks = []factoryd.BoardTask{
-		humanAsk("t-pick", 51, factoryd.QuestionChoice{Value: "park", Label: "Wait for it"}, factoryd.QuestionChoice{Value: "close", Label: "Done"}),
+		humanAsk("t-pick", 51, factoryd.QuestionChoice{Value: "park", Label: "Wait for it"}, factoryd.QuestionChoice{Value: factoryd.AnswerDone, Label: "I did it"}),
 		humanAsk("t-free", 52),
 	}
 	ck, _ := r.loggedIn(t)

@@ -44,7 +44,7 @@ func TestChatBudgetCards(t *testing.T) {
 		Why: "Until it is raised, the project agent judges no stopped card, so every stop comes to you.",
 		Info: "The project spent 49.96 EUR of the chat's budget of 50.00 EUR in 2026-11. The budget pays the chat and the judgment of stopped cards. " +
 			"Until it is raised or the UTC month turns, no stopped card is judged, so every stop comes to Needs you.\n\nAdd money to the chat raises it here, and so does Fund and go on in the chat thread that hit the stop. Only a human who approves the project can do either. The raise ends this card.",
-		Choices:  []QuestionChoice{{AnswerFundChat, "Add money to the chat"}, {AnswerPark, "Not now"}, {AnswerClose, "Noted"}},
+		Choices:  []QuestionChoice{{AnswerFundChat, "Add money to the chat"}, {AnswerPark, "Not now"}, {AnswerNoted, "Noted"}},
 		Happened: "The chat spent 49.96 EUR of its 50.00 EUR for November.",
 		Waits:    "Every stopped card comes to you until the budget is raised or the month ends.",
 	}

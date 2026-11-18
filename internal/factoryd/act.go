@@ -221,7 +221,11 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 				return ActResult{}, ErrActRefused(why)
 			}
 		}
-		if why := r.humanChoice(ctx, t, c, in); why != "" {
+		why, err := r.humanChoice(ctx, t, c, in)
+		if err != nil {
+			return ActResult{}, err
+		}
+		if why != "" {
 			return ActResult{}, ErrActRefused(why)
 		}
 	} else {
@@ -942,27 +946,50 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 
 // humanChoice is why human card t's case does not take in, "" when it
 // does: rung 2 or the human picks a value its question offers, with no
-// draw beside it.
-func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) string {
+// draw beside it. The factory's own pull request merges or closes at a
+// human's press alone, and "I did it" waits for the card's open
+// dependencies.
+func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) (string, error) {
 	switch {
 	case in.Rung != 2 && in.Rung != 3:
-		return fmt.Sprintf("%s may not answer a human card: rung 2 and the human may", who(in.Rung))
+		return fmt.Sprintf("%s may not answer a human card: rung 2 and the human may", who(in.Rung)), nil
 	case in.Res.Fund != nil:
-		return fmt.Sprintf("card %s is a human card, so its answer draws nothing: answer it without the fund", cardName(t))
+		return fmt.Sprintf("card %s is a human card, so its answer draws nothing: answer it without the fund", cardName(t)), nil
 	case len(in.Res.Args) > 0:
-		return fmt.Sprintf("card %s is a human card, so its answer is one of its choices and takes no args: answer it without them", cardName(t))
+		return fmt.Sprintf("card %s is a human card, so its answer is one of its choices and takes no args: answer it without them", cardName(t)), nil
 	case in.Res.Action == ActClose:
-		return "" // a human card closes whatever it asks, as its Close button does
+		return "", nil // End the card ends any human card
 	}
 	ask, _ := r.CaseAsk(ctx, c)
 	offers := AskOffers(ask.Detail)
 	switch {
 	case len(offers) == 0:
-		return fmt.Sprintf("card %s asks no question with choices: answer it with a note", cardName(t))
-	case slices.ContainsFunc(offers, func(o QuestionChoice) bool { return o.Value == in.Res.Action }):
-		return ""
+		return fmt.Sprintf("card %s asks no question with choices: answer it with a note", cardName(t)), nil
+	case !slices.ContainsFunc(offers, func(o QuestionChoice) bool { return o.Value == in.Res.Action }):
+		return choiceRefusal(t, offers), nil
+	case in.Rung != 3 && (in.Res.Action == ActApproveMerge || in.Res.Action == ActDenyMerge):
+		return fmt.Sprintf("Pull request #%d of card %s was opened by the factory, and no gate checked it: a human must press Merge it or Reject and close it on the card.", t.PRNumber, cardName(t)) + planAgentStep, nil
+	case in.Res.Action != AnswerDone:
+		return "", nil
 	}
-	return choiceRefusal(t, offers)
+	deps, err := r.store.OpenDependencies(ctx, t.ID)
+	if err != nil || len(deps) == 0 {
+		return "", err
+	}
+	waits := make([]string, 0, len(deps))
+	for _, d := range deps {
+		ref := d.TaskID
+		if d.Issue != 0 {
+			ref = fmt.Sprintf("#%d", d.Issue)
+		}
+		waits = append(waits, fmt.Sprintf("%s (%s)", ref, d.Status))
+	}
+	until := "it is"
+	if len(deps) > 1 {
+		until = "they are"
+	}
+	return fmt.Sprintf("card %s waits for %s, so its work cannot be done yet: answer Not now (park) until %s done, or End the card (close) with your note",
+		cardName(t), textutil.AndList(waits), until), nil
 }
 
 // choiceRefusal says card t takes one of offers, with a note beside it.

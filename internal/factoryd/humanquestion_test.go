@@ -36,8 +36,8 @@ func TestTheRaiseRoundsAnUncoveredNeedUpToTheCent(t *testing.T) {
 // what the factory saw, and offers exactly its answers in order, in the
 // vocabulary's words.
 func TestHumanCardQuestions(t *testing.T) {
-	did, notNow, factory, noted := QuestionChoice{AnswerClose, "I did it"}, QuestionChoice{AnswerPark, "Not now"},
-		QuestionChoice{AnswerGo, "Have the factory do it"}, QuestionChoice{AnswerClose, "Noted"}
+	did, notNow, factory, noted := QuestionChoice{AnswerDone, "I did it"}, QuestionChoice{AnswerPark, "Not now"},
+		QuestionChoice{AnswerGo, "Have the factory do it"}, QuestionChoice{AnswerNoted, "Noted"}
 	alert := SigNozAlert{Fingerprint: "fp", Labels: map[string]string{"alertname": "disk full", "service": "db"}, StartsAt: time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)}
 	for name, tt := range map[string]struct {
 		q        HumanQuestion

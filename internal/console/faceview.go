@@ -170,11 +170,16 @@ func (f *faceView) title(html template.HTML, words string) {
 }
 
 // askFace sets face f of card k from its ask row: the ask as its title,
+// the card's own title where the ask is the fallback that names no work,
 // its why line, and the answer row, whose one button sends the suggested
 // answer as the opened card's would.
 func (c *Console) askFace(ctx context.Context, v *boardView, f *faceView, k card, row caseRow) {
 	face := row.Face
-	f.title(c.linkRefs(ctx, v, k.Repository, face.Ask), face.Ask)
+	lead := face.Ask
+	if lead == factoryd.WorkDoneAsk {
+		lead = cmp.Or(factoryd.CardTitle(k.Task), lead)
+	}
+	f.title(c.linkRefs(ctx, v, k.Repository, lead), lead)
 	f.Why = c.linkRefs(ctx, v, k.Repository, face.Why)
 	a := &askView{Position: row.At, Of: row.Of, Others: len(face.Offers)}
 	if row.Of > 1 {

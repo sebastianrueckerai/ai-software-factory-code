@@ -1472,6 +1472,10 @@ var resourceFace = FaceSpec{
 
 // humanFace is the face of a card a human does or decides: its question as
 // filed, and the choices it stores, each in the vocabulary's words.
+// WorkDoneAsk is a human card's ask where neither its stored ask nor its
+// title reads as one.
+const WorkDoneAsk = "Is the work of this card done?"
+
 var humanFace = FaceSpec{
 	Ask: func(f Facts) string {
 		q := strings.TrimSpace(cmp.Or(factString(f.Case, "ask"), f.Case.Problem))
@@ -1483,7 +1487,7 @@ var humanFace = FaceSpec{
 				return q
 			}
 		}
-		return "Is the work of this card done?"
+		return WorkDoneAsk
 	},
 	Why: func(f Facts) string {
 		return cmp.Or(depWait(f), whyOf(factString(f.Case, "why")), whyOf(f.Card.Why), "Only a human can do this work.")
@@ -1546,10 +1550,6 @@ func choiceAnswer(value string, f Facts) (Answer, bool) {
 		key = ActReplan + "/" + variantHeld
 	case strings.HasPrefix(v, AnswerTakeOffMain+":"):
 		key = ActReplan + "/" + variantOffMain
-	case v == AnswerClose && slices.Contains(informingSources, f.Card.Source):
-		key = ActClose + "/" + variantNoted
-	case v == AnswerClose && f.Card.Source != SourceRollFailed:
-		key = ActClose + "/" + variantDone
 	case v == AnswerClose, v == AnswerGo, v == AnswerRerunAgain, v == AnswerCheckAgain, v == ActDeployNow:
 		key = v
 	case !offerable(c.Label):
@@ -1568,9 +1568,6 @@ func choiceAnswer(value string, f Facts) (Answer, bool) {
 // planRef finds the plan a held production's replan names in its label.
 var planRef = regexp.MustCompile(`#\d+`)
 
-// informingSources are the human cards that tell and ask nothing to do.
-var informingSources = []string{SourceAlert, SourceChatBudget, SourceMonthCap}
-
 // choiceValue is the value a human card's choice of answer a posts.
 func choiceValue(a Answer) string {
 	switch a.Key() {
@@ -1578,6 +1575,10 @@ func choiceValue(a Answer) string {
 		return AnswerPark
 	case ActClose + "/" + variantDismiss:
 		return AnswerDismiss
+	case ActClose + "/" + variantDone:
+		return AnswerDone
+	case ActClose + "/" + variantNoted:
+		return AnswerNoted
 	case ActRetry + "/" + variantRoll:
 		return AnswerRetryRoll
 	}

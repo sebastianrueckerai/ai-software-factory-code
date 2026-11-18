@@ -248,6 +248,94 @@ func TestHandBackReturnsTheCardToItsPlanner(t *testing.T) {
 	}
 }
 
+// humanCardRig is the facts rig with plan card h1 (#14) for a human,
+// waiting for d1 (#13, queued) and asking as its plan files it, its case 9
+// at the human; and card pr (#15), the factory's pull request #21 on a
+// project without agents, its case 10 at the human.
+func humanCardRig(t *testing.T) factsRig {
+	t.Helper()
+	g := newFactsRig(t)
+	const repo = "demo-app/demo-app"
+	h := Task{ID: "h1", Kind: "human", Repository: repo, IssueNumber: 14, Status: "waiting-human", Source: SourcePlan, Parent: "p"}
+	pr := Task{ID: "pr", Kind: "human", Repository: repo, IssueNumber: 15, Status: "waiting-human", Source: SourceTemplateUpdate, PRNumber: 21}
+	g.store.tasks["h1"], g.store.tasks["pr"] = h, pr
+	g.store.tasks["d1"] = Task{ID: "d1", Kind: "agent", Repository: repo, IssueNumber: 13, Status: "queued"}
+	g.store.deps = map[string][]string{"h1": {"d1"}}
+	g.store.cases = []Case{{ID: 9, TaskID: "h1", Repository: repo, Kind: CaseHumanCard, Status: CaseAtHuman},
+		{ID: 10, TaskID: "pr", Repository: repo, Kind: CaseHumanCard, Status: CaseAtHuman}}
+	for _, a := range []struct {
+		t      Task
+		ask    HumanAsk
+		caseID int
+	}{
+		{h, PlanHumanAsk(Task{ID: "p", IssueNumber: 12}, "Change two lines in the runner's build files"), 9},
+		{pr, HumanAsk{Q: FactoryPRQuestion(BriefText{Title: "Update the project from its template go-service"}, 21, "https://git.example/pulls/21")}, 10},
+	} {
+		e := a.ask.Event(a.t)
+		e.Detail["case_id"] = a.caseID
+		g.store.events = append(g.store.events, e)
+	}
+	return g
+}
+
+// "I did it" and "End the card" are two answers. Act refuses "I did it"
+// while the card waits for a card that is not done, naming that card and
+// the answers that fit, and nothing moves; "End the card" takes the
+// human's words and ends the case. Only a human hands the card back.
+func TestIDidItWaitsForTheCardBeforeIt(t *testing.T) {
+	ctx := context.Background()
+	g := humanCardRig(t)
+	var refused ErrActRefused
+	_, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: 3, Res: Resolution{Action: AnswerDone}})
+	if want := "card #14 waits for #13 (queued), so its work cannot be done yet: answer Not now (park) until it is done, or End the card (close) with your note"; !errors.As(err, &refused) || err.Error() != want {
+		t.Fatalf("I did it while #13 waits = %v, want %q", err, want)
+	}
+	if g.store.cases[0].Status != CaseAtHuman || len(g.store.resolved) != 0 {
+		t.Fatalf("case %s, resolved %v; want nothing moved", g.store.cases[0].Status, g.store.resolved)
+	}
+	_, err = g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: 2, Res: Resolution{Action: ActHandBack, Note: "not mine"}})
+	if want := "rung 2 may not pick hand_back: the human may"; !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("the chat's hand-back = %v, want the refusal %q", err, want)
+	}
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: 3, Res: Resolution{Action: ActClose, Note: "Done another way."}}); err != nil {
+		t.Fatalf("End the card = %v, want it taken", err)
+	}
+	if g.store.cases[0].Status != CaseResolved {
+		t.Fatalf("case %s after End the card, want resolved", g.store.cases[0].Status)
+	}
+	d := g.store.tasks["d1"]
+	d.Status = "done"
+	g.store.tasks["d1"] = d
+	g.store.cases[0].Status = CaseAtHuman
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: 3, Res: Resolution{Action: AnswerDone}}); err != nil {
+		t.Fatalf("I did it once #13 is done = %v, want it taken", err)
+	}
+}
+
+// No pull request the factory opened on a project without agents merges or
+// closes without a human: the project agent's merge and rejection are
+// refused at the card, naming the state and that a human presses them; the
+// human's are taken.
+func TestAFactoryPullRequestWaitsForAHuman(t *testing.T) {
+	ctx := context.Background()
+	for _, action := range []string{ActApproveMerge, ActDenyMerge} {
+		g := humanCardRig(t)
+		work := 0
+		in := ActInput{TaskID: "pr", CaseID: 10, By: "sebastian", Rung: 2, Res: Resolution{Action: action, Note: "Looks right."},
+			Work: func(context.Context) (int64, error) { work++; return 0, nil }}
+		_, err := g.r.Act(ctx, in)
+		const want = "Pull request #21 of card #15 was opened by the factory, and no gate checked it: a human must press Merge it or Reject and close it on the card. Record your analysis and recommended option with attach_analysis."
+		var refused ErrActRefused
+		if !errors.As(err, &refused) || err.Error() != want || work != 0 || g.store.cases[1].Status != CaseAtHuman {
+			t.Fatalf("the project agent's %s = %v, work %d, case %s; want %q and nothing done", action, err, work, g.store.cases[1].Status, want)
+		}
+		in.Rung = 3
+		if _, err := g.r.Act(ctx, in); err != nil || work != 1 || g.store.cases[1].Status != CaseResolved {
+			t.Fatalf("the human's %s = %v, work %d, case %s; want it taken", action, err, work, g.store.cases[1].Status)
+		}
+	}
+}
+
 // A human card's case is the human's or the chat's: rung 1 is refused,
 // and a card that asks no question with choices takes a note.
 func TestActHumanCardRefusals(t *testing.T) {
@@ -722,7 +810,7 @@ func TestHumanChoiceTakesNoFundAndNoArgs(t *testing.T) {
 	r := new(Runner)
 	task := Task{ID: "t1", IssueNumber: 12}
 	for name, res := range map[string]Resolution{"fund": {Action: ActClose, Fund: &policy.Draw{EUR: 1}}, "args": {Action: ActClose, Args: map[string]any{"sessions": 1}}} {
-		why := r.humanChoice(context.Background(), task, Case{Kind: CaseHumanCard}, ActInput{Rung: 3, Res: res})
+		why, _ := r.humanChoice(context.Background(), task, Case{Kind: CaseHumanCard}, ActInput{Rung: 3, Res: res})
 		if !strings.Contains(why, "card #12 is a human card") {
 			t.Errorf("%s: refusal %q; want a human card's refusal", name, why)
 		}
