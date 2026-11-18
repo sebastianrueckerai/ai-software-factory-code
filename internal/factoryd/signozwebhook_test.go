@@ -48,11 +48,18 @@ type alertForgejo struct {
 	refuse map[int64]int
 	// fileStatus, when set, is what issue creations answer
 	fileStatus int
+	// states is each patched issue's state now, open or closed
+	states map[int64]string
+	// listOpen makes the issue search answer the open issues, as Forgejo
+	// does; without it the search answers none
+	listOpen bool
+	// fault, when set and true for a request, answers it 500
+	fault func(r *http.Request) bool
 }
 
 func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 	t.Helper()
-	fj := &alertForgejo{labels: map[int64][]string{}, people: map[int64][]string{}}
+	fj := &alertForgejo{labels: map[int64][]string{}, people: map[int64][]string{}, states: map[int64]string{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fj.mu.Lock()
 		defer fj.mu.Unlock()
@@ -67,6 +74,10 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 		}
 		repo := strings.Join(parts[:6], "/")
 		var n int64
+		if fj.fault != nil && fj.fault(r) {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == repo:
 			io.WriteString(w, `{"default_branch":"main"}`)
@@ -131,6 +142,15 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			fj.comments = append(fj.comments, fmt.Sprintf("#%d %s", n, in.Body))
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"id":1}`)
+		case r.Method == http.MethodGet && r.URL.Path == repo+"/issues" && fj.listOpen && r.URL.Query().Get("page") == "1":
+			out := []map[string]any{}
+			for i, issue := range fj.issues {
+				title, _, _ := strings.Cut(issue, "\n\n")
+				if fj.repos[i] == parts[4]+"/"+parts[5] && fj.states[int64(i+1)] != "closed" {
+					out = append(out, map[string]any{"number": i + 1, "title": title, "user": map[string]string{"login": "factory-agent"}})
+				}
+			}
+			json.NewEncoder(w).Encode(out) // #nosec G104 -- test stub
 		case r.Method == http.MethodGet && r.URL.Path == repo+"/issues":
 			io.WriteString(w, `[]`)
 		case r.Method == http.MethodGet && fmtScan(r.URL.Path, repo+"/issues/%d/dependencies", &n):
@@ -159,6 +179,9 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
+			var in struct{ State string }
+			json.NewDecoder(r.Body).Decode(&in) // #nosec G104 -- test stub
+			fj.states[n] = in.State
 			fj.closed = append(fj.closed, n)
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{}`)
