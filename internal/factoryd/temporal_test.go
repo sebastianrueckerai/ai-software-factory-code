@@ -66,7 +66,7 @@ func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	completion.Metrics = m
 	objects := &fakeObjectStore{}
 	HealPass(context.Background(), store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent", Metrics: m,
-		Timeline: &Timeline{Objects: objects}}, completion, noneCompleted)
+		Timeline: &Timeline{Objects: objects}}, completion, noneCompleted, nil)
 	if got := events(t, objects, "tbroken"); !slices.Equal(got, []string{"task_ended failed"}) {
 		t.Fatalf("the failed task's events = %v", got)
 	}
@@ -131,7 +131,7 @@ func TestHealPassReopensACardWhoseRunCompleted(t *testing.T) {
 	back := &recordingBackend{forgejoStatus: 204, litellmStatus: 200}
 	fjURL, llURL := back.srv(t)
 	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent",
-		Timeline: &Timeline{Objects: &fakeObjectStore{}}}, newCompletion(store, fjURL, llURL), completed)
+		Timeline: &Timeline{Objects: &fakeObjectStore{}}}, newCompletion(store, fjURL, llURL), completed, nil)
 	if !reflect.DeepEqual(wf.reopens, []reopenCall{{taskID: "tq"}}) || !slices.Equal(wf.started, []string{"tr"}) {
 		t.Fatalf("reopens %+v, starts %v; want tq reopened, tr started, tx left", wf.reopens, wf.started)
 	}
@@ -180,7 +180,7 @@ func TestHealPassLeavesTheChatTaskBe(t *testing.T) {
 	back := &recordingBackend{forgejoStatus: 204, litellmStatus: 200}
 	fjURL, llURL := back.srv(t)
 	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent",
-		Timeline: &Timeline{Objects: &fakeObjectStore{}}}, newCompletion(store, fjURL, llURL), noneCompleted)
+		Timeline: &Timeline{Objects: &fakeObjectStore{}}}, newCompletion(store, fjURL, llURL), noneCompleted, nil)
 	if !slices.Equal(wf.started, []string{"tr"}) {
 		t.Fatalf("started = %v, want only the running card tr", wf.started)
 	}
@@ -387,7 +387,7 @@ func TestTemporalStartIsQuietAgainstARunningWorkflow(t *testing.T) {
 func TestHealPassTakesInMissedIssues(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	in.Projects = codeRepoOnly{}
-	HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store}, noneCompleted)
+	HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store}, noneCompleted, nil)
 	var agent string
 	for _, tk := range store.tasks {
 		if tk.IssueNumber == 7 {
@@ -555,7 +555,7 @@ func TestHealPassFinishesAFactoryClose(t *testing.T) {
 	}
 	fj := &planForgejo{issues: map[int64]*planIssue{5: {state: "open"}}}
 	in := &Intake{Store: store, Forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
-	HealPass(ctx, store, &fakeWorkflows{}, in, nil, noneCompleted)
+	HealPass(ctx, store, &fakeWorkflows{}, in, nil, noneCompleted, nil)
 	if fj.issues[5].state != "closed" || !store.confirmedCloses[[2]any{"t-a", int64(5)}] {
 		t.Fatalf("#5 is %q, confirmed %v; want closed and confirmed", fj.issues[5].state, store.confirmedCloses)
 	}
@@ -565,7 +565,7 @@ func TestHealPassFinishesAFactoryClose(t *testing.T) {
 func TestHealPassReconcilesEveryProjectsCases(t *testing.T) {
 	store := newFakeStore()
 	store.projects = []Project{{Name: "a", Repository: "sf/a"}, {Name: "b", Repository: "sf/b"}, {Name: "no-file"}}
-	HealPass(context.Background(), store, &fakeWorkflows{}, &Intake{Store: store, Projects: store}, nil, noneCompleted)
+	HealPass(context.Background(), store, &fakeWorkflows{}, &Intake{Store: store, Projects: store}, nil, noneCompleted, nil)
 	if want := []string{"sf/a", "sf/b"}; !slices.Equal(store.reconciled, want) {
 		t.Fatalf("reconciled %v, want %v", store.reconciled, want)
 	}
@@ -586,7 +586,7 @@ func TestHealPassSendsPendingCaseSignalsFirst(t *testing.T) {
 	back := &recordingBackend{forgejoStatus: 204, litellmStatus: 200}
 	fjURL, llURL := back.srv(t)
 	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent",
-		Timeline: &Timeline{Objects: &fakeObjectStore{}}}, newCompletion(store, fjURL, llURL), noneCompleted)
+		Timeline: &Timeline{Objects: &fakeObjectStore{}}}, newCompletion(store, fjURL, llURL), noneCompleted, nil)
 	resolved := slices.IndexFunc(wf.signals, func(s string) bool { return strings.HasPrefix(s, "tw "+SignalCaseResolved) })
 	comment := slices.IndexFunc(wf.signals, func(s string) bool { return strings.HasPrefix(s, "tw "+SignalHumanComment) })
 	if resolved < 0 || comment < 0 || resolved > comment || len(store.pending) != 0 {

@@ -169,6 +169,54 @@ func TestFilePlanFilesARoundOnTopOfTheSettled(t *testing.T) {
 	}
 }
 
+// A key of round 1 whose card failed into a successor that merged is
+// settled as a merged card is, the same in the planner's last plan and in
+// the round's filing: the last plan leaves all three cards of round 1 out,
+// and the filing puts their entries first.
+func TestARoundSettlesAKeyItsSuccessorMerged(t *testing.T) {
+	rig := func(t *testing.T) (*Runner, *fakeStore, *fakeKube, Plan) {
+		t.Helper()
+		r, store, kube, one := roundTwoRig(t, nil)
+		k := store.tasks["t-foundation"]
+		k.Status, k.MergeCommit = "failed", ""
+		store.tasks["t-foundation"] = k
+		if err := store.CreateSuccessor(context.Background(), "t-foundation", Task{ID: SuccessorID("t-foundation"), Kind: "agent", Track: policy.TrackDirect,
+			Source: SourceSuccessor, Parent: "t-plan", PlanKey: "foundation", PlanRevision: 1, IssueNumber: 13, Status: "done", MergeCommit: "m13",
+			Repository: "linkshort/linkshort", SHA: "abc123"}); err != nil {
+			t.Fatal(err)
+		}
+		return r, store, kube, one
+	}
+	t.Run("the planner's last plan", func(t *testing.T) {
+		r, _, kube, _ := rig(t)
+		done := make(chan error)
+		go func() {
+			_, err := execActivity(t, r, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+			done <- err
+		}()
+		awaitPod(t, kube, done)
+		kube.scriptPods(0, resultLine(true, "no plan"))
+		if err := <-done; err != nil {
+			t.Fatalf("RunPlan: %v", err)
+		}
+		var got []string
+		const head = "your last plan, revision 1, without the 3 merged cards of its earlier rounds, which the plan keeps as they are:"
+		if err := json.Unmarshal([]byte(podEnv(kube.podAt(0))["FINDINGS"]), &got); err != nil || len(got) == 0 || !strings.HasPrefix(got[0], head) {
+			t.Fatalf("FINDINGS %q (%v), want the last plan to begin %q", got, err, head)
+		}
+	})
+	t.Run("the round's filing", func(t *testing.T) {
+		r, store, _, one := rig(t)
+		res, err := r.FilePlan(context.Background(), "t-plan", planJSON(t, roundTwoAnswer()))
+		if err != nil || res.Revision != 2 || len(res.Findings) != 0 {
+			t.Fatalf("filed = %+v, %v; want revision 2", res, err)
+		}
+		if p := storedPlan(t, store, 2); len(p.Cards) != 5 || !reflect.DeepEqual(p.Cards[:3], one.Cards) {
+			t.Fatalf("revision 2's cards %+v, want revision 1's three entries first", p.Cards)
+		}
+	})
+}
+
 // A settled card that started from an old card keeps its from: the
 // revision before held it for the same key, so the round files.
 func TestFilePlanFilesARoundOverASettledFrom(t *testing.T) {
@@ -622,7 +670,7 @@ func TestConfirmationNamesTheOutline(t *testing.T) {
 func deltaCard(t *testing.T, store *fakeStore) (Task, bool) {
 	t.Helper()
 	for key, c := range cardsByKey(t, store) {
-		if strings.HasPrefix(key, "delta-") {
+		if isDeltaKey(key) {
 			return c, true
 		}
 	}
@@ -691,6 +739,8 @@ func deltaRig(t *testing.T, model *fakeLiteLLM, bound time.Duration, questions .
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// the integration card merged last, at the head its gate judged: its rows judge main
+	mergedAtJudgedHead(store, "t-integration", time.Now().Add(time.Hour))
 	r.supervisor = testSupervisorModel(model.srv(t).URL)
 	return r, store, objects, fj
 }
@@ -840,6 +890,7 @@ func deltaPassRig(t *testing.T, model *fakeLiteLLM, bound time.Duration) (*Runne
 	store.tasks["t-z"] = Task{ID: "t-z", Repository: "linkshort/linkshort", IssueNumber: 99, Source: SourceChat, Status: "done"}
 	store.tasks["z-foundation"] = Task{ID: "z-foundation", Repository: "linkshort/linkshort", Parent: "t-z", Source: SourcePlan, PlanKey: "foundation", Status: "done"}
 	store.tasks["z-int"] = Task{ID: "z-int", Repository: "linkshort/linkshort", Parent: "t-z", Source: SourcePlan, PlanKey: "integration", Status: "merged"}
+	mergedAtJudgedHead(store, "z-int", time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC))
 	newRevision(t, store, "t-z", criteriaPlan())
 	if err := store.PutCriteriaVerdicts(ctx, "z-int", "review", FactoryDecider, []CriterionVerdict{
 		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
@@ -942,7 +993,7 @@ func TestDeltaRoundFilesOneCardForADueRunTwice(t *testing.T) {
 	r.draftDelta(ctx, t1, repo, due)
 	n := 0
 	for key := range cardsByKey(t, store) {
-		if strings.HasPrefix(key, "delta-") {
+		if isDeltaKey(key) {
 			n++
 		}
 	}
@@ -1619,5 +1670,106 @@ func TestRoundCheckEndsAClosedPlanInItsLastRound(t *testing.T) {
 		if got := store.tasks["p"].Status; got != tc.want || len(replanSteps(t, r, "p")) != 0 {
 			t.Errorf("%s: plan %s, replan steps %d; want %s and none", tc.name, got, len(replanSteps(t, r, "p")), tc.want)
 		}
+	}
+}
+
+// deltaInputOf is the criteria the delta round's first call handed the
+// planner.
+func deltaInputOf(t *testing.T, model *fakeLiteLLM) []deltaCriterion {
+	t.Helper()
+	model.mu.Lock()
+	defer model.mu.Unlock()
+	if len(model.chats) == 0 {
+		t.Fatal("the round called no model")
+	}
+	body, _ := json.Marshal(model.chats[0])
+	var req struct {
+		Messages []struct{ Content string } `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatal(err)
+	}
+	var in struct {
+		Criteria []deltaCriterion `json:"criteria"`
+	}
+	_, input, _ := strings.Cut(req.Messages[len(req.Messages)-1].Content, "The input, as JSON:\n")
+	if err := json.Unmarshal([]byte(input), &in); err != nil {
+		t.Fatalf("the round's input: %v", err)
+	}
+	return in.Criteria
+}
+
+// The delta round hands the planner each open criterion with its state: unmet
+// from its row, or never judged, beside it the reason of the criteria gate's
+// run on the plan as it stands. A run on an earlier state of the plan, its
+// mark another, gives no reason.
+func TestTheDeltaRoundNamesEachCriterionsStateAndTheGatesReason(t *testing.T) {
+	const reason = "The required checks were still running on abcdef12 after 50 minutes"
+	for _, tc := range []struct {
+		name         string
+		run          string // the gate run's mark: "" for none, "now" for the plan as it stands
+		state, wantR string
+		evidence     string
+	}{
+		{"unmet", "", "unmet", "", "a redirect counts twice in internal/stats"},
+		{"never judged", "now", "never_judged", reason, ""},
+		{"never judged, the run on an earlier state", "rev 0", "never_judged", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			model := &fakeLiteLLM{content: `{"card": {"title": "x"}}`}
+			r, store, _, _ := deltaRig(t, model, 0)
+			if tc.run != "" {
+				store.criteriaVerdicts["t-integration"] = slices.DeleteFunc(store.criteriaVerdicts["t-integration"], func(v CriterionVerdict) bool { return v.Criterion == "redirect_302" })
+				mark := tc.run
+				if mark == "now" {
+					g, err := planGateOf(ctx, store, "t-plan", store.tasks["t-integration"])
+					if err != nil {
+						t.Fatal(err)
+					}
+					mark = g.mark
+				}
+				if _, err := store.Record(ctx, Event{Repository: "sf/code", TaskID: "t-plan", Kind: EventCriteriaGateRun, Actor: FactoryDecider, Via: ViaFactoryd,
+					Detail: map[string]any{"task": "t-integration", "outcome": gateStarted, "reason": reason, "cards": mark}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t1, repo, err := r.task(ctx, "t-plan")
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.draftDelta(ctx, t1, repo, []PlanCatch{{TaskID: "t-plan", Revision: 1, Kind: CatchDelta, Finder: FinderApprover, Detail: "redirect_302 grant 9"}})
+			criteria := deltaInputOf(t, model)
+			if len(criteria) != 1 || criteria[0].ID != "redirect_302" {
+				t.Fatalf("criteria = %+v, want redirect_302 alone", criteria)
+			}
+			if c := criteria[0]; c.State != tc.state || c.Reason != tc.wantR || c.Evidence != tc.evidence {
+				t.Errorf("criterion = state %q reason %q evidence %q, want %q %q %q", c.State, c.Reason, c.Evidence, tc.state, tc.wantR, tc.evidence)
+			}
+		})
+	}
+}
+
+// The delta round reads the criteria as the plan's close does: once the
+// integration card's merge is no record of the head its gate judged, its
+// rows judge no head on main and settle nothing, so links_crud and
+// all_green, met on those rows, are open beside redirect_302, and each is
+// never judged on rows that settle.
+func TestTheDeltaRoundReadsTheCriteriaAsTheCloseDoes(t *testing.T) {
+	ctx := context.Background()
+	model := &fakeLiteLLM{content: `{"card": {"title": "x"}}`}
+	r, store, _, _ := deltaRig(t, model, 0)
+	unmergeCard(store, "t-integration")
+	t1, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.draftDelta(ctx, t1, repo, []PlanCatch{{TaskID: "t-plan", Revision: 1, Kind: CatchDelta, Finder: FinderApprover, Detail: "redirect_302 grant 9"}})
+	var got []string
+	for _, c := range deltaInputOf(t, model) {
+		got = append(got, c.ID+" "+c.State)
+	}
+	if want := []string{"links_crud never_judged", "redirect_302 never_judged", "all_green never_judged"}; !slices.Equal(got, want) {
+		t.Fatalf("criteria = %q, want %q", got, want)
 	}
 }

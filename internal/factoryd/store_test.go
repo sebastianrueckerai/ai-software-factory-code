@@ -251,13 +251,20 @@ func (s *fakeStore) CreateSuccessor(ctx context.Context, id string, t Task) erro
 			}
 		}
 	}
+	for k, held := range s.tasks {
+		if held.Hold != nil && held.Hold.Release == id {
+			h := *held.Hold
+			h.Release, held.Hold = t.ID, &h
+			s.tasks[k] = held
+		}
+	}
 	return nil
 }
 
 func (s *fakeStore) MoveDependents(ctx context.Context, from, to string) ([]string, error) {
 	var moved []string
 	for id, deps := range s.deps {
-		if t := s.tasks[id]; t.Source == SourcePlan && t.Parent == to && slices.Contains(deps, from) {
+		if t := s.tasks[id]; t.PlanCard() && t.Parent == to && slices.Contains(deps, from) {
 			s.deps[id] = append(slices.DeleteFunc(deps, func(d string) bool { return d == from || d == to }), to)
 			moved = append(moved, id)
 		}
@@ -356,19 +363,13 @@ func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (wr
 			s.tasks[taskID], s.events = before, s.events[:rows]
 		}
 	}()
-	// a draw of nothing is weighed against no bound, nor one whose identity
-	// key a row holds already, as PGStore's drawFits
-	weighed := !d.amount().IsZero() && (d.Event.IdentityKey == "" || !slices.ContainsFunc(s.events, func(e Event) bool { return e.IdentityKey == d.Event.IdentityKey }))
-	if weighed && d.Rung <= 1 {
-		drawn, _ := s.CardDrawn(ctx, taskID)
-		if !fitsIn(drawn.Plus(d.amount()), d.CardBound) {
-			return false, &DrawBoundError{Card: true, Left: d.CardBound.Minus(drawn)}
-		}
-	}
-	if weighed && d.Rung <= 2 {
-		drawn, _ := s.PoolDrawn(ctx, d.Event.Repository, time.Now())
-		if !fitsIn(drawn.Plus(d.amount()), d.Pool) {
-			return false, &DrawBoundError{Left: d.Pool.Minus(drawn)}
+	// a draw whose identity key a row holds already is weighed against no
+	// bound, as PGStore's drawFits
+	if d.Event.IdentityKey == "" || !slices.ContainsFunc(s.events, func(e Event) bool { return e.IdentityKey == d.Event.IdentityKey }) {
+		cardDrawn, _ := s.CardDrawn(ctx, taskID)
+		poolDrawn, _ := s.PoolDrawn(ctx, d.Event.Repository, time.Now())
+		if e := newDrawBound(d.Rung, d.amount(), d.Need, d.Lines, d.CardBound.Minus(cardDrawn), d.Pool.Minus(poolDrawn)); e != nil {
+			return false, e
 		}
 	}
 	if d.Raise != 0 {
@@ -586,7 +587,7 @@ func (s *fakeStore) PlanClosed(ctx context.Context, plan string) (time.Time, boo
 func (s *fakeStore) HeldPlanCards(ctx context.Context, repository string) ([]Task, error) {
 	var out []Task
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.Source == SourcePlan && t.Status == "waiting-human" && t.Gate == "approval" {
+		if t.Repository == repository && t.PlanCard() && t.Status == "waiting-human" && t.Gate == "approval" {
 			out = append(out, t)
 		}
 	}
@@ -603,9 +604,13 @@ func (s *fakeStore) cardMerged(c Task) bool {
 	return c.MergeCommit != "" || slices.ContainsFunc(s.events, func(e Event) bool { return e.TaskID == c.ID && e.Kind == "pull_request_merged" })
 }
 
+// holdsKey is planCardRow with its key: a plan's card (Task.PlanCard)
+// that holds its key.
+func holdsKey(c Task) bool { return c.PlanCard() && c.PlanKey != "" }
+
 func (s *fakeStore) PlanMerged(ctx context.Context, plan string) (bool, error) {
 	for _, c := range s.tasks {
-		if c.Parent == plan && c.Source == SourcePlan && c.PlanKey != "" && s.cardMerged(c) {
+		if c.Parent == plan && holdsKey(c) && s.cardMerged(c) {
 			return true, nil
 		}
 	}
@@ -615,8 +620,9 @@ func (s *fakeStore) PlanMerged(ctx context.Context, plan string) (bool, error) {
 func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
 	groups := map[string]*Group{}
 	merged := map[string]bool{}
+	newest := map[[2]string]Task{}
 	for _, c := range s.tasks {
-		if _, closed := s.closed[c.Parent]; c.Source != SourcePlan || c.Parent == "" || c.PlanKey == "" || closed {
+		if _, closed := s.closed[c.Parent]; !holdsKey(c) || closed {
 			continue
 		}
 		g := groups[c.Parent]
@@ -625,7 +631,10 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 			g = &Group{Plan: p.ID, Issue: p.IssueNumber, Repository: p.Repository, Children: map[string]int{}}
 			groups[c.Parent] = g
 		}
-		g.Children[c.Status]++
+		key := [2]string{c.Parent, c.PlanKey}
+		if n, ok := newest[key]; !ok || cmp.Or(c.CreatedAt.Compare(n.CreatedAt), strings.Compare(c.ID, n.ID)) > 0 {
+			newest[key] = c
+		}
 		if !s.cardMerged(c) {
 			continue
 		}
@@ -633,6 +642,9 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 		if c.FinishedAt != nil && (g.FirstMerge.IsZero() || c.FinishedAt.Before(g.FirstMerge)) {
 			g.FirstMerge = *c.FinishedAt
 		}
+	}
+	for _, c := range newest {
+		groups[c.Parent].Children[c.Status]++
 	}
 	out := map[string][]Group{}
 	for plan, g := range groups {
@@ -679,11 +691,42 @@ func (s *fakeStore) PlansBetweenRounds(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
+func (s *fakeStore) PlansAwaitingCriteria(ctx context.Context) ([]string, error) {
+	var out []string
+	for id, t := range s.tasks {
+		ranOnMain := slices.ContainsFunc(s.events, func(e Event) bool {
+			return e.TaskID == id && e.Kind == EventCriteriaGateRun && fmt.Sprint(e.Detail["pr"]) == "0"
+		})
+		if _, closed := s.closed[id]; t.Status != "done" && t.Status != "failed" && !(t.Status == "closed" && ranOnMain) || closed {
+			continue
+		}
+		rev, ok, err := s.PlanRevision(ctx, id, 0)
+		if err != nil {
+			return nil, err
+		}
+		var p Plan
+		if !ok || json.Unmarshal(rev.Plan, &p) != nil || len(p.Criteria) == 0 || len(p.Outline) > 0 {
+			continue
+		}
+		cards, _ := s.PlanCards(ctx, id)
+		open := false
+		for _, c := range s.tasks {
+			open = open || c.Parent == id && holdsKey(c) && !Final(c.Status) && c.Status != "merged"
+		}
+		if _, filed := integrationCardOf(cards, p); !filed || open {
+			continue
+		}
+		out = append(out, id)
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
 func (s *fakeStore) QueuedPlans(ctx context.Context, repository string) ([]int64, error) {
 	var out []int64
 	for _, c := range s.tasks {
 		queued := c.Gate == GateMergeQueue || c.Gate == GateApproval || slices.ContainsFunc(s.queue, func(e queueEntry) bool { return e.task == c.ID })
-		if issue := s.tasks[c.Parent].IssueNumber; c.Repository == repository && c.Source == SourcePlan && c.Parent != "" && c.PlanKey != "" &&
+		if issue := s.tasks[c.Parent].IssueNumber; c.Repository == repository && holdsKey(c) &&
 			c.Status == "in-review" && queued && !slices.Contains(out, issue) {
 			out = append(out, issue)
 		}
@@ -1131,7 +1174,11 @@ func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string
 		t.FinishedAt = &now
 		if Final(to) {
 			s.finished[id] = now
-			t.Gate, t.GateSince = "", nil
+			if t.Hold != nil {
+				s.events = append(s.events, Event{Kind: EventCardHoldEnded, TaskID: id, Repository: t.Repository, IssueNumber: t.IssueNumber,
+					Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"reason": t.Hold.Reason, "card_status": to}})
+			}
+			t.Gate, t.GateSince, t.Hold = "", nil, nil
 		}
 	} else {
 		t.FinishedAt = nil
@@ -1157,12 +1204,53 @@ func (s *fakeStore) SetAdmitted(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
+	if t.AdmittedAt == nil && t.Hold != nil {
+		return errHeld
+	}
 	if t.AdmittedAt == nil {
 		now := time.Now()
 		t.AdmittedAt, t.QueueReason, t.QueueSince = &now, "", nil
 		s.tasks[id] = t
 	}
 	return nil
+}
+
+// SetCardHold mirrors Postgres: a bound agent card queued and never
+// admitted or resumed, or in waiting-deps on a dependency that has not
+// ended, takes the hold.
+func (s *fakeStore) SetCardHold(ctx context.Context, id string, h CardHold) (bool, error) {
+	t, ok := s.tasks[id]
+	live := slices.ContainsFunc(s.deps[id], func(d string) bool { return !Final(s.tasks[d].Status) })
+	if !ok || !t.Holdable() || t.Status == "waiting-deps" && !live {
+		return false, nil
+	}
+	t.Hold = &h
+	s.tasks[id] = t
+	return true, nil
+}
+
+// EndCardHold mirrors Postgres: any hold that holds the card for release
+// "", else only one whose release card is release.
+func (s *fakeStore) EndCardHold(ctx context.Context, id, release string) (bool, error) {
+	t, ok := s.tasks[id]
+	if !ok || !t.Held() || release != "" && t.Hold.Release != release {
+		return false, nil
+	}
+	t.Hold = nil
+	s.tasks[id] = t
+	return true, nil
+}
+
+// HeldOn mirrors Postgres: the cards a hold keeps until release, by id.
+func (s *fakeStore) HeldOn(ctx context.Context, release string) ([]Task, error) {
+	var out []Task
+	for _, t := range s.tasks {
+		if t.Held() && t.Hold.Release == release {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b Task) int { return strings.Compare(a.ID, b.ID) })
+	return out, nil
 }
 
 // SetQueueReason mirrors Postgres: a reason of a new kind restarts
@@ -1291,7 +1379,7 @@ func (s *fakeStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (
 			return have, false, nil
 		}
 		moved := have
-		moved.Kind, moved.Status, moved.Gate, moved.GateSince, moved.Track, moved.Process = "human", "waiting-human", "", nil, "", ""
+		moved.Kind, moved.Status, moved.Gate, moved.GateSince, moved.Track, moved.Process, moved.Hold = "human", "waiting-human", "", nil, "", "", nil
 		s.tasks[t.ID] = moved
 		if _, err := s.Record(ctx, ask.Event(t)); err != nil {
 			s.tasks[t.ID] = have
@@ -1318,7 +1406,7 @@ func (s *fakeStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (
 
 func (s *fakeStore) SwitchToPlan(ctx context.Context, id string, capabilities []string) (bool, error) {
 	t, ok := s.tasks[id]
-	if !ok || t.Track != policy.TrackDirect || t.Source == SourcePlan || t.MergeCommit != "" || !slices.Contains(switchableStatuses, t.Status) {
+	if !ok || t.Track != policy.TrackDirect || t.Source == SourcePlan || t.PlanKey != "" || t.MergeCommit != "" || !slices.Contains(switchableStatuses, t.Status) {
 		return false, nil
 	}
 	t.Track, t.RequiredCapabilities, t.PRNumber = policy.TrackPlan, capabilities, 0
@@ -1369,7 +1457,7 @@ func (s *fakeStore) ResetTaskUsage(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
-	t.Usage = TaskUsage{}
+	t.Usage = TaskUsage{ExtraLines: t.Usage.ExtraLines}
 	s.tasks[id] = t
 	return nil
 }
@@ -3026,8 +3114,8 @@ func TestPGStore(t *testing.T) {
 	if err := s.ResetTaskUsage(ctx, "t1"); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, _ := s.Task(ctx, "t1"); got.Usage != (TaskUsage{}) {
-		t.Fatalf("usage after the reset = %+v, want every counter zero, the raises too", got.Usage)
+	if got, _, _ := s.Task(ctx, "t1"); got.Usage != (TaskUsage{ExtraLines: 150}) {
+		t.Fatalf("usage after the reset = %+v, want every counter zero but the line raise of 150", got.Usage)
 	}
 	// t1 holds 10 EUR: a write that read 1000 cents sets the budget, one
 	// that read 200 sets the size and leaves it
@@ -3511,7 +3599,8 @@ func TestPGStoreTaskImage(t *testing.T) {
 
 // SwitchToPlan moves a running direct card that did not merge to the plan
 // track with the planner's class, once, and drops its open pull request's
-// number; a merged card, a plan's card and an ended card stay as they are.
+// number; a merged card, a plan's card, the successor that carries a plan
+// card's key and an ended card stay as they are.
 func TestSwitchToPlan(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
@@ -3539,6 +3628,10 @@ func TestSwitchToPlan(t *testing.T) {
 		Parent: "t-plan", PlanKey: "ui", RequiredCapabilities: coder}); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.CreateTask(ctx, Task{ID: "t-succ", Status: "running", Track: "direct", Repository: "sf/r", Kind: "agent", Source: SourceSuccessor,
+		Parent: "t-plan", PlanKey: "api", RequiredCapabilities: coder}); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.SetTaskMergeCommit(ctx, "t-merged", "abc"); err != nil {
 		t.Fatal(err)
 	}
@@ -3546,7 +3639,7 @@ func TestSwitchToPlan(t *testing.T) {
 		id       string
 		switched bool
 		pr       int64
-	}{{"t-run", true, 0}, {"t-pr", true, 0}, {"t-merged", false, 4}, {"t-card", false, 0}, {"t-done", false, 0}, {"t-run", false, 0}} {
+	}{{"t-run", true, 0}, {"t-pr", true, 0}, {"t-merged", false, 4}, {"t-card", false, 0}, {"t-succ", false, 0}, {"t-done", false, 0}, {"t-run", false, 0}} {
 		switched, err := s.SwitchToPlan(ctx, tc.id, planner)
 		if err != nil {
 			t.Fatalf("SwitchToPlan(%s): %v", tc.id, err)
@@ -3563,6 +3656,50 @@ func TestSwitchToPlan(t *testing.T) {
 			t.Fatalf("SwitchToPlan(%s) = %v; track %q, capabilities %q, pull request %d; want %v, %s, %q, %d",
 				tc.id, switched, got.Track, got.RequiredCapabilities, got.PRNumber, tc.switched, track, caps, tc.pr)
 		}
+	}
+}
+
+// HeldPlanCards are the repository's plan cards held at their approval,
+// a plan card's successor among them, as its key's card: a running card,
+// a successor without a key and another repository's card are not.
+func TestHeldPlanCards(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-plan", Status: "running", Repository: "sf/r", Kind: "agent", Source: "webhook", Track: "plan"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []Task{
+		{ID: "t-card", Source: SourcePlan, PlanKey: "api"},
+		{ID: "t-succ", Source: SourceSuccessor, PlanKey: "ui"},
+		{ID: "t-run", Source: SourcePlan, PlanKey: "cli"},
+		{ID: "t-loose", Source: SourceSuccessor},
+		{ID: "t-other", Source: SourcePlan, PlanKey: "ops", Repository: "sf/q"},
+	} {
+		c.Status, c.Kind, c.Track, c.Parent, c.Repository = "running", "agent", "direct", "t-plan", cmp.Or(c.Repository, "sf/r")
+		if err := s.CreateTask(ctx, c); err != nil {
+			t.Fatalf("CreateTask %s: %v", c.ID, err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'waiting-human', gate = 'approval' WHERE id IN ('t-card', 't-succ', 't-loose', 't-other')`); err != nil {
+		t.Fatal(err)
+	}
+	held, err := s.HeldPlanCards(ctx, "sf/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, k := range held {
+		ids = append(ids, k.ID)
+	}
+	if !slices.Equal(ids, []string{"t-card", "t-succ"}) {
+		t.Fatalf("HeldPlanCards = %q, want t-card and t-succ", ids)
 	}
 }
 
@@ -5093,6 +5230,24 @@ func (s *fakeStore) ClosePlanWithWaivers(ctx context.Context, plan, by string, p
 	return nil
 }
 
+func (s *fakeStore) PutGateVerdicts(ctx context.Context, writer, taskID, source string, rows []CriterionVerdict, drop []string) error {
+	if len(rows) == 0 && len(drop) == 0 {
+		return nil
+	}
+	if w, ok := s.tasks[writer]; writer != "" && ok && Final(w.Status) && !(w.Status == "done" && w.MergeCommit != "") {
+		return ErrCardEnded
+	}
+	if err := s.PutCriteriaVerdicts(ctx, taskID, source, FactoryDecider, rows); err != nil {
+		return err
+	}
+	for _, id := range drop {
+		if err := s.DeleteVerdictsButApprover(ctx, taskID, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *fakeStore) DeleteVerdictsButApprover(ctx context.Context, taskID, criterion string) error {
 	if s.criteriaVerdicts == nil {
 		return nil
@@ -5109,8 +5264,10 @@ func (s *fakeStore) CriteriaVerdicts(ctx context.Context, taskID string) ([]Crit
 
 func (s *fakeStore) CriteriaVerdictTasks(ctx context.Context) ([]string, error) {
 	var ids []string
-	for id := range s.criteriaVerdicts {
-		ids = append(ids, id)
+	for id, rows := range s.criteriaVerdicts {
+		if len(rows) > 0 {
+			ids = append(ids, id)
+		}
 	}
 	return ids, nil
 }

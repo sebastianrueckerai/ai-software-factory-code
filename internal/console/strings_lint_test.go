@@ -186,7 +186,7 @@ func pressedRefusals(r *rig, ck *http.Cookie, csrf, where, opened string) []show
 func galleryTexts(t *testing.T, e galleryEntry) []shownText {
 	r := newRig(t)
 	r.fg.setPullHead(labPull, labPullHead)
-	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
 	ck, s := r.loggedIn(t)
 	target := e.Seat(r)
 	name := e.Group + "/" + e.Kind

@@ -187,17 +187,22 @@ func (r *Runner) nudge(ctx context.Context, t Task, s sessionSpec, sup *Supervis
 // MessageSession hands text from user, a writer of the task's project, to
 // the task's running session the way the supervisor's message goes (6.6):
 // the worker's POST /message, recorded as a message step from user. A task
-// with no session running in this factoryd answers ErrNoLiveSession, the
+// whose session is in its start check-in answers a SessionStartingError,
+// one with no session running in this factoryd ErrNoLiveSession, the
 // worker's answers are messageWorker's.
 func (r *Runner) MessageSession(ctx context.Context, taskID, user, text string) error {
 	r.liveMu.Lock()
 	ls, ok := r.live[taskID]
+	since, starting := r.starting[taskID]
 	basics := ok && !ls.basics
 	if basics {
 		ls.basics = true
 	}
 	r.liveMu.Unlock()
-	if !ok {
+	switch {
+	case !ok && starting:
+		return &SessionStartingError{Since: since}
+	case !ok:
 		return ErrNoLiveSession
 	}
 	w := ls.worker
@@ -215,7 +220,11 @@ func (r *Runner) MessageSession(ctx context.Context, taskID, user, text string) 
 // session's first message, the basics preamble that tells the session
 // what it is.
 func sessionMessage(taskID, user, text string, basics bool) string {
-	msg := "A message from " + user + ", a writer of this project: " + text
+	from := user + ", a writer of this project"
+	if user == ChatUser {
+		from = "the project agent"
+	}
+	msg := "A message from " + from + ": " + text
 	if basics {
 		msg = "You are the agent session of card " + taskID + " in the AI software factory. " + manual.Loop +
 			". When you end, the factory commits your working tree, pushes it and opens the pull request. " +

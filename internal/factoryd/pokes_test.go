@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
@@ -28,6 +29,13 @@ func TestPokeOf(t *testing.T) {
 		return Event{Kind: kind, TaskID: "t-1", Actor: "sebastian", Detail: d}
 	}
 	const named = "#603 (Session store: pick the table's store)"
+	stranded := Event{Kind: EventCardHoldStranded, TaskID: "t-1", Detail: map[string]any{"release_task": "t-9", "release": "#31 (plan #30)", "release_issue": float64(31), "status": "closed"}}
+	failedRelease := Event{Kind: EventCardHoldStranded, TaskID: "t-1", Detail: map[string]any{"release_task": "t-9", "release": "#31 (plan #30)", "release_issue": float64(31), "status": "failed"}}
+	heldOn := func(release string) Task {
+		c := card
+		c.Status, c.Hold = "queued", &CardHold{Reason: "after the pg split", Release: release, By: "sebastian"}
+		return c
+	}
 	for _, tt := range []struct {
 		name string
 		e    Event
@@ -122,6 +130,14 @@ func TestPokeOf(t *testing.T) {
 			ChatMessage{Kind: MessagePoke, Content: "The agent gave " + named + " one more session.", Decider: "assisted level · granted by the agent"}, true},
 		{"the agent's filing at manual", agentDid(EventCardFiled, "manual", map[string]any{}), card, ChatMessage{}, false},
 		{"the member's retry", Event{Kind: EventCardRetried, TaskID: "t-1", Detail: map[string]any{"autonomy": "assisted", "decider": "member"}}, card, ChatMessage{}, false},
+		{"a stranded hold", stranded, heldOn("t-9"),
+			ChatMessage{Kind: MessagePoke, Content: "#603 - Session store: pick the table's store stays on hold: its release card #31 (plan #30) ended closed and releases nothing. " +
+				"Release the hold, or hold it again with another release card."}, true},
+		{"a hold whose release card failed", failedRelease, heldOn("t-9"),
+			ChatMessage{Kind: MessagePoke, Content: "#603 - Session store: pick the table's store stays on hold: its release card #31 (plan #30) ended failed and releases nothing. " +
+				"Retry #31, whose retry takes the hold over, or release the hold, or hold it again with another release card."}, true},
+		{"a hold released before the pass", stranded, func() Task { c := card; c.Status = "queued"; return c }(), ChatMessage{}, false},
+		{"a hold a retry's card took over", stranded, heldOn("t-9-r1"), ChatMessage{}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got, ok := PokeOf(tt.e, tt.t, Task{})
@@ -757,6 +773,87 @@ func TestForHumanNamesTheAnswersByTheirLabels(t *testing.T) {
 	} {
 		if got := ForHuman(tc.in); got != tc.want {
 			t.Errorf("ForHuman(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// A hold whose release card ends failed or closed releases nothing, and the
+// human hears it once: #31 of plan #30 fails, ending twice as a retried end
+// may, and each inbox the project tells gets one poke about held card #6,
+// naming #31, its plan, how it ended and the two ways on; #8, held on
+// another card, and the done end of #33, a release card too, poke nobody,
+// and no case opens. The poke is an inform, delivered at needs-you.
+func TestAStrandedHoldPokesTheHumanOnce(t *testing.T) {
+	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_stranded"))
+	if err != nil {
+		t.Skipf("no database: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.db.Exec(`TRUNCATE chat_messages, chat_conversations, chat_seen, chat_poke_cursor, events, tasks, cases CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	card := func(id string, n int64, status string) Task {
+		return Task{ID: id, Kind: "agent", Repository: "sf/code", IssueNumber: n, Status: status, Objective: "Card " + id, Track: "direct"}
+	}
+	plan := card("t-pl", 30, "done")
+	plan.Track = policy.TrackPlan
+	rel := card("t-rel", 31, "running")
+	rel.Source, rel.Parent, rel.PlanKey = SourcePlan, "t-pl", "split"
+	for _, k := range []Task{plan, rel, card("t-rel2", 33, "running"), card("t-held", 6, "queued"), card("t-held2", 8, "queued")} {
+		if err := s.CreateTask(ctx, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, release := range map[string]string{"t-held": "t-rel", "t-held2": "t-rel2"} {
+		if ok, err := s.SetCardHold(ctx, id, CardHold{Reason: "after the pg split", Release: release, By: "sebastian", At: at}); err != nil || !ok {
+			t.Fatalf("hold %s: %v, %v", id, ok, err)
+		}
+	}
+	tree := policy.Tree{Projects: map[string]policy.ProjectConfig{"code": {Repository: "sf/code", Notify: []string{"sebastian"}}}}
+	p := &Poker{Store: s, Current: func() policy.Version { return policy.Version{Tree: tree} }, Line: &busyLine{busy: map[string]bool{}, landed: map[string][]int64{}}}
+	if err := p.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tl := &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}
+	for id, final := range map[string]string{"t-rel": "failed", "t-rel2": "done"} {
+		if err := s.TransitionTask(ctx, id, []string{"running"}, final); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		taskEnded(ctx, tl, s, nil, nil, rel, "failed", "the checks stayed red")
+	}
+	rel2, _, _ := s.Task(ctx, "t-rel2")
+	taskEnded(ctx, tl, s, nil, nil, rel2, "done", "")
+	if err := p.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	inbox, err := s.EnsureInbox(ctx, "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.ChatMessages(ctx, "sf/code", "sebastian", inbox, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var held []ChatMessage
+	for _, m := range rows {
+		if m.BirthKind == EventCardHoldStranded {
+			held = append(held, m)
+		}
+	}
+	const want = "#6 - Card t-held stays on hold: its release card #31 (plan #30) ended failed and releases nothing. Retry #31, whose retry takes the hold over, or release the hold, or hold it again with another release card."
+	if len(held) != 1 || held[0].Kind != MessagePoke || held[0].TaskID != "t-held" || held[0].Content != want || held[0].Repeats != 0 || len(held[0].Choices) != 0 {
+		t.Fatalf("the hold's pokes = %+v, want one inform about #6: %q", held, want)
+	}
+	if level := deliveryLevel(held[0]); level != LevelNeedsYou {
+		t.Errorf("the poke's delivery level = %q, want needs-you", level)
+	}
+	for _, id := range []string{"t-held", "t-held2"} {
+		if open, err := s.OpenCasesOf(ctx, id); err != nil || len(open) != 0 {
+			t.Errorf("%s's open cases = %+v, %v, want none", id, open, err)
 		}
 	}
 }

@@ -2715,6 +2715,156 @@ func TestPlanLoopAnswerWithAChangeRequestGoesBackToThePlanner(t *testing.T) {
 	}
 }
 
+// waitingRevision is the plan harness on a run healed while revision 3
+// waits on its answers (comment 702), its usage u: RequestPlan(3) answers
+// the revision answered, or filed when confirmed, and the next planner
+// session files revision 4. grants are RecordGrant's calls as "by draw
+// key". The issue closes at 3h.
+func waitingRevision(t *testing.T, u TaskUsage, confirmed bool) (*planHarness, *[]string) {
+	h := newPlanHarness(t, PlanResult{Revision: 4, SHA256: "sha-4"})
+	h.state = RunState{Status: "waiting-human", Usage: u}
+	h.open = []int{0}
+	h.requestPlan = func(_ string, revision int) (PlanRef, error) {
+		ref := PlanRef{Revision: revision, SHA256: "sha-" + strconv.Itoa(revision)}
+		switch {
+		case revision == 0:
+			return PlanRef{Revision: 3, SHA256: "sha-3", Comment: 702}, nil
+		case revision == 3 && !confirmed:
+			ref.Answered = true
+		default:
+			ref.Filed = []int64{2, 3, 4}
+		}
+		return ref, nil
+	}
+	var grants []string
+	h.env.OnActivity(ActivityRecordGrant, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, by string, d policy.Draw, key string) error {
+			grants = append(grants, fmt.Sprintf("%s %+v %s", by, d, key))
+			return nil
+		})
+	h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	return h, &grants
+}
+
+// A person's change request on a revision whose planner used its session
+// cap is the human's answer: it buys the planner session it asks for as
+// the person's grant, and no cap ask opens.
+func TestPlanAnswerByAHumanAtTheCapGrantsASession(t *testing.T) {
+	h, grants := waitingRevision(t, TaskUsage{Attempts: 3}, false)
+	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "sebastian", Revision: 3, Index: 1})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 4 filed 3 cards" {
+		t.Fatalf("finals %v; want revision 4 filed", h.finals)
+	}
+	if len(h.plans) != 1 || len(h.escalated) != 0 || h.usage[len(h.usage)-1].ExtraAttempts != 1 {
+		t.Fatalf("plans %q, escalated %q, usage %+v; want one planner session, no ask, one session granted", h.plans, h.escalated, h.usage)
+	}
+	if want := []string{fmt.Sprintf("sebastian %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(*grants, want) {
+		t.Fatalf("grants %q, want %q", *grants, want)
+	}
+}
+
+// The project agent's change request on such a revision is no person's:
+// it buys nothing, the session cap asks a human and no planner session
+// runs.
+func TestPlanAnswerByTheAgentAtTheCapAsks(t *testing.T) {
+	h, grants := waitingRevision(t, TaskUsage{Attempts: 3}, false)
+	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: ChatUser, Revision: 3, Index: 1})
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("finals %v; want closed", h.finals)
+	}
+	if want := []string{CapReachedLadder + "\nlast: no session answered a plan"}; len(h.plans) != 0 || !slices.Equal(h.escalated, want) || len(*grants) != 0 {
+		t.Fatalf("plans %q, escalated %q, grants %q; want no session, the cap ask %q, no grant", h.plans, h.escalated, *grants, want)
+	}
+}
+
+// A person's comment while the revision waits asks for changes as an
+// answer does: at the session cap it buys the session that takes it.
+func TestPlanCommentByAHumanAtTheCapGrantsASession(t *testing.T) {
+	h, grants := waitingRevision(t, TaskUsage{Attempts: 3}, false)
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "split the API", Comment: 710})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 4 filed 3 cards" {
+		t.Fatalf("finals %v; want revision 4 filed", h.finals)
+	}
+	if want := [][]string{{"writer alice asked for changes to the plan: split the API"}}; !reflect.DeepEqual(h.plans, want) || len(h.escalated) != 0 {
+		t.Fatalf("plans %q, escalated %q; want %q and no ask", h.plans, h.escalated, want)
+	}
+	if want := []string{fmt.Sprintf("alice %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(*grants, want) {
+		t.Fatalf("grants %q, want %q", *grants, want)
+	}
+}
+
+// A person's Confirm at the session cap files the revision's cards: no
+// planner session, so no grant.
+func TestPlanConfirmAtTheCapFilesWithNoSession(t *testing.T) {
+	h, grants := waitingRevision(t, TaskUsage{Attempts: 3}, true)
+	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "sebastian", Revision: 3, Index: 1})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 3 filed 3 cards" {
+		t.Fatalf("finals %v; want revision 3 filed", h.finals)
+	}
+	if len(h.plans) != 0 || len(h.escalated) != 0 || len(*grants) != 0 ||
+		slices.ContainsFunc(h.usage, func(u TaskUsage) bool { return u.ExtraAttempts != 0 || u.ExtraTime != 0 }) {
+		t.Fatalf("plans %q, escalated %q, grants %q, usage %+v; want no session, no ask, nothing granted", h.plans, h.escalated, *grants, h.usage)
+	}
+}
+
+// A person's answer to a revision whose planner has sessions left but no
+// agent time, its automatic session used, buys the agent time a session
+// needs: the answer's slice, a quarter of the 20 minutes.
+func TestPlanAnswerByAHumanOutOfTimeGrantsTime(t *testing.T) {
+	h, grants := waitingRevision(t, TaskUsage{Attempts: 1, AgentTime: 25 * time.Minute, RetryTime: 5 * time.Minute}, false)
+	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "sebastian", Revision: 3, Index: 1})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 4 filed 3 cards" {
+		t.Fatalf("finals %v; want revision 4 filed", h.finals)
+	}
+	if len(h.plans) != 1 || len(h.escalated) != 0 {
+		t.Fatalf("plans %q, escalated %q; want one planner session, no ask", h.plans, h.escalated)
+	}
+	if want := []string{fmt.Sprintf("sebastian %+v %s", policy.Draw{AgentTime: 5 * time.Minute}, "card_extended default-test-run-id 0 5m0s")}; !slices.Equal(*grants, want) {
+		t.Fatalf("grants %q, want %q", *grants, want)
+	}
+}
+
+// A plan run at its session cap whose revision wait sebastian's answer
+// ended, recorded on a dev server before the plan-answer-grant change: the
+// answer bought nothing and the loop asked the cap. It carries no
+// plan-answer-grant marker, so GetVersion answers DefaultVersion there and
+// the replay schedules the same activities: the cap ask and no grant.
+func TestWorkflowReplaysAPlanAnswerAtTheCapRecordedBeforePlanAnswerGrant(t *testing.T) {
+	base := loadHistory(t, "testdata/devserver-plan-answer-at-cap.json")
+	var recorded []string
+	answered := false
+	for _, e := range base.Events {
+		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"plan-answer-grant"` {
+			t.Fatal("the recording holds the plan-answer-grant marker: it is no run from before")
+		}
+		if name := e.GetActivityTaskScheduledEventAttributes().GetActivityType().GetName(); name != "" {
+			recorded = append(recorded, name)
+		}
+		if s := e.GetWorkflowExecutionSignaledEventAttributes(); s.GetSignalName() == SignalPlanAnswered {
+			var sig TaskSignal
+			if err := json.Unmarshal(s.GetInput().GetPayloads()[0].GetData(), &sig); err != nil {
+				t.Fatal(err)
+			}
+			answered = sig.Author == "sebastian" && sig.Revision == 3
+		}
+	}
+	if !answered {
+		t.Fatal("the recording holds no answer of sebastian's to revision 3")
+	}
+	want := []string{ActivityTaskConfig, ActivityEnsureIssue, ActivityReconcile, ActivityReadUsage, ActivityAdmitResume, ActivitySetState,
+		ActivityReplanStopped, ActivityRunPlan, ActivityRecordUsage, ActivityReplanStopped, ActivityRequestPlan, ActivityReadUsage,
+		ActivityRecordStep, ActivityOpenPlanQuestions, ActivityRequestPlan, ActivityReadUsage, ActivityOpenTrip,
+		ActivityRecordStep, ActivityEndCase, ActivityFinish}
+	if !slices.Equal(recorded, want) {
+		t.Fatalf("the recording schedules %q; want one planner session, the revision's wait, sebastian's answer and the cap ask", recorded)
+	}
+	var got []string
+	replaySplice(t, base.Events, &activitiesSeen{got: &got})
+	if !slices.Equal(got, recorded) {
+		t.Fatalf("the replay scheduled %q, the recording %q", strings.Join(got, " "), strings.Join(recorded, " "))
+	}
+}
+
 // A healed run whose newest revision asks no question files its cards and
 // ends done at once; one whose questions all carry their answers (the last
 // answer landed while no workflow ran) goes back to the planner, whose
@@ -2802,6 +2952,39 @@ func TestAPlanCardItsPlanNoLongerHoldsKeepsTheFeatureGuide(t *testing.T) {
 	}
 	if env := podEnv(kube.podAt(0)); env["CARD_ROLE"] != RoleFeature || env["DIRECTORIES"] != "" {
 		t.Fatalf("CARD_ROLE %q DIRECTORIES %q, want feature and none", env["CARD_ROLE"], env["DIRECTORIES"])
+	}
+}
+
+// The successor that carries a plan card's key is that key's card: its
+// session carries the plan's spec, the key's role and its plan row's
+// directories, and its clone holds the plan's salvage branch, which a
+// revision's card that lands work again applies from.
+func TestASuccessorsSessionCarriesItsKeysSpecAndSalvage(t *testing.T) {
+	ctx := context.Background()
+	card := Task{ID: "t1", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec", Repository: "sf/r", SHA: "abc123",
+		IssueNumber: 4, Source: SourceSuccessor, Parent: "t-plan", PlanKey: "integration", Author: "sebastian", AuthorWriter: true,
+		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "Integration: acceptance tests\n\nTurn A1 to A9 into tests."}
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, card, kube, &fakeObjectStore{})
+	hub.branches = map[string]string{"salvage/t-plan": "s1"}
+	if err := store.CreateTask(ctx, Task{ID: "t-plan", Kind: "agent", Status: "done", Repository: "sf/r", IssueNumber: 1,
+		Objective: "Link shortener\n\nBuild a link shortener, cc @ops.", Track: policy.TrackPlan}); err != nil {
+		t.Fatal(err)
+	}
+	raw, sha, _ := planSHA(testPlan())
+	if _, err := store.AddPlanRevision(ctx, "t-plan", raw, sha); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil, resultLine(true, "built")); err != nil {
+		t.Fatal(err)
+	}
+	env := podEnv(kube.podAt(0))
+	spec := "Link shortener\n\nBuild a link shortener, cc @ops.\n\nThe plan's summary: The foundation first, then links and redirects, then the acceptance tests."
+	if env["SPEC"] != spec || env["CARD_ROLE"] != RoleIntegration || env["DIRECTORIES"] != `["acceptance/","internal/links"]` {
+		t.Fatalf("SPEC %q CARD_ROLE %q DIRECTORIES %q", env["SPEC"], env["CARD_ROLE"], env["DIRECTORIES"])
+	}
+	if clone := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "clone")); clone["BRANCHES"] != "salvage/t-plan:salvage" {
+		t.Fatalf("clone BRANCHES %q, want the plan's salvage branch", clone["BRANCHES"])
 	}
 }
 
@@ -5261,6 +5444,120 @@ func TestLandsAgainSessionClonesTheSalvage(t *testing.T) {
 			clone := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "clone"))
 			if clone["BRANCHES"] != tc.want || podEnv(kube.podAt(0))["BRANCHES"] != "" {
 				t.Fatalf("clone BRANCHES %q, the agent's %q; want %q and none", clone["BRANCHES"], podEnv(kube.podAt(0))["BRANCHES"], tc.want)
+			}
+		})
+	}
+}
+
+// metRig is plan t-plan, done, whose round-2 card a (issue 31) ended
+// failed and, when end is not empty, was cut into a successor of status
+// end (issue 33), with the round-2 plan whose card d depends on a: the
+// state of a delta card filed on a key its successor carried on.
+func metRig(t *testing.T, end string) (*Runner, *fakeStore, *planForgejo, func(revision int) Task) {
+	t.Helper()
+	ctx := context.Background()
+	pinned := fixtureVersion(t)
+	r, store, _, fj := newPlanRunner(t, testPlan())
+	r.cfg.Policy = func() policy.Version { return pinned }
+	r.cfg.Workflows = &fakeWorkflows{}
+	plan := store.tasks["t-plan"]
+	plan.Status = "done"
+	store.tasks["t-plan"] = plan
+	card := func(id, source, status string, issue int64) Task {
+		return Task{ID: id, Kind: "agent", Track: policy.TrackDirect, Source: source, Parent: "t-plan", PlanKey: "a",
+			Repository: "linkshort/linkshort", IssueNumber: issue, SHA: "b0", Status: status, PlanRevision: 1}
+	}
+	if err := store.CreateTask(ctx, card("t-a", SourcePlan, "failed", 31)); err != nil {
+		t.Fatal(err)
+	}
+	if end != "" {
+		store.tasks[SuccessorID("t-a")] = card(SuccessorID("t-a"), SourceSuccessor, end, 33)
+	}
+	p := Plan{Summary: "delta", Round: 2, Cards: []PlanCard{
+		{Key: "a", Role: RoleFeature, Title: "A", Brief: "A.", Size: "small", Round: 2, Acceptance: []PlanItem{{Text: "a works"}}},
+		{Key: "d", Role: RoleFeature, Title: "D", Brief: "D.", Size: "small", Round: 2, DependsOn: []string{"a"}, Acceptance: []PlanItem{{Text: "d works"}}},
+	}}
+	file := func(revision int) Task {
+		t.Helper()
+		plan, repo, err := r.task(ctx, "t-plan")
+		if err != nil {
+			t.Fatal(err)
+		}
+		old, err := r.oldCards(ctx, plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cards, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", p, FactoryDecider, true, revision, "", old)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cards[1].PlanKey != "d" {
+			t.Fatalf("cards = %+v", cards)
+		}
+		return cards[1]
+	}
+	return r, store, fj, file
+}
+
+// A dependency whose card failed and was cut into a successor that
+// delivered the work, done or merged, is met: d gets no edge and no
+// Forgejo dependency, its issue names the successor, it is admitted and
+// waits on nothing, the impasse pass leaves the plan done, and a refile
+// of a later revision adds nothing either.
+func TestFileChildrenMeetsADependencyItsSuccessorDelivered(t *testing.T) {
+	for _, end := range []string{"done", "merged"} {
+		t.Run(end, func(t *testing.T) {
+			ctx := context.Background()
+			r, store, fj, file := metRig(t, end)
+			var d Task
+			for revision := 2; revision <= 3; revision++ {
+				d = file(revision)
+				if got := store.deps[d.ID]; len(got) != 0 {
+					t.Errorf("revision %d: task_deps of d = %v, want none", revision, got)
+				}
+				if got := fj.issues[d.IssueNumber].deps; len(got) != 0 {
+					t.Errorf("revision %d: d's Forgejo dependencies = %v, want none", revision, got)
+				}
+			}
+			if body := fj.issues[d.IssueNumber].body; !strings.Contains(body, "\nDepends on: #31 (a, delivered by #33)\n") {
+				t.Errorf("d's issue does not name the successor that delivered a:\n%s", body)
+			}
+			if why, err := admissionWait(ctx, store, policy.Tree{}, time.Now(), d); err != nil || why != "" {
+				t.Errorf("admission = %q, %v; want no wait", why, err)
+			}
+			if st, err := r.Dependencies(ctx, d.ID); err != nil || !reflect.DeepEqual(st, DepState{}) {
+				t.Errorf("d's dependencies = %+v, %v; want none to wait on", st, err)
+			}
+			r.ImpassePass(ctx)
+			if got := replanSteps(t, r, "t-plan"); len(got) != 0 {
+				t.Errorf("the plan's replan steps %+v, want none", got)
+			}
+			if got := reopens(r); len(got) != 0 || store.tasks["t-plan"].Status != "done" {
+				t.Errorf("reopens %+v, plan %s; want the plan left done", got, store.tasks["t-plan"].Status)
+			}
+		})
+	}
+}
+
+// A dependency whose card has no successor, or whose chain ends failed,
+// closed or still running, keeps its edge on the plan card: d waits on
+// #31, and its issue names #31 alone.
+func TestFileChildrenKeepsTheEdgeOfAnUndeliveredDependency(t *testing.T) {
+	for _, end := range []string{"", "failed", "closed", "running"} {
+		t.Run(cmp.Or(end, "no successor"), func(t *testing.T) {
+			_, store, fj, file := metRig(t, end)
+			d := file(2)
+			if got := store.deps[d.ID]; !slices.Equal(got, []string{"t-a"}) {
+				t.Errorf("task_deps of d = %v, want [t-a]", got)
+			}
+			if got := fj.issues[d.IssueNumber].deps; !slices.Equal(got, []int64{31}) {
+				t.Errorf("d's Forgejo dependencies = %v, want [31]", got)
+			}
+			if body := fj.issues[d.IssueNumber].body; !strings.Contains(body, "\nDepends on: #31 (a)\n") {
+				t.Errorf("d's issue does not name #31 alone:\n%s", body)
+			}
+			if why, err := admissionWait(context.Background(), store, policy.Tree{}, time.Now(), d); err != nil || why != "waits on #31" {
+				t.Errorf("admission = %q, %v; want waits on #31", why, err)
 			}
 		})
 	}

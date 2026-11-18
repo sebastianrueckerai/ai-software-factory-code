@@ -606,8 +606,8 @@ func TestRunReportOfTheProverDryRunsTheFilingOnMain(t *testing.T) {
 		t.Fatalf("pods = %d, want the proofs pod alone", len(kube.podOrder))
 	}
 	fetch := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "fetch"))
-	if fetch["PR_REF"] != "refs/heads/main" || fetch["REPO_SHA"] != "m1" || fetch["CHECKOUT_SHA"] != "m0" {
-		t.Fatalf("fetch env = %v, want main at m1, checked out at m0", fetch)
+	if fetch["PR_REF"] != "m1" || fetch["REPO_SHA"] != "m1" || fetch["CHECKOUT_SHA"] != "m0" {
+		t.Fatalf("fetch env = %v, want main's head m1 fetched by itself, checked out at m0", fetch)
 	}
 	// the test activity has 10 minutes, so the pod gets 9 less the time spent
 	if budget, _ := strconv.Atoi(podEnv(kube.podAt(0))["PROOFS_BUDGET"]); budget > 540 || budget < 500 {
@@ -802,6 +802,26 @@ func TestProverPassOpensTheProverOnceTheFoundationIsDone(t *testing.T) {
 	}
 	if !slices.Equal(wf.started, []string{got.ID}) {
 		t.Fatalf("started = %v, want the prover once", wf.started)
+	}
+}
+
+// The prover waits on the foundation key's card: a foundation card that
+// failed into a successor that is done has the prover due, and the
+// criteria gate counts the plan's proofs as still to come.
+func TestTheProverWaitsOnTheFoundationKeysCard(t *testing.T) {
+	ctx := context.Background()
+	r, _, store := newProverRunner(t, planTask(), newFakeKube(), &fakeObjectStore{})
+	seedProver(t, store, proverPlan())
+	seedProverCards(t, store, "failed", "foundation", "sizes", "integration")
+	if err := store.CreateSuccessor(ctx, "t-foundation", Task{ID: SuccessorID("t-foundation"), Status: "done", Repository: "sf/r", Kind: "agent",
+		Source: SourceSuccessor, Parent: "t-plan", PlanKey: "foundation", Track: policy.TrackDirect}); err != nil {
+		t.Fatal(err)
+	}
+	if due, err := r.proverDue(ctx, planTask()); err != nil || !due {
+		t.Fatalf("proverDue = %v, %v; want the prover due once the foundation's successor is done", due, err)
+	}
+	if pending, err := r.proofsPending(ctx, proverTask(), nil, proverPlan()); err != nil || !pending {
+		t.Fatalf("proofsPending = %v, %v; want the proofs still to come", pending, err)
 	}
 }
 
@@ -1004,7 +1024,8 @@ func TestCarriedTestCriteriaOweTheProverNothing(t *testing.T) {
 }
 
 // The missing test of an all-carried plan asks for no proof gap: with the
-// plan's cards done and its one carried criterion's gate row unmet, the
+// plan's cards done, its integration card's pull request merged, and its
+// one carried criterion's gate row unmet, the
 // evidence naming the test, the close check asks the human only as unmet
 // work - the ordinary criteria ask - never one that names a stored-proof
 // gap.
@@ -1018,7 +1039,9 @@ func TestACarriedTestsMissingTestAsksNoProofGap(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/code", IssueNumber: 7, Track: policy.TrackPlan, Kind: "agent", Source: SourceChat, Status: "done"}
-	s.tasks["t-int"] = Task{ID: "t-int", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Kind: "agent", Track: policy.TrackDirect, Status: "done"}
+	s.tasks["t-int"] = Task{ID: "t-int", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Kind: "agent", Track: policy.TrackDirect, Status: "done",
+		PRNumber: 9, MergeCommit: "abc"}
+	mergedAtJudgedHead(s, "t-int", time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC))
 	if err := s.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
 		{Criterion: "door_open", Verdict: "unmet", Evidence: "criterion door_open: no test TestDoorOpen in ./internal/doors", Kind: CriterionTest}}); err != nil {
 		t.Fatal(err)
@@ -1027,8 +1050,45 @@ func TestACarriedTestsMissingTestAsksNoProofGap(t *testing.T) {
 	r.CriteriaPass(ctx)
 	pending, _ := s.ApprovalRequests(ctx, "pending")
 	if len(pending) != 1 || pending[0].Kind != ApprovalCriteria || pending[0].TaskID != "t-plan" ||
-		pending[0].Reason != "criteria not met with the plan's cards done: door_open" {
+		pending[0].Reason != "criteria not met once every card of the plan ended: door_open" {
 		t.Fatalf("pending = %+v, want the one unmet-work ask naming door_open", pending)
+	}
+}
+
+// The same under the plan close's rule: the integration card closed with
+// its pull request unmerged, so no row of its judges main, and the gate
+// runs on main's head m1, where the carried test is missing. Its unmet row
+// asks the one unmet-work question naming door_open, and the sweep opens
+// no prover card for the plan under a policy that runs one: a carried test
+// owes the prover nothing.
+func TestACarriedTestMissingOnMainAsksNoProofGap(t *testing.T) {
+	ctx := context.Background()
+	r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 2085, ""), func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+		return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+			{Criterion: "door_open", Verdict: "unmet", Evidence: "criterion door_open: no test TestDoorOpen in ./internal/doors", Kind: CriterionTest}})
+	})
+	r.cfg.Policy = proverPolicy
+	s.criteriaVerdicts["t-int"] = nil
+	plan := s.tasks["t-plan"]
+	plan.Track = policy.TrackPlan
+	s.tasks["t-plan"] = plan
+	newRevision(t, s, "t-plan", Plan{Summary: "s", Criteria: []PlanCriterion{{ID: "door_open", Kind: CriterionTest, Claim: "a door opens for its key",
+		Inputs: "POST /doors/1/open with key 7", Expected: "200", Suite: "internal/doors", Name: "TestDoorOpen"}},
+		Cards: []PlanCard{{Key: "foundation", Role: RoleFeature, Title: "f"}, {Key: "integration", Role: RoleIntegration, Title: "t"}}})
+	sweep(ctx, r)
+	r.CriteriaPass(ctx)
+	if !slices.Equal(*calls, []string{"t-int#0@m1:"}) {
+		t.Fatalf("gate calls %v, want the one run on main's head", *calls)
+	}
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	if len(pending) != 1 || pending[0].Kind != ApprovalCriteria || pending[0].TaskID != "t-plan" ||
+		pending[0].Reason != "criteria not met once every card of the plan ended: door_open" {
+		t.Fatalf("pending = %+v, want the one unmet-work ask naming door_open", pending)
+	}
+	for _, task := range s.tasks {
+		if task.Source == SourceProver {
+			t.Fatalf("prover card %+v, want none: the carried test owes the prover nothing", task)
+		}
 	}
 }
 

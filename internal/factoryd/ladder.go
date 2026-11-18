@@ -719,12 +719,36 @@ func (a CaseAction) preselected() map[string]any {
 	return map[string]any{"action": a.Action, "args": a.Args, "fund": a.Fund}
 }
 
+// storedDecision is a case step's decision as the run reads it back: the
+// migration moved the stored values onto the rungs' names, and a row the
+// store wrote before the change under the old name human reads through
+// the same reader as one written hand_up.
+func storedDecision(d string) string {
+	if d == "human" {
+		return RungHandUp
+	}
+	return d
+}
+
 // HandedUpBy is the hand-up of the rungs from rung from up (from rung 1 for
 // a case that climbs from rung 0 after rung 1 judged it already): the
 // newest step of one that ended handed up, with found as it climbed; nil for
 // a case no rung above 0 handed up.
 func HandedUpBy(steps []CaseStep, from int, found string) *HandUp {
 	up := &HandUp{Found: found, Rung: from}
+	// a moment's own hand-up answers the case: the first checkin step that
+	// stored the hand-up (under the rungs' name, or the old name human the
+	// migration moved) is the hand-up — its grounds the found, no action of
+	// its own — outranking the action rows around it
+	for k := 0; k < len(steps); k++ {
+		s := &steps[k]
+		if s.Outcome != StepHandedUp || s.Rung < max(from, 1) || s.Rung >= 3 || storedDecision(s.Decision) != RungHandUp {
+			continue
+		}
+		up.Rung = s.Rung
+		up.Found = cmp.Or(s.Found, s.Grounds)
+		return up
+	}
 	var first *CaseStep
 	for k := len(steps) - 1; k >= 0; k-- {
 		s := &steps[k]
@@ -746,7 +770,7 @@ func HandedUpBy(steps []CaseStep, from int, found string) *HandUp {
 		// rung found is the face's, not rung 0's
 		up.Found = first.Found
 	}
-	if first.Decision == RungHandUp {
+	if storedDecision(first.Decision) == RungHandUp {
 		// a moment's own human answer: its reason is what it found
 		up.Found = cmp.Or(first.Found, first.Grounds)
 		return up
@@ -771,7 +795,7 @@ func HandedUpBy(steps []CaseStep, from int, found string) *HandUp {
 	}
 	for k := len(steps) - 1; k >= 0; k-- {
 		s := steps[k]
-		if s.Outcome == StepHandedUp && s.Rung >= 1 && s.Rung < 3 && s.Decision != "" && s.Decision != RungHandUp {
+		if s.Outcome == StepHandedUp && s.Rung >= 1 && s.Rung < 3 && storedDecision(s.Decision) != RungHandUp && s.Decision != "" {
 			up.Action, up.Grounds, up.ActionRung = s.Decision, s.Grounds, s.Rung
 			if i := slices.IndexFunc(s.Did, func(a CaseAction) bool { return a.Result == resultProposed || a.Result == resultRecommended }); i >= 0 {
 				up.Preselected = &s.Did[i]
@@ -906,7 +930,10 @@ func (r *Runner) ClimbExpired(ctx context.Context, steps []CaseStep) error {
 // found: a row Act refused or failed hands the case up with why, so rung
 // 0 never keeps the human from being asked.
 func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, cases []Case) (*Resolution, string, error) {
-	if partial := slices.DeleteFunc(slices.Clone(f.Partial), func(n string) bool { return n == "siblings" || n == "head_commits" || n == "checks_log" }); len(partial) > 0 {
+	// an unread hold refuses the answers it guards itself (holdRefusal)
+	if partial := slices.DeleteFunc(slices.Clone(f.Partial), func(n string) bool {
+		return slices.Contains([]string{"siblings", "head_commits", "checks_log", partialHold, partialPlanHold}, n)
+	}); len(partial) > 0 {
 		return nil, "facts read partly: " + textutil.AndList(partial) + ", so rung 0 took nothing", nil
 	}
 	if i := slices.IndexFunc(cases, func(e Case) bool {
@@ -938,26 +965,40 @@ func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, case
 	return nil, "no resolver fits", nil
 }
 
-// healedTrip is the trip, of id trip, of a run that restarted while its
-// card waited on a human: the card's newest live ask (NewestAskCase) at
-// the human waits on with a step and no new face. One with no face yet
-// gets it, on its own reason. With none, the stop the card asked last
-// (restartedStop) opens its own case again, as its trip opened it. Either
-// way the case takes the restart's step of rung 0, a trip under the
-// gate's mark (runGrants), and the face names what moves the card on by
-// the case's kind and reason.
+// askedAgain says reason asks a card's standing question again: a run's
+// restart (HealedReason) or the heal pass's find of a wait with no live
+// ask (AsklessReason).
+func askedAgain(reason string) bool { return reason == HealedReason || reason == AsklessReason }
+
+// askedAgainFound is the step a case takes when reason, one askedAgain
+// matches, asks it again.
+func askedAgainFound(reason string) string {
+	if reason == HealedReason {
+		return "asked again after a restart"
+	}
+	return "asked again: " + reason
+}
+
+// healedTrip is the trip, of id trip, that asks card t's standing question
+// again for in's reason (askedAgain): the card's newest live ask
+// (NewestAskCase) at the human waits on with a step and no new face. One
+// with no face yet gets it, on its own reason. With none, the stop the
+// card asked last (restartedStop) opens its own case again, as its trip
+// opened it. Either way the case takes the reason's step of rung 0, a trip
+// under the gate's mark (runGrants), and the face names what moves the
+// card on by the case's kind and reason.
 func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip string) (TripOutcome, error) {
-	const restarted = "asked again after a restart"
+	found := askedAgainFound(in.Reason)
 	c, err := r.store.NewestAskCase(ctx, t.ID)
 	if err != nil {
 		return TripOutcome{}, err
 	}
 	if c.Status == CaseAtHuman {
-		return r.waitsAtHuman(ctx, t, c, restarted)
+		return r.waitsAtHuman(ctx, t, c, found)
 	}
 	stop, _ := c.Facts["reason"].(string)
 	if c.ID == 0 {
-		if stop, err = r.restartedStop(ctx, t); err != nil {
+		if stop, err = r.restartedStop(ctx, t, in.Reason); err != nil {
 			return TripOutcome{}, err
 		}
 		f, err := r.tripFacts(ctx, t, in.Head, in.Model)
@@ -974,7 +1015,7 @@ func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip stri
 			return TripOutcome{}, err
 		}
 	}
-	if err := r.tripStep(ctx, c.ID, restarted); err != nil {
+	if err := r.tripStep(ctx, c.ID, found); err != nil {
 		return TripOutcome{}, err
 	}
 	if out, ok, err := r.waitsOnRung(ctx, c); ok || err != nil {
@@ -1012,10 +1053,9 @@ func (r *Runner) refreshDraftInfo(ctx context.Context, taskID, have, note string
 	return nil
 }
 
-// restartedStop is the reason of the stop card t asked last, which a
-// restart asks again: its newest ask's words, healedReason when it has
-// none.
-func (r *Runner) restartedStop(ctx context.Context, t Task) (string, error) {
+// restartedStop is the reason of the stop card t asked last, which reason
+// asks again: its newest ask's words, reason itself when it has none.
+func (r *Runner) restartedStop(ctx context.Context, t Task, reason string) (string, error) {
 	asks, err := r.store.AskAnchors(ctx, t.ID)
 	if err != nil {
 		return "", err
@@ -1023,7 +1063,7 @@ func (r *Runner) restartedStop(ctx context.Context, t Task) (string, error) {
 	if i := len(asks) - 1; i >= 0 && strings.TrimSpace(asks[i].Body) != "" {
 		return asks[i].Body, nil
 	}
-	return HealedReason, nil
+	return reason, nil
 }
 
 // retriedTrip is what the attempts before trip's left on a case, ok false
@@ -1129,7 +1169,7 @@ func TripCase(t Task, f CaseFacts, in TripInput, scrub func(string) string) (Cas
 		facts["closed_why"] = d.Why
 	}
 	facts["source"], facts["reason"] = source, textutil.Truncate(scrub(in.Reason), 300)
-	if in.Reason != HealedReason {
+	if !askedAgain(in.Reason) {
 		facts["face"] = textutil.Truncate(scrub(in.Reason), 4000)
 	}
 	if len(in.Choices) > 0 {
@@ -1468,7 +1508,7 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 	}
 	body := healedLine
 	stop := reason
-	if reason == HealedReason {
+	if askedAgain(reason) {
 		stop, _ = c.Facts["reason"].(string)
 	}
 	note, err := r.planDraftNote(ctx, t.ID, stop)
@@ -1477,7 +1517,7 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 	}
 	question := EscalationQuestion(reason)
 	var face map[string]any
-	whole := reason != HealedReason && !strings.HasPrefix(reason, screeningAsks)
+	whole := !askedAgain(reason) && !strings.HasPrefix(reason, screeningAsks)
 	if whole {
 		// the register writes the face on the facts Act judges, as the case
 		// reaches the human; a render reads it as stored
@@ -1539,8 +1579,8 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		choices[i] = r.untrusted(t, c)
 	}
 	step := map[string]any{"reason": reason, "comment": id}
-	if reason == HealedReason {
-		// the restart's sentence asks nothing: the row names the question it asks again
+	if askedAgain(reason) {
+		// the sentence asks nothing: the row names the question it asks again
 		asks, err := r.store.AskAnchors(ctx, t.ID)
 		if err != nil {
 			log.Printf("task %s: the question a healed run asks again: %v", t.ID, err)

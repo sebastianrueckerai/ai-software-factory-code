@@ -29,7 +29,7 @@ func CardSources() []string {
 		SourceRoll, SourceRollRefused, SourceRollFailed, SourceMainFix, SourceRerun, SourceRevert, SourceStillRed,
 		SourceGroupRevert, SourceChainRepair, SourceChainStall, SourceAlert,
 		SourceGitHubSync, SourceSchemaCopy, SourceTemplateUpdate, SourceImageRemoval,
-		SourceChat, SourceChatBudget, SourceMonthCap, SourceConfig, SourceProductionHeld,
+		SourceChat, SourceChatBudget, SourceMonthCap, SourceFreezeCard, SourceConfig, SourceProductionHeld,
 	}
 }
 

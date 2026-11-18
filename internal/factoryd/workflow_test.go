@@ -217,7 +217,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityGateReproduction: func(ctx context.Context, taskID string, pr int64, commit string) (ReproResult, error) {
 			return ReproResult{}, nil
 		},
-		ActivityGateCriteria: func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
+		ActivityGateCriteria: func(ctx context.Context, taskID string, pr int64, commit, checked string) (CriteriaResult, error) {
 			return CriteriaResult{}, nil
 		},
 		ActivityHoldoutSettlement: func(ctx context.Context, taskID string, pin, pr int64, commit string, reds []HoldoutGateResult) (HoldoutSettlement, error) {
@@ -636,6 +636,88 @@ func TestWorkflowSessionCarriesTheTasksOwnAgentTimeAndCheckIn(t *testing.T) {
 	}
 	if want := 2*time.Hour + sessionGrace; len(deadlines) != 1 || deadlines[0] != want {
 		t.Fatalf("activity StartToCloseTimeout = %v, want %v (the class's own agent_time plus grace, not the workflow's 20m cap)", deadlines, want)
+	}
+}
+
+// A session's own agent time is the card's, sized: a class of 2h gives a
+// large card 3h (2h and half of it), a medium one 2h and a small one 1h,
+// the same as its activity's window, so the session's clock does not stop
+// it before the card's cap. Time added to the card rides it too.
+func TestWorkflowSessionRunsOnTheCardsSizedTime(t *testing.T) {
+	for _, c := range []struct {
+		size  string
+		added time.Duration
+		want  time.Duration
+	}{
+		{"large", 0, 3 * time.Hour},
+		{"medium", 0, 2 * time.Hour},
+		{"small", 0, time.Hour},
+		{"", 30 * time.Minute, 2*time.Hour + 30*time.Minute},
+	} {
+		h := newWorkflowHarness(t)
+		h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+			Stages: testStages(), Queue: policy.QueueNone, AgentTime: 2 * time.Hour}
+		h.state = RunState{Size: c.size, Usage: TaskUsage{ExtraTime: c.added}}
+		var windows []time.Duration
+		h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, in SessionInput) (SessionResult, error) {
+				h.sessions = append(h.sessions, in)
+				windows = append(windows, activity.GetInfo(ctx).StartToCloseTimeout)
+				return pushed("s1", "c1"), nil
+			})
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := h.run(t); final != "done" {
+			t.Fatalf("size %q: final = %q, want done", c.size, final)
+		}
+		if len(h.sessions) != 1 || h.sessions[0].AgentTime != c.want || len(windows) != 1 || windows[0] != c.want+sessionGrace {
+			t.Errorf("size %q, %v added: sessions %+v in windows %v; want one of agent time %v in a window of it and the grace", c.size, c.added, h.sessions, windows, c.want)
+		}
+	}
+}
+
+// A run from before versionSessionTime gives a large card's session the
+// class's 2h, in the card's window of 3h.
+func TestWorkflowSessionTimeBeforeKeepsTheClasssTime(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.env.OnGetVersion("session-time", workflow.DefaultVersion, versionSessionTime).Return(workflow.DefaultVersion)
+	h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+		Stages: testStages(), Queue: policy.QueueNone, AgentTime: 2 * time.Hour}
+	h.state = RunState{Size: "large"}
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if len(h.sessions) != 1 || h.sessions[0].AgentTime != 2*time.Hour {
+		t.Fatalf("sessions %+v, want one of the class's 2h", h.sessions)
+	}
+}
+
+// A large card's session that runs its card's whole 3h and stops on the
+// wall clock asks the agent time's cap card, as the card's cap is reached.
+func TestWorkflowWallClockAtTheSizedCapAsksTheCapCard(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+		Stages: testStages(), Queue: policy.QueueNone, AgentTime: 2 * time.Hour}
+	h.state = RunState{Size: "large"}
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(3 * time.Hour).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return wallClock("s1", ""), nil
+		})
+	h.signalAfter(4*time.Hour, SignalCaseResolved, caseResolved(701, Resolution{Action: ActClose}, 0))
+	h.signalAfter(5*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	h.run(t)
+	if len(h.sessions) != 1 || h.sessions[0].AgentTime != 3*time.Hour {
+		t.Fatalf("sessions %+v, want one of the card's 3h", h.sessions)
+	}
+	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], TimeCapReachedLadder) || h.tripUsage[0].AgentTime != 3*time.Hour {
+		t.Fatalf("asked %q after usage %+v, want the agent time's card once, after 3h used", h.escalated, h.tripUsage)
 	}
 }
 
@@ -4275,6 +4357,23 @@ func TestCheckinReplanClosesAPlansChild(t *testing.T) {
 	}
 }
 
+// A plan card's successor is its key's card in its plan: the check-in's
+// replan of it goes to that plan as a plan card's does, and it turns no
+// plan-track.
+func TestCheckinReplanOfAPlanCardsSuccessorGoesToItsPlan(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state.Source, h.state.PlanCard = SourceSuccessor, true
+	became := h.onBecomePlan(PlanSwitchResult{Switched: true})
+	works := h.onReplanChild(ReplanChildResult{Reason: "cut: plan #10 replans its work"})
+	h.onSessions(SessionResult{Outcome: OutcomeReplan, SessionID: "s1", Trip: "size", Reason: "two packages", Replan: "R"})
+	if final := h.run(t); final != "closed" || h.finals[0][1] != "cut: plan #10 replans its work" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if !slices.Equal(*works, []string{"R"}) || *became != 0 || len(h.sessions) != 1 {
+		t.Fatalf("ReplanChild works %q, BecomePlan calls %d, sessions %d; want [R], 0, 1", *works, *became, len(h.sessions))
+	}
+}
+
 // onRequestApproval records the head of each RequestApproval call.
 func (h *workflowHarness) onRequestApproval() *[]string {
 	var heads []string
@@ -4774,6 +4873,50 @@ func TestWorkflowClosesOnItsProofsAtMain(t *testing.T) {
 	}
 	if !slices.Equal(*calls, []string{"t1"}) || len(h.sessions) != 1 {
 		t.Fatalf("calls %q, sessions %+v; want one call on t1 and one session", *calls, h.sessions)
+	}
+}
+
+// The successor that carries a plan card's key, whose session pushes
+// nothing while its key's work is on main, closes done on its proofs at
+// main as the card would. A run from before the change runs none and goes
+// on to its next session.
+func TestWorkflowClosesASuccessorOnItsProofsAtMain(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state.Source, h.state.PlanCard = SourceSuccessor, true
+	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "main holds the work"})
+	calls := h.onProofsAtMain(ProofsAtMain{Head: "29b0d33aa", Met: true, Reason: "proofs met at 29b0d33: size_bound"}, nil)
+	if final := h.run(t); final != "done" || h.finals[0][1] != "proofs met at 29b0d33: size_bound" {
+		t.Fatalf("finals %v, want done on the proofs", h.finals)
+	}
+	if !slices.Equal(*calls, []string{"t1"}) || len(h.sessions) != 1 {
+		t.Fatalf("calls %q, sessions %+v; want one call on t1 and one session", *calls, h.sessions)
+	}
+
+	h = newWorkflowHarness(t)
+	h.state.Source, h.state.PlanCard = SourceSuccessor, true
+	h.env.OnGetVersion("successor-is-its-keys-card", workflow.DefaultVersion, versionSuccessorIsItsKeysCard).Return(workflow.DefaultVersion)
+	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "nothing to push"}, pushed("s2", "c2"))
+	calls = h.onProofsAtMain(ProofsAtMain{Met: true, Reason: "proofs met at 29b0d33: size_bound"}, nil)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" || len(*calls) != 0 || len(h.sessions) != 2 {
+		t.Fatalf("before the change: finals %v, calls %q, sessions %d; want the push merged, no call and two sessions", h.finals, *calls, len(h.sessions))
+	}
+}
+
+// A plan card whose push the line bound refused holds its work on its
+// branch, not on main: its proofs at main are not met, and the card
+// closes into a successor rather than done.
+func TestWorkflowClosesAnOverBoundPlanCardIntoASuccessor(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state.Source = SourcePlan
+	h.onSessions(overBound("s1"))
+	calls := h.onProofsAtMain(ProofsAtMain{}, nil)
+	if final := h.run(t); final != "failed" || len(h.finals) != 1 || h.finals[0][1] != "closed into successor t-succ" {
+		t.Fatalf("final %q, finals %v; want the one close into the successor", final, h.finals)
+	}
+	if !slices.Equal(*calls, []string{"t1"}) || len(h.successions) != 1 || h.successions[0].TaskID != "t1" {
+		t.Fatalf("calls %q, successor filings %+v; want one of each on t1", *calls, h.successions)
 	}
 }
 

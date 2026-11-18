@@ -26,7 +26,8 @@ import (
 // case 7, rung 1's close is refused with what rung 1 may take: route to
 // approval, re-verify, a successor, a replan, a withdrawal and a note. An
 // action the table does not hold is refused with the human's: re-verify,
-// a raise of the ceiling, a successor, a replan, a close and a note. With case 7 live, an
+// a raise of the ceiling, a successor, a replan, a close and a note; no
+// confirm_audit, as the rig's audit finding is at no file. With case 7 live, an
 // answer with no case is refused naming it. Nothing is written.
 func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 	g := newFactsRig(t)
@@ -192,7 +193,8 @@ func TestActReplansAndARefusedReplanLeavesTheCaseOpen(t *testing.T) {
 	if want := ErrNoReplan("Card #7 waits for a person to judge its screening: let it run or close its issue, then replan it."); err != want {
 		t.Fatalf("Act = %v, want %q", err, want)
 	}
-	if store.cases[0].Status != CaseAtHuman || len(store.resolved) != 0 || posted != 0 || len(fj.calls) != calls {
+	wrote := slices.ContainsFunc(fj.calls[calls:], func(c string) bool { return !strings.HasPrefix(c, "GET ") })
+	if store.cases[0].Status != CaseAtHuman || len(store.resolved) != 0 || posted != 0 || wrote {
 		t.Fatalf("case %s, resolved %v, posted %d, forgejo %q; want the case open and nothing posted", store.cases[0].Status, store.resolved, posted, fj.calls[calls:])
 	}
 }
@@ -550,9 +552,10 @@ func retriedTwice(t *testing.T, second ActInput) {
 
 // A card stopped at its agent time cap takes an extend of its agent time,
 // not one of the sessions alone: that raises nothing the stop names, is
-// refused with the stop's own words before it draws — no row, no raise, the
-// case open — so the stop's next answer is not already weighed as a draw
-// that bought nothing. The same extend with its minutes of agent time
+// refused with the stop's own words and the minutes each rung may ask for
+// (the large card's draw of 90 minutes, the pool's 30 hours) before it
+// draws — no row, no raise, the case open — so the stop's next answer is
+// not already weighed as a draw that bought nothing. The same extend with its minutes of agent time
 // raises the card and resolves the stop.
 func TestActRefusesASessionsOnlyExtendAtTheTimeCap(t *testing.T) {
 	g := newFactsRig(t)
@@ -563,7 +566,8 @@ func TestActRefusesASessionsOnlyExtendAtTheTimeCap(t *testing.T) {
 		Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Fund: &policy.Draw{EUR: 1}}}
 	var refused ErrActRefused
 	if _, err := g.r.Act(context.Background(), in); !errors.As(err, &refused) ||
-		!strings.HasPrefix(err.Error(), "this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none") {
+		!strings.HasPrefix(err.Error(), "this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none. "+
+			"The card's draw leaves 90 minutes and the pool 1800 minutes of agent time, so rung 1 may ask for up to 90 minutes, rung 2 for up to 600 minutes and the human for up to 600 minutes, ") {
 		t.Fatalf("a sessions-only extend at the time cap = %v, want the stop's own refusal", err)
 	}
 	if len(g.store.events) != events || g.store.tasks["t1"].Usage != usage || len(g.store.resolved) != 0 ||
@@ -1023,6 +1027,13 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 	g.card()
 	g.timeline(t)
 	g.r.timeline = g.tl
+	const rig = "secrets at acceptance/rig_test.go"
+	g.tl.now = func() time.Time { return factsAt(9, 50) }
+	if err := g.tl.Append(context.Background(), "t1", "audit", map[string]any{"commit": "h2", "verdict": "findings", "findings": []AuditFinding{
+		{Item: "secrets", File: "acceptance/rig_test.go", Line: 118, Why: "a rig literal"},
+		{Item: "... and 2 more", Why: "the card lists the first 50 of the parts' findings"}}}); err != nil {
+		t.Fatal(err)
+	}
 	t1 := g.store.tasks["t1"]
 	t1.IssueNumber = 0 // the answer's factoryd comment needs no issue here
 	g.store.tasks["t1"] = t1
@@ -1072,8 +1083,8 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := steps()
-	if len(got) != 1 || got[0]["finding"] != findingB || got[0]["by"] != "sebastian" || got[0]["why"] != "the rig's fakes, not secrets" {
-		t.Fatalf("confirmations = %v, want %q confirmed by sebastian with the reason", got, findingB)
+	if len(got) != 1 || got[0]["finding"] != rig || got[0]["by"] != "sebastian" || got[0]["why"] != "the rig's fakes, not secrets" {
+		t.Fatalf("confirmations = %v, want %q confirmed by sebastian with the reason", got, rig)
 	}
 	if c, err := g.r.store.CaseByID(ctx, 9); err != nil || c.Status != CaseResolved {
 		t.Fatalf("the case is %s (%v), want it resolved", c.Status, err)
@@ -1087,6 +1098,16 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 	}
 	if got := steps(); len(got) != 1 {
 		t.Fatalf("confirmations = %v, want the one standing, the second press recording nothing again", got)
+	}
+	// a start of the finding's text names it whole: the recorded text stands, nothing records again
+	g.store.cases = append(g.store.cases, Case{ID: 11, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
+		Facts: map[string]any{"head": "h2", "gate": "GateCriteria"}})
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 11, By: "sebastian", Rung: 3,
+		Res: Resolution{Action: ActConfirmAudit, Note: "once more", Args: map[string]any{"findings": "secrets at accept"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := steps(); len(got) != 1 || got[0]["finding"] != rig {
+		t.Fatalf("confirmations = %v, want %q alone, the start resolved to it", got, rig)
 	}
 }
 

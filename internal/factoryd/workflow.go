@@ -388,8 +388,10 @@ type SessionInput struct {
 	// its limits from it; 0 (a workflow from before the pin) reads the
 	// version in force.
 	PolicyVersion int64
-	// AgentTime and CheckIn are TaskConfig's, the task's resolved values;
-	// zero falls back to the pinned policy's limits.
+	// AgentTime is the card's whole agent time, its class's sized by the
+	// card's size and with what was added to it (versionSessionTime);
+	// CheckIn is TaskConfig's. Zero falls back to the pinned policy's
+	// limits.
 	AgentTime time.Duration
 	CheckIn   time.Duration
 	// CheckInAsk is the check-in the workflow asks of the session's
@@ -546,6 +548,9 @@ type RunState struct {
 	// 3.12): an alert card checks its alert still fires before its first
 	// model call.
 	Source string
+	// PlanCard: the task is its key's card in its parent plan
+	// (Task.PlanCard), a successor's too, so its cut goes to that plan.
+	PlanCard bool
 	// Park is the task's latest park on an image (image_parks), nil for
 	// none: a healed run of a card in waiting-image waits on in it.
 	Park *ImagePark `json:",omitempty"`
@@ -625,6 +630,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.checkinDecision = workflow.GetVersion(ctx, "checkin-decision", workflow.DefaultVersion, versionCheckinDecision)
 	run.providerFreeze = workflow.GetVersion(ctx, "provider-freeze", workflow.DefaultVersion, versionProviderFreeze)
 	run.noTypedSuccessor = workflow.GetVersion(ctx, "no-typed-successor", workflow.DefaultVersion, versionNoTypedSuccessor)
+	run.retryPressDrop = workflow.GetVersion(ctx, "retry-press-drop", workflow.DefaultVersion, versionRetryPressDrop)
+	run.humanWaitQueue = workflow.GetVersion(ctx, "human-wait-queue", workflow.DefaultVersion, versionHumanWaitQueue)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
 	workflow.GetVersion(ctx, "blind-proofs", 1, 1)
@@ -701,6 +708,14 @@ const (
 	// run from before holds its entry through the approval wait and the
 	// merge.
 	versionQueueWaits workflow.Version = 1
+	// versionHumanWaitQueue (change id "human-wait-queue"): every wait for
+	// a human leaves the merge queue, a gate's stop as the approval's, and
+	// every merge happens at a turn the card holds: a merge after such a
+	// wait takes the turn again first (holdTurn), and a gate that asked
+	// during the turn's checks takes a new turn before the approval. A run
+	// from before holds its turn through a gate's wait, and its approval
+	// takes a turn at each approval.
+	versionHumanWaitQueue workflow.Version = 1
 	// versionChecksWait (change id "checks-wait"): the checks wait's own
 	// activity timeout follows its bound, the waits row waits.checks, so
 	// the wait outlives it by the supervisor's whole budget. A run from
@@ -768,6 +783,19 @@ const (
 	// the class's unsized time. A run from before reads that, and such a
 	// card asks the agent-time cap before its first session.
 	versionSizedLeast workflow.Version = 1
+	// versionCardHold (change id "card-hold"): a card in its dependency wait
+	// that a human holds (DepState.Hold) stays in the wait with no
+	// dependency open, until the hold ends. Read where the wait would end. A
+	// run from before starts the card once no dependency is open.
+	versionCardHold workflow.Version = 1
+	// versionSessionTime (change id "session-time"): a session's own agent
+	// time (SessionInput.AgentTime) is the card's whole agent time, sized
+	// and with what was added to it, so a session ends at the card's cap
+	// and its wall_clock stop is that cap. Read where it differs from the
+	// class's unsized time. A run from before gives a session the class's
+	// time, at which a large or an extended card's session stops with time
+	// of the card left.
+	versionSessionTime workflow.Version = 1
 	// versionTripModel (change id "trip-model"): a trip of a run that reads
 	// a session's opening floor (the lifecycle's, a report's) carries the
 	// model its next session opens on, so the stop's facts weigh the floor
@@ -899,7 +927,43 @@ const (
 	// successor is an answer of the case's face. A run from before closes
 	// the card into its successor on that answer, as it did.
 	versionNoTypedSuccessor workflow.Version = 1
+	// versionRetryPressDrop (change id "retry-press-drop"): a session's
+	// start drops the retry switch's presses signalled before it, whose
+	// probe that session is, so none is left to end a later provider-limit
+	// wait at once. A run from before keeps them for its next wait.
+	versionRetryPressDrop workflow.Version = 1
+	// versionSuccessorReplansItsPlan (change id
+	// "successor-replans-its-plan", read at the cut of a plan card's
+	// successor): the successor goes back to its plan through ReplanChild,
+	// as the plan card it carries on would, and ends closed. A run from
+	// before turns the successor plan-track.
+	versionSuccessorReplansItsPlan workflow.Version = 1
+	// versionSuccessorIsItsKeysCard (change id
+	// "successor-is-its-keys-card", read by a plan card's successor at its
+	// merge press and at a session that pushed nothing): the successor is
+	// its key's card, so its press runs the criteria gate again as the
+	// card's does, and a session of it that pushed nothing runs its proofs
+	// at main. A run from before merges on the press and goes on to its
+	// next session.
+	versionSuccessorIsItsKeysCard workflow.Version = 1
+	// versionPlanAnswerGrant (change id "plan-answer-grant", read after a
+	// plan loop's wait on a revision's answers that a person ended, at the
+	// session cap or out of agent time): the person's answer buys the
+	// planner session it asks for as their grant (recordGrant), one more
+	// session at the session cap, else the agent time. A wait an ask opened
+	// grants nothing. A run from before asks the cap, the answer waiting for
+	// a draw.
+	versionPlanAnswerGrant workflow.Version = 1
 )
+
+// keysCard tells whether the run's card is its key's card in its plan: a
+// card the plan filed, or its successor (versionSuccessorIsItsKeysCard).
+// It goes last in a branch's condition, so a history that never reaches
+// the branch records no marker.
+func (t *taskRun) keysCard() bool {
+	return t.source == SourcePlan || t.planCard &&
+		workflow.GetVersion(t.ctx, "successor-is-its-keys-card", workflow.DefaultVersion, versionSuccessorIsItsKeysCard) >= versionSuccessorIsItsKeysCard
+}
 
 // budgetRefused opens the card of a task whose remaining budget cannot
 // fund a call: an answer would start an attempt whose first
@@ -973,6 +1037,7 @@ type taskRun struct {
 	screened          int                       // how many of posterInfo the screening read
 	providerFreeze    workflow.Version          // versionProviderFreeze: the provider-limit hold to a named reset
 	noTypedSuccessor  workflow.Version          // versionNoTypedSuccessor: a typed successor answer continues
+	retryPressDrop    workflow.Version          // versionRetryPressDrop: a session's start drops the presses before it
 	// checkedHead is the head whose checks hold for the synced head the
 	// cheap turn merges; "" when the merged head's own
 	// checks ran
@@ -1020,6 +1085,7 @@ type taskRun struct {
 	history           []string       // every finding sent to the agent, tagged with its stage and round
 	reviews           []Review       // the model reviews so far, oldest first
 	source            string         // the task row's arrival
+	planCard          bool           // the task is its key's card in its parent plan (RunState.PlanCard)
 	rolling           bool           // a roll task's run: a fold wakes the approval wait
 	orphanPR          bool           // the card of a pull request factoryd opened outside a card's workflow: verify opens none
 	redHead           string         // the last head whose checks failed
@@ -1078,6 +1144,12 @@ type taskRun struct {
 	// queueWaits: the approval wait is out of the merge queue
 	// (versionQueueWaits)
 	queueWaits workflow.Version
+	// humanWaitQueue: every wait for a human leaves the merge queue
+	// (versionHumanWaitQueue). inTurn: the card holds its project's turn;
+	// turnLost: it left the queue for a human, and its merge takes the
+	// turn again first (holdTurn)
+	humanWaitQueue   workflow.Version
+	inTurn, turnLost bool
 	// asked is the newest merge ask's input, askedCard the card's lines it
 	// held before AutoMerge's, which regate's ask again carries
 	asked     ApprovalInput
@@ -1128,6 +1200,10 @@ type verdict struct {
 	// is the fact the next session works from, which no check-in judges
 	// (versionWipStart)
 	wip bool
+	// retake: a human answered the merge's stop, whose wait left the
+	// merge queue: the merge takes the turn again before it runs again
+	// (versionHumanWaitQueue)
+	retake bool
 }
 
 func (t *taskRun) lifecycle() (string, error) {
@@ -1369,7 +1445,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	t.sizeAgentTime(st.Size)
 	t.answers = st.Answers
 	t.posterInfo, t.infoRequest = st.PosterInfo, st.InfoRequest
-	t.standing, t.source = st.Standing, st.Source
+	t.standing, t.source, t.planCard = st.Standing, st.Source, st.PlanCard
 	t.orphanPR = st.FactoryPR && st.PR.Number != 0
 	if st.PR.Number != 0 && (t.wipStart < versionWipStart || !st.Unfinished) {
 		t.judged = append(t.judged, st.Head)
@@ -1763,11 +1839,16 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		began := workflow.Now(t.ctx)
 		var res SessionResult
+		agentTime := t.cfg.Task.AgentTime
+		if card := t.cfg.WallClockCap + u.TimeAdded(); card != agentTime &&
+			workflow.GetVersion(t.ctx, "session-time", workflow.DefaultVersion, versionSessionTime) >= versionSessionTime {
+			agentTime = card
+		}
 		in := SessionInput{
 			TaskID: t.taskID, Attempt: attempt, Sessions: t.cfg.MaxSessions + u.SessionsAdded(), Model: model,
 			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			ParentStop: parentStop, ParentOutcome: parentOutcome, ParentTrip: parentTrip, ParentDeadEnd: parentDeadEnd,
-			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
+			PolicyVersion: t.cfg.PolicyVersion, AgentTime: agentTime, CheckIn: t.cfg.Task.CheckIn,
 		}
 		checkinPending := (t.gateFindings || t.deadFrom != "") && t.cfg.Task.CheckIn > 0
 		var gates *GateResults
@@ -1792,6 +1873,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		} else {
 			in.Handover = handoverNote
 		}
+		t.dropRetryPresses()
 		v, decided, err := t.race(t.sessionOptions(window), &res, ActivityRunSession, in)
 		t.gateFindings, t.deadFrom, handoverNote = false, "", ""
 		if !decided && imageNotPinned(err) {
@@ -1936,7 +2018,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				handoverNote = res.CheckIn.Handover
 			}
 		}
-		if t.source == SourcePlan && res.Outcome == OutcomeNoPush {
+		if res.Outcome == OutcomeNoPush && t.keysCard() {
 			var atMain ProofsAtMain
 			if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reproOptions()), ActivityProofsAtMain, t.taskID).Get(t.ctx, &atMain); err != nil {
 				workflow.GetLogger(t.ctx).Warn("proofs at main", "task", t.taskID, "error", err)
@@ -2363,6 +2445,16 @@ func (t *taskRun) waitOnProvider(w ProviderWait) {
 	}
 	sel.AddFuture(workflow.NewTimer(timerCtx, w.Backoff), func(workflow.Future) {})
 	sel.Select(t.ctx)
+}
+
+// dropRetryPresses drops the retry switch's presses signalled before a
+// session starts (versionRetryPressDrop): that session is their probe.
+func (t *taskRun) dropRetryPresses() {
+	if t.retryPressDrop < versionRetryPressDrop {
+		return
+	}
+	for workflow.GetSignalChannel(t.ctx, SignalProviderRetry).ReceiveAsync(nil) {
+	}
 }
 
 // waitOnLimit holds the card to a named limit's reset (versionProviderFreeze)
@@ -2881,12 +2973,13 @@ func (t *taskRun) adopted(v verdict, commit string) string {
 	return v.head
 }
 
-// autoMerge merges on the project's merge rule auto:
-// the note on the timeline, then the gate's approval naming met and the
-// merge as factory-merge. done with the task's verdict, or why it did not
-// go through: the card then. A person's replan that waited behind the
-// gates goes first: the card goes to the planner, or, on
-// a refused switch, merges.
+// autoMerge merges on the project's merge rule auto, at a turn the card
+// holds (holdTurn, mergeAtTurn): the note on the timeline naming the head
+// the turn merges, then the gate's approval naming met and the merge as
+// factory-merge. done with the task's verdict, or why it did not go
+// through: the card then. A person's replan that waited behind the gates
+// goes first: the card goes to the planner, or, on a refused switch,
+// merges.
 func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []string) (v verdict, done bool, failed string) {
 	if t.replans() {
 		if sw, step, ok := t.takeToPlan(); ok {
@@ -2895,11 +2988,15 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []strin
 			}
 		}
 	}
+	commit, v, stop := t.holdTurn(commit)
+	if stop {
+		return v, true, ""
+	}
 	if err := workflow.ExecuteActivity(t.short, ActivityAutoMergeNote, t.taskID, t.pr.Number, commit, g, rv).Get(t.ctx, nil); err != nil {
 		return verdict{}, false, "the auto merge's note failed: " + errMessage(err)
 	}
 	var res MergeResult
-	v, decided, err := t.gateActivity(false, mergeOptions(), &res, ActivityMerge, t.mergeArgs(commit, AutoApprover, met)...)
+	v, decided, err := t.mergeAtTurn(&commit, &res, AutoApprover, met)
 	switch {
 	case decided:
 		return v, true, ""
@@ -3010,7 +3107,7 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 		}
 		cancelRetry = nil
 		retry = nil
-		if signalled && t.source == SourcePlan {
+		if signalled && t.keysCard() {
 			var stand *CriteriaStand
 			v, stop, held, stand := t.regate(commit, g, approver)
 			if stand != nil {
@@ -3025,32 +3122,16 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 				continue
 			}
 		}
-		if signalled && t.waitsOutOfQueue() {
-			sync, v, stop := t.turn(commit)
-			if stop {
-				return v
-			}
-			if sync.To != commit {
-				if v, again := t.movedPast(sync.To, t.gatedChange); again {
-					return v
-				}
-				if len(sync.Overlap) > 0 {
-					return verdict{synced: true, head: sync.To}
-				}
-				// the cheap turn: main's new commits share no file with the
-				// pull request, so Forgejo keeps the approval on the head
-				// the sync made, and the checks that held for commit hold
-				t.checkedHead = cmp.Or(t.checkedHead, commit)
-				commit, t.syncedHead, t.head = sync.To, sync.To, sync.To
-			}
+		if t.humanWaitQueue < versionHumanWaitQueue {
+			// a run from before takes a turn at each approval
+			t.turnLost = signalled && t.waitsOutOfQueue()
 		}
-		opts := mergeOptions()
 		var met []string
 		if g.Criteria != nil {
 			_, met, _ = AutoMerge(g, t.newestReview(), t.source)
 		}
 		var res MergeResult
-		v, decided, err := t.gateActivity(false, opts, &res, ActivityMerge, t.mergeArgs(commit, approver, met)...)
+		v, decided, err := t.mergeAtTurn(&commit, &res, approver, met)
 		if decided {
 			return v
 		}
@@ -3073,7 +3154,7 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 			approver = ""
 			t.approvalRequested = workflow.Now(t.ctx)
 			if t.waitsOutOfQueue() {
-				t.leaveQueue(approvalWaitLeft)
+				t.leaveForHuman(approvalWaitLeft)
 			}
 		case res.Failed != "":
 			failures++
@@ -3091,7 +3172,7 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 			approver = ""
 			t.approvalRequested = workflow.Now(t.ctx)
 			if t.waitsOutOfQueue() {
-				t.leaveQueue(approvalWaitLeft)
+				t.leaveForHuman(approvalWaitLeft)
 			}
 		}
 	}
@@ -3197,6 +3278,24 @@ func (t *taskRun) newestReview() Review {
 // conditions the merge gate found on the merge rule auto.
 func (t *taskRun) mergeArgs(commit, approver string, met []string) []any {
 	return []any{t.taskID, t.pr.Number, commit, approver, t.checkedHead, met}
+}
+
+// mergeAtTurn runs Merge into res at a turn the card holds: holdTurn
+// before it, and again after a human answered the merge's stop, which
+// left the queue (verdict.retake); commit becomes the head the turn
+// merges. decided: v is the task's, the turn's or the merge's.
+func (t *taskRun) mergeAtTurn(commit *string, res *MergeResult, approver string, met []string) (verdict, bool, error) {
+	for {
+		head, v, stop := t.holdTurn(*commit)
+		if stop {
+			return v, true, nil
+		}
+		*commit = head
+		v, decided, err := t.gateActivity(false, mergeOptions(), res, ActivityMerge, t.mergeArgs(head, approver, met)...)
+		if decided || err != nil || !v.retake {
+			return v, decided, err
+		}
+	}
 }
 
 // maxMergeRetries bounds the retries of one approval's merge: with
@@ -3336,7 +3435,9 @@ func (t *taskRun) race(opts workflow.ActivityOptions, out any, activity string, 
 // and ModelReview race the terminal signals (terminal), Merge does not.
 // It takes the gate supervisor's trips, and a human's answer to its escalation runs the gate again with the same
 // arguments (a merge keeps its approval); a change request sent meanwhile
-// goes back to the agent.
+// goes back to the agent. A merge whose wait left the merge queue returns
+// on the answer instead, undecided with retake: its caller takes the turn
+// again (mergeAtTurn).
 func (t *taskRun) gateActivity(terminal bool, opts workflow.ActivityOptions, out any, activity string, args ...any) (verdict, bool, error) {
 	for {
 		var v verdict
@@ -3352,6 +3453,9 @@ func (t *taskRun) gateActivity(terminal bool, opts workflow.ActivityOptions, out
 		}
 		if v, stop := t.gateEscalated(v.escalate); stop {
 			return v, true, nil
+		}
+		if activity == ActivityMerge && t.turnLost {
+			return verdict{retake: true}, false, nil
 		}
 	}
 }
@@ -3381,7 +3485,7 @@ func (t *taskRun) reproduction(out *ReproResult, commit string) (verdict, bool, 
 func (t *taskRun) criteria(out *CriteriaResult, commit string) (verdict, bool, error) {
 	for {
 		*out = CriteriaResult{}
-		v, decided, err := t.gateActivity(true, reproOptions(), out, ActivityGateCriteria, t.taskID, t.pr.Number, commit)
+		v, decided, err := t.gateActivity(true, reproOptions(), out, ActivityGateCriteria, t.taskID, t.pr.Number, commit, t.checkedHead)
 		if err != nil {
 			return v, decided, err
 		}
@@ -3944,7 +4048,9 @@ type queuedCase struct {
 // resolution of one rung 0 resolved is the run's, and no one was asked,
 // else the run waits on the case and its ask's comment. At versionCaseQueue
 // a wait that comes to a case whose answer came while the run waited on
-// another takes it at once, as one taken live.
+// another takes it at once, as one taken live. A card at its turn that
+// waits for the human leaves the merge queue (versionHumanWaitQueue); a
+// stop answered at once is no wait, and the card keeps its turn.
 func (t *taskRun) ask(reason, question string, choices []string) error {
 	t.resolution, t.caseID = nil, 0
 	var out TripOutcome
@@ -3974,6 +4080,9 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 		if note := strings.TrimSpace(res.Note); note != "" || q.signal.Comment != 0 {
 			t.insertAnswer(t.resolutionKey(q.signal.CaseID, q.signal.Comment), answerText(q.signal.By, question, cmp.Or(note, res.Sentence()), q.at))
 		}
+	}
+	if t.resolution == nil && t.inTurn && t.humanWaitQueue >= versionHumanWaitQueue {
+		t.leaveForHuman(humanWaitLeft)
 	}
 	return nil
 }
@@ -4840,6 +4949,10 @@ const escalateFailed = "escalate: "
 
 // HealedReason is what a healed run waiting for a human asks again.
 const HealedReason = "factoryd restarted while the task waited for a human; the question above still stands."
+
+// AsklessReason is what the heal pass asks again of a card that waits for
+// a human with no live ask.
+const AsklessReason = "the task waited for a human with no question open; the question above still stands."
 
 // MaxAnswer bounds an answer's body, in bytes, in the list every later
 // session gets as the ANSWERS or POSTER_INFO env var (envFit and

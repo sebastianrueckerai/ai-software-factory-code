@@ -79,6 +79,11 @@ func (d Draw) Minus(o Draw) Draw {
 	return Draw{max(d.Sessions-o.Sessions, 0), max(d.AgentTime-o.AgentTime, 0), max(d.EUR-o.EUR, 0)}
 }
 
+// Min is the smaller of d's and o's in each part.
+func (d Draw) Min(o Draw) Draw {
+	return Draw{min(d.Sessions, o.Sessions), min(d.AgentTime, o.AgentTime), min(d.EUR, o.EUR)}
+}
+
 // Plus is d and o added.
 func (d Draw) Plus(o Draw) Draw {
 	return Draw{d.Sessions + o.Sessions, d.AgentTime + o.AgentTime, d.EUR + o.EUR}

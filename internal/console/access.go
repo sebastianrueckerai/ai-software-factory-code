@@ -185,6 +185,8 @@ var accessTable = map[string]accessRule{
 	"grant_session":    rCard,
 	"fund":             {need: approver, scope: scCard, what: "fund a card"},
 	"set_dependency":   rCard,
+	"hold_card":        rCard,
+	"release_hold":     rCard,
 	"replan":           {need: approver, scope: scCard, what: "replan a card"},
 	"delete_comment":   rCard,
 	"set_autonomy":     {need: approver, scope: scChat, what: "change the autonomy level"},

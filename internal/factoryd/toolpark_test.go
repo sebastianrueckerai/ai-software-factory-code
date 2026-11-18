@@ -1426,3 +1426,16 @@ func TestToolCardWithoutAProjectNamesTheAsker(t *testing.T) {
 		t.Fatalf("the chat's ask = %v, want the repository named", err)
 	}
 }
+
+// The project agent's ask in the chat names the project agent on the tool
+// card, as its answers do, not a bare login.
+func TestTheProjectAgentsToolAskNamesTheProjectAgent(t *testing.T) {
+	a := toolAsker{repository: codeRepo, by: ChatUser}
+	p := ImagePark{Tool: "sox", Need: "mix the sound.", Target: "video"}
+	if got, want := a.askLine(p), "Requested in the project chat by the project agent factory-chat: sox, mix the sound."; got != want {
+		t.Errorf("the ask's line = %q, want %q", got, want)
+	}
+	if got, want := a.joinLine(p), "Requested in the project chat by the project agent factory-chat: sox in image video too: mix the sound."; got != want {
+		t.Errorf("the join's line = %q, want %q", got, want)
+	}
+}

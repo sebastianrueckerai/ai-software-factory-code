@@ -48,9 +48,12 @@ type BoardTask struct {
 	WaitingOn    string
 	Dependencies []DepFact
 	QueueAhead   int
-	// MergeBehind is the issue of the card that holds its merge queue's
-	// turn, 0 at the front or outside the queue.
+	// MergeBehind is the issue of the card that holds the turn of the
+	// merge queue this card waits in, 0 at the front or outside a queue.
 	MergeBehind int64
+	// HeldFor is the issue of the open plan whose card this one waits
+	// behind in gate merge-queue without a queue row, 0 for none.
+	HeldFor int64
 	// SlotWait is the face's "waits for its turn to start, N ahead (L running)" of a card
 	// queued for a work slot, "" for any other: the resumed cards come
 	// first, then the never-started ones by filing.
@@ -73,6 +76,9 @@ type BoardTask struct {
 	// Helpers are the card's helper tasks that have not ended, oldest
 	// first: steps of its life, which the board shows on the card.
 	Helpers []BoardTask
+	// HoldView is where a human's hold on the card stands; zero when none
+	// holds it.
+	HoldView HoldView
 }
 
 // deployLive is the SQL test that a finished card's change runs on the
@@ -130,9 +136,7 @@ var boardTaskColumns = taskColumns + `, esc.at, esc.ask, COALESCE(esc.case_id, 0
 		        COALESCE((SELECT cr.run_index FROM chain_runs cr WHERE tasks.pr_number > 0 AND cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number), 0),
 		        ` + chainGreen + `,
 		        (SELECT g.updated_at FROM chain_runs g WHERE g.repository = tasks.repository AND g.status = 'success' ORDER BY g.run_id DESC, g.pr_number LIMIT 1),
-		        COALESCE(rl.roll_id, ''), COALESCE(rl.roll_issue, 0),
-		        COALESCE((SELECT h.issue_number FROM merge_queue me JOIN LATERAL (SELECT o.task_id FROM merge_queue o WHERE o.project = me.project
-		            ORDER BY o.entered_at, o.task_id LIMIT 1) hq ON hq.task_id <> me.task_id JOIN tasks h ON h.id = hq.task_id WHERE me.task_id = tasks.id), 0)`
+		        COALESCE(rl.roll_id, ''), COALESCE(rl.roll_issue, 0)`
 
 var boardTaskFrom = `
 		 FROM tasks LEFT JOIN LATERAL (SELECT roll.id AS roll_id, roll.issue_number AS roll_issue FROM roll_requests rr JOIN tasks roll ON roll.id = rr.task_id
@@ -150,7 +154,7 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	var ask, deps []byte
 	t, err := scanTask(func(dest ...any) error {
 		return scan(append(dest, &at, &ask, &b.AskCase, &b.WaitingOn, &deps, &b.QueueAhead, &b.QuestionComment, &b.AnswersPending,
-			&b.ChainState, &b.ChainLive, &b.ChainRun, &b.ChainGreen, &greenAt, &b.RollID, &b.RollIssue, &b.MergeBehind)...)
+			&b.ChainState, &b.ChainLive, &b.ChainRun, &b.ChainGreen, &greenAt, &b.RollID, &b.RollIssue)...)
 	})
 	if err != nil {
 		return b, err
@@ -245,10 +249,34 @@ func (s *PGStore) boardTasks(ctx context.Context, where string, args ...any) ([]
 var liveHelper = `EXISTS (SELECT 1 FROM tasks h WHERE h.parent_task = tasks.id AND h.source IN ` + reportSourcesSQL + `
 	AND h.status NOT IN ('done', 'failed', 'closed'))`
 
-// fillCards fills the asks of the cards in tasks and puts on each its
-// helper tasks that have not ended, oldest first, with their asks.
+// fillCards fills the merge queue places, the holds and the asks of the
+// cards in tasks and puts on each its helper tasks that have not ended,
+// oldest first, with their asks.
 func (s *PGStore) fillCards(ctx context.Context, tasks []BoardTask) error {
-	if err := s.fillAsks(ctx, tasks); err != nil || len(tasks) == 0 {
+	if len(tasks) == 0 {
+		return nil
+	}
+	places, err := s.MergeQueuePlaces(ctx)
+	if err != nil {
+		return err
+	}
+	var held []string
+	for i := range tasks {
+		p, ok := places[tasks[i].ID]
+		switch {
+		case ok && p.Ahead > 0 && p.HeadIssue > 0:
+			tasks[i].MergeBehind = p.HeadIssue
+		case !ok && tasks[i].Gate == GateMergeQueue && tasks[i].Status == "in-review":
+			held = append(held, tasks[i].ID)
+		}
+	}
+	if err := s.fillHeldFor(ctx, tasks, held); err != nil {
+		return err
+	}
+	if err := s.fillHolds(ctx, tasks); err != nil {
+		return err
+	}
+	if err := s.fillAsks(ctx, tasks); err != nil {
 		return err
 	}
 	ids := make([]string, len(tasks))
@@ -281,6 +309,51 @@ func HelpersOf(tasks []BoardTask, id string) []BoardTask {
 	}
 	slices.SortStableFunc(out, func(a, b BoardTask) int { return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), strings.Compare(a.ID, b.ID)) })
 	return out
+}
+
+// fillHolds sets HoldView on the cards of tasks a human holds.
+func (s *PGStore) fillHolds(ctx context.Context, tasks []BoardTask) error {
+	for i := range tasks {
+		if !tasks[i].Held() {
+			continue
+		}
+		v, err := holdView(ctx, s, tasks[i].Task)
+		if err != nil {
+			return err
+		}
+		tasks[i].HoldView = v
+	}
+	return nil
+}
+
+// fillHeldFor sets HeldFor on the cards of tasks named in held, from the
+// plan issue of each one's newest queue_group_wait event.
+func (s *PGStore) fillHeldFor(ctx context.Context, tasks []BoardTask, held []string) error {
+	if len(held) == 0 {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT ON (task_id) task_id, COALESCE((detail->>'issue')::bigint, 0)
+		FROM events WHERE task_id = ANY($1) AND kind = 'queue_group_wait' ORDER BY task_id, id DESC`, held)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	issues := map[string]int64{}
+	for rows.Next() {
+		var id string
+		var n int64
+		if err := rows.Scan(&id, &n); err != nil {
+			return err
+		}
+		issues[id] = n
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range tasks {
+		tasks[i].HeldFor = issues[tasks[i].ID]
+	}
+	return nil
 }
 
 // setSlotWaits words the wait of every card in tasks, one project's live

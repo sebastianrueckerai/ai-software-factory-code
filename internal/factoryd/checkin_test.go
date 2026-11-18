@@ -303,8 +303,8 @@ type scriptedTools struct{ out map[string]string }
 func TestCheckinTimeCapIsTheFailedCheckinsStop(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9"}
 	chat := &scriptedChat{delay: time.Second, answers: []CheckinResponse{{ToolName: "grep", ToolArgs: map[string]any{"pattern": "x"}}}}
-	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, 20*time.Millisecond)
-	const reason = "check-in time cap reached after 20ms"
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, 400*time.Millisecond)
+	const reason = "check-in time cap reached after 400ms"
 	if out.Decision != RungHandUp || out.ReasonKind != CheckTimeCap || out.Reason != reason {
 		t.Fatalf("decision = %q, kind %q, reason %q; want the time cap's stop under its own kind", out.Decision, out.ReasonKind, out.Reason)
 	}
@@ -338,16 +338,16 @@ func (c *toolsUntilLast) Call(ctx context.Context, _, _ string, in CheckinReques
 }
 
 // A model that would read until its calls run out still answers within
-// the time cap, long before the call cap. The answer is due at 400ms, the
+// the time cap, long before the call cap. The answer is due at 700ms, the
 // cap less half of it, the policy's per-call time being longer; calls
-// take 120ms. Evidence calls start at 0, 120ms and 240ms, when one more
-// still ends before 400ms; at 360ms none would, so the fourth call is
+// take 180ms. Evidence calls start at 0, 180ms and 360ms, when one more
+// still ends before 700ms; at 540ms none would, so the fourth call is
 // the forced answer call, and no evidence call is started only to be
 // cut.
 func TestCheckinTimeCapLeavesTheAnswerCall(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9"}
-	chat := &toolsUntilLast{delay: 120 * time.Millisecond}
-	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 20, 1.5, 1, 2000, 800*time.Millisecond)
+	chat := &toolsUntilLast{delay: 180 * time.Millisecond}
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 20, 1.5, 1, 2000, 1400*time.Millisecond)
 	if out.Decision != CheckHandover || out.Handover != "go on" {
 		t.Fatalf("outcome = %+v, want the answer's handover", out)
 	}
@@ -1005,11 +1005,11 @@ func TestCheckinStatementNamesTheStuckRule(t *testing.T) {
 // check static where nothing changed), and the parser's guard clamps any
 // timeout the guidance names past the ceiling.
 func TestCheckinGuidanceStaysInToolBounds(t *testing.T) {
-	session := checkinSystemFor(CheckInSession, false)
+	session := checkinSystemFor(&CheckInAsk{Moment: CheckInSession})
 	if !strings.Contains(session, "600000 ms") || !strings.Contains(session, "bash check static") {
 		t.Fatalf("session persona lacks the shell tool's bounds:\n%s", session)
 	}
-	gate, dead := checkinSystemFor(CheckInGate, false), checkinSystemFor(CheckInDead, false)
+	gate, dead := checkinSystemFor(&CheckInAsk{Moment: CheckInGate}), checkinSystemFor(&CheckInAsk{Moment: CheckInDead})
 	for name, persona := range map[string]string{"gate": gate, "dead": dead} {
 		if strings.Contains(persona, "bash check static") || strings.Contains(persona, "600000 ms") {
 			t.Errorf("the %s persona carries the session guidance's bounds:\n%s", name, persona)
@@ -1030,24 +1030,29 @@ func TestCheckinGuidanceStaysInToolBounds(t *testing.T) {
 	}
 }
 
-// The gate persona is today's constant; the session and dead personas name
-// the rungs' action names, the session's continue carrying the message's
-// guidance, and none names the gate's verdict vocabulary.
+// gatePersona is the gate's persona while it offers the reverify, word
+// for word as it read before the decisions came from the ask.
+const gatePersona = `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"id":"f1","verdict":"confirmed|dropped|remark","evidence":"...","repeats":"<id>"}],"decision":"handover|reverify|hand_up","reason_kind":"...","reason":"...","handover":"..."}. "reverify" drops every finding and verifies the head again. Each finding is named by the id the findings list gave it, f1 on down, not by its text. repeats is optional: when the statement lists earlier findings and a finding repeats one in other words, name that earlier finding's id. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
+
+// The gate persona reads as it did while the reverify is offered; the
+// session and dead personas name the rungs' action names, the session's
+// continue carrying the message's guidance, and none names the gate's
+// verdict vocabulary.
 func TestCheckinSystemPerMoment(t *testing.T) {
-	if checkinSystemFor(CheckInGate, false) != checkinSystem {
-		t.Fatal("the gate persona is not today's constant")
+	if got := checkinSystemFor(&CheckInAsk{Moment: CheckInGate}); got != gatePersona {
+		t.Fatalf("the gate persona = %q, want it as it read", got)
 	}
-	session := checkinSystemFor(CheckInSession, false)
+	session := checkinSystemFor(&CheckInAsk{Moment: CheckInSession})
 	if !strings.Contains(session, `{"decision":"continue|handover|hand_up","guidance":"..."`) {
 		t.Fatalf("session persona lacks the answer's shape:\n%s", session)
 	}
 	if !strings.Contains(session, `A continue may carry guidance`) || !strings.Contains(session, `"handover" stops the session`) {
 		t.Fatalf("session persona does not carry the continue and handover rules:\n%s", session)
 	}
-	if with := checkinSystemFor(CheckInSession, true); !strings.Contains(with, `{"decision":"continue|handover|replan|hand_up"`) {
+	if with := checkinSystemFor(&CheckInAsk{Moment: CheckInSession, Replan: true}); !strings.Contains(with, `{"decision":"continue|handover|replan|hand_up"`) {
 		t.Fatalf("session persona offering replan lacks it:\n%s", with)
 	}
-	dead := checkinSystemFor(CheckInDead, false)
+	dead := checkinSystemFor(&CheckInAsk{Moment: CheckInDead})
 	if !strings.Contains(dead, `{"decision":"handover|hand_up","reason_kind":"..."`) {
 		t.Fatalf("dead persona lacks the answer's shape:\n%s", dead)
 	}
@@ -1165,6 +1170,36 @@ func TestParseCheckinAnswerRefusesOutsideItsEnums(t *testing.T) {
 	_, err := parseCheckinAnswer(`{"decision":"hand_up","reason_kind":"policy class","reason":"r"}`, ask)
 	if err == nil || err.Error() != `unknown reason_kind "policy class"; allowed: goal_conflict, spend_above_policy, policy_class, access_factory_lacks` {
 		t.Fatalf("a free-text reason_kind = %v, want the reason kind named", err)
+	}
+}
+
+// While a merge conflict stands on the head the session starts on, the
+// gate's check-in is offered no reverify: its decision enum and its
+// persona's answer shape hold handover and hand_up alone, the persona
+// names no reverify, a reverify that drops every finding is refused naming
+// them, which the same ask with no conflict takes, and the statement says
+// the conflict.
+func TestGateCheckinOffersNoReverifyOnAMergeConflict(t *testing.T) {
+	ask := &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "f", Source: "review"}}}
+	dropped := `{"findings":[{"text":"f","verdict":"dropped","evidence":"internal/factoryd/store.go:672 at main: func (s *PGStore) TasksByPR"}],"decision":"reverify"}`
+	if _, err := parseCheckinAnswer(dropped, ask); err != nil {
+		t.Fatalf("no conflict: the reverify = %v, want it taken", err)
+	}
+	ask.Conflict = "the branch conflicts with its base: status 409"
+	props := momentAnswerSchema(ask)["properties"].(map[string]any)
+	if got := props["decision"].(map[string]any)["enum"].([]string); !slices.Equal(got, []string{CheckHandover, RungHandUp}) {
+		t.Fatalf("the decision enum = %v, want handover and hand_up alone", got)
+	}
+	if _, err := parseCheckinAnswer(dropped, ask); err == nil || err.Error() != `unknown decision "reverify"; allowed: handover, hand_up` {
+		t.Fatalf("conflict: the reverify = %v, want it refused naming handover and hand_up", err)
+	}
+	persona := checkinSystemFor(ask)
+	if strings.Contains(persona, "reverify") || !strings.Contains(persona, `"decision":"handover|hand_up","reason_kind"`) {
+		t.Fatalf("the persona under a conflict = %q, want handover and hand_up alone and no reverify", persona)
+	}
+	said := "The pull request does not merge into main: the branch conflicts with its base: status 409.\n"
+	if got := checkinStatement(ask, nil, 3, 1, 500); !strings.Contains(got, said) || strings.Contains(got, "reverify") {
+		t.Fatalf("statement lacks %q or names a reverify:\n%s", said, got)
 	}
 }
 
@@ -1382,14 +1417,14 @@ func TestCheckinOffersReplanOnlyWhenTheCardCanBeCut(t *testing.T) {
 	if got := statement(false); strings.Contains(got, "- replan:") {
 		t.Fatalf("an uncuttable card's statement offers replan:\n%s", got)
 	}
-	if got := checkinSystemFor(CheckInSession, true); !strings.Contains(got, `{"decision":"continue|handover|replan|hand_up","guidance":"..."`) {
+	if got := checkinSystemFor(&CheckInAsk{Moment: CheckInSession, Replan: true}); !strings.Contains(got, `{"decision":"continue|handover|replan|hand_up","guidance":"..."`) {
 		t.Fatalf("a cuttable card's persona lacks replan in its answer shape:\n%s", got)
 	}
-	if got := checkinSystemFor(CheckInSession, false); strings.Contains(got, "|replan") {
+	if got := checkinSystemFor(&CheckInAsk{Moment: CheckInSession}); strings.Contains(got, "|replan") {
 		t.Fatalf("an uncuttable card's persona offers replan:\n%s", got)
 	}
 	for _, moment := range []string{CheckInGate, CheckInDead} {
-		if checkinSystemFor(moment, true) != checkinSystemFor(moment, false) {
+		if checkinSystemFor(&CheckInAsk{Moment: moment, Replan: true}) != checkinSystemFor(&CheckInAsk{Moment: moment}) {
 			t.Errorf("the %s persona follows replan", moment)
 		}
 	}
@@ -1639,7 +1674,7 @@ func TestMomentAnswerSchemaOffersRepeatsOnlyWithPriors(t *testing.T) {
 	if !reflect.DeepEqual(got["enum"], []string{"aaaaaaaaaaaa", "bbbbbbbbbbbb"}) {
 		t.Fatalf("repeats = %v, want the enum of the listed ids", got)
 	}
-	if !strings.Contains(checkinSystem, `"repeats":"<id>"`) {
+	if !strings.Contains(checkinSystemFor(&CheckInAsk{Moment: CheckInGate}), `"repeats":"<id>"`) {
 		t.Fatal("the persona's answer shape omits repeats")
 	}
 }

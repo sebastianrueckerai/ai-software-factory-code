@@ -17,8 +17,10 @@ import (
 )
 
 // A plan card's session that ends without a push may have found its work
-// on main already: the proofs of the criteria the card cites run at
-// main's head, and when every one passes the card closes done. The run is
+// on main already: while the card's branch holds no work main lacks, the
+// proofs of the criteria the card cites run at main's head, and when
+// every one passes the card closes done. An invariant the card cites
+// counts for nothing: it holds before the work as after it. The run is
 // blind: it opens no proof, writes no row and records no event, and its
 // line and its finding name the criteria alone.
 
@@ -40,36 +42,44 @@ type mainOutcome struct {
 }
 
 // ProofsAtMain runs the proofs of the criteria plan card taskID cites at
-// main's head in one runner pod: each cited invariant's suite and each
-// cited criterion's stored or opened proof. A flagged stored proof makes
-// no run, nor does a criterion without a proof. A task no plan filed, the
-// plan's integration card, which closes through the criteria gate, and a
-// card that cites nothing answer ProofsAtMain{}. A pod that ended early
-// leaves the criteria it did not reach no report. A sandbox that cannot
-// start is its line and ProofsAtMain{}, so the card goes on.
+// main's head in one runner pod: each cited criterion's stored or opened
+// proof, no invariant. A flagged stored proof makes no run, nor does a
+// criterion without a proof. A task no plan filed, the plan's integration
+// card, which closes through the criteria gate, a card that cites no
+// criterion but invariants, and a card whose branch holds work main
+// lacks answer ProofsAtMain{}, as does a branch that cannot be read, with
+// its error. A pod that ended early leaves the criteria it did not reach
+// no report. A sandbox that cannot start is its line and ProofsAtMain{},
+// so the card goes on.
 func (r *Runner) ProofsAtMain(ctx context.Context, taskID string) (ProofsAtMain, error) {
 	defer beatUntilDone(ctx, "proofs at main")()
 	t, repo, err := r.task(ctx, taskID)
-	if err != nil || t.Source != SourcePlan || t.Parent == "" {
+	if err != nil || !t.PlanCard() {
 		return ProofsAtMain{}, err
 	}
 	p, _, err := planOfStore(ctx, r.store, t.Parent, t.ID)
 	if err != nil || roleOf(p, t.PlanKey) == RoleIntegration {
 		return ProofsAtMain{}, err
 	}
+	rows, err := r.store.PlanProofs(ctx, t.Parent)
+	if err != nil {
+		return ProofsAtMain{}, err
+	}
+	runs := slices.DeleteFunc(gateRuns(p, rows), criterionRun.holdout)
 	ids, err := r.cardCriteria(ctx, t, p)
+	ids = slices.DeleteFunc(ids, func(id string) bool {
+		return slices.ContainsFunc(runs, func(c criterionRun) bool { return c.id == id && c.kind == CriterionInvariant })
+	})
 	if err != nil || len(ids) == 0 {
 		return ProofsAtMain{}, err
 	}
-	rows, err := r.store.PlanProofs(ctx, t.Parent)
-	if err != nil {
+	if ahead, err := r.workAhead(ctx, t); ahead != "" || err != nil {
 		return ProofsAtMain{}, err
 	}
 	head, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
 	if err != nil {
 		return ProofsAtMain{}, err
 	}
-	runs := slices.DeleteFunc(gateRuns(p, rows), criterionRun.holdout)
 	outcomes := map[string]string{}
 	var entries []harness.Proof
 	for _, id := range ids {
@@ -83,7 +93,7 @@ func (r *Runner) ProofsAtMain(ctx context.Context, taskID string) (ProofsAtMain,
 		}
 	}
 	if len(entries) > 0 {
-		_, ran, err := r.runAt(ctx, t, repo, branchRef(prBase), head, entries)
+		_, ran, err := r.runAt(ctx, t, repo, "", head, entries)
 		var f *startFailure
 		if errors.As(err, &f) {
 			r.record(ctx, t.ID, "proofs_at_main", map[string]any{"head": head, "start_failed": f.text})
@@ -114,8 +124,26 @@ func (r *Runner) ProofsAtMain(ctx context.Context, taskID string) (ProofsAtMain,
 	return ProofsAtMain{Head: head, Findings: []string{"the proofs of " + textutil.AndList(unmet) + " are not met at main " + at}}, nil
 }
 
+// workAhead is the head of card t's branch on the fork while main lacks
+// it, or "" when the fork holds no branch for the card past its base or
+// main holds the branch's head.
+func (r *Runner) workAhead(ctx context.Context, t Task) (head string, err error) {
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return "", err
+	}
+	if head, err = r.branchHead(ctx, t, repo); err != nil || head == "" {
+		return "", err
+	}
+	base, err := r.forgejo.MergeBase(ctx, repo.Owner, repo.Name, r.forgejo.Fork(repo).Owner, head)
+	if err != nil || base == head {
+		return "", err
+	}
+	return head, nil
+}
+
 // runAt runs entries at head of ref in a sandbox of t's, torn down when
-// they end.
+// they end. An empty ref fetches head itself.
 func (r *Runner) runAt(ctx context.Context, t Task, repo Repo, ref, head string, entries []harness.Proof) (map[string]harness.ProofRun, map[string]proofOutcome, error) {
 	done, err := r.reproSandbox(ctx, &t, repo)
 	if err != nil {
@@ -180,25 +208,39 @@ func runIDs(runs []criterionRun) []string {
 }
 
 // untestedRuns are plan id's runnableRuns on the rows of its last card,
-// home.
-func (r *Runner) untestedRuns(ctx context.Context, id string) ([]criterionRun, Plan, Task, error) {
+// home: every row while the card's pull request is open, else the rows
+// that settle a promise as the plan's gate g stands (planGate.settling).
+func (r *Runner) untestedRuns(ctx context.Context, id string) ([]criterionRun, Plan, Task, planGate, error) {
 	p, _, err := planOfStore(ctx, r.store, id, "")
 	if err != nil {
-		return nil, Plan{}, Task{}, err
+		return nil, Plan{}, Task{}, planGate{}, err
 	}
 	home, err := IntegrationCard(ctx, r.store, id, p)
 	if err != nil {
-		return nil, Plan{}, Task{}, err
+		return nil, Plan{}, Task{}, planGate{}, err
 	}
 	rows, err := r.store.CriteriaVerdicts(ctx, home.ID)
 	if err != nil {
-		return nil, Plan{}, Task{}, err
+		return nil, Plan{}, Task{}, planGate{}, err
+	}
+	g, err := planGateOf(ctx, r.store, id, home)
+	if err != nil {
+		return nil, Plan{}, Task{}, planGate{}, err
+	}
+	if !runsAtPull(home) {
+		rows = g.settling(rows)
 	}
 	proofs, err := r.store.PlanProofs(ctx, id)
 	if err != nil {
-		return nil, Plan{}, Task{}, err
+		return nil, Plan{}, Task{}, planGate{}, err
 	}
-	return runnableRuns(p, proofs, rows), p, home, nil
+	return runnableRuns(p, proofs, rows), p, home, g, nil
+}
+
+// runsAtPull says a run of a plan's tests on its last card home runs at
+// the head of the card's open pull request, not at main's.
+func runsAtPull(home Task) bool {
+	return home.PRNumber != 0 && !Final(home.Status) && home.Status != "merged"
 }
 
 // askTestRun is run_criteria on card t, a plan or its last card, by whom:
@@ -216,7 +258,7 @@ func (r *Runner) askTestRun(ctx context.Context, t Task, by string) ([]CaseActio
 	if err != nil {
 		return nil, err
 	}
-	runs, _, home, err := r.untestedRuns(ctx, id)
+	runs, _, home, _, err := r.untestedRuns(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +276,7 @@ func (r *Runner) askTestRun(ctx context.Context, t Task, by string) ([]CaseActio
 	case r.gateRunning(id) || len(asked) > 0 && (asked[0].Detail["outcome"] == gateAsked || asked[0].Detail["outcome"] == gateStarted):
 		return nil, ErrActRefused("the plan's tests run now: their results land on its promises within minutes")
 	}
-	try := gateTry{plan: plan, card: home, attempt: fmt.Sprint(gateAttempts(asked) + 1), by: by}
+	try := gateTry{plan: plan, card: home, attempt: fmt.Sprint(gateAttempts(asked) + 1), by: by, pr: home.PRNumber}
 	if _, err := r.store.Record(ctx, Event{Repository: plan.Repository, TaskID: id, IssueNumber: plan.IssueNumber, Kind: EventCriteriaGateRun,
 		Actor: by, Via: ViaFactoryd, Detail: try.detail(gateAsked, "", "")}); err != nil {
 		return nil, fmt.Errorf("record the run of the tests: %w", err)
@@ -269,7 +311,7 @@ func (r *Runner) healTests(ctx context.Context, id string, p Plan) {
 			by, _ := newest.Detail["by"].(string)
 			attempt, _ := newest.Detail["attempt"].(string)
 			commit, _ := newest.Detail["commit"].(string)
-			r.recordTry(ctx, gateTry{plan: plan, card: home, attempt: attempt, by: by}, gateCut, commit, "the factory restarted while they ran")
+			r.recordTry(ctx, gateTry{plan: plan, card: home, attempt: attempt, by: by, pr: home.PRNumber}, gateCut, commit, "the factory restarted while they ran")
 		}
 	}
 }
@@ -286,7 +328,7 @@ func (r *Runner) healTests(ctx context.Context, id string, p Plan) {
 // promise's page shows. Only the newest press, still asked, runs.
 func (r *Runner) runTests(ctx context.Context, id string) {
 	rctx := context.WithoutCancel(ctx)
-	runs, p, home, err := r.untestedRuns(ctx, id)
+	runs, p, home, g, err := r.untestedRuns(ctx, id)
 	if err != nil {
 		log.Printf("plan %s: the tests no test ran: %s", id, r.Scrub.String(err.Error()))
 		return
@@ -302,21 +344,20 @@ func (r *Runner) runTests(ctx context.Context, id string) {
 	}
 	by, _ := asked[0].Detail["by"].(string)
 	attempt, _ := asked[0].Detail["attempt"].(string)
-	try := gateTry{plan: plan, card: home, attempt: attempt, by: by}
+	try := &gateTry{plan: plan, card: home, attempt: attempt, by: by, pr: home.PRNumber}
 	switch {
 	case len(runs) == 0:
-		r.recordTry(rctx, try, gateCut, "", "no test was left to run")
+		r.recordTry(rctx, *try, gateCut, "", "no test was left to run")
 		return
 	case r.planClosed(ctx, id):
-		r.recordTry(rctx, try, gateCut, "", "the plan closed")
+		r.recordTry(rctx, *try, gateCut, "", "the plan closed")
 		return
 	case Final(home.Status) && !r.planAtRest(ctx, plan):
-		r.recordTry(rctx, try, gateCut, "", "the plan is being planned again")
+		r.recordTry(rctx, *try, gateCut, "", "the plan is being planned again")
 		return
 	}
-	ref := branchRef(prBase)
-	var head string
-	if home.PRNumber != 0 && !Final(home.Status) && home.Status != "merged" {
+	var ref, head string
+	if runsAtPull(home) {
 		var pr PullRequestRef
 		pr, err = r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, home.PRNumber)
 		ref, head = pullRef(home.PRNumber), pr.HeadSHA
@@ -325,11 +366,23 @@ func (r *Runner) runTests(ctx context.Context, id string) {
 	}
 	if err != nil {
 		log.Printf("plan %s: the head of the tests no test ran: %s", id, r.Scrub.String(err.Error()))
-		r.recordTry(rctx, try, gateCut, "", "the head of its code could not be read")
+		r.recordTry(rctx, *try, gateCut, "", "the head of its code could not be read")
 		return
 	}
-	if !r.fundTry(ctx, try, head) {
+	if !r.fundTry(ctx, *try, head) {
 		return
+	}
+	if ref == "" {
+		// a run at main's head settles on main as the factory's own does
+		// (runCriteriaGate): the rows that judge no head on main go first
+		if !g.onMain {
+			if err := r.withdrawOffMain(rctx, id, p, home.ID); err != nil {
+				log.Printf("plan %s: withdraw the rows that judge no head on main: %s", id, r.Scrub.String(err.Error()))
+				r.recordTry(rctx, *try, gateCut, head, "its older results could not be withdrawn")
+				return
+			}
+		}
+		try.pr, try.mark = 0, g.mark
 	}
 	entries := make([]harness.Proof, 0, len(runs))
 	for _, c := range runs {
@@ -346,13 +399,19 @@ func (r *Runner) runTests(ctx context.Context, id string) {
 			results[c.id] = gateResult{outcome: outcomes[c.id], output: run.Output, ran: ok && run.Started, artifacts: run.Artifacts, dropped: run.Dropped}
 		}
 		rep := criteriaReport(p, head, runs, results)
-		if err := r.store.PutCriteriaVerdicts(gctx, home.ID, CriteriaSourceGate, FactoryDecider, gateRows(rep.proofs)); err != nil {
+		// a run on the card's pull request writes as the card, which a card
+		// that ended since refuses (ErrCardEnded)
+		writer := ""
+		if ref != "" {
+			writer = home.ID
+		}
+		if err := r.store.PutGateVerdicts(gctx, writer, home.ID, CriteriaSourceGate, gateRows(rep.proofs), nil); err != nil {
 			return &tryFault{"its results could not be stored", err}
 		}
-		if err := r.store.PutCriteriaVerdicts(gctx, home.ID, CriteriaSourceJudgement, FactoryDecider, rep.noVerdict); err != nil {
+		if err := r.store.PutGateVerdicts(gctx, writer, home.ID, CriteriaSourceJudgement, rep.noVerdict, nil); err != nil {
 			return &tryFault{"its results could not be stored", err}
 		}
-		if _, _, _, err := r.judgeArtifacts(gctx, home, home.ID, p, rep.artifacts); err != nil {
+		if _, _, _, err := r.judgeArtifacts(gctx, home, writer, home.ID, p, rep.artifacts); err != nil {
 			return &tryFault{"the model's judgement failed", err}
 		}
 		r.record(gctx, id, "criteria_run", map[string]any{"task": home.ID, "ref": ref, "head": head, "by": by, "proofs": rep.proofs})

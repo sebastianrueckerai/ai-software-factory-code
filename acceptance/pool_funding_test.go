@@ -180,7 +180,7 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 		"confirmed_eur": 12.0, "to_eur": 12.0, "reason": "the review findings cost money", "pr": "sf/infra#101"})
 
 	// the agent's fund of 1 EUR: no human click, the card's live case
-	// answered on rung 2
+	// answered on rung 2 as the chat user
 	r.SetLoadedAutonomy(policy.AutonomyAutonomous)
 	fund := `{"task_id":"t-e","eur":1,"text":"the replica is worth it"}`
 	equal(t, "the unattended fund", agentCall(t, r, path, ck, csrf, "fund", fund, "funded it"), []string{
@@ -188,7 +188,7 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 		`applied {"result":"Case 1 took fund.","tool":"fund"}`,
 		`text {"text":"funded it"}`, `done {}`})
 	equal(t, "the agent's answer", lastAct(t, r),
-		[]any{"t-e", int64(1), "anna", factoryd.ViaChat, 2, factoryd.ActFund, 1.0, "the replica is worth it"})
+		[]any{"t-e", int64(1), factoryd.ChatUser, factoryd.ViaChat, 2, factoryd.ActFund, 1.0, "the replica is worth it"})
 	card, _, _ := r.Task(t.Context(), "t-e")
 	equal(t, "the card's budget", card.BudgetEUR, 3.0)
 	equal(t, "the pool line after the agent's fund", poolLineOf(t, r, now), []any{12.0, 4.0, true, false,
@@ -243,8 +243,9 @@ func TestPoolEscalationFallback(t *testing.T) {
 		Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#13 needs you: fund?", TaskID: "t-e"}); err != nil {
 		t.Fatal(err)
 	}
-	const spent = "the escalation pool leaves 30 sessions, 1800 minutes of agent time and 0.50 EUR this month: only the human draws more"
-	if got := (&factoryd.DrawBoundError{Left: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 0.5}}).Error(); got != spent {
+	const spent = "the escalation pool leaves 30 sessions, 1800 minutes of agent time and 0.50 EUR this month: only the human draws more. " +
+		"This draw does not fit in EUR (asked 1.00, left 0.50). The largest draw that fits is 0 sessions, 0 seconds of agent time and 0.50 EUR: ask for that"
+	if got := (&factoryd.DrawBoundError{Want: policy.Draw{EUR: 1}, Left: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 0.5}, Fit: policy.Draw{EUR: 0.5}}).Error(); got != spent {
 		t.Fatalf("the store's refusal reads %q, want %q", got, spent)
 	}
 	r.RefuseActs(spent)
@@ -253,7 +254,7 @@ func TestPoolEscalationFallback(t *testing.T) {
 		`tool {"arguments":` + raise + `,"duration_ms":0,"name":"fund","result":"Refused: ` + spent + `"}`,
 		`text {"text":"the human decides"}`, `done {}`})
 	equal(t, "the refused call's status", lastToolRow(t, r, "anna", "fund").Status, http.StatusConflict)
-	equal(t, "the refused answer", lastAct(t, r), []any{"t-e", int64(1), "anna", factoryd.ViaChat, 2, factoryd.ActFund, 1.0, "the replica is worth it"})
+	equal(t, "the refused answer", lastAct(t, r), []any{"t-e", int64(1), factoryd.ChatUser, factoryd.ViaChat, 2, factoryd.ActFund, 1.0, "the replica is worth it"})
 	card, _, _ := r.Task(t.Context(), "t-e")
 	if card.BudgetEUR != 2 || card.Status != "waiting-human" {
 		t.Fatalf("the refusal moved the card to %v %v", card.BudgetEUR, card.Status)
@@ -281,8 +282,8 @@ func TestPoolEscalationFallback(t *testing.T) {
 			notes = append(notes, e)
 		}
 	}
-	if len(notes) != 1 || notes[0].TaskID != "t-e" || notes[0].Actor != "anna" || notes[0].Via != factoryd.ViaChat {
-		t.Fatalf("the analysis rows = %+v, want anna's chat row on t-e", notes)
+	if len(notes) != 1 || notes[0].TaskID != "t-e" || notes[0].Actor != factoryd.ChatUser || notes[0].Via != factoryd.ViaChat {
+		t.Fatalf("the analysis rows = %+v, want the project agent's chat row on t-e", notes)
 	}
 	equal(t, "the analysis row's detail", notes[0].Detail,
 		map[string]any{"found": found, "recommendation": "Grant one sizing exception", "source": "agent"})

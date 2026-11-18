@@ -37,11 +37,16 @@ type fakeWorkerEndpoint struct {
 	texts  []string
 	briefs []string // the raw body of each POST /brief
 	lists  []string // the raw body of each POST /proofs
+	bounds []string // the raw body of each POST /bound
 	onPush func()
 	// onTool answers POST /tool with its status and body; tools records
 	// every ask as the tool's name with its args
 	onTool func(name string, args map[string]any) (int, string)
 	tools  []string
+	// messageSeen carries one signal per POST /message: a test that
+	// waits on it observes the worker's posts by synchronization, not
+	// by polling its texts. nil: no signal is sent.
+	messageSeen chan struct{}
 }
 
 func (f *fakeWorkerEndpoint) start(t *testing.T, r *Runner) {
@@ -66,8 +71,16 @@ func (f *fakeWorkerEndpoint) start(t *testing.T, r *Runner) {
 			f.briefs = append(f.briefs, string(b))
 		case "/proofs":
 			f.lists = append(f.lists, string(b))
+		case "/bound":
+			f.bounds = append(f.bounds, string(b))
 		}
 		status := f.status
+		if req.Method == http.MethodPost && req.URL.Path == "/message" && f.messageSeen != nil {
+			select {
+			case f.messageSeen <- struct{}{}:
+			default:
+			}
+		}
 		f.mu.Unlock()
 		if req.URL.Path == "/tool" {
 			if args, err := json.Marshal(in.Args); err == nil {
@@ -1091,6 +1104,45 @@ func TestMessageSessionReachesTheRunningSession(t *testing.T) {
 	}
 	if err := runner.MessageSession(t.Context(), "t3", "anna", "hello"); !errors.Is(err, ErrNoLiveSession) {
 		t.Fatalf("MessageSession to a task without a session = %v, want ErrNoLiveSession", err)
+	}
+}
+
+// A writer's message to a card whose session is in its start check-in is
+// refused as such, naming since when, not as a card between sessions; the
+// check-in hands over, the agent runs, and once the session ended the
+// card is between sessions again.
+func TestMessageSessionNamesAStartingSession(t *testing.T) {
+	runner, _, _, worker, chat, _, _ := checkinRig(t, `{"decision":"handover","handover":"start from the tests"}`)
+	begun := time.Now()
+	var during error
+	var asked time.Time
+	chat.onCall = func() {
+		asked = time.Now()
+		during = runner.MessageSession(t.Context(), "t2", "anna", "rebase on main first")
+	}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Sessions: 3, Model: "m",
+		CheckInAsk: &CheckInAsk{Moment: CheckInDead, Stop: "wall clock"}}, nil,
+		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed {
+		t.Fatalf("result = (%+v, %v), want the session run after the check-in", res, err)
+	}
+	var starting *SessionStartingError
+	if !errors.Is(during, ErrSessionStarting) || errors.Is(during, ErrNoLiveSession) || !errors.As(during, &starting) {
+		t.Fatalf("MessageSession during the start check-in = %v, want ErrSessionStarting", during)
+	}
+	if starting.Since.Before(begun) || starting.Since.After(asked) {
+		t.Fatalf("the check-in runs since %v, want between the session's call %v and the message %v", starting.Since, begun, asked)
+	}
+	worker.mu.Lock()
+	texts := slices.Clone(worker.texts)
+	worker.mu.Unlock()
+	for _, text := range texts {
+		if strings.HasPrefix(text, "POST /message ") {
+			t.Errorf("worker got %q, want no message during the start check-in", text)
+		}
+	}
+	if err := runner.MessageSession(t.Context(), "t2", "anna", "hello"); !errors.Is(err, ErrNoLiveSession) {
+		t.Fatalf("MessageSession after the session = %v, want ErrNoLiveSession", err)
 	}
 }
 

@@ -96,11 +96,8 @@ const (
 	maxHoldoutText = 200
 )
 
-// pullRef is a pull request's head ref, branchRef a branch's: what a
-// repro pod fetches.
+// pullRef is a pull request's head ref: what a repro pod fetches.
 func pullRef(pr int64) string { return fmt.Sprintf("refs/pull/%d/head", pr) }
-
-func branchRef(branch string) string { return "refs/heads/" + branch }
 
 // holdoutEntry is a hold-out's id in the runner's list: criterionID
 // admits no hyphen, so it never meets a criterion's.

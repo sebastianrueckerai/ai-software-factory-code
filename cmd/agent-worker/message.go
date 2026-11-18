@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
@@ -45,13 +46,14 @@ func bearer(tokenSHA256 [32]byte, w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// messageHandler serves factoryd's two requests into the pod, each with
-// the session's bearer: POST /message {text}, handed to send, the
-// harness's Message, and POST /push {token, name}, which gate takes.
+// messageHandler serves factoryd's requests into the pod, each with the
+// session's bearer: POST /message {text}, handed to send, the harness's
+// Message, POST /push {token, name}, which gate takes, and POST /bound
+// {lines}, the card's raised line bound, which the end push reads.
 // messageHandler serves factoryd's messages: text for the agent's next
 // turn, with model when the session continues on another model from then
 // on (roadmap 222, item 5).
-func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe, wip *wipServe) http.Handler {
+func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe, wip *wipServe, bound *atomic.Int64) http.Handler {
 	mux := http.NewServeMux()
 	authorized := func(w http.ResponseWriter, r *http.Request) bool { return bearer(tokenSHA256, w, r) }
 	mux.HandleFunc("POST /message", func(w http.ResponseWriter, r *http.Request) {
@@ -95,6 +97,20 @@ func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.
 			http.Error(w, "no push waits for a token", http.StatusConflict)
 			return
 		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /bound", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
+			return
+		}
+		var in struct {
+			Lines int `json:"lines"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&in); err != nil || in.Lines <= 0 {
+			http.Error(w, "want {\"lines\": a positive whole number of changed lines}", http.StatusBadRequest)
+			return
+		}
+		bound.Store(int64(in.Lines))
 		w.WriteHeader(http.StatusNoContent)
 	})
 	ck.serve(mux, authorized)
@@ -187,14 +203,20 @@ func (g *pushGate) ask(commit string, wait time.Duration, w io.Writer) (pushCred
 }
 
 // serveMessages serves the session's messageHandler until the returned stop.
-func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe, wip *wipServe, log func(string, ...any)) (stop func(), err error) {
-	return servePort(messageHandler(tokenSHA256, gate, send, ck, wip), log)
+func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe, wip *wipServe, bound *atomic.Int64, log func(string, ...any)) (stop func(), err error) {
+	return servePort(messageHandler(tokenSHA256, gate, send, ck, wip, bound), log)
 }
 
-// servePort serves h on harness.MessagePort until the returned stop, which
-// lets the requests in flight finish.
+// listenPort opens the listener servePort serves on: harness.MessagePort
+// on every interface. A var, so a test can hand it a free loopback port.
+var listenPort = func() (net.Listener, error) {
+	return net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort)) // #nosec G102 -- the harness reaches this endpoint across the pod network; its handler rejects every request without the session token
+}
+
+// servePort serves h on listenPort's listener until the returned stop,
+// which lets the requests in flight finish.
 func servePort(h http.Handler, log func(string, ...any)) (stop func(), err error) {
-	ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort)) // #nosec G102 -- the harness reaches this endpoint across the pod network; its handler rejects every request without the session token
+	ln, err := listenPort()
 	if err != nil {
 		return nil, err
 	}

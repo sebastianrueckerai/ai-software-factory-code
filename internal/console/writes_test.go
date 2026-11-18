@@ -422,8 +422,8 @@ func TestChatAnswerTextsBoundedAtMaxAnswer(t *testing.T) {
 // depend on the other's as the bot, with one dependency_set row via chat,
 // and offers its inverse as the undo. A card that started refuses, a
 // process without the dependencies block refuses, a cycle refuses naming
-// the dependency that closes it; remove takes the edge off both, and its
-// undo puts it back.
+// the dependency or the hold that closes it; remove takes the edge off
+// both, and its undo puts it back.
 func TestChatSetDependency(t *testing.T) {
 	r, g := newWritesRig(t)
 	withPlan(r)
@@ -445,26 +445,28 @@ func TestChatSetDependency(t *testing.T) {
 	}
 	chatRows(t, r.events, before, "sebastian", row(false))
 
+	r.tasks.setHold("t-k1", &factoryd.CardHold{Reason: "after #32", Release: "t-k2", By: "sebastian"})
 	for _, tc := range []struct {
 		in   toolInput
 		code int
 		want string
 	}{
+		{toolInput{TaskID: "t-k2", DependsOn: "t-k1"}, http.StatusConflict, "#31 already waits on #32, through its dependencies or a hold, so #32 cannot depend on #31."},
 		{toolInput{TaskID: "t-r", DependsOn: "t-a"}, http.StatusConflict,
 			"Card #11 runs an agent session, not a card that has not started: steer sends its session a message; its pull request comes when the session ends."},
 		{toolInput{TaskID: "t-m", DependsOn: "t-a"}, http.StatusConflict, "Process maintenance has no dependencies block: its cards do not wait on others."},
-		{toolInput{TaskID: "t-a", DependsOn: "t-b"}, http.StatusConflict, "#22 already depends on #21, so #21 cannot depend on #22."},
+		{toolInput{TaskID: "t-a", DependsOn: "t-b"}, http.StatusConflict, "#22 already waits on #21, through its dependencies or a hold, so #21 cannot depend on #22."},
 		{toolInput{TaskID: "t-b", DependsOn: "t-a"}, http.StatusConflict, "#22 already depends on #21."},
 		{toolInput{TaskID: "t-a", DependsOn: "t-done"}, http.StatusConflict,
 			"Card #7 is done, not a card that is not final: a new card continues the work."},
 		{toolInput{TaskID: "t-a", DependsOn: "t-m", Remove: true}, http.StatusConflict, "#21 does not depend on #5."},
 		{toolInput{TaskID: "t-a", DependsOn: "t-a"}, http.StatusBadRequest, "a card cannot depend on itself"},
 		{toolInput{TaskID: "t-k1", DependsOn: "t-d"}, http.StatusConflict,
-			"#31 is in plan #30 and #33 is in no plan. A dependency joins cards of one plan only. Ask for the change in plan #30."},
+			"#31 is in plan #30 and #33 is in no plan. A dependency joins cards of one plan only: to keep #31 from starting until #33 is merged or done, hold #31 with #33 as its release card (hold_card, or Hold on its drawer)."},
 		{toolInput{TaskID: "t-d", DependsOn: "t-k1"}, http.StatusConflict,
-			"#33 is in no plan and #31 is in plan #30. A dependency joins cards of one plan only. Ask for #33 in plan #30."},
+			"#33 is in no plan and #31 is in plan #30. A dependency joins cards of one plan only: to keep #33 from starting until #31 is merged or done, hold #33 with #31 as its release card (hold_card, or Hold on its drawer)."},
 		{toolInput{TaskID: "t-d2", DependsOn: "t-d"}, http.StatusConflict,
-			"#34 is in no plan and #33 is in no plan. A dependency joins cards of one plan only. Wait for #33 to finish and file #34 again after it, or file the work of both as one plan."},
+			"#34 is in no plan and #33 is in no plan. A dependency joins cards of one plan only: to keep #34 from starting until #33 is merged or done, hold #34 with #33 as its release card (hold_card, or Hold on its drawer)."},
 	} {
 		code, msg := refused(t, r, "set_dependency", tc.in)
 		equal(t, "set_dependency "+tc.in.TaskID+" on "+tc.in.DependsOn, []any{code, msg}, []any{tc.code, tc.want})
@@ -507,6 +509,23 @@ func TestChatSetDependencyInsideAPlan(t *testing.T) {
 	gone := "#31 no longer depends on #33."
 	equal(t, "removal", done, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_dependency","result":"` + gone + `"}`,
 		`applied {"result":"` + gone + `","tool":"set_dependency","undo":"TOKEN"}`, `done {}`})
+}
+
+// set_dependency between a plan's card and the successor that carries
+// another key of that plan joins two cards of one plan.
+func TestChatSetDependencyOnAPlanCardsSuccessor(t *testing.T) {
+	r, g := newWritesRig(t)
+	withPlan(r)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-ks", Kind: "agent", Status: "queued", Track: policy.TrackDirect,
+		Process: "spec", Repository: "sf/code", IssueNumber: 35, Objective: "Add the first link, carried on.", Source: factoryd.SourceSuccessor,
+		Parent: "t-pl", PlanKey: "first"}})
+	r.tasks.mu.Unlock()
+	args := `{"task_id":"t-k2","depends_on":"t-ks"}`
+	_, done, _ := proposeAndDo(t, r, g, "set_dependency", args)
+	set := "#32 depends on #35 now."
+	equal(t, "Do it", done, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_dependency","result":"` + set + `"}`,
+		`applied {"result":"` + set + `","tool":"set_dependency","undo":"TOKEN"}`, `done {}`})
 }
 
 // new_card takes a track with its one-line reason, and a size: the
@@ -1378,6 +1397,14 @@ func TestCloseADonePlan(t *testing.T) {
 	}
 	r.tasks.planClosed = map[string]time.Time{"t-cl": time.Now()}
 	r.tasks.mu.Unlock()
+	// each integration card merged at the head its criteria gate judged
+	r.events.mu.Lock()
+	for _, id := range []string{"t-lr-int", "t-one-int", "t-fp-int", "t-cl-int", "t-cc-int"} {
+		r.events.rows = append(r.events.rows,
+			factoryd.Event{TaskID: id, Kind: factoryd.EventCriteriaJudged, Detail: map[string]any{"head": "h-" + id}},
+			factoryd.Event{TaskID: id, Kind: factoryd.EventPullRequestMerged, Detail: map[string]any{"by": factoryd.MergeUser, "head": "h-" + id}})
+	}
+	r.events.mu.Unlock()
 	var closes []string
 	closeErr := error(nil)
 	decide := func(id, note string, approver bool) (int, error) {
@@ -1392,7 +1419,7 @@ func TestCloseADonePlan(t *testing.T) {
 		}
 		return open, nil
 	}
-	r.c.cfg.CheckClosePlan = func(_ context.Context, id, note string, approver bool) error {
+	r.c.cfg.CheckClosePlan = func(_ context.Context, id, _, note string, approver bool) error {
 		_, err := decide(id, note, approver)
 		return err
 	}
@@ -1457,7 +1484,7 @@ func TestCloseADonePlan(t *testing.T) {
 	// the sweep's finishing step posts the words between factoryd's write
 	// and the console's post: the issue carries them once
 	closeErr = nil
-	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
 	const issue53 = "/api/v1/repos/sf/code/issues/53/comments"
 	words := "closed by sebastian: swept first; its merged cards stay on main"
 	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, bool, error) {
@@ -1490,7 +1517,7 @@ func TestCloseADonePlanNeedsAnApprover(t *testing.T) {
 	r.tasks.mu.Unlock()
 	r.fg.deps = map[string][]map[string]any{"/api/v1/repos/sf/code/issues/51/dependencies": dependsOn(7)}
 	var approvers []bool
-	r.c.cfg.CheckClosePlan = func(_ context.Context, _, _ string, approver bool) error {
+	r.c.cfg.CheckClosePlan = func(_ context.Context, _, _, _ string, approver bool) error {
 		approvers = append(approvers, approver)
 		return factoryd.ErrNotApprover
 	}
@@ -1514,7 +1541,7 @@ func TestClosePlanAnswerNamesMergedCardsOnlyWhenThereAreSome(t *testing.T) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-mm", Kind: "agent", Status: "done", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 71, Objective: "Merged."}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-mm-card", Kind: "agent", Status: "done", MergeCommit: "abc", Source: factoryd.SourcePlan, Parent: "t-mm", PlanKey: "a", Repository: "sf/code", IssueNumber: 72, Objective: "A card."}})
 	r.tasks.mu.Unlock()
-	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
 	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, bool, error) {
 		return 0, factoryd.PlanCloseWords(by, note, id == "t-mm"), id == "t-mm", nil
 	}
@@ -1727,7 +1754,7 @@ func TestClosePlanRemovesItsOwnDependencies(t *testing.T) {
 			Repository: "sf/code", IssueNumber: 62, Objective: "Already closed."}})
 	r.tasks.mu.Unlock()
 	var closes int
-	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
 	r.c.cfg.CloseHeldPlan = func(_ context.Context, _, by, note string, _ bool) (int, string, bool, error) {
 		closes++
 		return 0, factoryd.PlanCloseWords(by, note, false), false, nil

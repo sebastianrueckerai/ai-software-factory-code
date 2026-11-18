@@ -189,6 +189,31 @@ func TestBuildMergeReceiptDerivesEveryFactFromTheRecords(t *testing.T) {
 	}
 }
 
+// The receipt of the successor that carries the integration card's key
+// carries the judgement criteria's assessments from the plan-filed
+// integration card, where the plan's rows stand.
+func TestBuildMergeReceiptOfAnIntegrationSuccessorReadsThePlansRows(t *testing.T) {
+	ctx := context.Background()
+	task := gateTask
+	task.Source, task.Parent, task.PlanKey = SourceSuccessor, "t-plan", "integration"
+	r, store, _ := newGateRunner(t, task, &gateForgejo{diff: receiptDiff, merged: true, mergeCommit: "m1", head: "c1"})
+	b, _ := json.Marshal(criteriaPlan())
+	if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+	store.tasks["t-int"] = Task{ID: "t-int", Repository: "sf/repo", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Status: "failed"}
+	store.criteriaVerdicts = map[string][]CriterionVerdict{"t-int": {
+		{Criterion: "c3", Verdict: "met", Evidence: "suite ./... passed", Kind: CriterionInvariant, Source: CriteriaSourceGate, DecidedBy: FactoryDecider},
+		{Criterion: "c1", Verdict: "met", Evidence: "a link is stored", Kind: CriterionTest, Source: CriteriaSourceJudgement, DecidedBy: FactoryDecider},
+	}}
+	got, err := r.BuildMergeReceipt(ctx, "t1", 9)
+	want := []ReceiptAssessment{{Source: CriteriaSourceJudgement, Criterion: "c1", Verdict: "met", Evidence: "a link is stored"}}
+	if err != nil || !reflect.DeepEqual(got.Assessments, want) {
+		t.Fatalf("the successor's assessments = %+v, %v; want %+v", got.Assessments, err, want)
+	}
+}
+
 // A diff past the most factoryd reads (ErrDiffTooLong) leaves the
 // receipt's diff hash empty; every other fact stands.
 func TestBuildMergeReceiptPastTheDiffBoundLeavesTheHashEmpty(t *testing.T) {

@@ -1561,7 +1561,7 @@ func TestIntakeReviewRejectedSignalsApprovedDoesNot(t *testing.T) {
 }
 
 func prHead(ref, repo string) map[string]any {
-	return map[string]any{"ref": ref, "repo": map[string]string{"full_name": repo}}
+	return map[string]any{"ref": ref, "sha": "h-5", "repo": map[string]string{"full_name": repo}}
 }
 
 func prClosedBody(ref string, merged bool) []byte {
@@ -1657,6 +1657,12 @@ func TestIntakeMergedPullRequestSignalsWorkflow(t *testing.T) {
 	// card's lead time reads like a queue merge's
 	if got := store.tasks["t1"].MergeCommit; got != "m-5" {
 		t.Fatalf("merge commit = %q, want m-5 from the merged webhook", got)
+	}
+	// and the head it merged at, which the plan's close compares with the
+	// head its criteria gate judged
+	if i := slices.IndexFunc(store.events, func(e Event) bool { return e.TaskID == "t1" && e.Kind == EventPullRequestMerged }); i < 0 ||
+		store.events[i].Detail["head"] != "h-5" || store.events[i].Detail["by"] != "sebastian" {
+		t.Fatalf("events %+v, want sebastian's pull_request_merged at head h-5", store.events)
 	}
 }
 
@@ -2612,7 +2618,7 @@ func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 			}
 		} else {
 			in.Projects = projectList{none}
-			HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store}, noneCompleted)
+			HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store}, noneCompleted, nil)
 		}
 		if got := store.tasks["t-q"]; got.Kind != "human" || got.Status != "waiting-human" || slices.Contains(workflowsOf(in).started, "t-q") {
 			t.Fatalf("%s: task %+v, started %v", via, got, workflowsOf(in).started)

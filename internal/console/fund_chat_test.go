@@ -23,15 +23,20 @@ func fundRig(t *testing.T) *rig {
 }
 
 // fundOf is the fund Act takes of eur with note on case 1, the rig's live
-// case of a card waiting on a human.
+// case of a card waiting on a human: the project agent's on rung 2,
+// sebastian's on rung 3.
 func fundOf(eur float64, note string, rung int, via string) factoryd.ActInput {
-	return factoryd.ActInput{TaskID: "t-e", CaseID: 1, By: "sebastian", Via: via, Rung: rung,
+	by := "sebastian"
+	if rung == 2 {
+		by = factoryd.ChatUser
+	}
+	return factoryd.ActInput{TaskID: "t-e", CaseID: 1, By: by, Via: via, Rung: rung,
 		Res: factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": eur}, Note: note}}
 }
 
 // A wake's fund needs no human's login: the agent's own decision on rung
-// 2, by the woken human, and the note goes on the card as the answer with
-// the project's chat token.
+// 2, as the chat user and not as the woken human, and the note goes on the
+// card as the answer with the project's chat token.
 func TestFundAtAWakeAnswersAsTheChatBot(t *testing.T) {
 	r := fundRig(t)
 	p := factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}

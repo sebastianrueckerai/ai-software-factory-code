@@ -7,12 +7,16 @@ package main
 // session's start commit and its objects as a git bundle. It runs in the
 // worker process, kills nothing, asks for no token and pushes nothing —
 // the push rules and the push itself are factoryd's, with its own
-// credential. The commit is built the checkpointer's way: a fresh repo of
-// the worker's own borrowing the agent repo's objects, safeGit on every
-// git, brief.json excluded, scratch reproduction tests dropped — a
-// snapshot of a moving tree is valid, as the checkpoint's comment says.
+// credential, save the sync with main the staged tree takes (SyncOnMain),
+// whose refusal answers 409. The commit is built the checkpointer's way: a
+// fresh repo of the worker's own borrowing the agent repo's objects,
+// safeGit on every git, brief.json excluded, scratch reproduction tests
+// dropped — a snapshot of a moving tree is valid, as the checkpoint's
+// comment says.
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -22,6 +26,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
 // wipBundleCap bounds the bundle one answer streams: factoryd's own bound
@@ -77,7 +83,12 @@ func (w *wipServe) serve(mux *http.ServeMux, authorized func(http.ResponseWriter
 			defer done()
 		}
 		if err != nil {
-			http.Error(rw, err.Error(), http.StatusInternalServerError)
+			code := http.StatusInternalServerError
+			if errors.Is(err, factoryd.ErrPushRefused) {
+				// a refusal of the work itself, which factoryd hands the agent
+				code = http.StatusConflict
+			}
+			http.Error(rw, err.Error(), code)
 			return
 		}
 		if commit == "" {
@@ -194,6 +205,14 @@ func (w *wipServe) stage() (commit, bundle string, done func(), err error) {
 	if err != nil {
 		return "", "", done, err
 	}
+	agent, err := git(nil, "rev-parse", "refs/heads/agent")
+	if err != nil {
+		return "", "", done, err
+	}
+	bases := factoryd.ReadMainBases(pushRulesGit{context.Background(), w.e}, own, w.base, w.mainHead, agent)
+	if tree, err = factoryd.SyncOnMain(pushRulesGit{context.Background(), w.e}, own, bases, w.base, agent, tree); err != nil {
+		return "", "", done, err
+	}
 	startTree, err := git(nil, "rev-parse", w.base+"^{tree}")
 	if err != nil {
 		return "", "", done, err
@@ -201,11 +220,7 @@ func (w *wipServe) stage() (commit, bundle string, done func(), err error) {
 	if tree == startTree {
 		return "", "", done, nil
 	}
-	agent, err := git(nil, "rev-parse", "refs/heads/agent")
-	if err != nil {
-		return "", "", done, err
-	}
-	parents, _ := sessionParents(w.e, own, w.base, w.mainHead, agent)
+	parents, _ := sessionParents(w.e, own, w.base, bases)
 	if commit, err = git(botIdentity, append(append([]string{"commit-tree", tree}, parents...), "-m", commitMessage(w.e))...); err != nil {
 		return "", "", done, err
 	}

@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -570,6 +573,9 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 	capped := map[string]any{"cap_wait": dayFirst}
 	// a plan's automatic second session tops its spent time up
 	planRetry, planSpent := map[string]any{"planner": true, "planner_retry": true}, map[string]any{"planner": true}
+	// driveIn names a drive in another package, as "package Test"; the package
+	// declares it.
+	driveIn := map[CaseKind]string{CaseMonitorFlag: "internal/factoryd/pg TestMonitorFacesAQuietRunBesideIt"}
 	covered := map[CaseKind]bool{}
 	defer func() {
 		for _, k := range CaseKinds() {
@@ -665,17 +671,47 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseSessionCap, CapReachedLadder, limit, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
 		{CaseAgentTimeCap, TimeCapReached, spent, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
 		{CaseBudgetFloor, BudgetRefused, room, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
-		{CaseMonitorFlag, "x", room, "The card goes on meanwhile", reply, TestMonitorFacesAQuietRunBesideIt, ""},
+		{CaseMonitorFlag, "x", room, "The card goes on meanwhile", reply, nil, ""},
 		{CaseFindingsRepeated, DeadlockAskMark, room, "A reply alone changes nothing", reply, TestReplyAtTheDeadlock, ""},
 		{CaseFindingsRepeated, DeadlockAskMark, limit, none, "changes nothing", TestReplyAtTheDeadlock, ""},
 	} {
 		covered[tc.kind] = true
-		if (tc.drive == nil) == (tc.unreached == "") {
-			t.Errorf("%s: a row names a drive or why no trip reaches it, not both", tc.kind)
+		named := 0
+		for _, set := range []bool{tc.drive != nil, tc.unreached != "", driveIn[tc.kind] != ""} {
+			if set {
+				named++
+			}
+		}
+		if named != 1 {
+			t.Errorf("%s: a row names one of a drive, a drive in another package or why no trip reaches it", tc.kind)
+		}
+		if pkg, name, _ := strings.Cut(driveIn[tc.kind], " "); driveIn[tc.kind] != "" && !packageDeclaresTest(t, pkg, name) {
+			t.Errorf("%s: the drive %s is declared by no test file of %s", tc.kind, name, pkg)
 		}
 		got := tripNext(Case{Kind: tc.kind, Facts: tc.facts}, tc.reason)
 		if !strings.Contains(got, tc.want) || strings.Contains(got, tc.notWant) {
 			t.Errorf("%s (%v): face %q, want %q and not %q", tc.kind, tc.facts, got, tc.want, tc.notWant)
 		}
 	}
+}
+
+// packageDeclaresTest reports whether a test file of the package at pkg, a
+// path from the module root, declares the test name.
+func packageDeclaresTest(t *testing.T, pkg, name string) bool {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join("..", "..", pkg, "*_test.go"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no test files in %s", pkg)
+	}
+	decl := regexp.MustCompile(`(?m)^func ` + regexp.QuoteMeta(name) + `\(t \*testing\.T\)`)
+	for _, f := range files {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decl.Match(src) {
+			return true
+		}
+	}
+	return false
 }

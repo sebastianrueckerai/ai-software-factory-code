@@ -76,10 +76,61 @@ process of their own, and run outside the work bound.
 
 The work bound (`BoundedWorkflows`) is the one admission step every start
 passes: a queued card starts only while fewer than its project's
-`work_in_progress` cards hold a slot, every card it depends on is done
-(or one ended closed, which its workflow takes to a person), and its
-project's month budget has headroom. Otherwise it stays queued, holding no
-slot. A card that ends or parks on a person or its image frees its slot,
+`work_in_progress` cards hold a slot, no human's hold keeps it, every
+card it depends on is done (or one ended closed, which its workflow takes
+to a person), and its project's month budget has headroom. Otherwise it
+stays queued, holding no slot.
+
+A human holds a card that has not started (queued and never admitted, or
+in `waiting-deps`) with the drawer's Hold or the chat's `hold_card`: a
+reason the board shows, and an optional release card, any card of the
+same repository of any plan but not a plan itself, which is `done` once
+it files its cards, before their work lands. A release card that already
+waits on the held card, through its dependencies or another hold, is
+refused: both would wait for ever. The held card gets no work slot, and
+its dependency wait asks nothing, until the human releases it (Release,
+`release_hold`) or its release card is `merged` or `done`. The hold
+follows the release card's work into a retry or a successor, as a
+dependency edge does. A release card that ends `failed` or `closed`, or
+that a cut turns into a plan, releases nothing: the card stays held and
+its chip turns to the warning that names the release card, its plan, how
+it ended and the ways on. For a release card that failed, a retry of it
+comes first, since its retry takes the hold over. A release of the hold,
+or a hold on another release card, comes next. A closed one leaves these
+two. A release card's end `failed` or `closed` is told once too: its end
+records `card_hold_stranded` on each card its hold keeps, and the inbox
+of each human the project tells gets one inform, at needs-you, naming
+the held card, the release card, its plan, how it ended and the same
+ways on. A hold released, or taken over by a retry's card, before the
+poke goes out tells nothing. It opens no case and asks no rung. A card that ends, or moves to the human lane, takes its
+hold with it, and its `card_hold_ended` row names the move. Release
+refuses a card that no hold holds.
+
+Every revision of a plan keeps the key of a held card, whoever asked for
+the replan, and the card takes the entry the revision gives that key. A
+revision that drops the key is refused at its filing, naming the hold
+and what fits: keep the key, and when the plan no longer needs the card,
+ask in a question of the revision that the human close it or release its
+hold on its drawer. Once the human closed it, the replan rules ask for
+its key to be left out. The planner's record of the plan's cards shows
+each held card's hold.
+
+A held card owns no wait, so no queue or dependency flag opens a case on
+it. Rungs 0 to 2 neither start nor close it: the hold is a fact of its
+cases (`hold`, and `plan_hold` for a held card of the plan, read through
+the successors its cards were cut into), and the action table refuses
+their resume, continue, handover, successor, close and replan of the card
+itself, and a restart_plan of a plan that holds a held card, naming the
+hold and what fits the rung there: the case's note or settle where the
+table offers them, and the hand-up. A rung's statement lists each as not
+offered with that reason, and a hold that could not be read refuses them
+the same way. Their other answers, a fund, a note or the retry of a
+failed dependency among them, go through. Act records a rung 2 answer as the project agent's
+(`factory-chat`), never as the human whose turn woke it. The chat sets
+and ends a hold only on a line the human typed in that turn, or on their
+press.
+
+A card that ends or parks on a person or its image frees its slot,
 and the oldest queued card of its project starts (the pull, in filing
 order); the heal pass re-derives the same admission every minute.
 

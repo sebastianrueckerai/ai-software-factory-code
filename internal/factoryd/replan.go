@@ -204,18 +204,18 @@ func goOnWith(k Task) string {
 // or Refused, which names the plan's state and the fitting action.
 type ReplanChildResult struct{ Reason, Refused string }
 
-// ReplanChild sends the work of plan child childID, cut at its session,
-// back to its plan's planner: the plan's cards that wait on the child wait
-// on the plan, and the plan replans, or its running replan takes the
-// child in. A plan that can take no replan refuses, and nothing is
-// recorded or moved. Safe to repeat: the join of a queued plan reopens it
-// again, so a reopen that failed before its run started is healed.
+// ReplanChild sends the work of plan card childID (Task.PlanCard), cut at
+// its session, back to its plan's planner: the plan's cards that wait on
+// the child wait on the plan, and the plan replans, or its running replan
+// takes the child in. A plan that can take no replan refuses, and nothing
+// is recorded or moved. Safe to repeat: the join of a queued plan reopens
+// it again, so a reopen that failed before its run started is healed.
 func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanChildResult, error) {
 	k, _, err := r.task(ctx, childID)
 	if err != nil {
 		return ReplanChildResult{}, err
 	}
-	if k.Source != SourcePlan || k.Parent == "" {
+	if !k.PlanCard() {
 		return ReplanChildResult{}, terminalError("task %s belongs to no plan", childID)
 	}
 	p, _, err := r.task(ctx, k.Parent)
@@ -488,9 +488,9 @@ type ReplanWait struct {
 }
 
 // ReplanStopped tells whether the cards plan planID's pending replan stops,
-// and its started cards its newest revision drops (dropped), have ended,
-// so its planner may run on what they left and a revision may file on
-// their last pushes.
+// and its started cards its newest revision drops (dropped), each card cut
+// into a successor read as that successor, have ended, so its planner may
+// run on what they left and a revision may file on their last pushes.
 func (r *Runner) ReplanStopped(ctx context.Context, planID string) (ReplanWait, error) {
 	p, _, err := r.task(ctx, planID)
 	if err != nil {
@@ -518,7 +518,7 @@ func (r *Runner) ReplanStopped(ctx context.Context, planID string) (ReplanWait, 
 		return ReplanWait{}, err
 	}
 	if newest != nil {
-		cards, err := r.store.PlanCards(ctx, p.ID)
+		cards, err := PlanWaits(ctx, r.store, p.ID)
 		if err != nil {
 			return ReplanWait{}, err
 		}
@@ -592,9 +592,8 @@ func stoppable(k Task) bool {
 // replanStoppable folds gateTrigger into stoppable: origin names the ask
 // behind the stop, and a machine origin — a check-in's cut, a round, a
 // plan-wide stop that names no card — never stops a card whose open pull
-// request is its plan's criteria-gate trigger, for the gate runs only at
-// that pull request's merge press and the plan's settle path dies with
-// the card. A person's ask (ReplanPerson, the person named this card)
+// request is its plan's criteria-gate trigger, for its merge press runs
+// the gate on the card's work, which a stop drops. A person's ask (ReplanPerson, the person named this card)
 // stays free: it stops the card whatever it holds. When the forge read
 // fails, replanStoppable returns the error and never a false — a caller
 // refuses toward preservation, so the stop is never taken on a guess.
@@ -639,11 +638,11 @@ func (r *Runner) gateSpared(ctx context.Context, k, p Task) (spared bool, refuse
 }
 
 // gateTriggerNote names card k's open pull request as its plan's
-// criteria-gate trigger and the gate consequence: the gate runs only at
-// that pull request's merge press, so the card is held alive for a person
-// or the merge press.
+// criteria-gate trigger and the gate consequence: its merge press runs the
+// gate on the card's work, which a stop drops, so the card is held alive
+// for a person or the merge press.
 func gateTriggerNote(k Task) string {
-	return fmt.Sprintf("card #%d's pull request #%d is open and is its plan's criteria-gate trigger: the criteria gate runs only at that pull request's merge press",
+	return fmt.Sprintf("card #%d's pull request #%d is open and is its plan's criteria-gate trigger: its merge press runs the criteria gate on the card's work",
 		k.IssueNumber, k.PRNumber)
 }
 
@@ -728,18 +727,19 @@ func ReplanComment(s string) string {
 }
 
 // MayReplan tells whether a person may send card t back to the planner: an
-// agent card in the work bound that is a plan, a plan's child, or a direct
-// card that did not merge, where its project's process has a plan track
-// (planTrack).
+// agent card in the work bound that is a plan, a plan's child or its
+// successor, or a direct card that did not merge, where its project's
+// process has a plan track (planTrack).
 func MayReplan(t Task, planTrack bool) bool {
 	return t.Kind == "agent" && !t.Unbound() && (InPlan(t) || planTrack && t.MergeCommit == "" && t.Status != "done" && t.Status != "merged")
 }
 
 // Replan sends card taskID's work back to the planner at a person's ask,
-// to plan again on top of what was built: a plan, or a plan's child,
-// replans its plan, and the plan's started open cards stop; a direct card
-// goes to the planner as itself; with OffMain a plan's merged cards come
-// off main first. The answer is the note for the person. A card or plan
+// to plan again on top of what was built: a plan, or a plan's card or its
+// successor, replans its plan, and the plan's started open cards stop, a
+// card cut into a successor as that successor; a direct card goes to the
+// planner as itself; with OffMain a plan's merged cards come off main
+// first. The answer is the note for the person. A card or plan
 // that takes no replan answers ErrNoReplan and changes nothing, except
 // that a plan with a replan pending has its reopen healed, or the revert
 // its off-main replan waits for started.
@@ -754,11 +754,11 @@ func (r *Runner) Replan(ctx context.Context, taskID string, ask ReplanAsk) (stri
 		return "", ErrNoReplan(personCardRefusal(t))
 	case t.Unbound():
 		return "", ErrNoReplan(unboundRefusal(t))
+	case t.PlanCard():
+		ask.Card = t.ID
+		return r.replanPlan(ctx, t.Parent, ask)
 	case InPlan(t):
-		if g := GroupOf(t); g != t.ID {
-			ask.Card = t.ID
-		}
-		return r.replanPlan(ctx, GroupOf(t), ask)
+		return r.replanPlan(ctx, t.ID, ask)
 	}
 	return r.replanDirect(ctx, t, ask)
 }
@@ -823,7 +823,7 @@ func (r *Runner) replanPlan(ctx context.Context, planID string, ask ReplanAsk) (
 	if err != nil {
 		return "", err
 	}
-	cards, err := r.store.PlanCards(ctx, p.ID)
+	cards, err := PlanWaits(ctx, r.store, p.ID)
 	if err != nil {
 		return "", err
 	}
@@ -889,7 +889,8 @@ func (r *Runner) replanPlan(ctx context.Context, planID string, ask ReplanAsk) (
 	return note, nil
 }
 
-// onMain are the merged cards of cards still on main.
+// onMain are the merged cards of cards still on main; a key's successor
+// stands for it (PlanWaits).
 func onMain(cards []Task) []Task {
 	var out []Task
 	for _, k := range cards {
@@ -958,7 +959,7 @@ func (r *Runner) revertCard(ctx context.Context, p Task) (string, error) {
 // the revert; with no card left on main the step completes as any replan
 // does.
 func (r *Runner) awaitOffMain(ctx context.Context, p Task, step ReplanStep) (string, error) {
-	cards, err := r.store.PlanCards(ctx, p.ID)
+	cards, err := PlanWaits(ctx, r.store, p.ID)
 	if err != nil {
 		return "", err
 	}
@@ -1123,7 +1124,10 @@ func (r *Runner) replanDirect(ctx context.Context, t Task, ask ReplanAsk) (strin
 }
 
 // oldCards are plan p's record of cards a revision keeps, changes or
-// drops: its cards, and p itself while its pending replan is its own (a
+// drops: its cards, then the end of each one's chain of successors and
+// retries (throughSuccessors) that is another card, under the same key, so
+// the key is judged by its last card and a from of it goes on from that
+// card's branch, and p itself while its pending replan is its own (a
 // direct card's replan or cut), whose work the findings name by issue.
 func (r *Runner) oldCards(ctx context.Context, p Task) ([]Task, error) {
 	step, pending, err := r.pendingReplan(ctx, p)
@@ -1138,6 +1142,16 @@ func (r *Runner) oldCardsOf(ctx context.Context, p Task, step ReplanStep, pendin
 	cards, err := r.store.PlanCards(ctx, p.ID)
 	if err != nil {
 		return nil, err
+	}
+	for _, c := range cards {
+		end, ok, err := throughSuccessors(ctx, r.store, c)
+		if err != nil {
+			return nil, err
+		}
+		if ok && end.ID != c.ID && !slices.ContainsFunc(cards, func(k Task) bool { return k.ID == end.ID }) {
+			end.PlanKey = c.PlanKey
+			cards = append(cards, end)
+		}
 	}
 	if pending && step.Card == p.ID {
 		cards = append(cards, p)
@@ -1379,7 +1393,9 @@ func replanFindings(st replanState, next Plan) []string {
 		}
 	}
 	for _, k := range st.old {
-		if k.PlanKey == "" {
+		// a key is judged once, by its last card: a successor after the
+		// failed card it carried on
+		if k.PlanKey == "" || old[k.PlanKey].ID != k.ID {
 			continue
 		}
 		c, keeps := kept[k.PlanKey]
@@ -1470,21 +1486,26 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 		into    int64
 	}
 	var fates []fate
-	count, held, named := map[string]int{}, map[string]bool{}, map[string]bool{}
+	count, held, named, counted := map[string]int{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, k := range cards {
 		stopped := k.ID == step.Card || slices.Contains(step.Stops, k.ID)
 		if k.CreatedAt.After(step.Time) || k.Status == "closed" && k.FinishedAt != nil && k.FinishedAt.Before(step.Time) && !stopped {
 			continue
 		}
-		f := fate{k: k, verdict: "dropped"}
-		switch ref := fromRef(k); {
+		f, ref := fate{k: k, verdict: "dropped"}, fromRef(k)
+		switch {
 		case k.PlanKey != "" && keys[k.PlanKey]:
 			f.verdict = "kept"
 		case into[ref] != "":
 			f.verdict, f.into, named[ref] = "changed", issues[into[ref]], true
 		}
 		held[k.PlanKey] = k.PlanKey != ""
-		count[f.verdict]++
+		// a failed card and the successor that carried it on share one key,
+		// which counts once
+		if !counted[ref] {
+			count[f.verdict]++
+			counted[ref] = true
+		}
 		fates = append(fates, f)
 	}
 	added := 0
@@ -1500,8 +1521,9 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 	}
 	note := fmt.Sprintf("replanned at revision %d: kept %d, changed %d, dropped %d, added %d.", revision, count["kept"], count["changed"], count["dropped"], added)
 	var off []string
-	for _, k := range cards {
-		if k.PlanKey != "" && slices.Contains(next.TakeOffMain, k.PlanKey) {
+	for i, k := range cards {
+		// a key comes off main as its last card, whose merge the revert takes
+		if k.PlanKey != "" && slices.Contains(next.TakeOffMain, k.PlanKey) && !slices.ContainsFunc(cards[i+1:], func(l Task) bool { return l.PlanKey == k.PlanKey }) {
 			off = append(off, next.TakeOffLine(fmt.Sprintf("#%d (%s)", k.IssueNumber, k.PlanKey), k.PlanKey))
 		}
 	}
@@ -1654,7 +1676,7 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 		rec.work = append(rec.work, fmt.Sprintf("This is the cut of #%d at session %d, %s EUR spent: %s", cards[i].IssueNumber, session, textutil.EUR(spent), sanitize.Inbound(step.Work)))
 	}
 	roles, settled := map[string]string{}, map[string]bool{}
-	var criteria []PlanCriterion
+	var latest Plan
 	if newest, _, err := r.planAt(ctx, p.ID, 0); err != nil {
 		return replanRecord{}, false, err
 	} else if newest != nil {
@@ -1664,7 +1686,7 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 		for _, c := range settledCards(*newest, cards, filingRound(step, newest)) {
 			settled[c.Key] = true
 		}
-		criteria = newest.Criteria
+		latest = *newest
 	}
 	revisions := map[int]*Plan{}
 	for _, k := range cards {
@@ -1712,6 +1734,13 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 		default:
 			state = "running" + onBranch
 		}
+		if k.Held() {
+			v, err := holdView(ctx, r.store, k)
+			if err != nil {
+				return replanRecord{}, false, err
+			}
+			state += ", " + oneLine(sanitize.Inbound(v.Line))
+		}
 		// the title is planner text drawn from an issue, and a finding is
 		// one line
 		title, _, _ := strings.Cut(sanitize.Inbound(k.Objective), "\n")
@@ -1739,7 +1768,7 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 		}
 		// its last session is one from before the replan: a direct card's
 		// later ones are its planner's
-		text, err := r.oldCardText(ctx, k, tl, fmt.Sprintf("# #%d %s", k.IssueNumber, title), cmp.Or(said, state)+spend, role, cmp.Or(head, k.MergeCommit, k.SHA), step.Time, criteria)
+		text, err := r.oldCardText(ctx, k, tl, fmt.Sprintf("# #%d %s", k.IssueNumber, title), cmp.Or(said, state)+spend, role, cmp.Or(head, k.MergeCommit, k.SHA), step.Time, latest)
 		if err != nil {
 			return replanRecord{}, false, err
 		}
@@ -1762,11 +1791,11 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 // oldCardText is old card k's record file under title: its state line,
 // then each section that has lines: the reviews' findings and the stages'
 // from its timeline tl, an integration card's standing verdict
-// (StandingRow) on each of criteria, the plan's newest revision's, the
-// check-in's notes, and the working state of its newest session created
-// before before that left one, at branch head commit, with how that
-// session ended.
-func (r *Runner) oldCardText(ctx context.Context, k Task, tl []byte, title, state, role, commit string, before time.Time, criteria []PlanCriterion) (string, error) {
+// (StandingRow) on each criterion of newest, the plan's newest revision,
+// read where the rows stand (verdictHome), the check-in's notes, and the
+// working state of its newest session created before before that left
+// one, at branch head commit, with how that session ended.
+func (r *Runner) oldCardText(ctx context.Context, k Task, tl []byte, title, state, role, commit string, before time.Time, newest Plan) (string, error) {
 	parts := []string{title, state}
 	section := func(heading string, lines []string) {
 		if len(lines) > 0 {
@@ -1788,12 +1817,16 @@ func (r *Runner) oldCardText(ctx context.Context, k Task, tl []byte, title, stat
 	}
 	section("Stage findings", lines)
 	if role == RoleIntegration {
-		rows, err := r.store.CriteriaVerdicts(ctx, k.ID)
+		home, err := verdictHome(ctx, r.store, k, newest)
+		if err != nil {
+			return "", err
+		}
+		rows, err := r.store.CriteriaVerdicts(ctx, home)
 		if err != nil {
 			return "", err
 		}
 		lines = nil
-		for _, c := range criteria {
+		for _, c := range newest.Criteria {
 			v, ok := StandingRow(rows, c)
 			if !ok {
 				continue

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
+	"maps"
 	"reflect"
 	"slices"
 	"testing"
@@ -791,5 +792,60 @@ func TestSetAskFaceIsOneStep(t *testing.T) {
 	}
 	if o, w, a, r, _ := read(); o != card.Objective || w != card.Why || a != "SigNoz cleared the alert" || r != "SigNoz cleared the alert" {
 		t.Fatalf("an ended case changed the card: objective %q, why %q, ask %q, the row's ask %q", o, w, a, r)
+	}
+}
+
+// A card in gate merge-queue with no queue row reads the plan issue of its
+// newest queue_group_wait event; a card that holds a row reads 0.
+func TestPGStoreBoardTasksNameThePlanAHeldCardWaitsFor(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, merge_queue, events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	for n, id := range []string{"held", "queued", "other", "running", "merged"} {
+		gate, status := GateMergeQueue, "in-review"
+		switch id {
+		case "other":
+			gate = GateReview
+		case "running", "merged":
+			status = id
+		}
+		if err := s.CreateTask(ctx, Task{ID: id, Status: status, Gate: gate, Repository: "sf/r", Track: "direct", IssueNumber: int64(5 + n)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"held", "queued", "running", "merged"} {
+		if err := s.SetGate(ctx, id, GateMergeQueue, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.EnterQueue(ctx, "sf/r", "queued"); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []struct {
+		task, kind, detail string
+	}{{"held", "queue_group_wait", `{"issue": 1900}`}, {"held", "queue_group_wait", `{"issue": 1939}`}, {"held", "card_retried", `{}`},
+		{"queued", "queue_group_wait", `{"issue": 1800}`}, {"other", "queue_group_wait", `{"issue": 1700}`},
+		{"running", "queue_group_wait", `{"issue": 1600}`}, {"merged", "queue_group_wait", `{"issue": 1500}`}} {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO events (repository, task_id, kind, actor, via, detail) VALUES ('sf/r', $1, $2, 'factoryd', 'system', $3::jsonb)`,
+			e.task, e.kind, e.detail); err != nil {
+			t.Fatal(err)
+		}
+	}
+	board, err := s.BoardTasks(ctx, "sf/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int64{}
+	for _, b := range board {
+		got[b.ID] = b.HeldFor
+	}
+	if want := (map[string]int64{"held": 1939, "queued": 0, "other": 0, "running": 0, "merged": 0}); !maps.Equal(got, want) {
+		t.Fatalf("HeldFor = %v, want %v", got, want)
 	}
 }

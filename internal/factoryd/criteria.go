@@ -58,6 +58,9 @@ type CriteriaResult struct {
 	Holdouts []HoldoutGateResult `json:",omitempty"`
 	Stand    *CriteriaStand      `json:",omitempty"` // the plan's criteria after this run's rows; nil when the gate skipped or the plan names no criteria
 	Card     []string            `json:",omitempty"`
+	// Pending: an invariant's required checks were still running, so it
+	// holds no row and a later run reads them again.
+	Pending bool `json:",omitempty"`
 }
 
 // maxProofMessage caps a proof's message on the timeline.
@@ -88,6 +91,7 @@ type criterionRun struct {
 	held        string             // the line of a criterion the gate cannot run: an unmet row
 	late        bool               // held for want of a proof the store left out: a finding too
 	stored      *PlanProof         // the row the run proves; nil for an invariant and a held run
+	checks      bool               // an invariant: no pod run, the head's required checks are its verdict; suite stays for the line
 }
 
 // state is proofBlind for a stored proof, proofOpen for an opened one,
@@ -121,7 +125,8 @@ func (c criterionRun) flagged() bool { return c.state() == proofBlind && c.store
 
 // gateRuns are the runs the gate makes for p's criteria on its proof
 // rows, in plan order, then the stored and opened hold-outs in idx order:
-// an invariant runs its suite through goPackage; any other criterion and
+// an invariant makes no pod run: its verdict is the head's required
+// checks, whose test job runs the packages the diff reaches; any other criterion and
 // a hold-out run their stored proof blind with its file (a flagged one
 // makes no run and opens), or their opened one by suite and name from the
 // tree. A carried test criterion (kind test naming its suite and its
@@ -140,7 +145,7 @@ func gateRuns(p Plan, proofs []PlanProof) []criterionRun {
 	var runs []criterionRun
 	for _, c := range p.Criteria {
 		if c.Kind == CriterionInvariant {
-			runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, suite: goPackage(c.Suite)})
+			runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, suite: goPackage(c.Suite), checks: true})
 			continue
 		}
 		i := slices.IndexFunc(proofs, func(pp PlanProof) bool {
@@ -239,6 +244,10 @@ type gateResult struct {
 	changed   bool              // an opened proof whose file at the head is not its code
 	artifacts map[string][]byte // the run's files under CHECK_ARTIFACTS
 	dropped   []string          // the artifacts its line had no room for
+	checks    ChecksResult      // an invariant's: the required checks of checked
+	checked   string            // the head whose checks were read
+	suite     string            // the directory the run used when its test moved from the criterion's
+	declared  []string          // the directories that declare the test, two or more, when the criterion's does not
 }
 
 // openedProof is a proof this run opens.
@@ -253,7 +262,8 @@ type openedProof struct {
 type gateReport struct {
 	findings  []string
 	card      []string // the lines no session can settle: the late runs', and a judgement run the pod never reached
-	unreached []string // the judgement criteria the pod never reached, whose rows but the approver's go
+	unreached []string // the judgement criteria the pod never reached, and the invariants whose checks are still running: their rows but the approver's go
+	pending   bool     // an invariant's checks are still running
 	lines     []string // the criteria's, then the opened hold-outs'
 	met       int      // the criteria met
 	proofs    []gateProof
@@ -307,15 +317,38 @@ func criteriaReport(p Plan, head string, runs []criterionRun, results map[string
 		case c.flagged():
 			g.Line = c.label() + ": its proof was flagged " + c.stored.Flag + " by its dry run, so it had no blind try"
 			open(proofFlagged, "")
+		case c.checks:
+			at := res.checked[:min(8, len(res.checked))]
+			switch res.checks.State {
+			case ChecksSuccess:
+				g.Outcome, g.Met, g.Line = proofPassed, true, c.label()+": the required checks passed on "+at
+			case ChecksPending:
+				line := c.label() + ": the required checks are still running on " + at
+				rep.card, rep.lines, rep.unreached, rep.pending = append(rep.card, line), append(rep.lines, line), append(rep.unreached, c.id), true
+				continue
+			default:
+				header := c.label() + ": the required checks are not green on " + at
+				g.Outcome, g.Line = proofFailed, header
+				finding := header
+				if len(res.checks.Findings) > 0 {
+					var names []string
+					for _, f := range res.checks.Findings {
+						names = append(names, strings.SplitN(f, "\n", 2)[0])
+					}
+					g.Line += ": " + shortenEvidence(strings.Join(names, "; "))
+					finding += ":\n" + strings.Join(res.checks.Findings, "\n")
+				}
+				rep.findings = append(rep.findings, finding)
+			}
 		case res.absent:
 			g.Line = fmt.Sprintf("%s: its open proof is not at %s in %s", c.label(), c.stored.Path, ShortSHA(head))
 			rep.findings = append(rep.findings, g.Line+": commit the test below there.\n"+c.name+" in "+c.suite+":\n"+fenced(c.stored.Code))
 		default:
-			o := res.outcome
 			if !ok {
-				o = proofOutcome{proofNoReport, "the run reported nothing"}
+				res.outcome = proofOutcome{proofNoReport, "the run reported nothing"}
 			}
-			g.Outcome, g.Met, g.Line = o.Outcome, o.Outcome == proofPassed, criterionLine(c, o)
+			o := res.outcome
+			g.Outcome, g.Met, g.Line = o.Outcome, o.Outcome == proofPassed, criterionLine(c, res)
 			g.Message, g.Changed = textutil.Truncate(o.Message, maxProofMessage), res.changed
 			blind := c.state() == proofBlind
 			output := textutil.Tail(res.output, maxProofMessage)
@@ -417,9 +450,12 @@ func openedFinding(o openedProof, head string) string {
 	return s
 }
 
-// criterionLine is a run's line for the comment and the card.
-func criterionLine(r criterionRun, o proofOutcome) string {
-	what := r.name + " in " + r.suite
+// criterionLine is a run's line for the comment and the card: a run
+// whose test moved names the directory it ran in and the criterion's, a
+// run whose test two other directories declare names them.
+func criterionLine(r criterionRun, res gateResult) string {
+	o := res.outcome
+	what := r.name + " in " + cmp.Or(res.suite, r.suite)
 	if r.name == "" {
 		what = "suite " + r.suite
 	}
@@ -439,6 +475,12 @@ func criterionLine(r criterionRun, o proofOutcome) string {
 		if r.name == "" {
 			s += " every test"
 		}
+	}
+	switch {
+	case res.suite != "":
+		s += " (the criterion names " + r.suite + ")"
+	case len(res.declared) > 0:
+		s += " (declared in " + strings.Join(res.declared, ", ") + ")"
 	}
 	switch ev := shortenEvidence(o.Message); {
 	case ev == "":
@@ -495,7 +537,7 @@ func CriteriaCard(p Plan, key string) bool {
 
 // openedProofs are the proofs in state opened of p, t's plan, when t is its integration card or a delta card; nil for any other task.
 func (r *Runner) openedProofs(ctx context.Context, t Task, p Plan) ([]PlanProof, error) {
-	if t.Source != SourcePlan || t.Parent == "" || !CriteriaCard(p, t.PlanKey) {
+	if !t.PlanCard() || !CriteriaCard(p, t.PlanKey) {
 		return nil, nil
 	}
 	rows, err := r.store.PlanProofs(ctx, t.Parent)
@@ -526,10 +568,15 @@ func (r *Runner) proofAtHead(ctx context.Context, repo Repo, commit, path string
 	return content, err == nil, err
 }
 
-// GateCriteria runs the plan's criteria against the pull request head in a
-// fresh sandbox with no agent: one runner pod runs every gate run that is
+// GateCriteria runs the plan's criteria against the pull request head, or
+// main's head when pr is 0, in a fresh sandbox with no agent: one runner
+// pod runs every gate run that is
 // not held, flagged or absent at the head, the hold-outs last, through the
-// tree's check test. A plan card that is neither the integration card
+// tree's check test. An invariant criterion runs no pod: HeadChecks reads
+// the required checks of checked, or of commit when checked is empty,
+// once; success meets the criterion, failure or a timeout leaves it unmet
+// with the checks as findings, and pending leaves it no row and a card
+// line. A plan card that is neither the integration card
 // nor a delta card: not run, the timeline says why. A read of the proof
 // rows, or of an opened proof's file, that fails is the activity's error,
 // so it runs again. A plan that names no criteria names no proof: that is
@@ -539,16 +586,17 @@ func (r *Runner) proofAtHead(ctx context.Context, repo Repo, commit, path string
 // event on the card and on the plan, once per head, before its row turns
 // opened. The artifacts the run wrote are stored on the integration card,
 // and each judgement criterion's is judged (judgeArtifacts) before the
-// comment; the stand is read from that card's rows after them. The
+// comment on the pull request, which main's head has none of; the stand
+// is read from that card's rows after them. The
 // namespace and the token go when it ends, however it ends.
-func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
+func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, commit, checked string) (CriteriaResult, error) {
 	// the namespace wait, the image pull and the tests take minutes
 	defer beatUntilDone(ctx, "criteria")()
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return CriteriaResult{}, err
 	}
-	if t.Source != SourcePlan || t.Parent == "" {
+	if !t.PlanCard() {
 		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "skipped": "no plan filed"}))
 		return CriteriaResult{Skipped: "no plan filed"}, nil
 	}
@@ -569,6 +617,10 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	if err != nil {
 		return CriteriaResult{}, err
 	}
+	writer := ""
+	if pr != 0 {
+		writer = t.ID
+	}
 	waits, err := r.proofsPending(ctx, t, rows, p)
 	if err != nil {
 		return CriteriaResult{}, err
@@ -586,10 +638,10 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 			}
 		}
 		rep := criteriaReport(p, commit, held, nil)
-		if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceGate, FactoryDecider, gateRows(rep.proofs)); err != nil {
+		if err := r.store.PutGateVerdicts(ctx, writer, home.ID, CriteriaSourceGate, gateRows(rep.proofs), nil); err != nil {
 			return CriteriaResult{}, err
 		}
-		if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceJudgement, FactoryDecider, rep.noVerdict); err != nil {
+		if err := r.store.PutGateVerdicts(ctx, writer, home.ID, CriteriaSourceJudgement, rep.noVerdict, nil); err != nil {
 			return CriteriaResult{}, err
 		}
 		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "proofs": rep.proofs, "escalate": proofsNotStored}))
@@ -597,9 +649,21 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	}
 	results := map[string]gateResult{}
 	var entries []harness.Proof
+	var checks *gateResult
 	for _, c := range runs {
 		switch {
 		case c.held != "" || c.flagged():
+			continue
+		case c.checks:
+			if checks == nil {
+				head := cmp.Or(checked, commit)
+				res, err := r.HeadChecks(ctx, taskID, head)
+				if err != nil {
+					return CriteriaResult{}, err
+				}
+				checks = &gateResult{checks: res, checked: head}
+			}
+			results[c.id] = *checks
 			continue
 		case c.state() == proofOpen:
 			content, present, err := r.proofAtHead(ctx, repo, commit, c.stored.Path)
@@ -630,7 +694,11 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 			return cannotStart(err)
 		}
 		defer done()
-		ran, outcomes, err := r.runProofs(ctx, t, repo, pullRef(pr), commit, "", entries)
+		ref := ""
+		if pr != 0 {
+			ref = pullRef(pr)
+		}
+		ran, outcomes, err := r.runProofs(ctx, t, repo, ref, commit, "", entries)
 		// a pod that ended early leaves the criteria it did not reach
 		// unmet; a hold-out it did not reach is no verdict, so the
 		// activity fails and runs again
@@ -645,6 +713,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 			run, ok := ran[e.ID]
 			g := results[e.ID]
 			g.outcome, g.output, g.ran, g.artifacts, g.dropped = outcomes[e.ID], run.Output, ok && run.Started, run.Artifacts, run.Dropped
+			g.suite, g.declared = run.Suite, run.Declared
 			results[e.ID] = g
 		}
 	}
@@ -656,23 +725,18 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	for _, o := range rep.opened {
 		opened = append(opened, cmp.Or(o.run.stored.Criterion, o.run.stored.ID))
 	}
-	if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceGate, FactoryDecider, gateRows(rep.proofs)); err != nil {
+	if err := r.store.PutGateVerdicts(ctx, writer, home.ID, CriteriaSourceGate, gateRows(rep.proofs), nil); err != nil {
 		return CriteriaResult{}, err
 	}
-	if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceJudgement, FactoryDecider, rep.noVerdict); err != nil {
+	if err := r.store.PutGateVerdicts(ctx, writer, home.ID, CriteriaSourceJudgement, rep.noVerdict, rep.unreached); err != nil {
 		return CriteriaResult{}, err
-	}
-	for _, id := range rep.unreached {
-		if err := r.store.DeleteVerdictsButApprover(ctx, home.ID, id); err != nil {
-			return CriteriaResult{}, err
-		}
 	}
 	for _, o := range rep.opened {
 		if err := r.openProof(ctx, t, commit, o); err != nil {
 			return CriteriaResult{}, err
 		}
 	}
-	judged, unjudged, met, err := r.judgeArtifacts(ctx, t, home.ID, p, rep.artifacts)
+	judged, unjudged, met, err := r.judgeArtifacts(ctx, t, writer, home.ID, p, rep.artifacts)
 	if err != nil {
 		return CriteriaResult{}, err
 	}
@@ -689,6 +753,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		}
 	}
 	switch {
+	case pr == 0:
 	case slices.ContainsFunc(runs, func(c criterionRun) bool { return c.held == "" }):
 		r.commentOnce(ctx, t, repo, pr, r.untrusted(t, criteriaComment(commit, rep.met+met, of, rep.lines)))
 	case len(all) > 0:
@@ -698,7 +763,15 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	}
 	r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit,
 		"proofs": rep.proofs, "holdouts": rep.holdouts, "opened": opened, "findings": all}))
-	return CriteriaResult{Findings: rep.findings, Card: rep.card, Stand: stand}, nil
+	if pr != 0 {
+		// an invariant read another head's checks: the record names no head
+		judged := commit
+		if checks != nil && checks.checked != commit {
+			judged = ""
+		}
+		r.timeline.RecordRow(ctx, t.ID, EventCriteriaJudged, FactoryDecider, ViaFactoryd, map[string]any{"pr": pr, "head": judged})
+	}
+	return CriteriaResult{Findings: rep.findings, Card: rep.card, Stand: stand, Pending: rep.pending}, nil
 }
 
 // criteriaStand is how plan p's criteria stand on the rows of home, its

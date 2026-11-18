@@ -1618,3 +1618,28 @@ func TestLeftSubtractsTheSpendAndTheHoldsTogether(t *testing.T) {
 		t.Errorf("Left = %v, want 0.599999", got)
 	}
 }
+
+// ProviderLimitOf reads the first of a task's classes that names a provider
+// listed in provider_limits: a class with no provider, an unknown class and
+// one whose provider has no entry are passed over.
+func TestProviderLimitOfReadsTheFirstClassWithAProvider(t *testing.T) {
+	doc := Document{
+		Classes:        map[string]Class{"plain": {}, "big": {Provider: "zai"}, "small": {Provider: "zai"}, "orphan": {Provider: "gone"}},
+		ProviderLimits: map[string]ProviderLimit{"zai": {TZ: "Asia/Singapore"}},
+	}
+	for _, tc := range []struct {
+		classes []string
+		want    string
+	}{
+		{[]string{"plain", "big"}, "big"},
+		{[]string{"small", "big"}, "small"},
+		{[]string{"orphan", "unknown", "big"}, "big"},
+		{[]string{"plain", "orphan"}, ""},
+		{nil, ""},
+	} {
+		class, entry := doc.ProviderLimitOf(tc.classes)
+		if class != tc.want || (entry == nil) != (tc.want == "") || entry != nil && entry.TZ != "Asia/Singapore" {
+			t.Errorf("ProviderLimitOf(%q) = %q, %+v; want %q", tc.classes, class, entry, tc.want)
+		}
+	}
+}

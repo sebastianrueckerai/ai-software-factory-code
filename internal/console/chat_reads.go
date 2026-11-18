@@ -171,7 +171,7 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	if n := newestChecksCount(steps, pushedHead(steps)); n != "" {
 		fmt.Fprintf(&b, "\nchecks: %s: see pr", n)
 	}
-	if k.Track == policy.TrackPlan || planChild(k) {
+	if k.Track == policy.TrackPlan || k.PlanCard() {
 		b.WriteString("\nplan: see plan")
 	}
 	if n := len(every(steps, "session_start")); n > 0 {
@@ -184,9 +184,6 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	}
 	return b.String(), nil
 }
-
-// planChild: t is a card a plan filed.
-func planChild(t factoryd.Task) bool { return t.Source == factoryd.SourcePlan && t.Parent != "" }
 
 // every are the steps named step, oldest first.
 func every(steps []map[string]any, step string) []map[string]any {
@@ -273,7 +270,8 @@ func prState(steps []map[string]any) string {
 }
 
 // planText is the plan tool's answer: the newest revision of card in's
-// plan, or of the plan it is a card of, with the cards filed.
+// plan, or of the plan it is a card of, with each filed key's card
+// (factoryd.PlanWaits).
 func (t *turn) planText(in toolInput) (string, error) {
 	ctx := t.r.Context()
 	k, err := t.card(in)
@@ -283,7 +281,7 @@ func (t *turn) planText(in toolInput) (string, error) {
 	var b strings.Builder
 	plan := k
 	switch {
-	case planChild(k):
+	case k.PlanCard():
 		if plan, err = t.c.cardIn(ctx, t.a, k.Parent); err != nil {
 			return "", err
 		}
@@ -298,7 +296,7 @@ func (t *turn) planText(in toolInput) (string, error) {
 	if !ok {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan #%d has no revision yet.", plan.IssueNumber))
 	}
-	cards, err := t.c.cfg.Tasks.PlanCards(ctx, plan.ID)
+	cards, err := factoryd.PlanWaits(ctx, t.c.cfg.Tasks, plan.ID)
 	if err != nil {
 		return "", err
 	}

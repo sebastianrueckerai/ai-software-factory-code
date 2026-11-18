@@ -287,7 +287,7 @@ func (s *PGStore) CloseClearedCard(ctx context.Context, alertID int64, taskID st
 	if err := oneRow(res, err, "open "+AlertSigNoz+" alert"); err != nil {
 		return err
 	}
-	e, changed, err := changeStatusOn(ctx, tx, transitionSet, transitionWhere, taskID, "closed", []string{"waiting-human"})
+	events, changed, err := changeStatusOn(ctx, tx, transitionSet, transitionWhere, taskID, "closed", []string{"waiting-human"})
 	if err == nil && !changed {
 		err = fmt.Errorf("task %s: %w (not in waiting-human, cannot move to closed)", taskID, ErrNotFound)
 	}
@@ -297,9 +297,7 @@ func (s *PGStore) CloseClearedCard(ctx context.Context, alertID int64, taskID st
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	if e != nil {
-		s.recordStatus(ctx, *e)
-	}
+	s.recordStatus(ctx, events)
 	return nil
 }
 

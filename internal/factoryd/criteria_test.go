@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -163,7 +164,7 @@ func seedBlindPlan(t *testing.T, store *fakeStore, p Plan, rows []PlanProof) {
 }
 
 // The gate's runs of a plan's criteria, in plan order, on its proof rows,
-// then the hold-outs in idx order: an invariant runs its suite as a
+// then the hold-outs in idx order: an invariant makes no run, it reads the head's checks, keeping its suite as a
 // directory of the repository; a stored proof runs blind with its file, a
 // flagged one too, which makes no entry and opens; an opened proof runs
 // by suite and name from the tree; a test criterion without a stored or
@@ -180,7 +181,7 @@ func TestGateRunsOpenAndHoldTheProofs(t *testing.T) {
 		{id: "group_open", kind: CriterionTest, suite: "./acceptance", name: "TestGroupOpen", stored: &rows[1]},
 		{id: "door", kind: CriterionTest, suite: "./proofs/door", name: "TestDoor", file: file(rows[2]), stored: &rows[2]},
 		{id: "no_proof", kind: CriterionTest, held: "Criterion no_proof has no stored proof: the prover filed before a later revision added it.", late: true},
-		{id: "all_green", kind: CriterionInvariant, suite: "./..."},
+		{id: "all_green", kind: CriterionInvariant, suite: "./...", checks: true},
 		{id: "judged", kind: CriterionJudgement, held: "Criterion judged has no stored proof: the prover filed before a later revision added it.", late: true},
 		{id: "holdout-4", kind: CriterionTest, suite: "./proofs/key_log", name: "TestKeyLog", file: file(rows[3]), stored: &rows[3]},
 		{id: "holdout-5", kind: CriterionTest, suite: "./proofs/lock_log", name: "TestLockLog", file: file(rows[4]), stored: &rows[4]},
@@ -470,9 +471,27 @@ func TestProofResultReadsTheRunOrSaysWhyThereIsNone(t *testing.T) {
 	}
 	o := proofResult(harness.ProofRun{Exit: 1, Report: broken, Output: summary}, true, "", "TestB")
 	run := criterionRun{id: "b_guard", kind: CriterionTest, suite: "./b", name: "TestB"}
-	if got, want := criterionLine(run, o), "criterion b_guard: no test TestB in ./b: Failed FAIL x/b [build failed] "+
+	if got, want := criterionLine(run, gateResult{outcome: o}), "criterion b_guard: no test TestB in ./b: Failed FAIL x/b [build failed] "+
 		"b/b_test.go:5:32: undefined: Door b/b_test.go:6:2: undefined: Lock"; got != want {
 		t.Errorf("the card's line = %q, want %q", got, want)
+	}
+}
+
+// A run whose test moved names the directory it ran in beside the
+// criterion's; a test two directories declare and the criterion's does
+// not is missing, with the directories named.
+func TestCriterionLineNamesWhereAMovedTestRan(t *testing.T) {
+	run := criterionRun{id: "x", kind: CriterionTest, suite: "./a", name: "TestX"}
+	for _, c := range []struct {
+		res  gateResult
+		want string
+	}{
+		{gateResult{outcome: proofOutcome{proofPassed, ""}, suite: "./b"}, "criterion x: TestX in ./b passed (the criterion names ./a)"},
+		{gateResult{outcome: proofOutcome{proofMissing, ""}, declared: []string{"./b", "./c"}}, "criterion x: no test TestX in ./a (declared in ./b, ./c)"},
+	} {
+		if got := criterionLine(run, c.res); got != c.want {
+			t.Errorf("criterionLine(%+v) = %q, want %q", c.res, got, c.want)
+		}
 	}
 }
 
@@ -507,7 +526,7 @@ func TestGateCriteriaSkipsWithoutAPlan(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	r, hub, _ := newTestRunner(t, gateTask, kube, objects)
-	val, err := execActivity(t, r, ActivityGateCriteria, "t1", int64(9), "c1")
+	val, err := execActivity(t, r, ActivityGateCriteria, "t1", int64(9), "c1", "")
 	res := getInto[CriteriaResult](t, val, err)
 	if res.Skipped != "no plan filed" || len(res.Findings) != 0 || res.Escalate != "" || len(kube.podOrder) != 0 || len(hub.minted()) != 0 || len(hub.comments) != 0 {
 		t.Fatalf("result = %+v, pods %d, mints %v, comments %q", res, len(kube.podOrder), hub.minted(), hub.comments)
@@ -527,7 +546,7 @@ func TestGateCriteriaSkipsAFeatureCard(t *testing.T) {
 	r, _, store := newTestRunner(t, task, kube, objects)
 	seedPlan(t, store, map[string]string{"sizes": RoleFeature, "integ": RoleIntegration},
 		`{"id":"a_green","kind":"invariant","suite":"./a"}`)
-	val, err := execActivity(t, r, ActivityGateCriteria, "t1", int64(9), "c1")
+	val, err := execActivity(t, r, ActivityGateCriteria, "t1", int64(9), "c1", "")
 	res := getInto[CriteriaResult](t, val, err)
 	if res.Skipped != "not the plan's integration card or a delta card" || len(res.Findings) != 0 || res.Stand != nil || len(kube.podOrder) != 0 {
 		t.Fatalf("result = %+v, pods %d", res, len(kube.podOrder))
@@ -579,6 +598,52 @@ func TestGateCriteriaRunsOnADeltaCard(t *testing.T) {
 	}
 }
 
+// The successor that carries the integration card's key runs the gate on
+// its own head as the card would; the rows land on the plan-filed
+// integration card, where the plan's rows stand. Its sessions get the
+// gate's opened proofs.
+func TestGateCriteriaRunsOnASuccessorOfTheIntegrationCard(t *testing.T) {
+	ctx := context.Background()
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	task := seedCriteriaPlan(t)
+	task.Source = SourceSuccessor
+	r, _, store := newTestRunner(t, task, kube, objects)
+	proofsWorker(t, r)
+	seedPlan(t, store, map[string]string{"integ": RoleIntegration, "sizes": RoleFeature},
+		`{"id":"size_bound","kind":"test","claim":"c","inputs":"i","expected":"e"}`)
+	store.tasks["t-int"] = Task{ID: "t-int", Status: "failed", Repository: "sf/repo", Parent: "plan1", Source: SourcePlan, PlanKey: "integ",
+		Kind: "agent", Track: "direct"}
+	if _, err := store.PutPlanProofs(ctx, "plan1", 1, blindRows()[:2]); err != nil {
+		t.Fatal(err)
+	}
+	p, _, err := planOfStore(ctx, r.store, "plan1", "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened, err := r.openedProofs(ctx, store.tasks["t1"], p); err != nil || len(opened) != 1 || opened[0].ID != "group_open" {
+		t.Fatalf("the successor's opened proofs = %+v, %v; want group_open", opened, err)
+	}
+	store.proofs["plan1"] = store.proofs["plan1"][:1]
+	done := make(chan struct{})
+	var res CriteriaResult
+	go func() {
+		defer close(done)
+		res, err = runCriteria(t, r)
+	}()
+	scriptReproPods(kube, proofLines(harness.ProofRun{ID: "size_bound", Report: junitGz(t, wrap(`<testcase name="TestSizeBound"></testcase>`))}))
+	<-done
+	if err != nil || res.Skipped != "" || len(kube.podOrder) != 1 {
+		t.Fatalf("result = %+v, %v, pods %d; want the gate run in one pod", res, err, len(kube.podOrder))
+	}
+	if rows, _ := store.CriteriaVerdicts(ctx, "t-int"); len(rows) != 1 || rows[0].Criterion != "size_bound" || rows[0].Verdict != "met" {
+		t.Fatalf("rows on the integration card = %+v, want size_bound met", rows)
+	}
+	if rows, _ := store.CriteriaVerdicts(ctx, "t1"); len(rows) != 0 {
+		t.Fatalf("rows on the successor = %+v, want none", rows)
+	}
+}
+
 // A plan that names no criteria names no proof: a card finding for the
 // human, no sandbox, no stand. A plan whose gate criteria are all tests or judgements runs
 // no sandbox either: each, with no stored proof yet, is its unmet row and
@@ -598,7 +663,7 @@ func TestGateCriteriaFindsAPlanWithoutARun(t *testing.T) {
 			objects := &fakeObjectStore{}
 			r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
 			seedPlan(t, store, map[string]string{"integ": RoleIntegration}, criteria)
-			val, err := execActivity(t, r, ActivityGateCriteria, "t1", int64(9), "c1")
+			val, err := execActivity(t, r, ActivityGateCriteria, "t1", int64(9), "c1", "")
 			res := getInto[CriteriaResult](t, val, err)
 			var want []string
 			var wantRows []CriterionVerdict
@@ -639,6 +704,114 @@ func TestGateCriteriaFindsAPlanWithoutARun(t *testing.T) {
 	}
 }
 
+// A gate run on a card's pull request records the head it judged and
+// wrote the plan's rows for, on the card: the plan's close counts those
+// rows as main's only when the pull request merged at that head. A run on
+// main's head records none: the plan's own record of the run serves it.
+func TestGateCriteriaRecordsTheHeadItJudged(t *testing.T) {
+	const criterion = `{"id":"green_login","kind":"test","claim":"a login with the right password answers 200",` +
+		`"inputs":"POST /login as ada with the right password","expected":"200 and a session cookie"}`
+	for _, tc := range []struct {
+		name string
+		pr   int64
+		head string
+		want []string
+	}{
+		{"on the pull request", 9, "c1", []string{"9@c1"}},
+		{"on main's head", 0, "m1", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _, store := newTestRunner(t, seedCriteriaPlan(t), newFakeKube(), &fakeObjectStore{})
+			seedPlan(t, store, map[string]string{"integ": RoleIntegration}, criterion)
+			if _, err := execActivity(t, r, ActivityGateCriteria, "t1", tc.pr, tc.head, ""); err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, e := range store.events {
+				if e.TaskID == "t1" && e.Kind == EventCriteriaJudged {
+					got = append(got, fmt.Sprintf("%v@%v", e.Detail["pr"], e.Detail["head"]))
+				}
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("judged records %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// An invariant criterion reads the required checks of the checked head,
+// which a cheap queue turn leaves at the head before its sync: the run's
+// record then names no head, so no merge matches it and the plan's close
+// runs the gate on main. With the checks of the judged head itself, the
+// record names that head.
+func TestGateCriteriaRecordsNoHeadForAnotherHeadsChecks(t *testing.T) {
+	for _, tc := range []struct {
+		name, checked, want string
+	}{
+		{"the checks of the old head c0", "c0", "9@"},
+		{"the checks of the judged head", "c1", "9@c1"},
+		{"no checked head", "", "9@c1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, hub, store := newTestRunner(t, seedCriteriaPlan(t), newFakeKube(), &fakeObjectStore{})
+			seedBlindPlan(t, store, Plan{Criteria: []PlanCriterion{{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."}}}, nil)
+			hub.statuses = map[string]string{cmp.Or(tc.checked, "c1"): statusBody("success", [4]string{"success", "pr / test", "", ""})}
+			if _, err := runCriteriaChecked(t, r, tc.checked); err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, e := range store.events {
+				if e.TaskID == "t1" && e.Kind == EventCriteriaJudged {
+					got = append(got, fmt.Sprintf("%v@%v", e.Detail["pr"], e.Detail["head"]))
+				}
+			}
+			if !slices.Equal(got, []string{tc.want}) {
+				t.Fatalf("judged records %v, want [%s]", got, tc.want)
+			}
+		})
+	}
+}
+
+// A gate run on the pull request of a card that ended undelivered, as an
+// attempt still running after a human closed the card, writes no row: the
+// rows on the plan's integration card stand as they were, and its error is
+// terminal, so no retry runs the proofs pod again. The card's own run
+// while it is open writes them, as the close's run on main and its run on
+// a merged integration card's pull request.
+func TestGateCriteriaOfACardThatEndedWritesNoRow(t *testing.T) {
+	const criterion = `{"id":"green_login","kind":"test","claim":"a login with the right password answers 200",` +
+		`"inputs":"POST /login as ada with the right password","expected":"200 and a session cookie"}`
+	for _, tc := range []struct {
+		name, status, merge string
+		pr                  int64
+		writes              bool
+	}{
+		{"closed", "closed", "", 9, false},
+		{"failed", "failed", "", 9, false},
+		{"done with nothing merged", "done", "", 9, false},
+		{"open", "in-review", "", 9, true},
+		{"done and merged", "done", "m9", 9, true},
+		{"closed, the run on main", "closed", "", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			task := seedCriteriaPlan(t)
+			task.Status, task.MergeCommit = tc.status, tc.merge
+			r, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+			seedPlan(t, store, map[string]string{"integ": RoleIntegration}, criterion)
+			old := []CriterionVerdict{{Criterion: "green_login", Verdict: "met", Evidence: "before", Kind: CriterionTest}}
+			if err := store.PutCriteriaVerdicts(ctx, "t1", CriteriaSourceGate, FactoryDecider, old); err != nil {
+				t.Fatal(err)
+			}
+			_, err := execActivity(t, r, ActivityGateCriteria, "t1", tc.pr, "c1", "")
+			rows, _ := store.CriteriaVerdicts(ctx, "t1")
+			if wrote := len(rows) == 1 && rows[0].Evidence != "before"; wrote != tc.writes || (err == nil) != tc.writes || !tc.writes && !isTerminal(err) {
+				t.Fatalf("rows %+v, err %v (terminal %v); want written %v, a refusal terminal", rows, err, isTerminal(err), tc.writes)
+			}
+		})
+	}
+}
+
 // The gate runs a carried test criterion's named test from the head's
 // tree with no proof row: present and green it meets its criterion, and
 // absent at the head is a builder finding naming the missing test, its
@@ -666,6 +839,18 @@ func TestGateCriteriaRunsACarriedTestFromTheTree(t *testing.T) {
 			verdict:  "unmet",
 			evidence: absent,
 			findings: []string{absent},
+		},
+		"moved and green": {
+			run:      harness.ProofRun{ID: "door_open", Started: true, Suite: "./internal/doors/pg", Report: junitGz(t, wrap(`<testcase name="TestDoorOpen"></testcase>`))},
+			verdict:  "met",
+			evidence: "criterion door_open: TestDoorOpen in ./internal/doors/pg passed (the criterion names ./internal/doors)",
+		},
+		"declared in two directories": {
+			run: harness.ProofRun{ID: "door_open", Started: true, Exit: 1, Declared: []string{"./internal/doors/pg", "./internal/locks"},
+				Report: junitGz(t, wrap(`<testcase name="TestOther"></testcase>`))},
+			verdict:  "unmet",
+			evidence: absent + " (declared in ./internal/doors/pg, ./internal/locks)",
+			findings: []string{absent + " (declared in ./internal/doors/pg, ./internal/locks)"},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -707,6 +892,43 @@ func TestGateCriteriaRunsACarriedTestFromTheTree(t *testing.T) {
 				t.Fatalf("comments = %q, want the "+met+" of 1 line", hub.comments)
 			}
 		})
+	}
+}
+
+// The gate on main's head, pr 0, fetches the head it was given by its
+// commit, which stands though main moves on,
+// writes its rows on the integration card as on a pull request's head, and
+// comments on no pull request.
+func TestGateCriteriaOnMainFetchesMainAndCommentsOnNoPullRequest(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+	proofsWorker(t, r)
+	seedPlan(t, store, map[string]string{"integ": RoleIntegration}, `{"id":"door_open","kind":"test","claim":"a door opens for its key",`+
+		`"inputs":"POST /doors/1/open with key 7","expected":"200","suite":"internal/doors","name":"TestDoorOpen"}`)
+	done := make(chan struct{})
+	var res CriteriaResult
+	go func() {
+		defer close(done)
+		val, err := execActivity(t, r, ActivityGateCriteria, "t1", int64(0), "m1", "")
+		res = getInto[CriteriaResult](t, val, err)
+	}()
+	scriptReproPods(kube, proofLines(harness.ProofRun{ID: "door_open", Started: true, Report: junitGz(t, wrap(`<testcase name="TestDoorOpen"></testcase>`))}))
+	<-done
+	if res.Skipped != "" || res.Escalate != "" || len(res.Findings) != 0 || len(kube.podOrder) != 1 {
+		t.Fatalf("result = %+v, pods %d; want one pod and no finding", res, len(kube.podOrder))
+	}
+	fetch := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "fetch"))
+	if fetch["PR_REF"] != "m1" || fetch["REPO_SHA"] != "m1" {
+		t.Fatalf("fetch env = %v, want main's head m1 fetched by itself", fetch)
+	}
+	want := []CriterionVerdict{{Criterion: "door_open", Verdict: "met", Evidence: "criterion door_open: TestDoorOpen in ./internal/doors passed",
+		Kind: CriterionTest, Source: CriteriaSourceGate, DecidedBy: FactoryDecider}}
+	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); !slices.Equal(rows, want) {
+		t.Fatalf("rows = %+v, want %+v", rows, want)
+	}
+	if len(hub.comments) != 0 {
+		t.Fatalf("comments = %q, want none", hub.comments)
 	}
 }
 
@@ -898,6 +1120,7 @@ func TestGateCriteriaRunsTheStoredProofs(t *testing.T) {
 	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
 	hub.files = map[string]string{"c1:acceptance/group_open_test.go": "package acceptance"}
 	worker := proofsWorker(t, r)
+	hub.statuses = map[string]string{"c1": statusBody("success", [4]string{"success", "pr / test", "", ""})}
 	seedProofRows(t, store)
 	done := make(chan struct{})
 	var res CriteriaResult
@@ -909,7 +1132,6 @@ func TestGateCriteriaRunsTheStoredProofs(t *testing.T) {
 	scriptReproPods(kube, proofLines(
 		harness.ProofRun{ID: "size_bound", Report: junitGz(t, wrap(`<testcase name="TestSizeBound"></testcase>`))},
 		harness.ProofRun{ID: "group_open", Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestGroupOpen"><failure message="Failed">--- FAIL: TestGroupOpen (0.00s)</failure></testcase>`))},
-		harness.ProofRun{ID: "all_green", Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))},
 		harness.ProofRun{ID: "holdout-4", Report: junitGz(t, wrap(`<testcase name="TestKeyLog"></testcase>`))},
 	))
 	<-done
@@ -931,7 +1153,6 @@ func TestGateCriteriaRunsTheStoredProofs(t *testing.T) {
 	wantList := []harness.Proof{
 		{ID: "size_bound", Suite: "./proofs/size_bound", Name: "TestSizeBound", File: &harness.ProofFile{Path: "proofs/size_bound/size_bound_test.go", Content: "package size_bound"}},
 		{ID: "group_open", Suite: "./acceptance", Name: "TestGroupOpen"},
-		{ID: "all_green", Suite: "./..."},
 		{ID: "holdout-4", Suite: "./proofs/key_log", Name: "TestKeyLog", File: &harness.ProofFile{Path: "proofs/key_log/key_log_test.go", Content: "package key_log"}},
 	}
 	if err := json.Unmarshal([]byte(worker.lists[0]), &list); err != nil || !reflect.DeepEqual(list, wantList) {
@@ -946,7 +1167,7 @@ func TestGateCriteriaRunsTheStoredProofs(t *testing.T) {
 		"criterion group_open: TestGroupOpen in ./acceptance failed: Failed --- FAIL: TestGroupOpen (0.00s)",
 		"criterion door: its proof was flagged green on main by its dry run, so it had no blind try",
 		"Criterion no_proof has no stored proof: the prover filed before a later revision added it.",
-		"criterion all_green: suite ./... passed (1 passed, 0 skipped)",
+		"criterion all_green: the required checks passed on c1",
 		"Criterion judged has no stored proof: the prover filed before a later revision added it.",
 		"hold-out never_red: its proof was flagged unrunnable by its dry run, so it had no blind try",
 	}
@@ -1042,11 +1263,11 @@ func TestGateCriteriaOpensTheBlindProofsThatAreNotGreen(t *testing.T) {
 	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
 	hub.files = map[string]string{"c1:acceptance/group_open_test.go": "package acceptance // group_open v2"}
 	worker := proofsWorker(t, r)
+	hub.statuses = map[string]string{"c1": statusBody("success", [4]string{"success", "pr / test", "", ""})}
 	seedBlindPlan(t, store, blindPlan(), blindRows())
 	results, errs := runCriteriaWithPods(t, r, kube, proofLines(
 		harness.ProofRun{ID: "size_bound", Started: true, Exit: 1, Output: "=== RUN   TestSizeBound\n--- FAIL: TestSizeBound (0.00s)\n", Report: junitGz(t, sizeBoundFail)},
 		harness.ProofRun{ID: "group_open", Started: true, Report: junitGz(t, wrap(`<testcase name="TestGroupOpen"></testcase>`))},
-		harness.ProofRun{ID: "all_green", Started: true, Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))},
 		harness.ProofRun{ID: "holdout-4", Started: true, Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestKeyLog"><failure message="Failed">--- FAIL: TestKeyLog (0.00s)</failure></testcase>`))},
 		harness.ProofRun{ID: "holdout-5", Started: true, Report: junitGz(t, wrap(`<testcase name="TestLockLog"></testcase>`))},
 	))
@@ -1059,7 +1280,6 @@ func TestGateCriteriaOpensTheBlindProofsThatAreNotGreen(t *testing.T) {
 	wantList := []harness.Proof{
 		{ID: "size_bound", Suite: "./proofs/size_bound", Name: "TestSizeBound", File: file("proofs/size_bound/size_bound_test.go", sizeBoundCode)},
 		{ID: "group_open", Suite: "./acceptance", Name: "TestGroupOpen"},
-		{ID: "all_green", Suite: "./..."},
 		{ID: "holdout-4", Suite: "./proofs/key_log", Name: "TestKeyLog", File: file("proofs/key_log/key_log_test.go", "package key_log")},
 		{ID: "holdout-5", Suite: "./proofs/lock_log", Name: "TestLockLog", File: file("proofs/lock_log/lock_log_test.go", "package lock_log")},
 	}
@@ -1090,7 +1310,7 @@ func TestGateCriteriaOpensTheBlindProofsThatAreNotGreen(t *testing.T) {
 		"criterion group_open: TestGroupOpen in ./acceptance passed",
 		"criterion door: its proof was flagged green on main by its dry run, so it had no blind try",
 		late,
-		"criterion all_green: suite ./... passed (1 passed, 0 skipped)",
+		"criterion all_green: the required checks passed on c1",
 		lateJudged,
 		"hold-out key_log: TestKeyLog in ./proofs/key_log failed: Failed --- FAIL: TestKeyLog (0.00s)",
 	}
@@ -1149,7 +1369,7 @@ func TestGateCriteriaOpensTheBlindProofsThatAreNotGreen(t *testing.T) {
 			State: proofOpen, Path: "acceptance/group_open_test.go", Changed: true},
 		{ID: "door", Kind: CriterionTest, Suite: "./proofs/door", Name: "TestDoor", Line: lines[2], State: proofBlind, Path: "proofs/door/door_test.go"},
 		{ID: "no_proof", Kind: CriterionTest, Line: late},
-		{ID: "all_green", Kind: CriterionInvariant, Suite: "./...", Outcome: proofPassed, Met: true, Line: lines[4], Message: "1 passed, 0 skipped"},
+		{ID: "all_green", Kind: CriterionInvariant, Suite: "./...", Outcome: proofPassed, Met: true, Line: lines[4]},
 		{ID: "judged", Kind: CriterionJudgement, Line: lateJudged},
 		{ID: "key_log", Kind: CriterionTest, Suite: "./proofs/key_log", Name: "TestKeyLog", Outcome: proofFailed, Line: lines[6],
 			Message: "Failed\n--- FAIL: TestKeyLog (0.00s)", State: proofBlind, Path: "proofs/key_log/key_log_test.go", Holdout: true},
@@ -1302,8 +1522,8 @@ func TestGateCriteriaOpensAProofOnce(t *testing.T) {
 }
 
 // A blind proof the worker never started had no try: a pod that ended
-// before it, a worker that ran no entry, or an entry the worker could not
-// start (its budget ran out, or its file could not be placed). It stays
+// before it, or an entry the worker could not start (its budget ran out,
+// or its file could not be placed). It stays
 // stored and opens nothing; a criterion's row is unmet and its line,
 // which carries no code, is the finding; a hold-out stays out of every
 // surface, its verdict on the line unrunnable.
@@ -1312,7 +1532,6 @@ func TestGateCriteriaKeepsABlindProofThePodNeverRan(t *testing.T) {
 	plan := Plan{Criteria: []PlanCriterion{{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."}, blindPlan().Criteria[0]}}
 	green := harness.ProofRun{ID: "all_green", Started: true, Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))}
 	ended := proofLines(green)
-	closing, _ := json.Marshal(harness.WorkerEnvelope{Type: "proofs", Proofs: &harness.Proofs{Error: "proofs mode: the fetch failed"}})
 	const outOfBudget = "proofs mode: the run's 35m0s ran out before this entry"
 	unstarted := proofLines(green, harness.ProofRun{ID: "size_bound", Exit: -1, Output: outOfBudget},
 		harness.ProofRun{ID: "holdout-4", Exit: -1, Output: "proofs mode: write proofs/key_log/key_log_test.go: no room"})
@@ -1322,7 +1541,6 @@ func TestGateCriteriaKeepsABlindProofThePodNeverRan(t *testing.T) {
 		holdouts  string
 	}{
 		"a pod that ended early":           {ended[:strings.LastIndex(ended, "\n")], proofsEndedEarly, blindRows()[:1], `[]`},
-		"a worker that ran none":           {string(closing), "proofs mode: the fetch failed", []PlanProof{blindRows()[0], blindRows()[3]}, `[{"id":"holdout-4","verdict":"unrunnable"}]`},
 		"entries the worker did not start": {unstarted, "check test wrote no report (exit -1): " + outOfBudget, []PlanProof{blindRows()[0], blindRows()[3]}, `[{"id":"holdout-4","verdict":"unrunnable"}]`},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1364,6 +1582,30 @@ func TestGateCriteriaKeepsABlindProofThePodNeverRan(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A worker that ran no entry and says why, as a fetch that failed for
+// good, ran no criterion: it is the start escalation, no row and no
+// finding, and the answer runs the gate again.
+func TestGateCriteriaEscalatesAWorkerThatRanNoEntry(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	r, _, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+	proofsWorker(t, r)
+	seedBlindPlan(t, store, Plan{Criteria: []PlanCriterion{{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."}, blindPlan().Criteria[0]}}, []PlanProof{blindRows()[0], blindRows()[3]})
+	closing, _ := json.Marshal(harness.WorkerEnvelope{Type: "proofs", Proofs: &harness.Proofs{Error: "proofs mode: the fetch failed"}})
+	results, errs := runCriteriaWithPods(t, r, kube, string(closing))
+	want := "the sandbox cannot start at proofs mode, and no session can fix it: fix the cause below, " +
+		"then answer to run the criteria gate again, or close the card.\nstart failed: proofs mode: the fetch failed"
+	if errs[0] != nil || results[0].Escalate != want || len(results[0].Findings) != 0 || EscalationSource(results[0].Escalate) != "start" {
+		t.Fatalf("result = (%+v, %v), want the start escalation:\n%s", results[0], errs[0], want)
+	}
+	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(rows) != 0 {
+		t.Fatalf("verdict rows = %+v, want none from a run of no entry", rows)
+	}
+	if step := timelineStep(t, objects, "t1", "gate_criteria"); step["start_failed"] != "start failed: proofs mode: the fetch failed" {
+		t.Fatalf("line = %v, want the start failure", step)
 	}
 }
 
@@ -1469,12 +1711,10 @@ func TestGateCriteriaRefusesAListPastTheWorkersBound(t *testing.T) {
 func TestGateCriteriaKeepsTheRunsOfAPodThatEndedEarly(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
-	r, _, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
 	proofsWorker(t, r)
-	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
-		`{"id":"green_login","kind":"invariant","suite":"./internal/auth"}`+","+
-			`{"id":"state_guard","kind":"invariant","suite":"./internal/state"}`+","+
-			`{"id":"db_guard","kind":"invariant","suite":"./internal/store"}`)
+	plan, rows := openedGuards(hub, "green_login", "state_guard", "db_guard")
+	seedBlindPlan(t, store, plan, rows)
 	done := make(chan struct{})
 	var res CriteriaResult
 	var err error
@@ -1492,8 +1732,8 @@ func TestGateCriteriaKeepsTheRunsOfAPodThatEndedEarly(t *testing.T) {
 		t.Fatalf("the gate failed: %v", err)
 	}
 	want := []string{
-		"criterion state_guard: suite ./internal/state failed: Failed --- FAIL: TestState (0.01s)",
-		"criterion db_guard: suite ./internal/store: the proofs pod ended early, before it reported this entry",
+		"criterion state_guard: TestState in ./internal/state failed: Failed --- FAIL: TestState (0.01s)",
+		"criterion db_guard: TestDB in ./internal/store: the proofs pod ended early, before it reported this entry",
 	}
 	if !slices.Equal(res.Findings, want) {
 		t.Fatalf("findings = %q, want %q", res.Findings, want)
@@ -1528,14 +1768,15 @@ func TestGateCriteriaEndsWithItsContext(t *testing.T) {
 	forgetNamespaceBound = 50 * time.Millisecond
 	kube := newFakeKube()
 	kube.onCreatePod = func() { kube.podOrder[len(kube.podOrder)-1].phase = "Pending" }
-	r, _, store := newTestRunner(t, seedCriteriaPlan(t), kube, &fakeObjectStore{})
+	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, &fakeObjectStore{})
 	r.kube = hungDelete{kube}
-	seedPlan(t, store, map[string]string{"integ": RoleIntegration}, `{"id":"all_green","kind":"invariant","suite":"./..."}`)
+	plan, rows := openedGuards(hub, "green_login")
+	seedBlindPlan(t, store, plan, rows)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := r.GateCriteria(ctx, "t1", 9, "c1")
+		_, err := r.GateCriteria(ctx, "t1", 9, "c1", "")
 		done <- err
 	}()
 	select {
@@ -1554,7 +1795,13 @@ func TestGateCriteriaEndsWithItsContext(t *testing.T) {
 // runCriteria executes the GateCriteria activity in a test environment.
 func runCriteria(t *testing.T, r *Runner) (CriteriaResult, error) {
 	t.Helper()
-	val, err := execActivity(t, r, ActivityGateCriteria, "t1", int64(9), "c1")
+	return runCriteriaChecked(t, r, "")
+}
+
+// runCriteriaChecked executes the activity on head c1, its checks those of checked.
+func runCriteriaChecked(t *testing.T, r *Runner, checked string) (CriteriaResult, error) {
+	t.Helper()
+	val, err := execActivity(t, r, ActivityGateCriteria, "t1", int64(9), "c1", checked)
 	if err != nil {
 		return CriteriaResult{}, err
 	}
@@ -1570,9 +1817,9 @@ func TestGateCriteriaThatCannotStartEscalates(t *testing.T) {
 		p.phase, p.containers = "Pending", []ContainerState{{Name: "fetch", State: "waiting", Reason: "ErrImagePull", Message: imageNotFound}}
 	}
 	objects := &fakeObjectStore{}
-	r, _, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
-	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
-		`{"id":"all_green","kind":"invariant","suite":"./..."}`)
+	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+	plan, rows := openedGuards(hub, "green_login")
+	seedBlindPlan(t, store, plan, rows)
 	res, err := runCriteria(t, r)
 	want := "the sandbox cannot start at image pull, and no session can fix it: push the worker image or correct its reference, " +
 		"then answer to run the criteria gate again, or close the card.\nstart failed: image pull: container fetch waits with ErrImagePull: " + imageNotFound
@@ -1590,16 +1837,193 @@ func TestGateCriteriaThatCannotStartEscalates(t *testing.T) {
 	// escalation, naming the state and the action
 	task := seedCriteriaPlan(t)
 	task.Image = "video"
-	r, _, store = newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	r, hub, store = newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	v := r.cfg.Policy()
 	v.Projects = map[string]policy.ProjectConfig{"repo": {Repository: "sf/repo"}}
 	r.cfg.Policy = func() policy.Version { return v }
-	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
-		`{"id":"all_green","kind":"invariant","suite":"./..."}`)
+	plan, rows = openedGuards(hub, "green_login")
+	seedBlindPlan(t, store, plan, rows)
 	res, err = runCriteria(t, r)
 	want = "the sandbox cannot start at image pin, and no session can fix it: see that factory/images.yaml on main declares the image and that its build lands, so the factory pins it, " +
 		"then answer to run the criteria gate again, or close the card.\nimage video of project repo has no pin in force: no sandbox runs on it until the factory pins it"
 	if err != nil || res.Escalate != want {
 		t.Fatalf("an unpinned image: result = (%+v, %v), want:\n%s", res, err, want)
+	}
+}
+
+// invariantPlan is an invariant and one criterion with a stored proof.
+func invariantPlan() Plan {
+	return Plan{Criteria: []PlanCriterion{{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."}, blindPlan().Criteria[0]}}
+}
+
+func invariantGateRow(store *fakeStore) (CriterionVerdict, bool) {
+	rows, _ := store.CriteriaVerdicts(context.Background(), "t1")
+	for _, v := range rows {
+		if v.Criterion == "all_green" && v.Source == CriteriaSourceGate {
+			return v, true
+		}
+	}
+	return CriterionVerdict{}, false
+}
+
+// An invariant makes no pod run: the head's required checks, green, meet
+// it, and the pod's list holds the test proof alone. The checks read are
+// those of checked when it names a head, else the head's own.
+func TestGateCriteriaInvariantFollowsGreenChecks(t *testing.T) {
+	for name, tc := range map[string]struct{ checked, read, at string }{
+		"the head's own checks":     {"", "c1", "c1"},
+		"the checked head's checks": {"abcdef0123456789", "abcdef0123456789", "abcdef01"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			kube := newFakeKube()
+			r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, &fakeObjectStore{})
+			worker := proofsWorker(t, r)
+			seedBlindPlan(t, store, invariantPlan(), blindRows()[:1])
+			hub.statuses = map[string]string{tc.read: statusBody("success", [4]string{"success", "pr / test", "", ""})}
+			done := make(chan struct{})
+			var res CriteriaResult
+			var err error
+			go func() {
+				defer close(done)
+				res, err = runCriteriaChecked(t, r, tc.checked)
+			}()
+			scriptReproPods(kube, proofLines(harness.ProofRun{ID: "size_bound", Started: true, Report: junitGz(t, wrap(`<testcase name="TestSizeBound"></testcase>`))}))
+			<-done
+			if err != nil {
+				t.Fatal(err)
+			}
+			var list []harness.Proof
+			if err := json.Unmarshal([]byte(worker.lists[0]), &list); err != nil || len(list) != 1 || list[0].ID != "size_bound" {
+				t.Fatalf("list = %s (%v), want the test proof alone", worker.lists[0], err)
+			}
+			if !slices.Equal(hub.statusReads, []string{tc.read}) {
+				t.Fatalf("checks read on %q, want %q once", hub.statusReads, tc.read)
+			}
+			row, ok := invariantGateRow(store)
+			want := "criterion all_green: the required checks passed on " + tc.at
+			if !ok || row.Verdict != "met" || row.Evidence != want || len(res.Findings) != 0 || len(res.Card) != 0 {
+				t.Fatalf("row = %+v (%v), result = %+v; want met on %q", row, ok, res, want)
+			}
+		})
+	}
+}
+
+// Red checks leave the invariant unmet, their findings in its line, and
+// the criterion in the result's findings.
+func TestGateCriteriaInvariantUnmetOnRedChecks(t *testing.T) {
+	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), newFakeKube(), &fakeObjectStore{})
+	seedBlindPlan(t, store, Plan{Criteria: []PlanCriterion{{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."}}}, nil)
+	hub.statuses = map[string]string{"c1": statusBody("failure", [4]string{"failure", "pr / test", "", ""})}
+	res, err := runCriteria(t, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, ok := invariantGateRow(store)
+	if !ok || row.Verdict != "unmet" || !strings.Contains(row.Evidence, "pr / test") {
+		t.Fatalf("row = %+v (%v), want unmet naming the failing check", row, ok)
+	}
+	if len(res.Findings) != 1 || !strings.HasPrefix(res.Findings[0], "criterion all_green: the required checks are not green on c1:\n") || !strings.Contains(res.Findings[0], "pr / test") {
+		t.Fatalf("findings = %q, want one naming the criterion and the check", res.Findings)
+	}
+}
+
+// Checks still running leave the invariant no row, an older head's met
+// row included, and a card line; the next press runs the gate again.
+func TestGateCriteriaInvariantHeldOnPendingChecks(t *testing.T) {
+	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), newFakeKube(), &fakeObjectStore{})
+	seedBlindPlan(t, store, Plan{Criteria: []PlanCriterion{{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."}}}, nil)
+	if err := store.PutCriteriaVerdicts(context.Background(), "t1", CriteriaSourceGate, FactoryDecider,
+		[]CriterionVerdict{{Criterion: "all_green", Verdict: "met", Evidence: "the required checks passed on 0ldhead0", Kind: CriterionInvariant}}); err != nil {
+		t.Fatal(err)
+	}
+	hub.statuses = map[string]string{"c1": statusBody("pending", [4]string{"pending", "pr / test", "", "running"})}
+	res, err := runCriteria(t, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row, ok := invariantGateRow(store); ok {
+		t.Fatalf("row = %+v, want none", row)
+	}
+	if want := []string{"criterion all_green: the required checks are still running on c1"}; !slices.Equal(res.Card, want) || len(res.Findings) != 0 {
+		t.Fatalf("result = %+v, want the card line %q alone", res, want)
+	}
+	if !res.Pending || len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "criterion all_green: the required checks are still running on c1") {
+		t.Fatalf("pending %v, comments %q; want Pending and the line in the comment", res.Pending, hub.comments)
+	}
+}
+
+// A plan whose only criterion is an invariant starts no pod.
+func TestGateCriteriaInvariantOnlyRunsNoPod(t *testing.T) {
+	kube := newFakeKube()
+	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, &fakeObjectStore{})
+	seedBlindPlan(t, store, Plan{Criteria: []PlanCriterion{{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."}}}, nil)
+	hub.statuses = map[string]string{"c1": statusBody("success", [4]string{"success", "pr / test", "", ""})}
+	if _, err := runCriteria(t, r); err != nil {
+		t.Fatal(err)
+	}
+	if len(kube.podOrder) != 0 || len(hub.minted()) != 0 {
+		t.Fatalf("pods %d, mints %v; want none", len(kube.podOrder), hub.minted())
+	}
+	if row, ok := invariantGateRow(store); !ok || row.Verdict != "met" {
+		t.Fatalf("row = %+v (%v), want met", row, ok)
+	}
+}
+
+// openedGuards is a plan of test criteria by id, each with an opened proof
+// in ./internal/<id>'s directory whose file the head holds as stored, and
+// those proofs' rows.
+func openedGuards(hub *forgejoHub, ids ...string) (Plan, []PlanProof) {
+	names := map[string]string{"green_login": "TestLogin", "state_guard": "TestState", "db_guard": "TestDB"}
+	suites := map[string]string{"green_login": "internal/auth", "state_guard": "internal/state", "db_guard": "internal/store"}
+	var plan Plan
+	var rows []PlanProof
+	hub.files = map[string]string{}
+	for i, id := range ids {
+		path := suites[id] + "/" + id + "_test.go"
+		plan.Criteria = append(plan.Criteria, PlanCriterion{ID: id, Kind: CriterionTest, Claim: "c", Inputs: "i", Expected: "e"})
+		rows = append(rows, PlanProof{Idx: i + 1, Origin: ProofOriginCriterion, Criterion: id, ID: id, Suite: suites[id], Name: names[id],
+			Path: path, Code: "package " + id, State: ProofOpened})
+		hub.files["c1:"+path] = "package " + id
+	}
+	return plan, rows
+}
+
+// The report's line for an invariant, by what the checks of head 0123456789
+// said: a failure's line keeps the first line of each finding, its finding
+// all of them; a failure with none names no checks; pending is a card line
+// and a line, and no proof row.
+func TestCriteriaReportInvariantOnChecks(t *testing.T) {
+	const head = "0123456789"
+	run := []criterionRun{{id: "all_green", kind: CriterionInvariant, suite: "./...", checks: true}}
+	for name, tc := range map[string]struct {
+		checks         ChecksResult
+		line           string
+		findings, card []string
+		proofs         int
+		pending        bool
+	}{
+		"red": {ChecksResult{State: ChecksFailure, Findings: []string{"check \"pr / test\": failure\nline two\nline three", "check \"pr / vet\": failure"}},
+			"criterion all_green: the required checks are not green on 01234567: check \"pr / test\": failure; check \"pr / vet\": failure",
+			[]string{"criterion all_green: the required checks are not green on 01234567:\ncheck \"pr / test\": failure\nline two\nline three\ncheck \"pr / vet\": failure"}, nil, 1, false},
+		"timeout": {ChecksResult{State: ChecksTimeout, Findings: []string{"check \"pr / test\" timed out"}},
+			"criterion all_green: the required checks are not green on 01234567: check \"pr / test\" timed out",
+			[]string{"criterion all_green: the required checks are not green on 01234567:\ncheck \"pr / test\" timed out"}, nil, 1, false},
+		"red without findings": {ChecksResult{State: ChecksFailure},
+			"criterion all_green: the required checks are not green on 01234567",
+			[]string{"criterion all_green: the required checks are not green on 01234567"}, nil, 1, false},
+		"pending": {ChecksResult{State: ChecksPending, Findings: []string{"no check has reported"}},
+			"criterion all_green: the required checks are still running on 01234567", nil,
+			[]string{"criterion all_green: the required checks are still running on 01234567"}, 0, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rep := criteriaReport(Plan{}, "c1", run, map[string]gateResult{"all_green": {checks: tc.checks, checked: head}})
+			if len(rep.lines) != 1 || rep.lines[0] != tc.line || !slices.Equal(rep.findings, tc.findings) || !slices.Equal(rep.card, tc.card) ||
+				len(rep.proofs) != tc.proofs || rep.pending != tc.pending || rep.met != 0 {
+				t.Fatalf("report = %+v, want line %q, findings %q, card %q, %d proofs, pending %v", rep, tc.line, tc.findings, tc.card, tc.proofs, tc.pending)
+			}
+			if tc.proofs == 1 && (rep.proofs[0].Met || rep.proofs[0].Line != tc.line) {
+				t.Fatalf("proof = %+v", rep.proofs[0])
+			}
+		})
 	}
 }

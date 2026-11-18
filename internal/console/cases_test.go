@@ -334,6 +334,9 @@ func TestCaseFaceInfoIsTheAsksAndTheLifeLoadsOnDemand(t *testing.T) {
 	if drawer := getAs(r, ck, "/cards/t-a/drawer?tab=overview", false).Body.String(); !strings.Contains(drawer, "Postgres is shared.") {
 		t.Errorf("the opened card lacks the ask's info:\n%s", drawer)
 	}
+	if strings.Contains(needs, "Last answer processed:") {
+		t.Errorf("the face carries a processed-at line:\n%s", needs)
+	}
 }
 
 // A card's row waits since its oldest case was faced: the ask's time, not

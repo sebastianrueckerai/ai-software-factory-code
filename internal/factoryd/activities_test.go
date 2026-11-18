@@ -84,7 +84,7 @@ type prForgejo struct {
 	labels        map[int64][]string // issue → labels
 	labelFail     int                // PUT /issues/{n}/labels fails this many times first
 	labelStatus   int                // the failure's status; 500 when zero
-	head          string             // GET /branches/{b}'s commit; a POST /contents moves it to head+"e"
+	head          string             // GET /branches/{b}'s commit, which main holds (compare); a POST /contents moves it to head+"e"
 	mainHead      string             // GET /branches/main's commit; unlisted branches answer head
 	contents      []map[string]any   // POST /contents bodies
 	contentAuths  []string           // POST /contents' Authorization, in order
@@ -112,8 +112,9 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.calls = append(f.calls, r.Method+" "+r.URL.Path)
-		p := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/repo"),
-			"/api/v1/repos/factory-agent/repo"), "/api/v1/repos/demo-app/demo-app"), "/api/v1/repos/factory-agent/demo-app"), "/api/v1/repos/factory-projects/repo"), "/api/v1/repos/sf/code")
+		p := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/repo"),
+			"/api/v1/repos/factory-agent/repo"), "/api/v1/repos/demo-app/demo-app"), "/api/v1/repos/factory-agent/demo-app"), "/api/v1/repos/factory-projects/repo"), "/api/v1/repos/sf/code"),
+			"/api/v1/repos/factory-agent/linkshort")
 		switch {
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/raw/upstream-images.txt"):
 			key := strings.TrimPrefix(strings.TrimSuffix(r.URL.Path, "/raw/upstream-images.txt"), "/api/v1/repos/") + "@" + r.URL.Query().Get("ref")
@@ -172,6 +173,8 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			var n int64
 			fmt.Sscanf(p, "/pulls/%d/files", &n)
 			io.WriteString(w, `[{"filename":"k8s/factoryd.yaml"}]`)
+		case r.Method == "GET" && strings.HasSuffix(p, ".diff"):
+			io.WriteString(w, "diff --git a/k8s/factoryd.yaml b/k8s/factoryd.yaml\n--- a/k8s/factoryd.yaml\n+++ b/k8s/factoryd.yaml\n@@ -1 +1 @@\n-a\n+b\n")
 		case r.Method == "GET" && strings.HasPrefix(p, "/pulls/"):
 			if f.pullsDown {
 				http.Error(w, "forgejo down", http.StatusInternalServerError)
@@ -277,6 +280,11 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 				head = f.mainHead
 			}
 			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"id": head}})
+		case r.Method == "GET" && strings.HasPrefix(p, "/compare/main..."):
+			// main holds every commit of the fork
+			io.WriteString(w, `{"total_commits":0,"commits":[]}`)
+		case r.Method == "GET" && p == "/commits":
+			io.WriteString(w, `[]`)
 		case r.Method == "POST" && p == "/contents":
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)

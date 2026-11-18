@@ -61,6 +61,9 @@ type BriefStore interface {
 	BrieflessCases(ctx context.Context, perRepo int) ([]Case, error)
 	SetCaseBrief(ctx context.Context, id int64, happened, left string) error
 	SetCaseBriefError(ctx context.Context, id int64, e string) error
+	// SetCaseWake sets the case's wake, as Store.SetCaseWake does: the
+	// wake the freeze holds a brief to.
+	SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error
 	CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error)
 	// EnsureChatTask is the project's chat task of the month, the judgment
 	// budget.
@@ -216,9 +219,12 @@ func (b *BriefWriter) failed(ctx context.Context, t Task, err error, prev string
 	text := b.scrub(err.Error())
 	var refusal *policy.Refusal
 	var noBrief *noBriefError
+	var frozen frozenError
 	switch {
 	case errors.Is(err, errJudgmentSpent):
 		text = errJudgmentSpent.Error()
+	case errors.As(err, &frozen):
+		text = frozen.Error()
 	case errors.As(err, &refusal) && refusal.Decision == policy.RefusedBudget:
 		text = errJudgmentSpent.Error()
 	case errors.As(err, &refusal):
@@ -240,7 +246,8 @@ func (b *BriefWriter) failed(ctx context.Context, t Task, err error, prev string
 		return markErr
 	}
 	detail["error"] = text
-	_, err = b.Store.Record(context.WithoutCancel(ctx), Event{Repository: t.Repository, TaskID: t.ID, Kind: EventBriefFailed,
+	at := b.now()
+	_, err = b.Store.Record(context.WithoutCancel(ctx), Event{Repository: t.Repository, TaskID: t.ID, Kind: EventBriefFailed, At: at,
 		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail})
 	return err
 }
@@ -392,6 +399,36 @@ func lines(s string) string {
 // EventBriefFailed is factoryd's record of a brief writer that failed:
 // the card keeps today's text and no brief.
 const EventBriefFailed = "brief_failed"
+
+// frozenError is a brief call the class's freeze refused: the mark names
+// the reset, so one freeze marks the row once and records one row — the
+// retry driver is the case's wake now, not the pass's tick. The incident's
+// 46 brief_failed rows between 16:42:52 and 17:04:01 came from the pass
+// re-reading the failed case every tick (BrieflessCases returns every
+// non-terminally marked case) and the gateway's reason differing per call,
+// so each pass recorded its own row; today the refusal sets the case's
+// wake (SetCaseWake) and the pass skips a case whose wake is in the
+// future, so whatever re-drove the brief inside a freeze waits at the
+// case wake, and the monitor sweep wakes it then.
+type frozenError struct{ at time.Time }
+
+func (e frozenError) Error() string {
+	return "the class is frozen until " + e.at.UTC().Format(time.RFC3339)
+}
+
+// frozen marks the case whose brief call the named refusal refused: the
+// case's wake at the reset plus the margin, then the one brief_failed
+// with the reset as BackoffS, the seconds from the event to it (the wait
+// card's shape), so one freeze records one row.
+func (b *BriefWriter) frozen(ctx context.Context, t Task, c Case, at time.Time) error {
+	wake := at.Add(freezeWakeMargin)
+	if err := b.Store.SetCaseWake(ctx, c.ID, c.OwnerRung, c.WakeOn, &wake); err != nil {
+		return err
+	}
+	return b.failed(ctx, t, frozenError{at}, c.BriefError, func(ctx context.Context, m string) error {
+		return b.Store.SetCaseBriefError(ctx, c.ID, m)
+	}, map[string]any{"case": c.ID, "backoff_s": at.Sub(b.now()).Seconds()})
+}
 
 func (s *PGStore) BrieflessApprovals(ctx context.Context, perProject int) ([]ApprovalRequest, error) {
 	rows, err := s.db.QueryContext(ctx,

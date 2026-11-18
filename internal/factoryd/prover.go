@@ -688,7 +688,7 @@ func (r *Runner) storeProofs(ctx context.Context, t Task, repo Repo, plan Task) 
 	for i, pp := range filed {
 		entries[i] = storedProof(pp)
 	}
-	runs, runErr, err := r.proofRuns(ctx, t, repo, branchRef(branch), head, t.SHA, entries, budget)
+	runs, runErr, err := r.proofRuns(ctx, t, repo, "", head, t.SHA, entries, budget)
 	if err != nil {
 		return err
 	}
@@ -796,14 +796,15 @@ func (r *Runner) proverDue(ctx context.Context, plan Task) (bool, error) {
 	return !named || card.Status == "done", err
 }
 
-// foundationCard is plan id's first foundation card by p; named tells
-// whether p names one, and a card not filed yet is the zero Task.
+// foundationCard is the card of plan id's first foundation key by p
+// (PlanWaits); named tells whether p names one, and a card not filed yet
+// is the zero Task.
 func (r *Runner) foundationCard(ctx context.Context, id string, p Plan) (card Task, named bool, err error) {
 	keys := cardsOf(p.Cards, RoleFoundation)
 	if len(keys) == 0 {
 		return Task{}, false, nil
 	}
-	cards, err := r.store.PlanCards(ctx, id)
+	cards, err := PlanWaits(ctx, r.store, id)
 	if i := slices.IndexFunc(cards, func(c Task) bool { return c.PlanKey == keys[0] }); i >= 0 {
 		card = cards[i]
 	}

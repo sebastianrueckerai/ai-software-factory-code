@@ -457,6 +457,28 @@ func TestFailedPlanCardShowsRetry(t *testing.T) {
 	}
 }
 
+// The successor that carries a plan card's key is retried as the card is:
+// failed, it shows Retry to an approver, and so does one whose retry
+// stopped before its replacement got an issue.
+func TestAFailedPlanCardsSuccessorShowsRetry(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	succ := func(id string, n int64, key string) factoryd.BoardTask {
+		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "failed", Track: "direct", Process: "spec", Objective: "card again",
+			Repository: "linkshort/linkshort", IssueNumber: n, Source: factoryd.SourceSuccessor, Parent: "t-plan", PlanKey: key}}
+	}
+	replacement := factoryd.BoardTask{Task: factoryd.Task{ID: factoryd.RetryID("t-s9"), Kind: "agent", Status: "queued", Track: "direct", Process: "spec",
+		Objective: "again", Repository: "linkshort/linkshort", Source: factoryd.SourceSuccessor, Parent: "t-plan", PlanKey: "k9"}}
+	r.tasks.tasks = append(planTasks(), succ("t-s8", 18, "k8"), succ("t-s9", 19, ""), replacement)
+	ck, _ := r.loggedIn(t)
+	failed := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Done")
+	for _, id := range []string{"t-s8", "t-s9"} {
+		if !strings.Contains(failed, `action="/tasks/`+id+`/retry"`) {
+			t.Errorf("%s lacks Retry:\n%s", id, failed)
+		}
+	}
+}
+
 // Item 119: Retry, by an approver, files the replacement (factoryd's
 // RetryCard), which starts once a work slot is free: the console
 // labels nothing. A refusal answers 409 with its sentence; a writer who

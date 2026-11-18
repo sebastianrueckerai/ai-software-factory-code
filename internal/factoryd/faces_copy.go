@@ -985,6 +985,9 @@ func leftLine(f Facts) string {
 	case f.Checks == "green":
 		out = "No finding is open, and the checks are green."
 	}
+	if f.MergeConflict != "" {
+		out = strings.TrimSpace(out + " " + conflictLine)
+	}
 	// at the budget floor the ask's amount and this price are one number: a
 	// session priced at the opening is named by the why
 	if s := f.LastSession; s != nil && s.CostEUR >= 0.005 && (f.Kind != CaseBudgetFloor || pricedBySession(f.CaseFacts)) {
@@ -992,6 +995,10 @@ func leftLine(f Facts) string {
 	}
 	return out
 }
+
+// conflictLine is what is left on a head that no longer merges into main:
+// no run of the gates clears it, only a session that merges main.
+const conflictLine = "The pull request no longer merges into main. Only a session that merges main into its branch fixes that."
 
 func isAre(n int) string {
 	if n == 1 {

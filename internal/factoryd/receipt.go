@@ -178,9 +178,19 @@ func (r *Runner) BuildMergeReceipt(ctx context.Context, taskID string, pr int64)
 	}
 	slices.SortStableFunc(rec.Facts.Decisions, func(a, b ReceiptDecision) int { return receiptWhen(a).Compare(receiptWhen(b)) })
 	// the judgement criteria's verdicts: the model's assessments on the
-	// task's rows (an integration card's own, a card of a plan without
-	// them has none)
-	rows, err := r.store.CriteriaVerdicts(ctx, taskID)
+	// rows the task reads (verdictHome: the integration key's card reads
+	// the plan's, a card of a plan without them has none)
+	home := taskID
+	if t.PlanCard() {
+		p, _, err := planOfStore(ctx, r.store, t.Parent, t.ID)
+		if err != nil {
+			return MergeReceipt{}, err
+		}
+		if home, err = verdictHome(ctx, r.store, t, p); err != nil {
+			return MergeReceipt{}, err
+		}
+	}
+	rows, err := r.store.CriteriaVerdicts(ctx, home)
 	if err != nil {
 		return MergeReceipt{}, err
 	}

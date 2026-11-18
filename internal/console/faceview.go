@@ -310,7 +310,7 @@ func (c *Console) placeOf(ctx context.Context, v *boardView, k card, asks bool) 
 			words += fmt.Sprintf("%s%d %s", sep, len(p.Cards), plural(len(p.Cards), "card"))
 		}
 		return template.HTML(template.HTMLEscapeString(words))
-	case t.Source == factoryd.SourcePlan && t.Parent != "":
+	case t.PlanCard():
 		name := k.PlanName
 		if name == "" {
 			_, name, _ = c.planIssue(ctx, v.byID, t.Parent)

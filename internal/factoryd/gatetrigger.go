@@ -3,8 +3,9 @@ package factoryd
 import "context"
 
 // The criteria gate's trigger: the fact every replan stop and every
-// check-in decision against a re-cut card names. The gate runs only at a
-// living card's pull request merge press, so a card whose open pull
+// check-in decision against a re-cut card names. The gate runs on a living
+// card's pull request at its merge press; without it the plan's close runs
+// the gate on main, without that card's work. So a card whose open pull
 // request is that trigger must not be read as PR-less, and a failed forge
 // read is the error, never a false: an unreadable pull request is not a
 // closed one.
@@ -22,13 +23,17 @@ type CheckInPRFacts struct {
 // holds an open pull request (read through the forge client as the merge
 // press reads it), t is the plan's integration card or a delta card (the
 // same test CriteriaCard uses to decide the gate runs), and the plan
-// still holds criteria without a settled verdict. The error arm is the
-// fail direction: when the card holds a pull request and the forge read
-// fails, gateTrigger returns the error and never a false — a caller must
-// never read an unreadable pull request as no open pull request. With no
-// pull request to read it returns false, nil.
+// still holds criteria no row settles as the plan's close reads them
+// (planGate): rows at a head main does not hold settle nothing. The error
+// arm is the fail direction: when the card holds a pull request and the
+// forge read fails, gateTrigger returns the error and never a false — a
+// caller must never read an unreadable pull request as no open pull
+// request. With no pull request to read it returns false, nil.
 func (r *Runner) gateTrigger(ctx context.Context, t Task, p Plan) (bool, error) {
-	if t.Source != SourcePlan || t.Parent == "" || !CriteriaCard(p, t.PlanKey) {
+	if !t.PlanCard() || !CriteriaCard(p, t.PlanKey) {
+		return false, nil
+	}
+	if t.PRNumber == 0 {
 		return false, nil
 	}
 	home, err := IntegrationCard(ctx, r.store, t.Parent, p)
@@ -39,10 +44,11 @@ func (r *Runner) gateTrigger(ctx context.Context, t Task, p Plan) (bool, error) 
 	if err != nil {
 		return false, err
 	}
-	if len(openCriteria(p, rows)) == 0 {
-		return false, nil
+	g, err := planGateOf(ctx, r.store, t.Parent, home)
+	if err != nil {
+		return false, err
 	}
-	if t.PRNumber == 0 {
+	if len(openCriteria(p, g.settling(rows))) == 0 {
 		return false, nil
 	}
 	repo, err := SplitRepo(t.Repository)
@@ -62,7 +68,7 @@ func (r *Runner) gateTrigger(ctx context.Context, t Task, p Plan) (bool, error) 
 // pull request. Cards off a plan hold no facts; a plan's card without a
 // pull request holds none either.
 func (r *Runner) checkinPRFacts(ctx context.Context, t Task) (*CheckInPRFacts, error) {
-	if t.Source != SourcePlan || t.Parent == "" {
+	if !t.PlanCard() {
 		return nil, nil
 	}
 	p, _, err := planOfStore(ctx, r.store, t.Parent, t.ID)

@@ -85,6 +85,7 @@ type toolInput struct {
 	ID          int64    `json:"id,omitempty"`
 	Verdict     string   `json:"verdict,omitempty"`
 	DependsOn   string   `json:"depends_on,omitempty"`
+	ReleaseCard string   `json:"release_card,omitempty"`
 	Remove      bool     `json:"remove,omitempty"`
 	OffMain     bool     `json:"off_main,omitempty"`
 	Mode        string   `json:"mode,omitempty"`
@@ -499,7 +500,8 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 	for _, f := range []struct{ key, v string }{{"name", in.Name}, {"tool", in.Tool}, {"need", in.Need}, {"title", in.Title}, {"why", in.Why}, {"body", in.Body}, {"track", in.Track}, {"track_reason", in.TrackReason},
 		{"size", in.Size}, {"image", in.Image}, {"action", in.Action},
 		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}, {"mode", in.Mode},
-		{"verdict", in.Verdict}, {"autonomy", in.Autonomy}, {"path", in.Path}, {"old", in.Old}, {"new", in.New}, {"content", in.Content}} {
+		{"verdict", in.Verdict}, {"autonomy", in.Autonomy}, {"path", in.Path}, {"old", in.Old}, {"new", in.New}, {"content", in.Content},
+		{"release_card", in.ReleaseCard}, {"reason", in.Reason}} {
 		if f.v != "" {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
 		}
@@ -861,6 +863,9 @@ func boardWords(d boardData) string {
 			if h := k.Helper; h != nil {
 				lines[i] += fmt.Sprintf(", its %s %s is %s", h.Source, h.ID, h.Status)
 			}
+			if k.HoldLine != "" {
+				lines[i] += ", " + k.HoldLine
+			}
 		}
 		listed("\n  ", lines, whole)
 		b.WriteString("\n")
@@ -992,6 +997,19 @@ func (t *turn) planActor() (actor, error) {
 	}
 	if a.decider == "agent" {
 		a.thread = cmp.Or(a.thread, t.conv)
+	}
+	return a, err
+}
+
+// humanWord is planActor for a write on the human's word alone: a turn
+// on no line the human typed, a wake's among them, is refused, naming
+// what the tool would not do (refused) and how the human takes it: a
+// bound ask of tool, or button on the card's drawer.
+func (t *turn) humanWord(refused, tool, button string) (actor, error) {
+	a, err := t.planActor()
+	if err == nil && a.decider == "agent" {
+		err = refuse(http.StatusConflict, fmt.Sprintf("This turn runs on no line the human typed, so it %s. Give them the choice with ask, its press bound to %s, or let them press %s on the card's drawer.",
+			refused, tool, button))
 	}
 	return a, err
 }
@@ -1754,7 +1772,15 @@ func init() {
 			params: map[string]any{"task_id": taskParam, "note": str("why, commented first")}, required: []string{"task_id"},
 			about: "Close a card's issue, which ends the card.",
 			run: func(t *turn, in toolInput) (string, *inverse, error) {
-				note, err := t.c.doClose(t.r.Context(), t.a, in.TaskID, in.Note)
+				// a held card's close and a plan's, which waives its open
+				// criteria, are the human's: their typed line is their word
+				a := t.a
+				if k, err := t.card(in); err == nil && (k.Held() || factoryd.ClosablePlan(k)) {
+					if a, err = t.planActor(); err != nil {
+						return "", nil, err
+					}
+				}
+				note, err := t.c.doClose(t.r.Context(), a, in.TaskID, in.Note)
 				return note, nil, err
 			}},
 		{name: "edit", title: "Edit a card", write: true,
@@ -1789,6 +1815,31 @@ func init() {
 			run: func(t *turn, in toolInput) (string, *inverse, error) {
 				note, err := t.c.doSetDependency(t.r.Context(), t.a, in.TaskID, in.DependsOn, in.Remove)
 				return note, &inverse{"set_dependency", toolInput{TaskID: in.TaskID, DependsOn: in.DependsOn, Remove: !in.Remove}}, err
+			}},
+		{name: "hold_card", title: "Hold a card", write: true,
+			params: map[string]any{"task_id": taskParam,
+				"release_card": str("the card whose merge or done releases it, any plan"),
+				"reason":       str("why the card waits, one line the board shows")},
+			required: []string{"task_id", "reason"},
+			about:    "Hold a card that has not started, on the human's word, until it is released.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				a, err := t.humanWord("sets no hold: a hold is the human's own", "hold_card", "Hold")
+				if err != nil {
+					return "", nil, err
+				}
+				note, err := t.c.doHoldCard(t.r.Context(), a, in.TaskID, in.ReleaseCard, in.Reason)
+				return note, nil, err
+			}},
+		{name: "release_hold", title: "Release a hold", write: true,
+			params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
+			about: "End the hold on a card, on the human's word: it queues for a work slot again.",
+			run: func(t *turn, in toolInput) (string, *inverse, error) {
+				a, err := t.humanWord("releases no hold: only the human ends one", "release_hold", "Release")
+				if err != nil {
+					return "", nil, err
+				}
+				note, err := t.c.doReleaseHold(t.r.Context(), a, in.TaskID)
+				return note, nil, err
 			}},
 		{name: "replan", title: "Replan a card", write: true,
 			params: map[string]any{"task_id": taskParam, "note": str("why it goes back: the planner reads it"),
@@ -2141,7 +2192,7 @@ func (t *turn) requestImage(in toolInput) (string, error) {
 			return factoryd.QueueRefusal(ctx, t.c.cfg.Tasks, tree, t.p.Repository, title)
 		})
 	}
-	ask, err := t.c.cfg.RequestImage(ctx, t.p.Repository, tool, strings.TrimSpace(in.Need), strings.TrimSpace(in.Image), t.a.s.user, admit)
+	ask, err := t.c.cfg.RequestImage(ctx, t.p.Repository, tool, strings.TrimSpace(in.Need), strings.TrimSpace(in.Image), t.a.approver(), admit)
 	var no factoryd.ErrImageRequest
 	var admission *refusal
 	switch {

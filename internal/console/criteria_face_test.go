@@ -289,7 +289,7 @@ func heldPlanRig(t *testing.T, r *rig) (facefixtures.Fixture, *[]string) {
 	s.seat(fx)
 	r.seedScene(s)
 	var closes []string
-	r.c.cfg.CheckClosePlan = func(_ context.Context, id, note string, approver bool) error {
+	r.c.cfg.CheckClosePlan = func(_ context.Context, id, _, note string, approver bool) error {
 		if !approver {
 			return factoryd.ErrNotApprover
 		}

@@ -185,6 +185,16 @@ var writeCases = []writeCase{
 		},
 		result: "#21 depends on #22 now.", undo: true, undoResult: "#21 no longer depends on #22.", event: factoryd.EventDependencySet,
 		calls: []string{"issue dependency sf/code#21 on #22 remove false"}, undoCalls: []string{"issue dependency sf/code#21 on #22 remove true"}},
+	{name: "hold_card", tool: "hold_card", args: `{"task_id":"t-m","reason":"after the pg split"}`,
+		result: "#5 is on hold until a human releases it.", event: factoryd.EventCardHeld,
+		calls: []string{`hold t-m on "" by sebastian: after the pg split`}},
+	{name: "release_hold", tool: "release_hold", args: `{"task_id":"t-h"}`,
+		setup: func(r *AcceptanceRig) {
+			r.AddCard(factoryd.Task{ID: "t-h", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Repository: "sf/code", IssueNumber: 32,
+				Objective: "Prove the split.", Hold: &factoryd.CardHold{Reason: "after the pg split", By: "sebastian"}})
+		},
+		result: "#32's hold is released: it queues for a work slot.", event: factoryd.EventCardHoldEnded,
+		calls: []string{"release the hold of t-h"}},
 	{name: "replan", tool: "replan", args: `{"task_id":"t-f","note":"Plan it again."}`, confirm: true,
 		setup: func(r *AcceptanceRig) {
 			r.AddCard(factoryd.Task{ID: "t-f", Kind: "agent", Status: "failed", IssueNumber: 31, Objective: "Add the cache."})

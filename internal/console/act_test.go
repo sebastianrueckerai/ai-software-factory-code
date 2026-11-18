@@ -136,8 +136,8 @@ func TestChatAnswerCarriesActionAndFund(t *testing.T) {
 	}
 }
 
-// The chat's fund is the agent's own decision on rung 2, and a human's on
-// rung 3 once they confirmed it.
+// The chat's fund is the agent's own decision on rung 2, as the chat user,
+// and a human's on rung 3 once they confirmed it, as their login.
 func TestAgentFundIsRungTwo(t *testing.T) {
 	for decider, rung := range map[string]int{"agent": 2, "member": 3} {
 		r := newRig(t)
@@ -146,7 +146,8 @@ func TestAgentFundIsRungTwo(t *testing.T) {
 			t.Fatalf("%s: %v", decider, err)
 		}
 		got, _ := actedOnce(t, r)
-		want := factoryd.ActInput{TaskID: "t-e", CaseID: 5, By: "sebastian", Via: factoryd.ViaChat, Rung: rung,
+		by := map[int]string{2: factoryd.ChatUser, 3: "sebastian"}[rung]
+		want := factoryd.ActInput{TaskID: "t-e", CaseID: 5, By: by, Via: factoryd.ViaChat, Rung: rung,
 			Res: factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": 1.0}, Note: "the replica is worth it"}}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s: Act took %+v, want %+v", decider, got, want)
@@ -977,4 +978,24 @@ func TestTheAgentsCardWritesGoOutAsTheChatBot(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The agent's own acts outside Act carry the chat user, never the login
+// of the human whose turn woke it: its steer reaches the session as the
+// project agent's, a human's steer as theirs.
+func TestTheAgentsSteerIsTheChatUsers(t *testing.T) {
+	r, _ := newWritesRig(t)
+	_, s := r.loggedIn(t)
+	var by []string
+	r.c.cfg.Steer = func(_ context.Context, _, user, _ string) error {
+		by = append(by, user)
+		return nil
+	}
+	for _, decider := range []string{"agent", "member"} {
+		a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: decider, level: policy.AutonomyAutonomous}
+		if _, err := r.c.doSteer(t.Context(), a, "t-r", "rebase first"); err != nil {
+			t.Fatalf("%s's steer: %v", decider, err)
+		}
+	}
+	equal(t, "the steers' senders", by, []string{factoryd.ChatUser, "sebastian"})
 }

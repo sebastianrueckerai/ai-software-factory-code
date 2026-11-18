@@ -81,7 +81,6 @@
 
 {{define "evidence-criteria"}}{{$a := .}}{{with .Criteria}}<h4>The promises</h4>{{range $r := .}}<div class="criterion"><p><b>{{.Words}}</b> {{if .Verdict}}{{.Verdict}}{{else}}open{{end}}{{with .Word}} ({{.}}){{end}}</p>{{with .Detail}}<p class="meta">{{.}}</p>{{end}}
 {{with .Evidence}}<p class="reason">{{.}}</p>
-{{end}}{{with .Artifact}}<p class="meta">{{.Name}} at {{short .Head}}{{with $r.CutLine}}, {{.}}{{end}}</p>
-<pre class="artifact" tabindex="0">{{.Content}}</pre>
+{{end}}{{with .Artifact}}<details class="fold"><summary>{{.Name}} at {{short .Head}}, {{$r.Size}}</summary><pre class="artifact" tabindex="0">{{.Content}}</pre></details>
 {{else}}{{if $r.Human}}{{with $r.PlanCriterion.Evidence}}<p class="meta">Evidence: {{.}}</p>
 {{end}}{{end}}{{end}}</div>{{end}}{{end}}{{end}}

@@ -27,7 +27,7 @@ type criterionRow struct {
 	Evidence string
 	Word     string                 // "blind" or "open" for a met gate row, from its evidence
 	Artifact *factoryd.GateArtifact // a human criterion's artifact as the gate's newest run wrote it; nil without one
-	CutLine  string                 // "the first 8 KiB of <n> KiB" when the card shows the artifact's first maxCardArtifact bytes
+	Size     string                 // the artifact's size, "<n> KiB", or "the first 8 KiB of <n> KiB" when the card shows its first maxCardArtifact bytes
 	Human    bool                   // Met and Not met are offered: a human criterion on a merge card
 }
 
@@ -251,11 +251,11 @@ type requestReads struct {
 	Events
 }
 
-// openedProofsOf are the opened proofs of plan card t's plan when t is its
+// openedProofsOf are the opened proofs of plan card t's plan (Task.PlanCard) when t is its
 // integration card or a delta card, each read at head in project as a's
 // human; nil for any other card.
 func (c *Console) openedProofsOf(ctx context.Context, a actor, t factoryd.Task, project, head string) ([]proofView, error) {
-	if t.Source != factoryd.SourcePlan || t.Parent == "" || head == "" {
+	if !t.PlanCard() || head == "" {
 		return nil, nil
 	}
 	_, p, ok, err := c.planTable(ctx, t.Parent, 0)
@@ -325,8 +325,9 @@ func (c *Console) promiseRows(ctx context.Context, promises []factoryd.PromiseRo
 				if err := json.Unmarshal(b, a); err != nil {
 					return nil, fmt.Errorf("the artifact of %s: %w", p.ID, err)
 				}
+				row.Size = fmt.Sprintf("%d KiB", (len(a.Content)+1023)>>10)
 				if len(a.Content) > maxCardArtifact {
-					row.CutLine = fmt.Sprintf("the first %d KiB of %d KiB", maxCardArtifact>>10, (len(a.Content)+1023)>>10)
+					row.Size = fmt.Sprintf("the first %d KiB of %s", maxCardArtifact>>10, row.Size)
 					a.Content = strings.ToValidUTF8(a.Content[:maxCardArtifact], "")
 				}
 				row.Artifact = a
@@ -399,6 +400,34 @@ func (k *approvalCard) planOf() {
 	for _, h := range k.HoldoutRows {
 		k.Holdouts = append(k.Holdouts, planHoldout{HoldoutRow: h, Blurb: holdoutBlurbs[h.State]})
 	}
+}
+
+// planReader is the store a plan's open criteria are read from: its cards
+// and rows on the tasks port, its criteria gate's runs on the events port.
+type planReader struct {
+	Tasks
+	Events
+}
+
+// waivesCriteria reports whether a close of card id waives criteria: it is
+// a plan at rest whose criteria stand open, and a waiver drops a
+// requirement of the spec, so the chat proposes that close at every
+// autonomy level and only the human's press runs it. A read that fails
+// counts as a waiver.
+func (c *Console) waivesCriteria(ctx context.Context, id string) bool {
+	k, ok, err := c.cfg.Tasks.Task(ctx, id)
+	if err != nil {
+		return true
+	}
+	if !ok || !factoryd.ClosablePlan(k) {
+		return false
+	}
+	_, p, _, err := c.planTable(ctx, k.ID, 0)
+	if err != nil {
+		return true
+	}
+	open, err := factoryd.PlanOpenCriteria(ctx, planReader{c.cfg.Tasks, c.cfg.Events}, k.ID, p)
+	return err != nil || len(open) > 0
 }
 
 // planTable is revision n (0 the newest) of plan task id's plan: the

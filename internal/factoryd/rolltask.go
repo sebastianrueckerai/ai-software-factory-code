@@ -2074,3 +2074,7 @@ func (r *Runner) rollRefAt(ctx context.Context, repo Repo, ref string, t RollTar
 	}
 	return pinned, nil
 }
+
+func short(sha string) string {
+	return sha[:min(len(sha), 7)]
+}

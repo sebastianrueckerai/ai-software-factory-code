@@ -600,7 +600,7 @@ func (g *replayRig) stubs() {
 	ok(ActivityGateReproduction, 4, func(ctx context.Context, taskID string, pr int64, commit string) (ReproResult, error) {
 		return ReproResult{}, nil
 	})
-	ok(ActivityGateCriteria, 4, func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
+	ok(ActivityGateCriteria, 5, func(ctx context.Context, taskID string, pr int64, commit, checked string) (CriteriaResult, error) {
 		return CriteriaResult{}, nil
 	})
 	ok(ActivityHoldoutSettlement, 6, func(ctx context.Context, taskID string, pin, pr int64, commit string, reds []HoldoutGateResult) (HoldoutSettlement, error) {
@@ -1135,9 +1135,9 @@ func TestReplayFixtures(t *testing.T) {
 var replayCoverage = map[string]string{
 	"I1":  "TestFilePlanRefileOfTheNewestIsANoop",
 	"I2":  "open: declined, the ask quotes the refusal instead",
-	"I3":  "TestOneSendCarriesTheDecisionTheFundAndTheNote",
+	"I3":  "internal/factoryd/pg TestOneSendCarriesTheDecisionTheFundAndTheNote",
 	"I4":  "internal/console TestChatCarriesAQuestionAStopOrAFailureLeftUnanswered",
-	"I5":  "TestIdenticalPlanRefileResolvesItsCase",
+	"I5":  "internal/factoryd/pg TestIdenticalPlanRefileResolvesItsCase",
 	"I6":  "testdata/fixtures/1347.json",
 	"I7":  "TestBudgetFloorWithFindingsAsksOnce",
 	"I8":  "TestVerifyReturnsTheAdoptedHead",
@@ -1160,14 +1160,14 @@ var replayCoverage = map[string]string{
 	"S5":  "open: no fix is built, a human-lane card has no workflow; TestRollHeldCaseHoldsThePlansStates holds a roll's case, not this",
 	"S6":  "TestOpenTripRetriesAFailedDependencyOnce",
 	"S7":  "open: the impasse's refusal is tested for its words, not for the dependents it leaves waiting, and no fix is built",
-	"S8":  "TestACardWaitingOnAPlanAtTheHumanOpensOneCaseNamingThePlansAsk",
+	"S8":  "internal/factoryd/pg TestACardWaitingOnAPlanAtTheHumanOpensOneCaseNamingThePlansAsk",
 	"S9":  "testdata/fixtures/1452.json",
 	"S10": "open: by design, a merged dependency waits for its green chain run",
 	"S11": "TestAPlansFailedLeafIsACaseAtTheHumanUntilRetryOrClose",
 	"S12": "TestSuccessorTakesOverTheDependents",
 	"S13": "TestHealSignalsWaitingCards",
 	"S14": "TestAdmitRecordsTheRefusalAndClearsItOnAdmission",
-	"S15": "TestCountAdmittedFreesTheApprovalAndDependencyWaits",
+	"S15": "internal/factoryd/pg TestCountAdmittedFreesTheApprovalAndDependencyWaits",
 	"S16": "TestBoundedStartTakesNoSlotFromAFixForwardCard",
 	"S17": "TestAPlanRowWithNoIssueAgesIntoOneQueuedOverBoundCaseThatRung2Closes",
 	"S18": "internal/console TestAFacePressAnswersAsItsAnswer",
@@ -1177,7 +1177,7 @@ var replayCoverage = map[string]string{
 	"S22": "testdata/fixtures/1347.json",
 	"S23": "TestReportSessionRefusesAnOpeningTheBudgetCannotPay",
 	"S24": "open: by decision, a done integration card re-runs no review",
-	"S25": "TestRung2ProposesAtAssistedAndManual",
+	"S25": "internal/factoryd/pg TestRung2ProposesAtAssistedAndManual",
 	"S26": "TestPassLoopBoundsARunAndFlagsIt",
 	"S27": "TestReplayOfAHistoryWithoutTheCasesMarkerIsRefused",
 	"S28": "TestWorkflowRunRestartedAtClosingFinishesWithItsStoredEnd",
@@ -1189,7 +1189,7 @@ var replayCoverage = map[string]string{
 	"S34": "open: the planner's read set is a hand step on the infra tree",
 	"S35": "TestWorkflowReplaysDevServerHistories",
 	"S36": "TestFileChildrenCarriesTheRaisesOfTheCardItContinues",
-	"S37": "TestSizeGateBudgetMoveRecordsAFund",
+	"S37": "internal/factoryd/pg TestSizeGateBudgetMoveRecordsAFund",
 	"S38": "TestReplanChildRefusalOfAFailedCardSaysRetryOrClose",
 	"S39": "open: dormant under the shipped process",
 }

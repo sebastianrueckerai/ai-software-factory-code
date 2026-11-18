@@ -143,6 +143,10 @@ var SourceBriefs = map[string]func(BriefFacts) BriefText{
 		return BriefText{Title: "This month's spending reached the factory's limit of " + f.Name,
 			Why: "The gateway refuses every further model call until the limit is raised in policy.yaml or the month ends."}
 	},
+	SourceFreezeCard: func(f BriefFacts) BriefText {
+		return BriefText{Title: freezeCardTitle(f.Name),
+			Why: "Every model call of the class is refused until the provider's limit resets, so its cards wait."}
+	},
 	SourceConfig: func(f BriefFacts) BriefText {
 		return BriefText{Title: "Fix the rejected configuration in " + f.Name + " and push",
 			Why: "The factory refused the newest configuration, so the version before it stays in force."}

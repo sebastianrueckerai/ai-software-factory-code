@@ -39,11 +39,12 @@ type BoardDigestCard struct {
 }
 
 // BoardDigestQueued is a queued card, by issue and task id (the one name
-// a card without an issue has), and what holds it: the reason admit last
-// refused it ("waits on #N", "project month cap", "work bound H of B" with
-// H the slots held then) and Age, the time since the first refusal with
-// that reason. A card admit never refused is "no issue" while it has
-// none, else "next", with no age.
+// a card without an issue has), and what holds it: a human's hold, its
+// line and the time since it was put, else the reason admit last refused
+// it ("waits on #N", "project month cap", "work bound H of B" with H the
+// slots held then) and Age, the time since the first refusal with that
+// reason. A card admit never refused is "no issue" while it has none,
+// else "next", with no age.
 type BoardDigestQueued struct {
 	Issue  int
 	TaskID string
@@ -102,6 +103,8 @@ func (r *Runner) BoardDigest(ctx context.Context, repository string) (BoardDiges
 		}
 		q := BoardDigestQueued{Issue: int(t.IssueNumber), TaskID: t.ID, Reason: t.QueueReason}
 		switch {
+		case t.HoldView.Line != "":
+			q.Reason, q.Age = t.HoldView.Line, max(now.Sub(t.Hold.At), 0)
 		case t.QueueSince != nil:
 			q.Age = max(now.Sub(*t.QueueSince), 0)
 		case t.IssueNumber == 0:
@@ -140,9 +143,10 @@ func (r *Runner) boardCard(ctx context.Context, taskID string, now time.Time) (B
 		SlotHeld: d.Head.SlotHeld, Flags: d.Flags, Blind: d.Head.Blind, Criteria: d.Head.Criteria}, nil
 }
 
-// boardPlans are repository's open plans, each with its cards counted by
-// status and its proofs by its newest revision, or unreadable when that
-// revision does not decode. A store read that fails is the error.
+// boardPlans are repository's open plans, each with its keys' cards
+// (PlanWaits) counted by status and its proofs by its newest revision, or
+// unreadable when that revision does not decode. A store read that fails
+// is the error.
 func (r *Runner) boardPlans(ctx context.Context, repository string) ([]BoardDigestPlan, error) {
 	plans, err := r.store.OpenPlans(ctx, repository)
 	if err != nil {
@@ -150,7 +154,7 @@ func (r *Runner) boardPlans(ctx context.Context, repository string) ([]BoardDige
 	}
 	out := make([]BoardDigestPlan, len(plans))
 	for i, p := range plans {
-		cards, err := r.store.PlanCards(ctx, p.ID)
+		cards, err := PlanWaits(ctx, r.store, p.ID)
 		if err != nil {
 			return nil, err
 		}

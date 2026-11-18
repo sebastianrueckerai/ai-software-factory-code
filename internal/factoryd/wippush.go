@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"slices"
 	"strconv"
@@ -87,7 +88,7 @@ var (
 // interimPush is the check-in's interim push of the session's work in
 // progress: it asks the running pod's /wip for the work the agent holds,
 // and pushes what the push rules (pushrules.go) let it push to the task
-// branch under factoryd's own credential, the projects token, never a
+// branch under factoryd's own credential, the bot's login, never a
 // token the session holds. A session that dies anyway loses only the
 // minutes since the last check-in, so nothing here stops or answers
 // anything: every failure is logged and recorded, and the check-in runs
@@ -168,11 +169,18 @@ func (r *Runner) askWip(ctx context.Context, t Task, s sessionSpec, ns, pod stri
 		return "", "", wipOutcome{}
 	}
 	commit, bundle, err := r.postWorkerWip(ctx, workerStop, ns, pod, s.messageToken, r.endpointWait)
+	var answer *workerAnswer
 	switch {
 	case errors.Is(err, errWorkerStop):
 		// factoryd stopping cuts the ask: its own shutdown is the last
 		// word, and the stop's logs already say it
 		return "", "", wipOutcome{unpushed: "factoryd stopped before the pod handed the work over"}
+	case errors.As(err, &answer) && answer.code == http.StatusConflict:
+		// the worker's staging refused the work itself, which the agent
+		// can change
+		text := r.Scrub.String(answer.text)
+		r.wipFailure(ctx, t, s, "ask", text)
+		return "", "", wipOutcome{refusal: wipRefused + text, unpushed: text}
 	case err != nil:
 		text := r.Scrub.String(err.Error())
 		r.wipFailure(ctx, t, s, "ask", text)
@@ -212,13 +220,16 @@ func (r *Runner) shipWip(ctx context.Context, t Task, s sessionSpec, commit, bun
 		if errors.Is(err, ErrPushRefused) || errors.Is(err, ErrPushOverBound) {
 			// the rules judged the work itself, and the work can
 			// change: the refusal is the agent's to act on
-			return wipOutcome{refusal: "factoryd's interim push of your work in progress was refused: " + text, unpushed: text}
+			return wipOutcome{refusal: wipRefused + text, unpushed: text}
 		}
 		return wipOutcome{unpushed: text}
 	}
 	r.record(ctx, t.ID, "wip_pushed", map[string]any{"session": s.id, "commit": head})
 	return wipOutcome{head: head, parts: parts}
 }
+
+// wipRefused leads a refusal of the work the agent gets.
+const wipRefused = "factoryd's interim push of your work in progress was refused: "
 
 // wipFailure records one interim push that did not land: logged for the
 // operator, and a wip_push_failed timeline step for the session's story.
@@ -250,8 +261,8 @@ func (r *Runner) wipFailureFresh(ctx context.Context, t Task, s sessionSpec, at,
 // author and message are the agent's to forge. The push rules judge the
 // diff start..WIP as they judge the end push's, except the card's line
 // bound, which only the end push holds, and a clean diff pushes
-// under the projects token's basic login, as the GitHub pass fetches the
-// factory's repositories with it (github.go), a forced refspec: each
+// under the bot's login — the fork is the bot's private one, which no
+// other login can read or write — a forced refspec: each
 // interim push replaces the branch's tip with the newest WIP tree, no
 // history kept between check-ins, and the session's end push — which
 // lands its own commit the same way — cannot be refused for the
@@ -262,7 +273,7 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit, bun
 		return "", wipParts{}, err
 	}
 	defer os.RemoveAll(own) // #nosec G104 -- a temporary scratch repository
-	login := basicLogin(r.cfg.ProjectsUser, r.forgejo.ProjectsToken)
+	login := basicLogin(r.forgejo.BotUser, r.forgejo.BotPassword)
 	fork, branch := r.repoURL(r.forgejo.Fork(s.repo)), taskBranch(t)
 	// every git call here reads what the sandbox or an earlier push put on
 	// a branch: each runs under the address-space cap, with its output capped
@@ -282,8 +293,10 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit, bun
 		if tip, err = run(nil, "rev-parse", "--verify", branch); err != nil {
 			return "", wipParts{}, err
 		}
-	case strings.Contains(err.Error(), "couldn't find remote ref") || strings.Contains(err.Error(), "not found"):
-		// a first push: the fork has no task branch yet, and main is the start
+	case strings.Contains(err.Error(), "couldn't find remote ref"):
+		// a first push: the fork has no task branch yet, and main is the
+		// start. A fork Forgejo answers "not found" for is an access refusal,
+		// no first push
 		if err := fetch(r.repoURL(s.repo), prBase); err != nil {
 			return "", wipParts{}, fmt.Errorf("the fork holds no task branch and main cannot be fetched: %w", err)
 		}
@@ -372,28 +385,36 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit, bun
 	return head, parts, nil
 }
 
-// listWipParts lists the files the work changes against the merge base of
-// main and the work, the card's diff, else against the start when main is
-// not there to read. A failed listing is unread, never an error.
+// listWipParts lists the files the work changes, a move at its new path,
+// against the merge base of main and the work, the card's diff, else
+// against the start when main is not there to read. A failed listing is
+// unread, never an error.
 func listWipParts(g PushGit, own, start, head string) wipParts {
 	from := start
 	if mb, err := g.Git(own, "merge-base", prBase, head); err == nil && mb != "" {
 		from = mb
 	}
-	out, err := g.Git(own, "diff", "--numstat", "-z", "--no-renames", from, head)
+	out, err := g.Git(own, "diff", "--numstat", "-z", "-M", from, head)
 	if err != nil {
 		log.Printf("list the interim push's files: %v", err)
 		return wipParts{unread: true}
 	}
 	var all []wipPart
-	for entry := range strings.SplitSeq(out, "\x00") {
-		f := strings.SplitN(entry, "\t", 3)
+	entries := strings.Split(out, "\x00")
+	for i := 0; i < len(entries); i++ {
+		f := strings.SplitN(entries[i], "\t", 3)
 		if len(f) != 3 {
 			continue
 		}
+		path := f[2]
+		// a move's record holds no path: its old and new paths follow
+		if path == "" && i+2 < len(entries) {
+			path = entries[i+2]
+			i += 2
+		}
 		added, _ := strconv.Atoi(f[0])
 		deleted, _ := strconv.Atoi(f[1])
-		all = append(all, wipPart{Path: textutil.Truncate(f[2], wipPartPath), Lines: added + deleted})
+		all = append(all, wipPart{Path: textutil.Truncate(path, wipPartPath), Lines: added + deleted})
 	}
 	slices.SortStableFunc(all, func(a, b wipPart) int { return cmp.Compare(b.Lines, a.Lines) })
 	n := min(len(all), wipPartsMax)

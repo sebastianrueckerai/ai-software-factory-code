@@ -73,7 +73,7 @@ func (c *Console) doRoutineSkip(ctx context.Context, a actor, project, name stri
 	if err != nil {
 		return "", err
 	}
-	if err := c.cfg.Routines.Skip(ctx, project, name, !undo, a.s.user); err != nil {
+	if err := c.cfg.Routines.Skip(ctx, project, name, !undo, a.approver()); err != nil {
 		return "", routineFailed(err, project, name)
 	}
 	log.Printf("console: %s set the skip of routine %s of %s to %t via %s", a.s.user, name, project, !undo, a.via)

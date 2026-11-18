@@ -61,7 +61,7 @@ func TestRung2RetryProposesAtAssistedAndRunsAbove(t *testing.T) {
 					store.events = append(store.events, Event{TaskID: "t-b", Kind: EventQuestionAsked, Detail: map[string]any{"case_id": int64(3), "ask": "A dependency failed"}})
 				}
 				note := "the dependency failed on a cap " + leaky
-				got, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Via: ViaChat, Rung: 2,
+				got, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: ChatUser, Via: ViaChat, Rung: 2,
 					Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Note: note}})
 				if err != nil {
 					t.Fatal(err)
@@ -141,7 +141,7 @@ func TestActTakesTheChoicesOfTheBoardKinds(t *testing.T) {
 					t.Fatal(err)
 				}
 				store.cases = []Case{{ID: 7, TaskID: "t-h", Kind: kind, Status: CaseAtHuman, Facts: map[string]any{}}}
-				by := "sebastian"
+				by := ChatUser
 				if tc.rung == 3 {
 					by = "alice"
 				}
@@ -166,7 +166,7 @@ func TestASecondProposalOnTheSameCaseIsRefused(t *testing.T) {
 	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseDependencyFailed, Status: CaseAtHuman, StateKey: "t-a", Facts: map[string]any{}}}
 	store.events = append(store.events, Event{TaskID: "t-b", Kind: EventQuestionAsked, Detail: map[string]any{"case_id": int64(3), "ask": "retry t-a?"}})
 	propose := func() error {
-		_, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Via: ViaChat, Rung: 2,
+		_, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: ChatUser, Via: ViaChat, Rung: 2,
 			Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Note: "again"}})
 		return err
 	}
@@ -226,7 +226,7 @@ func TestActRunsAHumanCardsWorkOnlyOnceItAccepts(t *testing.T) {
 			}
 			store.cases = []Case{{ID: 7, TaskID: "t-h", Kind: CaseRollHeld, Status: status, Facts: map[string]any{}}}
 			askOwn(t, store, "t-h", 7, QuestionChoice{Value: AnswerKeepWaiting, Label: "Keep waiting"})
-			by := "sebastian"
+			by := ChatUser
 			if tc.rung == 3 {
 				by = "alice"
 			}
@@ -254,7 +254,7 @@ func TestAProposalAfterAnAnalysisIsRefused(t *testing.T) {
 		Did: []CaseAction{{Action: ActReplan, Result: resultRecommended}}}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Via: ViaChat, Rung: 2,
+	_, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: ChatUser, Via: ViaChat, Rung: 2,
 		Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}})
 	want := "`case_id` 3 already carries your recommendation of “Send back to the planner”: the human decides it on the card."
 	if err == nil || err.Error() != want {
@@ -291,7 +291,7 @@ func TestAFlagsProposalLeavesTheCardsQuestionAlone(t *testing.T) {
 	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseMonitorFlag, Status: CaseAtHuman, StateKey: "k", Facts: map[string]any{"flag": "session_no_push"}}}
 	store.events = append(store.events, Event{TaskID: "t-b", Kind: EventQuestionAsked, Detail: map[string]any{"ask": "the card's own ask"}},
 		Event{TaskID: "t-b", Kind: EventQuestionAsked, Detail: map[string]any{"case_id": int64(3), "flag": "session_no_push"}})
-	if _, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Note: "x"}}); err != nil {
+	if _, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Note: "x"}}); err != nil {
 		t.Fatal(err)
 	}
 	if own := store.events[0]; own.Detail["recommendation"] != nil {

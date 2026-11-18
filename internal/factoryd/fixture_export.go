@@ -286,10 +286,15 @@ func fixtureRole(rung int, actor, via string) string {
 func (r *fixtureRun) card(ctx context.Context) (FixtureCard, error) {
 	t := r.t
 	_, project, _ := r.Policy.ProjectOf(t.Repository)
+	// a plan card's successor carries the planner's brief
+	author := briefAuthor(t.Source)
+	if t.PlanCard() {
+		author = briefAuthor(SourcePlan)
+	}
 	c := FixtureCard{Issue: t.IssueNumber, TaskID: t.ID, Repository: t.Repository, Kind: t.Kind, Track: t.Track, Source: t.Source,
-		Size: t.Size, Rung: t.Rung, BudgetEUR: t.BudgetEUR, CeilingEUR: t.CeilingEUR, Objective: written(briefAuthor(t.Source), t.Objective),
+		Size: t.Size, Rung: t.Rung, BudgetEUR: t.BudgetEUR, CeilingEUR: t.CeilingEUR, Objective: written(author, t.Objective),
 		DependsOn: []FixtureDep{}, Autonomy: cmp.Or(project.Autonomy, policy.AutonomyManual), MergeRule: cmp.Or(project.MergeRule, policy.MergeHuman)}
-	if t.Source == SourcePlan && t.Parent != "" {
+	if t.PlanCard() {
 		plan, ok, err := r.Store.Task(ctx, t.Parent)
 		if err != nil {
 			return c, err
@@ -639,7 +644,7 @@ func gateTexts(l fixtureLine) []string {
 		_ = json.Unmarshal(l.Findings, &found)
 		texts := make([]string, len(found))
 		for i, a := range found {
-			texts[i] = a.Item
+			texts[i] = a.Text()
 		}
 		return texts
 	}

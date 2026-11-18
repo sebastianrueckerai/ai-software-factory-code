@@ -412,42 +412,100 @@ func TestATypedSuccessorAnswerClosesTheCardOnlyBeforeItsGate(t *testing.T) {
 
 // The successor activity files one card: the stuck card's objective with
 // the findings so far, the carried pull request and its size and budget,
-// queued on the direct track with no base of its own — it starts from
-// main's tip — on an issue labelled like a filed card's, started under
-// the work bound.
+// queued on the direct track on an issue labelled like a filed card's,
+// started under the work bound, its old card's key and revision in its
+// plan. It continues the old card's branch at the
+// old card's base b0; an old card with no branch leaves it no base of its
+// own, so it starts from main's tip.
 func TestSuccessorFilesOneCard(t *testing.T) {
-	ctx := context.Background()
-	r, store, objects, fj, wf := newRetryRig(t)
-	a := store.tasks["t-a"]
-	a.Size, a.PRNumber = "small", 7
-	store.tasks["t-a"] = a
-	fj.calls = nil
-	id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9,
-		Findings: "\n- the migration runs outside its transaction\n- the flag is read before it is set"})
-	if err != nil || id != SuccessorID("t-a") {
-		t.Fatalf("Successor = %q, %v", id, err)
+	for name, tc := range map[string]struct {
+		branch bool
+		sha    string
+	}{"branch": {true, "b0"}, "no branch": {false, ""}} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			r, store, objects, fj, wf := newRetryRig(t)
+			if !tc.branch {
+				delete(fj.branches, "factory/t-a")
+			}
+			a := store.tasks["t-a"]
+			a.Size, a.PRNumber, a.PlanRevision = "small", 7, 3
+			store.tasks["t-a"] = a
+			fj.calls = nil
+			id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9,
+				Findings: "\n- the migration runs outside its transaction\n- the flag is read before it is set"})
+			if err != nil || id != SuccessorID("t-a") {
+				t.Fatalf("Successor = %q, %v", id, err)
+			}
+			s := store.tasks[id]
+			if s.Status != "queued" || s.Track != policy.TrackDirect || s.Source != SourceSuccessor || s.Kind != "agent" ||
+				s.CarryPR != 9 || s.SHA != tc.sha || s.Repository != "linkshort/linkshort" || s.Parent != "t-plan" ||
+				s.PlanKey != "links-api" || s.PlanRevision != 3 || s.Process != "spec" || s.BudgetEUR != 2 || s.Size != "small" {
+				t.Fatalf("the successor row = %+v", s)
+			}
+			is := fj.issues[9]
+			for _, want := range []string{"Findings so far:", "\n- the migration runs outside its transaction", "\n- the flag is read before it is set",
+				"Carries: #9", "Size: small", "Budget: 2.00 EUR", successorMarker("t-a")} {
+				if !strings.Contains(is.body, want) {
+					t.Errorf("the successor issue %q misses %q", is.body, want)
+				}
+			}
+			if is.poster != "factory-agent" || !slices.Equal(is.labels, []string{"agent", "state/queued"}) || s.IssueNumber != 9 {
+				t.Fatalf("issue #9 = %+v, the row's issue %d", is, s.IssueNumber)
+			}
+			if !slices.Equal(wf.started, []string{id}) {
+				t.Fatalf("started %q, want the successor alone", wf.started)
+			}
+			if got := events(t, objects, id); len(got) != 1 || !strings.HasPrefix(got[0], "card_created") {
+				t.Fatalf("the successor's events %v, want its card_created", got)
+			}
+		})
 	}
-	s := store.tasks[id]
-	if s.Status != "queued" || s.Track != policy.TrackDirect || s.Source != SourceSuccessor || s.Kind != "agent" ||
-		s.CarryPR != 9 || s.SHA != "" || s.Repository != "linkshort/linkshort" || s.Parent != "t-plan" ||
-		s.Process != "spec" || s.BudgetEUR != 2 || s.Size != "small" {
-		t.Fatalf("the successor row = %+v", s)
-	}
-	is := fj.issues[9]
-	for _, want := range []string{"Findings so far:", "\n- the migration runs outside its transaction", "\n- the flag is read before it is set",
-		"Carries: #9", "Size: small", "Budget: 2.00 EUR", successorMarker("t-a")} {
-		if !strings.Contains(is.body, want) {
-			t.Errorf("the successor issue %q misses %q", is.body, want)
-		}
-	}
-	if is.poster != "factory-agent" || !slices.Equal(is.labels, []string{"agent", "state/queued"}) || s.IssueNumber != 9 {
-		t.Fatalf("issue #9 = %+v, the row's issue %d", is, s.IssueNumber)
-	}
-	if !slices.Equal(wf.started, []string{id}) {
-		t.Fatalf("started %q, want the successor alone", wf.started)
-	}
-	if got := events(t, objects, id); len(got) != 1 || !strings.HasPrefix(got[0], "card_created") {
-		t.Fatalf("the successor's events %v, want its card_created", got)
+}
+
+// A successor that carries the old card's work, its pull request or its
+// branch, keeps the old card's line raise, as a plan card that goes on
+// from another does, and one card_extended row names where the raise came
+// from. A successor that carries nothing starts at its size's bound.
+func TestSuccessorCarriesTheLineRaise(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pr     int64
+		branch bool
+		lines  int
+	}{"a pull request": {7, false, 600}, "a branch": {0, true, 600}, "no work": {0, false, 0}} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			r, store, _, fj, _ := newRetryRig(t)
+			if !tc.branch {
+				delete(fj.branches, "factory/t-a")
+			}
+			a := store.tasks["t-a"]
+			a.PRNumber, a.Usage.ExtraLines = tc.pr, 600
+			store.tasks["t-a"] = a
+			id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", Findings: "\n- one finding"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := store.tasks[id].Usage.ExtraLines; got != tc.lines {
+				t.Fatalf("the successor's line raise = %d, want %d", got, tc.lines)
+			}
+			var rows []Event
+			for _, e := range store.events {
+				if e.Kind == EventCardExtended && e.TaskID == id {
+					rows = append(rows, e)
+				}
+			}
+			if tc.lines == 0 {
+				if len(rows) != 0 {
+					t.Fatalf("card_extended rows %+v, want none", rows)
+				}
+				return
+			}
+			if len(rows) != 1 || rows[0].Detail["inherited_from"] != "t-a" || rows[0].Detail["inherited_issue"] != int64(5) ||
+				rows[0].Detail["lines"] != 600 || rows[0].Detail["pool"] != false {
+				t.Fatalf("card_extended rows %+v, want one of 600 lines inherited from t-a (#5), pool false", rows)
+			}
+		})
 	}
 }
 
@@ -552,19 +610,28 @@ func TestSuccessorFindsItsIssueClosed(t *testing.T) {
 	}
 }
 
-// Only factoryd's note, the first line of the findings, continues the old
-// card's branch: an agent's summary that quotes the note further down
-// starts the successor from main, as any close does.
-func TestSuccessorContinuesTheBranchOnFactorysNoteAlone(t *testing.T) {
+// A successor continues any branch the old card holds, not only an interim
+// commit over its line bound: work the old card took on through its from
+// sits there too. The branch is copied to the successor's own at the old
+// card's base, its brief names the start, and a cut of the successor finds
+// the work on its branch, so the replan must name it in a from.
+func TestSuccessorContinuesAnyBranchTheOldCardHolds(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, fj, _ := newRetryRig(t)
-	id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a",
-		Findings: "\n- previous session ended without a pushed commit: I read " + overBoundNote + " factory/t-a at c7"})
+	id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", Findings: "\n- previous session ended without a pushed commit"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if head, ok := fj.branches["factory/"+id]; ok || store.tasks[id].SHA != "" {
-		t.Fatalf("the successor's branch = %q, base %q; want no branch and main's tip", head, store.tasks[id].SHA)
+	s := store.tasks[id]
+	if fj.branches["factory/"+id] != "c7" || s.SHA != "b0" {
+		t.Fatalf("the successor's branch = %q, base %q; want the old card's head c7 and its base b0", fj.branches["factory/"+id], s.SHA)
+	}
+	const start = "Starts from the work of #5 (links-api), on this card's branch: finish what it holds, make it build green, and land it."
+	if !strings.Contains(s.Objective, start) {
+		t.Fatalf("the successor's objective %q misses its start %q", s.Objective, start)
+	}
+	if head, err := r.workHead(ctx, id); err != nil || head != "c7" {
+		t.Fatalf("workHead = %q, %v; want c7, the work a cut of the successor holds", head, err)
 	}
 }
 
@@ -572,7 +639,7 @@ func TestSuccessorContinuesTheBranchOnFactorysNoteAlone(t *testing.T) {
 // card's branch: the branch is copied to the successor's own, so its first
 // session starts at the interim head (startRef reads the branch first) and
 // its clone, which fetches the start's branch when the start is missing,
-// holds the work. A close without the note starts from main, as before.
+// holds the work.
 func TestSuccessorOfOverBoundWorkStartsAtTheInterimHead(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, fj, _ := newRetryRig(t)

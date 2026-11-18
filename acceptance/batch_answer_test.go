@@ -450,6 +450,13 @@ func (s *accBatchStore) SetQueueReason(context.Context, string, string, time.Tim
 	panic("unused")
 }
 
+func (s *accBatchStore) SetCardHold(context.Context, string, factoryd.CardHold) (bool, error) {
+	panic("unused")
+}
+
+func (s *accBatchStore) EndCardHold(context.Context, string, string) (bool, error) { panic("unused") }
+func (s *accBatchStore) HeldOn(context.Context, string) ([]factoryd.Task, error)   { panic("unused") }
+
 func (s *accBatchStore) CountAdmitted(ctx context.Context, repository string) (int, error) {
 	return s.tasks.CountAdmitted(ctx, repository)
 }
@@ -989,6 +996,12 @@ func (s *accBatchStore) CriteriaVerdicts(context.Context, string) ([]factoryd.Cr
 
 func (s *accBatchStore) CriteriaVerdictTasks(context.Context) ([]string, error) { panic("unused") }
 
+func (s *accBatchStore) PlansAwaitingCriteria(context.Context) ([]string, error) { panic("unused") }
+
+func (s *accBatchStore) PutGateVerdicts(context.Context, string, string, string, []factoryd.CriterionVerdict, []string) error {
+	panic("unused")
+}
+
 func (s *accBatchStore) PlanCatches(context.Context, string) ([]factoryd.PlanCatch, error) {
 	panic("unused")
 }
@@ -1081,6 +1094,9 @@ func (s *accBatchStore) RebaseRolls(ctx context.Context, taskID, head string) (b
 }
 func (s *accBatchStore) SetTaskSHA(ctx context.Context, id, sha string) error { panic("unused") }
 func (s *accBatchStore) EnterQueue(ctx context.Context, project, taskID string) (factoryd.QueueSpot, error) {
+	panic("unused")
+}
+func (s *accBatchStore) MergeQueuePlaces(ctx context.Context) (map[string]factoryd.QueuePlace, error) {
 	panic("unused")
 }
 func (s *accBatchStore) QueueHead(ctx context.Context, project string) (string, bool, error) {
@@ -1589,7 +1605,7 @@ tokens: {read: forgejo-ci-registrar, actions: forgejo-ci-registrar, merge: forge
   direct: {class: coder}
   plan: {class: planner, plan: {max_cards: 8, min_cards: 2, foundation: true, integration: true}}
 dependencies: {wait_until: done, on_failed: human}
-merge: {queue: none}
+merge: {queue: project}
 stages:
   - {name: checks, on_findings: agent, enabled: true}
   - {name: policy, on_findings: fail, enabled: true}

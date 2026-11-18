@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -81,6 +83,7 @@ var ErrRequestSpec = errors.New("the request's spec does not read")
 type RequestReads interface {
 	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
+	Task(ctx context.Context, id string) (Task, bool, error)
 	PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error)
 	PlanProofs(ctx context.Context, id string) ([]PlanProof, error)
 	PlanDelivered(ctx context.Context, plan string) (bool, Task, error)
@@ -127,7 +130,7 @@ func MergeRows(ctx context.Context, s interface {
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
 	CriteriaVerdicts(ctx context.Context, taskID string) ([]CriterionVerdict, error)
 }, t Task) (rows []PromiseRow, unsettled []string, integration string, err error) {
-	if t.Source != SourcePlan || t.Parent == "" {
+	if !t.PlanCard() {
 		return nil, nil, "", nil
 	}
 	rev, ok, err := s.PlanRevision(ctx, t.Parent, 0)
@@ -176,7 +179,7 @@ func (r *Request) planRows(ctx context.Context, s RequestReads) error {
 		r.Promises = append(r.Promises, PromiseRow{PlanCriterion: c})
 	}
 	if len(r.Plan.TakeOffMain) > 0 {
-		cards, err := s.PlanCards(ctx, r.TaskID)
+		cards, err := PlanWaits(ctx, s, r.TaskID)
 		if err != nil {
 			return fmt.Errorf("the cards of plan %s: %w", r.TaskID, err)
 		}
@@ -235,16 +238,23 @@ func (r *Request) criteriaRows(ctx context.Context, s RequestReads) error {
 	if r.Delivered, _, err = s.PlanDelivered(ctx, r.TaskID); err != nil {
 		return fmt.Errorf("the delivered cards of %s: %w", r.TaskID, err)
 	}
-	for _, c := range r.Plan.Criteria {
-		v, _ := StandingRow(rows, c)
-		r.Promises = append(r.Promises, PromiseRow{PlanCriterion: c, Verdict: v.Verdict, Evidence: v.Evidence})
-	}
 	cards, err := s.PlanCards(ctx, r.TaskID)
 	if err != nil {
 		return fmt.Errorf("the cards of plan %s: %w", r.TaskID, err)
 	}
 	if integration, ok := integrationCardOf(cards, r.Plan); ok {
-		r.ClosesItself = closesItself(r.Plan, integration, rows)
+		g, err := planGateOf(ctx, s, r.TaskID, integration)
+		if err != nil {
+			return fmt.Errorf("the criteria gate of plan %s: %w", r.TaskID, err)
+		}
+		if !runsAtPull(integration) {
+			rows = g.settling(rows)
+		}
+		r.ClosesItself = closesItself(g.cards)
+	}
+	for _, c := range r.Plan.Criteria {
+		v, _ := StandingRow(rows, c)
+		r.Promises = append(r.Promises, PromiseRow{PlanCriterion: c, Verdict: v.Verdict, Evidence: v.Evidence})
 	}
 	if r.Kind != ApprovalCriteriaRerun {
 		return nil
@@ -513,6 +523,49 @@ func FactInt(c Case, key string) int {
 	return n
 }
 
+// planCaseRevision is plan case c's revision: its facts', else the one its
+// state key names after "@r", 0 for neither.
+func planCaseRevision(c Case) int {
+	if revision := FactInt(c, "revision"); revision > 0 {
+		return revision
+	}
+	_, head, _ := strings.Cut(c.StateKey, "@")
+	revision, _ := strconv.Atoi(strings.TrimPrefix(head, "r"))
+	return max(revision, 0)
+}
+
+// withPlanSlot is plan case c with the facts its form reads, where its own
+// name no revision or index: the revision planCaseRevision reads, the
+// index its ask's place among the questions of request r's revision,
+// matched on its words, and that question's choices. A case that matches
+// none stays as it is.
+func withPlanSlot(c Case, r *Request) Case {
+	if !PlanCase(c) || FactInt(c, "revision") > 0 && FactInt(c, "index") > 0 {
+		return c
+	}
+	revision := planCaseRevision(c)
+	if r == nil || r.Kind != ApprovalPlan || revision == 0 || r.PlanSpec.Revision != revision {
+		return c
+	}
+	ask := strings.Join(strings.Fields(c.Problem), " ")
+	for i, q := range r.PlanQuestions {
+		if strings.Join(strings.Fields(q.Text), " ") != ask {
+			continue
+		}
+		more := map[string]any{"revision": revision, "index": i + 1}
+		if c.Facts["choices"] == nil && len(q.Choices) > 0 {
+			choices := make([]any, len(q.Choices))
+			for j, ch := range q.Choices {
+				choices[j] = ch
+			}
+			more["choices"], more["recommended"] = choices, q.Recommended
+		}
+		c.Facts = withFacts(c.Facts, more)
+		return c
+	}
+	return c
+}
+
 // orderPlanCases puts a plan's cases, which sit in the list where its
 // newest case does, in reading order: the newest revision first, its
 // questions by index, then its confirmation.
@@ -531,7 +584,7 @@ func orderPlanCases(list []Case) {
 		return 0
 	}
 	slices.SortStableFunc(plan, func(a, b Case) int {
-		return cmp.Or(cmp.Compare(FactInt(b, "revision"), FactInt(a, "revision")), cmp.Compare(confirmation(a), confirmation(b)),
+		return cmp.Or(cmp.Compare(planCaseRevision(b), planCaseRevision(a)), cmp.Compare(confirmation(a), confirmation(b)),
 			cmp.Compare(FactInt(a, "index"), FactInt(b, "index")))
 	})
 	for j, i := range at {
@@ -627,7 +680,7 @@ func CardPages(card BoardTask, cases []Case, asks map[int64]CaseAsk, pending []A
 // casePage is part (0 for the whole) c of a case of owner, which request r
 // answers, with the facts and the ask its face reads.
 func casePage(owner BoardTask, c Case, part int, r *Request, asks map[int64]CaseAsk) CardPage {
-	k := withDeps(c, owner)
+	k := withPlanSlot(withDeps(c, owner), r)
 	if r != nil && r.Kind == ApprovalPlan {
 		k = OnPlan(k, r.planFacts())
 	}

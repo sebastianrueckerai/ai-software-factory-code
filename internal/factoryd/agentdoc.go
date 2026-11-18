@@ -147,7 +147,7 @@ func agentDocCheckin(ctx context.Context, gwURL string, v policy.Version, hc *ht
 	timeCap := callsLeft * policy.CheckinCallTime
 	spans := []agentdoc.Span{
 		{Name: "session persona", Symbol: "factoryd.checkinSystemFor", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
-			Text: checkinSystemFor(ask.Moment, ask.Replan)},
+			Text: checkinSystemFor(ask)},
 		{Name: "the statement", Symbol: "factoryd.checkinStatement", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap)},
 		{Name: "the answer deadline", Symbol: "factoryd.checkinDueLine", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,

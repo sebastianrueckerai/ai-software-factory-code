@@ -532,6 +532,51 @@ func TestRestartChildrenStopsADroppedStartedCard(t *testing.T) {
 	}
 }
 
+// A revision that drops a key whose card failed into a running successor,
+// which no replan step stopped, stops the successor for the replan: its
+// dependents wait on the plan, it ends closed with the reason and its
+// issue closes, and the failed card stays as it ended.
+func TestRestartChildrenStopsADroppedKeysSuccessor(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, _ := fileRig(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if ref := requestPlan(t, r); len(ref.Refused) != 0 || len(ref.Filed) != 4 {
+		t.Fatalf("the children: %+v", ref)
+	}
+	cards := cardsByKey(t, store)
+	failed := cards["links-api"]
+	failed.Status, failed.PlanRevision = "failed", 1
+	store.tasks[failed.ID] = failed
+	succ := SuccessorID(failed.ID)
+	fj.issues[90] = &planIssue{title: "Links API, carried on", poster: "factory-agent", state: "open"}
+	if err := store.CreateSuccessor(ctx, failed.ID, Task{ID: succ, Kind: "agent", Track: policy.TrackDirect, Source: SourceSuccessor, Parent: "t-plan",
+		PlanKey: "links-api", PlanRevision: 1, IssueNumber: 90, Status: "running", Repository: "linkshort/linkshort"}); err != nil {
+		t.Fatal(err)
+	}
+	next := testPlan()
+	next.Cards = append(next.Cards[:1], next.Cards[2:]...)
+	next.Cards[1].DependsOn = nil
+	_, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.restartChildren(ctx, store.tasks["t-plan"], repo, 2, next)
+
+	if k := store.tasks[succ]; k.Status != "closed" || finalReason(t, r, succ) != "the plan's revision 2 drops it" {
+		t.Fatalf("the successor %s (%q), want closed as the plan's revision 2 drops it", k.Status, finalReason(t, r, succ))
+	}
+	if is := fj.issues[90]; is.state != "closed" {
+		t.Fatalf("the successor's issue is %q, want closed", is.state)
+	}
+	if got := store.deps[cards["redirects"].ID]; !slices.Equal(got, []string{cards["foundation"].ID, "t-plan"}) {
+		t.Fatalf("redirects waits on %v, want the foundation and the plan", got)
+	}
+	if k := store.tasks[failed.ID]; k.Status != "failed" {
+		t.Fatalf("the failed card %s, want it failed as it ended", k.Status)
+	}
+}
+
 // A card that never started takes the new revision's rung and size with
 // its brief, which states them; a started one keeps its own, and a
 // revision that changes them is refused.
@@ -576,62 +621,72 @@ func planJSON(t *testing.T, v any) string {
 
 // A plan card's first session pins the plan revision it runs against
 // (piece 10): the stamp happens before the session's pod, and a card
-// already pinned keeps its revision.
+// already pinned keeps its revision. A plan card's successor, its key's
+// card, is pinned alike.
 func TestRunSessionStampsThePlanRevision(t *testing.T) {
-	ctx := context.Background()
-	plan := testPlan()
-	card := Task{ID: "t-card", Kind: "agent", Status: "running", Process: "spec", Repository: "sf/r",
-		SHA: "abc123", IssueNumber: 3, Author: "alice", Parent: "t-plan", Source: SourcePlan, PlanKey: "links-api",
-		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "Links API", Track: "direct"}
-	kube, objects := newFakeKube(), &fakeObjectStore{}
-	runner, _, store := newTestRunner(t, card, kube, objects)
-	store.tasks["t-plan"] = Task{ID: "t-plan", Kind: "agent", Status: "done", Track: policy.TrackPlan, Process: "spec",
-		Repository: "sf/r", IssueNumber: 1, Author: "alice", AuthorWriter: true, Objective: "Link shortener"}
-	pinned := fixtureVersion(t)
-	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
-	runner.cfg.Policy = func() policy.Version { return pinned }
-	store.AddPlanRevision(ctx, "t-plan", json.RawMessage(planJSON(t, plan)), "s1")
-	store.AddPlanRevision(ctx, "t-plan", json.RawMessage(planJSON(t, plan)), "s2")
+	for _, source := range []string{SourcePlan, SourceSuccessor} {
+		t.Run(source, func(t *testing.T) {
+			ctx := context.Background()
+			plan := testPlan()
+			card := Task{ID: "t-card", Kind: "agent", Status: "running", Process: "spec", Repository: "sf/r",
+				SHA: "abc123", IssueNumber: 3, Author: "alice", Parent: "t-plan", Source: source, PlanKey: "links-api",
+				RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "Links API", Track: "direct"}
+			kube, objects := newFakeKube(), &fakeObjectStore{}
+			runner, _, store := newTestRunner(t, card, kube, objects)
+			store.tasks["t-plan"] = Task{ID: "t-plan", Kind: "agent", Status: "done", Track: policy.TrackPlan, Process: "spec",
+				Repository: "sf/r", IssueNumber: 1, Author: "alice", AuthorWriter: true, Objective: "Link shortener"}
+			pinned := fixtureVersion(t)
+			runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+			runner.cfg.Policy = func() policy.Version { return pinned }
+			store.AddPlanRevision(ctx, "t-plan", json.RawMessage(planJSON(t, plan)), "s1")
+			store.AddPlanRevision(ctx, "t-plan", json.RawMessage(planJSON(t, plan)), "s2")
 
-	logs := pushRequestLine("c1") + "\n" + envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": "Links API done."}}) +
-		"\n" + resultLine(true, "Links API done.")
-	done := make(chan error)
-	go func() {
-		val, err := execActivity(t, runner, ActivityRunSession, SessionInput{TaskID: "t-card", Attempt: 1, Model: "factory/big"})
-		if err == nil {
-			var res SessionResult
-			err = val.Get(&res)
-		}
-		done <- err
-	}()
-	awaitPod(t, kube, done)
-	kube.scriptPods(0, logs)
-	<-done
-	if got, _, _ := store.Task(ctx, "t-card"); got.PlanRevision != 2 {
-		t.Fatalf("the first session stamped plan revision %d, want 2", got.PlanRevision)
+			logs := pushRequestLine("c1") + "\n" + envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": "Links API done."}}) +
+				"\n" + resultLine(true, "Links API done.")
+			done := make(chan error)
+			go func() {
+				val, err := execActivity(t, runner, ActivityRunSession, SessionInput{TaskID: "t-card", Attempt: 1, Model: "factory/big"})
+				if err == nil {
+					var res SessionResult
+					err = val.Get(&res)
+				}
+				done <- err
+			}()
+			awaitPod(t, kube, done)
+			kube.scriptPods(0, logs)
+			<-done
+			if got, _, _ := store.Task(ctx, "t-card"); got.PlanRevision != 2 {
+				t.Fatalf("the first session stamped plan revision %d, want 2", got.PlanRevision)
+			}
+		})
 	}
 }
 
 // A stale card's merge approval never opens: the request fails the card
 // with the reason, and the merge itself refuses it too, so its branch
 // stays for the plan's re-run (piece 10). A card is stale when the newest
-// revision drops its key.
+// revision drops its key, a plan card's successor as the card it carries
+// on.
 func TestStaleCardNeitherAsksNorMerges(t *testing.T) {
-	ctx := context.Background()
-	fj := &gateForgejo{mergeStatus: []int{200}}
-	task := gateTask
-	task.Source, task.Parent, task.PlanKey, task.PlanRevision = SourcePlan, "t-plan", "make-check", 1
-	r, store, _ := newGateRunner(t, task, fj)
-	store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"one","cards":[{"key":"make-check"}]}`), "s1")
-	store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"two"}`), "s2")
-	if err := r.RequestApproval(ctx, "t1", ApprovalInput{}); err == nil || !strings.Contains(err.Error(), "the plan's revision 2 drops the card make-check") ||
-		!strings.Contains(err.Error(), "type: terminal") {
-		t.Fatalf("RequestApproval: %v", err)
-	}
-	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
-	res := getInto[MergeResult](t, val, err)
-	if res.Merged || len(fj.merges) != 0 || !strings.Contains(res.Refusal, "the plan's revision 2 drops the card make-check") {
-		t.Fatalf("merge = %+v, merges %d: a stale card merged", res, len(fj.merges))
+	for _, source := range []string{SourcePlan, SourceSuccessor} {
+		t.Run(source, func(t *testing.T) {
+			ctx := context.Background()
+			fj := &gateForgejo{mergeStatus: []int{200}}
+			task := gateTask
+			task.Source, task.Parent, task.PlanKey, task.PlanRevision = source, "t-plan", "make-check", 1
+			r, store, _ := newGateRunner(t, task, fj)
+			store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"one","cards":[{"key":"make-check"}]}`), "s1")
+			store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"two"}`), "s2")
+			if err := r.RequestApproval(ctx, "t1", ApprovalInput{}); err == nil || !strings.Contains(err.Error(), "the plan's revision 2 drops the card make-check") ||
+				!strings.Contains(err.Error(), "type: terminal") {
+				t.Fatalf("RequestApproval: %v", err)
+			}
+			val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+			res := getInto[MergeResult](t, val, err)
+			if res.Merged || len(fj.merges) != 0 || !strings.Contains(res.Refusal, "the plan's revision 2 drops the card make-check") {
+				t.Fatalf("merge = %+v, merges %d: a stale card merged", res, len(fj.merges))
+			}
+		})
 	}
 }
 

@@ -43,7 +43,7 @@ func verdictRig(r *rig) {
 		{Criterion: "c1", Verdict: "met", Evidence: "go test ./... exits 0, 214 tests", Kind: factoryd.CriterionTest, Source: "review"},
 	}}
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 30, Kind: factoryd.ApprovalCriteria, TaskID: "t-plan",
-		Project: "sf/code", Status: "pending", Reason: "criteria not met with the plan's cards done: c2, c3",
+		Project: "sf/code", Status: "pending", Reason: "criteria not met once every card of the plan ended: c2, c3",
 		Spec: json.RawMessage(`{"revision":0,"task":"t-int"}`)})
 	seatRequestCases(r)
 }
@@ -219,10 +219,18 @@ func TestCriteriaGapWaiveAndGrant(t *testing.T) {
 		t.Fatalf("an unknown criterion's waiver = %d %q", rec.Code, rec.Body.String())
 	}
 	a := actor{s: s, via: factoryd.ViaButton}
-	for _, press := range [][3]string{{"c2", "met", ""}, {"c2", "not_met", "x"}} {
-		_, err := r.c.doDecide(t.Context(), a, 30, press[0], press[1], press[2])
-		refusedAs(t, err, http.StatusConflict, "This card has no criterion rows.")
+	const (
+		met    = "This request records no Met for one criterion. Confirm the delivered cards with your evidence, which meets every open criterion, or waive this criterion with your reason."
+		notMet = "This request records no Not met for one criterion. Grant one more bounded card for the open criteria, or waive this criterion with your reason."
+	)
+	for _, kind := range []string{factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun} {
+		r.approvals.rows[len(r.approvals.rows)-1].Kind = kind
+		for _, press := range [][4]string{{"c2", "met", "", met}, {"c1", "met", "", met}, {"c2", "not_met", "x", notMet}} {
+			_, err := r.c.doDecide(t.Context(), a, 30, press[0], press[1], press[2])
+			refusedAs(t, err, http.StatusConflict, press[3])
+		}
 	}
+	r.approvals.rows[len(r.approvals.rows)-1].Kind = factoryd.ApprovalCriteria
 	if a := r.approvals.get(30); a.Status != "pending" {
 		t.Errorf("a refused press decided the request: %+v", a)
 	}
@@ -400,7 +408,7 @@ func TestTheGrantNeedsAnOpenCriterion(t *testing.T) {
 		}
 	}
 	var closes []string
-	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
 	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, bool, error) {
 		closes = append(closes, id+" by "+by+": "+note)
 		return 0, factoryd.PlanCloseWords(by, note, false), false, nil
@@ -868,7 +876,7 @@ func TestTheMergeCardHoldsARowPerCriterion(t *testing.T) {
 		_ = r.c.cfg.Timelines.Put(t.Context(), factoryd.ArtifactKey("t-int", "pages_ok"), []byte(pagesOK(tc.content)))
 		pages := rows(card(31))["The pages read well."]
 		if !strings.Contains(pages, `<pre class="artifact" tabindex="0">`+tc.shown+`</pre>`) ||
-			!strings.Contains(pages, `<p class="meta">pages_ok.txt at 8e3a1b0, the first 8 KiB of 9 KiB</p>`) {
+			!strings.Contains(pages, `<details class="fold"><summary>pages_ok.txt at 8e3a1b0, the first 8 KiB of 9 KiB</summary>`) {
 			t.Errorf("an artifact of %d bytes shows:\n%.400s", len(tc.content), pages)
 		}
 	}

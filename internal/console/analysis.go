@@ -49,7 +49,7 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 		}
 	}
 	err = t.c.cfg.AttachAnalysis(t.r.Context(), k.ID, found, recommendation,
-		factoryd.Event{Repository: t.p.Repository, Actor: t.a.s.user, Via: factoryd.ViaChat})
+		factoryd.Event{Repository: t.p.Repository, Actor: t.a.approver(), Via: factoryd.ViaChat})
 	var settled *factoryd.AskSettledError
 	var unshown *factoryd.AskUnshownError
 	switch {

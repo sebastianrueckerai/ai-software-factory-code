@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"golang.org/x/net/html"
 )
@@ -898,6 +899,25 @@ func TestTellTheRunningSession(t *testing.T) {
 	}
 	if rec := r.do(post("/tasks/t-run/steer", url.Values{"csrf": {s.csrf}, "text": {"hello"}}), ck); rec.Code != http.StatusNotFound || len(steered) != 2 {
 		t.Errorf("the Session tab's old door = %d, steered %q", rec.Code, steered)
+	}
+	for err, want := range steerRefusals() {
+		r.c.cfg.Steer = func(context.Context, string, string, string) error { return err }
+		before = r.events.count()
+		if rec := r.do(post("/tasks/t-run/steer", url.Values{"csrf": {s.csrf}, "text": {"hello"}}), ck); rec.Code != http.StatusConflict ||
+			strings.TrimSpace(rec.Body.String()) != want || r.events.count() != before {
+			t.Errorf("a steer the session refuses with %v = %d, %d rows: %q, want 409 %q", err, rec.Code, r.events.count()-before, rec.Body, want)
+		}
+	}
+}
+
+// steerRefusals are the session states a steer to card #11 meets, each
+// with the refusal that names it: a start check-in since 17:31 UTC, no
+// session, a session that ended.
+func steerRefusals() map[error]string {
+	return map[error]string{
+		&factoryd.SessionStartingError{Since: time.Date(2026, 11, 17, 17, 31, 24, 0, time.UTC)}: "Card #11 is in its start check-in since 17:31, which decides whether the agent starts. Send it once the agent starts, or comment on the card.",
+		factoryd.ErrNoLiveSession: "Card #11 is between sessions. Comment on the card, and the next session reads it.",
+		harness.ErrNotRunning:     "Card #11's session just ended. Comment on the card, and the next session reads it.",
 	}
 }
 

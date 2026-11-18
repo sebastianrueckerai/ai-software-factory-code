@@ -36,18 +36,23 @@ type CardDigest struct {
 	// the steps of the card's live cases, and at is when the digest was
 	// built, the time its waits are aged to. A running card's lastCallAt
 	// is its newest model call's time, and its retryDue the time the
-	// newest provider_refused line's backoff ends. cases are the card's
+	// newest provider_refused line's backoff ends. refusedAt and
+	// refusedBackoff are that line's time and backoff, and freezes the
+	// card's provider-limit freezes (freezeSpans). cases are the card's
 	// cases, issueCloses whether Finish closes the issue of the card's end
 	// (finishClosesIssue), and issueClosed whether its events hold its
 	// issue's close, which the webhook records on an ended card.
-	lastStep    string
-	caseSteps   []CaseStep
-	at          time.Time
-	lastCallAt  time.Time
-	retryDue    time.Time
-	cases       []Case
-	issueCloses bool
-	issueClosed bool
+	lastStep       string
+	caseSteps      []CaseStep
+	at             time.Time
+	lastCallAt     time.Time
+	retryDue       time.Time
+	refusedAt      time.Time
+	refusedBackoff time.Duration
+	freezes        []freezeSpan
+	cases          []Case
+	issueCloses    bool
+	issueClosed    bool
 }
 
 // DigestHead is where the card stands: its issue, its plan's issue and
@@ -68,6 +73,12 @@ type DigestHead struct {
 	QueueReason                   string
 	QueueSince                    *time.Time
 	Blind, Criteria               int
+	// MergeQueue is the card's place in its project's merge queue, nil
+	// when it holds no queue row.
+	MergeQueue *QueuePlace
+	// Hold is the line of a human's hold on the card (HoldView), "" when
+	// none holds it: the wait is the human's, no owned one.
+	Hold string
 }
 
 // DigestStep is one step of the card's life. Actor is who acted; for a
@@ -101,6 +112,9 @@ type DigestStep struct {
 	// texts are the finding texts of a checks, proofs, review or audit line,
 	// in the order the gate raised them
 	texts []string
+	// atFile are the ids of an audit line's findings at a file, the ones a
+	// confirmation covers
+	atFile []string
 	// refused marks a check-in whose every call was refused, which ended
 	// as a handover with no note
 	refused bool
@@ -185,9 +199,6 @@ func (r *Runner) readCard(ctx context.Context, taskID string) (cardRows, error) 
 		}
 		rows.caseSteps = append(rows.caseSteps, steps...)
 	}
-	if rows.verdicts, err = r.store.CriteriaVerdicts(ctx, taskID); err != nil {
-		return cardRows{}, err
-	}
 	children, err := r.store.TasksByParent(ctx, taskID)
 	if err != nil {
 		return cardRows{}, err
@@ -200,21 +211,28 @@ func (r *Runner) readCard(ctx context.Context, taskID string) (cardRows, error) 
 	if rows.timeline, err = r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl"); err != nil {
 		return cardRows{}, fmt.Errorf("read the timeline: %w", err)
 	}
-	if t.Source == SourcePlan && t.Parent != "" {
-		p, _, err := planOfStore(ctx, r.store, t.Parent, taskID)
+	home := taskID
+	var plan Plan
+	if t.PlanCard() {
+		if plan, _, err = planOfStore(ctx, r.store, t.Parent, taskID); err != nil {
+			return cardRows{}, err
+		}
+		if roleOf(plan, t.PlanKey) == RoleIntegration {
+			rows.criteria = plan.Criteria
+		}
+		if home, err = verdictHome(ctx, r.store, t, plan); err != nil {
+			return cardRows{}, err
+		}
+	}
+	if rows.verdicts, err = r.store.CriteriaVerdicts(ctx, home); err != nil {
+		return cardRows{}, err
+	}
+	if rows.criteria != nil && t.Gate == GateApproval {
+		proofs, err := r.store.PlanProofs(ctx, t.Parent)
 		if err != nil {
 			return cardRows{}, err
 		}
-		if roleOf(p, t.PlanKey) == RoleIntegration {
-			rows.criteria = p.Criteria
-			if t.Gate == GateApproval {
-				proofs, err := r.store.PlanProofs(ctx, t.Parent)
-				if err != nil {
-					return cardRows{}, err
-				}
-				rows.runnable = runIDs(runnableRuns(p, proofs, rows.verdicts))
-			}
-		}
+		rows.runnable = runIDs(runnableRuns(plan, proofs, rows.verdicts))
 	}
 	if t.Track != policy.TrackPlan {
 		return rows, nil
@@ -282,9 +300,12 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 			return CardDigest{}, err
 		}
 		if refused := newestLine(rows.timeline, StepProviderRefused); !refused.Time.IsZero() {
-			d.retryDue = refused.Time.Add(time.Duration(refused.BackoffS * float64(time.Second)))
+			d.refusedAt = refused.Time
+			d.refusedBackoff = time.Duration(refused.BackoffS * float64(time.Second))
+			d.retryDue = refused.Time.Add(d.refusedBackoff)
 		}
 	}
+	d.freezes = freezeSpans(rows.timeline)
 	// a promise a human judges is asked on the merge's own pages
 	d.Flags = digestFlags(r.Scrub, d, rows, budget, rows.runnable)
 	return d, nil
@@ -297,6 +318,13 @@ func (r *Runner) digestHead(ctx context.Context, t Task, events []Event) (Digest
 		Status: t.Status, Gate: t.Gate, StatusSince: t.CreatedAt, QueueReason: t.QueueReason, QueueSince: t.QueueSince}
 	if t.GateSince != nil {
 		h.Since = *t.GateSince
+	}
+	if t.Held() {
+		v, err := holdView(ctx, r.store, t)
+		if err != nil {
+			return DigestHead{}, err
+		}
+		h.Hold = v.Line
 	}
 	for _, e := range events {
 		if e.Kind == EventTaskStatus {
@@ -320,6 +348,13 @@ func (r *Runner) digestHead(ctx context.Context, t Task, events []Event) (Digest
 		return DigestHead{}, err
 	}
 	h.HoldsEUR = own.Held
+	places, err := r.store.MergeQueuePlaces(ctx)
+	if err != nil {
+		return DigestHead{}, err
+	}
+	if p, ok := places[t.ID]; ok {
+		h.MergeQueue = &p
+	}
 	return h, nil
 }
 
@@ -375,7 +410,7 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 		word := func(k string) string { s, _ := e.Detail[k].(string); return s }
 		number := func(k string) int { n, _ := toInt(e.Detail[k]); return n }
 		amount, _ := e.Detail["amount_eur"].(float64)
-		s := DigestStep{At: e.At, Actor: e.Actor, Ref: DigestRef{Event: strconv.FormatInt(e.ID, 10)}}
+		s := DigestStep{At: e.At, Actor: eventActor(e), Ref: DigestRef{Event: strconv.FormatInt(e.ID, 10)}}
 		comment := number("comment")
 		if comment > 0 {
 			s.Ref.Comment = strconv.Itoa(comment)
@@ -431,6 +466,19 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 				continue
 			}
 			s.Kind, s.Outcome = "criteria", word("criterion")+" not met"
+		case EventCardHeld:
+			s.Kind, s.Outcome = "held", digestText(scrub, word("reason"))
+			if n := number("release"); n > 0 {
+				s.Outcome = fmt.Sprintf("until #%d is merged or done: %s", n, s.Outcome)
+			}
+		case EventCardHoldEnded:
+			s.Kind, s.Outcome = "hold ended", "released"
+			if n := number("release"); n > 0 {
+				s.Outcome = fmt.Sprintf("#%d %s", n, word("status"))
+			}
+			if moved := word("card_status"); moved != "" {
+				s.Outcome = "the card moved to " + moved
+			}
 		case EventDependencySet:
 			s.Kind, s.Outcome = "dependency", "depends on "+issueOf(word("depends_on"))
 			if removed, _ := e.Detail["removed"].(bool); removed {

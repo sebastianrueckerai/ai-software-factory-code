@@ -100,6 +100,23 @@ type ProviderLimit struct {
 	Patterns []string `yaml:"patterns,omitempty" json:"patterns,omitempty"`
 }
 
+// ProviderLimitOf is the class a task of classes is held under when its
+// provider names a reset, and that provider's entry: the first of classes
+// that names a provider listed in provider_limits. "" and nil when none
+// does.
+func (d *Document) ProviderLimitOf(classes []string) (class string, entry *ProviderLimit) {
+	for _, name := range classes {
+		c, ok := d.Classes[name]
+		if !ok || c.Provider == "" {
+			continue
+		}
+		if e, ok := d.ProviderLimits[c.Provider]; ok {
+			return name, &e
+		}
+	}
+	return "", nil
+}
+
 // Location is the zone the provider's naive stamps read in, UTC when the
 // entry leaves tz out.
 func (p ProviderLimit) Location() *time.Location {
@@ -181,7 +198,7 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 	"promote_resource", "release_resource",
 	"new_card", "request_image", "answer", "comment", "tell_card", "steer", "retry",
 	"request_changes", "approve_merge", "deny_merge", "rerun_checks", "answer_criteria", "set_accent", "invite", "github_export",
-	"github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan", "set_pool",
+	"github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "hold_card", "release_hold", "replan", "set_pool",
 	"read_doc", "write_doc", "show_doc", "set_autonomy", "routines", "routine_write", "routine_delete", "routine_run", "routine_skip",
 	"notes_read", "notes_write", "escalate", "attach_analysis", "active_threads", "chat_search", "inbox", "board_view", "board_view_reset",
 	"watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}

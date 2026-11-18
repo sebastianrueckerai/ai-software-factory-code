@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -301,6 +302,26 @@ func TestBoardDigestPlanLineNamesItsLiveProver(t *testing.T) {
 	}
 	if want := "\nplans:\n#1344 session-metrics  done 1 · proofs 0 of 3 stored · prover running, session\ncaps:\n"; !strings.Contains(b.Render(), want) {
 		t.Fatalf("Render =\n%s\nwant it to hold\n%s", b.Render(), want)
+	}
+}
+
+// A plan's card counts read each key's card: a card that failed into a
+// running successor counts as the successor, running.
+func TestBoardDigestCountsEachKeysCard(t *testing.T) {
+	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
+	g.card("t1344", 1344, "done", "", 0, func(t *Task) { t.Track, t.PlanName = policy.TrackPlan, "session-metrics" })
+	if _, err := g.store.AddPlanRevision(context.Background(), "t1344", mustJSON(Plan{}), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	g.card("t1440", 1440, "done", "", 1, child("k1440"))
+	g.card("t1451", 1451, "failed", "", 2, child("k1451"))
+	g.card(SuccessorID("t1451"), 1460, "running", GateSession, 3, func(t *Task) { child("k1451")(t); t.Source = SourceSuccessor })
+	plans, err := g.r.boardPlans(context.Background(), "sf/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]int{"done": 1, "running": 1}; len(plans) != 1 || !maps.Equal(plans[0].Children, want) {
+		t.Fatalf("plans %+v, want one whose cards count %v", plans, want)
 	}
 }
 

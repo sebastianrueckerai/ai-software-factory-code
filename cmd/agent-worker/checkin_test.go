@@ -32,7 +32,7 @@ import (
 
 func checkinHandler(t *testing.T, ck *checkinServe) http.Handler {
 	t.Helper()
-	return messageHandler(mustHash(t, testMessageHash), newPushGate(), func(context.Context, string, string) error { return nil }, ck, nil)
+	return messageHandler(mustHash(t, testMessageHash), newPushGate(), func(context.Context, string, string) error { return nil }, ck, nil, nil)
 }
 
 func postTool(t *testing.T, h http.Handler, auth, body string) (int, string) {
@@ -197,12 +197,11 @@ func TestBriefWait(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git binary")
 	}
-	// start() binds the worker's one fixed message port
-	messagePortFree(t)
 	old := checkinWait
 	t.Cleanup(func() { checkinWait = old })
 
 	t.Run("no push", func(t *testing.T) {
+		loopbackPort(t)
 		readyToStart(t)
 		checkinWait = 50 * time.Millisecond
 		var logs []string
@@ -228,11 +227,12 @@ func TestBriefWait(t *testing.T) {
 	})
 
 	t.Run("push inside the wait", func(t *testing.T) {
+		addr := loopbackPort(t)
 		readyToStart(t)
 		checkinWait = 10 * time.Second
 		const note = "the finding is false; build and test as usual"
 		body, _ := json.Marshal(map[string]string{"handover": note})
-		answered := pushWhileStarting(body)
+		answered := pushWhileStarting(addr, body)
 		s, err := start(context.Background(), nolog, seedCheckinRepo(t), nil, func(workerEnv) egressProbe { return closedSandbox(t) })
 		if err != nil {
 			t.Fatal(err)
@@ -329,7 +329,7 @@ func TestStartStoresTheSessionsText(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git binary")
 	}
-	messagePortFree(t)
+	loopbackPort(t)
 	old := checkinWait
 	t.Cleanup(func() { checkinWait = old })
 	checkinWait = 10 * time.Millisecond
@@ -392,7 +392,7 @@ func TestStartReadsTheCardsBriefFromTheGateway(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git binary")
 	}
-	messagePortFree(t)
+	loopbackPort(t)
 	old := checkinWait
 	t.Cleanup(func() { checkinWait = old })
 	checkinWait = 10 * time.Millisecond
@@ -425,7 +425,7 @@ func TestStartBoundsTheBriefsRead(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git binary")
 	}
-	messagePortFree(t)
+	loopbackPort(t)
 	old := briefWait
 	t.Cleanup(func() { briefWait = old })
 	briefWait = 50 * time.Millisecond
@@ -457,15 +457,15 @@ func TestFitCardCutsTheBriefPastItsBound(t *testing.T) {
 	}
 }
 
-// pushWhileStarting posts body to the message port's POST /brief until
-// the listener answers: start() binds port 8091 somewhere in its clone and
+// pushWhileStarting posts body to POST /brief on the message port at addr
+// until the listener answers: start() binds it somewhere in its clone and
 // checkpoint phases. The channel gets the answer's status.
-func pushWhileStarting(body []byte) <-chan int {
+func pushWhileStarting(addr string, body []byte) <-chan int {
 	answered := make(chan int, 1)
 	go func() {
 		var code int
 		for deadline := time.Now().Add(5 * time.Second); ; {
-			req, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:8091/brief", bytes.NewReader(body))
+			req, _ := http.NewRequest(http.MethodPost, "http://"+addr+"/brief", bytes.NewReader(body))
 			req.Header.Set("Authorization", "Bearer session-secret")
 			resp, err := http.DefaultClient.Do(req)
 			if err == nil {
@@ -826,7 +826,7 @@ func TestBriefPushWritesTheOpenedProofsIntoTheClone(t *testing.T) {
 		if _, err := exec.LookPath("git"); err != nil {
 			t.Skip("no git binary")
 		}
-		messagePortFree(t)
+		addr := loopbackPort(t)
 		readyToStart(t)
 		old := checkinWait
 		t.Cleanup(func() { checkinWait = old })
@@ -834,7 +834,7 @@ func TestBriefPushWritesTheOpenedProofsIntoTheClone(t *testing.T) {
 		ws := seedCheckinRepo(t)
 		repo := filepath.Join(ws, "repo")
 		keep(t, repo)
-		answered := pushWhileStarting([]byte(push))
+		answered := pushWhileStarting(addr, []byte(push))
 		s, err := start(context.Background(), nolog, ws, nil, func(workerEnv) egressProbe { return closedSandbox(t) })
 		if err != nil {
 			t.Fatal(err)

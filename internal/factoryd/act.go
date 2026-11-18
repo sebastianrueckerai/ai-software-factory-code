@@ -161,7 +161,9 @@ func keepsOpen(c Case, t Task, res Resolution) bool {
 // records a step and ends nothing. A human card's case takes a value of its question's
 // choices, which Act records and runs nothing for, deploy_now excepted, which
 // runs outside the run. Rung 0 is factoryd's,
-// and factoryd answers on rung 0 alone. An answer holds its case from its
+// and factoryd answers on rung 0 alone. Rung 2 is the project agent's:
+// its answer is recorded as ChatUser, never as the human whose turn woke
+// it, so no record of it reads as the human's. An answer holds its case from its
 // first read to its end, so a second answer on it waits, then finds it
 // ended, with nothing of its own run.
 func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
@@ -172,6 +174,11 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		return ActResult{}, ErrActRefused("The factory answers for itself alone, not as " + who(in.Rung) + ".")
 	case in.Rung != 1 && in.By == CheckinDecider:
 		return ActResult{}, ErrActRefused("The check-in answers as itself alone, not as " + who(in.Rung) + ".")
+	case in.Rung != 2 && in.By == ChatUser:
+		return ActResult{}, ErrActRefused("The factory agent answers as itself alone, not as " + who(in.Rung) + ".")
+	}
+	if in.Rung == 2 {
+		in.By = ChatUser
 	}
 	out, err := r.act(ctx, in)
 	if in.CaseID != 0 && (err != nil || out.Case.Status == CaseAtHuman && slices.Contains(questionKinds, out.Case.Kind) && slices.Contains(capDraws, in.Res.Action)) {
@@ -558,8 +565,13 @@ func (r *Runner) refreshOffersOf(ctx context.Context, taskID string, caseID int6
 	}
 }
 
-// refreshOffers stores the face of case c anew on facts f.
+// refreshOffers stores the face of case c anew on facts f; on facts whose
+// timeline could not be read it stores nothing, so the offers pass weighs
+// them again.
 func (r *Runner) refreshOffers(ctx context.Context, t Task, c Case, f CaseFacts) {
+	if slices.Contains(f.Partial, partialTimeline) {
+		return
+	}
 	face, err := r.liveFace(ctx, t, c, f)
 	if err == nil {
 		err = r.store.SetCaseFace(ctx, c.ID, FaceKeys(face))
@@ -901,8 +913,8 @@ func answersACase(a Action) bool {
 }
 
 // confirmAudit records the audit findings a person's confirm_audit marks
-// fixtures (audit-confirm): each finding they named by its id, as its
-// whole text on facts f, in an audit_finding_confirmed step with who, why
+// fixtures (audit-confirm): each finding at a file they named by its id,
+// as its whole text on facts f, in an audit_finding_confirmed step with who, why
 // and when. Every GateAudit of the task reads the steps off the timeline
 // and settles its verdict past the findings they name, on this attempt and
 // a fresh one alike, until the head's audit clears on its own. A
@@ -921,6 +933,7 @@ func (r *Runner) confirmAudit(ctx context.Context, t Task, in ActInput, f CaseFa
 		if err := r.timeline.Append(ctx, t.ID, stepAuditConfirmed, detail); err != nil {
 			return err
 		}
+		seen[text] = Adjudication{}
 	}
 	return nil
 }
@@ -1330,13 +1343,14 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 	v := r.cfg.Policy()
 	_, project, _ := v.ProjectOf(t.Repository)
 	detail := map[string]any{"pool": true, "rung": in.Rung, "case_id": c.ID, "head": f.Head, "checks": f.Checks}
-	if !slices.Contains(f.Partial, "timeline") {
+	if !slices.Contains(f.Partial, partialTimeline) {
 		detail["findings"] = nonNil(f.Findings)
 	}
 	beside(detail, in.Detail)
 	esc := v.EscalationOf(t.Repository)
+	a, _ := ActionByName(in.Res.Action)
 	draw := &CaseDraw{Rung: in.Rung, Extend: policy.Draw{Sessions: d.Sessions, AgentTime: d.AgentTime}, FundEUR: budget,
-		PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size), Pool: esc.Pool,
+		PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size), Pool: esc.Pool, Need: a.need(f),
 		Event: Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Actor: in.By, Via: via, Detail: detail}}
 	switch in.Res.Action {
 	case ActRaiseCeiling:

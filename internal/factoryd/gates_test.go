@@ -51,6 +51,7 @@ type gateForgejo struct {
 	mergeCommit string   // and the commit the merge made on the base
 	mergedBy    string   // and by whom; "" = factory-merge
 	head        string   // GET /pulls/9's head sha; "" = c1
+	diffPush    string   // a read of the diff moves the head here: a push lands while the gate reads it
 	base        string   // and its base; "" = main
 	conflict    bool     // and it no longer merges into its base (mergeable false)
 	mergeWait   bool     // a 405 answers "Please try again later", Forgejo's conflict check still running
@@ -116,6 +117,9 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			}
 			time.Sleep(f.diffDelay)
 			io.WriteString(w, d)
+			if f.diffPush != "" {
+				f.head = f.diffPush
+			}
 		case r.Method == "POST" && p == "/pulls/9/reviews":
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
@@ -312,18 +316,25 @@ func getInto[T any](t *testing.T, val converter.EncodedValue, err error) T {
 	return out
 }
 
+// modDiff is the unified diff of a file with added lines added and
+// removed lines removed.
+func modDiff(path string, added, removed int) string {
+	return fmt.Sprintf("diff --git a/%[1]s b/%[1]s\n--- a/%[1]s\n+++ b/%[1]s\n@@ -1,%[3]d +1,%[2]d @@\n", path, added, removed) +
+		strings.Repeat("-old\n", removed) + strings.Repeat("+new\n", added)
+}
+
 func TestGatePolicyClassifiesAndRecords(t *testing.T) {
 	fj := &gateForgejo{files: []string{
 		`{"filename":"internal/factoryd/store.go"}`,
 		`{"filename":"internal/factoryd/migrations/0016_x.sql"}`,
 		`{"filename":"k8s/factoryd.yaml"}`,
-	}}
+	}, diff: modDiff("internal/factoryd/store.go", 1, 0) + modDiff("internal/factoryd/migrations/0016_x.sql", 1, 0) + modDiff("k8s/factoryd.yaml", 1, 0)}
 	r, store, objects := newGateRunner(t, gateTask, fj)
 	from := time.Now()
 	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 	g := getInto[PolicyGate](t, val, err)
 	want := PolicyGate{Class: "migration", Outcome: policy.OutcomeRequiresApproval, Paths: []string{"internal/factoryd/migrations/0016_x.sql"},
-		Migrations: []string{"internal/factoryd/migrations/0016_x.sql"}, Changed: 3, OutsideK8s: []string{"internal/factoryd/store.go", "internal/factoryd/migrations/0016_x.sql"}, PolicyVersion: 7, MergeRule: "human", Files: 3}
+		Migrations: []string{"internal/factoryd/migrations/0016_x.sql"}, Changed: 3, Lines: 3, OutsideK8s: []string{"internal/factoryd/store.go", "internal/factoryd/migrations/0016_x.sql"}, PolicyVersion: 7, MergeRule: "human", Files: 3, Insertions: 3}
 	if fmt.Sprint(g) != fmt.Sprint(want) {
 		t.Fatalf("gate = %+v, want %+v", g, want)
 	}
@@ -342,7 +353,7 @@ func TestGatePolicyClassifiesAndRecords(t *testing.T) {
 // The gate counts the changed lines, added and deleted: over the policy's
 // large_lines the pull request is class large and its comment says why.
 func TestGatePolicyCountsLines(t *testing.T) {
-	fj := &gateForgejo{files: []string{`{"filename":"internal/a.go","additions":40,"deletions":3}`, `{"filename":"README.md","additions":5,"deletions":5}`}}
+	fj := &gateForgejo{diff: modDiff("internal/a.go", 40, 3) + modDiff("README.md", 5, 5)}
 	r, store, objects := newGateRunner(t, gateTask, fj)
 	v := testPolicyVersion()
 	v.Document.Risk.LargeLines = 50
@@ -377,7 +388,7 @@ func TestPlainGroupRevertSkipsTheLargeClass(t *testing.T) {
 	for source, wantLarge := range map[string]bool{SourceRevert: false, SourceGroupRevert: true} {
 		task := gateTask
 		task.Source = source
-		r, _, _ := newGateRunner(t, task, &gateForgejo{files: []string{`{"filename":"internal/a.go","additions":200,"deletions":1000}`}})
+		r, _, _ := newGateRunner(t, task, &gateForgejo{diff: modDiff("internal/a.go", 200, 1000)})
 		v := testPolicyVersion()
 		v.Document.Risk.LargeLines = 1000
 		r.cfg.Policy = func() policy.Version { return v }
@@ -487,7 +498,7 @@ func anySlice(ss []string) []any {
 // A rename out of .forgejo counts under its old name: forbidden, and the
 // comment names the path.
 func TestGatePolicyForbidsARenameOutOfAWorkflowDir(t *testing.T) {
-	fj := &gateForgejo{files: []string{`{"filename":"ci.yml","previous_filename":".forgejo/workflows/ci.yml","status":"renamed"}`}}
+	fj := &gateForgejo{diff: "diff --git a/.forgejo/workflows/ci.yml b/ci.yml\nsimilarity index 100%\nrename from .forgejo/workflows/ci.yml\nrename to ci.yml\n"}
 	r, _, _ := newGateRunner(t, gateTask, fj)
 	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 	g := getInto[PolicyGate](t, val, err)
@@ -499,22 +510,95 @@ func TestGatePolicyForbidsARenameOutOfAWorkflowDir(t *testing.T) {
 	}
 }
 
+// Forgejo's file list shows a moved file as added with its whole content;
+// the unified diff shows the rename and its hunk. The gate counts the diff.
+func TestGatePolicyCountsAMoveByItsChangedLines(t *testing.T) {
+	hunk := "@@ -1,5 +1,5 @@\n" + strings.Repeat("-old\n", 5) + strings.Repeat("+new\n", 5)
+	diff := "diff --git a/a/x_test.go b/a/pg/x_test.go\nsimilarity index 90%\nrename from a/x_test.go\nrename to a/pg/x_test.go\n--- a/a/x_test.go\n+++ b/a/pg/x_test.go\n" + hunk +
+		"diff --git a/a/pg/pg.go b/a/pg/pg.go\nnew file mode 100644\n--- /dev/null\n+++ b/a/pg/pg.go\n@@ -0,0 +1,50 @@\n" + strings.Repeat("+line\n", 50)
+	fj := &gateForgejo{diff: diff, files: []string{
+		`{"filename":"a/pg/x_test.go","additions":300,"deletions":0,"status":"added"}`,
+		`{"filename":"a/pg/pg.go","additions":50,"deletions":0,"status":"added"}`,
+	}}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	v := testPolicyVersion()
+	v.Document.Risk.LargeLines = 100
+	r.cfg.Policy = func() policy.Version { return v }
+	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+	g := getInto[PolicyGate](t, val, err)
+	if g.Lines != 60 || g.Insertions != 55 || g.Deletions != 5 || g.Files != 2 || g.OverBound != "" ||
+		!slices.Equal(g.OutsideK8s, []string{"a/pg/x_test.go", "a/x_test.go", "a/pg/pg.go"}) {
+		t.Fatalf("gate = %+v, want 60 lines, 55 insertions, 5 deletions, 2 files, no OverBound", g)
+	}
+}
+
+// A rename with no hunk counts no line, and its old directory classes it.
+func TestGatePolicyClassesAMoveOutOfAGuardedDirectory(t *testing.T) {
+	diff := "diff --git a/.forgejo/workflows/x.yml b/docs/x.yml\nsimilarity index 100%\nrename from .forgejo/workflows/x.yml\nrename to docs/x.yml\n"
+	fj := &gateForgejo{diff: diff, files: []string{`{"filename":"docs/x.yml","additions":9,"status":"added"}`}}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+	g := getInto[PolicyGate](t, val, err)
+	if g.Class != "forbidden" || g.Outcome != policy.OutcomeForbidden || !slices.Equal(g.Paths, []string{".forgejo/workflows/x.yml"}) || g.Lines != 0 {
+		t.Fatalf("gate = %+v, want class forbidden by .forgejo/workflows/x.yml over 0 lines", g)
+	}
+}
+
+// Git quotes a path that holds a quote: the gate classes the new file by
+// its true name, as it does a plain one.
+func TestGatePolicyClassesAQuotedPath(t *testing.T) {
+	diff := "diff --git \"a/.forgejo/workflows/a\\\"b.yml\" \"b/.forgejo/workflows/a\\\"b.yml\"\nnew file mode 100644\n--- /dev/null\n+++ \"b/.forgejo/workflows/a\\\"b.yml\"\n@@ -0,0 +1 @@\n+on: push\n"
+	for name, files := range map[string][]string{
+		"with the file list": {`{"filename":".forgejo/workflows/a\"b.yml","additions":1,"status":"added"}`},
+		"diff alone":         nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, _, _ := newGateRunner(t, gateTask, &gateForgejo{diff: diff, files: files})
+			val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+			g := getInto[PolicyGate](t, val, err)
+			if g.Class != "forbidden" || !slices.Equal(g.Paths, []string{`.forgejo/workflows/a"b.yml`}) || g.Lines != 1 {
+				t.Fatalf("gate = %+v, want forbidden by .forgejo/workflows/a\"b.yml over 1 line", g)
+			}
+		})
+	}
+	// a path the diff parser misses is still classed by the file list
+	r, _, _ := newGateRunner(t, gateTask, &gateForgejo{diff: "diff --git garbled\n@@ -0,0 +1 @@\n+x\n", files: []string{`{"filename":".forgejo/workflows/z.yml","additions":1}`}})
+	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+	if g := getInto[PolicyGate](t, val, err); g.Class != "forbidden" || g.Lines != 1 {
+		t.Fatalf("gate = %+v, want forbidden by the file list's name over the diff's 1 line", g)
+	}
+}
+
+func TestGatePolicyOnAnUnreadDiffCountsTheFileList(t *testing.T) {
+	fj := &gateForgejo{diff: strings.Repeat("d", 8<<20+1), files: []string{
+		`{"filename":"a/pg/x_test.go","additions":300,"deletions":2}`,
+		`{"filename":"a/pg/pg.go","additions":50}`,
+	}}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+	g := getInto[PolicyGate](t, val, err)
+	if g.Lines != 352 || g.Insertions != 350 || g.Deletions != 2 || g.Files != 2 || g.Unread == "" ||
+		g.Class != policy.ClassNormal || !slices.Equal(g.OutsideK8s, []string{"a/pg/x_test.go", "a/pg/pg.go"}) {
+		t.Fatalf("gate = %+v, want the file list's 352 lines in 2 files, class normal over its two paths, and Unread set", g)
+	}
+}
+
 // A pull request factoryd opened is no agent's change (roadmap 187): its
 // paths forbidden to agents go to a human's approval instead of failing
 // the card, and the comment names them. An agent's change to them stays
 // forbidden.
 func TestGatePolicyForbiddenPathsOfAFactoryPRGoToAHuman(t *testing.T) {
-	files := []string{`{"filename":".forgejo/workflows/ci.yml"}`, `{"filename":"deploy/smoke.sh"}`}
+	diff := modDiff(".forgejo/workflows/ci.yml", 1, 0) + modDiff("deploy/smoke.sh", 1, 0)
 	for _, source := range []string{SourceGitHubSync, SourceSchemaCopy, SourceTemplateUpdate, SourceRevert} {
 		t.Run(source, func(t *testing.T) {
-			fj := &gateForgejo{files: files}
+			fj := &gateForgejo{diff: diff}
 			task := gateTask
 			task.Source = source
 			r, store, _ := newGateRunner(t, task, fj)
 			val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 			g := getInto[PolicyGate](t, val, err)
 			want := PolicyGate{Class: "forbidden", Outcome: policy.OutcomeRequiresApproval, Paths: []string{".forgejo/workflows/ci.yml"},
-				Factory: true, Changed: 2, OutsideK8s: []string{".forgejo/workflows/ci.yml", "deploy/smoke.sh"}, PolicyVersion: 7, MergeRule: "human", Files: 2}
+				Factory: true, Changed: 2, Lines: 2, OutsideK8s: []string{".forgejo/workflows/ci.yml", "deploy/smoke.sh"}, PolicyVersion: 7, MergeRule: "human", Files: 2, Insertions: 2}
 			if fmt.Sprint(g) != fmt.Sprint(want) {
 				t.Fatalf("gate = %+v, want %+v", g, want)
 			}
@@ -531,7 +615,7 @@ func TestGatePolicyForbiddenPathsOfAFactoryPRGoToAHuman(t *testing.T) {
 			}
 		})
 	}
-	fj := &gateForgejo{files: files}
+	fj := &gateForgejo{diff: diff}
 	r, _, _ := newGateRunner(t, gateTask, fj)
 	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 	if g := getInto[PolicyGate](t, val, err); g.Outcome != policy.OutcomeForbidden || g.Factory {
@@ -1881,6 +1965,39 @@ func TestUnjudgedSplitsTheGatesFromTheHumans(t *testing.T) {
 	}
 }
 
+// The successor that carries the integration card's key reads the rows
+// on the plan-filed integration card, where every gate run and every
+// approver writes them: its merge holds while a criterion has none there,
+// and releases once they settle.
+func TestUnjudgedOfASuccessorReadsTheIntegrationCardsRows(t *testing.T) {
+	ctx := context.Background()
+	task := gateTask
+	task.Source, task.Parent, task.PlanKey = SourceSuccessor, "t-plan", "integration"
+	r, store, _ := newGateRunner(t, task, &gateForgejo{mergeStatus: []int{http.StatusOK}})
+	p := criteriaPlan()
+	b, _ := json.Marshal(p)
+	if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+	store.tasks["t-int"] = Task{ID: "t-int", Repository: "sf/repo", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Status: "failed"}
+	if err := store.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceGate, FactoryDecider, []CriterionVerdict{{Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}}); err != nil {
+		t.Fatal(err)
+	}
+	val, err := execActivity(t, r, ActivityUnjudged, "t1")
+	if got, want := getInto[Unjudged](t, val, err), (Unjudged{Gate: []string{"c1"}, Human: []string{"c2"}}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the successor's unjudged = %+v, want %+v", got, want)
+	}
+	if err := store.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceApprover, "sebastian", []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c2", Verdict: "met", Kind: CriterionHuman}}); err != nil {
+		t.Fatal(err)
+	}
+	val, err = execActivity(t, r, ActivityUnjudged, "t1")
+	if got := getInto[Unjudged](t, val, err); !reflect.DeepEqual(got, Unjudged{}) {
+		t.Fatalf("the successor's unjudged once the rows settle = %+v, want none", got)
+	}
+}
+
 // The held merge names who settles each criterion without a row: the
 // human on this card first, then the criteria gate, which the next
 // approval runs again. It reads no review note and files no ask of its
@@ -2011,6 +2128,10 @@ func TestMergeAsFactoryMerge(t *testing.T) {
 	if !strings.Contains(timeline(t, objects), `"step":"merged"`) {
 		t.Fatal("no merged step")
 	}
+	if i := slices.IndexFunc(store.events, func(e Event) bool { return e.TaskID == "t1" && e.Kind == EventPullRequestMerged }); i < 0 ||
+		store.events[i].Detail["head"] != "c1" {
+		t.Fatalf("events %+v, want pull_request_merged naming the head c1 it merged", store.events)
+	}
 	startedWithin(t, objects, "merged", from)
 	// a human's approval is the human's review: the gate posts none
 	if len(fj.reviews) != 0 {
@@ -2073,7 +2194,8 @@ func TestAutoMergeCompanionLines(t *testing.T) {
 
 // GateCompanion reads the plan card's companion pins live through the
 // factory-config token: met, behind, or unread, a verdict that holds the
-// card. A task with no plan card carries no pins.
+// card. A task with no plan card carries no pins; a plan card's successor
+// carries its key's.
 func TestGateCompanion(t *testing.T) {
 	pin, head := "82ab246"+strings.Repeat("0", 33), "fee3ff16"+strings.Repeat("1", 32)
 	var auth []string
@@ -2141,6 +2263,14 @@ func TestGateCompanion(t *testing.T) {
 	cs = getInto[[]CompanionGate](t, val, err)
 	if len(cs) != 0 {
 		t.Fatalf("a direct card's companions = %+v, want none", cs)
+	}
+
+	succ := card
+	succ.ID, succ.Source = "t-succ", SourceSuccessor
+	store.tasks["t-succ"] = succ
+	val, err = execActivity(t, r, ActivityGateCompanion, "t-succ")
+	if cs = getInto[[]CompanionGate](t, val, err); !slices.Equal(cs, want) {
+		t.Fatalf("the successor's verdicts = %+v, want its key's card's %+v", cs, want)
 	}
 }
 
@@ -2514,6 +2644,28 @@ func TestMergeUpdateWithoutMoveOrRefusedIsAConflict(t *testing.T) {
 				t.Fatal("no merge_conflict step")
 			}
 		})
+	}
+}
+
+// A queue turn's sync that Forgejo refuses with a conflict records the
+// conflict on the card's timeline: the pull request, the head the turn
+// passed and the refusal, a credential in it masked.
+func TestSyncWithMainRecordsTheConflict(t *testing.T) {
+	fj := &gateForgejo{updateAs: http.StatusConflict, updateBody: "https://user:pass@host/x merge failed because of conflict"}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	r.Scrub = redact.New()
+	res, err := r.SyncWithMain(context.Background(), "t1", 9, "c1")
+	if err != nil || res.Conflict == "" || strings.Contains(res.Conflict, "pass@") || fj.updates == 0 {
+		t.Fatalf("SyncWithMain = %+v, %v, updates %d; want the conflict, masked", res, err, fj.updates)
+	}
+	var lines []map[string]any
+	for _, l := range timelineLines(t, r, "t1") {
+		if l["step"] == "merge_conflict" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) != 1 || lines[0]["pr"] != float64(9) || lines[0]["commit"] != "c1" || lines[0]["refusal"] != res.Conflict {
+		t.Fatalf("merge_conflict lines = %v, want one of pr 9 on c1 with the refusal %q", lines, res.Conflict)
 	}
 }
 
@@ -3110,6 +3262,32 @@ func TestGatesRefuseAMovedHead(t *testing.T) {
 	val, err = execActivity(t, ar, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{}, 1)
 	if a := getInto[AuditResult](t, val, err); a.MovedTo != "c2" || len(a.Findings) != 1 || a.Findings[0].Item != auditNoVerdict {
 		t.Fatalf("audit = %+v, want no verdict and the head c2 named", a)
+	}
+}
+
+// A push that lands while a gate reads the diff is a moved head too: the
+// gate checks the head after the read, so it never judges c2's diff as
+// c1's. GatePolicy refuses it, ModelReview and the audit name c2 with no
+// model call.
+func TestGatesRefuseAHeadThatMovesDuringTheDiffRead(t *testing.T) {
+	fj := &gateForgejo{diffPush: "c2", files: []string{`{"filename":"README.md"}`}, diff: "d"}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	if _, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1"); err == nil || !isHeadMoved(err) || !strings.Contains(err.Error(), "head moved to c2") {
+		t.Fatalf("GatePolicy with a push during its diff read = %v, want a head-moved refusal", err)
+	}
+	fj.head = "c1"
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"s"}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	if rv := getInto[Review](t, val, err); !strings.Contains(rv.Note, "head moved to c2") || rv.MovedTo != "c2" || len(ll.chats) != 0 {
+		t.Fatalf("review = %+v after %d model calls", rv, len(ll.chats))
+	}
+	al := &fakeLiteLLM{content: `{"verdict":"clear","findings":[]}`}
+	ar, _ := newAuditRunner(t, &gateForgejo{diffPush: "c2", diff: "d"}, al, true)
+	val, err = execActivity(t, ar, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{}, 1)
+	if a := getInto[AuditResult](t, val, err); a.MovedTo != "c2" || len(a.Findings) != 1 || a.Findings[0].Item != auditNoVerdict ||
+		!strings.Contains(a.Findings[0].Why, "head moved to c2") || len(al.chats) != 0 {
+		t.Fatalf("audit = %+v after %d model calls, want no verdict and the head c2 named", a, len(al.chats))
 	}
 }
 
@@ -3806,6 +3984,27 @@ func TestIntegrationReviewNamesTheGatesCriteria(t *testing.T) {
 	}
 }
 
+// The review of the successor that carries the integration card's key
+// answers the plan's criteria as the card's does: it names the criteria it
+// leaves to the gate.
+func TestASuccessorOfTheIntegrationCardsReviewNamesTheGatesCriteria(t *testing.T) {
+	r, _, _ := fundedReview(t, 0.01, 1e-9, 1e-5, nil)
+	store := r.store.(*fakeStore)
+	b, _ := json.Marshal(criteriaPlan())
+	if _, err := store.AddPlanRevision(context.Background(), "t-plan", b, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+	card := store.tasks["t1"]
+	card.Source, card.Parent, card.PlanKey, card.IssueNumber = SourceSuccessor, "t-plan", "integration", 9
+	store.tasks["t1"] = card
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	rv := getInto[Review](t, val, err)
+	if want := (&GateLeft{IDs: []string{"c1", "c3"}, Integration: true}); !reflect.DeepEqual(rv.GateCriteria, want) {
+		t.Fatalf("gate criteria = %+v, want %+v", rv.GateCriteria, want)
+	}
+}
+
 // A pull request the gate admits names every condition it found met, the
 // body of the gate's approval: who wrote it, and for an
 // agent's change the class, the audit, the proof and the review, in
@@ -4070,7 +4269,7 @@ func TestRedPlainRevertRetryLinksTheSameCard(t *testing.T) {
 // policy's large_lines, as every line-bound check reads it.
 func TestGatePolicyRefusesOverTheCardLineBound(t *testing.T) {
 	run := func(size string, extra, lines int) (PolicyGate, *gateForgejo) {
-		fj := &gateForgejo{files: []string{fmt.Sprintf(`{"filename":"internal/a.go","additions":%d,"deletions":0}`, lines)}}
+		fj := &gateForgejo{diff: modDiff("internal/a.go", lines, 0)}
 		task := gateTask
 		task.Size = size
 		task.Usage.ExtraLines = extra
@@ -4539,34 +4738,44 @@ func TestChangeSetUnreadable(t *testing.T) {
 }
 
 // The review's input carries the head's check runs, read at the call:
-// every check's context and state, a red one with its description, a
-// pending one named pending — the loop's own check runs the merge needs
+// every check's context and state — a fake whose combined status reports
+// two green checks and one red with its description, and one whose
+// checks are still pending — the loop's own check runs the merge needs
 // green, as the prompt's checks sentence says.
 func TestReviewInputCarriesTheCheckRuns(t *testing.T) {
-	fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n",
-		statusesRaw: `[{"context":"ci / test","status":"success"},{"context":"ci / lint","status":"failure","description":"gofmt needs b.go"},{"context":"ci / e2e","status":"pending"}]`}
-	r, _, _ := newGateRunner(t, gateTask, fj)
-	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
-	r.supervisor = testSupervisorModel(ll.srv(t).URL)
-	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Policy: PolicyGate{Class: "normal"}}); err != nil {
-		t.Fatal(err)
-	}
-	var in reviewInput
-	user := strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), ChatInputLead)
-	if err := json.Unmarshal([]byte(user), &in); err != nil {
-		t.Fatal(err)
-	}
-	want := []reviewCheck{{Context: "ci / test", State: "success"},
-		{Context: "ci / lint", State: "failure", Description: "gofmt needs b.go"},
-		{Context: "ci / e2e", State: "pending"}}
-	if !slices.Equal(in.Checks, want) {
-		t.Fatalf("checks = %+v, want %+v", in.Checks, want)
-	}
-	if !slices.Equal(fj.statusReads, []string{"c1"}) {
-		t.Fatalf("status reads = %v, want the reviewed head's combined status", fj.statusReads)
-	}
-	prompt, _ := ll.chats[0]["messages"].([]any)[0].(map[string]any)["content"].(string)
-	if !strings.Contains(prompt, "the loop's own check runs the merge needs green") {
-		t.Fatalf("the prompt does not name the loop's own check runs: %s", prompt)
+	for name, tc := range map[string]struct {
+		statuses string
+		want     []reviewCheck
+	}{
+		"two green and one red": {`[{"context":"ci / test","status":"success"},{"context":"ci / race","status":"success"},{"context":"ci / lint","status":"failure","description":"gofmt needs b.go"}]`,
+			[]reviewCheck{{Context: "ci / test", State: "success"}, {Context: "ci / race", State: "success"},
+				{Context: "ci / lint", State: "failure", Description: "gofmt needs b.go"}}},
+		"checks still pending": {`[{"context":"ci / test","status":"pending"},{"context":"ci / race","status":"pending"}]`,
+			[]reviewCheck{{Context: "ci / test", State: "pending"}, {Context: "ci / race", State: "pending"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n", statusesRaw: tc.statuses}
+			r, _, _ := newGateRunner(t, gateTask, fj)
+			ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
+			r.supervisor = testSupervisorModel(ll.srv(t).URL)
+			if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Policy: PolicyGate{Class: "normal"}}); err != nil {
+				t.Fatal(err)
+			}
+			var in reviewInput
+			user := strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), ChatInputLead)
+			if err := json.Unmarshal([]byte(user), &in); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(in.Checks, tc.want) {
+				t.Fatalf("checks = %+v, want %+v", in.Checks, tc.want)
+			}
+			if !slices.Equal(fj.statusReads, []string{"c1"}) {
+				t.Fatalf("status reads = %v, want the reviewed head's combined status", fj.statusReads)
+			}
+			prompt, _ := ll.chats[0]["messages"].([]any)[0].(map[string]any)["content"].(string)
+			if !strings.Contains(prompt, "the loop's own check runs the merge needs green") {
+				t.Fatalf("the prompt does not name the loop's own check runs: %s", prompt)
+			}
+		})
 	}
 }

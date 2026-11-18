@@ -370,7 +370,7 @@ func holdInfo(plans []HoldPlan) string {
 func (k *ReleaseKeeper) holdPlans(ctx context.Context, groups []Group) ([]HoldPlan, error) {
 	plans := make([]HoldPlan, len(groups))
 	for i, g := range groups {
-		cards, err := planWaits(ctx, k.Store, g.Plan)
+		cards, err := PlanWaits(ctx, k.Store, g.Plan)
 		if err != nil {
 			return nil, err
 		}

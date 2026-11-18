@@ -936,7 +936,7 @@ func (c *Console) doGithubSync(ctx context.Context, a actor, p factoryd.Project)
 	}
 	ctx = context.WithoutCancel(ctx)
 	go func() {
-		result, err := c.cfg.GitHubSync(ctx, p.Name, a.s.user)
+		result, err := c.cfg.GitHubSync(ctx, p.Name, a.approver())
 		if err != nil {
 			log.Printf("console: the sync of %s from GitHub: %v", p.Name, err)
 			result = "failed: " + errText(err)

@@ -2,10 +2,12 @@ package console
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -119,6 +121,71 @@ func newRealAct(t *testing.T, id string, issue int64, source string, q factoryd.
 	return ra
 }
 
+// raTemplate is the realAct rig's template database, its schema migrated
+// once per test binary: every realAct store is created from it by
+// CREATE DATABASE ... TEMPLATE, so a subtest's cost is the copy, not the
+// factory's migrations run again. A store opened on a copy finds every
+// migration recorded and applies none, its schema and its emptiness the
+// same a full OpenStore leaves.
+var raTemplate struct {
+	once sync.Once
+	err  error
+}
+
+// raScratch is DSN for a fresh database the rig's template holds the
+// schema of, dropped at the test's end.
+func raScratch(t *testing.T, name string) string {
+	t.Helper()
+	base := os.Getenv("FACTORYD_TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
+	}
+	tpl := schematest.DSN(t, "realact_template")
+	raTemplate.once.Do(func() {
+		pg, err := factoryd.OpenStore(context.Background(), tpl)
+		if err != nil {
+			raTemplate.err = err
+			return
+		}
+		pg.Close()
+	})
+	if raTemplate.err != nil {
+		t.Fatalf("the realAct template's store: %v", raTemplate.err)
+	}
+	u, err := url.Parse(tpl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	from := strings.TrimPrefix(u.Path, "/")
+	name = from + "_" + name
+	u.Path = "/" + name
+	db, err := sql.Open("pgx", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, stmt := range []string{
+		`DROP DATABASE IF EXISTS "` + name + `" WITH (FORCE)`,
+		`CREATE DATABASE "` + name + `" TEMPLATE "` + from + `"`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	t.Cleanup(func() {
+		db, err := sql.Open("pgx", os.Getenv("FACTORYD_TEST_DATABASE_URL"))
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer db.Close()
+		if _, err := db.Exec(`DROP DATABASE IF EXISTS "` + name + `" WITH (FORCE)`); err != nil {
+			t.Error(err)
+		}
+	})
+	return u.String()
+}
+
 // newRealRunner opens a fresh database and a Runner on it at level, with no card.
 func newRealRunner(t *testing.T, level string) *realAct {
 	t.Helper()
@@ -127,7 +194,7 @@ func newRealRunner(t *testing.T, level string) *realAct {
 	name := fmt.Sprintf("realact%d", raN)
 	raMu.Unlock()
 	ctx := context.Background()
-	dsn := schematest.Scratch(t, name)
+	dsn := raScratch(t, name)
 	pg, err := factoryd.OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)

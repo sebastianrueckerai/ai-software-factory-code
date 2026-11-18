@@ -47,7 +47,7 @@ const (
 // pokeKinds are the events a poke may answer.
 var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventApprovalRequested, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
 	EventCardFiled, EventCardRetried, EventSessionGranted, EventRoutineRan, EventChatBudgetSpent,
-	EventPullRequestMerged}
+	EventPullRequestMerged, EventCardHoldStranded}
 
 // agentVerbs are the agent's own actions a poke tells, by event kind.
 var agentVerbs = map[string]string{EventCardFiled: "filed", EventCardRetried: "retried", EventSessionGranted: "granted"}
@@ -229,7 +229,7 @@ func deliveryLevel(m ChatMessage) string {
 	switch m.BirthKind {
 	case EventTaskEnded, EventAllChildrenDone:
 		return LevelAll
-	case EventChatBudgetSpent:
+	case EventChatBudgetSpent, EventCardHoldStranded:
 		return LevelNeedsYou
 	}
 	return ""
@@ -335,6 +335,18 @@ func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
 		}
 	case EventAllChildrenDone:
 		m.Content = fmt.Sprintf("The plan %s is done: all %d cards.", name, num("cards"))
+	case EventCardHoldStranded:
+		// a hold the human released, or one a retry's card took over,
+		// before the pass strands nothing
+		if !t.Held() || t.Hold.Release != str("release_task") {
+			return m, false
+		}
+		fit := "Release the hold, or hold it again with another release card."
+		if str("status") == "failed" {
+			// a retry of the release card takes the hold over (takeOverEdges)
+			fit = fmt.Sprintf("Retry #%d, whose retry takes the hold over, or release the hold, or hold it again with another release card.", num("release_issue"))
+		}
+		m.Content = fmt.Sprintf("%s stays on hold: its release card %s ended %s and releases nothing. %s", capitalize(name), str("release"), str("status"), fit)
 	case EventChatBudgetSpent:
 		// the chat's own task is no card
 		m.TaskID = ""

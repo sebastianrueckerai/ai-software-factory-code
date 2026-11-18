@@ -600,7 +600,7 @@ func TestGateEvidenceReadsWhatTheGateWrote(t *testing.T) {
 		{proofOpen, proofOutcome{Outcome: proofPassed}, true, "TestSizeBound in ./proofs/size_bound passed"},
 		{"", proofOutcome{Outcome: proofMissing}, false, "no test TestSizeBound in ./proofs/size_bound"},
 	} {
-		rows := gateRows([]gateProof{{ID: run.id, Kind: run.kind, Met: tc.met, State: tc.state, Line: criterionLine(run, tc.outcome)}})
+		rows := gateRows([]gateProof{{ID: run.id, Kind: run.kind, Met: tc.met, State: tc.state, Line: criterionLine(run, gateResult{outcome: tc.outcome})}})
 		if state, line := GateEvidence(run.id, rows[0].Evidence); state != tc.state || line != tc.line {
 			t.Errorf("%q reads %q, %q; want %q, %q", rows[0].Evidence, state, line, tc.state, tc.line)
 		}

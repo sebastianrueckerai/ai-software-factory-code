@@ -20,8 +20,9 @@ import (
 )
 
 // factsRig is a runner on a fake store, a fake object store and a Forgejo
-// whose head h2 is green, at noon on 2026-11-03, under a policy where card
-// t1, a large card of demo-app/demo-app, runs the direct track's coder
+// whose head h2 is green and whose fork holds no branch of a card, at noon
+// on 2026-11-03, under a policy where card t1, a large card of
+// demo-app/demo-app, runs the direct track's coder
 // class: 3 sessions, 10 minutes of agent time, task_max_eur 5, floors of
 // 0.30 EUR cheap and 0.60 EUR frontier, and the default pool and card
 // draw. Its last session ran on small, whose recorded opening is two
@@ -42,6 +43,10 @@ func factsAt(hh, mm int) time.Time { return time.Date(2026, 11, 3, hh, mm, 0, 0,
 func newFactsRig(t *testing.T) factsRig {
 	t.Helper()
 	forge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/demo-app/branches/") {
+			http.NotFound(w, r)
+			return
+		}
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/repos/demo-app/demo-app/commits/h2/status" {
 			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -240,7 +245,7 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 		Findings:     []string{idA, idB},
 		FindingTexts: map[string]string{idA: findingA, idB: findingB}, FindingOrder: []string{idA, idB}, ReviewFindings: []string{idA},
 		AuditFindings: []string{idB},
-		LastDrawAt:    &drawn, DrawHead: "h2", DrawChecks: "green", DrawFindings: []string{idA, idB}, Pushed: true,
+		LastDrawAt:    &drawn, DrawHead: "h2", DrawChecks: "green", DrawFindings: []string{idA, idB}, Pushed: true, BranchRead: true,
 		TimeDraw: &DrawFacts{At: factsAt(9, 0), Head: "h1", Checks: "red", Pushed: true},
 		Dependencies: []DepFact{
 			{TaskID: "d1", Issue: 20, Status: "failed", Why: "session error: the pod is gone", Replaced: RetryID("d1")},
@@ -281,6 +286,36 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	}
 }
 
+// The facts read the card's branch on the fork: a branch at c9 whose merge
+// base with main is c1 holds work main lacks, a branch at c9 whose merge
+// base is c9 itself holds none main lacks, no branch holds none, and a
+// compare that fails reads nothing and names its reader.
+func TestTripFactsReadsTheBranch(t *testing.T) {
+	for name, tc := range map[string]struct {
+		branch     string
+		mergeBases map[string]string
+		read       bool
+		head       string
+	}{
+		"a branch ahead of main": {"c9", map[string]string{"c9": "c1"}, true, "c9"},
+		"a branch main holds":    {"c9", map[string]string{"c9": "c9"}, true, ""},
+		"no branch":              {"", nil, true, ""},
+		"a compare that fails":   {"c9", nil, false, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, hub, store := newTestRunner(t, gateTask, newFakeKube(), &fakeObjectStore{})
+			hub.branchHead, hub.mergeBases = tc.branch, tc.mergeBases
+			f, err := r.tripFacts(context.Background(), store.tasks["t1"], "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.BranchRead != tc.read || f.BranchHead != tc.head || slices.Contains(f.Partial, "branch") == tc.read {
+				t.Errorf("branch read %v, head %q, partial %v; want read %v, head %q", f.BranchRead, f.BranchHead, f.Partial, tc.read, tc.head)
+			}
+		})
+	}
+}
+
 // The criteria gate's run on the head is read with its review and its
 // audit: its unmet criterion is one of the findings, its met one none.
 func TestTripFactsReadsTheGatesUnmetCriteria(t *testing.T) {
@@ -304,6 +339,62 @@ func TestTripFactsReadsTheGatesUnmetCriteria(t *testing.T) {
 	slices.Sort(want)
 	if !slices.Equal(got.Findings, want) {
 		t.Fatalf("findings = %v, want the review's, the audit's and the gate's unmet criterion %v", got.Findings, want)
+	}
+}
+
+// A merge conflict stands on the head the newest merge_conflict line
+// names, with that line's refusal: none on a head no line names, none on
+// no head, none on an empty timeline, and none once the pull request's
+// head moved outside the run to another head after it, by the merge
+// gate's line or the synchronize webhook's event.
+func TestStandingConflictIsTheNewestRefusalOnTheHead(t *testing.T) {
+	const conflict = `{"step":"merge_conflict","commit":"aaa","refusal":"X"}` + "\n"
+	one := []byte(conflict + `{"step":"pushed","commit":"bbb"}` + "\n")
+	two := []byte(`{"step":"merge_conflict","commit":"aaa","refusal":"X1"}` + "\n" + `{"step":"merge_conflict","commit":"aaa","refusal":"X2"}` + "\n")
+	webhook := []byte(conflict + `{"step":"event","event":"merge_moved_head","pr":9,"head":"ccc"}` + "\n")
+	gate := []byte(conflict + `{"step":"merge_moved_head","pr":9,"commit":"aaa","head":"ccc","approver":"sebastian"}` + "\n")
+	before := []byte(`{"step":"event","event":"merge_moved_head","pr":9,"head":"ccc"}` + "\n" + conflict)
+	same := []byte(conflict + `{"step":"event","event":"merge_moved_head","pr":9,"head":"aaa"}` + "\n")
+	for _, c := range []struct {
+		name string
+		tl   []byte
+		head string
+		want string
+	}{
+		{"the conflict's head", one, "aaa", "X"},
+		{"the pushed head", one, "bbb", ""},
+		{"no head", one, "", ""},
+		{"two lines on the head", two, "aaa", "X2"},
+		{"no lines", nil, "aaa", ""},
+		{"moved by the webhook", webhook, "aaa", ""},
+		{"the webhook's moved head", webhook, "ccc", ""},
+		{"moved at the merge gate", gate, "aaa", ""},
+		{"moved before the conflict", before, "aaa", "X"},
+		{"moved onto the conflict's head", same, "aaa", "X"},
+	} {
+		if got := standingConflict(c.tl, c.head); got != c.want {
+			t.Errorf("%s: standingConflict = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// The facts of a card whose head Forgejo refused to merge main into hold
+// the refusal; once the pull request is no longer open none stands.
+func TestTripFactsReadTheMergeConflictOnTheHead(t *testing.T) {
+	g := newFactsRig(t)
+	ctx := context.Background()
+	refusal := "the branch conflicts with its base: status 409: merge failed because of conflict"
+	if err := g.tl.Append(ctx, "t1", "merge_conflict", map[string]any{"pr": 9, "commit": "h2", "refusal": refusal}); err != nil {
+		t.Fatal(err)
+	}
+	card := g.store.tasks["t1"]
+	f, err := g.r.tripFacts(ctx, card, "h2", "")
+	if err != nil || f.MergeConflict != refusal {
+		t.Fatalf("facts = %+v, %v; want the conflict %q on h2", f, err, refusal)
+	}
+	card.Status = "merged"
+	if f, err := g.r.tripFacts(ctx, card, "h2", ""); err != nil || f.MergeConflict != "" {
+		t.Fatalf("merged card's conflict = %q, %v; want none", f.MergeConflict, err)
 	}
 }
 

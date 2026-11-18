@@ -4473,6 +4473,18 @@ func TestChatSteerAndComment(t *testing.T) {
 	chatRows(t, r.events, before, "sebastian", commented, steer,
 		factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCommentDeleted, Detail: map[string]any{"comment": int64(1)}})
 	equal(t, "deleted", r.fg.deleted, []string{"/api/v1/repos/sf/code/issues/comments/1"})
+
+	for err, want := range steerRefusals() {
+		r.c.cfg.Steer = func(context.Context, string, string, string) error { return err }
+		before := r.events.count()
+		g.replies = [][]string{{call(1, "steer", `{"task_id":"t-r","text":"Rebase on main first."}`)}, {say("It waits.")}}
+		_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"tell #11 to rebase"}})
+		_, events, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+		equal(t, fmt.Sprintf("the Do it the session refuses with %v", err), events, []string{
+			`tool {"arguments":{"task_id":"t-r","text":"Rebase on main first."},"duration_ms":0,"name":"steer","result":"Refused: ` + want + `"}`,
+			`text {"text":"It waits."}`, `done {}`})
+		chatRows(t, r.events, before, "sebastian")
+	}
 }
 
 // The description the member approves passes the inbound sanitiser, a

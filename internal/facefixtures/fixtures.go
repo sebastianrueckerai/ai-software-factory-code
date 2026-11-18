@@ -510,7 +510,7 @@ var agentSources = []agentSource{
 	{factoryd.SourceSuccessor, func(b *builder, n int64, status string) factoryd.Task {
 		old := b.oldCard()
 		t := b.card(n, status, factoryd.SourceSuccessor, 3*time.Hour,
-			factoryd.SuccessorObjective(old, "\n- review: the heal pass skips a card whose ask was withdrawn", old.PRNumber, same))
+			factoryd.SuccessorObjective(old, "\n- review: the heal pass skips a card whose ask was withdrawn", old.PRNumber, false, same))
 		t.Parent, t.Size, t.Why, t.Summary = old.Parent, old.Size, old.Why, old.Summary
 		return t
 	}, factoryd.BriefFacts{}},

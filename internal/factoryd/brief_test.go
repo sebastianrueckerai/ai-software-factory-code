@@ -15,6 +15,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
@@ -132,6 +133,16 @@ func (f *fakeBriefStore) SetCaseBriefError(ctx context.Context, id int64, e stri
 	for i, c := range f.cases {
 		if c.ID == id {
 			f.cases[i].BriefError = e
+		}
+	}
+	return nil
+}
+
+// SetCaseWake records the wake the writer holds the case's brief to.
+func (f *fakeBriefStore) SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error {
+	for i, c := range f.cases {
+		if c.ID == id {
+			f.cases[i].OwnerRung, f.cases[i].WakeOn, f.cases[i].NextWakeAt = rung, on, at
 		}
 	}
 	return nil
@@ -772,5 +783,125 @@ func TestBriefWriterMakesNoCallToARefusingBudgetUntilItGrows(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("calls %d after the raise, want a second", calls)
+	}
+}
+
+// frozenChat is the gateway's local hold answering every check-in call
+// with the named refusal.
+type frozenChat struct{ until time.Time }
+
+func (c frozenChat) Call(ctx context.Context, taskID, alias string, in CheckinRequest) (CheckinResponse, error) {
+	return CheckinResponse{}, fmt.Errorf("gateway %s: %w", gateway.RefusedProviderLimit,
+		&policy.Refusal{Decision: gateway.RefusedProviderLimit, Reason: "Usage limit reached for 5 hour", Until: c.until})
+}
+
+// TestBriefWakeAtReset is the criterion brief_wakes_at_reset. The retry
+// driver behind 2026-11-14's 46 brief_failed rows was the writer's own
+// loop: BriefWriter.Loop re-ran the pass every tick and BrieflessCases
+// returned the marked case each time, so a call every ten seconds inside
+// the freeze recorded a row whenever the gateway's refusal words differed
+// per call. Today the named refusal sets the case's wake and the pass
+// skips a case whose wake is ahead, so whatever re-drove the brief inside
+// a freeze waits at the wake and the monitor sweep is the retry driver:
+// one row per freeze, the wake at the reset plus the margin, the sweep
+// waking the case then. A check-in inside the same hold records "not
+// run, the class is frozen until <reset>" and raises no flag.
+func TestBriefWakeAtReset(t *testing.T) {
+	g := newMonitorRig(t)
+	ctx := context.Background()
+	reset := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(gateway.HeaderDecision, gateway.RefusedProviderLimit)
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprintf(w, `{"error":{"message":"Usage limit reached for 5 hour"},"reset":%q}`, reset.Format(time.RFC3339))
+	}))
+	defer gw.Close()
+	v := briefVersion(gw.URL)
+	v.Projects["demo"] = policy.ProjectConfig{Repository: "demo-app/demo-app"}
+	if err := g.s.CreateTask(ctx, Task{ID: "t-brief", Kind: "agent", Status: "running", Objective: "x",
+		Repository: "demo-app/demo-app", IssueNumber: 21, Track: policy.TrackDirect, Size: "large", BudgetEUR: 3,
+		RequiredCapabilities: []string{policy.ClassCoder}}); err != nil {
+		t.Fatal(err)
+	}
+	g.filed(t, "t-brief", 21)
+	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t-brief", Repository: "demo-app/demo-app", Kind: CaseOther,
+		StateKey: "stop", Status: CaseAtHuman, Problem: "the stop", Facts: map[string]any{"reason": "the stop"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &BriefWriter{Store: g.s, CardDigest: briefLife, Current: func() policy.Version { return v },
+		Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}}
+	rows := func() (n int, backoff float64) {
+		t.Helper()
+		if err := g.s.db.QueryRowContext(ctx, `SELECT count(*), min((detail->>'backoff_s')::float8)
+			FROM events WHERE kind = $1 AND task_id = $2`, EventBriefFailed, "t-brief").Scan(&n, &backoff); err != nil {
+			t.Fatal(err)
+		}
+		return n, backoff
+	}
+	wake := reset.Add(freezeWakeMargin)
+
+	// one refusal inside the freeze: one row, the wake at the reset
+	if err := w.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n, backoff := rows(); n != 1 || backoff < 3590 || backoff > 3610 {
+		t.Fatalf("brief_failed rows = %d, backoff_s %v; want one row with the seconds to the reset (about 3600)", n, backoff)
+	}
+	if held := caseByID(t, g.s, c.ID); held.OwnerRung != 3 || held.NextWakeAt == nil || !held.NextWakeAt.Equal(wake) {
+		t.Fatalf("the frozen case = rung %d, wake %v; want rung 3 woken at %s, the reset plus %s", held.OwnerRung, held.NextWakeAt, wake, freezeWakeMargin)
+	}
+	if cases, err := g.s.BrieflessCases(ctx, 5); err != nil || len(cases) != 0 {
+		t.Fatalf("BrieflessCases inside the freeze = %v, %v; want none: the pass waits at the case wake", cases, err)
+	}
+	if due, err := g.s.DueCases(ctx, monitorAt, 10); err != nil || len(due) != 0 {
+		t.Fatalf("DueCases before the reset = %v, %v; want none", due, err)
+	}
+
+	// the sweep wakes it at the reset plus the margin, and the writer
+	// takes the case again only then
+	g.m.Now = func() time.Time { return wake }
+	if err := g.m.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if woken := caseByID(t, g.s, c.ID); woken.NextWakeAt != nil || woken.Status != CaseAtHuman {
+		t.Fatalf("the sweep left the frozen case = %+v; want it woken at the human with no wake", woken)
+	}
+	if steps := caseStepsOf(t, g.s, c.ID); len(steps) == 0 || steps[len(steps)-1].Rung != 0 ||
+		steps[len(steps)-1].Found != "the same stop again: the stop" {
+		t.Fatalf("the woken case's steps = %+v; want rung 0's repeat step", steps)
+	}
+	if cases, err := g.s.BrieflessCases(ctx, 5); err != nil || len(cases) != 1 || cases[0].ID != c.ID {
+		t.Fatalf("BrieflessCases after the wake = %v, %v; want the case again", cases, err)
+	}
+
+	// a second refusal of the same freeze records no second row
+	if err := w.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := rows(); n != 1 {
+		t.Fatalf("brief_failed rows = %d after the second pass; want one per freeze, not one per retry", n)
+	}
+	if held := caseByID(t, g.s, c.ID); held.NextWakeAt == nil || !held.NextWakeAt.Equal(wake) {
+		t.Fatalf("the re-frozen case = wake %v; want %s again", held.NextWakeAt, wake)
+	}
+
+	// a check-in inside the same hold records not-run and flags nothing
+	out := new(Runner).runCheckin(ctx, "t-1", "checkin", &CheckInAsk{Moment: CheckInGate, ParentSession: "s-1"},
+		nil, frozenChat{until: reset}, scriptedTools{}, 6, 1.5, 1, 2000, time.Minute)
+	want := CheckinFrozenReason + reset.UTC().Format("15:04") + " UTC"
+	if out.Decision != CheckHandover || out.Record == nil || out.Record.Reason != want {
+		t.Fatalf("the frozen check-in = %+v; want the handover recording %q", out.Record, want)
+	}
+	raw, err := json.Marshal(map[string]any{"step": "checkin", "reason": want, "decision": CheckHandover, "moment": string(CheckInGate)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var l timelineLine
+	if err := json.Unmarshal(raw, &l); err != nil {
+		t.Fatal(err)
+	}
+	if step := checkinStep(redact.New(), DigestStep{}, l); step.refused || step.state == "" {
+		t.Fatalf("the frozen check-in's step = %+v; want no refused mark and a decision, so no flag", step)
 	}
 }

@@ -14,13 +14,18 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // gateHarness scripts the gates: steps records every gate, review,
-// approval and merge call in order.
+// approval and merge call in order. The criteria gate's and the merge's
+// step is recorded as the call starts, so a call stopped while it takes
+// its time reads where it began; a test that sets its own activity
+// started listener records neither.
 type gateHarness struct {
 	*workflowHarness
 	steps        []string
@@ -61,6 +66,7 @@ type gateHarness struct {
 	auditDelay    time.Duration
 	mergeDelay    time.Duration
 	reproDelay    time.Duration
+	criteriaDelay time.Duration
 	policyCommits []string
 	policyPins    []int64
 	started       time.Time
@@ -119,12 +125,11 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 			return g.repro[min(n, len(g.repro))-1], nil
 		})
 	k := 0
-	g.env.OnActivity(ActivityGateCriteria, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
+	g.env.OnActivity(ActivityGateCriteria, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).After(g.criteriaDelay).Return(
+		func(ctx context.Context, taskID string, pr int64, commit, checked string) (CriteriaResult, error) {
 			g.mu.Lock()
 			defer g.mu.Unlock()
 			k++
-			g.steps = append(g.steps, "criteria "+commit)
 			if len(g.criteria) == 0 {
 				return CriteriaResult{}, nil
 			}
@@ -214,10 +219,24 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 				g.merges = append(g.merges, fmt.Sprintf("%d %s %s error", pr, commit, approver))
 				return MergeResult{}, g.mergeErrs[m-1]
 			}
-			g.steps = append(g.steps, "merge")
 			g.merges = append(g.merges, fmt.Sprintf("%d %s %s", pr, commit, approver))
 			return g.merge[min(m, len(g.merge))-1], nil
 		})
+	g.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, args converter.EncodedValues) {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		switch info.ActivityType.Name {
+		case ActivityGateCriteria:
+			var taskID, commit string
+			var pr int64
+			if err := args.Get(&taskID, &pr, &commit); err != nil {
+				panic(err)
+			}
+			g.steps = append(g.steps, "criteria "+commit)
+		case ActivityMerge:
+			g.steps = append(g.steps, "merge")
+		}
+	})
 	g.env.OnActivity(ActivityReportMergeRetriesExhausted, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, pr int64, commit, approver string) error {
 			g.mu.Lock()
@@ -1539,6 +1558,40 @@ func TestWorkflowPressRunsTheGateAgainForItsCriteria(t *testing.T) {
 	}
 	if len(g.mergeMet) != 1 || !slices.Contains(g.mergeMet[0], "the plan's criteria all stand met or waived: size_bound") {
 		t.Fatalf("merge met %q: want the gate's stand riding the merge", g.mergeMet)
+	}
+}
+
+// The successor that carries the integration card's key is that key's
+// card: its press runs the gate again as the card's does. A run from
+// before the change merges on the press with no gate.
+func TestWorkflowSuccessorsPressRunsTheGateAgain(t *testing.T) {
+	for name, tc := range map[string]struct {
+		before bool
+		steps  string
+	}{
+		"current": {false, "policy, repro c1, review c1, criteria c1, approval c1, criteria c1, merge"},
+		"before":  {true, "policy, repro c1, review c1, criteria c1, approval c1, merge"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g, holds := regateHarness(t, []Unjudged{{Gate: []string{"size_bound"}}, {}})
+			g.state.Source, g.state.PlanCard = SourceSuccessor, true
+			if tc.before {
+				g.env.OnGetVersion("successor-is-its-keys-card", workflow.DefaultVersion, versionSuccessorIsItsKeysCard).Return(workflow.DefaultVersion)
+			}
+			g.criteria = []CriteriaResult{{Stand: &CriteriaStand{IDs: []string{"size_bound"}, Open: []string{"size_bound"}}}, {Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
+			g.onSessions(pushed("s1", "c1"))
+			g.onChecks(ChecksResult{State: ChecksSuccess})
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if got := strings.Join(g.steps, ", "); got != tc.steps {
+				t.Fatalf("steps = %v, want %s", got, tc.steps)
+			}
+			if !slices.Equal(g.merges, []string{"9 c1 sebastian"}) || len(*holds) != 0 {
+				t.Fatalf("merges %v, holds %v: want the merge and no hold", g.merges, *holds)
+			}
+		})
 	}
 }
 

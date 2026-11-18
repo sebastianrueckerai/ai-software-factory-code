@@ -107,6 +107,7 @@ func TestRungZeroRowsFireOnTheirFacts(t *testing.T) {
 		want *Resolution
 	}{
 		{"green and approved", CaseSessionCap, head("green", true), &Resolution{Action: ActRouteApproval}},
+		{"green and approved, no longer merging into main", CaseSessionCap, func() CaseFacts { f := head("green", true); f.MergeConflict = "conflict"; return f }(), nil},
 		{"green, not approved", CaseGateStop, head("green", false), nil},
 		{"red", CaseBudgetFloor, head("red", false), &Resolution{Action: ActRerunChecks}},
 		{"red, run again", CaseCheckinShare, func() CaseFacts { f := head("red", false); f.RerunOnHead = true; return f }(), nil},
@@ -326,6 +327,8 @@ func TestRungZeroTakesNothingOnFactsReadPartly(t *testing.T) {
 			case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/demo-app/demo-app/issues/12/comments":
 				w.WriteHeader(http.StatusCreated)
 				fmt.Fprint(w, `{"id": 501}`)
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/factory-agent/demo-app/branches/factory/t1":
+				http.NotFound(w, r)
 			default:
 				fmt.Fprint(w, `[]`)
 			}
@@ -381,5 +384,22 @@ func TestCapAskCountsTheReviewAndAuditFindings(t *testing.T) {
 	f.ReviewFindings, f.AuditFindings = nil, nil
 	if got := FaceOf(c, Facts{CaseFacts: f}).Ask; got != "The card used all 3 sessions. Allow more, or end the card?" {
 		t.Fatalf("the checks' findings alone: ask = %q", got)
+	}
+}
+
+// A stop at the head on a pull request that no longer merges into main
+// says so in what is left, after its open findings; a head with no
+// conflict says nothing of it.
+func TestAStopOnAConflictedHeadSaysWhatFixesIt(t *testing.T) {
+	f := CaseFacts{Kind: CaseSessionCap, Head: "h2", PR: 9, PROpen: true, Attempts: 3, SessionCap: 3, MergeConflict: "the branch conflicts with its base",
+		Findings: []string{"a1"}, AuditFindings: []string{"a1"}, FindingTexts: map[string]string{"a1": "the migration runs outside its transaction"}}
+	c := Case{Kind: CaseSessionCap}
+	want := "1 finding is open. The pull request no longer merges into main. Only a session that merges main into its branch fixes that."
+	if got := FaceOf(c, Facts{CaseFacts: f}).Story.Left; got != want {
+		t.Errorf("left = %q, want %q", got, want)
+	}
+	f.MergeConflict = ""
+	if got := FaceOf(c, Facts{CaseFacts: f}).Story.Left; got != "1 finding is open." {
+		t.Errorf("with no conflict, left = %q, want the finding alone", got)
 	}
 }

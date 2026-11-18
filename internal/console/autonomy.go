@@ -84,7 +84,7 @@ func (c *Console) doSetAutonomy(ctx context.Context, name, state string, queueCa
 		detail["queue_cap"] = queueCap
 	}
 	c.event(context.WithoutCancel(ctx), factoryd.Event{Repository: repo, Kind: factoryd.EventAutonomyChanged,
-		Actor: a.s.user, Via: cmp.Or(a.via, factoryd.ViaChat), Detail: detail})
+		Actor: a.approver(), Via: cmp.Or(a.via, factoryd.ViaChat), Detail: detail})
 	log.Printf("console: %s set %s to %s via %s (%s#%d) in %.1fs", a.s.user, name, state, a.via, c.cfg.InfraRepo, pr, time.Since(start).Seconds())
 	return nil
 }
@@ -623,7 +623,7 @@ func readTextDocument(label string, data []byte, from, to int, find string, rege
 // repository of the project the write belongs to.
 func (c *Console) docWritten(ctx context.Context, a actor, project, path, hash, commit string) {
 	c.event(context.WithoutCancel(ctx), factoryd.Event{Repository: project, Kind: factoryd.EventDocWritten,
-		Actor: a.s.user, Via: a.via, Detail: map[string]any{"path": path, "hash": hash, "commit": commit}})
+		Actor: a.approver(), Via: a.via, Detail: map[string]any{"path": path, "hash": hash, "commit": commit}})
 }
 
 // docEdit is write_doc's change: Old replaced by New in an existing file,

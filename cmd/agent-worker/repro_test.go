@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -150,6 +149,41 @@ func TestReproRefusesAMovedHead(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ws, "repo", "ran")); err == nil {
 		t.Fatal("the command ran on a moved head")
+	}
+}
+
+// A run at a commit of a branch names the commit as its ref: once main has
+// moved on, the commit still fetches and its tree is the one run, while
+// main's ref fetches the new head and reads as moved.
+func TestReproFetchesACommitOfABranchThatMovedOn(t *testing.T) {
+	remote, head := reproRemote(t)
+	work := filepath.Join(t.TempDir(), "work")
+	for _, args := range [][]string{
+		{"clone", "-q", remote, work},
+		{"-C", work, "rm", "-q", "check.sh"},
+		{"-C", work, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "main moves on"},
+		{"-C", work, "push", "-q", "origin", "main"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	reproEnvs(t, remote, head, "sh check.sh")
+	t.Setenv("PR_REF", head)
+	ws := t.TempDir()
+	if code := runReproFetch(nolog, ws); code != 0 {
+		t.Fatalf("fetch exit %d", code)
+	}
+	if got := repro(ws); got != (harness.Repro{Exit: 3, Output: "checking\noops\n"}) {
+		t.Fatalf("repro at the commit = %+v, want check.sh's exit 3", got)
+	}
+	t.Setenv("PR_REF", "refs/heads/main")
+	ws = t.TempDir()
+	if code := runReproFetch(nolog, ws); code != 0 {
+		t.Fatalf("fetch exit %d", code)
+	}
+	if got := repro(ws); got.Exit != -1 || !strings.Contains(got.Output, "refs/heads/main is at") {
+		t.Fatalf("repro at main's ref = %+v, want the moved head refused", got)
 	}
 }
 
@@ -561,12 +595,13 @@ func TestReproFetchOnTheWayToForgejoIsTransient(t *testing.T) {
 
 // proofsCheck is the check script of the proofs tests: it prints its
 // arguments, the paths it got, whether it sees the bearer's hash and
-// whether the message port answers, then writes a report naming the test
-// (the suite's when none) and an artifact; suite ./none exits 2 first.
+// whether the message port at PROOFS_TEST_PORT answers, then writes a
+// report naming the test (the suite's when none) and an artifact; suite
+// ./none exits 2 first.
 const proofsCheck = `printf 'argc=%s %s\n' "$#" "$*"
 printf 'report=%s\nartifacts=%s\n' "$CHECK_REPORT" "$CHECK_ARTIFACTS"
 printf 'hash=%s\n' "${MESSAGE_TOKEN_SHA256-unset}"
-if (exec 3<>/dev/tcp/127.0.0.1/8091) 2>/dev/null; then echo port=open; else echo port=closed; fi
+if (exec 3<>"/dev/tcp/127.0.0.1/$PROOFS_TEST_PORT") 2>/dev/null; then echo port=open; else echo port=closed; fi
 [ -d "$CHECK_ARTIFACTS" ] || exit 9
 [ "$2" = ./none ] && exit 2
 printf '<testsuites><testcase name="%s"></testcase></testsuites>' "${3:-suite}" >"$CHECK_REPORT"
@@ -699,6 +734,108 @@ func TestProofsRunCheckTestPerEntry(t *testing.T) {
 	}
 	if len(paths) != 6 {
 		t.Errorf("paths = %v, want six distinct", paths)
+	}
+}
+
+// A test its suite's directory declares no more runs in the one directory
+// that declares it, which the run names, a subtest by its whole name; two
+// that declare it keep the suite and are named. A test in place, an entry
+// with a file and a suite of more than one directory run as named. The
+// search reads what go reads: no testdata, vendor, dot or underscore
+// directory, no link and no file past maxTestFile.
+func TestProofsRunAMovedTestWhereItWent(t *testing.T) {
+	declares := func(pkg string) string {
+		return "package " + pkg + "\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) {}\n"
+	}
+	tree := func(t *testing.T, repo string, files map[string]string) {
+		t.Helper()
+		for name, content := range files {
+			if err := writeRegular(repo, name, content); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	movedToB := map[string]string{"a/a.go": "package a\n", "b/b_test.go": declares("b")}
+	for name, tc := range map[string]struct {
+		setup    func(t *testing.T, repo string)
+		proof    harness.Proof
+		first    string
+		suite    string
+		declared []string
+	}{
+		"moved to one directory": {
+			setup: func(t *testing.T, repo string) { tree(t, repo, movedToB) },
+			proof: harness.Proof{ID: "x", Suite: "./a", Name: "TestX"},
+			first: "argc=3 test ./b TestX", suite: "./b",
+		},
+		"its package gone": {
+			setup: func(t *testing.T, repo string) { tree(t, repo, map[string]string{"b/b_test.go": declares("b")}) },
+			proof: harness.Proof{ID: "x", Suite: "./a", Name: "TestX"},
+			first: "argc=3 test ./b TestX", suite: "./b",
+		},
+		"a subtest": {
+			setup: func(t *testing.T, repo string) { tree(t, repo, movedToB) },
+			proof: harness.Proof{ID: "x", Suite: "./a", Name: "TestX/sub"},
+			first: "argc=3 test ./b TestX/sub", suite: "./b",
+		},
+		"declared in two directories": {
+			setup: func(t *testing.T, repo string) {
+				tree(t, repo, map[string]string{"a/a.go": "package a\n", "b/b_test.go": declares("b"), "c/c_test.go": declares("c")})
+			},
+			proof: harness.Proof{ID: "x", Suite: "./a", Name: "TestX"},
+			first: "argc=3 test ./a TestX", declared: []string{"./b", "./c"},
+		},
+		"in place": {
+			setup: func(t *testing.T, repo string) {
+				tree(t, repo, map[string]string{"a/a_test.go": declares("a"), "b/b_test.go": declares("b"), "c/c_test.go": declares("c")})
+			},
+			proof: harness.Proof{ID: "x", Suite: "./a", Name: "TestX"},
+			first: "argc=3 test ./a TestX",
+		},
+		"an entry with a file": {
+			setup: func(t *testing.T, repo string) { tree(t, repo, movedToB) },
+			proof: harness.Proof{ID: "x", Suite: "./a", Name: "TestX", File: &harness.ProofFile{Path: "a/x_test.go", Content: "package a\n"}},
+			first: "argc=3 test ./a TestX",
+		},
+		"every package": {
+			setup: func(t *testing.T, repo string) { tree(t, repo, movedToB) },
+			proof: harness.Proof{ID: "x", Suite: "./...", Name: "TestX"},
+			first: "argc=3 test ./... TestX",
+		},
+		"past what go reads": {
+			setup: func(t *testing.T, repo string) {
+				tree(t, repo, movedToB)
+				tree(t, repo, map[string]string{
+					"testdata/t_test.go": declares("t"), "vendor/v/v_test.go": declares("v"), ".hidden/h_test.go": declares("h"), "_old/o_test.go": declares("o"),
+					"d/d_test.go": declares("d") + strings.Repeat("\n", maxTestFile),
+					"e/e_test.go": "package e\n\n// func TestX(t *testing.T) went to b\nfunc TestXY(t *testing.T) {}\n",
+				})
+				outside := t.TempDir()
+				if err := os.WriteFile(filepath.Join(outside, "l_test.go"), []byte(declares("l")), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, filepath.Join(repo, "l")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(filepath.Join(repo, "g"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(outside, "l_test.go"), filepath.Join(repo, "g", "g_test.go")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			proof: harness.Proof{ID: "x", Suite: "./a", Name: "TestX"},
+			first: "argc=3 test ./b TestX", suite: "./b",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ws, repo := proofsWorkspace(t, proofsCheck)
+			tc.setup(t, repo)
+			r := proofRuns(t, ws, tc.proof)[0]
+			if first := strings.SplitN(r.Output, "\n", 2)[0]; r.Exit != 0 || !r.Started || first != tc.first || r.Suite != tc.suite || !slices.Equal(r.Declared, tc.declared) {
+				t.Errorf("run = %+v, want exit 0, the first line %q, the suite %q and declared %q", r, tc.first, tc.suite, tc.declared)
+			}
+		})
 	}
 }
 
@@ -1060,22 +1197,29 @@ func TestLoadProofsEnv(t *testing.T) {
 	}
 }
 
-// messagePortFree skips a test that binds the worker's one fixed message
-// port while something holds it, as inside a live worker pod.
-func messagePortFree(t *testing.T) {
+// loopbackPort hands servePort a listener on a free loopback port in place
+// of the worker's fixed message port, for t's one servePort, and answers
+// its address.
+func loopbackPort(t *testing.T) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort))
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Skip("the worker's message port is held: " + err.Error())
+		t.Fatal(err)
 	}
-	ln.Close()
+	old := listenPort
+	listenPort = func() (net.Listener, error) { return ln, nil }
+	t.Cleanup(func() {
+		listenPort = old
+		ln.Close()
+	})
+	return ln.Addr().String()
 }
 
-// postProofs posts body to the proofs mode's port with auth, again until
-// the port answers within five seconds: its status, 0 for none.
-func postProofs(auth, body string) int {
+// postProofs posts body to the proofs mode's port at addr with auth, again
+// until the port answers within five seconds: its status, 0 for none.
+func postProofs(addr, auth, body string) int {
 	for deadline := time.Now().Add(5 * time.Second); ; {
-		req, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+strconv.Itoa(harness.MessagePort)+"/proofs", strings.NewReader(body))
+		req, _ := http.NewRequest(http.MethodPost, "http://"+addr+"/proofs", strings.NewReader(body))
 		req.Header.Set("Authorization", auth)
 		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
@@ -1102,20 +1246,22 @@ func sandboxEnvs(t *testing.T) {
 // and the wait goes on; the list posted runs. The port is closed by the
 // time a check runs, and no check sees the bearer's hash.
 func TestProofsTakeTheListOverTheMessagePort(t *testing.T) {
-	messagePortFree(t)
+	addr := loopbackPort(t)
 	ws, _ := proofsWorkspace(t, proofsCheck)
 	proofsEnvs(t)
 	sandboxEnvs(t)
 	t.Setenv("MESSAGE_TOKEN_SHA256", testMessageHash)
+	_, port, _ := net.SplitHostPort(addr)
+	t.Setenv("PROOFS_TEST_PORT", port)
 	old := proofsListWait
 	t.Cleanup(func() { proofsListWait = old })
 	proofsListWait = 10 * time.Second
 	answers := make(chan []int, 1)
 	go func() {
 		answers <- []int{
-			postProofs("", `[{"id":"a","suite":"./a","name":"TestA"}]`),
-			postProofs("Bearer session-secret", "not json"),
-			postProofs("Bearer session-secret", `[{"id":"a","suite":"./a","name":"TestA"}]`),
+			postProofs(addr, "", `[{"id":"a","suite":"./a","name":"TestA"}]`),
+			postProofs(addr, "Bearer session-secret", "not json"),
+			postProofs(addr, "Bearer session-secret", `[{"id":"a","suite":"./a","name":"TestA"}]`),
 		}
 	}()
 	var got emitted
@@ -1142,7 +1288,7 @@ func TestProofsTakeTheListOverTheMessagePort(t *testing.T) {
 // envelope's error, before the egress probe and any check, and frees the
 // port; a bearer's hash it cannot read ends it at once.
 func TestProofsEndWhenNoListArrives(t *testing.T) {
-	messagePortFree(t)
+	addr := loopbackPort(t)
 	ws, repo := proofsWorkspace(t, "touch ran")
 	proofsEnvs(t)
 	old := proofsListWait
@@ -1168,7 +1314,7 @@ func TestProofsEndWhenNoListArrives(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(repo, "ran")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the check ran: %v", err)
 	}
-	ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort))
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatalf("the port is still held: %v", err)
 	}

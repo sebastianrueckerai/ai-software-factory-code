@@ -128,22 +128,3 @@ func ParseProviderReset(h http.Header, body []byte, entry *policy.ProviderLimit)
 	}
 	return time.Time{}, false
 }
-
-// providerLimitEntry resolves the provider_limits entry a call reads: the
-// class from the task's classes, its provider from policy. The first
-// class that names a provider wins.
-func providerLimitEntry(doc *policy.Document, task Task) (class string, entry *policy.ProviderLimit) {
-	if doc == nil {
-		return "", nil
-	}
-	for _, name := range task.Classes {
-		c, ok := doc.Classes[name]
-		if !ok || c.Provider == "" {
-			continue
-		}
-		if e, ok := doc.ProviderLimits[c.Provider]; ok {
-			return name, &e
-		}
-	}
-	return "", nil
-}

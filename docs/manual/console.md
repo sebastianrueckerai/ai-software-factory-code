@@ -339,7 +339,20 @@ decimals: a task's model calls cost fractions of a cent.
   and events stay the woken human's, decided by the agent, and so do the
   cards it files (the intake reads the author of an issue `factory-chat`
   posted from the console's `card_filed` row; an issue with none is no
-  card) and the cards of a plan it files. A filing whose `card_filed`
+  card) and the cards of a plan it files. What it hands factoryd as its
+  own act, a rung 2 answer through Act, a steer, a retry, a close, a
+  criteria grant, a plan's close, a routine's skip or an analysis among
+  them, names `factory-chat`, never the woken human, so no record reads as
+  the human's, and a card's digest names `factory-chat` on a row the
+  console wrote with `decider: agent`. Rung 2 restarts no plan with open
+  criteria, nor one whose count could not be read: the restart's close
+  would waive them, so it hands the restart up instead. Settling a plan's
+  criteria by word is the human's: rung 2 takes no verdict on a
+  criterion (met, not met or a waiver), no confirmation of the delivered
+  cards and no denial of a criteria request. Its statement lists each as
+  not offered, Act refuses each with the hand-up, and factoryd's own
+  decision functions refuse anyone but a person. Its grant of one more
+  bounded card, which waives nothing, stays its own. A filing whose `card_filed`
   row cannot be written is closed with a comment and refused, naming the
   issue. Its comments, and so its answers to escalations, are
   `factory-chat`'s: the agent reads such an answer as the project agent's,
@@ -381,7 +394,11 @@ decimals: a task's model calls cost fractions of a cent.
   button too; a failed card's close ends it `closed`, with an issue or without, and
   Close shows on every failed card; a done plan whose later rounds are still to plan
   shows Close too, and its close ends it `closed`: no later round starts, and a
-  card's open case ends with the close as the human's answer), `edit` its brief: its title or body, which make the task's objective, and its why
+  card's open case ends with the close as the human's answer; the close of a
+  held card or of a plan at rest acts as the human only on a line they typed
+  in that turn, and the close of a plan whose criteria stand open, which
+  waives them, is a proposal at every autonomy level that only the human's
+  press runs), `edit` its brief: its title or body, which make the task's objective, and its why
   line and summary, which the next session's brief reads; the brief passes
   `factoryd.CheckBrief` first and its refusals come back whole (the drawer's Edit the brief form too), `grant_session` grants a card at a cap what
   the cap asks for, is refused on a card at no cap (“Allow more sessions”
@@ -389,7 +406,15 @@ decimals: a task's model calls cost fractions of a cent.
   question, and `set_dependency` adds or removes a dependency of a card that has
   not started, in the store and on the issues as the bot. An added
   dependency joins two cards of one plan; a card of no plan is a group of
-  one, and a refusal names the fitting action. `set_pool` sets the money
+  one, and the refusal of an edge across two names the fitting action: a
+  hold with the other card as its release card. `hold_card` holds a card
+  that has not started, with a reason and an optional release card of any
+  plan of the project, not a plan itself and not one that waits on the
+  held card, and `release_hold` ends a hold; both run only on a
+  line the human typed in that turn, or on their press, and the drawer's
+  Hold and Release do the same. A held card's face carries its hold in
+  the waiting chip, or in the blocked chip once its release card ended
+  failed or closed or became a plan. `set_pool` sets the money
   of the project's escalation pool, or tops up the money its project file
   already sets, as `escalation.pool.eur` written through a pull request on
   that file. The OK is asked for it at every autonomy level. The
@@ -399,7 +424,7 @@ decimals: a task's model calls cost fractions of a cent.
   the project file, and 30 sessions, 30 hours and 60 EUR stand where
   neither does. The board's pool cell and the chat's status line read
   what the cards drew against it, and say overdrawn once a part is past
-  its pool. Past it, only the human draws more until the month turns.
+  its pool. Past it, only the human draws more of that part until the month turns.
 
 ## Projects (task 65)
 

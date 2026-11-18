@@ -143,7 +143,11 @@ func TestActAsksThePlanAnswerGuard(t *testing.T) {
 		if c.noRevision {
 			delete(g.store.plans, "t1")
 		}
-		_, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: k.ID, By: "factory-agent", Rung: c.rung, Res: Resolution{Action: ActNote, Note: "x"}})
+		by := ChatUser
+		if c.rung != 2 {
+			by = "factory-agent"
+		}
+		_, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: k.ID, By: by, Rung: c.rung, Res: Resolution{Action: ActNote, Note: "x"}})
 		steps := g.store.caseSteps[k.ID]
 		if c.want == "" {
 			if err != nil || len(steps) != 1 || steps[0].Rung != 2 || g.store.cases[len(g.store.cases)-1].Status != CaseAtHuman {
@@ -170,10 +174,10 @@ func TestActRefusesAnAgentsReplanOffMain(t *testing.T) {
 		rung               int
 		attach             bool
 	}{
-		{"rung 2 at manual", policy.AutonomyManual, "factory-agent", 2, true},
-		{"rung 2 at assisted", policy.AutonomyAssisted, "factory-agent", 2, true},
-		{"rung 2 at autonomous", policy.AutonomyAutonomous, "factory-agent", 2, true},
-		{"rung 2 at full auto", policy.AutonomyFullAuto, "factory-agent", 2, true},
+		{"rung 2 at manual", policy.AutonomyManual, ChatUser, 2, true},
+		{"rung 2 at assisted", policy.AutonomyAssisted, ChatUser, 2, true},
+		{"rung 2 at autonomous", policy.AutonomyAutonomous, ChatUser, 2, true},
+		{"rung 2 at full auto", policy.AutonomyFullAuto, ChatUser, 2, true},
 	} {
 		g, k := planAskRig(t, c.autonomy, nil)
 		g.store.cases[len(g.store.cases)-1].Kind = CaseSessionCap

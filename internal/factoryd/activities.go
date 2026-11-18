@@ -467,8 +467,8 @@ type SuccessorInput struct {
 }
 
 // SourceSuccessor is a card a stuck card closed into, carrying the patch
-// and the findings: it starts from main's tip, or from the old card's
-// branch when that holds the old card's work over its line bound.
+// and the findings: it continues the old card's branch, or starts from
+// main's tip when the old card has none.
 const SourceSuccessor = "successor"
 
 // successorFindings heads the findings a successor's objective carries.
@@ -477,8 +477,9 @@ const successorFindings = "Findings so far:"
 // SuccessorObjective is the objective of the successor of card old: old's
 // title, its text opening with "Continues #N." (ContinuesBody), then the
 // findings so far (findings, "\n- " lines), the pull request pr it
-// carries, old's size and its budget, masked by mask.
-func SuccessorObjective(old Task, findings string, pr int64, mask func(string) string) string {
+// carries, old's size and its budget, and with onBranch the line that it
+// starts from old's work on its branch (workLine), masked by mask.
+func SuccessorObjective(old Task, findings string, pr int64, onBranch bool, mask func(string) string) string {
 	var lines []string
 	if findings != "" {
 		lines = append(lines, successorFindings+findings)
@@ -490,6 +491,9 @@ func SuccessorObjective(old Task, findings string, pr int64, mask func(string) s
 		lines = append(lines, "Size: "+old.Size)
 	}
 	lines = append(lines, fmt.Sprintf("Budget: %s EUR", textutil.EUR(old.BudgetEUR)))
+	if onBranch {
+		lines = append(lines, workLine(old))
+	}
 	return IssueObjective(CardTitle(old), ContinuesBody(old)) + "\n\n" + mask(strings.Join(lines, "\n"))
 }
 
@@ -541,13 +545,17 @@ func successorMarker(id string) string {
 // Successor files the successor of the stuck card in (task 6): a card of
 // the same objective with the findings so far, the carried pull request
 // and the card's size and budget, queued on the direct track under the
-// work bound. Its first session starts from main's tip, with no base of
-// its own, unless the findings' first line, factoryd's note, says the old
-// card's work over its line bound is an interim commit on its branch: then
-// the successor continues that branch with the old card's base. The row
-// lands first, with the old card's dependencies and its dependents, and its
-// issue after, so a filing that stops part way runs again to the same one
-// card: the row's identity holds the card and the marker holds the issue.
+// work bound; a plan card's successor carries its key and the revision it
+// ran against in its plan. It continues the old card's branch with the old
+// card's base, as a plan card that goes on from another does, so its first
+// session starts at that head and its clone holds the work: an interim
+// commit the line bound refused, or work the old card took on through its
+// from. An old card with no branch leaves it to start from main's tip. A
+// successor that carries work, a pull request or a branch, keeps the old
+// card's line raise. The row lands first, with the old card's dependencies
+// and its dependents, and its issue after, so a filing that stops part way
+// runs again to the same one card: the row's identity holds the card and
+// the marker holds the issue.
 func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, error) {
 	old, repo, err := r.task(ctx, in.TaskID)
 	if err != nil {
@@ -566,20 +574,13 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		if !ok {
 			return "", errNoTrack(p)
 		}
-		// work an end push the line bound refused sits on the old card's
-		// branch as an interim commit: the successor continues that branch,
-		// as a plan card that goes on from another does, so its first session
-		// starts at that head and its clone holds the work
-		head, err := "", error(nil)
-		if strings.HasPrefix(in.Findings, "\n- "+overBoundNote) {
-			head, err = r.ContinueBranch(ctx, old, Task{ID: SuccessorID(old.ID)})
-			if err != nil && !errors.Is(err, ErrNoBranch) {
-				return "", err
-			}
+		head, err := r.ContinueBranch(ctx, old, Task{ID: SuccessorID(old.ID)})
+		if err != nil && !errors.Is(err, ErrNoBranch) {
+			return "", err
 		}
 		if t, err = fileEntry(p, Task{ID: SuccessorID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass,
-			BudgetEUR: old.BudgetEUR, Size: old.Size, Objective: SuccessorObjective(old, in.Findings, pr, func(s string) string { return r.untrusted(old, s) }),
-			Repository: old.Repository, Source: SourceSuccessor, Parent: old.Parent, PlanKey: old.PlanKey, Rung: old.Rung,
+			BudgetEUR: old.BudgetEUR, Size: old.Size, Objective: SuccessorObjective(old, in.Findings, pr, head != "", func(s string) string { return r.untrusted(old, s) }),
+			Repository: old.Repository, Source: SourceSuccessor, Parent: old.Parent, PlanKey: old.PlanKey, PlanRevision: old.PlanRevision, Rung: old.Rung,
 			Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter, CarryPR: pr, ToolImage: old.ToolImage}); err != nil {
 			return "", err
 		}
@@ -591,6 +592,9 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		t.Process = old.Process
 		if head != "" {
 			t.SHA = old.SHA
+		}
+		if pr > 0 || head != "" {
+			t.Usage.ExtraLines = old.Usage.ExtraLines
 		}
 		if err := r.store.CreateSuccessor(ctx, old.ID, t); err != nil {
 			return "", err
@@ -621,6 +625,7 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 			return "", fmt.Errorf("the successor of %s: link its issue #%d: %w", old.ID, t.IssueNumber, err)
 		}
 		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": r.forgejo.BotUser, "issue": t.IssueNumber, "successor_of": old.ID, "track": t.Track, "budget_eur": t.BudgetEUR})
+		r.recordInherited(ctx, old, t)
 	}
 	r.showTakeOver(ctx, old, t)
 	if err := r.cfg.Workflows.Start(ctx, t.ID); err != nil {
@@ -662,7 +667,17 @@ func (r *Runner) personAnswered(ctx context.Context, id string) bool {
 		return false
 	}
 	i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventQuestionAnswered || e.Kind == EventSessionGranted })
-	return i >= 0 && events[i].Detail["decider"] != "agent" && isPerson(events[i].Actor)
+	return i >= 0 && isPerson(eventActor(events[i]))
+}
+
+// eventActor is who acted in row e: the console writes the project
+// agent's own decision in a human's turn or a wake under that human's
+// login with decider agent, and that row's actor is the chat user.
+func eventActor(e Event) string {
+	if e.Detail["decider"] == "agent" {
+		return ChatUser
+	}
+	return e.Actor
 }
 
 // capRefusals open the card of a task whose attempt the day's, the
@@ -1054,7 +1069,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, named("plan card", err)
 	case planned:
 		s.cardRole, s.directories = pc.Role, pc.Directories
-	case t.Source == SourcePlan && t.Parent != "":
+	case t.PlanCard():
 		s.cardRole = RoleFeature
 	}
 	opened, err := r.openedProofs(ctx, t, plan)
@@ -1078,9 +1093,10 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	// pull/<n>, and the session's facts say so, because the sandbox holds
 	// no git credential to fetch it mid-session
 	s.pull = t.CarryPR
-	// a plan card's first session pins the revision it runs against
-	// (piece 10); the merge refuses a card the plan has since passed
-	if t.Source == SourcePlan && t.Parent != "" && t.PlanRevision == 0 {
+	// a plan card's first session, its successor's too, pins the revision
+	// it runs against (piece 10); the merge refuses a card the plan has
+	// since passed
+	if t.PlanCard() && t.PlanRevision == 0 {
 		rev, ok, err := r.store.PlanRevision(ctx, t.Parent, 0)
 		if err != nil {
 			return SessionResult{}, named("plan revision", err)
@@ -1101,7 +1117,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	// a plan's work its first revert took off main is on its salvage
 	// branch, which a card that lands it again applies from
-	if t.Source == SourcePlan && t.Parent != "" {
+	if t.PlanCard() {
 		pair, err := r.salvagePair(ctx, repo, t.Parent)
 		if err != nil {
 			return SessionResult{}, named("salvage branch", err)
@@ -1910,8 +1926,13 @@ func (r *Runner) RecordNotRun(ctx context.Context, taskID, kind string, pr int64
 
 // ProviderWait records that the task waits w.Backoff on the model
 // provider; its schedule puts the task in gate provider (activityGates).
+// A named limit's words ride the row, for the face and the life to read.
 func (r *Runner) ProviderWait(ctx context.Context, taskID string, w ProviderWait) error {
-	return r.timeline.Append(ctx, taskID, StepProviderRefused, map[string]any{"status": w.Status, "reason": w.Reason, "backoff_s": int(w.Backoff.Seconds())})
+	detail := map[string]any{"status": w.Status, "reason": w.Reason, "backoff_s": int(w.Backoff.Seconds())}
+	if w.Words != "" {
+		detail["words"] = w.Words
+	}
+	return r.timeline.Append(ctx, taskID, StepProviderRefused, detail)
 }
 
 // finishClosesIssue reports whether Finish closes the issue of card t as
@@ -1936,8 +1957,8 @@ func earliest(a, b time.Time) time.Time {
 
 // sessionDeadline is a session's overall deadline: the earlier of
 // activityDeadline (with sessionGrace to record the outcome after) and now
-// plus agentTime, the task's resolved agent time (SessionInput.AgentTime,
-// or the pinned policy's limits when the task carries none).
+// plus agentTime, the card's agent time (SessionInput.AgentTime, or the
+// pinned policy's limits when the input carries none).
 func sessionDeadline(activityDeadline time.Time, agentTime time.Duration) time.Time {
 	return earliest(activityDeadline.Add(-sessionGrace), time.Now().Add(agentTime))
 }
@@ -2217,7 +2238,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		return RunState{}, err
 	}
 	st := RunState{Status: t.Status, Usage: t.Usage, Size: t.Size, Standing: t.Standing(), Report: t.Report(), Stronger: t.Source == SourceScreening,
-		Roll: t.Source == SourceRoll, FactoryPR: factoryPRSources(t.Source), Source: t.Source}
+		Roll: t.Source == SourceRoll, FactoryPR: factoryPRSources(t.Source), Source: t.Source, PlanCard: t.PlanCard()}
 	if t.Status == "closing" {
 		st.ClosingFinal, st.ClosingReason = t.ClosingFinal, t.ClosingReason
 	}

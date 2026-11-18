@@ -76,7 +76,7 @@ func (w *writeSeams) wire(cfg *console.Config) {
 		w.log("criterion %s %s %s by %s: %s", id, cid, verdict, by, reason)
 		return nil
 	}
-	cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
 	cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, bool, error) {
 		w.log("close plan %s by %s: %s", id, by, note)
 		return 0, factoryd.PlanCloseWords(by, note, false), false, nil
@@ -96,6 +96,14 @@ func (w *writeSeams) wire(cfg *console.Config) {
 	cfg.CloseCard = func(_ context.Context, id, by string) error {
 		w.log("close %s by %s", id, by)
 		return nil
+	}
+	cfg.HoldCard = func(_ context.Context, id, release, reason, by string) (bool, error) {
+		w.log("hold %s on %q by %s: %s", id, release, by, reason)
+		return true, nil
+	}
+	cfg.ReleaseCardHold = func(_ context.Context, id string) (bool, error) {
+		w.log("release the hold of %s", id)
+		return true, nil
 	}
 	cfg.RequestImage = func(_ context.Context, repository, tool, need, image, by string, _ func(string) error) (factoryd.ImageAsk, error) {
 		w.log("image %s %s for %s by %s", repository, tool, need, by)

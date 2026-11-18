@@ -251,7 +251,7 @@ func TestRestartedPlanCarriesTheBrief(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-br", Kind: "agent", Status: "done", Track: policy.TrackPlan,
 		Repository: "linkshort/linkshort", IssueNumber: 30, Objective: "Build the stats\n\nCount the hits.", Why: acceptedBrief.Why, Summary: acceptedBrief.Summary}})
 	r.tasks.mu.Unlock()
-	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
 	r.c.cfg.CloseHeldPlan = func(_ context.Context, _, by, note string, _ bool) (int, string, bool, error) {
 		return 0, factoryd.PlanCloseWords(by, note, false), false, nil
 	}

@@ -766,7 +766,9 @@ func TestSessionStartFailureLeavesAResult(t *testing.T) {
 // an earlier session pushed, which stays the parent. The commit's trailers
 // name the agent's role, the task, the session and the issue author
 // behind it (roadmap 41), as git reads them back; a trailer the agent
-// wrote into its own commit is gone.
+// wrote into its own commit is gone. An agent that orphaned its history is
+// refused with the reset that puts its files back on the start, and after
+// that reset its work lands.
 func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -807,6 +809,9 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 		agent       func(dir string)
 		files       string // the pushed tree's files; "" = nothing pushed
 		startWip    bool   // the start is an interim push's commit
+		// refused: the first push is refused so, and the push after the
+		// refusal's action, git reset --soft onto the start, lands files
+		refused string
 	}{
 		{name: "no changes", start: sha, agent: func(string) {}},
 		{name: "agent committed", start: sha, agent: agentCommits, files: "a.txt\nb.txt"},
@@ -816,7 +821,7 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 		}},
 		{name: "resumed from an interim head and nothing changed", start: wip, startWip: true, agent: func(string) {}, files: "wip.txt"},
 		{name: "resumed", start: wip, agent: agentCommits, files: "a.txt\nb.txt\nwip.txt"},
-		{name: "agent orphaned its history", start: wip, files: "a.txt\nb.txt\nwip.txt", agent: func(dir string) {
+		{name: "agent orphaned its history", start: wip, files: "a.txt\nb.txt\nwip.txt", refused: "refusing to push: your branch shares no history with main", agent: func(dir string) {
 			run("-C", dir, "checkout", "-q", "--orphan", "other")
 			agentCommits(dir)
 			run("-C", dir, "branch", "-q", "-D", "factory/agent-orphaned-its-history")
@@ -837,6 +842,13 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 			tc.agent(dir)
 
 			commit, err := commitAndPush(dir, e, base, mainHead, func() error { return nil }, fixedToken("t"))
+			if tc.refused != "" {
+				if err == nil || !strings.HasPrefix(err.Error(), tc.refused) || !strings.Contains(err.Error(), "`git reset --soft "+tc.start[:7]+"`") {
+					t.Fatalf("commitAndPush = %q, %v; want %q naming the reset onto the start", commit, err, tc.refused)
+				}
+				run("-C", dir, "reset", "-q", "--soft", tc.start[:7])
+				commit, err = commitAndPush(dir, e, base, mainHead, func() error { return nil }, fixedToken("t"))
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -991,6 +1003,107 @@ func TestCommitAndPushKeepsPulledMainOutOfTheChange(t *testing.T) {
 			}
 			if got := run("-C", fork, "diff", "--name-only", m1, commit); got != tc.diff {
 				t.Fatalf("change against main = %q, want %q", got, tc.diff)
+			}
+		})
+	}
+}
+
+// seedResetBehindTheStart seeds a session whose start s merges the card's
+// commit c1 (task's edit on m0) with main's m1 (mainEdit's on m0), the sync a
+// predecessor's push leaves, keeping the card's side where both edit a file:
+// the fork holds branch at s, the remote's main is m1, and the session's
+// clone is prepared at s with its agent reset to c1, behind the sync. m0
+// holds a.txt "a\n" and b.txt "b\n". m1 is the clone's main, mainHead.
+func seedResetBehindTheStart(t *testing.T, branch string, task, mainEdit func(dir string)) (dir string, e workerEnv, s, m1 string) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	run := func(args ...string) string { return gitRun(t, args...) }
+	seed := t.TempDir()
+	commit := func(args ...string) string {
+		run("-C", seed, "add", "-A")
+		run(append([]string{"-C", seed, "-c", "user.name=H", "-c", "user.email=h@h"}, args...)...)
+		return run("-C", seed, "rev-parse", "HEAD")
+	}
+	run("init", "-q", "-b", "main", seed)
+	os.WriteFile(filepath.Join(seed, "a.txt"), []byte("a\n"), 0o644)
+	os.WriteFile(filepath.Join(seed, "b.txt"), []byte("b\n"), 0o644)
+	commit("commit", "-q", "-m", "m0")
+	run("-C", seed, "checkout", "-q", "-b", "task")
+	task(seed)
+	c1 := commit("commit", "-q", "-m", "the card's work")
+	run("-C", seed, "checkout", "-q", "main")
+	mainEdit(seed)
+	m1 = commit("commit", "-q", "-m", "main moves on")
+	run("-C", seed, "checkout", "-q", "task")
+	s = commit("merge", "-q", "--no-edit", "-X", "ours", "main")
+	remote, fork := filepath.Join(t.TempDir(), "remote.git"), filepath.Join(t.TempDir(), "fork.git")
+	run("init", "-q", "--bare", "-b", "main", remote)
+	run("init", "-q", "--bare", fork)
+	run("-C", seed, "push", "-q", remote, "main")
+	run("-C", seed, "push", "-q", fork, s+":refs/heads/"+branch)
+
+	e = workerEnv{taskID: "t1", repoSHA: s, branch: branch, repoURL: remote, pushURL: fork}
+	dir = filepath.Join(t.TempDir(), "repo")
+	if err := cloneBase(e, dir); err != nil {
+		t.Fatal(err)
+	}
+	e.repoURL = ""
+	base, mainHead, err := prepareRepo(dir, e)
+	if err != nil || base != s || mainHead != m1 {
+		t.Fatalf("prepareRepo = %s, %s, %v; want the start %s and main %s", base, mainHead, err, s, m1)
+	}
+	run("-C", dir, "reset", "-q", "--hard", c1)
+	return dir, e, s, m1
+}
+
+// An agent that resets its HEAD behind the session's start, onto the card's
+// commit before the start's sync with main, holds files without main's
+// commits the start already holds. The pushed commit stays on the start, so
+// its tree is the start's main content plus the agent's own change: main's
+// lines are not reverted, and the bound measures the card's lines alone, so
+// a small revert, 4 lines against main without the sync (own.txt's 2,
+// a.txt's 2), does not pass the bound unseen, and a large one, 87 (own.txt's
+// 6, a.txt's 81), does not trip it. An agent that adds nothing past the
+// reset has nothing to push.
+func TestCommitAndPushRestoresMainAnAgentResetBehindTheStart(t *testing.T) {
+	lines := func(n int, word string) string { return strings.Repeat(word+"\n", n) }
+	for _, tc := range []struct {
+		name      string
+		own, main string // own.txt the card adds, a.txt main's m1 writes
+		more      string // what the agent appends to own.txt after its reset
+		bound     int
+	}{
+		{name: "a revert within the bound", own: "own\n", main: "a2\n", more: "more\n", bound: 5},
+		{name: "a revert over the bound", own: lines(5, "own"), main: lines(80, "main"), more: "more\n", bound: 10},
+		{name: "nothing past the reset", own: "own\n", main: "a2\n", bound: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
+			dir, e, s, m1 := seedResetBehindTheStart(t, branch,
+				func(dir string) { os.WriteFile(filepath.Join(dir, "own.txt"), []byte(tc.own), 0o644) },
+				func(dir string) { os.WriteFile(filepath.Join(dir, "a.txt"), []byte(tc.main), 0o644) })
+			os.WriteFile(filepath.Join(dir, "own.txt"), []byte(tc.own+tc.more), 0o644)
+			e.lineBound = lineBoundOf(tc.bound)
+
+			commit, err := commitAndPush(dir, e, s, m1, func() error { return nil }, fixedToken("t"))
+			if tc.more == "" {
+				if err != nil || commit != "" || gitRun(t, "-C", e.pushURL, "rev-parse", "refs/heads/"+branch) != s {
+					t.Fatalf("commitAndPush = %q, %v; want nothing pushed, the branch kept at the start %s", commit, err, s)
+				}
+				return
+			}
+			if err != nil || commit == "" {
+				t.Fatalf("commitAndPush = %q, %v; want the agent's change pushed", commit, err)
+			}
+			if got := gitRun(t, "-C", e.pushURL, "rev-list", "--parents", "-n", "1", commit); got != commit+" "+s {
+				t.Fatalf("commit and parents = %q, want %s on the start %s", got, commit, s)
+			}
+			if got := gitRun(t, "-C", e.pushURL, "show", commit+":a.txt"); got+"\n" != tc.main {
+				t.Fatalf("a.txt = %q, want main's %q kept", got, tc.main)
+			}
+			if got := gitRun(t, "-C", e.pushURL, "diff", "--name-only", m1, commit); got != "own.txt" {
+				t.Fatalf("change against main = %q, want own.txt alone", got)
 			}
 		})
 	}
@@ -1620,6 +1733,8 @@ func TestCheckpointMeasuresTheAgentDiffWithoutRunningAgentPrograms(t *testing.T)
 		t.Fatal(err)
 	}
 	fmt.Fprintf(cfg, "[core]\n\thooksPath = %s\n\tfsmonitor = %s\n[diff]\n\texternal = %s\n[filter \"spy\"]\n\tclean = %s\n", hooks, spy, spy, spy)
+	// and turn a fetch from the agent's repo into a command of its own
+	fmt.Fprintf(cfg, "[url \"ext::sh -c touch%% %s%% #\"]\n\tinsteadOf = %s\n[protocol \"ext\"]\n\tallow = always\n", spyLog, dir)
 	cfg.Close()
 
 	stat, _, _, _, err = ck.diff(ctx)
@@ -1636,6 +1751,27 @@ func TestCheckpointMeasuresTheAgentDiffWithoutRunningAgentPrograms(t *testing.T)
 	exec.Command("git", "-C", dir, "add", "-A").Run()
 	if _, err := os.Stat(spyLog); err != nil {
 		t.Fatalf("control: planted programs did not run under plain git: %v", err)
+	}
+}
+
+// The worker's git ends with its context though a program it started
+// outlives it holding the output pipe, as a program an agent plants for git
+// to run can: the call waits a bounded time for the pipe, not for the
+// program's 20 seconds.
+func TestWorkerGitEndsWhileItsChildHoldsThePipe(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pid")
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			exec.Command("kill", "-9", strings.TrimSpace(string(b))).Run()
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	began := time.Now()
+	_, err := workerEnv{}.runGitCtx(ctx, dir, nil, "-c", "alias.hold=!echo $$ > "+pidFile+"; exec sleep 20", "hold")
+	if took := time.Since(began); err == nil || took > 10*time.Second {
+		t.Fatalf("runGitCtx = %v after %s, want a failure within 10s", err, took)
 	}
 }
 
@@ -1719,6 +1855,54 @@ func TestCheckpointToleratesFileRemovedDuringStaging(t *testing.T) {
 	}
 	if !strings.Contains(patch, "-1\n-2\n-3") || !strings.Contains(patch, "deleted file mode") {
 		t.Fatalf("patch does not carry the deletion: %q", patch)
+	}
+}
+
+// A checkpoint reads each merge base with main once: the start's (base and
+// main) and the agent's HEAD's (HEAD and main), which the push's sync and
+// the parents it picks both weigh. Git's trace counts every merge-base a
+// worker git ran in one measure, the ancestry checks apart: two.
+func TestACheckpointReadsEachMergeBaseOnce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seed, dir := t.TempDir(), filepath.Join(t.TempDir(), "repo")
+	for _, args := range [][]string{{"init", "-q", "-b", "main", seed}, {"-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "base"},
+		{"clone", "-q", seed, dir}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	e := workerEnv{taskID: "t1", branch: "factory/t1"}
+	base, mainHead, err := prepareRepo(dir, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ck, err := newCheckpointer(dir, e, base, mainHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644)
+	trace := filepath.Join(t.TempDir(), "trace.json")
+	ck.e.gitTrace = []string{"GIT_TRACE2_EVENT=" + trace}
+	if _, _, _, _, err := ck.diff(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bases []string
+	for line := range strings.SplitSeq(string(b), "\n") {
+		var ev struct {
+			Event string   `json:"event"`
+			Argv  []string `json:"argv"`
+		}
+		if json.Unmarshal([]byte(line), &ev) != nil || ev.Event != "start" || !slices.Contains(ev.Argv, "merge-base") || slices.Contains(ev.Argv, "--is-ancestor") {
+			continue
+		}
+		bases = append(bases, strings.Join(ev.Argv[slices.Index(ev.Argv, "merge-base")+1:], " "))
+	}
+	if len(bases) != 2 {
+		t.Fatalf("one checkpoint ran merge-base %d times: %q; want the start's and the HEAD's once each", len(bases), bases)
 	}
 }
 
@@ -1880,7 +2064,7 @@ func TestDeliverOnAnInterimHeadLandsOnlyAFinishedSession(t *testing.T) {
 			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
 			run("-C", seed, "push", "-q", fork, "wip:"+branch)
 			e := workerEnv{taskID: "t1", sessionID: "s-2", author: "alice", title: "o", repoSHA: wip, branch: branch, repoURL: remote, pushURL: fork,
-				startWip: true, lineBound: tc.bound}
+				startWip: true, lineBound: lineBoundOf(tc.bound)}
 			dir := filepath.Join(t.TempDir(), "repo")
 			if err := cloneBase(e, dir); err != nil {
 				t.Fatal(err)
@@ -2081,25 +2265,32 @@ func TestLoadEnvCodingSessionHasNoReportGuide(t *testing.T) {
 
 // A card's later session starts on the branch an earlier one pushed. The
 // checkpoint's diff is that session's work; card_diff is the card's whole
-// diff against the merge base with main.
+// diff against the merge base with main, the main its push bills from: after
+// the session merges main (m.txt's 4 lines), that main. Measured from the
+// start's m0 instead, the merged session's card would be 3 files and 9 lines.
+// The agent plants a ref to a missing object in the checkpoint store, which
+// fails any git that lists the store's refs.
 func TestCheckpointCarriesTheCardDiffAcrossSessions(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
-		resume, write bool
-		wantDiff      map[string]any
-		wantCard      map[string]any
+		name                 string
+		resume, write, merge bool
+		wantDiff             map[string]any
+		wantCard             map[string]any
 	}{
-		{"session 2", true, true,
+		{"session 2", true, true, false,
 			map[string]any{"files": 1, "insertions": 2, "deletions": 0},
 			map[string]any{"files": 2, "insertions": 5, "deletions": 0}},
-		{"session 1", false, true,
+		{"session 1", false, true, false,
 			map[string]any{"files": 1, "insertions": 2, "deletions": 0},
 			map[string]any{"files": 1, "insertions": 2, "deletions": 0}},
 		// the card's lines move the first tick of a session that changed
 		// nothing yet
-		{"session 2 before its first change", true, false,
+		{"session 2 before its first change", true, false, false,
 			map[string]any{"files": 0, "insertions": 0, "deletions": 0},
 			map[string]any{"files": 1, "insertions": 3, "deletions": 0}},
+		{"session 2 merged main", true, true, true,
+			map[string]any{"files": 2, "insertions": 6, "deletions": 0},
+			map[string]any{"files": 2, "insertions": 5, "deletions": 0}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
@@ -2140,6 +2331,12 @@ func TestCheckpointCarriesTheCardDiffAcrossSessions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if err := os.WriteFile(filepath.Join(ck.store, ".git", "refs", "heads", "x"), []byte(strings.Repeat("1", 40)+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if tc.merge {
+				run("-C", dir, "merge", "-q", "--no-edit", "origin/main")
+			}
 			if tc.write {
 				os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\nb\n"), 0o644)
 			}
@@ -2160,6 +2357,111 @@ func TestCheckpointCarriesTheCardDiffAcrossSessions(t *testing.T) {
 			<-done
 			if !reflect.DeepEqual(ev.Detail["diff"], tc.wantDiff) || !reflect.DeepEqual(ev.Detail["card_diff"], tc.wantCard) {
 				t.Fatalf("diff = %v, card_diff = %v; want %v, %v", ev.Detail["diff"], ev.Detail["card_diff"], tc.wantDiff, tc.wantCard)
+			}
+		})
+	}
+}
+
+// The card's diff of an agent reset behind the session's start is measured
+// on the tree its push takes, so the size trip never counts main's lines the
+// reset dropped. The start's main m1 writes a.txt "a2"; the agent resets to
+// c1 (own.txt "own" on m0) and appends "more" to own.txt. Synced, the card
+// is own.txt's 2 lines against m1; the raw work tree against m1 is 2 files,
+// 3 insertions, 1 deletion (a.txt back to "a"). Where m1 also writes
+// own.txt, the push refuses the tree, and the card is the agent's own since
+// its fork m0: own.txt's 2 lines again, where the raw work tree against m1
+// is 2 files, 3 insertions, 2 deletions.
+func TestCheckpointMeasuresTheCardAsItsPushDoes(t *testing.T) {
+	write := func(dir, name, body string) { os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644) }
+	a2 := func(dir string) { write(dir, "a.txt", "a2\n") }
+	for _, tc := range []struct {
+		name string
+		main func(dir string)
+	}{
+		{name: "reset behind the start", main: a2},
+		{name: "main's commits conflict with the card's", main: func(dir string) {
+			a2(dir)
+			write(dir, "own.txt", "theirs\n")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, e, s, m1 := seedResetBehindTheStart(t, "factory/t-ck", func(dir string) { write(dir, "own.txt", "own\n") }, tc.main)
+			// the checkpointer is made at the start, before the agent runs
+			c1 := gitRun(t, "-C", dir, "rev-parse", "HEAD")
+			gitRun(t, "-C", dir, "reset", "-q", "--hard", s)
+			ck, err := newCheckpointer(dir, e, s, m1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gitRun(t, "-C", dir, "reset", "-q", "--hard", c1)
+			write(dir, "own.txt", "own\nmore\n")
+
+			if _, card, _, _, err := ck.diff(context.Background()); err != nil || card != (diffStat{Files: 1, Insertions: 2}) {
+				t.Fatalf("card_diff = %+v (%v), want own.txt's 2 lines", card, err)
+			}
+		})
+	}
+}
+
+// seedCheckpoint is a session's clone of a base commit that holds files,
+// and its checkpointer made at the start.
+func seedCheckpoint(t *testing.T, files map[string]string) (string, *checkpointer) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	seed, dir := t.TempDir(), filepath.Join(t.TempDir(), "repo")
+	gitRun(t, "init", "-q", "-b", "main", seed)
+	for name, body := range files {
+		os.MkdirAll(filepath.Dir(filepath.Join(seed, name)), 0o755)
+		os.WriteFile(filepath.Join(seed, name), []byte(body), 0o644)
+	}
+	gitRun(t, "-C", seed, "add", "-A")
+	gitRun(t, "-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "base")
+	gitRun(t, "clone", "-q", seed, dir)
+	e := workerEnv{taskID: "t1", branch: "factory/t1"}
+	base, mainHead, err := prepareRepo(dir, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ck, err := newCheckpointer(dir, e, base, mainHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir, ck
+}
+
+// A move counts by its changed lines, as the push rule bills it: the base's
+// 100-line a/x.go moved to b/x.go with one line changed is 1 file, 1
+// insertion and 1 deletion, where read without rename detection it is 2
+// files and 100 lines each way; a pure move is 1 file and no line. The
+// names list both paths of the move.
+func TestCheckpointCountsAMoveByItsChangedLines(t *testing.T) {
+	var body strings.Builder
+	for i := range 100 {
+		fmt.Fprintf(&body, "line %d\n", i+1)
+	}
+	for _, tc := range []struct {
+		name  string
+		moved string
+		want  diffStat
+	}{
+		{"one changed line", strings.Replace(body.String(), "line 50\n", "line fifty\n", 1), diffStat{Files: 1, Insertions: 1, Deletions: 1}},
+		{"pure move", body.String(), diffStat{Files: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, ck := seedCheckpoint(t, map[string]string{"a/x.go": body.String()})
+			os.Remove(filepath.Join(dir, "a", "x.go"))
+			os.MkdirAll(filepath.Join(dir, "b"), 0o755)
+			os.WriteFile(filepath.Join(dir, "b", "x.go"), []byte(tc.moved), 0o644)
+
+			stat, card, _, files, err := ck.diff(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stat != tc.want || card != tc.want {
+				t.Fatalf("diff = %+v, card_diff = %+v; want both %+v", stat, card, tc.want)
+			}
+			if !slices.Equal(files, []string{"a/x.go", "b/x.go"}) {
+				t.Fatalf("files = %q, want both paths of the move", files)
 			}
 		})
 	}
@@ -2199,8 +2501,9 @@ func TestSessionLinesMaskTheSessionsOwnTokens(t *testing.T) {
 }
 
 // A checkpoint names every changed file, though its patch is cut at
-// maxPatch: twelve files of 100 lines make a patch of about 30 KiB, and a
-// name with a space and an accent comes raw, not C-quoted.
+// maxPatch: thirteen files of 100 lines make a patch of about 32 KiB, and a
+// name with a space and an accent comes raw, not C-quoted, as does one that
+// begins with a space.
 func TestCheckpointNamesTheChangedFilesPastThePatchCut(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	run := func(args ...string) {
@@ -2225,7 +2528,7 @@ func TestCheckpointNamesTheChangedFilesPastThePatchCut(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := []byte(strings.Repeat("a line of the new file\n", 100))
-	want := []string{"f00.go", "f01.go", "f02.go", "f03.go", "f04.go", "f05.go", "f06.go", "f07.go", "f08.go", "f09.go", "f10.go", "über wir.go"}
+	want := []string{" lead.go", "f00.go", "f01.go", "f02.go", "f03.go", "f04.go", "f05.go", "f06.go", "f07.go", "f08.go", "f09.go", "f10.go", "über wir.go"}
 	for _, name := range want {
 		os.WriteFile(filepath.Join(dir, name), body, 0o644)
 	}
@@ -2238,7 +2541,7 @@ func TestCheckpointNamesTheChangedFilesPastThePatchCut(t *testing.T) {
 	}
 	// git lists in byte order: the accent sorts after the ASCII names
 	if !slices.Equal(files, want) {
-		t.Fatalf("files = %q, want all twelve names", files)
+		t.Fatalf("files = %q, want all thirteen names", files)
 	}
 }
 
@@ -2283,5 +2586,43 @@ func TestCheckpointBoundsItsNames(t *testing.T) {
 		if len(f) > maxCheckpointName+len("…") {
 			t.Fatalf("a name of %d bytes, want it cut at %d", len(f), maxCheckpointName)
 		}
+	}
+}
+
+// A patch past the worker's git output cap still makes its checkpoint, the
+// patch read only to maxPatch and marked cut: a new file of 20,000 lines of
+// 64 bytes, 1.22 MiB, whose patch is 1.3 MB.
+func TestCheckpointSurvivesAPatchPastTheCap(t *testing.T) {
+	dir, ck := seedCheckpoint(t, nil)
+	os.WriteFile(filepath.Join(dir, "big.txt"), []byte(strings.Repeat(strings.Repeat("x", 63)+"\n", 20000)), 0o644)
+	events := make(chan harness.Event, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ck.loop(ctx, 20*time.Millisecond, func(ev harness.Event) { events <- ev }, t.Logf)
+	}()
+	stop := func() { cancel(); <-done }
+	var ev harness.Event
+	select {
+	case ev = <-events:
+	case <-time.After(10 * time.Second):
+		stop()
+		t.Fatal("no checkpoint for a patch past the cap")
+	}
+	stop()
+	if len(events) != 0 {
+		t.Fatalf("%d more checkpoints without a further change", len(events))
+	}
+	want := map[string]any{"files": 1, "insertions": 20000, "deletions": 0}
+	if !reflect.DeepEqual(ev.Detail["diff"], want) || !reflect.DeepEqual(ev.Detail["card_diff"], want) {
+		t.Fatalf("diff = %v, card_diff = %v; want both %v", ev.Detail["diff"], ev.Detail["card_diff"], want)
+	}
+	if files, _ := ev.Detail["files"].([]string); !slices.Equal(files, []string{"big.txt"}) {
+		t.Fatalf("files = %v, want big.txt", ev.Detail["files"])
+	}
+	const cut = "\n… (diff truncated)"
+	if patch, _ := ev.Detail["patch"].(string); !strings.HasSuffix(patch, cut) || len(patch) > maxPatch+len(cut) {
+		t.Fatalf("patch of %d bytes ends %q, want it cut at %d bytes", len(patch), patch[max(0, len(patch)-30):], maxPatch)
 	}
 }

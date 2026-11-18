@@ -1181,6 +1181,12 @@ func (s *acceptanceStore) CriteriaVerdicts(context.Context, string) ([]factoryd.
 
 func (s *acceptanceStore) CriteriaVerdictTasks(context.Context) ([]string, error) { return nil, nil }
 
+func (s *acceptanceStore) PlansAwaitingCriteria(context.Context) ([]string, error) { return nil, nil }
+
+func (s *acceptanceStore) PutGateVerdicts(context.Context, string, string, string, []factoryd.CriterionVerdict, []string) error {
+	return nil
+}
+
 func (s *acceptanceStore) PlanCatches(context.Context, string) ([]factoryd.PlanCatch, error) {
 	return nil, nil
 }
@@ -1520,6 +1526,16 @@ func (s *acceptanceStore) LeaveQueue(_ context.Context, taskID string) (string, 
 	return "demo-app/demo-app", true, nil
 }
 
+func (s *acceptanceStore) MergeQueuePlaces(context.Context) (map[string]factoryd.QueuePlace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]factoryd.QueuePlace{}
+	for i, id := range s.queue {
+		out[id] = factoryd.QueuePlace{Ahead: i, HeadTask: s.queue[0], HeadIssue: s.tasks[s.queue[0]].IssueNumber}
+	}
+	return out, nil
+}
+
 func (s *acceptanceStore) WaitingQueueHeads(context.Context) ([]string, error) { return nil, nil }
 
 func (s *acceptanceStore) MonthSpend(context.Context, time.Time) (factoryd.MonthSpend, error) {
@@ -1561,6 +1577,19 @@ func (s *acceptanceStore) ProjectMonthSpend(context.Context, string, time.Time) 
 }
 
 func (s *acceptanceStore) CountQueue(context.Context, string) (int, error) { return 0, nil }
+
+// The holds: no acceptance run holds a card.
+func (s *acceptanceStore) SetCardHold(context.Context, string, factoryd.CardHold) (bool, error) {
+	return false, nil
+}
+
+func (s *acceptanceStore) EndCardHold(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+
+func (s *acceptanceStore) HeldOn(context.Context, string) ([]factoryd.Task, error) {
+	return nil, nil
+}
 
 var _ factoryd.Store = (*acceptanceStore)(nil)
 

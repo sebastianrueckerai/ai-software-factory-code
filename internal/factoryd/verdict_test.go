@@ -43,8 +43,9 @@ func criteriaPlan() Plan {
 }
 
 // seedCriteriaPlan stores a criteria plan on task plan with revision
-// json, its integration card integrationID (status sets the card's, and
-// every other card is done), and returns the store.
+// json, its integration card integrationID (status sets the card's, a done
+// one's pull request merged, and every other card is done), and returns
+// the store.
 func seedVerdictPlan(t *testing.T, plan, integrationID, status string) *fakeStore {
 	t.Helper()
 	s := newFakeStore()
@@ -58,6 +59,9 @@ func seedVerdictPlan(t *testing.T, plan, integrationID, status string) *fakeStor
 	s.tasks[plan] = Task{ID: plan, Repository: "sf/code", IssueNumber: 7, Source: SourceChat, Status: "done"}
 	s.tasks["card-foundation"] = Task{ID: "card-foundation", Repository: "sf/code", Parent: plan, Source: SourcePlan, PlanKey: "foundation", Status: "done"}
 	s.tasks[integrationID] = Task{ID: integrationID, Repository: "sf/code", Parent: plan, Source: SourcePlan, PlanKey: "integration", Status: status}
+	if status == "done" {
+		mergeCard(s, integrationID)
+	}
 	return s
 }
 
@@ -207,6 +211,15 @@ func TestDecideCriterion(t *testing.T) {
 	if err := DecideCriterion(ctx, s, "t-none", "c1", "waived", "sebastian", "why"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unknown plan: %v, want ErrNotFound", err)
 	}
+	// a waiver and a met are a person's word: the factory's own deciders record neither
+	for _, by := range []string{ChatUser, FactoryDecider, CheckinDecider, ""} {
+		if err := DecideCriterion(ctx, s, "t-plan", "c3", "waived", by, "out of scope"); !errors.Is(err, ErrNotPerson) {
+			t.Errorf("a waiver by %q: %v, want ErrNotPerson", by, err)
+		}
+		if err := DecideCriterion(ctx, s, "t-plan", "c2", "met", by, "it reads well"); !errors.Is(err, ErrNotPerson) {
+			t.Errorf("a met by %q: %v, want ErrNotPerson", by, err)
+		}
+	}
 	if err := DecideCriterion(ctx, s, "t-plan", "c3", "waived", "sebastian", "the timeout is the provider's SLA"); err != nil {
 		t.Fatalf("waive c3: %v", err)
 	}
@@ -283,6 +296,24 @@ func TestGrantCriteria(t *testing.T) {
 	}
 	if n, err = GrantCriteria(ctx, s, "t-plan", "sebastian", 8); err != nil || n != 0 {
 		t.Fatalf("second grant = %d, %v; want 0, nil", n, err)
+	}
+}
+
+// A grant counts the open criteria as the plan's close does: once the
+// integration card's merge is no record of the head its gate judged, the
+// review's met on c1 judges no head on main and settles nothing, so the
+// grant covers c1 beside c2 and c3.
+func TestGrantCriteriaCountsAsTheCloseDoes(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+	unmergeCard(s, "t-int")
+	if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := GrantCriteria(ctx, s, "t-plan", "sebastian", 7); err != nil || n != 3 {
+		t.Fatalf("grant = %d, %v; want 3 (c1, c2, c3), nil", n, err)
 	}
 }
 
@@ -427,6 +458,30 @@ func TestBehavioursCallReadsNoDiffText(t *testing.T) {
 		if strings.Contains(user, marker) {
 			t.Fatalf("the behaviours call reads diff text %s: %s", marker, user)
 		}
+	}
+}
+
+// A key cut into a successor reads as the successor in the feature the
+// integration card's review sees: its pull request's files, not the cut
+// card's.
+func TestIntegrationReviewReadsACutKeyThroughItsSuccessor(t *testing.T) {
+	diffs := map[int64]string{9: featureDiffs[9], 11: featureDiffs[11], 12: featureDiffs[12], 21: markedFile("s.go", "FromS", "MARK-S")}
+	r, store := featureRunner(t, "I", map[string]int64{"A": 11, "B": 12}, diffs)
+	cut := store.tasks["t-A"]
+	cut.Status = "failed"
+	store.tasks["t-A"] = cut
+	succ := SuccessorID("t-A")
+	store.tasks[succ] = Task{ID: succ, Repository: "sf/repo", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "A", PRNumber: 21,
+		Objective: "Card A title\n\nthe card's body", Status: "merged"}
+	ll := &fakeLiteLLM{answer: featureAnswer}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	if rv := getInto[Review](t, val, err); rv.Note != "" {
+		t.Fatalf("review = %+v", rv)
+	}
+	calls := featureCalls(ll)["behaviours"]
+	if len(calls) != 1 || !strings.Contains(calls[0], "s.go +2 -0 (card 1)") || strings.Contains(calls[0], "a.go") {
+		t.Fatalf("the behaviours call does not read key A as its successor's s.go alone: %v", calls)
 	}
 }
 
@@ -748,7 +803,7 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 	if len(pending) != 1 || pending[0].Kind != ApprovalCriteria || pending[0].TaskID != "t-gap" {
 		t.Fatalf("pending = %+v, want one criteria request of t-gap", pending)
 	}
-	want := "criteria not met with the plan's cards done: c2, c3"
+	want := "criteria not met once every card of the plan ended: c2, c3"
 	if pending[0].Reason != want {
 		t.Errorf("reason = %q, want %q", pending[0].Reason, want)
 	}
@@ -776,7 +831,7 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 		t.Fatal(err)
 	}
 	r2.CriteriaPass(ctx)
-	if pending, _ = s2.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c3" {
+	if pending, _ = s2.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c3" {
 		t.Fatalf("the changed gap did not re-open: %+v", pending)
 	}
 
@@ -791,6 +846,71 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 	if pending, _ := s3.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
 		t.Fatalf("a running plan asked its gap: %+v", pending)
 	}
+}
+
+// A denied criteria ask is matched on its kind and the criteria its spec
+// names, not on its words: a gap denied under the words of an older
+// factory, and a never-judged ask denied under another cause, do not ask
+// again for the same criteria; a denied ask of other criteria does not
+// hold a new one.
+func TestADeniedCriteriaAskHoldsOnItsCriteria(t *testing.T) {
+	ctx := context.Background()
+	deny := func(t *testing.T, s *fakeStore, kind, reason, spec string) {
+		t.Helper()
+		id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: kind, TaskID: "t-plan", Project: "sf/code", Spec: json.RawMessage(spec), Reason: reason})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DecideApproval(ctx, id, kind, "denied", "sebastian", "no"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gap := func(t *testing.T, denied string) (*Runner, *fakeStore) {
+		t.Helper()
+		s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+		if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
+			{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c2", Evidence: "read it", Kind: CriterionHuman},
+			{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Kind: CriterionInvariant}}); err != nil {
+			t.Fatal(err)
+		}
+		deny(t, s, ApprovalCriteria, "criteria not met with the plan's cards done: "+strings.ReplaceAll(denied, `","`, ", "),
+			`{"revision":0,"task":"t-int","criteria":["`+denied+`"]}`)
+		return &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}, s
+	}
+	t.Run("a gap", func(t *testing.T) {
+		r, s := gap(t, `c2","c3`)
+		r.CriteriaPass(ctx)
+		if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+			t.Fatalf("the denied gap asked again: %+v", pending)
+		}
+	})
+	t.Run("a gap of other criteria", func(t *testing.T) {
+		r, s := gap(t, "c3")
+		r.CriteriaPass(ctx)
+		pending, _ := s.ApprovalRequests(ctx, "pending")
+		if len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c2, c3" {
+			t.Fatalf("pending %+v, want the gap of c2 and c3 asked beside the denied one of c3", pending)
+		}
+		var spec CriteriaSpec
+		if err := json.Unmarshal(pending[0].Spec, &spec); err != nil || spec.Task != "t-int" || !slices.Equal(spec.Criteria, []string{"c2", "c3"}) {
+			t.Fatalf("spec %s (%v), want the integration card and c2, c3", pending[0].Spec, err)
+		}
+	})
+	t.Run("criteria never judged", func(t *testing.T) {
+		r, s, _ := mainGatePlan(t, nil, integrationAs("closed", 0, ""), func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+			return CriteriaResult{}, errors.Join(s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider,
+				[]CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}}), errors.New("cut"))
+		})
+		deny(t, s, ApprovalCriteriaRerun, "criteria never judged: the criteria gate has not settled c3. The card's ceiling left no room for the gate",
+			`{"task":"t-int","criteria":["c3"]}`)
+		for range 3 {
+			sweep(ctx, r)
+		}
+		r.CriteriaPass(ctx)
+		if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+			t.Fatalf("the denied ask asked again: %+v", pending)
+		}
+	})
 }
 
 // A grant on a revision that already holds a refused grant's dues files
@@ -824,7 +944,8 @@ func TestGrantAgainOnTheSameRevision(t *testing.T) {
 }
 
 // The close tells a judgement that never happened from one that failed:
-// with the cards final, criteria without a row file one criteria_rerun
+// with the cards final and the criteria gate run without a row for them,
+// criteria without a row file one criteria_rerun
 // ask naming the criteria gate for its own and the human for the human
 // ones, whatever the review's note, the unmet ones named beside them;
 // unmet rows alone file today's gap ask. A pending ask of either kind
@@ -849,7 +970,7 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 		{"the human's alone", note, ApprovalCriteriaRerun,
 			"criteria never judged: c2 is yours to settle on this card. Not met: c1, c3",
 			[]CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest}, {Criterion: "c3", Verdict: "unmet", Kind: CriterionInvariant}}},
-		{"unmet rows only", note, ApprovalCriteria, "criteria not met with the plan's cards done: c2, c3",
+		{"unmet rows only", note, ApprovalCriteria, "criteria not met once every card of the plan ended: c2, c3",
 			[]CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c2", Evidence: "read it", Kind: CriterionHuman}, {Criterion: "c3", Verdict: "unmet", Kind: CriterionInvariant}}},
 	} {
 		s := seedVerdictPlan(t, "t-plan", "t-int", "done")
@@ -860,7 +981,8 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 		// brings a plan without a verdict row to the pass
 		mergeCard(s, "t-int")
 		objs := &fakeObjectStore{}
-		r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}, forgejo: planIssues(t)}
+		r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}, forgejo: planIssues(t),
+			criteriaGate: gateWritesNothing}
 		if c.note != "" || c.name == "mixed" {
 			r.record(ctx, "t-int", "model_review", map[string]any{"pr": 9, "commit": "c1", "note": c.note})
 		}
@@ -869,6 +991,7 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		sweep(ctx, r)
 		r.CriteriaPass(ctx)
 		pending, _ := s.ApprovalRequests(ctx, "pending")
 		if len(pending) != 1 || pending[0].Kind != c.kind || pending[0].TaskID != "t-plan" || pending[0].Reason != c.reason {
@@ -889,7 +1012,7 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 		}
 		r.CriteriaPass(ctx)
 		if again, _ := s.ApprovalRequests(ctx, "pending"); len(again) != 1 || again[0].Kind != ApprovalCriteria ||
-			again[0].Reason != "criteria not met with the plan's cards done: c1, c2, c3" {
+			again[0].Reason != "criteria not met once every card of the plan ended: c1, c2, c3" {
 			t.Fatalf("mixed: pending %+v, want the gap ask alone", again)
 		}
 		if resolved, _ := s.ApprovalRequests(ctx, "approved"); len(resolved) != 1 || resolved[0].ID != pending[0].ID || resolved[0].DecidedBy != FactoryDecider {
@@ -904,6 +1027,11 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 			t.Fatalf("mixed: pending %+v, closes %d: want the plan closed and its rerun ask resolved", again, closeRows(s))
 		}
 	}
+}
+
+// gateWritesNothing is a criteria gate that runs and writes no row.
+func gateWritesNothing(context.Context, string, int64, string, string) (CriteriaResult, error) {
+	return CriteriaResult{}, nil
 }
 
 // planIssues is a Forgejo whose issues stand open until a close (prForgejo,
@@ -938,12 +1066,31 @@ func planWithoutCriteria(t *testing.T, statuses ...string) (*Runner, *fakeStore,
 	return r, s, objs, fj
 }
 
-// mergeCard gives card id of s a merge commit and its finish.
+// mergeCard gives card id of s a merge commit and its finish, and the
+// records of a pull request that merged then at the head its criteria gate
+// judged (mergedAtJudgedHead).
 func mergeCard(s *fakeStore, id string) {
 	finished := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
 	card := s.tasks[id]
 	card.MergeCommit, card.FinishedAt = "abc", &finished
 	s.tasks[id] = card
+	mergedAtJudgedHead(s, id, finished)
+}
+
+// mergedAtJudgedHead records that card id's pull request merged at at, at
+// the head h-<id> its criteria gate judged an hour before.
+func mergedAtJudgedHead(s *fakeStore, id string, at time.Time) {
+	s.events = append(s.events, Event{TaskID: id, Kind: EventCriteriaJudged, At: at.Add(-time.Hour), Detail: map[string]any{"head": "h-" + id}},
+		Event{TaskID: id, Kind: EventPullRequestMerged, At: at, Detail: map[string]any{"by": MergeUser, "head": "h-" + id}})
+}
+
+// unmergeCard leaves card id of s with no merge: no merge commit and no
+// pull_request_merged record.
+func unmergeCard(s *fakeStore, id string) {
+	card := s.tasks[id]
+	card.MergeCommit = ""
+	s.tasks[id] = card
+	s.events = slices.DeleteFunc(s.events, func(e Event) bool { return e.TaskID == id && e.Kind == EventPullRequestMerged })
 }
 
 // closeRows counts t-plan's plan_closed event rows.
@@ -1385,6 +1532,7 @@ func TestPlanCloseWaitsForTheIntegrationCard(t *testing.T) {
 		t.Fatalf("plan_closed recorded %d times while the integration card is running, want 0", got)
 	}
 	set("merged")
+	mergedAtJudgedHead(s, "t-int", time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC))
 	r.CriteriaPass(ctx)
 	r.CriteriaPass(ctx)
 	if got := closed(objs); got != 1 {
@@ -1554,6 +1702,42 @@ func TestClosedPlanCardKeepsItsCriteriaApprovalUntilAnApproverCloses(t *testing.
 	}
 }
 
+// The production hold reads the same rule as the close: rows the gate wrote
+// at the head of the closed integration card settle nothing, so c1 and c3
+// stay open and hold the merged plan, and a person's close of the plan card
+// closes nothing while they do. Once a run on main is on record for the
+// cards as they stand, the rows settle and nothing is open.
+func TestPlanOpenHoldsOnRowsOffMain(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-plan", "t-int", "closed")
+	mergeCard(s, "card-foundation")
+	if err := gateMet(ctx, s, "t-int"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceApprover, "sebastian", []CriterionVerdict{{Criterion: "c2", Verdict: "met", Kind: CriterionHuman}}); err != nil {
+		t.Fatal(err)
+	}
+	p, _, _ := planOfStore(ctx, s, "t-plan", "")
+	open, err := PlanOpenCriteria(ctx, s, "t-plan", p)
+	if ids, _ := judgeIDs(open); err != nil || !slices.Equal(ids, []string{"c1", "c3"}) {
+		t.Fatalf("open = %v, %v; want c1 and c3", ids, err)
+	}
+	setStatus(s, "t-plan", "closed")
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r.planCloseCheck(ctx, "t-plan")
+	if closeRows(s) != 0 {
+		t.Fatal("the plan closed on rows that judged no head on main")
+	}
+	if _, err := s.Record(ctx, Event{Repository: "sf/code", TaskID: "t-plan", Kind: EventCriteriaGateRun, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"task": "t-int", "pr": int64(0), "commit": "m1", "outcome": gateDone, "attempt": "1",
+			"cards": "rev 1 card-foundation:done@2026-10-01T09:00:00Z t-int:closed"}}); err != nil {
+		t.Fatal(err)
+	}
+	if open, err := PlanOpenCriteria(ctx, s, "t-plan", p); err != nil || len(open) != 0 {
+		t.Fatalf("after the run on main: open = %v, %v; want none", open, err)
+	}
+}
+
 // A human's confirmation of the delivered cards meets every open
 // criterion at once, their line the evidence, and the sweep that follows
 // ends the request and closes the plan. A child not done or merged
@@ -1566,11 +1750,17 @@ func TestConfirmDeliveredCriteria(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s},
+		criteriaGate: gateWritesNothing}
+	sweep(ctx, r)
 	r.CriteriaPass(ctx)
 	pending, _ := s.ApprovalRequests(ctx, "pending")
 	if len(pending) != 1 || pending[0].TaskID != "t-plan" {
 		t.Fatalf("pending = %+v, want one criteria request of t-plan", pending)
+	}
+	// a confirmation is a person's word: the project agent's records nothing
+	if n, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", ChatUser, "the pages read well"); !errors.Is(err, ErrNotPerson) || n != 0 {
+		t.Fatalf("the project agent's confirm = %d, %v; want 0, ErrNotPerson", n, err)
 	}
 	n, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", "sebastian", "the pages read well and no endpoint times out")
 	if err != nil || n != 2 {
@@ -1603,11 +1793,27 @@ func TestConfirmDeliveredCriteria(t *testing.T) {
 	// a child not done or merged refuses, its name and state in the error
 	s2 := seedVerdictPlan(t, "t-open", "t-open-int", "queued")
 	_, err = ConfirmDeliveredCriteria(ctx, s2, "t-open", "sebastian", "they are done")
-	if !errors.Is(err, ErrChildOpen) || !strings.Contains(err.Error(), "t-open-int") || !strings.Contains(err.Error(), "queued") {
-		t.Fatalf("confirm with an open child = %v, want ErrChildOpen naming the child", err)
+	if !errors.Is(err, ErrChildOpen) || err.Error() != "t-open-int is queued: a card of the plan is still open or failed: wait for it to end, then confirm again" {
+		t.Fatalf("confirm with an open child = %v, want ErrChildOpen naming the child and the wait", err)
 	}
 	if rows, _ := s2.CriteriaVerdicts(ctx, "t-open-int"); len(rows) != 0 {
 		t.Errorf("a refused confirm wrote rows: %+v", rows)
+	}
+	// a held child never ends by itself: the way on is its release or close
+	held := s2.tasks["t-open-int"]
+	held.Hold = &CardHold{Reason: "after the pg split", By: "sebastian"}
+	s2.tasks["t-open-int"] = held
+	if _, err := ConfirmDeliveredCriteria(ctx, s2, "t-open", "sebastian", "they are done"); !errors.Is(err, ErrChildOpen) ||
+		err.Error() != "t-open-int is queued: a card of the plan is still open or failed: release its hold or close it, then confirm again" {
+		t.Fatalf("confirm with a held child = %v, want ErrChildOpen naming the release and the close", err)
+	}
+	// a child that waits on the human names the answer as the way on
+	for _, status := range []string{"in-review", "waiting-human"} {
+		s := seedVerdictPlan(t, "t-open", "t-open-int", status)
+		want := "t-open-int is " + status + ": a card of the plan is still open or failed: answer it, then confirm again"
+		if _, err := ConfirmDeliveredCriteria(ctx, s, "t-open", "sebastian", "they are done"); !errors.Is(err, ErrChildOpen) || err.Error() != want {
+			t.Fatalf("confirm with a child %s = %v, want %q", status, err, want)
+		}
 	}
 
 	// a card cut into a successor that is merged counts as delivered; the
@@ -1640,13 +1846,151 @@ func TestConfirmDeliveredCriteria(t *testing.T) {
 		t.Fatalf("confirm with an open successor = %v, want ErrChildOpen naming the successor", err)
 	}
 
-	// a cut card with no successor row at all refuses naming the cut card
-	s5 := seedVerdictPlan(t, "t-cut-gone", "t-cut-gone-int", "done")
-	cutGone := Task{ID: "t-cut-gone-card", Repository: "sf/code", Parent: "t-cut-gone", Source: SourcePlan, PlanKey: "cut", Status: "closed"}
-	s5.tasks[cutGone.ID] = cutGone
-	_, err = ConfirmDeliveredCriteria(ctx, s5, "t-cut-gone", "sebastian", "they are done")
-	if !errors.Is(err, ErrChildOpen) || !strings.Contains(err.Error(), cutGone.ID) || !strings.Contains(err.Error(), "closed") {
-		t.Fatalf("confirm with a missing successor = %v, want ErrChildOpen naming the cut card", err)
+	// a card that failed with no successor refuses, naming it
+	s5 := seedVerdictPlan(t, "t-failed", "t-failed-int", "done")
+	failed := Task{ID: "t-failed-card", Repository: "sf/code", Parent: "t-failed", Source: SourcePlan, PlanKey: "cut", Status: "failed"}
+	s5.tasks[failed.ID] = failed
+	_, err = ConfirmDeliveredCriteria(ctx, s5, "t-failed", "sebastian", "they are done")
+	if !errors.Is(err, ErrChildOpen) || err.Error() != "t-failed-card is failed: a card of the plan is still open or failed: retry or close it, then confirm again" {
+		t.Fatalf("confirm with a failed card = %v, want ErrChildOpen naming it, Retry and Close", err)
+	}
+}
+
+// PlanDelivered: a card done, merged or closed, the last with no successor
+// (a replan cut it, or a person closed it), delivers; a card failed or
+// still running does not, and is named; a card cut into a successor
+// stands as the successor, open while it runs.
+func TestPlanDeliveredTakesAClosedCard(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name      string
+		last      string // the status of t-last
+		successor string // the status of t-last's successor, "" for none
+		delivered bool
+		open      string
+	}{
+		{"closed, no successor", "closed", "", true, ""},
+		{"failed, no successor", "failed", "", false, "t-last"},
+		{"running", "running", "", false, "t-last"},
+		{"closed into a running successor", "closed", "running", false, SuccessorID("t-last")},
+		{"closed into a closed successor", "closed", "closed", true, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := seedVerdictPlan(t, "t-plan", "t-int", "merged")
+			s.tasks["t-last"] = Task{ID: "t-last", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "last", Status: c.last}
+			if c.successor != "" {
+				succ := SuccessorID("t-last")
+				s.tasks[succ] = Task{ID: succ, Repository: "sf/code", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "last", Status: c.successor}
+			}
+			ok, open, err := PlanDelivered(ctx, s, "t-plan")
+			if err != nil || ok != c.delivered || open.ID != c.open {
+				t.Fatalf("PlanDelivered = %v, %q, %v; want %v, %q", ok, open.ID, err, c.delivered, c.open)
+			}
+		})
+	}
+}
+
+// A plan whose integration card ended closed with no pull request (it
+// proved and pushed nothing) and three gate criteria never judged takes
+// the human's confirmation with their line: three met rows of source
+// approver on the integration card, the line their evidence. An empty
+// line is refused while a card ended closed, and taken once every card
+// is done or merged.
+func TestConfirmDeliveredCriteriaOverAClosedIntegrationCard(t *testing.T) {
+	ctx := context.Background()
+	seed := func(status string) *fakeStore {
+		s := newFakeStore()
+		p := criteriaPlan()
+		p.Criteria = []PlanCriterion{
+			{ID: "chat_park_settles_cases", Kind: CriterionTest, Claim: "c", Inputs: "i", Expected: "e"},
+			{ID: "parked_card_still_answers", Kind: CriterionTest, Claim: "c", Inputs: "i", Expected: "e"},
+			{ID: "committed_session_ends_pushed", Kind: CriterionInvariant, Suite: "./..."},
+		}
+		newRevision(t, s, "t-plan", p)
+		s.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/code", IssueNumber: 7, Source: SourceChat, Status: "done"}
+		s.tasks["card-foundation"] = Task{ID: "card-foundation", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "foundation", Status: "done"}
+		s.tasks["t-int"] = Task{ID: "t-int", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Status: status}
+		return s
+	}
+	const line = "main at 6e3b46e: the three tests pass and ci / test is green"
+	s := seed("closed")
+	if _, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", "sebastian", " "); !errors.Is(err, ErrNoEvidence) || !strings.Contains(err.Error(), "t-int is closed") {
+		t.Fatalf("an empty line beside a closed card = %v, want ErrNoEvidence naming t-int", err)
+	}
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(rows) != 0 {
+		t.Fatalf("the refused confirmation wrote rows: %v", rows)
+	}
+	n, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", "sebastian", line)
+	if err != nil || n != 3 {
+		t.Fatalf("confirm = %d, %v; want 3, nil", n, err)
+	}
+	var want []CriterionVerdict
+	for _, c := range []struct{ id, kind string }{
+		{"chat_park_settles_cases", CriterionTest}, {"parked_card_still_answers", CriterionTest}, {"committed_session_ends_pushed", CriterionInvariant},
+	} {
+		want = append(want, CriterionVerdict{Criterion: c.id, Verdict: "met", Evidence: line, Kind: c.kind, Source: CriteriaSourceApprover, DecidedBy: "sebastian"})
+	}
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); !slices.Equal(rows, want) {
+		t.Fatalf("rows =\n%v\nwant\n%v", rows, want)
+	}
+
+	s = seed("done")
+	if n, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", "sebastian", ""); err != nil || n != 3 {
+		t.Fatalf("an empty line with every card done = %d, %v; want 3, nil", n, err)
+	}
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(rows) != 3 || rows[0].Evidence != "confirmed by sebastian" {
+		t.Fatalf("rows = %v, want three met on the confirmer's name", rows)
+	}
+}
+
+// offMainPlan is seedVerdictPlan's plan, c2 a test criterion, whose
+// integration card ended closed off main: the gate met c1 and c3 at the
+// card's head, and no run of the gate on main is on record.
+func offMainPlan(t *testing.T) *fakeStore {
+	t.Helper()
+	s := seedVerdictPlan(t, "t-plan", "t-int", "closed")
+	p := criteriaPlan()
+	p.Criteria[1] = PlanCriterion{ID: "c2", Kind: CriterionTest, Claim: "a parked card heals", Inputs: "a card parked with no ask", Expected: "one ask"}
+	newRevision(t, s, "t-plan", p)
+	if err := gateMet(context.Background(), s, "t-int"); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// The gate's met rows on a head that never reached main settle nothing:
+// beside the human's waiver of c2, their confirmation meets c1 and c3 over
+// the gate's rows, and the sweep approves the criteria request and closes
+// the plan.
+func TestConfirmOverGateRowsOffMainClosesThePlan(t *testing.T) {
+	ctx := context.Background()
+	s := offMainPlan(t)
+	if _, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t-plan", Project: "sf/code", Reason: "criteria not met once every card of the plan ended: c1, c2, c3"}); err != nil {
+		t.Fatal(err)
+	}
+	const reason, line = "the suite moved to ./internal/factoryd/pg", "main at 0e6fe22: c1 and c3 hold"
+	if err := DecideCriterion(ctx, s, "t-plan", "c2", "waived", "sebastian", reason); err != nil {
+		t.Fatalf("waive c2: %v", err)
+	}
+	if n, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", "sebastian", line); err != nil || n != 2 {
+		t.Fatalf("confirm = %d, %v; want 2, nil", n, err)
+	}
+	want := []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest, Source: CriteriaSourceGate, DecidedBy: FactoryDecider},
+		{Criterion: "c3", Verdict: "met", Kind: CriterionInvariant, Source: CriteriaSourceGate, DecidedBy: FactoryDecider},
+		{Criterion: "c2", Verdict: "waived", Evidence: reason, Kind: CriterionTest, Source: CriteriaSourceApprover, DecidedBy: "sebastian"},
+		{Criterion: "c1", Verdict: "met", Evidence: line, Kind: CriterionTest, Source: CriteriaSourceApprover, DecidedBy: "sebastian"},
+		{Criterion: "c3", Verdict: "met", Evidence: line, Kind: CriterionInvariant, Source: CriteriaSourceApprover, DecidedBy: "sebastian"},
+	}
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); !slices.Equal(rows, want) {
+		t.Fatalf("rows =\n%v\nwant\n%v", rows, want)
+	}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r.CriteriaPass(ctx)
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	approved, _ := s.ApprovalRequests(ctx, "approved")
+	if len(pending) != 0 || len(approved) != 1 || approved[0].DecisionNote != "every criterion is met or waived" || closeRows(s) != 1 {
+		t.Fatalf("after the sweep: pending %+v, approved %+v, plan_closed %d; want the request approved and the plan closed once", pending, approved, closeRows(s))
 	}
 }
 
@@ -1671,6 +2015,25 @@ func TestDecideCriterionRefusesAWaiverOfAMetOne(t *testing.T) {
 	}
 	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(rows) != 2 || rows[1].Verdict != "waived" || rows[1].Criterion != "c3" {
 		t.Errorf("the open criterion's waiver rows = %v", rows)
+	}
+}
+
+// Off main the gate's met row on c1 settles nothing (planGate), so an
+// approver's waiver of c1 stands beside it.
+func TestDecideCriterionWaivesAGateRowOffMain(t *testing.T) {
+	ctx := context.Background()
+	s := offMainPlan(t)
+	const reason = "superseded: #2161 landed the work"
+	if err := DecideCriterion(ctx, s, "t-plan", "c1", "waived", "sebastian", reason); err != nil {
+		t.Fatalf("a waiver of c1 met off main = %v, want nil", err)
+	}
+	want := []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest, Source: CriteriaSourceGate, DecidedBy: FactoryDecider},
+		{Criterion: "c3", Verdict: "met", Kind: CriterionInvariant, Source: CriteriaSourceGate, DecidedBy: FactoryDecider},
+		{Criterion: "c1", Verdict: "waived", Evidence: reason, Kind: CriterionTest, Source: CriteriaSourceApprover, DecidedBy: "sebastian"},
+	}
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); !slices.Equal(rows, want) {
+		t.Fatalf("rows =\n%v\nwant\n%v", rows, want)
 	}
 }
 
@@ -1701,7 +2064,7 @@ func TestPlanCloseCheckAsksNoGapWhileASuccessorRuns(t *testing.T) {
 	}
 	setStatus(s, succ, "done")
 	r.planCloseCheck(ctx, "t-gap")
-	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c3" {
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c3" {
 		t.Fatalf("pending = %+v, want the gap asked once the successor ended", pending)
 	}
 }
@@ -1730,7 +2093,7 @@ func TestPlanCloseCheckAsksNoGapWhileADueStands(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.tasks["card-delta"] = Task{ID: "card-delta", Repository: "sf/code", Parent: "t-gap", Source: SourcePlan, PlanKey: "delta", Status: "in-review"}
-	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t-gap", Project: "sf/code", Reason: "criteria not met with the plan's cards done: c3"})
+	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t-gap", Project: "sf/code", Reason: "criteria not met once every card of the plan ended: c3"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1748,7 +2111,7 @@ func TestPlanCloseCheckAsksNoGapWhileADueStands(t *testing.T) {
 	s.tasks["card-delta"] = Task{ID: "card-delta", Repository: "sf/code", Parent: "t-gap", Source: SourcePlan, PlanKey: "delta", Status: "done"}
 	r.planCloseCheck(ctx, "t-gap")
 	pending, _ := s.ApprovalRequests(ctx, "pending")
-	if len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c3" {
+	if len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c3" {
 		t.Fatalf("pending = %+v, want the gap asked again", pending)
 	}
 
@@ -1762,56 +2125,708 @@ func TestPlanCloseCheckAsksNoGapWhileADueStands(t *testing.T) {
 	}
 }
 
-// A plan whose integration card ended off main closes when a person
-// waived every criterion but an invariant its gate met: the criteria
-// request resolves approved. A test criterion that stands on a gate row
-// alone keeps the plan open.
-func TestPlanCloseOffMainTakesAnInvariantTheGateMet(t *testing.T) {
+// Rows the gate wrote at the head of an integration card that closed
+// unmerged judged no head on main and settle nothing, an invariant's as a
+// test criterion's: the plan is not closed on them, the gate runs on
+// main's head m1 and first withdraws them (a timeline line names them),
+// and its rows decide. The invariant met on main closes the plan (c1
+// stands on the approver's row); a test criterion red on main keeps the
+// plan open and opens the gap ask naming it.
+func TestPlanCloseJudgesOffMainRowsOnMain(t *testing.T) {
 	ctx := context.Background()
-	rig := func(c1Source string) (*fakeStore, *fakeObjectStore, *Runner) {
-		s := seedVerdictPlan(t, "t-plan", "t-int", "closed")
-		put := func(source string, rows ...CriterionVerdict) {
-			if err := s.PutCriteriaVerdicts(ctx, "t-int", source, FactoryDecider, rows); err != nil {
+	for _, c := range []struct {
+		name      string
+		approver  []CriterionVerdict
+		offMain   []CriterionVerdict
+		onMain    []CriterionVerdict
+		withdrawn string
+		closes    int
+		ask       string
+	}{
+		{"an invariant met at the card's head",
+			[]CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}},
+			[]CriterionVerdict{{Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}},
+			[]CriterionVerdict{{Criterion: "c3", Verdict: "met", Evidence: "main's checks green", Kind: CriterionInvariant}},
+			"[c3]", 1, ""},
+		{"a test criterion met at the card's head", nil,
+			[]CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}},
+			[]CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Evidence: "red on main", Kind: CriterionTest},
+				{Criterion: "c3", Verdict: "met", Evidence: "main's checks green", Kind: CriterionInvariant}},
+			"[c1 c3]", 0, "criteria not met once every card of the plan ended: c1"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 2085, ""), func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+				return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, c.onMain)
+			})
+			if err := s.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceApprover, "sebastian", c.approver); err != nil {
 				t.Fatal(err)
 			}
+			if err := s.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceGate, FactoryDecider, c.offMain); err != nil {
+				t.Fatal(err)
+			}
+			r.CriteriaPass(ctx)
+			if closeRows(s) != 0 || len(*calls) != 0 {
+				t.Fatalf("before the gate on main: closes %d, calls %v; want the plan open and the gate queued", closeRows(s), *calls)
+			}
+			r.CriteriaGatePass(ctx)
+			r.CriteriaPass(ctx)
+			if !slices.Equal(*calls, []string{"t-int#0@m1:"}) {
+				t.Fatalf("gate calls %v, want one on main's head", *calls)
+			}
+			if got := fmt.Sprint(timelineStep(t, r.timeline.Objects.(*fakeObjectStore), "t-plan", "criteria_rows_withdrawn")["criteria"]); got != c.withdrawn {
+				t.Errorf("withdrawn %s, want %s", got, c.withdrawn)
+			}
+			rows, _ := s.CriteriaVerdicts(ctx, "t-int")
+			for _, want := range c.onMain {
+				if v, _ := StandingRow(rows, PlanCriterion{ID: want.Criterion, Kind: want.Kind}); v.Verdict != want.Verdict || v.Evidence != want.Evidence {
+					t.Errorf("%s stands on %+v, want the gate's row on main %+v", want.Criterion, v, want)
+				}
+			}
+			pending, _ := s.ApprovalRequests(ctx, "pending")
+			if closeRows(s) != c.closes || c.ask == "" && len(pending) != 0 || c.ask != "" && (len(pending) != 1 || pending[0].Reason != c.ask) {
+				t.Fatalf("closes %d, pending %+v; want %d closes and the ask %q", closeRows(s), pending, c.closes, c.ask)
+			}
+		})
+	}
+}
+
+// An approver's Close of a plan with a merged card waives only the
+// criteria nothing settles. A criterion the gate's newest run on main met
+// (its record at 10-02 12:00) stays met, though the human closed the
+// failed card since and the gate has not run for the cards as they stand.
+// It is waived when that met holds no more: a card merged after the run
+// (10-03), the newest record of a run names no met (a later cut whose rows
+// read failed), or the criterion was met only at the head of a closed
+// card's unmerged pull request. The human criterion c2, which no row
+// settles, is waived in every case.
+func TestCloseHeldPlanKeepsWhatTheGateMetOnMain(t *testing.T) {
+	ctx := context.Background()
+	ran := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	later := time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		name   string
+		onMain bool
+		after  func(*fakeStore)
+		waived []string
+	}{
+		{"met by a run on main", true, func(*fakeStore) {}, []string{"c2"}},
+		{"a card merged since", true, func(s *fakeStore) {
+			s.tasks["card-late"] = Task{ID: "card-late", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "late", Status: "done", MergeCommit: "l1", FinishedAt: &later}
+			s.events = append(s.events, Event{TaskID: "card-late", Kind: EventPullRequestMerged, At: later})
+		}, []string{"c1", "c2", "c3"}},
+		{"a card merged since that ended closed", true, func(s *fakeStore) {
+			s.tasks["card-late"] = Task{ID: "card-late", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "late", Status: "closed", MergeCommit: "l1", FinishedAt: &later}
+			s.events = append(s.events, Event{TaskID: "card-late", Kind: EventPullRequestMerged, At: later})
+		}, []string{"c1", "c2", "c3"}},
+		{"a later run records no met", true, func(s *fakeStore) {
+			s.events = append(s.events, Event{TaskID: "t-plan", Kind: EventCriteriaGateRun, At: ran.Add(time.Hour),
+				Detail: map[string]any{"task": "t-int", "pr": int64(0), "commit": "m2", "outcome": gateCut, "attempt": "1", "cards": "x"}})
+		}, []string{"c1", "c2", "c3"}},
+		{"met at an unmerged head", false, func(*fakeStore) {}, []string{"c1", "c2", "c3"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 2085, ""), func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+				return CriteriaResult{}, gateMet(ctx, s, taskID)
+			})
+			s.criteriaVerdicts["t-int"] = nil
+			plan := s.tasks["t-plan"]
+			plan.Track = policy.TrackPlan
+			s.tasks["t-plan"] = plan
+			mergeCard(s, "card-foundation")
+			failed := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
+			s.tasks["card-extra"] = Task{ID: "card-extra", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "extra", Status: "failed", FinishedAt: &failed}
+			if c.onMain {
+				sweep(ctx, r)
+				if len(*calls) != 1 || closeRows(s) != 0 {
+					t.Fatalf("calls %v, closes %d; want one run on main and the plan open on c2", *calls, closeRows(s))
+				}
+				gateRunsAt(s, ran.Add(-time.Hour), ran)
+				card := s.tasks["card-extra"]
+				card.Status, card.FinishedAt = "closed", &later
+				s.tasks["card-extra"] = card
+			} else if err := gateMet(ctx, s, "t-int"); err != nil {
+				t.Fatal(err)
+			}
+			c.after(s)
+			p, _, err := planOfStore(ctx, s, "t-plan", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			open, err := PlanOpenCriteria(ctx, s, "t-plan", p)
+			ids := make([]string, 0, len(open))
+			for _, o := range open {
+				ids = append(ids, o.ID)
+			}
+			if err != nil || !slices.Equal(ids, c.waived) {
+				t.Fatalf("PlanOpenCriteria = %v, %v; want %v, the criteria the Close waives", ids, err, c.waived)
+			}
+			if n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil || n != len(c.waived) || closeRows(s) != 1 {
+				t.Fatalf("CloseHeldPlan = %d, %v, closes %d; want %d waived and the plan closed", n, err, closeRows(s), len(c.waived))
+			}
+			if got := waivedOn(ctx, s, "t-int"); !slices.Equal(got, c.waived) {
+				t.Fatalf("waived %v, want %v", got, c.waived)
+			}
+		})
+	}
+}
+
+// The reviewer's cases: the gate's run on the merged integration card's
+// pull request (started 10-02 11:00, its outcome at 12:00) met c1, the gap
+// ask on c3 opened, and a human closed the plan card, so the gate never
+// runs again. Then the work that met c1 left main: the revert pass marked
+// the integration card reverted, dated 10-03 after the run, or dated 08:00
+// before it, as a revert that merged on main before the run and that the
+// pass found only after; or a card merged at 11:30, while the run ran. An
+// approver's Close waives c1 with c3, and a writer's Close of a plan whose
+// open criteria the run had all met is refused for want of an approver.
+func TestCloseHeldPlanTakesNoMetFromARunMainNoLongerHolds(t *testing.T) {
+	ctx := context.Background()
+	revert := func(at time.Time) func(*fakeStore) {
+		return func(s *fakeStore) {
+			integration := s.tasks["t-int"]
+			integration.RevertedAt = &at
+			s.tasks["t-int"] = integration
 		}
-		put(c1Source, CriterionVerdict{Criterion: "c1", Verdict: "met", Kind: CriterionTest})
-		put(CriteriaSourceApprover, CriterionVerdict{Criterion: "c2", Verdict: "waived", Kind: CriterionHuman})
-		put(CriteriaSourceGate, CriterionVerdict{Criterion: "c3", Verdict: "met", Kind: CriterionInvariant})
-		if _, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t-plan", Project: "sf/code", Spec: json.RawMessage(`{}`), Reason: "gap"}); err != nil {
+	}
+	late := time.Date(2026, 10, 2, 11, 30, 0, 0, time.UTC)
+	mergedDuring := func(s *fakeStore) {
+		s.tasks["card-late"] = Task{ID: "card-late", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "late", Status: "done", MergeCommit: "l1", FinishedAt: &late}
+		s.events = append(s.events, Event{TaskID: "card-late", Kind: EventPullRequestMerged, At: late})
+	}
+	for _, c := range []struct {
+		name     string
+		c3       string
+		change   func(*fakeStore)
+		by, note string
+		approver bool
+		want     error
+		waived   []string
+	}{
+		{"reverted after the run, an approver's Close", "unmet", revert(time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)), "sebastian", "moved on", true, nil, []string{"c1", "c3"}},
+		{"reverted after the run, a writer's Close", "met", revert(time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)), "mallory", "", false, ErrNotApprover, nil},
+		{"a revert dated before the run, an approver's Close", "unmet", revert(time.Date(2026, 10, 2, 8, 0, 0, 0, time.UTC)), "sebastian", "moved on", true, nil, []string{"c1", "c3"}},
+		{"a revert dated before the run, a writer's Close", "met", revert(time.Date(2026, 10, 2, 8, 0, 0, 0, time.UTC)), "mallory", "", false, ErrNotApprover, nil},
+		{"a card merged while the run ran, an approver's Close", "unmet", mergedDuring, "sebastian", "moved on", true, nil, []string{"c1", "c3"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, s, calls := mainGatePlan(t, nil, func(*fakeStore) {}, func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+				return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+					{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c3", Verdict: c.c3, Kind: CriterionInvariant}})
+			})
+			plan := s.tasks["t-plan"]
+			plan.Track = policy.TrackPlan
+			s.tasks["t-plan"] = plan
+			mergeCard(s, "card-foundation")
+			sweep(ctx, r)
+			if c.c3 == "unmet" {
+				r.CriteriaPass(ctx)
+				if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c3" {
+					t.Fatalf("pending %+v, want the gap ask on c3", pending)
+				}
+			}
+			if !slices.Equal(*calls, []string{"t-int#9@h9:"}) || closeRows(s) != 0 {
+				t.Fatalf("calls %v, closes %d; want the one run on pull request 9 and the plan open", *calls, closeRows(s))
+			}
+			gateRunsAt(s, time.Date(2026, 10, 2, 11, 0, 0, 0, time.UTC), time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC))
+			closed := time.Date(2026, 10, 2, 15, 0, 0, 0, time.UTC)
+			plan = s.tasks["t-plan"]
+			plan.Status, plan.FinishedAt = "closed", &closed
+			s.tasks["t-plan"] = plan
+			c.change(s)
+			n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", c.by, c.note, c.approver)
+			if !errors.Is(err, c.want) || (err == nil) != (c.want == nil) || n != len(c.waived) {
+				t.Fatalf("CloseHeldPlan = %d, %v; want %d waived, %v", n, err, len(c.waived), c.want)
+			}
+			if got := waivedOn(ctx, s, "t-int"); !slices.Equal(got, c.waived) {
+				t.Fatalf("waived %v, want %v", got, c.waived)
+			}
+		})
+	}
+}
+
+// A run on the merged integration card's pull request whose merge was
+// already reverted on main, though the revert pass had not marked it yet,
+// met c1 and c3 at a head main no longer holds. Once the pass marks the
+// card reverted, those rows settle nothing: the plan does not close, the
+// gate is due again for the plan as it stands and runs on main's head m1,
+// withdrawing c1 and c3 first, and its rows decide: c1 red on main asks
+// the gap.
+func TestARevertMarkedAfterTheRunMakesTheGateDueOnMain(t *testing.T) {
+	ctx := context.Background()
+	r, s, calls := mainGatePlan(t, nil, func(*fakeStore) {}, func(call int, s *fakeStore, taskID string) (CriteriaResult, error) {
+		if call == 1 {
+			return CriteriaResult{}, gateMet(ctx, s, taskID)
+		}
+		return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+			{Criterion: "c1", Verdict: "unmet", Evidence: "red on main", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}})
+	})
+	r.CriteriaPass(ctx)
+	r.CriteriaGatePass(ctx)
+	reverted := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
+	integration := s.tasks["t-int"]
+	integration.RevertedAt = &reverted
+	s.tasks["t-int"] = integration
+	r.CriteriaPass(ctx)
+	if closeRows(s) != 0 {
+		t.Fatal("the plan closed on rows of a head main no longer holds")
+	}
+	r.CriteriaGatePass(ctx)
+	r.CriteriaPass(ctx)
+	if !slices.Equal(*calls, []string{"t-int#9@h9:", "t-int#0@m1:"}) {
+		t.Fatalf("gate calls %v, want the run on pull request 9, then one on main's head", *calls)
+	}
+	if got := fmt.Sprint(timelineStep(t, r.timeline.Objects.(*fakeObjectStore), "t-plan", "criteria_rows_withdrawn")["criteria"]); got != "[c1 c3]" {
+		t.Errorf("withdrawn %s, want [c1 c3]", got)
+	}
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	if closeRows(s) != 0 || len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c1" {
+		t.Fatalf("closes %d, pending %+v; want the plan open and the gap ask on c1", closeRows(s), pending)
+	}
+}
+
+// Rule (a) counts the integration card's rows as main's only when its pull
+// request merged at the head its gate judged. Feature card F (the
+// foundation) merged and its gate-judged work stands in c1's met row,
+// which the integration card's gate wrote at head h1. While the merge ask
+// waited, F's merge was reverted on main (dated 08:00, before the
+// integration card merged at 09:00), and the press synced the pull request
+// to h2 and merged it without a gate run. The plan does not close: the
+// gate runs on main's head, withdraws c1 and c3, finds c1 red, and the gap
+// ask opens. When the pull request merged at h1, the gate's head, the rows
+// settle and the plan closes with no gate run. A human's merge in Forgejo
+// of another head (h3) runs the gate on main as the sync does, and so does
+// a merge at h1 when the gate read another head's checks, which leaves its
+// record without a head.
+func TestPlanGateCountsRowsOnlyForTheHeadThatMerged(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name, merged, by string
+		reverted         bool
+		calls            []string
+		closes           int
+	}{
+		{"main moved under the merge ask", "h2", MergeUser, true, []string{"t-int#0@m1:"}, 0},
+		{"merged at the judged head", "h1", MergeUser, false, nil, 1},
+		{"a human merged another head", "h3", "sebastian", false, []string{"t-int#0@m1:"}, 0},
+		{"the gate read another head's checks", "", MergeUser, false, []string{"t-int#0@m1:"}, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, s, calls := mainGatePlan(t, nil, func(*fakeStore) {}, func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+				return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+					{Criterion: "c1", Verdict: "unmet", Evidence: "red on main", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}})
+			})
+			mergeCard(s, "card-foundation")
+			if c.reverted {
+				at := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
+				card := s.tasks["card-foundation"]
+				card.RevertedAt = &at
+				s.tasks["card-foundation"] = card
+			}
+			s.events = slices.DeleteFunc(s.events, func(e Event) bool { return e.TaskID == "t-int" })
+			mergedAt := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+			judged, merged := "h1", c.merged
+			if merged == "" {
+				judged, merged = "", "h1"
+			}
+			s.events = append(s.events,
+				Event{TaskID: "t-int", Kind: EventCriteriaJudged, At: mergedAt.Add(-time.Hour), Detail: map[string]any{"pr": int64(9), "head": judged}},
+				Event{TaskID: "t-int", Kind: EventPullRequestMerged, At: mergedAt, Detail: map[string]any{"pr": int64(9), "by": c.by, "head": merged}})
+			if err := gateMet(ctx, s, "t-int"); err != nil {
+				t.Fatal(err)
+			}
+			sweep(ctx, r)
+			r.CriteriaPass(ctx)
+			if !slices.Equal(*calls, c.calls) || closeRows(s) != c.closes {
+				t.Fatalf("calls %v, closes %d; want %v and %d", *calls, closeRows(s), c.calls, c.closes)
+			}
+			if c.closes == 0 {
+				pending, _ := s.ApprovalRequests(ctx, "pending")
+				if len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c1" {
+					t.Fatalf("pending %+v, want the gap ask on c1", pending)
+				}
+			}
+		})
+	}
+}
+
+// gateRunsAt dates the criteria gate's records of s, which the fake store
+// leaves undated: a run's start at started, its outcome at ended.
+func gateRunsAt(s *fakeStore, started, ended time.Time) {
+	for i, e := range s.events {
+		switch {
+		case e.Kind != EventCriteriaGateRun || !e.At.IsZero():
+		case e.Detail["outcome"] == gateStarted:
+			s.events[i].At = started
+		default:
+			s.events[i].At = ended
+		}
+	}
+}
+
+// waivedOn are the criteria an approver waived on card id, in order.
+func waivedOn(ctx context.Context, s *fakeStore, id string) []string {
+	rows, _ := s.CriteriaVerdicts(ctx, id)
+	var waived []string
+	for _, v := range rows {
+		if v.Source == CriteriaSourceApprover && v.Verdict == "waived" {
+			waived = append(waived, v.Criterion)
+		}
+	}
+	slices.Sort(waived)
+	return waived
+}
+
+// A run on main cut after it wrote rows (its judgement step failed) wrote
+// them for main's head: they stand. Rows for every criterion close the plan
+// on the next pass; a criterion it left without a row runs the gate once
+// more, and after the second cut the rerun ask names it, the human's
+// confirmation with their evidence settles it, and the plan closes.
+func TestCriteriaGateOnMainCutAfterItsRowsDoesNotHang(t *testing.T) {
+	ctx := context.Background()
+	cut := errors.New("the judgement calls timed out")
+	t.Run("rows for every criterion", func(t *testing.T) {
+		r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 0, ""), func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+			return CriteriaResult{}, errors.Join(gateMet(ctx, s, taskID), cut)
+		})
+		sweep(ctx, r)
+		r.CriteriaPass(ctx)
+		if len(*calls) != 1 || !slices.Equal(gateOutcomes(s), []string{"cut#1"}) || closeRows(s) != 1 {
+			t.Fatalf("calls %v, outcomes %v, closes %d; want one cut run and the plan closed", *calls, gateOutcomes(s), closeRows(s))
+		}
+	})
+	t.Run("a criterion left without a row", func(t *testing.T) {
+		r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 0, ""), func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+			return CriteriaResult{}, errors.Join(s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider,
+				[]CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}}), cut)
+		})
+		for range 3 {
+			sweep(ctx, r)
+		}
+		r.CriteriaPass(ctx)
+		pending, _ := s.ApprovalRequests(ctx, "pending")
+		if len(*calls) != 2 || len(pending) != 1 || pending[0].Reason != "criteria never judged: the criteria gate has not settled c3" {
+			t.Fatalf("calls %v, pending %+v; want two cut runs and the rerun ask on c3", *calls, pending)
+		}
+		if n, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", "sebastian", "ci / test is green on main at m1"); err != nil || n != 1 {
+			t.Fatalf("confirm = %d, %v; want 1, nil", n, err)
+		}
+		r.CriteriaPass(ctx)
+		if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 || closeRows(s) != 1 {
+			t.Fatalf("after the confirmation: pending %+v, closes %d; want the plan closed", pending, closeRows(s))
+		}
+	})
+}
+
+// A plan with no merged card and no approver's row is visited by no open
+// group and, once the run on main withdrew the rows of its closed
+// integration card, by no row: the sweep still visits it, as every
+// last-round plan at rest with criteria and no plan_closed. Main's branch
+// unreadable for good cuts the first run (Forgejo's 404); the next sweep
+// runs the gate again, and its rows close the plan.
+func TestCriteriaPassVisitsAPlanWhoseRowsWereWithdrawn(t *testing.T) {
+	ctx := context.Background()
+	fj := &prForgejo{mainHead: "m1", branchGone: true}
+	r, s := gatePlanOn(t, fj, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(ctx context.Context, taskID string, _ int64, _, _ string) (CriteriaResult, error) {
+			return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+				{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}})
+		}
+	})
+	integrationAs("closed", 2085, "")(s)
+	s.criteriaVerdicts["t-int"] = nil
+	if err := gateMet(ctx, s, "t-int"); err != nil {
+		t.Fatal(err)
+	}
+	p := criteriaPlan()
+	p.Criteria = slices.DeleteFunc(p.Criteria, func(c PlanCriterion) bool { return c.Kind == CriterionHuman })
+	newRevision(t, s, "t-plan", p)
+	sweep(ctx, r)
+	if got := gateOutcomes(s); !slices.Equal(got, []string{"cut#1"}) {
+		t.Fatalf("the first run: outcomes %v, want one cut", got)
+	}
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(rows) != 0 {
+		t.Fatalf("rows %+v, want the closed card's withdrawn", rows)
+	}
+	fj.branchGone = false
+	sweep(ctx, r)
+	r.CriteriaPass(ctx)
+	if got := gateOutcomes(s); !slices.Equal(got, []string{"cut#1", "ran#2"}) || closeRows(s) != 1 {
+		t.Fatalf("outcomes %v, closes %d; want the second run on main and the plan closed", got, closeRows(s))
+	}
+}
+
+// A card of the plan that ends after the gate's last run makes the gate due
+// again on main: a delta card done with nothing pushed (its proofs met at
+// main), the failed integration card retried and closed, or retried and
+// failed again after its own gate met the criteria at a head that never
+// merged, which settles nothing. The first run
+// on main finds c1 red and the gap ask opens; once the card ends, a second
+// run finds c1 green and the plan closes. Each state of the cards keeps
+// the attempt bound: a gate that errors after the card ends runs twice for
+// that state and then asks, however many passes follow.
+func TestCriteriaGateRunsAgainWhenACardEndsAfterIt(t *testing.T) {
+	ctx := context.Background()
+	redThenGreen := func(call int, s *fakeStore, taskID string) (CriteriaResult, error) {
+		if call == 1 {
+			return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+				{Criterion: "c1", Verdict: "unmet", Evidence: "red on main", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}})
+		}
+		return CriteriaResult{}, gateMet(ctx, s, taskID)
+	}
+	redThenError := func(call int, s *fakeStore, taskID string) (CriteriaResult, error) {
+		if call == 1 {
+			return redThenGreen(call, s, taskID)
+		}
+		return CriteriaResult{}, errors.New("the sandbox went away")
+	}
+	// its gate met the criteria at its own pull request's head, which never merged
+	failsAgainAfterItsGate := func(s *fakeStore) {
+		if err := gateMet(ctx, s, "t-int"); err != nil {
 			t.Fatal(err)
 		}
-		objs := &fakeObjectStore{}
-		return s, objs, &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: objs, Events: s, Store: s}}
+		finished := time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)
+		integrationAs("failed", 31, "")(s)
+		c := s.tasks["t-int"]
+		c.FinishedAt = &finished
+		s.tasks["t-int"] = c
 	}
-	closes := func(objs *fakeObjectStore) int {
-		body, _ := objs.Get(ctx, "sessions/t-plan/timeline.jsonl")
-		return strings.Count(string(body), `"event":"`+EventPlanClosed+`"`)
+	key := deltaKey("t-plan", 1, []PlanCatch{{Detail: "c1 grant 1"}})
+	deltaCard := func(status string) func(*fakeStore) {
+		return func(s *fakeStore) {
+			s.tasks["t-delta"] = Task{ID: "t-delta", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: key, Status: status}
+		}
 	}
+	for _, c := range []struct {
+		name          string
+		card          func(*fakeStore)
+		answer        func(int, *fakeStore, string) (CriteriaResult, error)
+		running, ends func(*fakeStore)
+		calls, closes int
+		outcomes      []string
+	}{
+		{"a delta card done with nothing pushed", integrationAs("closed", 0, ""), redThenGreen,
+			deltaCard("running"), deltaCard("done"), 2, 1, []string{"ran#1", "ran#1"}},
+		{"the failed integration card retried", integrationAs("failed", 0, ""), redThenGreen,
+			integrationAs("running", 0, ""), integrationAs("closed", 0, ""), 2, 1, []string{"ran#1", "ran#1"}},
+		{"the failed integration card retried, failing again", integrationAs("failed", 0, ""), redThenGreen,
+			integrationAs("running", 0, ""), failsAgainAfterItsGate, 2, 1, []string{"ran#1", "ran#1"}},
+		{"bounded per state", integrationAs("closed", 0, ""), redThenError,
+			deltaCard("running"), deltaCard("done"), 3, 0, []string{"ran#1", "cut#1", "cut#2"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, s, calls := mainGatePlan(t, nil, c.card, c.answer)
+			sweep(ctx, r)
+			r.CriteriaPass(ctx)
+			if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c1" {
+				t.Fatalf("after the first run: pending %+v, want the gap ask on c1", pending)
+			}
+			c.running(s)
+			r.CriteriaPass(ctx)
+			c.ends(s)
+			for range 4 {
+				sweep(ctx, r)
+			}
+			r.CriteriaPass(ctx)
+			if len(*calls) != c.calls || closeRows(s) != c.closes || !slices.Equal(gateOutcomes(s), c.outcomes) {
+				t.Fatalf("calls %v, closes %d, outcomes %v; want %d calls, %d closes and %v", *calls, closeRows(s), gateOutcomes(s), c.calls, c.closes, c.outcomes)
+			}
+		})
+	}
+}
 
-	s, objs, r := rig(CriteriaSourceApprover)
+// The gate on main judged c1 unmet and the gap ask opened; a card granted
+// for it wrote met rows at its own pull request's head and closed
+// unmerged. Those rows judged no head on main: the plan does not close on
+// them. The card's end makes the gate due again: it runs on main a second
+// time, withdraws the card's rows, finds c1 still red, and the gap ask
+// on c1 opens again.
+func TestPlanCloseIgnoresTheRowsOfADeltaCardThatNeverMerged(t *testing.T) {
+	ctx := context.Background()
+	r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 0, ""), func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+		return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+			{Criterion: "c1", Verdict: "unmet", Evidence: "red on main", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}})
+	})
+	sweep(ctx, r)
 	r.CriteriaPass(ctx)
-	if got := closes(objs); got != 1 {
-		t.Fatalf("plan_closed recorded %d times, want 1", got)
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c1" {
+		t.Fatalf("after the gate on main: pending %+v, want the gap ask on c1", pending)
 	}
-	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
-		t.Fatalf("pending approvals %+v, want the criteria request resolved", pending)
+	key := deltaKey("t-plan", 1, []PlanCatch{{Detail: "c1 grant 1"}})
+	s.tasks["t-delta"] = Task{ID: "t-delta", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: key, Status: "running"}
+	r.CriteriaPass(ctx)
+	if err := gateMet(ctx, s, "t-int"); err != nil {
+		t.Fatal(err)
 	}
-	if approved, _ := s.ApprovalRequests(ctx, "approved"); len(approved) != 1 || approved[0].Kind != ApprovalCriteria {
-		t.Fatalf("approved approvals %+v, want the criteria request", approved)
+	delta := s.tasks["t-delta"]
+	delta.Status, delta.PRNumber = "closed", 31
+	s.tasks["t-delta"] = delta
+	sweep(ctx, r)
+	r.CriteriaPass(ctx)
+	if closeRows(s) != 0 {
+		t.Fatal("the plan closed on the rows of a card that never merged")
 	}
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	rows, _ := s.CriteriaVerdicts(ctx, "t-int")
+	c1, _ := StandingRow(rows, PlanCriterion{ID: "c1", Kind: CriterionTest})
+	if len(*calls) != 2 || c1.Evidence != "red on main" || len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c1" {
+		t.Fatalf("calls %v, c1 %+v, pending %+v; want a second run on main, c1 red there and the gap ask on c1", *calls, c1, pending)
+	}
+}
 
-	_, objs, r = rig(CriteriaSourceGate)
-	r.CriteriaPass(ctx)
-	if got := closes(objs); got != 0 {
-		t.Fatalf("a test criterion on a gate row alone: plan_closed recorded %d times, want 0", got)
+// A plan whose integration card ended closed closes once a delta card of the
+// plan whose own pull request reached main, done or merged, stands and its
+// gate met every criterion on the rows. A delta card done with nothing
+// merged (its work was on main already) judged no head on main: the gate
+// is queued to run on main, and the ask stands meanwhile. A merged card a
+// later revision dropped is no delta card: the rows judge no head on main,
+// and while that card is merged, not final, the ask is withdrawn.
+func TestPlanCloseTakesADeltaCardTheGateMet(t *testing.T) {
+	ctx := context.Background()
+	key := deltaKey("t-plan", 1, []PlanCatch{{Detail: "c1 grant 9"}})
+	for _, tc := range []struct {
+		name, planKey, status, merge string
+		closes, pending              int
+		queued                       bool
+	}{
+		{"delta done, its pull request merged", key, "done", "d1", 1, 0, false},
+		{"delta merged", key, "merged", "", 1, 0, false},
+		{"delta done with nothing merged", key, "done", "", 0, 1, true},
+		{"dropped card merged", "dropped", "merged", "", 0, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := seedVerdictPlan(t, "t-plan", "t-int", "closed")
+			s.tasks["t-extra"] = Task{ID: "t-extra", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: tc.planKey, Status: tc.status, MergeCommit: tc.merge}
+			if tc.status == "merged" || tc.merge != "" {
+				mergedAtJudgedHead(s, "t-extra", time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC))
+			}
+			for _, row := range []CriterionVerdict{
+				{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+				{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},
+				{Criterion: "c3", Verdict: "met", Kind: CriterionInvariant},
+			} {
+				if err := s.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceGate, FactoryDecider, []CriterionVerdict{row}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteriaRerun, TaskID: "t-plan", Project: "sf/code", Spec: json.RawMessage(`{}`), Reason: "never judged"}); err != nil {
+				t.Fatal(err)
+			}
+			objs := &fakeObjectStore{}
+			r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: objs, Events: s, Store: s}}
+			r.CriteriaPass(ctx)
+			body, _ := objs.Get(ctx, "sessions/t-plan/timeline.jsonl")
+			if got := strings.Count(string(body), `"event":"`+EventPlanClosed+`"`); got != tc.closes {
+				t.Fatalf("plan_closed recorded %d times, want %d", got, tc.closes)
+			}
+			pending, _ := s.ApprovalRequests(ctx, "pending")
+			approved, _ := s.ApprovalRequests(ctx, "approved")
+			if len(pending) != tc.pending || tc.closes == 1 && (len(approved) != 1 || approved[0].Kind != ApprovalCriteriaRerun) {
+				t.Fatalf("pending %+v approved %+v, want %d pending and, closed, the rerun request approved", pending, approved, tc.pending)
+			}
+			r.gateMu.Lock()
+			queued := slices.Contains(r.gateQueue, "t-plan")
+			r.gateMu.Unlock()
+			if queued != tc.queued {
+				t.Errorf("t-plan queued for the gate: %v, want %v", queued, tc.queued)
+			}
+		})
+	}
+}
+
+// The integration card's rows judge main when it merged (09:00) and no
+// card of the plan merged or was reverted after it, by merge time, not by
+// finish: a card merged at 08:00 and done at 10:00 leaves them on main, one
+// merged at 09:30 does not, nor one reverted at 10:00, nor the integration
+// card's own revert.
+func TestPlanGateReadsMergeTimesAndReverts(t *testing.T) {
+	ctx := context.Background()
+	at := func(h, m int) *time.Time { v := time.Date(2026, 10, 1, h, m, 0, 0, time.UTC); return &v }
+	for _, c := range []struct {
+		name                       string
+		merged, finished, reverted *time.Time
+		integrationReverted        bool
+		onMain                     bool
+	}{
+		{"a card merged before, done after", at(8, 0), at(10, 0), nil, false, true},
+		{"a card merged after", at(9, 30), at(9, 30), nil, false, false},
+		{"a card merged before, reverted after", at(8, 0), at(8, 0), at(10, 0), false, false},
+		{"the integration card reverted", at(8, 0), at(8, 0), nil, true, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+			card := s.tasks["card-foundation"]
+			card.MergeCommit, card.FinishedAt, card.RevertedAt = "f1", c.finished, c.reverted
+			s.tasks["card-foundation"] = card
+			s.events = append(s.events, Event{TaskID: "card-foundation", Kind: EventPullRequestMerged, At: *c.merged})
+			if c.integrationReverted {
+				integration := s.tasks["t-int"]
+				integration.RevertedAt = at(10, 0)
+				s.tasks["t-int"] = integration
+			}
+			g, err := planGateOf(ctx, s, "t-plan", s.tasks["t-int"])
+			if err != nil || g.onMain != c.onMain {
+				t.Fatalf("onMain = %v, %v; want %v", g.onMain, err, c.onMain)
+			}
+		})
+	}
+}
+
+// The successor that carries the integration card's key, gated at its own
+// pull request and merged at the head the gate judged, is the newest
+// criteria card the rows judge main by, as the card would be.
+func TestPlanGateReadsMainThroughALandedSuccessorOfTheIntegrationCard(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-plan", "t-int", "failed")
+	succ := SuccessorID("t-int")
+	s.tasks[succ] = Task{ID: succ, Repository: "sf/code", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "integration", Status: "done"}
+	mergeCard(s, succ)
+	g, err := planGateOf(ctx, s, "t-plan", s.tasks["t-int"])
+	if err != nil || !g.onMain || g.pr != 0 {
+		t.Fatalf("onMain %v, pr %d, %v; want the rows judging main, with main's head to run on", g.onMain, g.pr, err)
+	}
+}
+
+// The mark the gate's runs record changes with each state of the cards: a
+// revert of a card, and a revision of the plan, which may add or fix a
+// criterion with no card changed.
+func TestPlanGateMarkTakesRevertsAndTheRevision(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+	mark := func() string {
+		t.Helper()
+		g, err := planGateOf(ctx, s, "t-plan", s.tasks["t-int"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g.mark
+	}
+	first := mark()
+	if want := "rev 1 card-foundation:done t-int:done@2026-10-01T09:00:00Z"; first != want {
+		t.Fatalf("mark = %q, want %q", first, want)
+	}
+	reverted := time.Date(2026, 10, 2, 7, 0, 0, 0, time.UTC)
+	card := s.tasks["t-int"]
+	card.RevertedAt = &reverted
+	s.tasks["t-int"] = card
+	if got, want := mark(), "rev 1 card-foundation:done t-int:done@2026-10-01T09:00:00Z reverted"; got != want {
+		t.Fatalf("mark after the revert = %q, want %q", got, want)
+	}
+	newRevision(t, s, "t-plan", criteriaPlan())
+	if got, want := mark(), "rev 2 card-foundation:done t-int:done@2026-10-01T09:00:00Z reverted"; got != want {
+		t.Fatalf("mark after a revision = %q, want %q", got, want)
 	}
 }
 
 // gatePlan seeds a done plan whose integration card (pull request 9,
 // merged, its own ceiling 6.00) holds budget and spent, an approver's row on the human
 // criterion c2 and a runner whose gate is gate.
-func gatePlan(t *testing.T, budget, spent float64, gate func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error)) (*Runner, *fakeStore) {
+func gatePlan(t *testing.T, budget, spent float64, gate func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error)) (*Runner, *fakeStore) {
+	t.Helper()
+	return gatePlanOn(t, &prForgejo{pulls: map[int64]string{9: `{"number":9,"state":"closed","merged":true,"head":{"sha":"h9"},"base":{"ref_name":"main"}}`}}, budget, spent, gate)
+}
+
+// gatePlanOn is gatePlan on forgejo fj.
+func gatePlanOn(t *testing.T, fj *prForgejo, budget, spent float64, gate func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error)) (*Runner, *fakeStore) {
 	t.Helper()
 	ctx := context.Background()
 	s := seedVerdictPlan(t, "t-plan", "t-int", "done")
@@ -1823,7 +2838,6 @@ func gatePlan(t *testing.T, budget, spent float64, gate func(*fakeStore) func(co
 	if err := s.PutCriteriaVerdicts(ctx, "t-int", "approver", "sebastian", []CriterionVerdict{{Criterion: "c2", Verdict: "met", Kind: CriterionHuman}}); err != nil {
 		t.Fatal(err)
 	}
-	fj := &prForgejo{pulls: map[int64]string{9: `{"number":9,"state":"closed","merged":true,"head":{"sha":"h9"},"base":{"ref_name":"main"}}`}}
 	forgejo := &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
 	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}, forgejo: forgejo}
 	r.criteriaGate = gate(s)
@@ -1860,8 +2874,8 @@ func TestCriteriaGatePassRunsTheGateOnTheReserve(t *testing.T) {
 	} {
 		var calls []string
 		var leftAtCall float64
-		r, s := gatePlan(t, c.budget, c.spent, func(s *fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
+		r, s := gatePlan(t, c.budget, c.spent, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(ctx context.Context, taskID string, pr int64, commit, checked string) (CriteriaResult, error) {
 				calls = append(calls, fmt.Sprintf("%s#%d@%s", taskID, pr, commit))
 				leftAtCall = s.tasks[taskID].Left()
 				return CriteriaResult{}, gateMet(ctx, s, taskID)
@@ -1893,8 +2907,8 @@ func TestCriteriaGatePassRunsTheGateOnTheReserve(t *testing.T) {
 // finishes: the gate pass's context is cancelled by its own deadline at
 // 50ms, the gate takes 120ms on a context of its own, and writes its rows.
 func TestCriteriaGatePassRunsPastThePassBound(t *testing.T) {
-	r, s := gatePlan(t, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(ctx context.Context, taskID string, _ int64, _ string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(ctx context.Context, taskID string, _ int64, _, _ string) (CriteriaResult, error) {
 			select {
 			case <-time.After(120 * time.Millisecond):
 			case <-ctx.Done():
@@ -1924,8 +2938,8 @@ func TestCriteriaGatePassRunsACutGateOnceMore(t *testing.T) {
 		calls int
 	}{{"cut twice", true, 2}, {"ran without rows", false, 1}} {
 		calls := 0
-		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(context.Context, string, int64, string) (CriteriaResult, error) {
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 				calls++
 				if c.cut {
 					return CriteriaResult{}, context.DeadlineExceeded
@@ -1952,8 +2966,8 @@ func TestCriteriaGatePassRunsACutGateOnceMore(t *testing.T) {
 func TestCriteriaGatePassNamesACeilingWithNoRoom(t *testing.T) {
 	ctx := context.Background()
 	calls := 0
-	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 			calls++
 			return CriteriaResult{}, nil
 		}
@@ -1977,8 +2991,8 @@ func TestRunCriteriaGateScrubsItsErrors(t *testing.T) {
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	r, _ := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+	r, _ := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 			return CriteriaResult{}, errors.New(leak)
 		}
 	})
@@ -2015,8 +3029,8 @@ func TestCriteriaGatePassRecordsTheOutcomeAfterThePassEnds(t *testing.T) {
 	calls := 0
 	pass, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 			calls++
 			cancel()
 			return CriteriaResult{}, nil
@@ -2034,10 +3048,8 @@ func TestCriteriaGatePassRecordsTheOutcomeAfterThePassEnds(t *testing.T) {
 	}
 }
 
-// The gate runs for a done plan at rest whose integration card reached
-// main, and only then: not under a replan, not once a person closed the
-// plan after it was queued, not on a failed integration card with an open
-// pull request, which keeps the criteria_rerun ask.
+// The gate runs for a done plan at rest, and only then: not under a
+// replan, not once a person closed the plan after it was queued.
 func TestCriteriaGatePassRunsOnlyForADonePlanAtRest(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
@@ -2056,15 +3068,10 @@ func TestCriteriaGatePassRunsOnlyForADonePlanAtRest(t *testing.T) {
 			p.Status = "closed"
 			s.tasks["t-plan"] = p
 		}, 0},
-		{"a failed integration card", func(_ *Runner, s *fakeStore) {
-			c := s.tasks["t-int"]
-			c.Status, c.MergeCommit = "failed", ""
-			s.tasks["t-int"] = c
-		}, nil, 1},
 	} {
 		calls := 0
-		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(context.Context, string, int64, string) (CriteriaResult, error) {
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 				calls++
 				return CriteriaResult{}, nil
 			}
@@ -2085,6 +3092,177 @@ func TestCriteriaGatePassRunsOnlyForADonePlanAtRest(t *testing.T) {
 	}
 }
 
+// mainGatePlan is gatePlanOn over a main whose head is m1, its checks
+// those of statuses, with the integration card set by card; calls lists
+// each gate call as task#pr@commit:checked, and the gate answers each
+// call with answer.
+func mainGatePlan(t *testing.T, statuses []string, card func(*fakeStore), answer func(call int, s *fakeStore, taskID string) (CriteriaResult, error)) (*Runner, *fakeStore, *[]string) {
+	t.Helper()
+	fj := &prForgejo{pulls: map[int64]string{9: `{"number":9,"state":"closed","merged":true,"head":{"sha":"h9"},"base":{"ref_name":"main"}}`},
+		mainHead: "m1", statusesBySHA: map[string][]string{"m1": statuses}}
+	calls := new([]string)
+	r, s := gatePlanOn(t, fj, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(_ context.Context, taskID string, pr int64, commit, checked string) (CriteriaResult, error) {
+			*calls = append(*calls, fmt.Sprintf("%s#%d@%s:%s", taskID, pr, commit, checked))
+			return answer(len(*calls), s, taskID)
+		}
+	})
+	card(s)
+	return r, s, calls
+}
+
+// integrationAs sets t-int's status, pull request and merge commit; with
+// no merge commit it holds no merge (unmergeCard).
+func integrationAs(status string, pr int64, merge string) func(*fakeStore) {
+	return func(s *fakeStore) {
+		c := s.tasks["t-int"]
+		c.Status, c.PRNumber, c.MergeCommit = status, pr, merge
+		s.tasks["t-int"] = c
+		if merge == "" {
+			unmergeCard(s, "t-int")
+		}
+	}
+}
+
+// A plan card a human closes while the gate's run on main's head runs,
+// after the run withdrew the closed integration card's rows and before it
+// wrote one, leaves the plan with no row and no merge: no row and no open
+// group brings the sweep back to it. Its run on main's head on record does:
+// the sweep visits the closed plan, nothing holds production, and the plan
+// closes.
+func TestCriteriaPassClosesAPlanClosedDuringItsRunOnMain(t *testing.T) {
+	ctx := context.Background()
+	r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 2085, ""), func(_ int, s *fakeStore, _ string) (CriteriaResult, error) {
+		closed := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+		plan := s.tasks["t-plan"]
+		plan.Status, plan.FinishedAt = "closed", &closed
+		s.tasks["t-plan"] = plan
+		return CriteriaResult{}, errors.New("the run was cut")
+	})
+	s.criteriaVerdicts["t-int"] = nil
+	if err := gateMet(ctx, s, "t-int"); err != nil {
+		t.Fatal(err)
+	}
+	sweep(ctx, r)
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(*calls) != 1 || len(rows) != 0 || !slices.Equal(gateOutcomes(s), []string{"cut#1"}) {
+		t.Fatalf("calls %v, rows %+v, outcomes %v; want one run on main, cut, the rows withdrawn", *calls, rows, gateOutcomes(s))
+	}
+	r.CriteriaPass(ctx)
+	if closeRows(s) != 1 {
+		t.Fatalf("plan_closed rows %d, want the closed plan closed", closeRows(s))
+	}
+}
+
+// An integration card whose work reached main through no pull request of
+// its own leaves the gate criteria to the criteria gate on main's head: a
+// card closed with no pull request (it proved and pushed nothing), one
+// closed with its pull request unmerged, a done one with no pull request,
+// one failed into a successor that is done, and one failed with none. The
+// gate runs once on m1 with pr 0, its ran record carries pr 0, its rows
+// close the plan, and no ask opens. A done card whose pull request merged
+// keeps the gate on that head, h9; an integration card still running runs
+// no gate.
+func TestPlanCloseRunsTheGateAtMainWhenTheIntegrationCardPushedNothing(t *testing.T) {
+	ctx := context.Background()
+	failedIntoDone := func(s *fakeStore) {
+		integrationAs("failed", 0, "")(s)
+		succ := SuccessorID("t-int")
+		s.tasks[succ] = Task{ID: succ, Repository: "sf/code", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "integration", Status: "done", PRNumber: 12, MergeCommit: "m0"}
+	}
+	for _, c := range []struct {
+		name   string
+		card   func(*fakeStore)
+		calls  []string
+		pr     int64
+		closes int
+		asks   int
+	}{
+		{"closed, no pull request", integrationAs("closed", 0, ""), []string{"t-int#0@m1:"}, 0, 1, 0},
+		{"closed, its pull request unmerged", integrationAs("closed", 2085, ""), []string{"t-int#0@m1:"}, 0, 1, 0},
+		{"done, no pull request", integrationAs("done", 0, ""), []string{"t-int#0@m1:"}, 0, 1, 0},
+		{"failed into a done successor", failedIntoDone, []string{"t-int#0@m1:"}, 0, 1, 0},
+		{"done, its pull request merged", integrationAs("done", 9, "abc"), []string{"t-int#9@h9:"}, 9, 1, 0},
+		{"running", integrationAs("running", 0, ""), nil, 0, 0, 0},
+		{"failed, no successor", integrationAs("failed", 0, ""), []string{"t-int#0@m1:"}, 0, 1, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, s, calls := mainGatePlan(t, nil, c.card, func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+				return CriteriaResult{}, gateMet(ctx, s, taskID)
+			})
+			r.CriteriaPass(ctx)
+			r.CriteriaGatePass(ctx)
+			r.CriteriaPass(ctx)
+			if !slices.Equal(*calls, c.calls) {
+				t.Fatalf("gate calls %v, want %v", *calls, c.calls)
+			}
+			pending, _ := s.ApprovalRequests(ctx, "pending")
+			if closeRows(s) != c.closes || len(pending) != c.asks {
+				t.Fatalf("closes %d, pending %+v; want %d closes and %d asks", closeRows(s), pending, c.closes, c.asks)
+			}
+			if c.calls == nil {
+				return
+			}
+			var ran []map[string]any
+			for _, e := range s.events {
+				if e.Kind == EventCriteriaGateRun && e.Detail["outcome"] == gateDone {
+					ran = append(ran, e.Detail)
+				}
+			}
+			head := "m1"
+			if c.pr != 0 {
+				head = "h9"
+			}
+			if len(ran) != 1 || ran[0]["pr"] != c.pr || ran[0]["commit"] != head || ran[0]["task"] != "t-int" {
+				t.Fatalf("ran records %v, want one on t-int with pr %d at %s", ran, c.pr, head)
+			}
+		})
+	}
+}
+
+// The gate on main's head keeps the gate's attempts: checks still running
+// at m1 record pending and spend no attempt, a pass within the bound reads
+// m1's checks alone, and once they conclude the gate runs again on the
+// same attempt and its rows close the plan. A gate that errors is cut
+// twice, and then the criteria_rerun ask opens.
+func TestCriteriaGateAtMainKeepsTheAttempts(t *testing.T) {
+	ctx := context.Background()
+	t.Run("pending", func(t *testing.T) {
+		r, s, calls := mainGatePlan(t, []string{checksRunning, checksGreen}, integrationAs("closed", 0, ""), func(call int, s *fakeStore, taskID string) (CriteriaResult, error) {
+			if call == 1 {
+				return CriteriaResult{Pending: true}, nil
+			}
+			return CriteriaResult{}, gateMet(ctx, s, taskID)
+		})
+		t0 := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+		r.now = func() time.Time { return t0 }
+		sweep(ctx, r)
+		if !slices.Equal(*calls, []string{"t-int#0@m1:"}) || !slices.Equal(gateOutcomes(s), []string{"pending#1"}) {
+			t.Fatalf("first pass: calls %v, outcomes %v; want one run on m1 and one pending record", *calls, gateOutcomes(s))
+		}
+		sweep(ctx, r)
+		if len(*calls) != 1 {
+			t.Fatalf("checks still running: calls %v, want no second run", *calls)
+		}
+		sweep(ctx, r)
+		r.CriteriaPass(ctx)
+		if pending, _ := s.ApprovalRequests(ctx, "pending"); len(*calls) != 2 || !slices.Equal(gateOutcomes(s), []string{"pending#1", "ran#1"}) || closeRows(s) != 1 || len(pending) != 0 {
+			t.Fatalf("checks green: calls %v, outcomes %v, closes %d, pending %+v; want ran on attempt 1 and the plan closed", *calls, gateOutcomes(s), closeRows(s), pending)
+		}
+	})
+	t.Run("errors", func(t *testing.T) {
+		r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 0, ""), func(int, *fakeStore, string) (CriteriaResult, error) {
+			return CriteriaResult{}, errors.New("the sandbox went away")
+		})
+		for range 4 {
+			sweep(ctx, r)
+		}
+		pending, _ := s.ApprovalRequests(ctx, "pending")
+		if len(*calls) != 2 || !slices.Equal(gateOutcomes(s), []string{"cut#1", "cut#2"}) || len(pending) != 1 || pending[0].Kind != ApprovalCriteriaRerun {
+			t.Fatalf("calls %v, outcomes %v, pending %+v; want two cuts and the criteria_rerun ask", *calls, gateOutcomes(s), pending)
+		}
+	})
+}
+
 // A card with no ceiling of its own is held to the policy's card ceiling
 // (5.00 in the test policy): 5.00 spent of 5.00 cannot take 0.40, and the
 // ask names the ceiling; 4.60 spent leaves 0.40, no raise.
@@ -2095,8 +3273,8 @@ func TestCriteriaGatePassKeepsToThePolicyCeiling(t *testing.T) {
 		calls int
 	}{{5, 0}, {4.6, 1}} {
 		calls := 0
-		r, s := gatePlan(t, 5, c.spent, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(context.Context, string, int64, string) (CriteriaResult, error) {
+		r, s := gatePlan(t, 5, c.spent, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 				calls++
 				return CriteriaResult{}, nil
 			}
@@ -2119,8 +3297,8 @@ func TestCriteriaGatePassKeepsToThePolicyCeiling(t *testing.T) {
 // -0.30) is raised by 0.70 to leave 0.40.
 func TestCriteriaGatePassRaisesAnOverspentCardToTheReserve(t *testing.T) {
 	var left float64
-	r, s := gatePlan(t, 5, 5.3, func(s *fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(_ context.Context, id string, _ int64, _ string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5.3, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(_ context.Context, id string, _ int64, _, _ string) (CriteriaResult, error) {
 			left = s.tasks[id].Left()
 			return CriteriaResult{}, nil
 		}
@@ -2136,8 +3314,8 @@ func TestCriteriaGatePassRaisesAnOverspentCardToTheReserve(t *testing.T) {
 func TestCriteriaGatePassCountsAnEscalationAsACut(t *testing.T) {
 	ctx := context.Background()
 	calls := 0
-	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 			calls++
 			return CriteriaResult{Escalate: "the sandbox did not start"}, nil
 		}
@@ -2169,8 +3347,8 @@ func addGatePlan(t *testing.T, s *fakeStore, p, i string) {
 func TestCriteriaGatePassStartsOnlyARunThatFits(t *testing.T) {
 	ctx := context.Background()
 	var ran []string
-	r, s := gatePlan(t, 5, 1, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(_ context.Context, id string, _ int64, _ string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 1, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(_ context.Context, id string, _ int64, _, _ string) (CriteriaResult, error) {
 			ran = append(ran, id)
 			return CriteriaResult{}, nil
 		}
@@ -2200,8 +3378,8 @@ func TestCriteriaGatePassCutsOnlyAForgejoRefusal(t *testing.T) {
 		asks   int
 	}{{"a server error", http.StatusInternalServerError, 0}, {"a missing pull request", http.StatusNotFound, 1}} {
 		calls := 0
-		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(context.Context, string, int64, string) (CriteriaResult, error) {
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 				calls++
 				return CriteriaResult{}, nil
 			}
@@ -2299,8 +3477,10 @@ func TestRunCriteriaGateScrubsEveryErrorLine(t *testing.T) {
 		}},
 	} {
 		logs.Reset()
-		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(context.Context, string, int64, string) (CriteriaResult, error) { return CriteriaResult{}, nil }
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+				return CriteriaResult{}, nil
+			}
 		})
 		ls := &leakyStore{fakeStore: s}
 		r.store, r.Scrub = ls, redact.New()
@@ -2327,14 +3507,16 @@ func TestPlanCloseCheckScrubsTheGatesReadErrors(t *testing.T) {
 		set  func(*Runner, *leakyStore)
 	}{
 		{"the close row read", func(_ *Runner, s *leakyStore) { s.closed = errors.New(leak) }},
-		{"the record read", func(_ *Runner, s *leakyStore) { s.events = errors.New(leak) }},
+		{"the record read", func(_ *Runner, s *leakyStore) { s.events, s.in = errors.New(leak), "planGateOf" }},
 		{"the replan read", func(r *Runner, _ *leakyStore) {
 			r.timeline.Objects = &failingObjects{in: "gateWanted", err: errors.New(leak)}
 		}},
 	} {
 		logs.Reset()
-		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(context.Context, string, int64, string) (CriteriaResult, error) { return CriteriaResult{}, nil }
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+				return CriteriaResult{}, nil
+			}
 		})
 		ls := &leakyStore{fakeStore: s, in: "gateWanted"}
 		r.store, r.Scrub = ls, redact.New()
@@ -2380,8 +3562,8 @@ func TestCriteriaGateWaitsOnAFailedRead(t *testing.T) {
 		{"only the gate's replan read fails", func(r *Runner, _ *leakyStore) { r.timeline.Objects = &failingObjects{in: "gateWanted"} }},
 	} {
 		calls := 0
-		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(context.Context, string, int64, string) (CriteriaResult, error) {
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 				calls++
 				return CriteriaResult{}, nil
 			}
@@ -2447,8 +3629,8 @@ func (*putFailing) Put(context.Context, string, []byte) error { return errors.Ne
 func TestCriteriaGateOnceGuardReadsTheEventsRow(t *testing.T) {
 	ctx := context.Background()
 	calls := 0
-	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 			calls++
 			return CriteriaResult{}, nil
 		}
@@ -2462,8 +3644,8 @@ func TestCriteriaGateOnceGuardReadsTheEventsRow(t *testing.T) {
 		t.Fatalf("with the mirror lost: gate calls %d, pending %+v, want one run and the ask", calls, pending)
 	}
 	r.timeline.Objects = &failingObjects{}
-	if due, err := r.gateDue(ctx, "t-plan", s.tasks["t-int"]); due || err != nil {
-		t.Errorf("S3 unreadable, the row present: due %t, %v, want not due", due, err)
+	if g, err := planGateOf(ctx, s, "t-plan", s.tasks["t-int"]); err != nil || g.due() {
+		t.Errorf("S3 unreadable, the row present: due %t, %v, want not due", g.due(), err)
 	}
 }
 
@@ -2486,8 +3668,8 @@ func TestRunCriteriaGateChecksAgainBeforeTheRaiseAndTheRun(t *testing.T) {
 		{"during the raise", 5.4, func(s *leakyStore, _ *atomic.Bool) { s.afterFund = func() { closePlan(s.fakeStore) } }},
 	} {
 		calls := 0
-		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-			return func(context.Context, string, int64, string) (CriteriaResult, error) {
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 				calls++
 				return CriteriaResult{}, nil
 			}
@@ -2515,8 +3697,8 @@ func TestRunCriteriaGateChecksAgainBeforeTheRaiseAndTheRun(t *testing.T) {
 func TestCriteriaGateCountsALostOutcomeAsACut(t *testing.T) {
 	ctx := context.Background()
 	calls := 0
-	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 			calls++
 			return CriteriaResult{}, nil
 		}
@@ -2538,8 +3720,8 @@ func TestCriteriaGateCountsALostOutcomeAsACut(t *testing.T) {
 func TestCriteriaGateWaitsWhenItsStartIsNotRecorded(t *testing.T) {
 	ctx := context.Background()
 	calls := 0
-	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 			calls++
 			return CriteriaResult{}, nil
 		}
@@ -2557,8 +3739,8 @@ func TestCriteriaGateWaitsWhenItsStartIsNotRecorded(t *testing.T) {
 func TestCriteriaGateRunsOnceForEachRoundsIntegrationCard(t *testing.T) {
 	ctx := context.Background()
 	var calls []string
-	r, s := gatePlan(t, 5, 1, func(s *fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(_ context.Context, id string, _ int64, _ string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 1, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(_ context.Context, id string, _ int64, _, _ string) (CriteriaResult, error) {
 			calls = append(calls, id)
 			return CriteriaResult{}, nil
 		}
@@ -2599,8 +3781,8 @@ func TestCriteriaGateRunningIsNoCut(t *testing.T) {
 	}
 	calls, pending, commented, pokes := 0, -1, -1, -1
 	var r *Runner
-	r, s := gatePlan(t, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(ctx context.Context, id string, _ int64, _ string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(ctx context.Context, id string, _ int64, _, _ string) (CriteriaResult, error) {
 			calls++
 			if calls == 1 {
 				return CriteriaResult{}, errors.New("timed out")
@@ -2643,8 +3825,8 @@ func TestCriteriaGateRunLeavesThePlanAlone(t *testing.T) {
 	ctx := context.Background()
 	closesDuring := -1
 	var r *Runner
-	r, s := gatePlan(t, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(ctx context.Context, id string, _ int64, _ string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(ctx context.Context, id string, _ int64, _, _ string) (CriteriaResult, error) {
 			if err := gateMet(ctx, s, id); err != nil {
 				return CriteriaResult{}, err
 			}
@@ -2668,13 +3850,15 @@ func TestCriteriaGateRunLeavesThePlanAlone(t *testing.T) {
 // the next pass asks.
 func TestCriteriaGateStartedDuringTheCloseCheck(t *testing.T) {
 	ctx := context.Background()
-	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) { return CriteriaResult{}, nil }
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return CriteriaResult{}, nil
+		}
 	})
 	row := func(outcome, attempt string) {
 		t.Helper()
 		if _, err := s.Record(ctx, Event{Repository: "sf/code", TaskID: "t-plan", Kind: EventCriteriaGateRun, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"task": "t-int", "pr": 9, "commit": "h9", "outcome": outcome, "attempt": attempt}}); err != nil {
+			Detail: map[string]any{"task": "t-int", "pr": 9, "commit": "h9", "outcome": outcome, "attempt": attempt, "cards": "rev 1 card-foundation:done t-int:done@2026-10-01T09:00:00Z"}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2716,15 +3900,17 @@ func asksRequested(s *fakeStore) int {
 	return n
 }
 
-// The ask's own read of the gate's record fails after a run that wrote no
-// rows: no ask that pass. The next pass reads it and asks.
+// The read of the gate's record fails after a run that wrote no rows: no
+// ask that pass. The next pass reads it and asks.
 func TestCriteriaGateAskWaitsOnItsRecordRead(t *testing.T) {
 	ctx := context.Background()
-	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) { return CriteriaResult{}, nil }
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return CriteriaResult{}, nil
+		}
 	})
 	sweep(ctx, r)
-	r.store = &leakyStore{fakeStore: s, events: errors.New("db down"), in: "askRerun"}
+	r.store = &leakyStore{fakeStore: s, events: errors.New("db down"), in: "planGateOf"}
 	r.CriteriaPass(ctx)
 	if p, _ := s.ApprovalRequests(ctx, "pending"); len(p) != 0 {
 		t.Fatalf("pending %+v, want no ask while the ask's read fails", p)
@@ -2742,8 +3928,8 @@ func TestCriteriaGateAskWaitsOnItsRecordRead(t *testing.T) {
 func TestCriteriaGateAskNamesOnlyItsCardsCeiling(t *testing.T) {
 	ctx := context.Background()
 	calls := 0
-	r, s := gatePlan(t, 5, 1, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
-		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+	r, s := gatePlan(t, 5, 1, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
 			calls++
 			return CriteriaResult{}, nil
 		}
@@ -2859,9 +4045,16 @@ func TestPlanCloseWords(t *testing.T) {
 func TestCloseHeldPlanRecordsPlanClosedWithTheWaivers(t *testing.T) {
 	ctx := context.Background()
 	r, s, fj := tenCriteriaPlan(t, "done")
+	r.criteriaGate = gateWritesNothing
+	r.planCloseCheck(ctx, "t-plan")
+	r.CriteriaGatePass(ctx)
 	r.planCloseCheck(ctx, "t-plan")
 	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Kind != ApprovalCriteriaRerun {
 		t.Fatalf("the sweep's ask: %+v, want one pending criteria_rerun", pending)
+	}
+	if got := commentBodies(fj); len(got) != 1 ||
+		!strings.HasPrefix(got[0], "#1 factoryd: every card of the plan has ended, and no verdict on main settles these criteria: the criteria gate has not settled k1, k2,") {
+		t.Errorf("the ask's comment = %q, want it to say every card ended and nothing on main settles the criteria", got)
 	}
 	n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "the cards moved to the rebuild", true)
 	if err != nil || n != 10 {
@@ -2943,5 +4136,127 @@ func TestCriteriaPassFinishesAPlanClose(t *testing.T) {
 				t.Fatalf("console posted first %t, pass %d: comments %q, status %q, issue %q; want the words once, closed, closed", posted, pass, got, status, fj.issues[1].state)
 			}
 		}
+	}
+}
+
+// gateOutcomes are the outcomes of the plan's criteria gate runs on t-int,
+// oldest first, started rows left out, each with its attempt.
+func gateOutcomes(s *fakeStore) []string {
+	var out []string
+	for _, e := range s.events {
+		if e.Kind == EventCriteriaGateRun && e.Detail["outcome"] != gateStarted {
+			out = append(out, fmt.Sprintf("%s#%v", e.Detail["outcome"], e.Detail["attempt"]))
+		}
+	}
+	return out
+}
+
+// pendingGate is a plan whose gate answers pending on its first call and
+// then the next answer of later, over a head h9 whose checks are those of
+// statuses, in order; calls counts the gate's calls.
+func pendingGate(t *testing.T, statuses []string, later CriteriaResult) (r *Runner, s *fakeStore, calls *int, now *time.Time) {
+	t.Helper()
+	fj := &prForgejo{pulls: map[int64]string{9: `{"number":9,"state":"closed","merged":true,"head":{"sha":"h9"},"base":{"ref_name":"main"}}`},
+		statusesBySHA: map[string][]string{"h9": statuses}}
+	calls = new(int)
+	r, s = gatePlanOn(t, fj, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(ctx context.Context, taskID string, _ int64, _, _ string) (CriteriaResult, error) {
+			*calls++
+			if *calls == 1 {
+				return CriteriaResult{Pending: true}, nil
+			}
+			if !later.Pending {
+				return later, gateMet(ctx, s, taskID)
+			}
+			return later, nil
+		}
+	})
+	t0 := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	now = &t0
+	r.now = func() time.Time { return *now }
+	return r, s, calls, now
+}
+
+var (
+	checksRunning = statusBody("pending", [4]string{"pending", "pr / test", "", "running"})
+	checksGreen   = statusBody("success", [4]string{"success", "pr / test", "", ""})
+)
+
+// An invariant's checks still running record one pending outcome; a later
+// pass within the checks bound reads the head's checks alone: still
+// pending, it records nothing and starts no gate run, and no ask opens.
+func TestCriteriaGatePassWaitsOnPendingChecks(t *testing.T) {
+	ctx := context.Background()
+	r, s, calls, now := pendingGate(t, []string{checksRunning}, CriteriaResult{})
+	sweep(ctx, r)
+	if *calls != 1 || !slices.Equal(gateOutcomes(s), []string{"pending#1"}) {
+		t.Fatalf("first pass: calls %d, outcomes %v; want one gate run and one pending record", *calls, gateOutcomes(s))
+	}
+	events := len(s.events)
+	*now = now.Add(time.Minute)
+	sweep(ctx, r)
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); *calls != 1 || len(s.events) != events || len(pending) != 0 {
+		t.Fatalf("second pass: calls %d, new events %d, pending %+v; want no gate run, no record, no ask", *calls, len(s.events)-events, pending)
+	}
+}
+
+// Once the checks conclude, the next pass runs the gate: its rows land and
+// ran is recorded on the same attempt, and the plan closes with no ask.
+func TestCriteriaGatePassRunsTheGateWhenPendingChecksConclude(t *testing.T) {
+	ctx := context.Background()
+	r, s, calls, now := pendingGate(t, []string{checksGreen}, CriteriaResult{})
+	sweep(ctx, r)
+	*now = now.Add(time.Minute)
+	sweep(ctx, r)
+	r.CriteriaPass(ctx)
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); *calls != 2 || len(pending) != 0 || closeRows(s) != 1 || !slices.Equal(gateOutcomes(s), []string{"pending#1", "ran#1"}) {
+		t.Fatalf("calls %d, pending %+v, closes %d, outcomes %v; want the gate run once more, ran on attempt 1 and the plan closed", *calls, pending, closeRows(s), gateOutcomes(s))
+	}
+}
+
+// Past the checks wait's bound from the pending record, the gate runs once
+// more; checks still running end it as ran, with the reason, and the
+// criteria_rerun ask opens for the criterion with no row.
+func TestCriteriaGatePassEndsPendingChecksPastTheBound(t *testing.T) {
+	ctx := context.Background()
+	r, s, calls, now := pendingGate(t, []string{checksRunning}, CriteriaResult{Pending: true})
+	sweep(ctx, r)
+	*now = now.Add(r.cfg.Policy().ChecksBound("sf/code") + time.Minute)
+	sweep(ctx, r)
+	if *calls != 2 || !slices.Equal(gateOutcomes(s), []string{"pending#1", "ran#1"}) {
+		t.Fatalf("calls %d, outcomes %v; want the gate run once more and ran on attempt 1", *calls, gateOutcomes(s))
+	}
+	last := s.events[len(s.events)-1]
+	if last.Detail["reason"] != "The required checks were still running on h9 after 50 minutes" {
+		t.Fatalf("the ran record's detail = %v", last.Detail)
+	}
+	r.CriteriaPass(ctx)
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	if len(pending) != 1 || pending[0].Kind != ApprovalCriteriaRerun {
+		t.Fatalf("pending asks = %+v, want the one criteria_rerun ask", pending)
+	}
+	if want := "criteria never judged: the criteria gate has not settled c1, c3. The required checks were still running on h9 after 50 minutes"; !strings.HasPrefix(pending[0].Reason, want) {
+		t.Fatalf("ask reason = %q, want it to start with %q", pending[0].Reason, want)
+	}
+	sweep(ctx, r)
+	if *calls != 2 {
+		t.Fatalf("calls = %d after the ask, want the gate left alone", *calls)
+	}
+}
+
+// A restart between the started record of a later run and its outcome
+// leaves started newest: the bound still counts from the first pending
+// record, so a gate run past it that finds the checks running ends as ran
+// instead of recording a fresh pending.
+func TestCriteriaGatePassKeepsThePendingBoundAcrossARestart(t *testing.T) {
+	ctx := context.Background()
+	r, s, calls, now := pendingGate(t, []string{checksRunning}, CriteriaResult{Pending: true})
+	sweep(ctx, r)
+	s.events = append(s.events, Event{TaskID: "t-plan", Kind: EventCriteriaGateRun,
+		Detail: map[string]any{"task": "t-int", "pr": 9, "commit": "h9", "outcome": gateStarted, "attempt": "1"}})
+	*now = now.Add(r.cfg.Policy().ChecksBound("sf/code") + time.Minute)
+	sweep(ctx, r)
+	if *calls != 2 || !slices.Equal(gateOutcomes(s), []string{"pending#1", "ran#1"}) {
+		t.Fatalf("calls %d, outcomes %v; want the gate run once more and ended as ran, not a new pending", *calls, gateOutcomes(s))
 	}
 }
