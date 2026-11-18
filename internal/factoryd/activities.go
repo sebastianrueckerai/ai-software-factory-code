@@ -2770,7 +2770,11 @@ func (r *Runner) workHead(ctx context.Context, taskID string) (string, error) {
 }
 
 // branchHead is the task's branch head past the base, whoever pushed it.
+// A runner without a Forgejo client reads no branch.
 func (r *Runner) branchHead(ctx context.Context, t Task, repo Repo) (string, error) {
+	if r.forgejo == nil {
+		return "", nil
+	}
 	fork := r.forgejo.Fork(repo)
 	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(t))
 	switch {
