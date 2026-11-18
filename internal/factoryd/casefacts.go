@@ -118,8 +118,13 @@ type CaseFacts struct {
 	Report bool `json:"report,omitempty"`
 	// Criteria: the card is the integration or a delta card of a plan whose
 	// criteria a human judges on its merge
-	Criteria     bool      `json:"criteria,omitempty"`
-	Pushed       bool      `json:"pushed,omitempty"` // a session pushed a branch head
+	Criteria bool `json:"criteria,omitempty"`
+	Pushed   bool `json:"pushed,omitempty"` // a session pushed a branch head
+	// BranchRead: the card's branch on the fork was read. BranchHead is its
+	// head while main lacks it, "" when the fork holds no branch for the
+	// card past its base or main holds its head (workAhead).
+	BranchRead   bool      `json:"branch_read,omitempty"`
+	BranchHead   string    `json:"branch_head,omitempty"`
 	Dependencies []DepFact `json:"dependencies,omitempty"`
 	Planner      bool      `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
 	// PlannerRetry: the plan's automatic second session, topped up to half
@@ -458,6 +463,11 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			}
 			f.Criteria = len(p.Criteria) > 0 && CriteriaCard(p, t.PlanKey)
 			return nil
+		}},
+		{"branch", func() (err error) {
+			f.BranchHead, err = r.workAhead(ctx, t)
+			f.BranchRead = err == nil
+			return err
 		}},
 		{"dependencies", func() (err error) {
 			f.Dependencies, err = r.depFacts(ctx, t.ID)

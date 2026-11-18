@@ -236,6 +236,8 @@ func TestRungZeroTakesNothingOnFactsReadPartly(t *testing.T) {
 			case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/demo-app/demo-app/issues/12/comments":
 				w.WriteHeader(http.StatusCreated)
 				fmt.Fprint(w, `{"id": 501}`)
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/factory-agent/demo-app/branches/factory/t1":
+				http.NotFound(w, r)
 			default:
 				fmt.Fprint(w, `[]`)
 			}

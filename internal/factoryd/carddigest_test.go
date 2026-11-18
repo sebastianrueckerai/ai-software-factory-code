@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -27,7 +29,8 @@ var digestStart = time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 // digestAt is m minutes into the life of the fixtures' card.
 func digestAt(m int) time.Time { return digestStart.Add(time.Duration(m) * time.Minute) }
 
-// digestRig is a runner on a fake store and a fake object store, with
+// digestRig is a runner on a fake store, a fake object store and a Forgejo
+// that answers every call 404, so the fork holds no branch of a card, with
 // card t1410 filed at digestStart by a webhook: medium, budget 5, running.
 // Its clock stands at digestStart until a test moves it (at).
 type digestRig struct {
@@ -46,8 +49,16 @@ func newDigestRig(change func(*Task)) digestRig {
 	}
 	store.tasks[card.ID] = card
 	return digestRig{r: &Runner{store: store, objects: objects, cfg: testRunnerConfig(), now: func() time.Time { return digestStart },
-		timeline: &Timeline{Objects: objects, Events: store, Store: store}},
+		timeline: &Timeline{Objects: objects, Events: store, Store: store},
+		forgejo:  &Forgejo{BaseURL: "http://forgejo.test", BotUser: "factory-agent", HTTP: &http.Client{Transport: notFoundTrips{}}}},
 		store: store, tl: &Timeline{Objects: objects}}
+}
+
+// notFoundTrips answers every request 404.
+type notFoundTrips struct{}
+
+func (notFoundTrips) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}, Request: r}, nil
 }
 
 // at moves the rig's clock to minute m.
