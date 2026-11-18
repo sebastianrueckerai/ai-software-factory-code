@@ -139,20 +139,6 @@ func newMonitorRig(t *testing.T) monitorRig {
 	return monitorRig{m: m, s: s, forge: forge, objects: objects, signals: signals}
 }
 
-// card files agent card id on issue of demo-app/demo-app on the direct
-// track in status at 08:00, four hours before the rig's clock.
-func (g monitorRig) card(t *testing.T, id string, issue int64, status string) {
-	t.Helper()
-	ctx := context.Background()
-	if err := g.s.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: status, Objective: "x", Repository: "demo-app/demo-app",
-		IssueNumber: issue, Track: policy.TrackDirect, Size: "large", BudgetEUR: 3}); err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET created_at = $2 WHERE id = $1`, id, monitorAt.Add(-4*time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // event records an event of kind on card id, on issue, at at.
 func (g monitorRig) event(t *testing.T, id string, issue int64, kind string, detail map[string]any, at time.Time) int64 {
 	t.Helper()
@@ -169,13 +155,6 @@ func (g monitorRig) event(t *testing.T, id string, issue int64, kind string, det
 func (g monitorRig) filed(t *testing.T, id string, issue int64) int64 {
 	t.Helper()
 	return g.event(t, id, issue, EventCardCreated, map[string]any{"budget_eur": 3.0}, monitorAt.Add(-4*time.Hour))
-}
-
-func (g monitorRig) pass(t *testing.T) {
-	t.Helper()
-	if err := g.m.Pass(context.Background()); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
 }
 
 // flagCases are card id's monitor_flag cases by state key, one case per
@@ -208,13 +187,6 @@ const (
 	queuedLine     = "Monitor flag: queued_over_bound(work bound 3 of 3 for 3h)"
 	monitorHandsUp = "no resolver fits"
 )
-
-// face is the comment of a monitor case's face on card id for line: the
-// card goes on, and the flag is answered in the chat.
-func face(id, line string) string {
-	return "factoryd: task " + id + " needs a human.\n\n```\n" + line + "\n```\n\n" +
-		"The card goes on meanwhile. Answer the flag in the project chat."
-}
 
 // assertQueueCase checks that card id carries the queue's flag case alone,
 // at the human with rung 0's hand-up and the human's step, its facts naming
@@ -258,37 +230,6 @@ func logs(t *testing.T) *strings.Builder {
 	return &b
 }
 
-// A running card quiet since its filing at 08:00, with no line and no model
-// call, raises wait_over_bound on run_quiet: one case, faced beside the
-// run, which stays running. The face writes no line on the card's
-// timeline, so the quiet keeps its start, and another event opens nothing.
-func TestMonitorFacesAQuietRunBesideIt(t *testing.T) {
-	g := newMonitorRig(t)
-	g.rungsOff()
-	ctx := context.Background()
-	g.card(t, "t1", 12, "running")
-	g.pass(t)
-	g.filed(t, "t1", 12)
-	g.pass(t)
-	const line = "Monitor flag: wait_over_bound(run_quiet since +0:00)"
-	cases := g.flagCases(t, "t1")
-	c, ok := cases["wait_over_bound|run_quiet|2026-11-04T08:00:00Z"]
-	if len(cases) != 1 || !ok || c.Status != CaseAtHuman || c.Problem != line {
-		t.Fatalf("t1's flag cases = %v, want wait_over_bound on run_quiet since 08:00 at the human", cases)
-	}
-	if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "running" || !slices.Equal(g.forge.comments[12], []string{face("t1", line)}) {
-		t.Fatalf("t1 %s, comments %q; want it running with the case's one face", task.Status, g.forge.comments[12])
-	}
-	if tl, _ := g.objects.Get(ctx, "sessions/t1/timeline.jsonl"); len(tl) != 0 {
-		t.Fatalf("t1's timeline = %q, want no line", tl)
-	}
-	g.event(t, "t1", 12, EventMergeDenied, nil, monitorAt)
-	g.pass(t)
-	if cases := g.flagCases(t, "t1"); len(cases) != 1 || len(g.forge.comments[12]) != 1 {
-		t.Fatalf("t1's flag cases = %v, comments %q; want the one case and its one face", cases, g.forge.comments[12])
-	}
-}
-
 // The newest ask on a card is the run's: a monitor case beside it, newer
 // and at the human, is answered by its id alone.
 func TestNewestAskCaseLeavesAMonitorCaseOut(t *testing.T) {
@@ -310,11 +251,10 @@ func TestNewestAskCaseLeavesAMonitorCaseOut(t *testing.T) {
 	}
 }
 
-// monitorStores are the stores whose monitor reads must agree: Postgres,
-// and the fake.
+// monitorStores are the stores whose monitor reads must agree; Postgres runs
+// in internal/factoryd/pg, so the fake runs here.
 var monitorStores = map[string]func(*testing.T) Store{
-	"postgres": func(t *testing.T) Store { return monitorStore(t) },
-	"fake":     func(*testing.T) Store { return newFakeStore() },
+	"fake": func(*testing.T) Store { return newFakeStore() },
 }
 
 // The first read plants the cursor at the newest event and answers
@@ -372,9 +312,4 @@ func TestMonitorPlantsTheCursorAtTheNewestEvent(t *testing.T) {
 			}
 		})
 	}
-}
-
-func (g monitorRig) rungsOff() {
-	rungsOff(g.m.Runner)
-	g.m.Policy = func() policy.Tree { return g.m.Runner.cfg.Policy().Tree }
 }

@@ -56,3 +56,7 @@ const (
 func (a Action) PgRefusal(f CaseFacts, rung int, res Resolution) string {
 	return a.refusal(f, rung, res)
 }
+
+// PgMonitorKinds aliases the monitor's unexported event kinds, for the
+// moved monitor parity test that reads them from the store.
+var PgMonitorKinds = monitorKinds

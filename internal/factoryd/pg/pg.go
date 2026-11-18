@@ -262,6 +262,10 @@ var (
 	orderedActions            = factoryd.PgOrderedActions
 	replanText                = factoryd.PgReplanText
 	replanClosers             = factoryd.PgReplanClosers
+	EventGateAudit            = factoryd.EventGateAudit
+	EventSessionEnd           = factoryd.EventSessionEnd
+	EventSessionStarted       = factoryd.EventSessionStarted
+	monitorKinds              = factoryd.PgMonitorKinds
 	RoleFoundation            = factoryd.RoleFoundation
 	RoleFeature               = factoryd.RoleFeature
 	RoleIntegration           = factoryd.RoleIntegration

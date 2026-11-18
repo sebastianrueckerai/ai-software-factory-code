@@ -934,6 +934,121 @@ func TestOpenTripWithAKindTakesNoHealedPath(t *testing.T) {
 	}
 }
 
+// A running card quiet since its filing at 08:00, with no line and no model
+// call, raises wait_over_bound on run_quiet: one case, faced beside the
+// run, which stays running. The face writes no line on the card's
+// timeline, so the quiet keeps its start, and another event opens nothing.
+func TestMonitorFacesAQuietRunBesideIt(t *testing.T) {
+	g := newMonitorRig(t)
+	g.rungsOff()
+	ctx := context.Background()
+	g.card(t, "t1", 12, "running")
+	g.pass(t)
+	g.filed(t, "t1", 12)
+	g.pass(t)
+	const line = "Monitor flag: wait_over_bound(run_quiet since +0:00)"
+	cases := g.flagCases(t, "t1")
+	c, ok := cases["wait_over_bound|run_quiet|2026-11-04T08:00:00Z"]
+	if len(cases) != 1 || !ok || c.Status != CaseAtHuman || c.Problem != line {
+		t.Fatalf("t1's flag cases = %v, want wait_over_bound on run_quiet since 08:00 at the human", cases)
+	}
+	if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "running" || !slices.Equal(g.forge.comments[12], []string{face("t1", line)}) {
+		t.Fatalf("t1 %s, comments %q; want it running with the case's one face", task.Status, g.forge.comments[12])
+	}
+	if tl, _ := g.objects.Get(ctx, "sessions/t1/timeline.jsonl"); len(tl) != 0 {
+		t.Fatalf("t1's timeline = %q, want no line", tl)
+	}
+	g.event(t, "t1", 12, EventMergeDenied, nil, monitorAt)
+	g.pass(t)
+	if cases := g.flagCases(t, "t1"); len(cases) != 1 || len(g.forge.comments[12]) != 1 {
+		t.Fatalf("t1's flag cases = %v, comments %q; want the one case and its one face", cases, g.forge.comments[12])
+	}
+}
+
+// The newest ask on a card is the run's: a monitor case beside it, newer
+// and at the human, is answered by its id alone.
+func TestNewestAskCaseLeavesAMonitorCaseOut(t *testing.T) {
+	for name, open := range monitorStores {
+		t.Run(name, func(t *testing.T) {
+			ctx, s := context.Background(), open(t)
+			run, _, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap", Status: CaseAtHuman, Problem: "p"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20",
+				Status: CaseAtHuman, Problem: "Monitor flag: checkin_cut(+0:20)"}); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := s.NewestAskCase(ctx, "t1"); err != nil || got.ID != run.ID {
+				t.Fatalf("NewestAskCase = case %d (%s), %v; want the run's case %d", got.ID, got.Kind, err, run.ID)
+			}
+		})
+	}
+}
+
+// monitorStores are the stores whose monitor reads must agree; the fake runs
+// in factoryd, so Postgres runs here.
+var monitorStores = map[string]func(*testing.T) Store{
+	"postgres": func(t *testing.T) Store { return monitorStore(t) },
+}
+
+// The first read plants the cursor at the newest event and answers
+// nothing: no history raises a flag. Later reads answer the monitor's
+// kinds past the cursor and past after, oldest first, up to the limit.
+// The cursor moves forward only.
+func TestMonitorPlantsTheCursorAtTheNewestEvent(t *testing.T) {
+	for name, open := range monitorStores {
+		t.Run(name, func(t *testing.T) {
+			ctx, s := context.Background(), open(t)
+			record := func(kind string) int64 {
+				t.Helper()
+				id, err := s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: kind, Actor: FactoryDecider, Via: ViaFactoryd})
+				if err != nil || id == 0 {
+					t.Fatalf("Record %s = %d, %v", kind, id, err)
+				}
+				return id
+			}
+			read := func(after int64, limit int) []int64 {
+				t.Helper()
+				events, err := s.MonitorEvents(ctx, after, monitorKinds, limit)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ids := make([]int64, len(events))
+				for i, e := range events {
+					ids[i] = e.ID
+				}
+				return ids
+			}
+			record(EventTaskStatus)
+			record(EventSessionEnd)
+			if got := read(0, 100); len(got) != 0 {
+				t.Fatalf("the first read = %v, want nothing: the cursor starts at the newest event", got)
+			}
+			review := record(EventModelReview)
+			record(EventSessionStarted)
+			audit := record(EventGateAudit)
+			if got := read(0, 100); !slices.Equal(got, []int64{review, audit}) {
+				t.Fatalf("read = %v, want the review %d and the audit %d, not the session's start", got, review, audit)
+			}
+			if got := read(0, 1); !slices.Equal(got, []int64{review}) {
+				t.Fatalf("read of one = %v, want the review %d", got, review)
+			}
+			if got := read(review, 100); !slices.Equal(got, []int64{audit}) {
+				t.Fatalf("read past the review = %v, want the audit %d", got, audit)
+			}
+			for _, id := range []int64{audit, review} {
+				if err := s.SetMonitorCursor(ctx, id); err != nil {
+					t.Fatal(err)
+				}
+				if got := read(0, 100); len(got) != 0 {
+					t.Fatalf("read after the cursor moved to %d = %v, want nothing: the cursor stays at the audit %d", id, got, audit)
+				}
+			}
+		})
+	}
+}
+
 // A plan's child row whose issue never linked reads the queue reason "no
 // issue" and holds no slot. The flag fires on a wait longer than its bound,
 // so at 2h01m the monitor opens one queued_over_bound case, keyed by the
