@@ -1342,7 +1342,7 @@ func TestBoardRowsApplyOnTheirPreconditions(t *testing.T) {
 // The human takes all of them, and rung 2 keeps the grant, which buys a
 // card and waives nothing.
 func TestSettlingCriteriaByWordIsTheHumans(t *testing.T) {
-	const want = "settling a plan's criteria by word is the human's: hand it up with your recommendation; the human waives, denies or confirms"
+	const want = "settling a plan's criteria by word is the human's: hand it up with your recommendation; the human waives or confirms"
 	criteria := CaseFacts{Kind: CasePlanCriteria}
 	merge := CaseFacts{Kind: CaseMergeApproval, Criteria: true, Head: "h1", PR: 9, PROpen: true, Checks: "green"}
 	verdict := func(v, note string) Resolution {

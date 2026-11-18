@@ -1324,6 +1324,10 @@ func (c *Console) doCardAnswer(ctx context.Context, a actor, id, key string, fie
 	case factoryd.AnswerAccent:
 		_, err := c.doSetAccent(ctx, a, id, field("accent"))
 		return "", err
+	case factoryd.AnswerHold:
+		return c.doHoldCard(ctx, a, id, field("release"), note)
+	case factoryd.AnswerRelease:
+		return c.doReleaseHold(ctx, a, id)
 	}
 	return "", refuse(http.StatusBadRequest, "This answer opens the card's thread: press it on the opened card.")
 }

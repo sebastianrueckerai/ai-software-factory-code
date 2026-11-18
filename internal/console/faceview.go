@@ -453,12 +453,15 @@ func (c *Console) stateOf(ctx context.Context, v *boardView, f *faceView, k card
 // waitsOf is why card k does not go on, in words, each card it waits for
 // a link with its title and state: the cards it depends on, its image,
 // its turn among the queued cards, or the cards ahead of it in the merge
-// queue; nothing while its helper runs, whose step its state names.
+// queue, and first a human's hold on it; nothing while its helper runs,
+// whose step its state names.
 func (c *Console) waitsOf(ctx context.Context, v *boardView, k card) template.HTML {
 	var words string
 	switch {
 	case k.helperRuns():
 		// the state names the helper's step, the one thing the card waits on
+	case k.HoldLine != "":
+		words = k.HoldLine
 	case k.WaitingOn != "":
 		words = "waits for " + k.WaitingOn
 	case k.Blocked > 0 && k.Status == "queued":
@@ -467,6 +470,8 @@ func (c *Console) waitsOf(ctx context.Context, v *boardView, k card) template.HT
 		words = "waits for its image"
 	case k.Status == "queued":
 		words = queueWait(k.Task, k.SlotWait)
+	case k.Status == "in-review" && k.Gate == factoryd.GateMergeQueue && k.HeldFor > 0:
+		words = fmt.Sprintf("waits to merge until plan #%d closes", k.HeldFor)
 	case k.Status == "in-review" && k.Gate == factoryd.GateMergeQueue && k.QueueAhead < 0:
 		words = "waits to merge after the open plan"
 	case k.Status == "in-review" && k.Gate == factoryd.GateMergeQueue && k.QueueAhead > 0 && k.MergeBehind > 0:

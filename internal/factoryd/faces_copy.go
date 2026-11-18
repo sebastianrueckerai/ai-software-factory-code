@@ -26,6 +26,8 @@ const (
 	AnswerEditBrief   = "edit_brief"
 	AnswerAccent      = "accent"
 	AnswerThread      = "thread"
+	AnswerHold        = "hold_card"
+	AnswerRelease     = "release_hold"
 	AnswerConfirmPlan = "confirm"
 	AnswerRevisePlan  = "revise"
 	AnswerPlanChoice  = "plan_answer"
@@ -162,7 +164,7 @@ var Vocabulary = []Answer{
 	{Action: ActAnswerCriteria, Variant: "waive", Label: "Drop this promise", Effect: "Takes the promise off the plan.",
 		Fields: []Field{criterionField(), requiredNote("Your reason", "Why the plan no longer needs it")}},
 	{Action: ActGrantCriteria, Label: "Build the missing part", Effect: "Files one more card for the open promises."},
-	{Action: ActConfirmCriteria, Label: "The work is enough", Effect: "Records every open promise as met by the delivered cards.",
+	{Action: ActConfirmCriteria, Label: "The work is enough", Effect: "Records every open promise as met by the delivered cards. Drop first the ones you cannot confirm.",
 		Fields: []Field{optionalNote("What shows it")}},
 	{Action: ActRunCriteria, Label: "Run the tests now", Effect: "Runs the plan's tests on main and records each result."},
 	{Action: ActDeployNow, Label: "Deploy now", Effect: "Releases the held production deploy."},
@@ -187,6 +189,10 @@ var Vocabulary = []Answer{
 		Fields: []Field{requiredNote("Your reason", "Why the card should do without it")}},
 	{Action: AnswerSteer, Label: "Tell the running session", Effect: "The running session reads your message at its next step.",
 		Fields: []Field{requiredNote("Your message", "What the session should know")}},
+	{Action: AnswerHold, Label: "Put on hold", Effect: "The card does not start until you release it, or until the card you name is merged or done.",
+		Fields: []Field{requiredNote("Why it waits", "The reason, which the board shows on the card"),
+			{Name: "release", Label: "The card that releases it", Hint: "An issue number, or empty to release it yourself", Kind: FieldText, Default: none}}},
+	{Action: AnswerRelease, Label: "Release the hold", Effect: "The card takes its turn to start again."},
 	{Action: AnswerEditBrief, Label: "Edit the brief", Effect: "Changes the title, why line and summary for the agent and the board.",
 		Fields: []Field{{Name: "title", Label: "Title", Kind: FieldText, Default: func(f Facts) string { return CardTitle(f.Card) }},
 			{Name: "why", Label: "Why", Kind: FieldText, Default: func(f Facts) string { return f.Card.Why }},
@@ -985,6 +991,9 @@ func leftLine(f Facts) string {
 	case f.Checks == "green":
 		out = "No finding is open, and the checks are green."
 	}
+	if f.Kind == CaseBudgetFloor && f.BranchRead && f.BranchHead == "" && f.Attempts > 0 {
+		out = lostWorkLine
+	}
 	if f.MergeConflict != "" {
 		out = strings.TrimSpace(out + " " + conflictLine)
 	}
@@ -999,6 +1008,10 @@ func leftLine(f Facts) string {
 // conflictLine is what is left on a head that no longer merges into main:
 // no run of the gates clears it, only a session that merges main.
 const conflictLine = "The pull request no longer merges into main. Only a session that merges main into its branch fixes that."
+
+// lostWorkLine is what is left at a budget floor after a session whose
+// branch, once read, holds no work main lacks.
+const lostWorkLine = "The last session's work was not pushed and is lost. The next session starts again from main."
 
 func isAre(n int) string {
 	if n == 1 {
@@ -1987,16 +2000,24 @@ var heldPlanFace = FaceSpec{
 		for i, p := range promises {
 			promises[i] = endSentence(p)
 		}
-		return Story{Planned: cmp.Or(line("The plan promised: "+strings.Join(promises, " ")), "The plan's open promises stand in its full brief."),
+		s := Story{Planned: cmp.Or(line("The plan promised: "+strings.Join(promises, " ")), "The plan's open promises stand in its full brief."),
 			Happened: "A human closed the plan's card while these promises were open."}
+		switch met, open := len(factStrings(f.Case, "met_on_main")), len(factStrings(f.Case, "open")); {
+		case met > 0 && met == open:
+			s.Left = "The last run of the plan's tests on main met all of them, so closing drops none."
+		case met > 0:
+			s.Left = fmt.Sprintf("The last run of the plan's tests on main met %d of them, so closing drops only the other %d.", met, open-met)
+		}
+		return s
 	},
 	Answers: keys(AnswerDropAndEnd, ActSettle+"/"+variantKeepOpen),
 }
 
 // HeldPlanComment is the words on the issue of plan t, held with its open
 // promises (heldPlanFace): the ask, its why, what happened with each open
-// promise on a line of its own, as the issue holds no full brief, and the
-// answers an approver gives on the board.
+// promise on a line of its own, as the issue holds no full brief, what a
+// close drops where the tests on main met some, and the answers an
+// approver gives on the board.
 func HeldPlanComment(c Case, t Task) string {
 	face := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: t, Case: c})
 	happened := strings.TrimSuffix(face.Story.Happened, ".") + ":"
@@ -2007,7 +2028,11 @@ func HeldPlanComment(c Case, t Task) string {
 	for _, a := range face.Answers {
 		answers += "\n- " + a.Label + ": " + a.Effect
 	}
-	return strings.Join([]string{face.Ask + " " + face.Why, happened, answers}, "\n\n")
+	parts := []string{face.Ask + " " + face.Why, happened}
+	if face.Story.Left != "" {
+		parts = append(parts, face.Story.Left)
+	}
+	return strings.Join(append(parts, answers), "\n\n")
 }
 
 // The states of a promise on its page (promiseState).

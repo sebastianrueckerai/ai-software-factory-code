@@ -1169,7 +1169,7 @@ var replayCoverage = map[string]string{
 	"S14": "TestAdmitRecordsTheRefusalAndClearsItOnAdmission",
 	"S15": "internal/factoryd/pg TestCountAdmittedFreesTheApprovalAndDependencyWaits",
 	"S16": "TestBoundedStartTakesNoSlotFromAFixForwardCard",
-	"S17": "TestAPlanRowWithNoIssueAgesIntoOneQueuedOverBoundCaseThatRung2Closes",
+	"S17": "internal/factoryd/pg TestAPlanRowWithNoIssueAgesIntoOneQueuedOverBoundCaseThatRung2Closes",
 	"S18": "internal/console TestAFacePressAnswersAsItsAnswer",
 	"S19": "TestExtendAnswersACapAlone",
 	"S20": "TestARestartedRunFormsTheDeadlockAskAtTheSecondEqualStop",

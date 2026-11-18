@@ -132,16 +132,19 @@ func TestHoldCommentSaysWhatTheCloseWaives(t *testing.T) {
 		name     string
 		c2Met    bool
 		comment  string
+		left     string
 		writer   error
 		by, note string
 		approver bool
 		waived   int
 	}{
 		{"the gate met two of three", false,
-			"factoryd: this plan still holds production with 3 open criteria. Closing its issue waives nothing: the criteria gate's last run on main met 2 of them, so an approver's Close with a note on the console waives only 1 and ends the plan.",
+			"This plan still holds production with 3 open criteria. Closing its issue waives nothing: the criteria gate's last run on main met 2 of them, so an approver's Close with a note on the console waives only 1 and ends the plan.",
+			"The last run of the plan's tests on main met 2 of them, so closing drops only the other 1.",
 			ErrNotApprover, "sebastian", "moved on", true, 1},
 		{"the gate met every open one", true,
-			"factoryd: this plan still holds production with 2 open criteria. Closing its issue waives nothing: the criteria gate's last run on main met them, so a Close on the console waives none, needs no note and ends the plan.",
+			"This plan still holds production with 2 open criteria. Closing its issue waives nothing: the criteria gate's last run on main met them, so a Close on the console waives none, needs no note and ends the plan.",
+			"The last run of the plan's tests on main met all of them, so closing drops none.",
 			nil, "mallory", "", false, 0},
 	} {
 		for _, path := range []string{"issue close", "close check"} {
@@ -182,8 +185,13 @@ func TestHoldCommentSaysWhatTheCloseWaives(t *testing.T) {
 					r.planCloseCheck(ctx, "t-plan")
 					reopened = nil
 				}
-				if !slices.Equal(fj.comments, []string{c.comment}) || !slices.Equal(fj.reopened, reopened) || closeRows(s) != 0 {
-					t.Fatalf("comments %q, reopened %v, plan_closed rows %d; want %q, %v, none", fj.comments, fj.reopened, closeRows(s), c.comment, reopened)
+				said := len(fj.comments) == 1 && fj.comments[0] == c.comment
+				if path != "issue close" {
+					// the close check asks on the board, and the issue hears the ask with what a close drops
+					said = len(fj.comments) == 1 && strings.Contains(fj.comments[0], "\n\n"+c.left+"\n\n")
+				}
+				if !said || !slices.Equal(fj.reopened, reopened) || closeRows(s) != 0 {
+					t.Fatalf("comments %q, reopened %v, plan_closed rows %d; want %q or the ask with %q, %v, none", fj.comments, fj.reopened, closeRows(s), c.comment, c.left, reopened)
 				}
 				if err := r.CheckClosePlan(ctx, "t-plan", "mallory", "", false); !errors.Is(err, c.writer) || (err == nil) != (c.writer == nil) {
 					t.Fatalf("a writer's Close without a note: %v, want %v", err, c.writer)

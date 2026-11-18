@@ -151,7 +151,7 @@ func TestCriteriaActionsRunOnADonePlansCase(t *testing.T) {
 // criteria request too. The human's press takes each, and rung 2's grant,
 // which waives nothing, runs.
 func TestRung2SettlesNoCriteriaByWord(t *testing.T) {
-	const want = "settling a plan's criteria by word is the human's: hand it up with your recommendation; the human waives, denies or confirms"
+	const want = "settling a plan's criteria by word is the human's: hand it up with your recommendation; the human waives or confirms"
 	words := []struct {
 		name string
 		res  Resolution

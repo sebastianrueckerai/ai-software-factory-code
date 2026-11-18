@@ -396,6 +396,9 @@ func AnswerFor(key string, f Facts) (Answer, bool) {
 			a.Fields = slices.Insert(slices.Delete(a.Fields, i, i+1), 0, minutes)
 		}
 	}
+	if a.Action == ActConfirmCriteria && f.ClosedCard {
+		a.Fields = []Field{requiredNote("What shows it", "The line that shows main meets the promises")}
+	}
 	if p, page := promiseOn(f); a.Action == ActAnswerCriteria && page {
 		if a.Variant != "waive" && p.Kind != CriterionHuman {
 			// a human judges only a human's promise
@@ -540,8 +543,9 @@ func openFindingTexts(f CaseFacts) []string {
 // MoreOf are the actions of card t, which holds no case, by its state: a
 // live card's replan, more sessions, money, a word to its running session
 // and its end; a failed card's retry and its close; a plan at rest its
-// close, whose note waives the promises it leaves open; and on every card
-// its brief, its colour and a thread.
+// close, whose note waives the promises it leaves open; a held card's
+// release first, and the hold of a card that has not started; and on every
+// card its brief, its colour and a thread.
 // The card's own replan says why it goes back, and a plan's card may take
 // the plan's merged cards off main first. Who may press which is the
 // console's to judge.
@@ -555,6 +559,12 @@ func MoreOf(t Task, f Facts) []Answer {
 		keys = []string{ActRetry, ActClose}
 	case !Final(t.Status):
 		keys = []string{ActReplan, ActExtend, ActFund, AnswerSteer, ActClose}
+	}
+	switch {
+	case t.Held():
+		keys = append([]string{AnswerRelease}, keys...)
+	case t.Holdable():
+		keys = append(keys, AnswerHold)
 	}
 	var out []Answer
 	for _, key := range append(keys, AnswerEditBrief, AnswerAccent, AnswerThread) {

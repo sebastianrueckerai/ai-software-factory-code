@@ -43,7 +43,7 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		{"rung 1's close with no case", ActInput{By: "factory-checkin", Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
 			"the check-in may not pick `close`: the factory agent and the human may, and the check-in may take `replan`"},
 		{"a successor with no case", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActSuccessor}},
-			"no ask is open on card #12, so `successor` has nothing to answer, and the human may take `confirm_audit`, `raise_ceiling`, `replan` and `close`"},
+			"no ask is open on card #12, so `successor` has nothing to answer, and the human may take `raise_ceiling`, `replan` and `close`"},
 	} {
 		c.in.TaskID = "t1"
 		var refused ErrActRefused
@@ -60,7 +60,7 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		{"rung 1's close", ActInput{CaseID: 7, By: "factory-checkin", Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
 			"the check-in may not pick `close`: the factory agent and the human may, and the check-in may take `route_approval`, `reverify`, `successor` and `replan`"},
 		{"the human's approve", ActInput{CaseID: 7, By: "sebastian", Rung: 3, Res: Resolution{Action: "approve"}},
-			"there is no action `approve`, and the human may take `reverify`, `confirm_audit`, `raise_ceiling`, `successor`, `replan`, `close` and `note`"},
+			"there is no action `approve`, and the human may take `reverify`, `raise_ceiling`, `successor`, `replan`, `close` and `note`"},
 		{"a fund with no case while case 7 waits", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},
 			"Card #12 waits on the session cap: answer that ask, not the card."},
 		{"a fund with no case via the chat while case 7 waits", ActInput{By: "sebastian", Via: ViaChat, Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},

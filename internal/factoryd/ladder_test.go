@@ -403,3 +403,27 @@ func TestAStopOnAConflictedHeadSaysWhatFixesIt(t *testing.T) {
 		t.Errorf("with no conflict, left = %q, want the finding alone", got)
 	}
 }
+
+// A budget floor after a session, on a card whose branch was read and
+// holds no work, says the work is lost and the next session starts again
+// from main. A branch with work on it, a branch never read (an older
+// stored case) and a card that ran no session lose nothing.
+func TestABudgetFloorSaysWhenTheWorkIsLost(t *testing.T) {
+	const lost = "The last session's work was not pushed and is lost. The next session starts again from main."
+	facts := CaseFacts{Kind: CaseBudgetFloor, BudgetEUR: 5, SpentEUR: 4.83, LeftEUR: 0.17, FloorEUR: 0.3, Attempts: 2, BranchRead: true}
+	c := Case{Kind: CaseBudgetFloor}
+	if left := FaceOf(c, Facts{CaseFacts: facts}).Story.Left; left != lost {
+		t.Errorf("left = %q, want %q", left, lost)
+	}
+	for name, change := range map[string]func(f *CaseFacts){
+		"a branch at c9":  func(f *CaseFacts) { f.BranchHead = "c9" },
+		"a branch unread": func(f *CaseFacts) { f.BranchRead = false },
+		"no session ran":  func(f *CaseFacts) { f.Attempts = 0 },
+	} {
+		f := facts
+		change(&f)
+		if left := FaceOf(c, Facts{CaseFacts: f}).Story.Left; strings.Contains(left, "is lost") {
+			t.Errorf("%s: left = %q, want nothing lost", name, left)
+		}
+	}
+}

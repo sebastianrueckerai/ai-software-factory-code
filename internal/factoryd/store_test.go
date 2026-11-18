@@ -2126,7 +2126,15 @@ func (s *fakeStore) BoardTasks(ctx context.Context, repository string) ([]BoardT
 	}
 	for _, t := range s.tasks {
 		if t.Repository == repository && t.Kind != KindChat && !factorydFinal(t.Status) && !t.Report() {
-			out = append(out, BoardTask{Task: t, Helpers: HelpersOf(all, t.ID)})
+			b := BoardTask{Task: t, Helpers: HelpersOf(all, t.ID)}
+			if t.Held() {
+				v, err := holdView(ctx, s, t)
+				if err != nil {
+					return nil, err
+				}
+				b.HoldView = v
+			}
+			out = append(out, b)
 		}
 	}
 	slices.SortFunc(out, func(a, b BoardTask) int {

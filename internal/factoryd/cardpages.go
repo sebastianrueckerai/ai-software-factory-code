@@ -68,6 +68,7 @@ type Request struct {
 	Integration              string
 	Unsettled                []string
 	Delivered, ClosesItself  bool
+	ClosedCard               bool
 	Run                      *RunFact
 	Plan                     Plan
 	TakeOffRefs, TakeOffWhys []string
@@ -251,6 +252,7 @@ func (r *Request) criteriaRows(ctx context.Context, s RequestReads) error {
 			rows = g.settling(rows)
 		}
 		r.ClosesItself = closesItself(g.cards)
+		r.ClosedCard = slices.ContainsFunc(g.cards, func(c Task) bool { return c.Status == "closed" })
 	}
 	for _, c := range r.Plan.Criteria {
 		v, _ := StandingRow(rows, c)
@@ -358,7 +360,7 @@ func (r Request) onPromises(c Case) Case {
 		}
 	}
 	c = OnOpen(c, open, unchecked, len(r.Promises))
-	c.Facts = withFacts(c.Facts, map[string]any{"settled": len(open) == 0, "undelivered": !r.Delivered, "closes_itself": r.ClosesItself})
+	c.Facts = withFacts(c.Facts, map[string]any{"settled": len(open) == 0, "undelivered": !r.Delivered, "closes_itself": r.ClosesItself, "closed_card": r.ClosedCard})
 	return c
 }
 

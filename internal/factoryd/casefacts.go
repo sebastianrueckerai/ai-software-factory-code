@@ -128,10 +128,13 @@ type CaseFacts struct {
 	// Settled: every promise a criteria request asks about stands met or
 	// dropped as its rows read now; Undelivered: a card of its plan is not
 	// delivered yet; ClosesItself: the close check then closes the plan by
-	// itself. A request's page carries all three (CardPages).
+	// itself; ClosedCard: a card of its plan ended closed, so the work is
+	// enough only with the human's evidence. A request's page carries all
+	// four (CardPages).
 	Settled      bool `json:"settled,omitempty"`
 	Undelivered  bool `json:"undelivered,omitempty"`
 	ClosesItself bool `json:"closes_itself,omitempty"`
+	ClosedCard   bool `json:"closed_card,omitempty"`
 	Pushed       bool `json:"pushed,omitempty"` // a session pushed a branch head
 	// BranchRead: the card's branch on the fork was read. BranchHead is its
 	// head while main lacks it, "" when the fork holds no branch for the

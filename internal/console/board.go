@@ -477,10 +477,8 @@ type card struct {
 	Activity                  string // the task's newest event as one line, or the escalation's question
 	WaitingForActivity        bool   // the activity line stands for the wait's reason
 	// HoldLine is a human's hold on the card as the board words it, ""
-	// for none; HoldWarn marks one whose release card ended failed or
-	// closed and releases nothing.
+	// for none.
 	HoldLine string
-	HoldWarn bool
 	// Title is the face's first line: the card's title, the objective's
 	// first paragraph whole (factoryd.CardTitle), or a human card's ask.
 	Title string
@@ -1775,7 +1773,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 			minutes(max(bt.ChainGreenAt.Sub(*bt.FinishedAt), 0)))
 	}
 	k.WaitingOn, k.SlotWait, k.MergeBehind, k.HeldFor = bt.WaitingOn, bt.SlotWait, bt.MergeBehind, bt.HeldFor
-	k.HoldLine, k.HoldWarn = bt.HoldView.Line, bt.HoldView.Warn
+	k.HoldLine = bt.HoldView.Line
 	// "blocked by n" counts the dependencies that are not done yet;
 	// WaitingOn already says so for a card in waiting-deps, where the
 	// face shows that chip and never both.
