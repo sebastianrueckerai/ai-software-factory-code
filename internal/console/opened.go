@@ -243,6 +243,14 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 	switch {
 	case row != nil:
 		f := factoryd.Facts{CaseFacts: factoryd.FactsOf(row.Case), Card: row.card(k).Task, Case: row.Case}
+		if f.Card.Kind == "human" {
+			// a human card ends closed by End the card, so the cards waiting for it ask
+			waiters, err := c.cfg.Tasks.Dependents(ctx, f.Card.ID)
+			if err != nil {
+				log.Printf("console: the cards waiting for %s: %v", f.Card.ID, err)
+			}
+			f.Waiters = factoryd.LiveDependents(waiters)
+		}
 		o.Ask = c.askOf(ctx, v, k, row.Face, seen)
 		o.Ask.Position, o.Ask.Of = row.At, row.Of
 		if p, ok := factoryd.PromiseOn(row.Case); ok && !factoryd.PromiseFits(p.Promise) {

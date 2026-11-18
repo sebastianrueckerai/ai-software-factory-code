@@ -1603,5 +1603,6 @@ func (b *builder) card2101(group, name string) Fixture {
 	plan := factoryd.Task{ID: plan1947ID, IssueNumber: 1947, PlanName: "empty commit fires gate"}
 	fx := b.asked(group, name, t, factoryd.PlanHumanAsk(plan, c.Title), 75*time.Minute)
 	fx.Case.ID = 5848
+	fx.Facts.Waiters = 1 // the plan's integration card waits for it
 	return fx
 }

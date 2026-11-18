@@ -305,15 +305,16 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	}
 	ends := c.ID != 0 && !keepsOpen(c, t, res)
 	answers := ends && res.Action != ActWithdraw
+	if choice && c.ID != 0 && t.Kind == "human" {
+		// every choice taken writes how the issue's close ends the card, which
+		// can reach the intake before the case ends: the newest choice holds,
+		// so a Not now after a failed End the card leaves no closed behind
+		if err := r.store.SetCaseFacts(ctx, c.ID, map[string]any{endsFact: humanEnd(res.Action)}); err != nil {
+			return out, err
+		}
+	}
 	var worked int64
 	if in.Work != nil {
-		if choice && ends && t.Kind == "human" {
-			// the issue's close this work makes can reach the intake before
-			// the case ends: the case carries how that close ends the card
-			if err := r.store.SetCaseFacts(ctx, c.ID, map[string]any{endsFact: humanEnd(res.Action)}); err != nil {
-				return out, err
-			}
-		}
 		if worked, err = in.Work(ctx); err != nil {
 			return out, ranErr(out.Did, err)
 		}
@@ -986,7 +987,11 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) (
 		return "", err
 	}
 	end := "End the card (close) with your note"
-	if InPlan(t) {
+	waiters, err := r.store.Dependents(ctx, t.ID)
+	if err != nil {
+		return "", err
+	}
+	if LiveDependents(waiters) > 0 {
 		end += ", and the cards that wait for it ask you first"
 	}
 	var waits, closed []string

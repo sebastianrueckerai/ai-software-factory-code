@@ -1468,6 +1468,24 @@ func humanAsk(id string, issue int64, choices ...factoryd.QuestionChoice) factor
 			Recommendation: "Postgres", Source: "the agent", Choices: choices}}
 }
 
+// A human card's End the card says that the cards waiting for it ask
+// first while a card waits for it, in a plan or outside one.
+func TestAHumanCardsEndSaysItsWaitingCardsAsk(t *testing.T) {
+	r := newRig(t)
+	waiter := factoryd.BoardTask{Task: factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-deps", Repository: "sf/code", IssueNumber: 52, Objective: "Ship the export"}}
+	r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerDone, Label: "I did it"}), waiter}
+	ck, _ := r.loggedIn(t)
+	if body := drawer(t, r, ck, "t-hq", "overview"); !strings.Contains(body, "Ends the card and closes its issue. Nothing more runs.") {
+		t.Errorf("with no card waiting, End the card lacks its plain line:\n%s", body)
+	}
+	r.tasks.mu.Lock()
+	r.tasks.deps = map[string][]string{"t-w": {"t-hq"}}
+	r.tasks.mu.Unlock()
+	if body := drawer(t, r, ck, "t-hq", "overview"); !strings.Contains(body, "Ends the card and closes its issue. The cards that wait for it ask you first.") {
+		t.Errorf("with #52 waiting, End the card does not say the waiting cards ask first:\n%s", body)
+	}
+}
+
 // A human card whose stored ask reads as no question, and whose title
 // makes none either, asks whether the work is done on its opened card; its
 // small card leads with the card's title, so Needs you names the work.

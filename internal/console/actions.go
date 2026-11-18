@@ -1524,8 +1524,9 @@ func choiceCard(t factoryd.Task) bool {
 // commit, or concluded, refuses the re-run and the dismissal with its own
 // line; check again closes the card all the same. The failed roll card's
 // retry resets the failed rolls and closes the card as factoryd's own; the
-// roller's next poll files the new roll. park and keep waiting settle the
-// case, nothing posted, and the card keeps its wait with none open; go hands the card to the factory; every other choice
+// roller's next poll files the new roll. park and keep waiting record the
+// answer on the case, which stays open, nothing posted, and the card keeps
+// its wait; go hands the card to the factory; every other choice
 // closes the card on its label. The held-production ask's Deploy anyway is
 // Act's deploy_now, which the chat's agent may press too; its replans are
 // phase 4's doReplan of the plan the value names, and the card closes once
@@ -2084,7 +2085,9 @@ func (c *Console) doChatFund(ctx context.Context, a actor, name string, eur floa
 // card waiting on a live case closes through Act: an agent card's Act
 // closes its issue as factoryd's recorded close and has the note posted
 // after it as the human's, and a human card's close resolves its case once
-// its own close went through (choiceDone).
+// its own close went through (choiceDone). A human card waiting with no
+// case is refused (noCase): its close goes through Act, which records that
+// it ends closed.
 func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string, error) {
 	note = strings.TrimSpace(note)
 	if len(note) > 64<<10 {
@@ -2100,7 +2103,12 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	if factoryd.Final(t.Status) && t.Status != "failed" {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d %s, so there is nothing to close: %s.", t.IssueNumber, factoryd.StatusMeaning(t.Status), fitting(t, capFacts{})))
 	}
-	k, err := c.newestCase(ctx, t)
+	newest := c.newestCase
+	if t.Kind == "human" {
+		// a human card ends through Act, which records how it ends
+		newest = c.liveCase
+	}
+	k, err := newest(ctx, t)
 	if err != nil {
 		return "", err
 	}

@@ -267,7 +267,7 @@ func TestHandBackReturnsTheCardToItsPlanner(t *testing.T) {
 
 // humanCardRig is the facts rig with plan card h1 (#14) for a human,
 // waiting for d1 (#13, queued) and asking as its plan files it, its case 9
-// at the human; and card pr (#15), the factory's pull request #21 on a
+// at the human, and card k1 (#16) waiting for it; and card pr (#15), the factory's pull request #21 on a
 // project without agents, its case 10 at the human.
 func humanCardRig(t *testing.T) factsRig {
 	t.Helper()
@@ -277,7 +277,8 @@ func humanCardRig(t *testing.T) factsRig {
 	pr := Task{ID: "pr", Kind: "human", Repository: repo, IssueNumber: 15, Status: "waiting-human", Source: SourceTemplateUpdate, PRNumber: 21}
 	g.store.tasks["h1"], g.store.tasks["pr"] = h, pr
 	g.store.tasks["d1"] = Task{ID: "d1", Kind: "agent", Repository: repo, IssueNumber: 13, Status: "queued"}
-	g.store.deps = map[string][]string{"h1": {"d1"}}
+	g.store.tasks["k1"] = Task{ID: "k1", Kind: "agent", Repository: repo, IssueNumber: 16, PlanKey: "image", Status: "waiting-deps", Source: SourcePlan, Parent: "p"}
+	g.store.deps = map[string][]string{"h1": {"d1"}, "k1": {"h1"}}
 	g.store.cases = []Case{{ID: 9, TaskID: "h1", Repository: repo, Kind: CaseHumanCard, Status: CaseAtHuman},
 		{ID: 10, TaskID: "pr", Repository: repo, Kind: CaseHumanCard, Status: CaseAtHuman}}
 	for _, a := range []struct {
@@ -308,6 +309,12 @@ func TestIDidItWaitsForTheCardBeforeIt(t *testing.T) {
 	if want := "card #14 waits for #13 (queued), so its work cannot be done yet: answer Not now (park) until it is done, or " + end; !errors.As(err, &refused) || err.Error() != want {
 		t.Fatalf("I did it while #13 waits = %v, want %q", err, want)
 	}
+	g.store.deps["k1"] = nil
+	_, err = g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: 3, Res: Resolution{Action: AnswerDone}})
+	if want := "card #14 waits for #13 (queued), so its work cannot be done yet: answer Not now (park) until it is done, or End the card (close) with your note"; err == nil || err.Error() != want {
+		t.Fatalf("I did it with no card waiting for #14 = %v, want %q", err, want)
+	}
+	g.store.deps["k1"] = []string{"h1"}
 	d := g.store.tasks["d1"]
 	d.Status = "closed"
 	g.store.tasks["d1"] = d
@@ -352,14 +359,10 @@ func TestEndTheCardEndsAHumanCardClosed(t *testing.T) {
 		d := g.store.tasks["d1"]
 		d.Status = "done"
 		g.store.tasks["d1"] = d
-		g.store.tasks["k1"] = Task{ID: "k1", Kind: "agent", Repository: "demo-app/demo-app", IssueNumber: 16, PlanKey: "image", Status: "waiting-deps", Source: SourcePlan, Parent: "p"}
-		g.store.deps["k1"] = []string{"h1"}
 		h := g.store.tasks["h1"]
 		h.PlanKey = "manifests"
 		g.store.tasks["h1"] = h
-		forgejo, _ := intakeForgejoStub(t)
-		in := &Intake{Store: g.store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent",
-			Timeline: &Timeline{Objects: &fakeObjectStore{}, Store: g.store, Events: g.store}}
+		in := intakeOn(t, g.store)
 		// the issue's close reaches the intake while the answer's work runs
 		closeIssue := func(ctx context.Context) (int64, error) {
 			return 0, in.endByClose(ctx, g.store.tasks["h1"], "sebastian")
@@ -379,6 +382,54 @@ func TestEndTheCardEndsAHumanCardClosed(t *testing.T) {
 		case tc.final == "done" && (st.Ended != nil || len(st.Waiting) != 0):
 			t.Fatalf("after I did it the next card's dependencies = %+v, want none left, so it starts", st)
 		}
+	}
+}
+
+// End the card says that the cards waiting for a human card ask first
+// wherever such cards wait, in a plan or outside one, by the card's facts.
+func TestEndTheCardSaysTheWaitingCardsAsk(t *testing.T) {
+	card := Task{ID: "h", Kind: "human", Repository: "demo-app/demo-app", IssueNumber: 21, Status: "waiting-human", Source: SourceWebhook}
+	c, err := CaseFromAsk(card, HumanAsk{Q: IssueQuestion("Rotate the bot token", "The token leaked.", "alice", false)}.Event(card), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for waiters, want := range map[int]string{0: "Ends the card and closes its issue. Nothing more runs.",
+		1: "Ends the card and closes its issue. The cards that wait for it ask you first."} {
+		f := FactsOf(c)
+		f.Waiters = waiters
+		face := FaceOf(c, Facts{CaseFacts: f, Card: card})
+		i := slices.IndexFunc(slices.Concat(face.Answers, face.More), func(a Answer) bool { return a.Key() == ActClose })
+		if i < 0 || slices.Concat(face.Answers, face.More)[i].Effect != want {
+			t.Errorf("End the card with %d cards waiting: %+v, want %q", waiters, slices.Concat(face.Answers, face.More), want)
+		}
+	}
+}
+
+// intakeOn is an intake on store, with a stub Forgejo.
+func intakeOn(t *testing.T, store *fakeStore) *Intake {
+	forgejo, _ := intakeForgejoStub(t)
+	return &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent",
+		Timeline: &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: store}}
+}
+
+// An End the card whose work failed leaves no end behind: Not now, pressed
+// after it, records that the card ends done, so a close in the forge later
+// ends it done.
+func TestNotNowAfterAFailedEndTheCard(t *testing.T) {
+	ctx := context.Background()
+	g := humanCardRig(t)
+	refused := func(context.Context) (int64, error) { return 0, errors.New("forgejo refused the close") }
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: 3, Res: Resolution{Action: ActClose}, Work: refused}); err == nil {
+		t.Fatal("End the card with a failing close = nil, want its failure")
+	}
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: 3, Res: Resolution{Action: AnswerPark}}); err != nil {
+		t.Fatalf("Not now = %v, want it taken", err)
+	}
+	if err := intakeOn(t, g.store).endByClose(ctx, g.store.tasks["h1"], "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.store.tasks["h1"].Status; got != "done" {
+		t.Fatalf("a close in the forge after Not now ends the card %s, want done", got)
 	}
 }
 

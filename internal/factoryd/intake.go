@@ -1461,7 +1461,8 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 
 // issueClosed acts on task t's issue closed by closer, from the webhook or
 // the heal pass alike: the task's workflow is signalled (it asks Forgejo
-// whether a merge closed it), a human-lane task is simply done, a failed
+// whether a merge closed it), a human-lane task ends as its answer recorded
+// (humanEndOf), done for a close no answer made, a failed
 // card ends closed, and so does a done plan (DonePlan) once its
 // production hold is gone (endDonePlan). A merged card is left as it is:
 // its own merge closes its issue (Closes #N), a close no webhook tells from a
@@ -1588,8 +1589,9 @@ func (in *Intake) decide(ctx context.Context, taskID, kind, author string, numbe
 }
 
 // finishHumanTask ends human-lane task t, which has no workflow, as final
-// for why ("" for none): its closed issue ends it done, its pull request's
-// merge or close too (endPRCard). settle, when set, is the events row that
+// for why ("" for none): its closed issue ends it as its answer recorded
+// (humanEndOf), and its pull request's merge or close ends it as well
+// (endPRCard). settle, when set, is the events row that
 // settles the card's ask, written once, by the end that moved the card. A
 // card another end moved first is left as it is. A SigNoz alert's gets
 // its verdict from the close: noise when the issue carries

@@ -152,6 +152,22 @@ func TestMergeItTakesTheHeadTheHumanRead(t *testing.T) {
 	}
 }
 
+// End the card on a human card always runs through Act, which records how
+// the card ends: on a card that waits with no open case, every door's End
+// the card is refused with the line that says the case comes, and nothing
+// closes.
+func TestEndTheCardWaitsForTheHumanCardsCase(t *testing.T) {
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerDone, Label: "I did it"})}
+	r.openCases = map[string][]factoryd.Case{}
+	_, s := r.loggedIn(t)
+	human := actor{s: s, repository: "sf/code", via: factoryd.ViaButton, decider: "member"}
+	_, err := r.c.doClose(t.Context(), human, "t-hq", "Done elsewhere.")
+	if no := refusedWith(err); no == nil || no.status != http.StatusConflict || no.msg != noCase || len(r.fg.patched) != 0 || len(r.acted) != 0 {
+		t.Fatalf("End the card with no case = %v, patched %v, %d Act calls; want %q and nothing closed", err, r.fg.patched, len(r.acted), noCase)
+	}
+}
+
 // The stall card's answers carry the card's commit: "re-run again"
 // re-runs the head's pending runs and keeps the card waiting, nothing
 // posted, a note on its case; "check again" closes the card and touches

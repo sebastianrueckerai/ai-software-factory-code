@@ -89,6 +89,17 @@ func (s *PGStore) Dependencies(ctx context.Context, id string) ([]Dependency, er
 		WHERE d.task_id = $1 ORDER BY t.status = 'done', t.issue_number, t.id`, id)
 }
 
+// LiveDependents counts the cards of deps that have not ended.
+func LiveDependents(deps []Dependency) int {
+	n := 0
+	for _, d := range deps {
+		if !Final(d.Status) {
+			n++
+		}
+	}
+	return n
+}
+
 // Dependents are the cards that depend on task id.
 func (s *PGStore) Dependents(ctx context.Context, id string) ([]Dependency, error) {
 	return s.dependencies(ctx, `SELECT t.id, t.issue_number, COALESCE(t.plan_key, ''), t.status

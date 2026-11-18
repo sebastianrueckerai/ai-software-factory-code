@@ -123,7 +123,9 @@ type CaseFacts struct {
 	Runnable     []string  `json:"runnable,omitempty"`
 	Pushed       bool      `json:"pushed,omitempty"` // a session pushed a branch head
 	Dependencies []DepFact `json:"dependencies,omitempty"`
-	Planner      bool      `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
+	// Waiters counts the cards that wait for this one and have not ended
+	Waiters int  `json:"waiters,omitempty"`
+	Planner bool `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
 	// PlannerRetry: the plan's automatic second session, topped up to half
 	// its agent time, is still to come (plannerTime).
 	PlannerRetry bool   `json:"planner_retry,omitempty"`
@@ -540,7 +542,11 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			return nil
 		}},
 		{"dependencies", func() (err error) {
-			f.Dependencies, err = r.depFacts(ctx, t.ID)
+			if f.Dependencies, err = r.depFacts(ctx, t.ID); err != nil {
+				return err
+			}
+			waiters, err := r.store.Dependents(ctx, t.ID)
+			f.Waiters = LiveDependents(waiters)
 			return err
 		}},
 		{"cases", func() error {
