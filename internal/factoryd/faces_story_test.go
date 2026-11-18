@@ -141,6 +141,33 @@ func TestTheStoryOf2004(t *testing.T) {
 	}
 }
 
+// A finding the review words anew after the last session is open: of the
+// 3 review findings open before it, the review raises one in other words
+// and one as before, so the story counts 3 before and 2 open now, and no
+// line of the face credits the session with a fix.
+func TestARewordedFindingIsStillOpen(t *testing.T) {
+	x := fixture(t, facefixtures.GroupCase, string(factoryd.CaseBudgetFloor))
+	f := x.facts
+	f.BudgetEUR, f.SpentEUR, f.LeftEUR, f.Attempts, f.Checks = 4, 4, 0, 3, "green"
+	before := []string{factoryd.FindingID("the export skips archived cards"), factoryd.FindingID("the import drops the accent"), factoryd.FindingID("the lane reads no limit")}
+	now := []string{factoryd.FindingID("archived cards are missing from the export"), before[1]}
+	f.Findings, f.ReviewFindings, f.AuditFindings = now, now, nil
+	f.LastSession = &factoryd.LastSessionFacts{CostEUR: 2, Pushed: true, Judged: []string{"review"}, Review: before}
+	face := factoryd.FaceOf(x.c, f)
+	if happened, left := "It spent 4.00 of 4.00 EUR in 3 sessions. Before the last session, 3 review findings were open.",
+		"2 findings are open. One more session costs about 2.00 EUR."; face.Story.Happened != happened || face.Story.Left != left {
+		t.Errorf("happened %q, left %q; want %q, %q", face.Story.Happened, face.Story.Left, happened, left)
+	}
+	if ask := "Adding 2.40 EUR lets the card fix its 2 open review findings. How should it go on?"; face.Ask != ask {
+		t.Errorf("ask %q, want %q", face.Ask, ask)
+	}
+	for _, s := range []string{face.Ask, face.Why, face.Story.Planned, face.Story.Happened, face.Story.Left} {
+		if strings.Contains(s, "fixed") {
+			t.Errorf("%q credits a fix", s)
+		}
+	}
+}
+
 // No face holds a raw stop reason: the machine words of a check-in, a
 // gate's supervisor or a monitor flag stay off every fixture's face.
 func TestNoFaceHoldsARawStopReason(t *testing.T) {
