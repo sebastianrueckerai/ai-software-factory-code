@@ -184,7 +184,7 @@ func checkBrief(b BriefText, job BriefJob, refs RefResolver, on [4]bool) []strin
 		// a fenced block quotes a log or a file: no reference of the text's,
 		// and neither is code
 		f = FencedBlock.ReplaceAllString(f, "")
-		prose := CodeSpan.ReplaceAllString(f, "")
+		prose := CodeSpan.ReplaceAllString(f, " ")
 		for _, m := range RefPattern.FindAllStringSubmatch(linkTarget.ReplaceAllString(prose, "]"), -1) {
 			ok, asked := resolved[m[2]]
 			if !asked {
