@@ -874,3 +874,29 @@ func TestARetryOnAFrozenCardReadsRetryNow(t *testing.T) {
 		}
 	}
 }
+
+// A cap's why line names the limit and the file an approver changes it in:
+// the factory's file for the day and the month, the project's file, by its
+// path where the stop names it, for a project's month.
+func TestACapsWhyNamesTheFileOfItsLimit(t *testing.T) {
+	const goes = ", and the card goes on by itself when it resets."
+	for name, c := range map[string]struct {
+		f    factoryd.Facts
+		want string
+	}{
+		"day":   {factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseDayCap}}, "An approver changes the daily limit in the factory's file policy.yaml" + goes},
+		"month": {factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseMonthCap}}, "An approver changes the monthly limit in the factory's file policy.yaml" + goes},
+		"project": {factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseProjectCap, CapWait: "the month cap budget.month_eur in projects/demo-app.yaml is spent"}},
+			"An approver changes the project's monthly limit in the project's file projects/demo-app.yaml" + goes},
+		"project, no file named": {factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseProjectCap}}, "An approver changes the project's monthly limit in the project's file" + goes},
+	} {
+		c.f.Case = factoryd.Case{Kind: c.f.Kind}
+		got := factoryd.FaceOf(c.f.Case, c.f).Why
+		if got != c.want {
+			t.Errorf("%s: %q, want %q", name, got, c.want)
+		}
+		if faults := writingguide.Lint(got); len(faults) > 0 {
+			t.Errorf("%s: the guide refuses %q: %v", name, got, faults)
+		}
+	}
+}

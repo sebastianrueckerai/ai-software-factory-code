@@ -3,6 +3,7 @@ package console
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
@@ -185,6 +186,47 @@ func TestLinkRefsLinksRunsAndCommits(t *testing.T) {
 			ref(12, "#card=t-12", false, "Add the login page, done")+" merged."))
 	equal(t, "no word, no link", r.c.linkRefs(ctx, v, "sf/code", "run 3384 failed at 3c9a1e0, and the commit message is short."),
 		template.HTML("run 3384 failed at 3c9a1e0, and the commit message is short."))
+	equal(t, "a word of the letters a to f beside a hash", r.c.linkRefs(ctx, v, "sf/code", "The commit defaced the page, and commit deface1 mends it."),
+		template.HTML(`The commit defaced the page, and `+
+			`<a class="ref-link" href="https://git.example/sf/code/commit/deface1" target="_blank" rel="noopener">commit deface1</a> mends it.`))
+}
+
+// The file an approver changes a limit in is linked to its page in the
+// factory's configuration, where the console knows that address: the
+// factory's file and a project's file, as the cap's why line names them.
+func TestLinkRefsLinksTheFactorysFiles(t *testing.T) {
+	r, ctx, v := refsRig(t)
+	const text = "An approver changes the monthly limit in the factory's file policy.yaml, and the project's monthly limit in the project's file projects/demo-app.yaml."
+	r.c.cfg.ConfigRepo = ""
+	equal(t, "no address, no link", r.c.linkRefs(ctx, v, "sf/code", text),
+		template.HTML("An approver changes the monthly limit in the factory&#39;s file policy.yaml, and the project&#39;s monthly limit in the project&#39;s file projects/demo-app.yaml."))
+	r.c.cfg.ConfigRepo, r.c.cfg.ConfigDir = "https://git.example/sf/infra/", "factory"
+	equal(t, "both files", r.c.linkRefs(ctx, v, "sf/code", text),
+		template.HTML(`An approver changes the monthly limit in the factory&#39;s file `+
+			`<a class="ref-link" href="https://git.example/sf/infra/src/branch/main/factory/policy.yaml" target="_blank" rel="noopener">policy.yaml</a>`+
+			`, and the project&#39;s monthly limit in the project&#39;s file `+
+			`<a class="ref-link" href="https://git.example/sf/infra/src/branch/main/factory/projects/demo-app.yaml" target="_blank" rel="noopener">projects/demo-app.yaml</a>.`))
+	equal(t, "a file of the product stays text", r.c.linkRefs(ctx, v, "sf/code", "The card edits policy.yaml of the product."),
+		template.HTML("The card edits policy.yaml of the product."))
+}
+
+// A commit the view holds whole is linked by its whole hash, and the text
+// keeps the short one: a card's merge commit, a case's fact and the head of
+// a pending merge request.
+func TestLinkRefsLinksACommitByItsWholeHash(t *testing.T) {
+	r, ctx, v := refsRig(t)
+	const merged, head, fact = "3c9a1e0f5b6d7c8e9f0a1b2c3d4e5f6a7b8c9d0e", "7eaf7c7000000000000000000000000000000001", "50f5db9aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2"
+	done := v.byID["t-12"]
+	done.MergeCommit = merged
+	v.byID["t-12"] = done
+	v.cases.byCard = map[string][]factoryd.Case{"t-12": {{ID: 1, TaskID: "t-12", Facts: map[string]any{"commit": fact, "run": 3384}}}}
+	v.pending = []factoryd.ApprovalRequest{{ID: 4, Spec: json.RawMessage(`{"head_sha":"` + head + `"}`)}}
+	link := func(sha string) string {
+		return `<a class="ref-link" href="https://git.example/sf/code/commit/` + sha + `" target="_blank" rel="noopener">commit ` + sha[:7] + `</a>`
+	}
+	equal(t, "three commits the view holds and one it does not",
+		r.c.linkRefs(ctx, v, "sf/code", "Main is red at commit 3c9a1e0. Merges commit 7eaf7c7 as you. The roll of commit 50f5db9 failed, not commit 1234567."),
+		template.HTML("Main is red at "+link(merged)+". Merges "+link(head)+" as you. The roll of "+link(fact)+" failed, not "+link("1234567")+"."))
 }
 
 // The first use of each term on a face is marked, whole words only, in

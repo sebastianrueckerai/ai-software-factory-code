@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
@@ -1109,14 +1110,16 @@ func budgetWhy(f Facts) string {
 	return fmt.Sprintf("The card has %s EUR left, and the next session needs %s EUR to start.", textutil.EUR(f.LeftEUR), textutil.EUR(f.FloorEUR))
 }
 
-// capWhy names the limit and where an approver changes it.
+// capWhy names the limit and the file an approver changes it in, in the
+// words the console links to that file (the factory's file, the project's
+// file).
 func capWhy(f Facts) string {
-	limit, where := "the daily limit", "the factory's configuration"
+	limit, where := "the daily limit", "the factory's file policy.yaml"
 	switch f.Kind {
 	case CaseMonthCap:
 		limit = "the monthly limit"
 	case CaseProjectCap:
-		limit, where = "the project's monthly limit", "the project's configuration"
+		limit, where = "the project's monthly limit", strings.TrimSpace("the project's file "+projectFile.FindString(f.CapWait+" "+factString(f.Case, "reason")))
 	}
 	return fmt.Sprintf("An approver changes %s in %s, and %s when it resets.", limit, where, onward(f, "the card goes on by itself"))
 }
@@ -1580,8 +1583,11 @@ func planName(p Task) string {
 }
 
 // PlanWords names the plan of issue in a card that is not its own: plan
-// “<name>” (#N), plan #N for a plan without a name.
+// “<name>” (#N), plan #N for a plan without a name. The name is text an
+// agent wrote, and these words reach Forgejo in a commit status, an issue
+// and a comment: it goes out cleaned, with no link kept.
 func PlanWords(name string, issue int64) string {
+	name = sanitize.Outbound(name, nil)
 	if name == "" {
 		return fmt.Sprintf("plan #%d", issue)
 	}

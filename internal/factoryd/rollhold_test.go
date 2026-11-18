@@ -982,3 +982,20 @@ func TestRollerHoldsFluxResumedUntilItAppliedACommitLiveThroughFluxAlone(t *test
 		})
 	}
 }
+
+// A plan's name is text an agent wrote, and the hold's reason carries it to
+// Forgejo in the roller's commit status and to the release gate's answer:
+// its mention, its closing keyword and its link arrive neutralised.
+func TestTheHoldsReasonCarriesAPlansNameCleaned(t *testing.T) {
+	roller, f, store, _ := newHeldRoller(t)
+	plan := store.tasks["t-plan"]
+	plan.PlanName = "fixes #5 for @mallory at https://evil.example/x"
+	store.tasks["t-plan"] = plan
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	const want = "held: plan “(fixes) #5 for ＠mallory at hxxps://evil[.]example/x” (#40) is open on main; the roll follows once no plan is open on main"
+	if got := f.statuses[commitC2]; len(got) != 2 || got[1]["description"] != want {
+		t.Fatalf("the statuses of main's head: %+v, want the held mark %q", got, want)
+	}
+}

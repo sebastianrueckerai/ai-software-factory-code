@@ -3,6 +3,7 @@ package console
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
@@ -123,31 +124,77 @@ func (v *boardView) refsOf(ctx context.Context, c *Console, repo string) renderR
 	return r
 }
 
-// forgeRef is a CI run or a commit named in words, as the factory's texts
-// name them: "CI run 3384", "commit 3c9a1e0".
-var forgeRef = regexp.MustCompile(`\bCI run (\d+)\b|\b[Cc]ommit ([0-9a-f]{7,40})\b`)
+// forgeRef is a CI run, a commit or a file of the factory's configuration
+// named in words, as the factory's texts name them: "CI run 3384", "commit
+// 3c9a1e0", "the factory's file policy.yaml", "the project's file
+// projects/demo.yaml". A hash holds a digit, which keeps a word of the
+// letters a to f a word: "commit defaced".
+var forgeRef = regexp.MustCompile(`\bCI run (\d+)\b|\b[Cc]ommit ([0-9a-f]{7,40})\b|\bthe (?:factory|project)'s file (policy\.yaml|projects/[a-z0-9-]+\.yaml)`)
 
 // issueLinks is text, which holds no code and no link, with each #N
-// linked and named, and each CI run and commit named in words linked to
-// its page of r's repository on the forge.
+// linked and named, each CI run and commit named in words linked to its
+// page of r's repository on the forge, and each file of the factory's
+// configuration to its page there, where the console knows the address.
 func (c *Console) issueLinks(v *boardView, r *cardRefs, text string) string {
-	if c.cfg.ForgejoPublicURL == "" || r.t.Repository == "" {
-		return c.numberLinks(v, r, text)
+	base := ""
+	if c.cfg.ForgejoPublicURL != "" && r.t.Repository != "" {
+		base = strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/") + "/" + r.t.Repository
 	}
-	base := strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/") + "/" + r.t.Repository
 	var b strings.Builder
 	at := 0
 	for _, m := range forgeRef.FindAllStringSubmatchIndex(text, -1) {
-		href := base + "/actions/runs/"
-		if m[4] >= 0 {
-			href = base + "/commit/"
+		from, href := m[0], ""
+		switch {
+		case m[6] >= 0:
+			if from = m[6]; c.cfg.ConfigRepo != "" {
+				href = strings.TrimSuffix(c.cfg.ConfigRepo, "/") + "/src/branch/main/" + c.cfg.ConfigDir + "/" + text[m[6]:m[7]]
+			}
+		case base == "":
+		case m[2] >= 0:
+			href = base + "/actions/runs/" + text[m[2]:m[3]]
+		case strings.ContainsAny(text[m[4]:m[5]], "0123456789"):
+			href = base + "/commit/" + v.fullHash(text[m[4]:m[5]])
 		}
-		b.WriteString(c.numberLinks(v, r, text[at:m[0]]))
-		b.WriteString(`<a class="ref-link" href="` + template.HTMLEscapeString(href+text[max(m[2], m[4]):max(m[3], m[5])]) + `" target="_blank" rel="noopener">` + text[m[0]:m[1]] + `</a>`)
+		if href == "" {
+			continue
+		}
+		b.WriteString(c.numberLinks(v, r, text[at:from]))
+		b.WriteString(`<a class="ref-link" href="` + template.HTMLEscapeString(href) + `" target="_blank" rel="noopener">` + template.HTMLEscapeString(text[from:m[1]]) + `</a>`)
 		at = m[1]
 	}
 	b.WriteString(c.numberLinks(v, r, text[at:]))
 	return b.String()
+}
+
+// fullHash is the whole hash of the commit a text names by short, where a
+// card, a case or a pending request of the view holds it; else short.
+func (v *boardView) fullHash(short string) string {
+	whole := func(sha string) bool { return len(sha) == 40 && strings.HasPrefix(sha, short) }
+	for _, t := range v.byID {
+		for _, sha := range []string{t.SHA, t.MergeCommit} {
+			if whole(sha) {
+				return sha
+			}
+		}
+	}
+	for _, cases := range v.cases.byCard {
+		for _, c := range cases {
+			for _, fact := range c.Facts {
+				if sha, _ := fact.(string); whole(sha) {
+					return sha
+				}
+			}
+		}
+	}
+	for _, a := range v.pending {
+		var spec struct {
+			Head string `json:"head_sha"`
+		}
+		if json.Unmarshal(a.Spec, &spec) == nil && whole(spec.Head) {
+			return spec.Head
+		}
+	}
+	return short
 }
 
 // numberLinks is text with each #N linked and named.
