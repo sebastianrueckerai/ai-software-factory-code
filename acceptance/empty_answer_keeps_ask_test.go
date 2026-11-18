@@ -24,7 +24,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	factorygateway "github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
 
 // The park-answer rig: everything the tests of a parked card's answers
@@ -131,12 +130,6 @@ func (f *parkForgejo) Unwanted() []string {
 	return append([]string(nil), f.unwanted...)
 }
 
-// parkRigs counts the rigs this process seeded, one database each.
-var parkRigs = struct {
-	mu sync.Mutex
-	n  int
-}{}
-
 // parkRig is the factory around one parked card: the store, the runner,
 // the signed webhook intake and the console over the same store, with
 // the fake Forgejo and the object store behind them all; dsn is the
@@ -167,11 +160,7 @@ type parkRig struct {
 func newParkRig(t *testing.T) *parkRig {
 	t.Helper()
 	ctx := context.Background()
-	parkRigs.mu.Lock()
-	n := parkRigs.n
-	parkRigs.n++
-	parkRigs.mu.Unlock()
-	dsn := schematest.DSN(t, fmt.Sprintf("acceptance_park_%d", n))
+	dsn := accDatabase(t, "acceptance_park")
 	store, err := factoryd.OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
