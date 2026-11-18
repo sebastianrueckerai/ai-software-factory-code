@@ -61,10 +61,11 @@ func (f *accReceiptForgejo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // accReceiptStore opens the real store on the suite's throwaway Postgres,
 // and a plain database handle on the same DSN, to read the seeded
-// records back as anyone can.
+// records back as anyone can. The database is the test's own, dropped at
+// its end, so every run of the test starts empty.
 func accReceiptStore(t *testing.T, name string) (*factoryd.PGStore, *sql.DB) {
 	t.Helper()
-	dsn := schematest.DSN(t, name)
+	dsn := schematest.Scratch(t, name)
 	s, err := factoryd.OpenStore(context.Background(), dsn)
 	if err != nil {
 		t.Fatal(err)

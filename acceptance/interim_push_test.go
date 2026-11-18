@@ -246,7 +246,7 @@ func wipPolicy() policy.Version {
 // worker's pushes onto the git target the faked Forgejo serves.
 func TestWorkSurvivesTheDeadSession(t *testing.T) {
 	ctx := context.Background()
-	dsn := schematest.DSN(t, "acceptance_wip")
+	dsn := schematest.Scratch(t, "acceptance_wip")
 	store, err := factoryd.OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)

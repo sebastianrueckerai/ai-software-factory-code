@@ -140,7 +140,8 @@ var parkRigs = struct {
 // parkRig is the factory around one parked card: the store, the runner,
 // the signed webhook intake and the console over the same store, with
 // the fake Forgejo and the object store behind them all; dsn is the
-// store's database, for a gateway's store beside it.
+// store's database, for a gateway's store beside it; load puts a version
+// in force for the runner and the intake (loadPolicy).
 type parkRig struct {
 	mu        sync.Mutex
 	dsn       string
@@ -154,6 +155,7 @@ type parkRig struct {
 	workflows *acceptanceWorkflows
 	objects   *stubObjects
 	version   policy.Version
+	load      func(policy.Version)
 	delivery  int
 }
 
@@ -242,6 +244,15 @@ func newParkRig(t *testing.T) *parkRig {
 	forgejo := &factoryd.Forgejo{BaseURL: fj.server.URL, BotUser: parkBot, BotPassword: "bot-pw"}
 	objects := &stubObjects{data: map[string][]byte{}}
 	workflows := &acceptanceWorkflows{}
+	// the version in force the runner and the intake read, which
+	// loadPolicy moves as factoryd's policy loader does
+	var policyMu sync.Mutex
+	current, versions := v, map[int64]policy.Version{v.ID: v}
+	inForce := func() policy.Version {
+		policyMu.Lock()
+		defer policyMu.Unlock()
+		return current
+	}
 	cfg := factoryd.RunnerConfig{
 		AgentNamespacePrefix: "factory-agents-", WorkerImage: "reg/worker@sha256:abc", SandboxBaseImage: "reg/sandbox-base@sha256:bcd", RegistryHost: "store.test",
 		PullSecret: "forgejo-registry", FactoryNamespace: "factory",
@@ -250,9 +261,12 @@ func newParkRig(t *testing.T) *parkRig {
 		AnswerTokens: 8192, HeadroomTokens: 16384, ChecksPoll: time.Millisecond,
 		EgressCanary: "example.com:443", EgressDirectIP: "192.0.2.7:443",
 		Supervisor: factoryd.SupervisorConfig{RepetitionEvents: 24},
-		Policy:     func() policy.Version { return v },
+		Policy:     inForce,
 		PolicyVersion: func(_ context.Context, id int64) (policy.Version, bool, error) {
-			return v, id == v.ID, nil
+			policyMu.Lock()
+			defer policyMu.Unlock()
+			w, ok := versions[id]
+			return w, ok, nil
 		},
 		Leases: &acceptanceLeases{}, Gates: &factoryd.GateWatch{},
 		LastFailure: func(context.Context, string, string) (string, error) { return "", nil },
@@ -268,7 +282,7 @@ func newParkRig(t *testing.T) *parkRig {
 	// the signed webhook intake over the same store, its events recorded
 	// by the runner's own timeline so the answers land in the cases
 	in := &factoryd.Intake{Store: store, Forgejo: forgejo, Workflows: workflows, BotUser: parkBot,
-		Secret: parkHookSecret, Timeline: runner.Timeline(), Policy: func() policy.Tree { return v.Tree }}
+		Secret: parkHookSecret, Timeline: runner.Timeline(), Policy: func() policy.Tree { return inForce().Tree }}
 
 	// the console over the same store: the runner's own digests, case
 	// reads and Act, the chat and its operator, the intake's trust gate
@@ -342,8 +356,26 @@ func newParkRig(t *testing.T) *parkRig {
 		}
 	})
 	rig = &parkRig{dsn: dsn, store: store, runner: runner, forgejo: forgejo, fj: fj, intake: in, console: board,
-		workflows: workflows, objects: objects, version: v}
+		workflows: workflows, objects: objects, version: v, load: func(next policy.Version) {
+			policyMu.Lock()
+			defer policyMu.Unlock()
+			current, versions[next.ID] = next, next
+		}}
 	return rig
+}
+
+// loadPolicy records tree under commit as the policy in force and loads
+// it, as factoryd's policy loader does: the store, a gateway beside it,
+// the console, the runner and the intake read the one version.
+func (r *parkRig) loadPolicy(t *testing.T, commit string, tree policy.Tree) policy.Version {
+	t.Helper()
+	v, _, err := r.store.RecordPolicy(context.Background(), commit, tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.load(v)
+	r.version = v
+	return v
 }
 
 // seedWaitingCard parks the running-kind card at the human: the agent's

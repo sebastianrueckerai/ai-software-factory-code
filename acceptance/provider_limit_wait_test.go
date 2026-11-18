@@ -22,8 +22,10 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/interceptor"
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -69,7 +71,8 @@ type plWaitRun struct {
 // plWaitEnv is a Temporal test environment whose clock starts at start,
 // with the real runner's activities over store, its timelines in objects,
 // and TaskWorkflow registered on it: every activity but the session, which
-// the caller scripts. move puts plWaitPolicy's moved version in force.
+// the caller scripts, behind the gate watch that moves a card's gate as
+// factoryd's worker does. move puts plWaitPolicy's moved version in force.
 func plWaitEnv(t *testing.T, store *factoryd.PGStore, objects *stubObjects, start time.Time) (env *testsuite.TestWorkflowEnvironment, move func()) {
 	t.Helper()
 	git := &gitForgejo{base: wipBase}
@@ -113,10 +116,12 @@ func plWaitEnv(t *testing.T, store *factoryd.PGStore, objects *stubObjects, star
 			v, ok := versions[id]
 			return v, ok, nil
 		},
-		Leases: &acceptanceLeases{}, Gates: &factoryd.GateWatch{},
+		Leases:      &acceptanceLeases{},
 		LastFailure: func(context.Context, string, string) (string, error) { return "", nil },
 		Workflows:   &acceptanceWorkflows{},
 	}
+	gates := &factoryd.GateWatch{Store: store, Bound: factoryd.PinnedBound(cfg.Policy, cfg.PolicyVersion)}
+	cfg.Gates = gates
 	completion := &factoryd.Completion{Store: store, Forgejo: forgejo, LiteLLM: &factoryd.LiteLLMAdmin{BaseURL: litellm.URL, MasterKey: "mk"}}
 	runner, err := factoryd.NewRunner(cfg, mergeProject{store}, &acceptanceKube{}, forgejo, completion, objects,
 		&factoryd.SupervisorModel{GatewayURL: quiet.URL, Token: "gw-token", Budget: factoryd.TokenBudget{AnswerTokens: 1000, HeadroomTokens: 8000}})
@@ -127,6 +132,7 @@ func plWaitEnv(t *testing.T, store *factoryd.PGStore, objects *stubObjects, star
 	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 	env = suite.NewTestWorkflowEnvironment()
 	env.SetStartTime(start)
+	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{gates}})
 	runner.RegisterActivities(skipping{env: env, skip: factoryd.ActivityRunSession})
 	env.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
 	return env, func() {

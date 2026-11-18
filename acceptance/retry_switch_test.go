@@ -28,24 +28,26 @@ import (
 // the first meets the provider's dated refusal and arms the class's hold,
 // the other is answered by the hold, and both wait to the reset beside
 // the one freeze card. From each entry point — the freeze card's Retry
-// now and the chat's retry on the card — the press clears the hold, closes
-// the card at once and wakes both cards, whose next sessions start at the
-// press. The first press's probe meets a dated refusal naming a new reset:
-// the hold re-arms, the same card reopens and both cards wait to the new
-// reset, with no case and no question. The second press's probe succeeds:
-// both cards reach the provider and the card stays closed on
-// class_resumed. [retry_switch_ends_freeze]
+// now, and the chat's retry on a frozen card, which the runner finds held
+// by the freeze card under the policy in force, or on the freeze card
+// itself — the press clears the hold, closes the card at once and wakes
+// both cards, whose next sessions start at the press. The first press's
+// probe meets a dated refusal naming a new reset: the hold re-arms, the
+// same card reopens and both cards wait to the new reset, with no case
+// and no question. The second press's probe succeeds: both cards reach
+// the provider and the card stays closed on class_resumed.
+// [retry_switch_ends_freeze]
 func TestRetrySwitchEndsFreeze(t *testing.T) {
-	for _, entry := range []string{"button", "chat"} {
-		t.Run(entry, func(t *testing.T) {
+	for _, entry := range []struct {
+		name       string
+		chat, work bool // the chat's retry, on a frozen work card
+	}{{"Retry now", false, false}, {"the chat's retry on a frozen card", true, true}, {"the chat's retry on the freeze card", true, false}} {
+		t.Run(entry.name, func(t *testing.T) {
 			r := newParkRig(t)
 			ctx := context.Background()
 			tree := plFrozenVersion(r)
 			tree.Document.Approvers = []string{parkMember}
-			v, _, err := r.store.RecordPolicy(ctx, "c-retry", tree)
-			if err != nil {
-				t.Fatal(err)
-			}
+			v := r.loadPolicy(t, "c-retry", tree)
 			gwStore, err := factorygateway.OpenStore(ctx, r.dsn)
 			if err != nil {
 				t.Fatal(err)
@@ -152,7 +154,10 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 				mu.Lock()
 				woke = nil
 				mu.Unlock()
-				if entry == "button" {
+				if entry.work {
+					card = cards[0]
+				}
+				if !entry.chat {
 					req := httptest.NewRequest(http.MethodPost, "/tasks/"+card+"/retry-freeze",
 						strings.NewReader(url.Values{"csrf": {csrf}, "project": {parkProject}}.Encode()))
 					req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

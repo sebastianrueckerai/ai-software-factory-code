@@ -37,7 +37,7 @@ const receiptMarker = "<!-- factoryd receipt t-wip -->"
 // stands).
 func TestReceiptCommentOnTheMergedPullRequest(t *testing.T) {
 	ctx := context.Background()
-	store, err := factoryd.OpenStore(ctx, schematest.DSN(t, "acceptance_receipt_comment"))
+	store, err := factoryd.OpenStore(ctx, schematest.Scratch(t, "acceptance_receipt_comment"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestReceiptCommentOnTheMergedPullRequest(t *testing.T) {
 // second time — posts nothing: the first write stands.
 func TestReceiptCommentOnTheWebhookMergedPullRequest(t *testing.T) {
 	ctx := context.Background()
-	store, err := factoryd.OpenStore(ctx, schematest.DSN(t, "acceptance_receipt_webhook"))
+	store, err := factoryd.OpenStore(ctx, schematest.Scratch(t, "acceptance_receipt_webhook"))
 	if err != nil {
 		t.Fatal(err)
 	}

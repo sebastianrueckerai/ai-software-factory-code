@@ -361,7 +361,7 @@ func TestWallClockStopShipsTheWork(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 			ctx := context.Background()
-			store, err := factoryd.OpenStore(ctx, schematest.DSN(t, "acceptance_wall_clock_"+name))
+			store, err := factoryd.OpenStore(ctx, schematest.Scratch(t, "acceptance_wall_clock_"+name))
 			if err != nil {
 				t.Fatal(err)
 			}
