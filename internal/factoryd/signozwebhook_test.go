@@ -1767,7 +1767,7 @@ func TestAClearedAlertSkipsAFinalCard(t *testing.T) {
 // A resolve of the alert of a human card that stays open writes
 // resolved_at on the card's live case and stores the face those facts
 // give: the story says when the alert resolved, and Noted leads as the
-// factory's pick. A card whose case ended takes nothing.
+// factory's pick. A new firing puts the card back to firing.
 func TestAResolvedAlertsCardSaysItResolved(t *testing.T) {
 	r := newAlertRig(t)
 	demo := r.in.Projects.(*memProjects).m["demo-app"]
@@ -1796,6 +1796,12 @@ func TestAResolvedAlertsCardSaysItResolved(t *testing.T) {
 	pick, _ := face["preselected"].(map[string]any)
 	if story.Happened != "It resolved at 28 September at 20:40 UTC." || pick["action"] != "choice:"+AnswerNoted || face["recommended_by"] != "the factory" {
 		t.Fatalf("the stored face = %+v, want the resolve's time and Noted as the factory's pick", face)
+	}
+	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", "2026-09-28T21:00:00Z", neverEnds))
+	face = r.store.faces[3]
+	story, _ = face["story"].(Story)
+	if r.store.cases[k].Facts["resolved_at"] != "" || story.Happened != "It has fired since 28 September at 21:00 UTC, at 14.29." || face["preselected"] != nil {
+		t.Fatalf("after a new firing: resolved_at %v, face %+v; want the card firing again", r.store.cases[k].Facts["resolved_at"], face)
 	}
 }
 

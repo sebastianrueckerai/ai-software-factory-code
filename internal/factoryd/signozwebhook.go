@@ -352,7 +352,7 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 			return err
 		}
 		if filed && t.Kind == "human" && !Final(t.Status) && row.Detail["event"] != true {
-			return in.resolvedOnCard(ctx, t, at)
+			return in.alertOnCard(ctx, t, map[string]any{"resolved_at": at})
 		}
 		return nil
 	}
@@ -403,7 +403,13 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 		if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
 			return err
 		}
-		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"starts_at": at})
+		if err := in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"starts_at": at}); err != nil {
+			return err
+		}
+		if row.Detail["resolved_at"] != nil && t.Kind == "human" {
+			return in.alertOnCard(ctx, t, map[string]any{"resolved_at": "", "happened": firedLine(a)})
+		}
+		return nil
 	}
 	// the fingerprint's task already closed: a roll can retrigger this same
 	// fingerprint (item 127, fix round 2), so it is judged again rather than
@@ -1150,27 +1156,33 @@ func namespaceOf(labels map[string]string) string {
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
-// resolvedOnCard writes the resolve at of its alert on human card t's live
-// ask: the case's facts take resolved_at, and its face is stored again on
-// them, so the card says when its alert resolved.
-func (in *AlertIntake) resolvedOnCard(ctx context.Context, t Task, at string) error {
+// alertOnCard writes how its alert stands on human card t's live ask: the
+// case's facts take facts, a resolve's resolved_at or a new firing's story
+// line, and its face is stored again on them, so the card says whether its
+// alert still fires.
+func (in *AlertIntake) alertOnCard(ctx context.Context, t Task, facts map[string]any) error {
 	c, err := in.Store.NewestAskCase(ctx, t.ID)
 	if err != nil || c.ID == 0 {
 		return err
 	}
-	switch err := in.Store.SetCaseFacts(ctx, c.ID, map[string]any{"resolved_at": at}); {
+	switch err := in.Store.SetCaseFacts(ctx, c.ID, facts); {
 	case errors.Is(err, ErrNotFound):
 		return nil // the case ended since the read
 	case err != nil:
 		return err
 	}
-	facts := maps.Clone(c.Facts)
-	if facts == nil {
-		facts = map[string]any{}
+	merged := maps.Clone(c.Facts)
+	if merged == nil {
+		merged = map[string]any{}
 	}
-	facts["resolved_at"], c.Facts = at, facts
+	maps.Copy(merged, facts)
+	c.Facts = merged
 	ask, _ := caseAskIn(ctx, in.Store, c)
-	face := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: t, Recommend: RecommendationOf(ask.Detail)})
+	rec := RecommendationOf(ask.Detail)
+	if rec.By == "the factory" {
+		rec = Recommendation{} // the face's own pick, which the new facts write again
+	}
+	face := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: t, Recommend: rec})
 	return in.Store.SetCaseFace(ctx, c.ID, FaceKeys(face))
 }
 

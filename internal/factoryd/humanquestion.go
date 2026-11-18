@@ -94,14 +94,20 @@ func AlertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
 		Info:    why + "\n\n" + body,
 		Choices: choices(ActClose+"/"+variantNoted, ActNote+"/"+variantPark),
 	}
-	if !a.StartsAt.IsZero() {
-		q.Happened = "It has fired since " + timeWords(a.StartsAt)
-		if v := oneLine(a.Annotations["value"]); v != "" {
-			q.Happened += ", at " + v
-		}
-		q.Happened += "."
-	}
+	q.Happened = firedLine(a)
 	return q
+}
+
+// firedLine is the story line of alert a that fires, "" without its start.
+func firedLine(a SigNozAlert) string {
+	if a.StartsAt.IsZero() {
+		return ""
+	}
+	line := "It has fired since " + timeWords(a.StartsAt)
+	if v := oneLine(a.Annotations["value"]); v != "" {
+		line += ", at " + v
+	}
+	return line + "."
 }
 
 // RollRefusedQuestion is the card of a green main CI run whose images the
