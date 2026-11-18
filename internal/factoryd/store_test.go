@@ -1029,7 +1029,7 @@ func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64
 			return 0, nil
 		}
 	}
-	e.ID = int64(len(s.intakeEvents) + 1)
+	e.ID = s.nextIntakeID()
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = s.clock()
 	}
@@ -1054,8 +1054,8 @@ func (s *fakeStore) ConfirmFactoryClose(ctx context.Context, taskID string, issu
 }
 
 // closeKey keys a close record's confirmation: by its task and issue, and
-// by its own id once the record is off its issue (ForgetFactoryClose), so
-// each forgotten record of a task keeps its own.
+// by its own id once the record is off its issue (ReopenFreezeCard), so
+// each such record of a task keeps its own.
 func closeKey(e IntakeEvent) [2]any {
 	if e.CommentID == 0 {
 		return [2]any{e.TaskID, fmt.Sprintf("forgotten %d", e.ID)}
@@ -1638,19 +1638,90 @@ func (s *fakeStore) FreezeCards(ctx context.Context, status string) ([]Task, err
 	return out, nil
 }
 
-// ForgetFactoryClose takes the fake's record of factoryd's close of task
-// taskID's issue off the issue, as the store's does: the record keeps its
-// confirmation.
-func (s *fakeStore) ForgetFactoryClose(ctx context.Context, taskID string, issue int64) error {
+// EndFreezeCard ends the fake's waiting freeze card t as the store's
+// transaction does: all of it, or nothing and false when the row no longer
+// waits or a close record stands on the issue.
+func (s *fakeStore) EndFreezeCard(ctx context.Context, t Task, face, comment string) (bool, error) {
+	c, ok := s.tasks[t.ID]
+	if !ok || c.Status != "waiting-human" || c.Source != SourceFreezeCard {
+		return false, nil
+	}
+	if comment != "" {
+		if slices.ContainsFunc(s.intakeEvents, func(e IntakeEvent) bool {
+			return e.TaskID == t.ID && e.Kind == IntakeFactoryClosed && e.CommentID == t.IssueNumber
+		}) {
+			return false, nil
+		}
+		s.intakeEvents = append(s.intakeEvents, IntakeEvent{ID: s.nextIntakeID(), TaskID: t.ID, Kind: IntakeFactoryClosed,
+			Author: FactoryDecider, CommentID: t.IssueNumber, Body: comment, CreatedAt: s.clock()})
+	}
+	if face != "" {
+		c.Objective = face
+		s.tasks[t.ID] = c
+	}
+	if err := s.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
+		return false, err
+	}
+	return true, s.SettleFreezeReopen(ctx, t.ID, t.IssueNumber)
+}
+
+// ReopenFreezeCard opens the fake's done freeze card t again as the
+// store's transaction does: the row, its face, the close's record off the
+// issue and confirmed, and the owed reopen.
+func (s *fakeStore) ReopenFreezeCard(ctx context.Context, t Task, face, comment string) error {
+	c, ok := s.tasks[t.ID]
+	if !ok || c.Status != "done" || c.Source != SourceFreezeCard {
+		return fmt.Errorf("freeze card %s: %w (not done, cannot open again)", t.ID, ErrNotFound)
+	}
+	c.Objective = face
+	s.tasks[t.ID] = c
+	if err := s.TransitionTask(ctx, t.ID, []string{"done"}, "waiting-human"); err != nil {
+		return err
+	}
+	if s.confirmedCloses == nil {
+		s.confirmedCloses = map[[2]any]bool{}
+	}
 	for i, e := range s.intakeEvents {
-		if e.TaskID == taskID && e.Kind == IntakeFactoryClosed && e.CommentID == issue {
+		if e.TaskID == t.ID && e.Kind == IntakeFactoryClosed && e.CommentID == t.IssueNumber {
+			delete(s.confirmedCloses, closeKey(e))
 			s.intakeEvents[i].CommentID = 0
-			if s.confirmedCloses[closeKey(e)] {
-				delete(s.confirmedCloses, closeKey(e))
-				s.confirmedCloses[closeKey(s.intakeEvents[i])] = true
-			}
+			s.confirmedCloses[closeKey(s.intakeEvents[i])] = true
 		}
 	}
+	if err := s.SettleFreezeReopen(ctx, t.ID, t.IssueNumber); err != nil {
+		return err
+	}
+	s.intakeEvents = append(s.intakeEvents, IntakeEvent{ID: s.nextIntakeID(), TaskID: t.ID, Kind: IntakeFactoryReopened,
+		Author: FactoryDecider, CommentID: t.IssueNumber, Body: comment, CreatedAt: s.clock()})
+	return nil
+}
+
+// OwedFreezeReopens lists the fake's owed reopens, oldest first.
+func (s *fakeStore) OwedFreezeReopens(ctx context.Context) ([]IntakeEvent, error) {
+	var out []IntakeEvent
+	for _, e := range s.intakeEvents {
+		if e.Kind == IntakeFactoryReopened {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// nextIntakeID is an id above every intake event the fake holds, so a
+// deleted row frees no id of a row that stands.
+func (s *fakeStore) nextIntakeID() int64 {
+	var newest int64
+	for _, e := range s.intakeEvents {
+		newest = max(newest, e.ID)
+	}
+	return newest + 1
+}
+
+// SettleFreezeReopen deletes the fake's owed reopen of task taskID's issue.
+func (s *fakeStore) SettleFreezeReopen(ctx context.Context, taskID string, issue int64) error {
+	s.intakeEvents = slices.DeleteFunc(s.intakeEvents, func(e IntakeEvent) bool {
+		return e.TaskID == taskID && e.Kind == IntakeFactoryReopened && e.CommentID == issue
+	})
 	return nil
 }
 

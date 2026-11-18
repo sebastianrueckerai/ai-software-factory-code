@@ -257,9 +257,24 @@ func closeIssueAsFactory(ctx context.Context, store interface {
 			comment = events[i].Body
 		}
 	}
+	return finishClose(ctx, store, forgejo, t, comment, id > 0)
+}
+
+// finishClose is the Forgejo side of a close factoryd recorded: it posts
+// comment unless it is "", as a new comment when the record is fresh and
+// where the issue lacks it otherwise (CommentOnce), closes the issue and
+// confirms the record. Only a comment Forgejo refuses (forgejoTerminal) is
+// logged, and the close goes on.
+func finishClose(ctx context.Context, store interface {
+	ConfirmFactoryClose(context.Context, string, int64) error
+}, forgejo *Forgejo, t Task, comment string, fresh bool) error {
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return err
+	}
 	switch {
 	case comment == "":
-	case id > 0:
+	case fresh:
 		_, err = forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, comment)
 	default:
 		err = forgejo.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, comment)
