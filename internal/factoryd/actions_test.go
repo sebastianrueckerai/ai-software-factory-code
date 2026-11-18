@@ -473,6 +473,20 @@ func TestOfferedFollowsTheTable(t *testing.T) {
 	}
 }
 
+// A card with no open pull request, no push and no head is offered a
+// successor while its branch holds work main lacks, which the successor
+// continues; with none on its branch the successor is refused.
+func TestSuccessorOfferedOnBranchWork(t *testing.T) {
+	f := CaseFacts{BranchRead: true, BranchHead: "c9", Autonomy: policy.AutonomyFullAuto}
+	if why := applies(t, ActSuccessor, f, Resolution{}); why != "" || !slices.Contains(offeredNames(f, 3), ActSuccessor) {
+		t.Errorf("a branch at c9: successor refused %q, offered %v; want it offered", why, offeredNames(f, 3))
+	}
+	f.BranchHead = ""
+	if why, want := applies(t, ActSuccessor, f, Resolution{}), "no pull request is open and the card's branch holds no work"; why != want || slices.Contains(offeredNames(f, 3), ActSuccessor) {
+		t.Errorf("no work on the branch: successor refused %q, offered %v; want refused %q", why, offeredNames(f, 3), want)
+	}
+}
+
 // A retry takes a failed dependency nobody retried whose end a retry can
 // fix, and a named one a retry replaced already, whose answer names the
 // replacement; any other named one is refused with its state.

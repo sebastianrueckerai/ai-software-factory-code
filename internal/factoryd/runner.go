@@ -1589,10 +1589,10 @@ func sizeBounded(t Task, s sessionSpec) bool {
 }
 
 // cuttable: the planner can cut the rest of the session's card into
-// smaller cards: a plan's child goes back to its plan, a direct card only
-// where its project's process has a plan track.
+// smaller cards: a plan's card or its successor goes back to its plan, a
+// direct card only where its project's process has a plan track.
 func cuttable(t Task, s sessionSpec) bool {
-	return sizeBounded(t, s) && (t.Source == SourcePlan || s.planTrack)
+	return sizeBounded(t, s) && (t.PlanCard() || s.planTrack)
 }
 
 // checkinLive is the mid-session check-in: a detector tripped, and the

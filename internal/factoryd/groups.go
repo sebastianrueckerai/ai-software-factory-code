@@ -17,6 +17,13 @@ func GroupOf(t Task) string {
 	return t.ID
 }
 
+// PlanCard reports whether card t is its key's card in its parent plan: a
+// card the plan filed, or the successor of one, which carries its key. Its
+// replan is its plan's, and it never turns plan-track.
+func (t Task) PlanCard() bool {
+	return t.Parent != "" && (t.Source == SourcePlan || t.Source == SourceSuccessor && t.PlanKey != "")
+}
+
 // InPlan reports whether card t is a plan card or a plan's child, so its
 // replan is its plan's.
 func InPlan(t Task) bool {

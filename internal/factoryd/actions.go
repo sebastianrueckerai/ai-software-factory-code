@@ -248,8 +248,8 @@ var Actions = []Action{
 		return raiseRefusal(eur)
 	}},
 	{Name: ActSuccessor, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, _ Resolution) string {
-		if !f.PROpen && !f.Pushed && f.Head == "" {
-			return "no pull request is open and no session pushed a branch"
+		if !f.PROpen && !f.Pushed && f.Head == "" && f.BranchHead == "" {
+			return "no pull request is open and the card's branch holds no work"
 		}
 		return ""
 	}},

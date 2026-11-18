@@ -164,6 +164,8 @@ type QuestionFacts struct {
 	SessionCap    int           // sessions the card may run, its grants included
 	SessionGrants int           // sessions the answers granted beyond the policy's cap
 	Attempts      int           // attempts the card has run
+	BranchRead    bool          // the card's branch on the fork was read
+	BranchHead    string        // its head while main lacks it, "" for no work on it
 	LineBound     int           // changed lines the card's size plans, its raises included
 	BudgetEUR     float64       // the card's budget
 	SpentEUR      float64       // EUR of the budget spent
@@ -584,6 +586,9 @@ func BudgetQuestion(reason string, f QuestionFacts) *HumanQuestion {
 		Why:  "The card stopped mid-work: its remaining budget cannot pay for the session it needs next. Nothing is lost — the card waits here, and a raise lets the agent carry on where it stopped.",
 		Info: "A Fund button raises the card's budget by that amount and answers the card in one click; the session starts once the budget covers it. Park records your answer and leaves the card waiting for a later raise.",
 	}
+	if f.BranchRead && f.BranchHead == "" && f.Attempts > 0 {
+		q.Why = "The card stopped mid-work: its remaining budget cannot pay for the session it needs next. The last session's work was not pushed and is lost. A fund starts a new session from main, and the work must be done again."
+	}
 	floor := f.FloorEUR
 	if tail := budgetTail.FindStringSubmatch(reason); tail != nil {
 		if f.BudgetEUR > 0 {
@@ -990,8 +995,10 @@ func issueQuestion(title, body, poster string, agents bool) HumanQuestion {
 // questionFacts reads the numbers the templates fill from: the check-in
 // spend the task has made, the card's shares,
 // the caps and money of the card and of the month wherever a template or
-// the plain tail shows them, and the pull request a budget stop's raise
-// funds. It reads nothing for a reason the templates do not cover.
+// the plain tail shows them, and for a budget stop the pull request its
+// raise funds and the attempts the card ran. The branch facts are the
+// caller's to copy from the case's facts. It reads nothing for a reason
+// the templates do not cover.
 func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) QuestionFacts {
 	track := QuestionFacts{PlanTrack: t.Track == policy.TrackPlan}
 	if strings.HasPrefix(reason, BudgetRefused) && r.cfg.Policy != nil {
@@ -999,7 +1006,7 @@ func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) Quest
 		if t.ModelAlias != "" {
 			track.FloorEUR = v.Document.Budget.SessionFloor(r.frontier(t.ModelAlias))
 		}
-		track.PR = t.PRNumber
+		track.PR, track.Attempts = t.PRNumber, t.Usage.Attempts
 		track.BudgetEUR, track.SpentEUR, track.HeldEUR, track.LeftEUR = t.BudgetEUR, t.EnforcedSpent(), t.HeldEUR, t.Left()
 		track.ReserveEUR = v.Document.Limits.GateReserve()
 		return track

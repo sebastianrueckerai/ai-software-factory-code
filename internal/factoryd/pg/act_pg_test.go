@@ -50,7 +50,8 @@ func (w *caseSignals) Signal(_ context.Context, taskID, name string, sig TaskSig
 }
 
 // actForge is a Forgejo for the issues of demo-app/demo-app: it keeps the
-// comments posted and whether issue 12 was closed.
+// comments posted and whether issue 12 was closed. The bot's fork holds no
+// branch of a card.
 type actForge struct {
 	mu         sync.Mutex
 	comments   []string
@@ -77,6 +78,8 @@ func (f *actForge) serve(t *testing.T) *httptest.Server {
 		case r.Method == http.MethodGet && r.URL.Path == issue:
 			fmt.Fprint(w, `{"state":"open"}`)
 		case r.Method == http.MethodGet && r.URL.Path == issue+"/dependencies":
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/demo-app/branches/"):
 			w.WriteHeader(http.StatusNotFound)
 		case r.Method == http.MethodPatch && r.URL.Path == issue && f.closeFails:
 			w.WriteHeader(http.StatusInternalServerError)

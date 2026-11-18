@@ -646,9 +646,9 @@ func newTestPoller(t *testing.T, f *chainForgejo, projects ...Project) (*ChainPo
 		Policy: func() policy.Version { return policy.Version{} }}, store
 }
 
-// A companion head that reaches a held plan card's pin wakes the card with
-// one companion_landed signal, and only once; a head still behind wakes
-// nothing.
+// A companion head that reaches a held plan card's pin wakes the card, and
+// a held successor that carries its key, with one companion_landed signal
+// each, and only once; a head still behind wakes nothing.
 func TestChainPollCompanionWake(t *testing.T) {
 	pin, behind := "82ab246"+strings.Repeat("0", 33), "fee3ff16"+strings.Repeat("1", 32)
 	code := seedProject("sf/code")
@@ -671,6 +671,9 @@ func TestChainPollCompanionWake(t *testing.T) {
 	}
 	store.tasks["t-card"] = Task{ID: "t-card", Kind: "agent", Status: "waiting-human", Repository: "sf/code",
 		Parent: "t-plan", PlanKey: "foundation", PlanRevision: 1, Source: SourcePlan, Gate: "approval"}
+	succ := store.tasks["t-card"]
+	succ.ID, succ.Source = "t-succ", SourceSuccessor
+	store.tasks["t-succ"] = succ
 
 	if err := p.Tick(ctx); err != nil {
 		t.Fatal(err)
@@ -683,14 +686,14 @@ func TestChainPollCompanionWake(t *testing.T) {
 	if err := p.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(wf.signals) != 1 || !strings.HasPrefix(wf.signals[0], "t-card companion_landed") {
-		t.Fatalf("signals = %q, want one companion_landed for t-card", wf.signals)
+	if len(wf.signals) != 2 || !strings.HasPrefix(wf.signals[0], "t-card companion_landed") || !strings.HasPrefix(wf.signals[1], "t-succ companion_landed") {
+		t.Fatalf("signals = %q, want one companion_landed for t-card and one for t-succ", wf.signals)
 	}
 	if err := p.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(wf.signals) != 1 {
-		t.Fatalf("signals = %q, want the wake once", wf.signals)
+	if len(wf.signals) != 2 {
+		t.Fatalf("signals = %q, want each wake once", wf.signals)
 	}
 }
 

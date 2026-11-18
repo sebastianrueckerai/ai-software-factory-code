@@ -65,9 +65,10 @@ func TestPGStoreReplacesACardOutsideAPlan(t *testing.T) {
 }
 
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). A plan
-// child's successor lands with the old card's edges in one transaction: it
-// depends on the old card's dependency, and the sibling that waited on the
-// old card waits on the successor; the old card keeps its own row and key.
+// child's successor lands with the old card's key, revision and edges in
+// one transaction: it depends on the old card's dependency, and the
+// sibling that waited on the old card waits on the successor; the old card
+// keeps its own row and key.
 func TestPGStoreSuccessorTakesOverTheEdges(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_successor_edges"))
@@ -96,9 +97,12 @@ func TestPGStoreSuccessorTakesOverTheEdges(t *testing.T) {
 		t.Fatal(err)
 	}
 	succ := Task{ID: SuccessorID("t-a"), Status: "queued", Track: policy.TrackDirect, BudgetEUR: 1, Repository: "sf/r", Kind: "agent",
-		Source: SourceSuccessor, Parent: "t-plan", PlanKey: "links"}
+		Source: SourceSuccessor, Parent: "t-plan", PlanKey: "links", PlanRevision: 2}
 	if err := s.CreateSuccessor(ctx, "t-a", succ); err != nil {
 		t.Fatal(err)
+	}
+	if got, _, err := s.Task(ctx, succ.ID); err != nil || got.PlanKey != "links" || got.PlanRevision != 2 {
+		t.Fatalf("the successor's row %+v, %v; want key links at revision 2", got, err)
 	}
 	if err := s.SetTaskIssue(ctx, succ.ID, 9); err != nil {
 		t.Fatal(err)

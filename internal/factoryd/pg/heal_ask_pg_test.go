@@ -17,8 +17,8 @@ import (
 )
 
 // healAskForgejo is Forgejo as the heal pass and the re-opened ask's face
-// read it: the cards' issues open with no comments, and every comment
-// posted on them taken and kept.
+// read it: the cards' issues open with no comments, every comment posted
+// on them taken and kept, and no branch of a card on the bot's fork.
 type healAskForgejo struct {
 	mu     sync.Mutex
 	posted []string
@@ -43,6 +43,8 @@ func (f *healAskForgejo) serve(t *testing.T) *httptest.Server {
 			f.posted = append(f.posted, c.Body)
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id": %d}`, 500+len(f.posted))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/") && strings.Contains(r.URL.Path, "/branches/"):
+			w.WriteHeader(http.StatusNotFound)
 		default:
 			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusInternalServerError)
