@@ -93,6 +93,10 @@ type FreezeCardStore interface {
 	// rows after the stored cursor, oldest first, and returns the
 	// newest row's id as the cursor to persist.
 	FreezeEvents(ctx context.Context) ([]FreezeEvent, int64, error)
+	// StandingFreezes lists the class_frozen rows that are the newest row
+	// of their class at or before the stored cursor, oldest first: the
+	// freezes a restart finds standing.
+	StandingFreezes(ctx context.Context) ([]FreezeEvent, error)
 	// SetFreezeCursor persists the watcher's cursor (the migration's
 	// freeze_cursor table), so a restart reads forward only.
 	SetFreezeCursor(ctx context.Context, cursor int64) error
@@ -107,9 +111,10 @@ type FreezeCardStore interface {
 	InsertIntakeEvent(context.Context, IntakeEvent) (int64, error)
 	IntakeEvents(context.Context, string) ([]IntakeEvent, error)
 	ConfirmFactoryClose(context.Context, string, int64) error
-	// ForgetFactoryClose deletes the record of factoryd's close of task
-	// taskID's issue: a reopened freeze card's next close records, and
-	// says, its own.
+	// ForgetFactoryClose takes the record of factoryd's close of task
+	// taskID's issue off the issue: a reopened freeze card's next close
+	// records, and says, its own, and the record stays as the card's
+	// earlier end (countHumanEnd).
 	ForgetFactoryClose(ctx context.Context, taskID string, issue int64) error
 	// Task reads a card: the one a retry press names, and the watcher's
 	// own while it waits.
@@ -149,10 +154,11 @@ type FreezeCard struct {
 
 	// mu serializes Check, on the watcher's loop, and CloseOnRetry, on a
 	// press's goroutine.
-	mu      sync.Mutex
-	now     func() time.Time
-	cursor  int64
-	classes map[string]*freezeClass
+	mu       sync.Mutex
+	now      func() time.Time
+	cursor   int64
+	restored bool
+	classes  map[string]*freezeClass
 }
 
 // freezeClass is the watcher's memory of one class's card across passes.
@@ -166,9 +172,11 @@ type freezeClass struct {
 	resumedAt time.Time
 	spoke     bool
 	closed    bool // the retry press closed the card; an arm before reset reopens it
-	// pending is the class_frozen a Forgejo refusal that a human's fix
-	// cures stopped on this card: each pass applies it again
+	// pending is the class_frozen Forgejo stopped on this card: each pass
+	// applies it again while its reset is ahead
 	pending *FreezeEvent
+	// woke is the resume whose held five minutes woke the class's cards
+	woke time.Time
 }
 
 // Loop checks every interval until ctx ends.
@@ -205,8 +213,19 @@ func (w *FreezeCard) Check(ctx context.Context) error {
 	if err := w.rehydrate(ctx); err != nil {
 		return err
 	}
+	if !w.restored {
+		if err := w.restore(ctx); err != nil {
+			return err
+		}
+		w.restored = true
+	}
 	for _, key := range slices.Sorted(maps.Keys(w.classes)) {
-		if st := w.classes[key]; st != nil && st.pending != nil {
+		st := w.classes[key]
+		switch {
+		case st == nil || st.pending == nil:
+		case !beforeReset(w.now(), st.pending.Reset):
+			w.unarm(st)
+		default:
 			if err := w.arm(ctx, st, *st.pending); err != nil {
 				return err
 			}
@@ -228,6 +247,46 @@ func (w *FreezeCard) Check(ctx context.Context) error {
 		w.cursor = cursor
 	}
 	return w.tick(ctx)
+}
+
+// restore applies again, on a watcher's first pass, each class_frozen that
+// is the newest row of its class at or before the cursor while its reset
+// is ahead: the freeze a restart finds standing. Its open card holds that
+// reset and stays quiet (frozen); an arm Forgejo stopped before the
+// restart, which the memory lost, files its card. A freeze the retry
+// press answered since is over, its class_resumed row not read yet: the
+// press cleared the hold.
+func (w *FreezeCard) restore(ctx context.Context) error {
+	standing, err := w.Store.StandingFreezes(ctx)
+	if err != nil {
+		return err
+	}
+	done, err := w.Store.FreezeCards(ctx, "done")
+	if err != nil {
+		return err
+	}
+	for _, ev := range standing {
+		if !beforeReset(w.now(), ev.Reset) || slices.ContainsFunc(done, func(t Task) bool {
+			at, ok := freezePressStamp(t.Objective)
+			return ok && objectiveHasClassLine(t.Objective, ev.Class) && !at.Before(ev.At)
+		}) {
+			continue
+		}
+		if err := w.event(ctx, ev); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// unarm drops st's stopped arm, which the end of its hold made moot. A
+// memory that holds no card goes with it, so a later freeze starts its own
+// clock.
+func (w *FreezeCard) unarm(st *freezeClass) {
+	st.pending = nil
+	if st.taskID == "" {
+		delete(w.classes, st.repo+"/"+st.class)
+	}
 }
 
 // rehydrate adopts the waiting freeze cards a previous watcher filed, so
@@ -306,7 +365,8 @@ func freezeResumeStamp(objective string) (time.Time, bool) {
 // class, as the gateway's hold is the class's in all of them: an arm
 // re-arms each, which cancels a pending close, reopens each card the
 // press closed before its reset, and files the card of the arming
-// repository when it has none; an end starts each open card's close.
+// repository when it has none; an end starts each open card's close and
+// drops every arm Forgejo stopped.
 func (w *FreezeCard) event(ctx context.Context, ev FreezeEvent) error {
 	repos, err := w.openCardRepositories(ctx, ev.Class)
 	if err != nil {
@@ -334,7 +394,7 @@ func (w *FreezeCard) event(ctx context.Context, ev FreezeEvent) error {
 	case "class_resumed":
 		for _, st := range w.classes {
 			if st.class == ev.Class {
-				st.pending = nil // the hold ended: the arm it stopped is moot
+				w.unarm(st)
 			}
 		}
 		for _, repo := range repos {
@@ -347,20 +407,18 @@ func (w *FreezeCard) event(ctx context.Context, ev FreezeEvent) error {
 }
 
 // forgejoGone reports whether err is Forgejo's word that an issue is gone
-// for good, whoever asks: a 404, a 410 or a 422. A 401 or a 403 is a
-// credential's state, which a human's fix cures.
+// for good, whoever asks: a 404, a 410 or a 422.
 func forgejoGone(err error) bool {
 	return errors.Is(err, errForgejoNotFound) || errors.Is(err, errForgejoGone) || errors.Is(err, errForgejoUnprocessable)
 }
 
 // arm applies class_frozen ev to st's card (frozen) and decides what a
 // Forgejo refusal does to it, so that one card does not stop the pass for
-// every class. A refusal a human's fix cures, a 401, a 403 or another 4xx,
-// keeps the card and its arm, which each pass applies again. A card whose
-// issue is gone for good is given up, and the arm in hand files its
-// replacement at once. A filing Forgejo refuses for good waits for the
-// class's next arm. Any other error stops the pass, which reads the arm
-// again.
+// every class. A card whose issue is gone for good is given up, and the
+// arm in hand files its replacement at once. A filing Forgejo refuses for
+// good waits for the class's next arm. Any other 4xx keeps the card and
+// its arm, which each pass applies again (keep). Any other error stops the
+// pass, and the next applies the arm again.
 func (w *FreezeCard) arm(ctx context.Context, st *freezeClass, ev FreezeEvent) error {
 	err := w.frozen(ctx, st, ev)
 	switch {
@@ -368,9 +426,12 @@ func (w *FreezeCard) arm(ctx context.Context, st *freezeClass, ev FreezeEvent) e
 		st.pending = nil
 		return nil
 	case forgejoGone(err) && st.taskID == "":
-		st.pending = nil
-		log.Printf("freeze card: Forgejo refuses for good to file the %s class's freeze card on %s (%s): "+
-			"a human restores the repository or the bot's access to it, and the class's next arm files the card", st.class, st.repo, textutil.Truncate(maskedErr(err), 300))
+		w.unarm(st)
+		action := "a human restores the repository or the bot's access to it, and the class's next arm files the card"
+		if errors.Is(err, errForgejoUnprocessable) {
+			action = "Forgejo cannot process the filing as factoryd sends it, which the answer above explains, and the class's next arm tries it again"
+		}
+		log.Printf("freeze card: Forgejo refuses for good to file the %s class's freeze card on %s (%s): %s", st.class, st.repo, textutil.Truncate(maskedErr(err), 300), action)
 		return nil
 	case forgejoGone(err):
 		if _, err := w.giveUp(ctx, st, err); err != nil {
@@ -425,9 +486,30 @@ func (w *FreezeCard) giveUp(ctx context.Context, st *freezeClass, cause error) (
 func (w *FreezeCard) closeCard(ctx context.Context, t Task) error {
 	moved, err := closeRow(ctx, w.Store, t.ID)
 	if moved {
-		countOutcome(ctx, w.Metrics, w.Store, t, "done")
+		countHumanEnd(ctx, w.Metrics, w.Store, t, "done")
 	}
 	return err
+}
+
+// countHumanEnd counts human card t's end (countOutcome), each card once:
+// a freeze card a re-arm opened again counted its end when the press
+// closed it, which the close's record off its issue tells
+// (ForgetFactoryClose), so its later end counts nothing.
+func countHumanEnd(ctx context.Context, m *telemetry.Metrics, store interface {
+	projectLookup
+	taskReader
+	IntakeEvents(context.Context, string) ([]IntakeEvent, error)
+}, t Task, final string) {
+	if t.Source == SourceFreezeCard {
+		events, err := store.IntakeEvents(ctx, t.ID)
+		if err != nil {
+			log.Printf("metrics: the earlier ends of freeze card %s: %v", t.ID, err)
+		}
+		if slices.ContainsFunc(events, func(e IntakeEvent) bool { return e.Kind == IntakeFactoryClosed && e.CommentID == 0 }) {
+			return
+		}
+	}
+	countOutcome(ctx, m, store, t, final)
 }
 
 // freezeRefusedBody is the face of class's card whose issue Forgejo
@@ -690,6 +772,18 @@ func openFreezeCards(ctx context.Context, s interface {
 	return slices.DeleteFunc(open, func(t Task) bool { return !objectiveHasClassLine(t.Objective, class) }), nil
 }
 
+// freezePressStamp reads when the retry press closed the card of a
+// press-closed face; ok is false on any other face.
+func freezePressStamp(objective string) (time.Time, bool) {
+	_, after, ok := strings.Cut(objective, freezePressedSentence+" at ")
+	if !ok {
+		return time.Time{}, false
+	}
+	at, _, _ := strings.Cut(after, ": ")
+	t, err := time.Parse(time.RFC3339, at)
+	return t, err == nil
+}
+
 // pressClosedCards lists the freeze cards of class the retry press closed
 // whose reset lies after at, every repository's: an arm at at reopens
 // them.
@@ -753,6 +847,10 @@ func (w *FreezeCard) tick(ctx context.Context) error {
 		}
 		switch {
 		case !st.resumedAt.IsZero() && !now.Before(st.resumedAt.Add(freezeResumeHold)):
+			if !st.woke.Equal(st.resumedAt) {
+				st.woke = st.resumedAt
+				resumed = append(resumed, st.class)
+			}
 			err := w.close(ctx, st)
 			switch {
 			case forgejoGone(err):
@@ -767,7 +865,6 @@ func (w *FreezeCard) tick(ctx context.Context) error {
 				return err
 			}
 			delete(w.classes, key)
-			resumed = append(resumed, st.class)
 		case st.resumedAt.IsZero() && !st.spoke && !st.frozenAt.IsZero():
 			limit := w.providerLimit(st.repo)
 			if now.Before(st.frozenAt.Add(limit)) {
@@ -784,7 +881,8 @@ func (w *FreezeCard) tick(ctx context.Context) error {
 				}
 				next := w.class(st.repo, st.class)
 				next.frozenAt = st.frozenAt
-				if err := w.arm(ctx, next, FreezeEvent{Repository: st.repo, At: now, Kind: "class_frozen", Class: st.class, Reset: st.reset, Words: words}); err != nil {
+				next.pending = &FreezeEvent{Repository: st.repo, At: now, Kind: "class_frozen", Class: st.class, Reset: st.reset, Words: words}
+				if err := w.arm(ctx, next, *next.pending); err != nil {
 					return err
 				}
 				continue
@@ -800,11 +898,18 @@ func (w *FreezeCard) tick(ctx context.Context) error {
 	return nil
 }
 
-// keep logs a refusal of st's card a human's fix cures, a 401, a 403 or
-// another 4xx: the card stays, and the next pass tries it again.
+// keep logs a refusal of st's card that does not say its issue is gone:
+// the card stays, and the next pass tries it again. A 401 or a 403 names
+// the bot's credential or its rights; any other status names itself.
 func (w *FreezeCard) keep(st *freezeClass, err error) {
-	log.Printf("freeze card: Forgejo refuses %s's %s card%s (%s): a human fixes the bot's credential or its rights, and each pass tries the card again",
-		st.repo, st.class, issueRef(st.issue), textutil.Truncate(maskedErr(err), 300))
+	_, after, _ := strings.Cut(err.Error(), ": status ")
+	status, _, _ := strings.Cut(after, ":")
+	action := "Forgejo will not take the request with status " + status + ": a human reads its answer above and restores what it names"
+	if status == "401" || status == "403" {
+		action = "a human fixes the bot's credential or its rights"
+	}
+	log.Printf("freeze card: Forgejo refuses %s's %s card%s (%s): %s, and each pass tries the card again",
+		st.repo, st.class, issueRef(st.issue), textutil.Truncate(maskedErr(err), 300), action)
 }
 
 // wakeResumed wakes the frozen cards of class, in every repository, once
@@ -864,9 +969,19 @@ func freezeAsk(class string, limit time.Duration) string {
 }
 
 // speak makes the freeze card ask once: add a fallback, switch the model,
-// keep waiting. The work cards ask nothing.
+// keep waiting. The work cards ask nothing. The comment posts first, once
+// however often a pass or a restarted watcher tries (CommentOnce), and
+// the face takes the ask only after it: an ask Forgejo refused is on no
+// face, so a restart does not read it as made (rehydrate).
 func (w *FreezeCard) speak(ctx context.Context, st *freezeClass, limit time.Duration) error {
 	ask := freezeAsk(st.class, limit)
+	repo, err := SplitRepo(st.repo)
+	if err != nil {
+		return err
+	}
+	if err := w.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, st.issue, "factoryd: "+ask); err != nil {
+		return fmt.Errorf("comment the provider-limit ask on issue #%d: %w", st.issue, err)
+	}
 	t, ok, err := w.waiting(ctx, st.taskID)
 	if err != nil {
 		return err
@@ -875,13 +990,6 @@ func (w *FreezeCard) speak(ctx context.Context, st *freezeClass, limit time.Dura
 		if err := w.Store.SetObjective(ctx, st.taskID, t.Objective+"\n\n"+ask); err != nil {
 			return err
 		}
-	}
-	repo, err := SplitRepo(st.repo)
-	if err != nil {
-		return err
-	}
-	if _, err := w.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, st.issue, "factoryd: "+ask); err != nil {
-		return fmt.Errorf("comment the provider-limit ask on issue #%d: %w", st.issue, err)
 	}
 	log.Printf("freeze card: the %s class's freeze outgrew %s, its card #%d asked once", st.class, limit, st.issue)
 	return nil
@@ -1022,24 +1130,45 @@ func (s *PGStore) FreezeEvents(ctx context.Context) ([]FreezeEvent, int64, error
 	if err := s.db.QueryRowContext(ctx, `SELECT cursor FROM freeze_cursor WHERE id = 1`).Scan(&stored); err != nil {
 		return nil, 0, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, at, repository, COALESCE(task_id, ''), kind,
-		COALESCE(detail->>'class', ''), COALESCE(detail->>'reset', ''), COALESCE(detail->>'words', '')
-		FROM events WHERE id > $1 AND kind IN ('class_frozen', 'class_resumed') ORDER BY id`, stored)
+	out, err := s.freezeEvents(ctx, `SELECT `+freezeEventColumns+` FROM events
+		WHERE id > $1 AND kind IN ('class_frozen', 'class_resumed') ORDER BY id`, stored)
 	if err != nil {
 		return nil, 0, err
 	}
+	if len(out) > 0 {
+		stored = out[len(out)-1].ID
+	}
+	return out, stored, nil
+}
+
+// StandingFreezes lists the class_frozen rows that are the newest row of
+// their class at or before the stored cursor, oldest first.
+func (s *PGStore) StandingFreezes(ctx context.Context) ([]FreezeEvent, error) {
+	return s.freezeEvents(ctx, `SELECT `+freezeEventColumns+` FROM (
+		SELECT DISTINCT ON (detail->>'class') * FROM events
+		WHERE id <= (SELECT cursor FROM freeze_cursor WHERE id = 1) AND kind IN ('class_frozen', 'class_resumed')
+		ORDER BY detail->>'class', id DESC) newest
+		WHERE kind = 'class_frozen' ORDER BY id`)
+}
+
+const freezeEventColumns = `id, at, repository, COALESCE(task_id, ''), kind,
+	COALESCE(detail->>'class', ''), COALESCE(detail->>'reset', ''), COALESCE(detail->>'words', '')`
+
+func (s *PGStore) freezeEvents(ctx context.Context, query string, args ...any) ([]FreezeEvent, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var out []FreezeEvent
-	var newest int64
 	for rows.Next() {
 		ev := FreezeEvent{}
 		if err := rows.Scan(&ev.ID, &ev.At, &ev.Repository, &ev.TaskID, &ev.Kind, &ev.Class, &ev.Reset, &ev.Words); err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		out = append(out, ev)
-		newest = ev.ID
 	}
-	return out, max(newest, stored), rows.Err()
+	return out, rows.Err()
 }
 
 // SetFreezeCursor persists the watcher's cursor: the id of the last
@@ -1063,10 +1192,11 @@ func (s *PGStore) FreezeCards(ctx context.Context, status string) ([]Task, error
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE source = $1 AND status = $2 ORDER BY id`, SourceFreezeCard, status)
 }
 
-// ForgetFactoryClose deletes the record of factoryd's close of task
-// taskID's issue, confirmed or not: the freeze watcher's reopen of a card
-// the press closed, whose next close records and posts its own.
+// ForgetFactoryClose takes the record of factoryd's close of task taskID's
+// issue off the issue (comment_id 0): the freeze watcher's reopen of a
+// card the press closed, whose next close records and posts its own. The
+// row stays as the card's earlier end.
 func (s *PGStore) ForgetFactoryClose(ctx context.Context, taskID string, issue int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM intake_events WHERE task_id = $1 AND kind = $2 AND comment_id = $3`, taskID, IntakeFactoryClosed, issue)
+	_, err := s.db.ExecContext(ctx, `UPDATE intake_events SET comment_id = 0 WHERE task_id = $1 AND kind = $2 AND comment_id = $3`, taskID, IntakeFactoryClosed, issue)
 	return err
 }

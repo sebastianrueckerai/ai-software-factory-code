@@ -48,6 +48,11 @@ func TestFreezeCardCursorPersistsPG(t *testing.T) {
 	if stored != ids[1] {
 		t.Fatalf("the stored cursor is %d, want %d: SetFreezeCursor did not persist", stored, ids[1])
 	}
+	// at the cursor the class's newest row is its second class_frozen
+	if standing, err := s.StandingFreezes(ctx); err != nil || len(standing) != 1 || standing[0].ID != ids[1] || standing[0].Class != "big" ||
+		standing[0].Repository != "sf/acme" || standing[0].Reset != base.Add(4*time.Hour).Format(time.RFC3339) || standing[0].Words != "free quota exhausted" {
+		t.Fatalf("StandingFreezes at the second arm = %+v, %v; want that arm alone", standing, err)
+	}
 	// a fresh watcher reads forward only from the persisted cursor
 	events, cursor, err := s.FreezeEvents(ctx)
 	if err != nil {
@@ -65,6 +70,26 @@ func TestFreezeCardCursorPersistsPG(t *testing.T) {
 	events, cursor, err = s.FreezeEvents(ctx)
 	if err != nil || cursor != ids[2] || len(events) != 0 {
 		t.Fatalf("events = %+v, cursor %d, err %v; want a quiet read at the cursor", events, cursor, err)
+	}
+	// past its class_resumed the class stands frozen no more; a class whose
+	// newest row at the cursor is its class_frozen does
+	if standing, err := s.StandingFreezes(ctx); err != nil || len(standing) != 0 {
+		t.Fatalf("StandingFreezes past the resume = %+v, %v; want none", standing, err)
+	}
+	var small int64
+	if err := s.DB().QueryRowContext(ctx, `INSERT INTO events (at, repository, task_id, kind, actor, via, detail)
+		VALUES ($1, 'sf/other', '', 'class_frozen', 'gateway', 'gateway', '{"class":"small","reset":"2026-11-22T12:00:00Z","words":"daily limit"}') RETURNING id`,
+		base.Add(time.Hour)).Scan(&small); err != nil {
+		t.Fatal(err)
+	}
+	if standing, err := s.StandingFreezes(ctx); err != nil || len(standing) != 0 {
+		t.Fatalf("StandingFreezes with small's arm past the cursor = %+v, %v; want none", standing, err)
+	}
+	if err := s.SetFreezeCursor(ctx, small); err != nil {
+		t.Fatal(err)
+	}
+	if standing, err := s.StandingFreezes(ctx); err != nil || len(standing) != 1 || standing[0].ID != small || standing[0].Class != "small" || standing[0].Repository != "sf/other" {
+		t.Fatalf("StandingFreezes at small's arm = %+v, %v; want that arm alone", standing, err)
 	}
 }
 
@@ -155,8 +180,8 @@ func TestFreezeCardsReadTheSourcePG(t *testing.T) {
 	if err := s.ForgetFactoryClose(ctx, "fz-done", 3); err != nil {
 		t.Fatal(err)
 	}
-	if events, err := s.IntakeEvents(ctx, "fz-done"); err != nil || len(events) != 0 {
-		t.Fatalf("after the forget the card's intake = %+v, %v; want none", events, err)
+	if events, err := s.IntakeEvents(ctx, "fz-done"); err != nil || len(events) != 1 || events[0].Kind != IntakeFactoryClosed || events[0].CommentID != 0 {
+		t.Fatalf("after the forget the card's intake = %+v, %v; want the close's record off the issue", events, err)
 	}
 	if id, err := s.InsertIntakeEvent(ctx, record); err != nil || id == 0 {
 		t.Fatalf("the next close's record = %d, %v; want a new one", id, err)

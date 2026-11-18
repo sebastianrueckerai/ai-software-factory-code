@@ -1560,7 +1560,7 @@ func (in *Intake) finishHumanTask(ctx context.Context, t Task, final, why, close
 	if settle != nil {
 		in.Timeline.RecordRow(ctx, t.ID, settle.Kind, settle.Actor, settle.Via, settle.Detail)
 	}
-	countOutcome(ctx, in.Metrics, in.Store, t, final)
+	countHumanEnd(ctx, in.Metrics, in.Store, t, final)
 	mirrorTaskState(ctx, in.Forgejo, t, final)
 	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, in.Workflows, t, final, why)
 	return nil

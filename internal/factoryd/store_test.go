@@ -1618,12 +1618,15 @@ func (s *fakeStore) FreezeCards(ctx context.Context, status string) ([]Task, err
 	return out, nil
 }
 
-// ForgetFactoryClose deletes the fake's record of factoryd's close of
-// task taskID's issue, and its confirmation.
+// ForgetFactoryClose takes the fake's record of factoryd's close of task
+// taskID's issue off the issue, as the store's does, and drops its
+// confirmation.
 func (s *fakeStore) ForgetFactoryClose(ctx context.Context, taskID string, issue int64) error {
-	s.intakeEvents = slices.DeleteFunc(s.intakeEvents, func(e IntakeEvent) bool {
-		return e.TaskID == taskID && e.Kind == IntakeFactoryClosed && e.CommentID == issue
-	})
+	for i, e := range s.intakeEvents {
+		if e.TaskID == taskID && e.Kind == IntakeFactoryClosed && e.CommentID == issue {
+			s.intakeEvents[i].CommentID = 0
+		}
+	}
 	delete(s.confirmedCloses, [2]any{taskID, issue})
 	return nil
 }

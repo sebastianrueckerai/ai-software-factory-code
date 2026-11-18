@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -35,6 +36,23 @@ func (s *freezeStore) FreezeEvents(ctx context.Context) ([]FreezeEvent, int64, e
 		}
 	}
 	return out, newest, nil
+}
+
+func (s *freezeStore) StandingFreezes(ctx context.Context) ([]FreezeEvent, error) {
+	newest := map[string]FreezeEvent{}
+	for _, ev := range s.rows {
+		if ev.ID <= s.storedCursor && ev.ID > newest[ev.Class].ID {
+			newest[ev.Class] = ev
+		}
+	}
+	var out []FreezeEvent
+	for _, ev := range newest {
+		if ev.Kind == "class_frozen" {
+			out = append(out, ev)
+		}
+	}
+	slices.SortFunc(out, func(a, b FreezeEvent) int { return cmp.Compare(a.ID, b.ID) })
+	return out, nil
 }
 
 func (s *freezeStore) SetFreezeCursor(ctx context.Context, cursor int64) error {
@@ -1649,12 +1667,14 @@ func TestFreezeCardFilingRefusal(t *testing.T) {
 	}
 }
 
-// Hand-derived from three ends of freeze cards, each counted in
-// factory.task.outcome only by the side that moved the row: the press
-// closes big's #1, the watcher moving it (1); the press closes small's #2
-// with the webhook of that close moving it first, which counts it there
-// (0 here); big's #1, reopened by a refusal inside its reset, closes five
-// minutes after a self-resume, the watcher moving it (1).
+// Hand-derived from four ends of three freeze cards, each card counted
+// once in factory.task.outcome. The press closes big's #1, the watcher
+// moving the row (1). A refusal inside its reset opens #1 again, and its
+// close five minutes after a self-resume counts nothing more (0). The
+// press closes small's #2 with the webhook of that close moving the row
+// first, which counts it there (0 here); a refusal opens #2 again and a
+// human's close ends it through the webhook, which counts nothing more
+// (0). The webhook ends plain's #3, which never ended before (1).
 func TestFreezeCardCountsItsEndOnce(t *testing.T) {
 	ctx := context.Background()
 	store := &freezeStore{fakeStore: newFakeStore()}
@@ -1664,17 +1684,26 @@ func TestFreezeCardCountsItsEndOnce(t *testing.T) {
 	w := freezeWatcher(store, forgejo, &now)
 	m, reader := testMetrics(t)
 	w.Metrics = m
+	in := &Intake{Store: store.fakeStore, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Metrics: m}
 	reset := base.Add(5 * time.Hour).Format(time.RFC3339)
-	row := func(id int64, kind, class string, at time.Duration) {
+	row := func(kind, class string, at time.Duration) {
 		t.Helper()
 		now = base.Add(at)
-		store.rows = append(store.rows, FreezeEvent{ID: id, Repository: "sf/acme", At: now, Kind: kind, Class: class, Reset: reset, Words: "free quota exhausted"})
+		store.rows = append(store.rows, FreezeEvent{ID: int64(len(store.rows) + 1), Repository: "sf/acme", At: now, Kind: kind, Class: class, Reset: reset, Words: "free quota exhausted"})
 		if err := w.Check(ctx); err != nil {
 			t.Fatal(err)
 		}
 	}
-	row(1, "class_frozen", "big", 0)
-	row(2, "class_frozen", "small", 0)
+	counted := func() float64 {
+		n := 0.0
+		for _, c := range sums(t, reader, "factory.task.outcome") {
+			n += c
+		}
+		return n
+	}
+	row("class_frozen", "big", 0)
+	row("class_frozen", "small", 0)
+	row("class_frozen", "plain", 0)
 	for _, class := range []string{"big", "small"} {
 		store.webhookOnClose = class == "small"
 		if err := w.CloseOnRetry(ctx, "sf/acme", class, "sebastian"); err != nil {
@@ -1682,17 +1711,346 @@ func TestFreezeCardCountsItsEndOnce(t *testing.T) {
 		}
 	}
 	store.webhookOnClose = false
-	row(3, "class_frozen", "big", 10*time.Minute)
-	row(4, "class_resumed", "big", 20*time.Minute)
+	if got := counted(); got != 1 {
+		t.Fatalf("after the presses the watcher counted %v ends, want big's 1", got)
+	}
+	row("class_frozen", "big", 10*time.Minute)
+	row("class_frozen", "small", 10*time.Minute)
+	row("class_resumed", "big", 20*time.Minute)
 	now = base.Add(26 * time.Minute)
 	if err := w.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
-	counted := 0.0
-	for _, n := range sums(t, reader, "factory.task.outcome") {
-		counted += n
+	if c1, c2 := freezeCardOn(t, store, 1), freezeCardOn(t, store, 2); c1.Status != "done" || c2.Status != "waiting-human" || counted() != 1 {
+		t.Fatalf("#1 %s, #2 %s, %v ends counted; want #1 done, #2 open again and big's 1", c1.Status, c2.Status, counted())
 	}
-	if c1, c2 := freezeCardOn(t, store, 1), freezeCardOn(t, store, 2); c1.Status != "done" || c2.Status != "done" || counted != 2 {
-		t.Fatalf("#1 %s, #2 %s, the watcher counted %v ends, want both done and 2", c1.Status, c2.Status, counted)
+	for _, end := range []struct {
+		issue int64
+		want  float64
+	}{{2, 1}, {3, 2}} {
+		if err := in.finishHumanTask(ctx, freezeCardOn(t, store, end.issue), "done", "", "sebastian", nil); err != nil {
+			t.Fatal(err)
+		}
+		if c := freezeCardOn(t, store, end.issue); c.Status != "done" || counted() != end.want {
+			t.Fatalf("#%d %s after the webhook's end, %v ends counted, want done and %v", end.issue, c.Status, counted(), end.want)
+		}
+	}
+	if got := counted(); got != 2 {
+		t.Fatalf("%v ends counted over three cards, want 2: big's press and plain's close", got)
+	}
+}
+
+// freezeAsks counts the provider-limit ask on the face of the freeze card
+// on issue number and in that issue's comments.
+func freezeAsks(t *testing.T, store *freezeStore, fj *alertForgejo, number int64) (face, comments int) {
+	t.Helper()
+	const ask = "has held past waits.provider_limit"
+	for _, c := range fj.comments {
+		if strings.HasPrefix(c, fmt.Sprintf("#%d factoryd: The freeze of the ", number)) && strings.Contains(c, ask) {
+			comments++
+		}
+	}
+	return strings.Count(freezeCardOn(t, store, number).Objective, ask), comments
+}
+
+// Hand-derived from a 401 that a restart cures, the bot's password being
+// read once at start. Big's arm at 12:00 meets the 401 on its filing: no
+// card, the cursor past the row. The watcher built anew at 12:10 over the
+// same store, Forgejo taking the bot again, files the card on its first
+// pass with no new row, once: the pass after files nothing. A watcher
+// built anew once more files nothing either. A freeze whose reset passed
+// before the restart files nothing.
+func TestFreezeCardKeptArmSurvivesARestart(t *testing.T) {
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	for name, restart := range map[string]time.Duration{"the reset is ahead": 10 * time.Minute, "the reset passed": 6 * time.Hour} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := &freezeStore{fakeStore: newFakeStore()}
+			forgejo, fj := newAlertForgejo(t)
+			now := base
+			w := freezeWatcher(store, forgejo, &now)
+			fj.fileStatus = http.StatusUnauthorized
+			store.rows = append(store.rows, FreezeEvent{ID: 1, Repository: "sf/acme", At: now, Kind: "class_frozen", Class: "big",
+				Reset: base.Add(5 * time.Hour).Format(time.RFC3339), Words: "free quota exhausted"})
+			if err := w.Check(ctx); err != nil || len(fj.issues) != 0 || store.storedCursor != 1 {
+				t.Fatalf("the refused filing's pass = %v over %d issues at cursor %d, want it to end with none at 1", err, len(fj.issues), store.storedCursor)
+			}
+			fj.fileStatus = 0
+			want := 1
+			if restart > 5*time.Hour {
+				want = 0
+			}
+			for i, at := range []time.Duration{restart, restart + time.Minute, restart + 2*time.Minute} {
+				now = base.Add(at)
+				if i != 1 {
+					w = freezeWatcher(store, forgejo, &now)
+				}
+				if err := w.Check(ctx); err != nil || len(fj.issues) != want {
+					t.Fatalf("the pass at %s = %v over %d issues, want %d", now.Format("15:04"), err, len(fj.issues), want)
+				}
+			}
+			if want == 1 {
+				if c := freezeCardOn(t, store, 1); c.Status != "waiting-human" || !objectiveHasClassLine(c.Objective, "big") ||
+					!strings.Contains(c.Objective, "free quota exhausted") || !strings.Contains(c.Objective, "The class resets at 2026-11-21T17:00:00Z (in 4h 50m)") {
+					t.Fatalf("the kept arm's card stands %s:\n%s", c.Status, c.Objective)
+				}
+			}
+		})
+	}
+}
+
+// Hand-derived from a reopen a restart cures: the press closed big's #1
+// at 12:10, and the dated refusal at 12:20 meets a 401 on the reopen: #1
+// stays done, the cursor past the row. The watcher built anew at 12:30,
+// Forgejo taking the bot again, reopens #1 on its first pass with one
+// re-arm comment and no second card; the pass after adds nothing.
+func TestFreezeCardKeptReopenSurvivesARestart(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	w := freezeWatcher(store, forgejo, &now)
+	arm := func(id int64) {
+		t.Helper()
+		store.rows = append(store.rows, FreezeEvent{ID: id, Repository: "sf/acme", At: now, Kind: "class_frozen", Class: "big",
+			Reset: base.Add(5 * time.Hour).Format(time.RFC3339), Words: "free quota exhausted"})
+		if err := w.Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	arm(1)
+	now = base.Add(10 * time.Minute)
+	if err := w.CloseOnRetry(ctx, "sf/acme", "big", "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	fj.refuse = map[int64]int{1: http.StatusUnauthorized}
+	now = base.Add(20 * time.Minute)
+	arm(2)
+	if c := freezeCardOn(t, store, 1); c.Status != "done" || store.storedCursor != 2 {
+		t.Fatalf("after the refused reopen #1 stands %s at cursor %d, want done at 2", c.Status, store.storedCursor)
+	}
+	fj.refuse = nil
+	w = freezeWatcher(store, forgejo, &now)
+	for _, at := range []time.Duration{30 * time.Minute, 31 * time.Minute} {
+		now = base.Add(at)
+		if err := w.Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+		said := commentsSaying(fj, "#1 factoryd: the hold re-armed after the retry, to the reset 2026-11-21T17:00:00Z. 0 cards of the class wait.")
+		if c := freezeCardOn(t, store, 1); c.Status != "waiting-human" || said != 1 || len(fj.issues) != 1 {
+			t.Fatalf("at %s #1 stands %s with %d re-arm comments over %d issues, want it open again with one over one", now.Format("15:04"), c.Status, said, len(fj.issues))
+		}
+	}
+}
+
+// Hand-derived from an ask Forgejo refuses: small's #1, frozen at 12:00
+// with a reset 30 hours out, owes its ask from 12:00 the next day. The
+// passes at 13:00, 13:01 and 13:02 that day meet a 401 on the comment:
+// the card is kept, no ask on its face or its issue. With the restart, a
+// watcher built anew over the same store makes the pass at 13:03, Forgejo
+// taking the bot again; without, the same watcher does. Either way the
+// ask stands once on the face and once on the issue, and the passes after
+// add none.
+func TestFreezeCardKeptAskIsMadeOnce(t *testing.T) {
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	for name, restart := range map[string]bool{"the same watcher": false, "a restarted watcher": true} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := &freezeStore{fakeStore: newFakeStore()}
+			forgejo, fj := newAlertForgejo(t)
+			now := base
+			w := freezeWatcher(store, forgejo, &now)
+			store.rows = append(store.rows, FreezeEvent{ID: 1, Repository: "sf/acme", At: now, Kind: "class_frozen", Class: "small",
+				Reset: base.Add(30 * time.Hour).Format(time.RFC3339), Words: "free quota exhausted"})
+			if err := w.Check(ctx); err != nil {
+				t.Fatal(err)
+			}
+			fj.refuse = map[int64]int{1: http.StatusUnauthorized}
+			pass := func(at time.Duration, wantFace, wantComments int) {
+				t.Helper()
+				now = base.Add(at)
+				if err := w.Check(ctx); err != nil {
+					t.Fatalf("the pass at %s = %v, want it to end", now.Format("15:04"), err)
+				}
+				if face, comments := freezeAsks(t, store, fj, 1); face != wantFace || comments != wantComments || len(fj.issues) != 1 {
+					t.Fatalf("at %s the ask stands %d times on the face and %d on the issue over %d issues, want %d and %d on the one card:\n%s",
+						now.Format("15:04"), face, comments, len(fj.issues), wantFace, wantComments, freezeCardOn(t, store, 1).Objective)
+				}
+			}
+			for _, at := range []time.Duration{25 * time.Hour, 25*time.Hour + time.Minute, 25*time.Hour + 2*time.Minute} {
+				pass(at, 0, 0)
+			}
+			fj.refuse = nil
+			if restart {
+				w = freezeWatcher(store, forgejo, &now)
+			}
+			pass(25*time.Hour+3*time.Minute, 1, 1)
+			pass(25*time.Hour+4*time.Minute, 1, 1)
+			w = freezeWatcher(store, forgejo, &now)
+			pass(25*time.Hour+5*time.Minute, 1, 1)
+		})
+	}
+}
+
+// Hand-derived from a replacement whose filing fails. Small's #1, frozen
+// at 12:00 with a reset 30 hours out, is deleted; its ask at 13:00 the
+// next day meets the 404, the card is given up, and the replacement's
+// filing fails too.
+//   - A 404: nothing is kept.
+//   - A 403, then the class resumes at 14:00: the kept filing is dropped.
+//   - A 500 that lasts past the reset: each pass fails on the filing until
+//     the reset at 18:00, after which the filing is dropped and the pass
+//     ends.
+//
+// In all three a new freeze 72 hours after the first files #2 on its own
+// clock: no ask at once, the ask 24 hours later.
+//   - A 500 that ends: the pass at 13:02 files #2 on the episode's clock,
+//     and it makes the ask that was due, once.
+func TestFreezeCardFailedReplacement(t *testing.T) {
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	for name, status := range map[string]int{"a 404": http.StatusNotFound, "a 403 and a resume": http.StatusForbidden,
+		"a 500 past the reset": http.StatusInternalServerError, "a 500 that ends": http.StatusInternalServerError} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := &freezeStore{fakeStore: newFakeStore()}
+			forgejo, fj := newAlertForgejo(t)
+			now := base
+			w := freezeWatcher(store, forgejo, &now)
+			row := func(kind string, reset time.Duration) {
+				store.rows = append(store.rows, FreezeEvent{ID: int64(len(store.rows) + 1), Repository: "sf/acme", At: now, Kind: kind, Class: "small",
+					Reset: base.Add(reset).Format(time.RFC3339), Words: "free quota exhausted"})
+			}
+			pass := func(at time.Duration, fails bool) {
+				t.Helper()
+				now = base.Add(at)
+				if err := w.Check(ctx); (err != nil) != fails {
+					t.Fatalf("the pass at %s = %v, want a failure: %t", now.Format("2006-01-02 15:04"), err, fails)
+				}
+			}
+			row("class_frozen", 30*time.Hour)
+			pass(0, false)
+			fj.deleted = map[int64]bool{1: true}
+			fj.fileStatus = status
+			server := status == http.StatusInternalServerError
+			pass(25*time.Hour, server)
+			pass(25*time.Hour+time.Minute, server)
+			if c := freezeCardOn(t, store, 1); c.Status != "done" || len(fj.issues) != 1 {
+				t.Fatalf("after the failed replacement #1 stands %s over %d issues, want it given up and no other", c.Status, len(fj.issues))
+			}
+			if name == "a 500 that ends" {
+				fj.fileStatus = 0
+				pass(25*time.Hour+2*time.Minute, false)
+				pass(25*time.Hour+3*time.Minute, false)
+				if face, comments := freezeAsks(t, store, fj, 2); face != 1 || comments != 1 || len(fj.issues) != 2 {
+					t.Fatalf("the replacement over %d issues asks %d times on its face and %d on its issue, want #2 with the ask that was due, once", len(fj.issues), face, comments)
+				}
+				return
+			}
+			if status == http.StatusForbidden {
+				now = base.Add(26 * time.Hour)
+				row("class_resumed", 30*time.Hour)
+			}
+			pass(26*time.Hour, server)
+			pass(31*time.Hour, false)
+			fj.fileStatus = 0
+			pass(31*time.Hour+time.Minute, false)
+			if len(fj.issues) != 1 {
+				t.Fatalf("%d issues once Forgejo files again, want no card for the freeze that ended", len(fj.issues))
+			}
+			now = base.Add(72 * time.Hour)
+			row("class_frozen", 100*time.Hour)
+			pass(72*time.Hour, false)
+			pass(72*time.Hour+time.Minute, false)
+			if face, comments := freezeAsks(t, store, fj, 2); face != 0 || comments != 0 {
+				t.Fatalf("the new freeze's card asks at once, %d times on its face and %d on its issue:\n%s", face, comments, freezeCardOn(t, store, 2).Objective)
+			}
+			pass(96*time.Hour+time.Minute, false)
+			if face, comments := freezeAsks(t, store, fj, 2); face != 1 || comments != 1 {
+				t.Fatalf("24 hours into the new freeze its card asks %d times on its face and %d on its issue, want once", face, comments)
+			}
+		})
+	}
+}
+
+// Hand-derived from a close Forgejo refuses: big's #1 resumed at 12:00,
+// and from 12:05 its close meets a 401. The pass at 12:05 wakes the
+// class's two running cards, in both repositories, and keeps the card
+// open; the pass at 12:06 wakes none again. Once Forgejo takes the bot,
+// the pass at 12:07 closes the card and wakes none.
+func TestFreezeCardKeptCloseStillWakes(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base.Add(-time.Hour)
+	w := freezeWatcher(store, forgejo, &now)
+	var woke []string
+	w.Signal = func(_ context.Context, id string) error { woke = append(woke, id); return nil }
+	for _, c := range []Task{{ID: "t1", Status: "running", Repository: "sf/acme"}, {ID: "t2", Status: "running", Repository: "sf/other"}} {
+		c.Kind, c.Track, c.RequiredCapabilities = "agent", policy.TrackDirect, []string{"big"}
+		if err := store.CreateTask(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reset := base.Add(5 * time.Hour).Format(time.RFC3339)
+	store.rows = append(store.rows,
+		FreezeEvent{ID: 1, Repository: "sf/acme", At: now, Kind: "class_frozen", Class: "big", Reset: reset, Words: "free quota exhausted"},
+		FreezeEvent{ID: 2, Repository: "sf/acme", At: base, Kind: "class_resumed", Class: "big", Reset: reset, Words: "free quota exhausted"})
+	fj.refuse = map[int64]int{1: http.StatusUnauthorized}
+	for _, step := range []struct {
+		at     time.Duration
+		woken  int
+		status string
+	}{{0, 0, "waiting-human"}, {5 * time.Minute, 2, "waiting-human"}, {6 * time.Minute, 2, "waiting-human"}, {7 * time.Minute, 2, "done"}} {
+		now = base.Add(step.at)
+		if step.status == "done" {
+			fj.refuse = nil
+		}
+		if err := w.Check(ctx); err != nil {
+			t.Fatalf("the pass at %s = %v, want it to end", now.Format("15:04"), err)
+		}
+		if c := freezeCardOn(t, store, 1); len(woke) != step.woken || c.Status != step.status {
+			t.Fatalf("at %s: woke %q, #1 %s; want %d wakes and %s", now.Format("15:04"), woke, c.Status, step.woken, step.status)
+		}
+	}
+	if slices.Sort(woke); !slices.Equal(woke, []string{"t1", "t2"}) {
+		t.Fatalf("woke %q, want each running card once", woke)
+	}
+}
+
+// Hand-derived from the statuses Forgejo answers a filing with. A 401 and
+// a 403 are the bot's credential or its rights. A 400 and a 423 are not:
+// the line names the status and that Forgejo will not take the request. A
+// 422 is given up, as a 404 is, but no repository or access is missing:
+// the line says Forgejo cannot process the filing. Each line names the
+// state and what follows.
+func TestFreezeCardRefusalNamesItsStatus(t *testing.T) {
+	const credential, restores = "a human fixes the bot's credential or its rights", "a human restores the repository or the bot's access to it"
+	for status, want := range map[int]string{
+		http.StatusUnauthorized:        credential + ", and each pass tries the card again",
+		http.StatusForbidden:           credential + ", and each pass tries the card again",
+		http.StatusBadRequest:          "Forgejo will not take the request with status 400: a human reads its answer above and restores what it names, and each pass tries the card again",
+		http.StatusLocked:              "Forgejo will not take the request with status 423: a human reads its answer above and restores what it names, and each pass tries the card again",
+		http.StatusUnprocessableEntity: "Forgejo cannot process the filing as factoryd sends it, which the answer above explains, and the class's next arm tries it again",
+	} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			store := &freezeStore{fakeStore: newFakeStore()}
+			forgejo, fj := newAlertForgejo(t)
+			now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+			w := freezeWatcher(store, forgejo, &now)
+			var said bytes.Buffer
+			log.SetOutput(&said)
+			fj.fileStatus = status
+			store.rows = append(store.rows, FreezeEvent{ID: 1, Repository: "sf/acme", At: now, Kind: "class_frozen", Class: "big",
+				Reset: now.Add(5 * time.Hour).Format(time.RFC3339), Words: "free quota exhausted"})
+			err := w.Check(context.Background())
+			log.SetOutput(os.Stderr) // under the log's lock: no write reaches said past here
+			text := said.String()
+			if err != nil || !strings.Contains(text, want) || !strings.Contains(text, fmt.Sprintf("status %d", status)) ||
+				(!strings.Contains(want, credential) && strings.Contains(text, credential)) || strings.Contains(text, restores) {
+				t.Fatalf("the pass = %v, want a line saying %q, log:\n%s", err, want, text)
+			}
+		})
 	}
 }
