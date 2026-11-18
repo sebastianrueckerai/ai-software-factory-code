@@ -461,7 +461,7 @@ func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
 		t.Fatalf("asks = %+v, want the ask's one", store.askedRows(task.ID))
 	}
 	if e, q := store.askedRows(task.ID)[0], store.askedRows(task.ID)[0].Question; q == nil ||
-		q.Ask != "Needs a decision" || q.Why != "sebastian filed it for a human, so no agent works on it" || q.Info != "please look" ||
+		q.Ask != "Needs a decision" || q.Why != "filed by sebastian for a human, so no agent works on it" || q.Info != "please look" ||
 		!slices.Equal(q.Labels(), []string{"I did it", "Have the factory do it", "Not now"}) {
 		t.Fatalf("intake event = %+v, want the issue asked as a question", e)
 	}
@@ -2243,27 +2243,32 @@ func TestValidateReproCommand(t *testing.T) {
 }
 
 // The person's card of a refused reproduction command says what to do,
-// names the poster and the sandbox rule its command breaks.
+// names the issue, the poster and the sandbox rule its command breaks; an
+// issue title that would pass a why's length is left out of it.
 func TestReproQuestionText(t *testing.T) {
-	q := ReproQuestion("sebastian", ValidateReproCommand("cd /tmp/x && make repro"))
+	q := ReproQuestion("Gateway: the 429 retry loses the request id", "sebastian", ValidateReproCommand("cd /tmp/x && make repro"))
 	want := HumanQuestion{Ask: "Write the reproduction command so the sandbox can run it, then file the issue again",
-		Why:      "sebastian wrote a reproduction command that breaks the sandbox rule, so no agent works on the issue",
-		Happened: "The command chains cd out of the checked-out worktree: the sandbox has one checkout, the command runs in place.",
+		Why:      "The reproduction command sebastian wrote for \u201cGateway: the 429 retry loses the request id\u201d breaks the sandbox rule, so no agent works on the issue",
+		Happened: "The command runs cd out of the checked-out worktree: the sandbox has one checkout, the command runs in place.",
 		Choices:  humanWorkChoices(false)}
 	if !reflect.DeepEqual(q, want) {
 		t.Errorf("ReproQuestion = %+v, want %+v", q, want)
 	}
-	if q := ReproQuestion("sebastian", ValidateReproCommand("git worktree add /tmp/w HEAD")); q.Happened != "The command creates a git worktree: "+sandboxCheckoutRule+"." {
+	if q := ReproQuestion("A card", "sebastian", ValidateReproCommand("git worktree add /tmp/w HEAD")); q.Happened != "The command creates a git worktree: "+sandboxCheckoutRule+"." {
 		t.Errorf("worktree Happened = %q, want the sandbox rule named", q.Happened)
+	}
+	long := strings.Repeat("The gateway drops the request id ", 3)
+	if q := ReproQuestion(long, "sebastian", ValidateReproCommand("cd /tmp/x && make repro")); q.Why != "The reproduction command sebastian wrote breaks the sandbox rule, so no agent works on the issue" {
+		t.Errorf("a long title's why = %q, want the why without it", q.Why)
 	}
 }
 
-// A writer's agent issue whose repro block chains cd out of the worktree,
+// A writer's agent issue whose repro block runs cd out of the worktree,
 // or creates a git worktree, is refused at filing: no agent card, a
 // person's card whose ask names the sandbox rule, no coder workflow.
 func TestIntakeRefusesASandboxBreakingRepro(t *testing.T) {
 	for issue, tc := range map[int64]struct{ cmd, rule string }{
-		21: {"cd /tmp/x && make repro", "chains cd out of the checked-out worktree: the sandbox has one checkout, the command runs in place"},
+		21: {"cd /tmp/x && make repro", "runs cd out of the checked-out worktree: the sandbox has one checkout, the command runs in place"},
 		22: {"git worktree add /tmp/w HEAD", "creates a git worktree: the sandbox has one checkout, the command runs in place"},
 	} {
 		t.Run(tc.cmd, func(t *testing.T) {

@@ -106,11 +106,15 @@ func TestHumanCardsAskOneThing(t *testing.T) {
 		t.Errorf("#2101 asks %q, why %q; want %q, %q", face.Ask, face.Why, ask, why)
 	}
 	back := face.Answers[1]
-	if want := "The planner plans the whole plan again with your note. Its started cards stop."; back.Effect != want {
+	if want := "This card ends, and the planner plans the whole plan again with your note. Its started cards stop."; back.Effect != want {
 		t.Errorf("I cannot do this: %q, want %q", back.Effect, want)
 	}
 	if len(back.Fields) != 1 || !back.Fields[0].Required || back.Fields[0].Hint != "One line for the planner: what keeps you from doing it" {
 		t.Errorf("I cannot do this opens %+v, want one required note with its hint", back.Fields)
+	}
+	pr := fixture(t, facefixtures.GroupCard, "factory pull request on a project without agents").face
+	if merge, reject := pr.Answers[0].Effect, pr.Answers[1].Effect; merge != "Merges the pull request as you. The card ends." || reject != "Closes the pull request. The card ends." {
+		t.Errorf("the factory pull request's effects %q, %q; want each to say the card ends", merge, reject)
 	}
 }
 

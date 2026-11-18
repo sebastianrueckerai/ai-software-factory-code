@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
@@ -442,7 +443,7 @@ func ValidateReproCommand(cmd string) string {
 		}
 	}
 	if pending != 0 {
-		return "chains cd out of the checked-out worktree: " + sandboxCheckoutRule
+		return "runs cd out of the checked-out worktree: " + sandboxCheckoutRule
 	}
 	return ""
 }
@@ -451,13 +452,18 @@ func ValidateReproCommand(cmd string) string {
 // chain segments with: &&, ;, || and newlines.
 var reproChainOperators = []string{"&&", "||", ";"}
 
-// ReproQuestion is the person's card of an issue whose reproduction
+// ReproQuestion is the person's card of issue title whose reproduction
 // command breaks the sandbox rule for reason: no agent card is filed on
 // it, and its poster files it again with a command that keeps the rule.
-func ReproQuestion(poster, reason string) HumanQuestion {
+// Its why names the issue, unless that passes a why's length.
+func ReproQuestion(title, poster, reason string) HumanQuestion {
+	why := fmt.Sprintf("The reproduction command %s wrote for \u201c%s\u201d breaks the sandbox rule, so no agent works on the issue", poster, oneLine(title))
+	if utf8.RuneCountInString(why) > whyMax {
+		why = "The reproduction command " + poster + " wrote breaks the sandbox rule, so no agent works on the issue"
+	}
 	return HumanQuestion{
 		Ask:      "Write the reproduction command so the sandbox can run it, then file the issue again",
-		Why:      poster + " wrote a reproduction command that breaks the sandbox rule, so no agent works on the issue",
+		Why:      why,
 		Happened: "The command " + reason + ".",
 		Choices:  humanWorkChoices(false),
 	}
@@ -1108,7 +1114,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	if reason := ValidateReproCommand(task.ReproCommand); track != LabelHuman && reason != "" {
 		// the sandbox rule is known at filing: no session discovers it
 		// under GateReproduction, the poster fixes the issue
-		ask, track = ReproQuestion(poster, reason), LabelHuman
+		ask, track = ReproQuestion(issue.Title, poster, reason), LabelHuman
 	}
 	if track != LabelHuman && workflowOnly(askedDirectories(text)) {
 		ask, track = WorkflowQuestion(issue.Title), LabelHuman

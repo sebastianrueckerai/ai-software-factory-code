@@ -1436,7 +1436,7 @@ func (b *builder) cards() {
 		factoryd.IssueQuestion(humanIssueTitle, humanIssueBody, "alice", true), 2*time.Hour))
 	reproTitle, reproBody := "Gateway: the 429 retry loses the request id", "Retrying a 429 drops the provider's request id from the log.\n\n```repro\ncd /tmp && go test ./internal/gateway\n```"
 	b.out = append(b.out, b.humanIssue(GroupCard, "reproduction-rule card", b.next(), reproTitle, reproBody,
-		factoryd.ReproQuestion("alice", factoryd.ValidateReproCommand(factoryd.ReproCommand(reproBody))), 2*time.Hour))
+		factoryd.ReproQuestion(reproTitle, "alice", factoryd.ValidateReproCommand(factoryd.ReproCommand(reproBody))), 2*time.Hour))
 	b.out = append(b.out, b.card2101(GroupCard, "workflow-files card"))
 	movedTitle, movedBody := "Board export: keep the nightly snapshots", "Write the board to a JSON snapshot every night so a lost database still leaves the cards. Keep 30 snapshots."
 	b.out = append(b.out, b.humanIssue(GroupCard, "card moved to a human", b.next(), movedTitle, movedBody, factoryd.MovedQuestion(movedTitle, movedBody, "sebastian"), 2*time.Hour))

@@ -226,7 +226,7 @@ func TestBadReproFilesAPersonsCard(t *testing.T) {
 			asks = append(asks, *e.Question)
 		}
 	}
-	if len(asks) != 1 || !reflect.DeepEqual(asks[0], ReproQuestion("sebastian", ValidateReproCommand("cd /tmp/x && make repro"))) {
+	if len(asks) != 1 || !reflect.DeepEqual(asks[0], ReproQuestion("It breaks", "sebastian", ValidateReproCommand("cd /tmp/x && make repro"))) {
 		t.Fatalf("asks = %+v, want the one repro ask", asks)
 	}
 }

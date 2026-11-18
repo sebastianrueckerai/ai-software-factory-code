@@ -223,7 +223,7 @@ func TestHandBackReturnsTheCardToItsPlanner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []CaseAction{{Action: ActHandBack, Result: "Plan #10 goes back to the planner: 1 card stops, and its work stays on its branch."}}; !reflect.DeepEqual(got.Did, want) {
+	if want := []CaseAction{{Action: ActHandBack, Result: "Plan #10 goes back to the planner: 1 card stops."}}; !reflect.DeepEqual(got.Did, want) {
 		t.Errorf("Did %+v, want %+v", got.Did, want)
 	}
 	want := []ReplanStep{{Origin: ReplanPerson, By: "ana", Comment: why, Stops: []string{"h"}, Revision: 2, Time: replanAt}}
@@ -232,6 +232,20 @@ func TestHandBackReturnsTheCardToItsPlanner(t *testing.T) {
 	}
 	if h := store.tasks["h"]; h.Status != "closed" || store.cases[0].Status != CaseResolved {
 		t.Errorf("the card is %s and its case %s, want closed and resolved", h.Status, store.cases[0].Status)
+	}
+	// a second card's hand-back while that replan is pending would lose its
+	// words, even where the press would heal a reopen that failed partway
+	p := store.tasks["p"]
+	p.Status = "done"
+	store.tasks["p"] = p
+	if err := store.CreateTask(ctx, Task{ID: "h2", Kind: "human", Status: "waiting-human", Source: SourcePlan, Parent: "p", PlanKey: "docs",
+		PlanRevision: 1, Repository: "sf/repo", IssueNumber: 16}); err != nil {
+		t.Fatal(err)
+	}
+	store.cases = append(store.cases, Case{ID: 10, TaskID: "h2", Repository: "sf/repo", Kind: CaseHumanCard, Status: CaseAtHuman})
+	_, err = r.Act(ctx, ActInput{TaskID: "h2", CaseID: 10, By: "ana", Rung: 3, Res: Resolution{Action: ActHandBack, Note: "Not mine either."}})
+	if want := "Plan #10 is being replanned: wait for its revision."; !errors.As(err, &refused) || err.Error() != want || store.cases[1].Status != CaseAtHuman || store.tasks["h2"].Status != "waiting-human" {
+		t.Errorf("a hand-back during the pending replan = %v, case %s, card %s; want %q and nothing moved", err, store.cases[1].Status, store.tasks["h2"].Status, want)
 	}
 
 	r, store, _ = replanRig(t, "done", 2)

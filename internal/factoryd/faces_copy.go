@@ -107,7 +107,7 @@ var Vocabulary = []Answer{
 	{Action: ActClose, Label: "End the card", Effect: "Ends the card and closes its issue. Nothing more runs.",
 		Fields: []Field{optionalNote("A note on why")}},
 	{Action: ActClose, Variant: variantDone, Label: "I did it", Effect: "The factory does not check this. The card closes."},
-	{Action: ActHandBack, Label: "I cannot do this", Effect: "The planner plans the whole plan again with your note. Its started cards stop.",
+	{Action: ActHandBack, Label: "I cannot do this", Effect: "This card ends, and the planner plans the whole plan again with your note. Its started cards stop.",
 		Fields: []Field{requiredNote("What stops you", "One line for the planner: what keeps you from doing it")}},
 	{Action: ActClose, Variant: variantNoted, Label: "Noted", Effect: "Ends this notice."},
 	{Action: ActClose, Variant: variantDismiss, Label: "End the card", Effect: "Ends the card and stops watching the chain until main moves."},
@@ -302,6 +302,12 @@ var effectFills = map[string]func(Facts) string{
 	},
 	ActNote: waitEffect, ActNote + "/" + variantPark: waitEffect,
 	ActClose + "/" + variantDone: func(f Facts) string { return factString(f.Case, "check") },
+	ActApproveMerge: func(f Facts) string {
+		if ChoiceCase(f.Case, f.Card.Kind) {
+			return "Merges the pull request as you. The card ends."
+		}
+		return ""
+	},
 	ActClose: func(f Facts) string {
 		switch {
 		case f.Kind == CaseMonitorFlag && f.Final != "":
@@ -363,7 +369,7 @@ func waitEffect(f Facts) string {
 		return "The notice stays on the card. Nothing else changes."
 	}
 	if asked, err := time.Parse(time.RFC3339, factString(f.Case, "asked_at")); err == nil && f.Case.Kind == CaseAgentRequestInfo {
-		return "The card keeps waiting for the author's answer until " + asked.Add(infoWait).UTC().Format("2 January at 15:04 UTC") +
+		return "The card keeps waiting for the author's answer until " + timeWords(asked.Add(infoWait)) +
 			", then its issue closes as not reproducible."
 	}
 	return ""
@@ -388,7 +394,7 @@ func capReset(f Facts) string {
 		// the question opened before its cap bound: the cap is today's
 		at = time.Now()
 	}
-	return CapTurn(decision, at).UTC().Format("2 January at 15:04 UTC")
+	return timeWords(CapTurn(decision, at))
 }
 
 // CaseFaces are the faces of every case kind.

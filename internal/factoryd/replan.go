@@ -798,6 +798,10 @@ func (r *Runner) replanPlan(ctx context.Context, planID string, ask ReplanAsk) (
 		return r.awaitOffMain(ctx, p, step)
 	}
 	if pending {
+		if ask.Card != "" && !slices.Contains(step.Stops, ask.Card) {
+			// the pending replan carries none of this card's words
+			return "", beingReplanned(p)
+		}
 		return r.completeReplan(ctx, p, step)
 	}
 	replannable, closed, err := r.planReplannable(ctx, p)
@@ -982,10 +986,14 @@ func (r *Runner) completeReplan(ctx context.Context, p Task, step ReplanStep) (s
 	}
 	why := fmt.Sprintf("stopped for the replan of plan #%d", p.IssueNumber)
 	var spared, named []Task
+	branchless := 0
 	for _, id := range step.Stops {
 		k, ok, err := r.store.Task(ctx, id)
 		if err != nil {
 			return "", err
+		}
+		if ok && k.Kind == "human" {
+			branchless++
 		}
 		if !ok || !stoppable(k) {
 			continue
@@ -1017,7 +1025,7 @@ func (r *Runner) completeReplan(ctx context.Context, p Task, step ReplanStep) (s
 	if !acted {
 		return "", beingReplanned(p)
 	}
-	note := stopsNote(p, len(step.Stops)-len(spared))
+	note := stopsNote(p, len(step.Stops)-len(spared), branchless)
 	for _, k := range spared {
 		note += fmt.Sprintf(" %s, so it is left alive for its merge press.", gateTriggerNote(k))
 	}
@@ -1029,16 +1037,27 @@ func (r *Runner) completeReplan(ctx context.Context, p Task, step ReplanStep) (s
 }
 
 // stopsNote tells the person that plan p goes back to its planner and n
-// cards stop.
-func stopsNote(p Task, n int) string {
-	plan := fmt.Sprintf("Plan #%d", p.IssueNumber)
-	switch n {
-	case 0:
-		return plan + " goes back to the planner: no card stops."
-	case 1:
-		return plan + " goes back to the planner: 1 card stops, and its work stays on its branch."
+// cards stop, branchless of them human cards, which hold no branch.
+func stopsNote(p Task, n, branchless int) string {
+	plan := fmt.Sprintf("Plan #%d goes back to the planner: ", p.IssueNumber)
+	if n == 0 {
+		return plan + "no card stops."
 	}
-	return fmt.Sprintf("%s goes back to the planner: %d cards stop, and their work stays on their branches.", plan, n)
+	stop := "1 card stops"
+	if n > 1 {
+		stop = fmt.Sprintf("%d cards stop", n)
+	}
+	switch b := n - branchless; {
+	case b <= 0:
+		return plan + stop + "."
+	case n == 1:
+		return plan + stop + ", and its work stays on its branch."
+	case b == n:
+		return plan + stop + ", and their work stays on their branches."
+	case b == 1:
+		return plan + stop + ", and the agent card's work stays on its branch."
+	}
+	return plan + stop + ", and the agent cards' work stays on their branches."
 }
 
 // replanDirect sends direct card t to the planner. The person's words go

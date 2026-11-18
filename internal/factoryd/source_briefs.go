@@ -3,7 +3,6 @@ package factoryd
 import (
 	"fmt"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -129,11 +128,7 @@ var SourceBriefs = map[string]func(BriefFacts) BriefText{
 	},
 	// Name is the UTC month, 2006-01
 	SourceChatBudget: func(f BriefFacts) BriefText {
-		month := "this month"
-		if m, err := time.Parse("2006-01", f.Name); err == nil {
-			month = m.Month().String()
-		}
-		return BriefText{Title: "The chat's budget for " + month + " is spent. Add money to it?",
+		return BriefText{Title: "The chat's budget for " + monthWords(f.Name) + " is spent. Add money to it?",
 			Why: "Until it is raised, the project agent judges no stopped card, so every stop comes to you."}
 	},
 	// Of is the spend at which LiteLLM's outer guard refused under the cap

@@ -26,8 +26,7 @@ func StallQuestion(repository, sha string, since time.Time, pending []string, ca
 			"a head still pending a stall bound later asks again. End the card resolves the stall alert and asks nothing more until the head changes. " +
 			"A head that concludes, green or red, closes this card by itself.",
 		Choices:  choices(AnswerRerunAgain, AnswerCheckAgain, ActClose+"/"+variantDismiss),
-		Happened: fmt.Sprintf("The chain at %s has been pending since %s, on %s.", sha[:min(7, len(sha))], timeWords(since), strings.Join(pending, ", ")),
-		Waits:    waitOnChain(cards),
+		Happened: fmt.Sprintf("The chain at %s has been pending since %s, waiting on %s.", sha[:min(7, len(sha))], timeWords(since), plural(len(pending), "check")),
 	}
 }
 
@@ -52,7 +51,7 @@ func RepairQuestion(repository, sha string, findings []string, runURL string, ca
 			"\n\n" + carried + "\n\nRead the run's log or the red status, find the cause, fix it from main's head, and push: the fix rides the chain again, and a green chain ends every wait. " +
 			"A green head closes this card by itself, and so does a head that moves on. Closing it yourself dismisses the red at " + short + ": no new card asks until the head changes.",
 		Choices:  humanDoneChoices,
-		Happened: fmt.Sprintf("The chain of %s is red at %s: %s.", repository, short, strings.Join(findings, ", ")),
+		Happened: fmt.Sprintf("The chain of %s is red at %s, with %s.", repository, short, plural(len(findings), "failed check")),
 		Waits:    waitOnChain(cards),
 		Check:    fmt.Sprintf("Closes the card and lets the red at %s stand. A red chain at a newer head files a new card.", short),
 	}
@@ -244,7 +243,7 @@ func MovedQuestion(title, body, poster string) HumanQuestion {
 func IssueQuestion(title, body, poster string, agents bool) HumanQuestion {
 	return HumanQuestion{
 		Ask:     oneLine(title),
-		Why:     poster + " filed it for a human, so no agent works on it",
+		Why:     "filed by " + poster + " for a human, so no agent works on it",
 		Info:    body,
 		Choices: humanWorkChoices(agents),
 	}
@@ -253,13 +252,13 @@ func IssueQuestion(title, body, poster string, agents bool) HumanQuestion {
 // timeWords is t as a face says it: "16 November at 05:12 UTC".
 func timeWords(t time.Time) string { return t.UTC().Format("2 January at 15:04 UTC") }
 
-// monthWords is month, 2006-01, as its name; month itself when it is no
+// monthWords is month, 2006-01, as its name; "this month" when it is no
 // month.
 func monthWords(month string) string {
 	if m, err := time.Parse("2006-01", month); err == nil {
 		return m.Month().String()
 	}
-	return month
+	return "this month"
 }
 
 // carry is "carries" for one, else "carry".
