@@ -8,8 +8,10 @@
 // prints the table and writes it to a new table file, and writes nothing
 // else. Without -dry it writes what the table file holds, after the owner
 // struck or corrected its rows, and calls no model. A second run changes
-// nothing. Both reach Forgejo with FORGEJO_TOKEN alone, a token of the
-// project repositories: read:issue and read:repository for -dry,
+// nothing. Both reach Forgejo with FORGEJO_TOKEN alone, a token of
+// factory-agent, so its edits read as the bot's, limited to the project
+// repositories and their document repositories (chat.doc_repo), whose
+// files the door reads: read:issue and read:repository for -dry,
 // write:issue and read:repository without it. Run both from the code
 // repository's root at the commit the live factoryd runs.
 //
@@ -135,15 +137,34 @@ func run(ctx context.Context, dry bool, tablePath, gateway string, out io.Writer
 	var calls counter
 	p.model = &factoryd.SupervisorModel{GatewayURL: strings.TrimRight(gateway, "/"), Token: os.Getenv("GATEWAY_TOKEN"),
 		Budget: factoryd.TokenBudget{AnswerTokens: 2048, HeadroomTokens: 16384}, HTTP: &http.Client{Transport: &calls}}
-	t, err := p.draft(ctx)
-	if err != nil {
-		return err
-	}
-	if err := writeTable(tablePath, t); err != nil {
+	if err := p.dryRun(ctx, tablePath); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "\n%d model calls on the small model. The table is in %s: strike or correct its rows, then run without -dry.\n", calls.n.Load(), tablePath)
 	return nil
+}
+
+// dryRun drafts the table into a new file at path, made before the first
+// model call: a table the owner may have corrected already is never
+// written over, and a dry run that fails leaves no file.
+func (p *pass) dryRun(ctx context.Context, path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- the table file the owner names
+	if err != nil {
+		return err
+	}
+	t, err := p.draft(ctx)
+	if err == nil {
+		enc := json.NewEncoder(f)
+		enc.SetIndent("", "  ")
+		err = enc.Encode(t)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(path)
+	}
+	return err
 }
 
 // forgejoOf is Forgejo at base as user with token, for every call of
@@ -151,24 +172,6 @@ func run(ctx context.Context, dry bool, tablePath, gateway string, out io.Writer
 func forgejoOf(base, user, token string) (*factoryd.Forgejo, issues) {
 	base = strings.TrimRight(base, "/")
 	return (&factoryd.Forgejo{BaseURL: base}).As(user, token), issues{base: base, token: token}
-}
-
-// writeTable writes table t to a new file at path: a table the owner may
-// have corrected already is never written over.
-func writeTable(path string, t table) error {
-	raw, err := json.MarshalIndent(t, "", "  ")
-	if err != nil {
-		return err
-	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- the table file the owner names
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(raw); err != nil {
-		_ = f.Close()
-		return err
-	}
-	return f.Close()
 }
 
 // appliedMigrations are the migrations the database records as applied.
@@ -897,7 +900,7 @@ func (p *pass) writeName(ctx context.Context, row nameRow) (string, error) {
 		return row.Card, err
 	case !ok:
 		return row.Card, errors.New("the plan is gone")
-	case t.PlanName == strings.TrimSpace(row.Name):
+	case t.PlanName == normalName(row.Name):
 		return "", nil
 	case t.PlanName != row.Old:
 		return row.Card, fmt.Errorf("the plan was named %q since the dry run", t.PlanName)
@@ -911,6 +914,12 @@ func (p *pass) writeName(ctx context.Context, row nameRow) (string, error) {
 		return row.Card, fmt.Errorf("the name %q does not hold: a plan's name has 3 to 24 characters on one line, and no other open plan of the project has it", row.Name)
 	}
 	return fmt.Sprintf("%s is named %q.", row.Card, name), p.store.SetPlanName(ctx, row.Plan, name)
+}
+
+// normalName is name as the namer writes names.
+func normalName(name string) string {
+	n, _ := factoryd.PlanName(name, nil)
+	return n
 }
 
 // promiseInput is a promise call's message: the plan's outcome, its
@@ -1163,7 +1172,7 @@ func (p *pass) askAgain(ctx context.Context, t factoryd.Task, detail map[string]
 	}
 	if t.Kind == "human" {
 		_, _, q := factoryd.BoardAsk(factoryd.Case{}, detail)
-		ask, ok, err := p.today(ctx, t, q, rest, brief)
+		ask, ok, err := p.today(ctx, t, q, rest, brief, true)
 		if err != nil {
 			return factoryd.Event{}, err
 		}
@@ -1188,13 +1197,13 @@ func (p *pass) askToday(ctx context.Context, t factoryd.Task, c factoryd.Case, a
 		return repair{}, false, nil
 	}
 	_, _, q := factoryd.BoardAsk(c, c.Facts)
-	today, ok, err := p.today(ctx, t, q, c.Facts, brief)
+	today, ok, err := p.today(ctx, t, q, c.Facts, brief, ownAsk(t, c.Kind))
 	if err != nil || !ok {
 		return repair{}, false, err
 	}
 	keys := today.Event(t).Detail
 	picked := pick(ask.Detail, storedAnswers(q, ask.Detail))
-	if same(keys, c.Facts) && reflect.DeepEqual(factoryd.AskOffers(ask.Detail), factoryd.AskOffers(keys)) &&
+	if same(keys, c.Facts) && reflect.DeepEqual(answerSet(factoryd.AskOffers(ask.Detail)), answerSet(factoryd.AskOffers(keys))) &&
 		reflect.DeepEqual(normal(picked), normal(pick(ask.Detail, nil))) {
 		return repair{}, false, nil
 	}
@@ -1208,13 +1217,23 @@ func (p *pass) askToday(ctx context.Context, t factoryd.Task, c factoryd.Case, a
 		do: func(ctx context.Context) error { return p.store.SetAskFace(ctx, t, id, set, face) }}, true, nil
 }
 
-// today is human card t's question as today's register asks it: a plan's
-// card asks as its plan files one (PlanHumanAsk), any other card its
-// stored question q with each answer by today's value of its vocabulary
-// row, and the title and why line the pass wrote it. The pick stays the
-// ask row's (pick). ok is false for a card with neither.
-func (p *pass) today(ctx context.Context, t factoryd.Task, q *factoryd.HumanQuestion, detail map[string]any, brief factoryd.BriefText) (factoryd.HumanAsk, bool, error) {
-	if t.Source == factoryd.SourcePlan && t.Parent != "" {
+// ownAsk says a case of kind is human card t's own ask: each of its
+// choice cases, but on a plan's card its own case alone, not a month's
+// cap it asks.
+func ownAsk(t factoryd.Task, kind factoryd.CaseKind) bool {
+	return kind == factoryd.CaseHumanCard || !planCard(t)
+}
+
+func planCard(t factoryd.Task) bool { return t.Source == factoryd.SourcePlan && t.Parent != "" }
+
+// today is the question of human card t's ask as today's register asks
+// it: a plan's card's own ask as its plan files one (PlanHumanAsk), any
+// other its stored question q with each answer by today's value of its
+// vocabulary row, and the card's own ask the title and why line the pass
+// wrote it. The pick stays the ask row's (pick). ok is false for an ask
+// with neither.
+func (p *pass) today(ctx context.Context, t factoryd.Task, q *factoryd.HumanQuestion, detail map[string]any, brief factoryd.BriefText, own bool) (factoryd.HumanAsk, bool, error) {
+	if own && planCard(t) {
 		plan, ok, err := p.store.Task(ctx, t.Parent)
 		if err != nil {
 			return factoryd.HumanAsk{}, false, err
@@ -1232,13 +1251,22 @@ func (p *pass) today(ctx context.Context, t factoryd.Task, q *factoryd.HumanQues
 	for i, c := range q.Choices {
 		nq.Choices[i] = todays(c)
 	}
-	if brief.Title != "" {
+	if own && brief.Title != "" {
 		nq.Ask, nq.Why = brief.Title, brief.Why
 	}
 	by, _ := detail["by"].(string)
 	asker, _ := detail["source"].(string)
 	decider, _ := detail["decider_line"].(string)
 	return factoryd.HumanAsk{Q: nq, By: by, Asker: asker, Via: factoryd.ViaFactoryd, Decider: decider}, true, nil
+}
+
+// answerSet is offers as a set: a face puts its suggested answer first.
+func answerSet(offers []factoryd.QuestionChoice) []factoryd.QuestionChoice {
+	out := slices.Clone(offers)
+	slices.SortFunc(out, func(a, b factoryd.QuestionChoice) int {
+		return cmp.Or(strings.Compare(a.Value, b.Value), strings.Compare(a.Label, b.Label))
+	})
+	return out
 }
 
 // storedAnswers are the answers a human card's ask stored, its question's and its
@@ -1300,11 +1328,12 @@ func todays(c factoryd.QuestionChoice) factoryd.QuestionChoice {
 	return c
 }
 
-// same says keys stand in facts already: each key's value, as JSON.
+// same says keys stand in facts already: each key's value, as JSON, an
+// empty line and none alike.
 func same(keys, facts map[string]any) bool {
 	for _, k := range []string{"ask", "why", "info", "happened", "waits", "check", "offers"} {
 		v, ok := keys[k]
-		if !ok {
+		if _, held := facts[k]; !ok || v == "" && !held {
 			continue
 		}
 		if !reflect.DeepEqual(normal(v), normal(facts[k])) {

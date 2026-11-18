@@ -75,6 +75,9 @@ func TestDryWritesNothingAndTheRunWritesTheTable(t *testing.T) {
 		t.Errorf("promises\n got %+v\nwant %+v", drafted.Promises, wantPromises)
 	}
 	out := p.out.(*bytes.Buffer).String()
+	if strings.Contains(out, "case 65") {
+		t.Errorf("the month's cap case of a plan's human card is asked as the plan's question:\n%s", out)
+	}
 	for _, line := range []string{
 		"| sf/app#18 | Gateway: retry loop | Gateway: fix the retry loop | So a retried call keeps its request id. | yes |",
 		`- sf/app#10: "empty-commit-fires-gate" becomes "Close refusal fix".`,
@@ -84,6 +87,7 @@ func TestDryWritesNothingAndTheRunWritesTheTable(t *testing.T) {
 		`- sf/app#16, case 61: it asks "Change two lines in the runner's build files" with today's answers: I did it, I cannot do this, Not now.`,
 		`- sf/app#21, case 62: it asks "Repair the red chain of the app" with today's answers: I did it, Not now.`,
 		`- sf/app#22, case 63: it asks "Look at the 5xx rate of the app" with today's answers: Noted, Not now.`,
+		`- sf/app#25, case 64: it asks "Look at the 5xx rate of the export" with today's answers: Noted, Not now.`,
 		"- sf/app#20, case 80 (other): its face, stored before it counted findings, is stored again from today's facts at factoryd's next minute pass.",
 		`- sf/app#20, case 80: the case writer's story names the answer "Not now", so the writer writes it again.`,
 		"- sf/app#12 keeps its brief: a human wrote its title.",
@@ -143,6 +147,7 @@ func TestDryWritesNothingAndTheRunWritesTheTable(t *testing.T) {
 		"ask face 61 " + face16 + " | row offers=done:I did it,hand_back:I cannot do this,park:Not now pick=done by=the factory agent story=false",
 		"ask face 62 " + face21 + " | row offers=done:I did it,park:Not now pick=choice:done by=the factory agent story=false",
 		"ask face 63 " + face22 + " | row offers=noted:Noted,park:Not now pick=<nil> by=<nil> story=true",
+		"ask face 64 " + face25 + " | row offers=park:Not now,noted:Noted pick=choice:park by=the factory agent story=true",
 		"case face 80 story=<nil>",
 		`case brief 80 "" ""`,
 	}
@@ -204,6 +209,50 @@ func TestTheNamesOfTwoSlugPlansDiffer(t *testing.T) {
 	}
 	if err == nil || len(s.writes) > 0 {
 		t.Errorf("the run = %v with writes %q, want both names left", err, s.writes)
+	}
+}
+
+// A name the owner corrected with a double space is written as the namer
+// writes names, and a second run finds it standing.
+func TestACorrectedNameStandsOnASecondRun(t *testing.T) {
+	s := newStore()
+	s.tasks["t-a"] = factoryd.Task{ID: "t-a", IssueNumber: 30, Status: "queued", Repository: "sf/app", Kind: "agent", Track: policy.TrackPlan, PlanName: "close-refusal"}
+	p := newPass(s, &fakeForge{issues: map[int64][2]string{}}, nil)
+	rows := table{Names: []nameRow{{Plan: "t-a", Card: "sf/app#30", Old: "close-refusal", Name: "Close  refusal fix"}}}
+	for run := 1; run <= 2; run++ {
+		if err := p.apply(context.Background(), rows); err != nil {
+			t.Fatalf("run %d: %v\n%s", run, err, p.out)
+		}
+	}
+	if want := []string{"plan name t-a Close refusal fix"}; !reflect.DeepEqual(s.writes, want) {
+		t.Errorf("writes %q, want %q", s.writes, want)
+	}
+}
+
+// A dry run into a table file that exists makes no model call, and a dry
+// run that fails leaves no table file.
+func TestADryRunIntoAnExistingTableCallsNoModel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "table.json")
+	if err := os.WriteFile(path, []byte(`{"cards": [{"title": "corrected"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := liveBoard()
+	calls := modelGateway(t, briefAnswers)
+	p := newPass(s, forgeOf(s), calls)
+	if err := p.dryRun(context.Background(), path); !errors.Is(err, fs.ErrExist) || calls.count() > 0 {
+		t.Errorf("a dry run into an existing table = %v with %d model calls, want it refused with none", err, calls.count())
+	}
+	if raw, _ := os.ReadFile(path); string(raw) != `{"cards": [{"title": "corrected"}]}` {
+		t.Errorf("the table now reads %s", raw)
+	}
+	fresh := filepath.Join(t.TempDir(), "table.json")
+	p.policy.Tree.Projects["lab"] = policy.ProjectConfig{Repository: "sf/broken"}
+	s.broken = "sf/broken"
+	if err := p.dryRun(context.Background(), fresh); err == nil {
+		t.Fatal("a dry run whose board read fails passed")
+	}
+	if _, err := os.Stat(fresh); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a failed dry run left its table file: %v", err)
 	}
 }
 
@@ -274,21 +323,6 @@ func TestEveryForgejoCallCarriesTheToken(t *testing.T) {
 	}
 }
 
-// A dry run never writes over a table file: the owner may have corrected
-// it already.
-func TestTheTableIsNeverWrittenOver(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "table.json")
-	if err := os.WriteFile(path, []byte(`{"cards": [{"title": "corrected"}]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeTable(path, table{}); !errors.Is(err, fs.ErrExist) {
-		t.Errorf("writing over the table = %v, want it refused", err)
-	}
-	if raw, _ := os.ReadFile(path); string(raw) != `{"cards": [{"title": "corrected"}]}` {
-		t.Errorf("the table now reads %s", raw)
-	}
-}
-
 // The real run, which opens the store as factoryd does and so applies the
 // checkout's migrations, names each one the database lacks.
 func TestARunNamesTheMigrationsTheDatabaseLacks(t *testing.T) {
@@ -306,6 +340,7 @@ const (
 	ask23     = "Look at the error rate of the export"
 	why23     = "The alert fired on the export and may point at a fault there."
 	why22     = "The alert fires on the app and may point at a fault there."
+	why25     = "The alert fires on the export and may point at a fault there."
 	// face16 is #16's question as its plan files one today
 	face16 = `ask=Change two lines in the runner's build files check=The factory does not check this. The card closes, and the plan goes on. ` +
 		`offers=[{"value":"done","label":"I did it"},{"value":"hand_back","label":"I cannot do this"},{"value":"park","label":"Not now"}] plan=t-plan ` +
@@ -313,6 +348,9 @@ const (
 	// face21 is #21's stored question with today's value of I did it
 	face21 = `ask=Repair the red chain of the app check=<nil> ` +
 		`offers=[{"value":"done","label":"I did it"},{"value":"park","label":"Not now"}] plan=<nil> waits=<nil> why=The merge queue waits until the chain is green.`
+	// face25 is the same of the export's alert
+	face25 = `ask=Look at the 5xx rate of the export check=<nil> ` +
+		`offers=[{"value":"noted","label":"Noted"},{"value":"park","label":"Not now"}] plan=<nil> waits=<nil> why=` + why25
 	// face22 is the alert card's stored question with today's value of Noted
 	face22 = `ask=Look at the 5xx rate of the app check=<nil> ` +
 		`offers=[{"value":"noted","label":"Noted"},{"value":"park","label":"Not now"}] plan=<nil> waits=<nil> why=` + why22
@@ -407,6 +445,12 @@ func liveBoard() *fakeStore {
 		"ask": ask23, "question": ask23, "why": why23, "offers": oldAlert, "choices": []string{"Noted", "Not now"}, "source": factoryd.SourceAlert, "by": "factoryd",
 		"resolved_at": "2026-11-17T10:00:00Z", "case_id": 90, "story": map[string]any{"planned": "It fired."},
 		"preselected": map[string]any{"action": "choice:close"}, "recommended_by": "the factory", "recommendation": "The alert no longer fires."}}}
+	c25 := card(25, "waiting-human", "Look at the 5xx rate of the export\n\nThe rate is 6 %.")
+	c25.Kind, c25.Source, c25.Why = "human", factoryd.SourceAlert, why25
+	add(c25)
+	c26 := card(26, "waiting-human", "Change the base image of the runner\n\nEdit Dockerfile.runner.")
+	c26.Kind, c26.Source, c26.Parent, c26.Why = "human", factoryd.SourcePlan, "t-plan", "The push rule keeps agents out of workflow files, so a human makes this edit."
+	add(c26)
 	c24 := card(24, "waiting-poster", "Find the cause of the import stall\n\nIt stops at row 9,000.")
 	c24.Why, c24.Summary = "So the nightly import finishes again.", "The import stops at row 9,000. The card finds why. A test imports 10,000 rows."
 	add(c24)
@@ -425,6 +469,16 @@ func liveBoard() *fakeStore {
 		map[string]any{"story": map[string]any{"planned": "It fires."}, "offers": []factoryd.AskOffer{{Value: "choice:close", Label: "Noted", Effect: "Ends this notice."},
 			{Value: "choice:park", Label: "Not now", Effect: "The card keeps waiting for your answer."}},
 			"preselected": map[string]any{"action": "choice:close"}, "recommended_by": "the factory", "recommendation": "The alert no longer fires."})
+	// the same, with rung 2's pick on Not now, which the face leads with
+	s.seat(factoryd.Case{ID: 64, TaskID: "t-25", Repository: "sf/app", Kind: factoryd.CaseHumanCard, Status: factoryd.CaseAtHuman,
+		Facts: map[string]any{"ask": "Look at the 5xx rate of the export", "why": why25, "offers": oldAlert, "source": factoryd.SourceAlert, "by": "factoryd"}},
+		map[string]any{"story": map[string]any{"planned": "It fires."}, "offers": []factoryd.AskOffer{{Value: "choice:close", Label: "Noted", Effect: "Ends this notice."},
+			{Value: "choice:park", Label: "Not now", Effect: "The card keeps waiting for your answer."}},
+			"preselected": map[string]any{"action": "park", "args": nil, "fund": nil}, "recommended_by": "the factory agent", "recommendation": "The rate falls by itself after a deploy."})
+	// a month's cap a plan's human card asks keeps its own question
+	s.seat(factoryd.Case{ID: 65, TaskID: "t-26", Repository: "sf/app", Kind: factoryd.CaseMonthCap, Status: factoryd.CaseAtHuman,
+		Facts: map[string]any{"ask": "The factory's spending reached its limit for the month. Raise it?", "why": "Every card waits until the limit rises or the month turns.",
+			"offers": []factoryd.QuestionChoice{{Value: "noted", Label: "Noted"}, {Value: "park", Label: "Not now"}}, "source": factoryd.SourceMonthCap, "by": "factoryd"}}, nil)
 	s.seat(factoryd.Case{ID: 80, TaskID: "t-20", Repository: "sf/app", Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman,
 		Brief: "Press Not now to wait for the export.", BriefDetail: "The export of the large board is left.",
 		Facts: map[string]any{"ask": "The export stopped. Try again?", "story": map[string]any{"planned": "This card builds it."}}}, nil)
@@ -567,6 +621,7 @@ type fakeStore struct {
 	revisions map[string][]factoryd.PlanRevision
 	confirmed map[string]int
 	writes    []string
+	broken    string // a repository whose board read fails
 }
 
 // seat opens case c with its ask row, which names it, holds its facts
@@ -633,6 +688,9 @@ func (s *fakeStore) SetPlanName(_ context.Context, id, name string) error {
 }
 
 func (s *fakeStore) BoardTasks(_ context.Context, repository string) ([]factoryd.BoardTask, error) {
+	if repository == s.broken {
+		return nil, errors.New("the board read failed")
+	}
 	var out []factoryd.BoardTask
 	for _, t := range s.tasks {
 		if t.Repository == repository && !factoryd.Final(t.Status) && t.Kind != factoryd.KindChat && !t.Report() {
