@@ -20,6 +20,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // switchGateway is the real gateway (gateway.NewServer) at
@@ -215,8 +216,8 @@ func rowKinds(store *freezeStore) []string {
 // it, and no one is asked. The hold's named refusal reaches the tool error
 // path of a session of the frozen class: its digest and its image look,
 // whose calls run through the chat's model door on the card's account,
-// refuse naming the decision, zai's words, the new reset and the press that
-// ends the freeze sooner. The switch
+// refuse naming the decision, zai's words, the new reset and the answer
+// that ends the freeze sooner, in words the guide passes. The switch
 // refuses a work card and a done freeze card by their state, and a press
 // with no hold armed and no frozen card is a quiet success.
 func TestRetrySwitchEndsFreeze(t *testing.T) {
@@ -462,8 +463,12 @@ func retrySwitchEndsFreeze(t *testing.T, press func(sw *RetrySwitch, r *Runner, 
 		t.Fatal(err)
 	}
 	op := &OperatorModel{GatewayURL: "http://gateway", Token: "gateway-token", HTTP: gw.client()}
-	frozenUntil := " was refused (refused_provider_limit): " + zaiWords(at(125*time.Minute)) + "; the class is frozen until " + stamp(at(125*time.Minute)) +
-		", when the work resumes by itself, or sooner if an approver presses Retry now on the class's freeze card or retries a frozen case in the chat"
+	ends := ". The class is frozen until " + stamp(at(125*time.Minute)) + ", and the work goes on by itself then. " +
+		`An approver ends the freeze sooner with the answer "Retry now" on the class's freeze card, or with a retry of a frozen card in the chat.`
+	if faults := writingguide.Lint("The digest was refused" + ends); len(faults) > 0 {
+		t.Errorf("the refusal's words %q: %q", ends, faults)
+	}
+	frozenUntil := " was refused (refused_provider_limit): " + strings.TrimSuffix(zaiWords(at(125*time.Minute)), ".") + ends
 	for _, tool := range []struct {
 		serve      http.HandlerFunc
 		body, want string
