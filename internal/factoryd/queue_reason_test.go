@@ -6,10 +6,10 @@ import (
 	"time"
 )
 
-// bothStores are the stores whose queue reason and slot count must agree:
+// fakeStores are the stores whose queue reason and slot count must agree:
 // the fake the admission, board and workflow tests read; Postgres runs in
 // internal/factoryd/pg.
-var bothStores = map[string]func(*testing.T) Store{
+var fakeStores = map[string]func(*testing.T) Store{
 	"fake": func(*testing.T) Store { return newFakeStore() },
 }
 
@@ -19,7 +19,7 @@ var bothStores = map[string]func(*testing.T) Store{
 // though a refusal read before its admission writes one. The board's read
 // carries what the card's read does.
 func TestSetQueueReasonKeepsTheFirstRefusalTime(t *testing.T) {
-	for name, open := range bothStores {
+	for name, open := range fakeStores {
 		t.Run(name, func(t *testing.T) {
 			ctx, s := context.Background(), open(t)
 			if err := s.CreateTask(ctx, Task{ID: "t-q", Repository: "sf/r", Kind: "agent", Track: "direct", Status: "queued", Objective: "b", IssueNumber: 3}); err != nil {
