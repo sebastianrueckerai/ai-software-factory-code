@@ -354,7 +354,8 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		o.Brief.Evidence = c.evidenceOf(ctx, v, k, face)
 	}
 	for _, a := range factoryd.MoreOf(bt.Task, facts) {
-		tool := a.Action == factoryd.AnswerSteer || a.Action == factoryd.AnswerEditBrief || a.Action == factoryd.AnswerAccent || a.Action == factoryd.AnswerThread
+		tool := slices.Contains([]string{factoryd.AnswerSteer, factoryd.AnswerEditBrief, factoryd.AnswerAccent, factoryd.AnswerThread,
+			factoryd.AnswerHold, factoryd.AnswerRelease}, a.Action)
 		switch {
 		case onCase && !tool && !(helperPage && a.Action == factoryd.ActClose), !c.mayPress(v, k, a):
 		case slices.ContainsFunc(o.More, func(m answerView) bool { return m.Label == a.Label }),

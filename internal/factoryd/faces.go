@@ -578,7 +578,8 @@ func MoreOf(t Task, f Facts) []Answer {
 		case !ok, a.Action == AnswerSteer && t.Status != "running":
 			continue
 		case a.Action == AnswerHold && t.Held():
-			a.Label = "Hold again"
+			again, _ := AnswerOf(AnswerHold + "/" + variantAgain)
+			a.Label, a.Effect = again.Label, again.Effect
 		case a.Action == ActReplan:
 			a.Fields = []Field{requiredNote("Why it goes back", "What the planner should do differently")}
 			if InPlan(t) {

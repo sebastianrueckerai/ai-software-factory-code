@@ -82,19 +82,20 @@ to a person), and its project's month budget has headroom. Otherwise it
 stays queued, holding no slot.
 
 A human holds a card that has not started (queued and never admitted, or
-in `waiting-deps`) with the drawer's Hold or the chat's `hold_card`: a
+in `waiting-deps`) with "Put on hold", among the opened card's other
+actions, or the chat's `hold_card`: a
 reason the board shows, and an optional release card, any card of the
 same repository of any plan but not a plan itself, which is `done` once
 it files its cards, before their work lands. A release card that already
 waits on the held card, through its dependencies or another hold, is
 refused: both would wait for ever. The held card gets no work slot, and
-its dependency wait asks nothing, until the human releases it (Release,
+its dependency wait asks nothing, until the human releases it ("Release the hold",
 `release_hold`) or its release card is `merged` or `done`. The hold
 follows the release card's work into a retry or a successor, as a
 dependency edge does. A release card that ends `failed` or `closed`, or
 that a cut turns into a plan, releases nothing: the card stays held and
-its chip turns to the warning that names the release card, its plan, how
-it ended and the ways on. For a release card that failed, a retry of it
+its waits line names the release card, its plan, how it ended and the
+ways on. For a release card that failed, a retry of it
 comes first, since its retry takes the hold over. A release of the hold,
 or a hold on another release card, comes next. A closed one leaves these
 two. A release card's end `failed` or `closed` is told once too: its end
@@ -103,15 +104,15 @@ of each human the project tells gets one inform, at needs-you, naming
 the held card, the release card, its plan, how it ended and the same
 ways on. A hold released, or taken over by a retry's card, before the
 poke goes out tells nothing. It opens no case and asks no rung. A card that ends, or moves to the human lane, takes its
-hold with it, and its `card_hold_ended` row names the move. Release
-refuses a card that no hold holds.
+hold with it, and its `card_hold_ended` row names the move. "Release the
+hold" refuses a card that no hold holds.
 
 Every revision of a plan keeps the key of a held card, whoever asked for
 the replan, and the card takes the entry the revision gives that key. A
 revision that drops the key is refused at its filing, naming the hold
 and what fits: keep the key, and when the plan no longer needs the card,
-ask in a question of the revision that the human close it or release its
-hold on its drawer. Once the human closed it, the replan rules ask for
+ask in a question of the revision that the human close it or press
+"Release the hold" on the opened card. Once the human closed it, the replan rules ask for
 its key to be left out. The planner's record of the plan's cards shows
 each held card's hold.
 

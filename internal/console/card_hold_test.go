@@ -161,6 +161,17 @@ func TestHoldButtonsAndTheirRefusals(t *testing.T) {
 		t.Fatalf("a refused hold wrote: t-k2's hold %+v, %d rows", holdOf(r, "t-k2"), r.events.count()-before)
 	}
 
+	// the board names the answer that fits a held card by its label, and the
+	// agent's door by the key it types
+	rec = r.do(post("/tasks/t-k1/plan/changes", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "text": {"cut it"}}), ck)
+	equal(t, "the board's plan press on a held card", []any{rec.Code, rec.Body.String()}, []any{http.StatusConflict,
+		"Card #31 waits for a free work slot, in filing order, not a plan card: it is on hold until a human releases it with “Release the hold”.\n"})
+	held, _, _ := r.tasks.Task(t.Context(), "t-k1")
+	if err := wrongState(held, capFacts{}, "a running session"); !errors.As(err, &no) ||
+		no.msg != "Card #31 waits for a free work slot, in filing order, not a running session: it is on hold until a human releases it with `release_hold`." {
+		t.Errorf("the agent's door on a held card = %v", err)
+	}
+
 	rec = r.do(post("/tasks/t-k1/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.AnswerRelease}}), ck)
 	equal(t, "the Release button", []any{rec.Code, rec.Header().Get("Location")}, []any{http.StatusSeeOther, "/?project=ai-software-factory-code"})
 	if h := holdOf(r, "t-k1"); h != nil {
@@ -240,7 +251,7 @@ func TestBoardShowsTheHoldAndTheDrawerOffersIt(t *testing.T) {
 		case "t-k1":
 			r.tasks.tasks[i].HoldView = factoryd.HoldView{Line: "on hold until #33 is merged or done: after #33"}
 		case "t-k2":
-			r.tasks.tasks[i].HoldView = factoryd.HoldView{Warn: true,
+			r.tasks.tasks[i].HoldView = factoryd.HoldView{
 				Line: "on hold: its release card #2062 (plan #1915) ended closed and releases nothing, so a human releases the hold or holds the card on another card: after #2062"}
 		}
 	}
@@ -262,6 +273,19 @@ func TestBoardShowsTheHoldAndTheDrawerOffersIt(t *testing.T) {
 			t.Errorf("the held card's drawer lacks %q", want)
 		}
 	}
+	if want := "The hold takes your new reason and the card you name in place of the ones it has."; !strings.Contains(drawer, want) ||
+		strings.Contains(drawer, "The card does not start until you release it") {
+		t.Errorf("Hold again on a held card says what Put on hold does, want %q", want)
+	}
+	// a held card that also asks keeps both: only a human releases a hold
+	r.openCases = map[string][]factoryd.Case{"t-k1": {{ID: 7, TaskID: "t-k1", Kind: factoryd.CaseDependencyFailed, StateKey: "t-d", Status: factoryd.CaseAtHuman}}}
+	drawer = r.do(httptest.NewRequest(http.MethodGet, "/cards/t-k1/drawer", nil), ck).Body.String()
+	for _, want := range []string{`data-answer="release_hold"`, `data-answer="hold_card"`, "Release the hold", "Hold again"} {
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the held card that asks lacks %q in its drawer", want)
+		}
+	}
+	r.openCases = nil
 	drawer = r.do(httptest.NewRequest(http.MethodGet, "/cards/t-d/drawer", nil), ck).Body.String()
 	if !strings.Contains(drawer, `data-answer="hold_card"`) || !strings.Contains(drawer, "Put on hold") || strings.Contains(drawer, "release_hold") {
 		t.Errorf("a queued card's drawer offers Put on hold alone: %v %v", strings.Contains(drawer, `data-answer="hold_card"`), strings.Contains(drawer, "release_hold"))

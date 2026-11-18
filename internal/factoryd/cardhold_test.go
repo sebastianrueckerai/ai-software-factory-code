@@ -132,7 +132,7 @@ func TestAReleaseCardThatEndsClosedOrFailedKeepsTheHold(t *testing.T) {
 				t.Fatal(err)
 			}
 			i := slices.IndexFunc(board, func(b BoardTask) bool { return b.ID == "t-held" })
-			if v := board[i].HoldView; !v.Warn || v.Released || v.Line != want {
+			if v := board[i].HoldView; v.Released || v.Line != want {
 				t.Fatalf("the board's hold = %+v, want the warning", v)
 			}
 			if len(store.cases) != 0 || len(store.events) != 0 {
@@ -159,7 +159,7 @@ func TestAReleaseCardThatBecameAPlanKeepsTheHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	i := slices.IndexFunc(board, func(b BoardTask) bool { return b.ID == "t-held" })
-	if v := board[i].HoldView; !v.Warn || v.Released || v.Line != want {
+	if v := board[i].HoldView; v.Released || v.Line != want {
 		t.Fatalf("the board's hold = %+v, want the warning", v)
 	}
 }
@@ -601,7 +601,7 @@ func heldPlanRig(t *testing.T) (*Runner, *fakeStore, Task, CardHold) {
 // dropsRedirects is the line that refuses a revision dropping held card
 // redirects, #4.
 const dropsRedirects = "card redirects (#4) is on hold: after the pg split. Only a human closes a held card, so keep its key: the card takes the entry this revision gives that key. " +
-	"If the plan no longer needs the card, keep its key and ask in a question of this revision that the human close it or release its hold on its drawer"
+	"If the plan no longer needs the card, keep its key and ask in a question of this revision that the human close it or press “Release the hold” on the opened card"
 
 // Rung 2's replan through Act, sent as the console sends it with the
 // woken human's login, is the project agent's: the replan step names

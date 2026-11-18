@@ -67,6 +67,7 @@ const (
 	variantAlone    = "alone"
 	variantFile     = "file"
 	variantOpen     = "open"
+	variantAgain    = "again"
 )
 
 // The keys of a routine's answers in their other states: the undo of a
@@ -194,6 +195,7 @@ var Vocabulary = []Answer{
 	{Action: AnswerHold, Label: "Put on hold", Effect: "The card does not start until you release it, or until the card you name is merged or done.",
 		Fields: []Field{requiredNote("Why it waits", "The reason, which the board shows on the card"),
 			{Name: "release", Label: "The card that releases it", Hint: "An issue number, or empty to release it yourself", Kind: FieldText, Default: none}}},
+	{Action: AnswerHold, Variant: variantAgain, Label: "Hold again", Effect: "The hold takes your new reason and the card you name in place of the ones it has."},
 	{Action: AnswerRelease, Label: "Release the hold", Effect: "The card takes its turn to start again."},
 	{Action: AnswerEditBrief, Label: "Edit the brief", Effect: "Changes the title, why line and summary for the agent and the board.",
 		Fields: []Field{{Name: "title", Label: "Title", Kind: FieldText, Default: func(f Facts) string { return CardTitle(f.Card) }},
