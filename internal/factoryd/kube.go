@@ -37,6 +37,11 @@ var (
 	// errForgejoForbidden is Forgejo's 403, one of ErrRefused: the
 	// credential works but lacks the right (a reader listing hooks).
 	errForgejoForbidden = fmt.Errorf("%w (forbidden)", ErrRefused)
+	// errForgejoGone is Forgejo's 410 and errForgejoUnprocessable its 422,
+	// both of ErrRefused: the object is gone, or Forgejo will not take the
+	// change, whoever asks.
+	errForgejoGone          = fmt.Errorf("%w (gone)", ErrRefused)
+	errForgejoUnprocessable = fmt.Errorf("%w (unprocessable)", ErrRefused)
 	// errForgejoNotFound is Forgejo's 404. It is also ErrNotFound, so a
 	// caller tolerating an absent object needs no second check, but only
 	// it, not a kube, S3 or store not-found, ends an activity's retries.

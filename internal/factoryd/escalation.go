@@ -275,11 +275,11 @@ func closeIssueAsFactory(ctx context.Context, store interface {
 	return store.ConfirmFactoryClose(ctx, t.ID, t.IssueNumber)
 }
 
-// closeRow moves human card id's row from waiting-human to done once
-// closeIssueAsFactory closed its issue, and reports whether this call
-// moved it. The webhook of that close, factoryd's own, ends the human card
-// too (finishHumanTask) and may come first: a row no longer waiting is
-// closed already, and its outcome counted there.
+// closeRow moves human card id's row from waiting-human to done and
+// reports whether this call moved it; a row no longer waiting is closed
+// already. After closeIssueAsFactory the webhook of that close,
+// factoryd's own, ends the human card too (finishHumanTask) and may come
+// first, its outcome counted there.
 func closeRow(ctx context.Context, store interface {
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
 }, id string) (bool, error) {

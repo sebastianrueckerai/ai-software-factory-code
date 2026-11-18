@@ -403,7 +403,7 @@ func main() {
 		runner.Namer.NameOpenPlans(sweepCtx)
 	}()
 	// set before the worker runs Act
-	freezeCards := &factoryd.FreezeCard{Store: store, Forgejo: forgejo, Current: policyLoader.Current, Timeline: runner.Timeline(),
+	freezeCards := &factoryd.FreezeCard{Store: store, Forgejo: forgejo, Current: policyLoader.Current, Timeline: runner.Timeline(), Metrics: metrics,
 		Signal: func(ctx context.Context, taskID string) error {
 			return inner.SignalRunning(ctx, taskID, factoryd.SignalProviderRetry)
 		}}
