@@ -79,7 +79,7 @@ var SourceBriefs = map[string]func(BriefFacts) BriefText{
 				"and a green chain ends every wait."}
 	},
 	SourceChainStall: func(f BriefFacts) BriefText {
-		return BriefText{Title: "The deploy chain of " + f.Name + " stalled. Run it again?",
+		return BriefText{Title: "The deploy chain of " + f.Name + " stalled. How should it go on?",
 			Why: "The chain has been pending past its stall bound, and merged cards wait on it."}
 	},
 	SourceAlert: func(f BriefFacts) BriefText {
@@ -154,7 +154,7 @@ var SourceBriefs = map[string]func(BriefFacts) BriefText{
 			Why: "The factory refused the newest configuration, so the version before it stays in force."}
 	},
 	SourceProductionHeld: func(f BriefFacts) BriefText {
-		return BriefText{Title: "Deploys of " + f.Name + " to production wait for an open plan. How should the deploys go on?",
+		return BriefText{Title: "Deploys of " + f.Name + " to production wait for an open plan. How should they go on?",
 			Why: "While a plan is open on main, no merge goes to production, so a half-built feature never goes live."}
 	},
 	SourceRoutine: func(f BriefFacts) BriefText {

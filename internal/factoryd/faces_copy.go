@@ -506,7 +506,7 @@ func init() {
 		CaseCheckinHuman: work(FaceSpec{Ask: fixed("The session's check found a question only you can settle. How should the card go on?"),
 			Why:     reasonWhy("A check during the session found a question that only a human can settle."),
 			Answers: keys(ActContinue, ActReplan, ActClose, ActNote)}),
-		CasePolicyClass: work(FaceSpec{Ask: fixed("The change touches files only a human may approve. Let the card go on with it?"),
+		CasePolicyClass: work(FaceSpec{Ask: fixed("The change touches files only a human may approve. How should the card go on?"),
 			Why:     reasonWhy("The factory's rules let only a human approve a change to these files."),
 			Answers: keys(ActContinue, ActReplan, ActClose, ActNote)}),
 		CaseCheckinShare: work(FaceSpec{Ask: fixed("The last session spent more than its share of the card's money. Allow one more session, or end the card?"),

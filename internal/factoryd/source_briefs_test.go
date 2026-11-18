@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -57,5 +58,18 @@ func TestEveryCodeFiledSourceHasABrief(t *testing.T) {
 		if seen == 0 {
 			t.Errorf("%s: no fixture", src)
 		}
+	}
+}
+
+// The held production's ask fits an ask's length for the longest name a
+// project may carry, 37 characters by the policy's rule of a project's file.
+func TestTheHeldProductionsAskFitsTheLongestProjectName(t *testing.T) {
+	name := strings.Repeat("a", 37)
+	b := factoryd.SourceBriefs[factoryd.SourceProductionHeld](factoryd.BriefFacts{Name: name})
+	if want := "Deploys of " + name + " to production wait for an open plan. How should they go on?"; b.Title != want {
+		t.Errorf("the ask %q, want %q", b.Title, want)
+	}
+	if refusals := factoryd.CheckBrief(b, factoryd.BriefAsk, everyRef{}); len(refusals) > 0 {
+		t.Errorf("the door refuses the ask of %d characters: %q", utf8.RuneCountInString(b.Title), refusals)
 	}
 }

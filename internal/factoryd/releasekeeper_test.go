@@ -171,7 +171,7 @@ func TestReleaseKeeperAsksAfterSixHours(t *testing.T) {
 		t.Fatalf("issues %q at 16:00, want one", f.issues)
 	}
 	title, body, _ := strings.Cut(f.issues[0], "\n\n")
-	if want := "Deploys of sf-demo-app to production wait for an open plan. How should the deploys go on?"; title != want {
+	if want := "Deploys of sf-demo-app to production wait for an open plan. How should they go on?"; title != want {
 		t.Errorf("title %q, want %q", title, want)
 	}
 	for _, want := range []string{holdPlanLine, "Choices:\n- Not now\n- Deploy now\n- Replan plan #12 on top\n- Take plan #12 off main and replan\n"} {
@@ -233,7 +233,7 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 	if len(f.issues) != 1 {
 		t.Fatalf("issues %q, want the fix's ask at once", f.issues)
 	}
-	if title, _, _ := strings.Cut(f.issues[0], "\n\n"); title != "Deploys of sf-demo-app to production wait for an open plan. How should the deploys go on?" {
+	if title, _, _ := strings.Cut(f.issues[0], "\n\n"); title != "Deploys of sf-demo-app to production wait for an open plan. How should they go on?" {
 		t.Errorf("title %q", title)
 	}
 	if _, q := askOfHold(t, store); q.Why != holdWhy || !strings.Contains(q.Info, "plan #12 is open on main. Fix #40 merged, but production is held. #40 fixes an alert. "+holdSince) {
@@ -270,7 +270,7 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 	if len(f.issues) != 2 {
 		t.Fatalf("issues %d, want a second ask", len(f.issues))
 	}
-	if title, _, _ := strings.Cut(f.issues[1], "\n\n"); title != "Deploys of sf-demo-app to production wait for an open plan. How should the deploys go on?" {
+	if title, _, _ := strings.Cut(f.issues[1], "\n\n"); title != "Deploys of sf-demo-app to production wait for an open plan. How should they go on?" {
 		t.Errorf("title %q", title)
 	}
 	if _, q := askOfHold(t, store); q.Why != holdWhy ||
@@ -324,7 +324,7 @@ func TestReleaseKeeperOffersTheReplansOfTheLongestHeldPlan(t *testing.T) {
 			}
 			_, q := askOfHold(t, store)
 			want := HumanQuestion{
-				Ask: "Deploys of sf-demo-app to production wait for an open plan. How should the deploys go on?",
+				Ask: "Deploys of sf-demo-app to production wait for an open plan. How should they go on?",
 				Why: holdWhy,
 				Info: "Production of sf-demo-app has waited 6 hours: " + c.reason + " are open on main. " + since + "\n\nThe open plans and what each waits on:\n" +
 					c.lines + "\n\n" + holdInfoTail + "\n\n" + c.others,

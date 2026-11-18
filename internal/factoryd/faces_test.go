@@ -910,24 +910,48 @@ func TestACapsWhyNamesTheFileOfItsLimit(t *testing.T) {
 // pairAsk matches an ask whose question names two ways out.
 var pairAsk = regexp.MustCompile(`, or [^.?]*\?$`)
 
+// yesAndItsRefusals are the asks that yes or no answers on a face of more
+// than two answers: each answer past the yes is a way to say no.
+var yesAndItsRefusals = []string{"Merge this card's pull request?", "Is this promise of the plan met?"}
+
+// yesNoAsk says whether ask ends in a question that yes or no answers: one
+// that opens with no question word and names no pair.
+func yesNoAsk(ask string) bool {
+	if !strings.HasSuffix(ask, "?") || pairAsk.MatchString(ask) {
+		return false
+	}
+	question := ask[strings.LastIndex(ask, ". ")+1:]
+	first, _, _ := strings.Cut(strings.TrimSpace(question), " ")
+	return !slices.Contains([]string{"How", "What", "Which", "Who", "Where", "When", "Why"}, first)
+}
+
 // An ask whose face holds more answers than two names no pair of them: it
 // keeps its facts and asks how the card goes on, so a pick may be any
 // answer the face holds.
 func TestTheAsksWithManyAnswersNameNoPair(t *testing.T) {
-	pairs := 0
+	pairs, yesNos := 0, 0
 	for _, x := range facedFixtures(t) {
-		if !pairAsk.MatchString(x.face.Ask) {
-			continue
+		pair, yesNo := pairAsk.MatchString(x.face.Ask), yesNoAsk(x.face.Ask)
+		if pair {
+			pairs++
 		}
-		pairs++
+		if yesNo {
+			yesNos++
+		}
 		ways := labels(x.face.Answers)
 		ways = slices.DeleteFunc(ways, func(l string) bool { return l == "Not now" })
-		if len(ways) > 2 {
+		if len(ways) <= 2 {
+			continue
+		}
+		if pair {
 			t.Errorf("%s/%s: the ask %q names a pair, and the face holds %v", x.fx.Group, x.fx.Kind, x.face.Ask, ways)
 		}
+		if yesNo && !slices.Contains(yesAndItsRefusals, x.face.Ask) {
+			t.Errorf("%s/%s: the ask %q takes yes or no, and the face holds %v", x.fx.Group, x.fx.Kind, x.face.Ask, ways)
+		}
 	}
-	if pairs == 0 {
-		t.Error("no fixture's ask names a pair, so the check reads nothing")
+	if pairs == 0 || yesNos == 0 {
+		t.Errorf("%d fixture asks name a pair and %d take yes or no, so a check reads nothing", pairs, yesNos)
 	}
 	for ask, f := range map[string]factoryd.Facts{
 		"The checks ran past their time limit. How should the card go on?":       {CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseGateStop, Gate: factoryd.ActivityWaitChecks}},
@@ -948,10 +972,14 @@ func TestTheAsksWithManyAnswersNameNoPair(t *testing.T) {
 		factoryd.CaseOther:            "The card stopped on a problem it cannot fix by itself. How should it go on?",
 		factoryd.CaseDependencyFailed: "A card this one waits for failed. How should this card go on?",
 		factoryd.CaseDependencyClosed: "A card this one waits for was closed. How should this card go on?",
-		factoryd.CaseRollHeld:         "Deploys of code to production wait for an open plan. How should the deploys go on?",
+		factoryd.CaseRollHeld:         "Deploys of code to production wait for an open plan. How should they go on?",
+		factoryd.CasePolicyClass:      "The change touches files only a human may approve. How should the card go on?",
 	} {
 		if got := fixture(t, "case", string(kind)).face.Ask; got != ask {
 			t.Errorf("%s: the ask %q, want %q", kind, got, ask)
 		}
+	}
+	if got, ask := fixture(t, "source", factoryd.SourceChainStall+"/needs-you").face.Ask, "The deploy chain of sf/code stalled. How should it go on?"; got != ask {
+		t.Errorf("the chain's stall: the ask %q, want %q", got, ask)
 	}
 }
