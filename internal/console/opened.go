@@ -235,7 +235,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		// a plan's case that names no question of a revision is answered
 		// by the plan's request
 		n := c.caseNeed(ctx, v, button(r), bt, k, cs, casesInView(r)[bt.ID])
-		if _, part := factoryd.HoldoutOn(n.Case.Case); !planCase(n.Case.Case) || part || n.Case.Plan != nil || len(o.Brief.Approvals) == 0 {
+		if _, part := factoryd.HoldoutOn(n.Case.Case); !factoryd.PlanCase(n.Case.Case) || part || n.Case.Plan != nil || len(o.Brief.Approvals) == 0 {
 			row = n.Case
 		}
 	}
@@ -320,8 +320,15 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		o.Sent = true
 	}
 	if o.Ask == nil && !o.Sent && len(o.Brief.Approvals) > 0 {
+		pending := make([]factoryd.ApprovalRequest, len(o.Brief.Approvals))
+		for i, ap := range o.Brief.Approvals {
+			pending[i] = ap.ApprovalRequest
+		}
 		ap := o.Brief.Approvals[max(lead, 0)]
-		kase, face := requestFace(ap, bt.Task)
+		page := factoryd.CardPages(bt, nil, nil, pending, func(a factoryd.ApprovalRequest) factoryd.Request {
+			return o.Brief.Approvals[slices.IndexFunc(o.Brief.Approvals, func(ap approvalCard) bool { return ap.ID == a.ID })].Request
+		})[max(lead, 0)]
+		kase, face := page.Case, page.Face
 		press := func(an factoryd.Answer, key string) (*pressForm, func(string) string) {
 			if approverOnly(v, k, ap, an) {
 				o.Ask.denied = append(o.Ask.denied, an.Label)
@@ -329,14 +336,13 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 			return requestPress(v, k, ap, an, key)
 		}
 		ask := k.ID + "-r" + strconv.FormatInt(ap.ID, 10)
-		if q, ok := planQuestionCase(ap); ok {
+		if kase.Kind == factoryd.CasePlanQuestion {
 			// a plan that waits on its open questions asks the first of them
-			kase, face = q, factoryd.CaseFace(q, bt.Task, factoryd.CaseAsk{})
-			slot := &caseRow{Case: q, Face: face, Plan: planSlotOf(face, q)}
+			slot := &caseRow{Case: kase, Face: face, Plan: planSlotOf(face, kase)}
 			press = func(an factoryd.Answer, key string) (*pressForm, func(string) string) {
 				return casePress(v, k, *slot, an, key)
 			}
-			ask += fmt.Sprintf("-q%v", q.Facts["index"])
+			ask += fmt.Sprintf("-q%v", kase.Facts["index"])
 		}
 		face = v.scrubbed(face)
 		o.Ask = c.askOf(ctx, v, k, face, seen)
@@ -641,7 +647,7 @@ func casePress(v *boardView, k card, row caseRow, a factoryd.Answer, key string)
 			return key + "." + field
 		}
 	}
-	if planCase(row.Case) && a.Action == factoryd.ActClose {
+	if factoryd.PlanCase(row.Case) && a.Action == factoryd.ActClose {
 		// the plan's own end, no answer of its question
 		return cardPress(v, k, a, key)
 	}
@@ -657,7 +663,7 @@ func casePress(v *boardView, k card, row caseRow, a factoryd.Answer, key string)
 			return nil, nil
 		}
 		p.Post, p.DataTo = "/tasks/"+k.ID+"/plan/holdout", ""
-		p.Values = []hidden{{"revision", strconv.Itoa(factInt(row.Case, "revision"))}, {"index", strconv.Itoa(h.Idx)}, {"verb", verb}}
+		p.Values = []hidden{{"revision", strconv.Itoa(factoryd.FactInt(row.Case, "revision"))}, {"index", strconv.Itoa(h.Idx)}, {"verb", verb}}
 		return p, named("note")
 	}
 	switch {
@@ -735,25 +741,6 @@ func (c *Console) pinMerge(ctx context.Context, a actor, t factoryd.Task, answer
 	answers[i].Press.Values = append(answers[i].Press.Values, hidden{"head", head})
 }
 
-// planQuestionCase is the case plan request ap's first open question
-// opens, as its ask opens it; false when no question but the confirmation
-// waits.
-func planQuestionCase(ap approvalCard) (factoryd.Case, bool) {
-	for _, q := range ap.Questions {
-		if q.Answered() || q.Kind == factoryd.QuestionConfirmation {
-			continue
-		}
-		choices := make([]any, len(q.Choices))
-		for i, ch := range q.Choices {
-			choices[i] = ch
-		}
-		return factoryd.Case{TaskID: ap.TaskID, Repository: ap.Project, Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman, Problem: q.Text,
-			Facts: map[string]any{"revision": float64(ap.PlanSpec.Revision), "index": float64(q.Index), "question": q.Text, "choices": choices,
-				"recommended": q.Recommended, "grounds": q.Grounds}}, true
-	}
-	return factoryd.Case{}, false
-}
-
 // requestAsk fits the ask of request ap to its rows as they read now. A
 // merge waits on its head's checks and on each human promise's verdict,
 // which the pages before it take. A criteria request offers Build the
@@ -778,7 +765,7 @@ func requestAsk(ask *askBlock, ap approvalCard) {
 		return
 	}
 	ask.Answers = slices.DeleteFunc(ask.Answers, ap.refuses)
-	if !ap.Grantable {
+	if !ap.Grantable() {
 		ask.Answers, ask.Note = nil, "Every promise is met or dropped, so the plan closes within minutes."
 	}
 }
@@ -788,27 +775,7 @@ func requestAsk(ask *askBlock, ap approvalCard) {
 // before the plan's cards are delivered.
 func (ap approvalCard) refuses(a answerView) bool {
 	criteria := ap.Kind == factoryd.ApprovalCriteria || ap.Kind == factoryd.ApprovalCriteriaRerun
-	return criteria && (a.Action == factoryd.ActGrantCriteria && !ap.Grantable || a.Action == factoryd.ActConfirmCriteria && !ap.Delivered)
-}
-
-// openPromises is criteria case k as request ap's rows read now: the
-// promises still open, those of them nothing judged yet and the plan's
-// count, so its ask counts them and Drop this promise picks among them.
-// Rows it could not read leave the request's own count.
-func openPromises(k factoryd.Case, ap approvalCard) factoryd.Case {
-	if len(ap.Criteria) == 0 {
-		return k
-	}
-	var open, unchecked []string
-	for _, c := range ap.Criteria {
-		if c.Verdict != "met" && c.Verdict != "waived" {
-			open = append(open, c.ID)
-			if c.Verdict == "" {
-				unchecked = append(unchecked, c.ID)
-			}
-		}
-	}
-	return factoryd.OnOpen(k, open, unchecked, len(ap.Criteria)+len(ap.GateLines))
+	return criteria && (a.Action == factoryd.ActGrantCriteria && !ap.Grantable() || a.Action == factoryd.ActConfirmCriteria && !ap.Delivered)
 }
 
 // requestPress is the press of answer a by key on approval request ap of

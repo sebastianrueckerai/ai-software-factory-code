@@ -3,12 +3,10 @@ package console
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"log"
 	"maps"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -76,10 +74,10 @@ func (r caseRow) Waiting() string {
 }
 
 // caseSet is what one board read holds of its repository's cases: the
-// desk, each card's cases at the human oldest first, a helper task's
-// among its parent's, each task's live ask, the newest live case an answer
-// on the task ends, and the helper tasks whose cases a card holds. The
-// minute pass withdraws an older ask the live one replaced.
+// desk, the cases at the human each card read shows, its helpers' among
+// them (factoryd.CardCases), each task's live ask, the newest live case an
+// answer on the task ends, and the helper tasks whose cases a card holds.
+// The minute pass withdraws an older ask the live one replaced.
 type caseSet struct {
 	desk    factoryd.CaseDesk
 	byCard  map[string][]factoryd.Case
@@ -87,8 +85,7 @@ type caseSet struct {
 	helpers map[string]factoryd.BoardTask
 }
 
-// caseSetOf reads repository's case set, the cases of the helper tasks of
-// cards among their parent's.
+// caseSetOf reads repository's case set with the cases cards show.
 func (c *Console) caseSetOf(ctx context.Context, repository string, cards ...factoryd.BoardTask) (caseSet, error) {
 	desk, err := c.cfg.CaseDesk(ctx, repository)
 	cs := caseSet{desk: desk, byCard: map[string][]factoryd.Case{}, liveAsk: map[string]factoryd.Case{}, helpers: map[string]factoryd.BoardTask{}}
@@ -100,38 +97,18 @@ func (c *Console) caseSetOf(ctx context.Context, repository string, cards ...fac
 			cs.liveAsk[k.TaskID] = k
 		}
 	}
-	for _, k := range desk.Cases {
-		if k.Status == factoryd.CaseAtHuman {
-			cs.byCard[k.TaskID] = append(cs.byCard[k.TaskID], k)
-		}
-	}
-	for _, list := range cs.byCard {
-		sortCases(list)
-	}
 	cs.adopt(cards...)
 	return cs, nil
 }
 
-// adopt files the cases of the helper tasks of cards among their
-// parent's.
+// adopt files the cases each card of cards shows, its helpers' among them.
 func (cs caseSet) adopt(cards ...factoryd.BoardTask) {
 	for _, bt := range cards {
+		cs.byCard[bt.ID] = factoryd.CardCases(bt, cs.desk.Cases)
 		for _, h := range bt.Helpers {
 			cs.helpers[h.ID] = h
-			if list, ok := cs.byCard[h.ID]; ok {
-				cs.byCard[bt.ID] = append(cs.byCard[bt.ID], list...)
-				delete(cs.byCard, h.ID)
-				sortCases(cs.byCard[bt.ID])
-			}
 		}
 	}
-}
-
-// sortCases puts a card's cases in reading order: by id, a plan's in its
-// own order (orderPlanCases).
-func sortCases(list []factoryd.Case) {
-	slices.SortFunc(list, func(a, b factoryd.Case) int { return cmp.Compare(a.ID, b.ID) })
-	orderPlanCases(list)
 }
 
 // askingCards are the cards that hold a case at the human in cs but that
@@ -149,12 +126,13 @@ func (c *Console) askingCards(ctx context.Context, cs caseSet, cards []factoryd.
 			held[h.ID] = true
 		}
 	}
-	var ids []string
-	for id := range cs.byCard {
-		if !held[id] {
-			ids = append(ids, id)
+	atHuman := map[string][]factoryd.Case{}
+	for _, k := range cs.desk.Cases {
+		if k.Status == factoryd.CaseAtHuman && !held[k.TaskID] {
+			atHuman[k.TaskID] = append(atHuman[k.TaskID], k)
 		}
 	}
+	ids := slices.Collect(maps.Keys(atHuman))
 	if len(ids) == 0 {
 		return nil
 	}
@@ -173,7 +151,7 @@ func (c *Console) askingCards(ctx context.Context, cs caseSet, cards []factoryd.
 	}
 	var out []factoryd.BoardTask
 	for _, id := range ids {
-		if _, open := cs.byCard[id]; !open || held[id] || !cs.holds(factoryd.Task{ID: id, Status: statuses[id], Track: policy.TrackPlan}) {
+		if held[id] || !factoryd.ShowsCases(factoryd.Task{ID: id, Status: statuses[id], Track: policy.TrackPlan}, atHuman[id]) {
 			continue
 		}
 		bt, ok := read(id)
@@ -198,144 +176,9 @@ func (c *Console) askingCards(ctx context.Context, cs caseSet, cards []factoryd.
 	return out
 }
 
-func planCase(k factoryd.Case) bool {
-	return k.Kind == factoryd.CasePlanQuestion || k.Kind == factoryd.CasePlanConfirmation
-}
-
-func factInt(k factoryd.Case, key string) int {
-	n, _ := k.Facts[key].(float64)
-	return int(n)
-}
-
-// orderPlanCases puts a plan's cases, which sit in the list where its
-// newest case does, in reading order: the newest revision first, its
-// questions by index, then its confirmation.
-func orderPlanCases(list []factoryd.Case) {
-	var at []int
-	var plan []factoryd.Case
-	for i, k := range list {
-		if planCase(k) {
-			at, plan = append(at, i), append(plan, k)
-		}
-	}
-	slices.SortStableFunc(plan, func(a, b factoryd.Case) int {
-		return cmp.Or(cmp.Compare(factInt(b, "revision"), factInt(a, "revision")),
-			cmp.Compare(btoi(a.Kind == factoryd.CasePlanConfirmation), btoi(b.Kind == factoryd.CasePlanConfirmation)),
-			cmp.Compare(factInt(a, "index"), factInt(b, "index")))
-	})
-	for j, i := range at {
-		list[i] = plan[j]
-	}
-}
-
-// pagesOf are the pages of card id's carousel when it holds cases: first
-// each pending resource request of the card, which opens no case of its
-// own and leads its asks, as a page numbered by its request's id negated;
-// then its cases at the human, oldest first.
-func pagesOf(v *boardView, cs caseSet, id string) []factoryd.Case {
-	cases := cs.byCard[id]
-	if len(cases) == 0 {
-		return nil
-	}
-	var pages []factoryd.Case
-	for _, a := range v.pending {
-		if a.TaskID != id || a.Kind != factoryd.ApprovalResource {
-			continue
-		}
-		k, err := factoryd.RequestCase(a)
-		if err != nil {
-			log.Printf("console: approval request %d: %v", a.ID, err)
-			continue
-		}
-		k.ID, k.Kind, k.OpenedAt = -a.ID, factoryd.CaseKind(factoryd.ApprovalResource), a.CreatedAt
-		pages = append(pages, k)
-	}
-	return append(pages, cases...)
-}
-
-// requestPage says case k is a page pagesOf made of a request.
+// requestPage says case k is a page of a card's carousel made of a
+// resource request (factoryd.CardPages).
 func requestPage(k factoryd.Case) bool { return k.ID < 0 }
-
-// page is one page of a card's carousel: a case of pagesOf, or one part of
-// its ask (Part from 1): a promise a human judges before a merge, an open
-// promise of a plan's criteria request, an extra promise of a plan's
-// confirmation.
-type page struct {
-	Case factoryd.Case
-	Part int
-}
-
-// key names page p in a board read and an arrow's link: the case's id, and
-// the part after a dot.
-func (p page) key() string {
-	k := strconv.FormatInt(p.Case.ID, 10)
-	if p.Part > 0 {
-		k += "." + strconv.Itoa(p.Part)
-	}
-	return k
-}
-
-// parts are the parts of case k's ask that request ap's rows hold, each a
-// page of its own: the human promises of a merge with no verdict yet, the
-// open promises of a criteria request, the extra promises a plan's
-// confirmation waits on. Every part is case k with its part's facts.
-func parts(k factoryd.Case, ap *approvalCard) []factoryd.Case {
-	if ap == nil {
-		return nil
-	}
-	var out []factoryd.Case
-	promise := func(r criterionRow, evidence string) factoryd.PromiseFact {
-		return factoryd.PromiseFact{ID: r.ID, Promise: factoryd.PromiseOf(r.PlanCriterion), Kind: r.Kind, Verdict: r.Verdict, Evidence: evidence}
-	}
-	switch k.Kind {
-	case factoryd.CaseMergeApproval:
-		k = factoryd.OnOpen(k, ap.Unsettled, nil, 0)
-		for _, r := range ap.Criteria {
-			if r.Human && slices.Contains(ap.Unsettled, r.ID) {
-				out = append(out, factoryd.OnPromise(k, promise(r, r.PlanCriterion.Evidence)))
-			}
-		}
-	case factoryd.CasePlanCriteria:
-		k = openPromises(k, *ap)
-		if ap.Run != nil {
-			k = factoryd.OnRun(k, *ap.Run)
-		}
-		for _, r := range ap.Criteria {
-			if r.Verdict != "met" && r.Verdict != "waived" {
-				out = append(out, factoryd.OnPromise(k, promise(r, r.Evidence)))
-			}
-		}
-	case factoryd.CasePlanConfirmation:
-		for _, h := range ap.Holdouts {
-			if h.Decides {
-				out = append(out, factoryd.OnHoldout(k, factoryd.HoldoutFact{Idx: h.Idx, Claim: h.Claim}))
-			}
-		}
-	}
-	return out
-}
-
-// planFacts are what plan request ap names of its plan.
-func planFacts(ap *approvalCard) factoryd.PlanFacts {
-	p := factoryd.PlanFacts{Outcome: ap.PlanOutcome, OffMain: ap.TakeOffRefs, OffMainWhys: ap.TakeOffWhys}
-	for _, r := range ap.PlanRows {
-		p.Cards = append(p.Cards, r.Title)
-	}
-	for _, r := range ap.Criteria {
-		p.Promises = append(p.Promises, factoryd.PromiseOf(r.PlanCriterion))
-	}
-	for _, h := range ap.Holdouts {
-		if h.Decides {
-			p.HoldoutsOpen++
-		}
-	}
-	for _, q := range ap.Questions {
-		if q.Kind != factoryd.QuestionConfirmation {
-			p.Asks++
-		}
-	}
-	return p
-}
 
 // faceAt is when case k was last put at the human: its newest ask's time,
 // else its opening.
@@ -346,88 +189,51 @@ func (cs caseSet) faceAt(k factoryd.Case) time.Time {
 	return k.OpenedAt
 }
 
-// caseNeed is card bt's row in Needs you with the page inView in view,
-// the first when that page is no longer there; the row waits since its
-// oldest case was faced. A case whose ask has parts (parts) is a page per
-// part, then a page of its own unless its parts are all it asks.
+// caseNeed is card bt's row in Needs you with the page inView of its
+// pages (factoryd.CardPages) in view, the first when that page is no
+// longer there; the row waits since its oldest case was faced.
 func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt factoryd.BoardTask, k card, cs caseSet, inView string) need {
-	cases := pagesOf(v, cs, bt.ID)
+	// each request whose body answers a page, read once
+	read := map[int64]*approvalCard{}
+	pages := factoryd.CardPages(bt, cs.byCard[bt.ID], cs.desk.Asks, v.pending, func(a factoryd.ApprovalRequest) factoryd.Request {
+		ap := c.approvalCard(ctx, a, act, v.byID, v.csrf, v.approves(k.Repository), true)
+		ap.Filter, ap.Writer = v.filter, v.writes
+		read[a.ID] = &ap
+		return ap.Request
+	})
 	since := time.Time{}
-	for _, o := range cases {
-		if f := cs.faceAt(o); since.IsZero() || f.Before(since) {
+	for _, p := range pages {
+		if f := cs.faceAt(p.Case); since.IsZero() || f.Before(since) {
 			since = f
 		}
 	}
 	if since.IsZero() {
 		since = waitingSince(bt)
 	}
-	// each request whose body answers a case, read once
-	read := map[int64]*approvalCard{}
-	approvalOfCase := func(o factoryd.Case) *approvalCard {
-		for _, a := range v.pending {
-			if a.TaskID != o.TaskID || !approvalOf(a, o) {
-				continue
-			}
-			if ap, ok := read[a.ID]; ok {
-				return ap
-			}
-			ap := c.approvalCard(ctx, a, act, v.byID, v.csrf, v.approves(k.Repository), true)
-			ap.Filter, ap.Writer = v.filter, v.writes
-			read[a.ID] = &ap
-			return &ap
-		}
-		return nil
+	at := max(slices.IndexFunc(pages, func(p factoryd.CardPage) bool { return p.Key() == inView }), 0)
+	shown := pages[at]
+	var ap *approvalCard
+	if shown.Request != nil {
+		ap = read[shown.Request.ID]
 	}
-	var pages []page
-	var shows []factoryd.Case
-	for _, o := range cases {
-		ps := parts(o, approvalOfCase(o))
-		for i, p := range ps {
-			pages, shows = append(pages, page{o, i + 1}), append(shows, p)
-		}
-		if len(ps) == 0 || o.Kind != factoryd.CasePlanCriteria {
-			pages, shows = append(pages, page{o, 0}), append(shows, o)
-		}
-	}
-	at := max(slices.IndexFunc(pages, func(p page) bool { return p.key() == inView }), 0)
-	shown, ap := pages[at], approvalOfCase(pages[at].Case)
 	// a helper's case asks on its parent and acts on the helper
-	owner, helper := cs.helpers[shown.Case.TaskID]
-	if !helper {
-		owner = bt
-	}
-	row := caseRow{Case: withDeps(shows[at], owner), Since: cmp.Or(cs.faceAt(shown.Case), since), At: at + 1, Of: len(pages), Key: shown.key(),
+	owner := shown.Owner
+	row := caseRow{Case: shown.Case, Since: cmp.Or(cs.faceAt(shown.Case), since), At: at + 1, Of: len(pages), Key: shown.Key(),
 		Project: v.filter.Project, Query: v.filter.query(), Approval: ap,
 		Answers: cs.liveAsk[owner.ID].ID == shown.Case.ID && shown.Case.CommentID == owner.QuestionComment}
-	if helper {
+	if owner.ID != bt.ID {
 		o := c.card(owner.Task)
 		o.Filter, o.MayWriteSummary, o.CSRF = k.Filter, k.MayWriteSummary, k.CSRF
 		row.Owner = &o
 	}
 	if at > 0 {
-		row.PrevKey = pages[at-1].key()
+		row.PrevKey = pages[at-1].Key()
 	}
 	if at+1 < len(pages) {
-		row.NextKey = pages[at+1].key()
+		row.NextKey = pages[at+1].Key()
 	}
-	if ap != nil && ap.Kind == factoryd.ApprovalPlan {
-		row.Case = factoryd.OnPlan(row.Case, planFacts(ap))
-	}
-	ask := cs.desk.Asks[shown.Case.ID]
-	switch {
-	case shown.Part > 0:
-		ask = factoryd.CaseAsk{}
-	case shown.Case.Kind == factoryd.CasePlanCriteria && ap != nil:
-		row.Case, ask = openPromises(row.Case, *ap), factoryd.CaseAsk{}
-	case ap != nil && ap.Healed:
-		row.Case, _ = healedFace(row.Case, bt.Task)
-	}
-	face := factoryd.CaseFace(row.Case, owner.Task, ask)
-	if ap != nil && ap.Healed && shown.Part == 0 {
-		face.Story.Left = "The checks healed after a re-run."
-	}
-	if planCase(shown.Case) && shown.Part == 0 {
-		if slot := planSlotOf(face, shown.Case); slot != nil {
+	if factoryd.PlanCase(shown.Case) && shown.Part == 0 {
+		if slot := planSlotOf(shown.Face, shown.Case); slot != nil {
 			hosts := v.policy.Document.LinkHosts
 			for i := range slot.Choices {
 				slot.Choices[i].Label = sanitize.Outbound(scrubText(slot.Choices[i].Label), hosts)
@@ -435,31 +241,15 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 			row.Plan = slot
 		}
 	}
-	row.Face = v.scrubbed(face)
+	row.Face = v.scrubbed(shown.Face)
 	return need{Since: since, Card: k, CSRF: v.csrf, Case: &row}
-}
-
-// withDeps is case k of card bt with the cards a human's work card waits
-// for and that are not done, as the board read them in the shape Act's
-// facts read them, among its facts: its face says what it waits for, and
-// offers "I did it" once none is left.
-func withDeps(k factoryd.Case, bt factoryd.BoardTask) factoryd.Case {
-	if bt.Kind != "human" || len(bt.Dependencies) == 0 {
-		return k
-	}
-	k.Facts = maps.Clone(k.Facts)
-	if k.Facts == nil {
-		k.Facts = map[string]any{}
-	}
-	k.Facts["dependencies"] = bt.Dependencies
-	return k
 }
 
 // planSlotOf is the form of plan case k, whose face is face: the
 // question's choices, the one the face recommends checked, or the
 // confirmation. A case that names no revision and no index has none.
 func planSlotOf(face factoryd.Face, k factoryd.Case) *planSlot {
-	revision, index := factInt(k, "revision"), factInt(k, "index")
+	revision, index := factoryd.FactInt(k, "revision"), factoryd.FactInt(k, "index")
 	if revision == 0 || index == 0 {
 		return nil
 	}
@@ -499,29 +289,6 @@ func casesInView(r *http.Request) map[string]string {
 	return out
 }
 
-// approvalOf says whether approval request a is the body of case k: a
-// merge request of the merge case that names it, a resource request of
-// its case of the resource kind — the export's shape, as the store opens
-// no case of its own for one — a plan's of its plan question or
-// confirmation, which the case's own form answers.
-func approvalOf(a factoryd.ApprovalRequest, k factoryd.Case) bool {
-	switch k.Kind {
-	case factoryd.CaseMergeApproval:
-		id, _ := json.Marshal(k.Facts["approval"])
-		return a.Kind == factoryd.ApprovalMerge && string(id) == strconv.FormatInt(a.ID, 10)
-	case factoryd.CaseKind(factoryd.ApprovalResource):
-		id, named := k.Facts["approval"]
-		raw, _ := json.Marshal(id)
-		return a.Kind == factoryd.ApprovalResource && (!named || string(raw) == strconv.FormatInt(a.ID, 10))
-	case factoryd.CasePlanCriteria:
-		id, _ := json.Marshal(k.Facts["approval"])
-		return slices.Contains([]string{factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun}, a.Kind) && string(id) == strconv.FormatInt(a.ID, 10)
-	case factoryd.CasePlanQuestion, factoryd.CasePlanConfirmation:
-		return a.Kind == factoryd.ApprovalPlan
-	}
-	return false
-}
-
 // caseFragment answers GET /projects/{name}/cards/{id}/cases/{case}: the
 // card's page with that key as Needs you shows it, which htmx swaps in for
 // the card's row.
@@ -557,7 +324,7 @@ func (c *Console) caseFragment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "The card's asks could not be read. Reload the board.", http.StatusInternalServerError)
 		return
 	}
-	if len(pagesOf(v, cs, id)) == 0 {
+	if !cs.holds(bt.Task) {
 		http.NotFound(w, r)
 		return
 	}

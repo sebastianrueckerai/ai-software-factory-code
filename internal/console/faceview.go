@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"html/template"
 	"log"
-	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -264,40 +263,11 @@ func (c *Console) approvalFace(ctx context.Context, v *boardView, a approvalCard
 	}
 	t := v.byID[a.TaskID]
 	t.ID, t.Repository = cmp.Or(t.ID, a.TaskID), cmp.Or(t.Repository, a.Project)
-	k, face := requestFace(a, t)
+	page := factoryd.CardPages(factoryd.BoardTask{Task: t}, nil, nil, []factoryd.ApprovalRequest{a.ApprovalRequest}, func(factoryd.ApprovalRequest) factoryd.Request { return a.Request })[0]
+	k, face := page.Case, page.Face
 	f.Place = c.placeOf(ctx, v, card{Task: t, PlanName: a.PlanName}, true)
 	c.askFace(ctx, v, &f, card{Task: t, MayWriteSummary: a.Writer, Filter: a.Filter}, caseRow{Case: k, Face: v.scrubbed(face), At: 1, Of: 1, Approval: &a})
 	return f
-}
-
-// requestFace is the register's case and face of approval request a on
-// card t; a request whose spec does not read faces as its kind's.
-func requestFace(a approvalCard, t factoryd.Task) (factoryd.Case, factoryd.Face) {
-	k, err := factoryd.RequestCase(a.ApprovalRequest)
-	switch {
-	case a.Kind == factoryd.ApprovalPlan:
-		k = factoryd.OnPlan(factoryd.Case{Kind: factoryd.CasePlanConfirmation, TaskID: a.TaskID, Repository: a.Project}, planFacts(&a))
-	case err != nil:
-		log.Printf("console: approval request %d: %v", a.ID, err)
-		k = factoryd.Case{TaskID: a.TaskID, Repository: a.Project, Facts: map[string]any{"approval": a.ID, "approval_kind": a.Kind}}
-	}
-	if a.Healed {
-		return healedFace(k, t)
-	}
-	if a.Kind == factoryd.ApprovalCriteria || a.Kind == factoryd.ApprovalCriteriaRerun {
-		k = openPromises(k, a)
-	}
-	return k, factoryd.CaseFace(k, t, factoryd.CaseAsk{})
-}
-
-// healedFace is red merge case k of card t whose head's checks turned
-// green since (#1013): the case on green checks and its face, which says so.
-func healedFace(k factoryd.Case, t factoryd.Task) (factoryd.Case, factoryd.Face) {
-	k.Facts = maps.Clone(k.Facts)
-	k.Facts["checks"], k.Facts["red_checks"] = "green", false
-	face := factoryd.CaseFace(k, t, factoryd.CaseAsk{})
-	face.Story.Left = "The checks healed after a re-run."
-	return k, face
 }
 
 // scrubbed is face with its texts as a face shows them: no secret, and a

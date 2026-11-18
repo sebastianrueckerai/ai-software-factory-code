@@ -1571,7 +1571,7 @@ func newRig(t *testing.T) *rig {
 		OpenCasesOf: func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 			base, err := r.ownCasesOf(ctx, taskID)
 			for _, q := range r.requestCases(ctx, taskID) {
-				if !slices.ContainsFunc(base, func(k factoryd.Case) bool { return approvalOf(q.req, k) }) {
+				if !slices.ContainsFunc(base, func(k factoryd.Case) bool { return factoryd.RequestAnswers(q.req, k) }) {
 					base = append(base, q.c)
 				}
 			}

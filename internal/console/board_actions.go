@@ -29,7 +29,7 @@ func (c *Console) answerRequest(ctx context.Context, a actor, q factoryd.Approva
 	if err != nil {
 		return "", refuse(http.StatusServiceUnavailable, "The card's asks could not be read, so nothing was answered. Try again.")
 	}
-	i := slices.IndexFunc(open, func(k factoryd.Case) bool { return approvalOf(q, k) })
+	i := slices.IndexFunc(open, func(k factoryd.Case) bool { return factoryd.RequestAnswers(q, k) })
 	if i < 0 {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Approval request %d has no live ask yet. Reload the board.", q.ID))
 	}

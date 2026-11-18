@@ -22,7 +22,7 @@ func TestNeedWaiting(t *testing.T) {
 	if got := (need{Since: now.Add(-25 * time.Minute)}).Waiting(); got != "25 min" {
 		t.Errorf("a need of 25 minutes waits %q", got)
 	}
-	if got := (approvalCard{ApprovalRequest: factoryd.ApprovalRequest{CreatedAt: now.Add(-125 * time.Minute)}}).Waiting(); got != "2 h 5 min" {
+	if got := (approvalCard{Request: factoryd.Request{ApprovalRequest: factoryd.ApprovalRequest{CreatedAt: now.Add(-125 * time.Minute)}}}).Waiting(); got != "2 h 5 min" {
 		t.Errorf("an approval of 125 minutes waits %q", got)
 	}
 	if got := (approvalCard{}).Waiting(); got != "" {

@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -47,20 +46,18 @@ func (r criterionRow) Detail() string {
 // maxCardArtifact is the most of an artifact a merge card shows.
 const maxCardArtifact = 8 << 10
 
-// approvalCard is a pending approval request with what its kind needs.
+// approvalCard is a pending approval request with its rows, as its kind's
+// card shows them. The request's Healed: a merge request opened on red
+// checks whose recorded head's checks are green now (#1013, a re-run), so
+// the card offers its Approve again and says so.
 type approvalCard struct {
-	factoryd.ApprovalRequest
+	factoryd.Request
 	IDSuffix string // on the item's ids: "-d" in the drawer, so the column's copy keeps its own
 	IssueURL string
 	Issue    int64
 	PlanName string // a plan approval: the plan's name, its title while it has none
 	PRURL    string
 	Monthly  float64
-	Merge    factoryd.MergeSpec
-	// Healed: a merge request opened on red checks whose recorded head's
-	// checks are green now (#1013, a re-run), so the card offers its Approve
-	// again and says so.
-	Healed bool
 	// HeadUnread: the head's current checks could not be read (#1013), so
 	// the card shows the face its frozen spec gives it, which may be
 	// stale; the card says so rather than fail silently.
@@ -69,27 +66,11 @@ type approvalCard struct {
 	// problem sentence.
 	HeadUnreadWhy string
 	Resource      cloudres.ResourceSpec
-	// a plan's criteria gap: the spec, the open criteria with their
-	// standing verdicts, whether every card of the plan is delivered
-	// (done or merged), which the confirm button keys on, and whether a
-	// criterion is still open, which the grant answers
-	CriteriaSpec factoryd.CriteriaSpec
-	// Criteria are the card's rows; GateLines the met gate rows that ask
-	// nothing, one line each.
+	// Criteria are the card's rows of the plan's promises; GateLines the
+	// met gate rows of a criteria request that ask nothing, one line each.
 	Criteria  []criterionRow
 	GateLines []criterionRow
-	Delivered bool
-	Grantable bool
-	// Run is the newest run of a never-judged plan's tests a human asked
-	// for, nil for none.
-	Run *factoryd.RunFact
-	// Unsettled: a merge card's human criteria with no verdict, which hold
-	// its Approve. A gate criterion without a row does not: the press
-	// reaches the workflow, which runs the gate again.
-	Unsettled []string
-	// a plan: its revision, the summary, the cards in filing order and the
-	// keys it takes off main
-	PlanSpec    factoryd.PlanSpec
+	// a plan: the summary and the cards in filing order
 	PlanSummary string
 	PlanRows    []factoryd.PlanRow
 	// PlanOutcome and PlanGlossary are the spec's, PlanStill what its later
@@ -98,14 +79,9 @@ type approvalCard struct {
 	PlanOutcome  string
 	PlanGlossary []string
 	PlanStill    []string
-	// TakeOffRefs are the cards the plan takes off main, each as the
-	// confirm button's line reads it: #its issue, else its key. TakeOffWhys
-	// are the reasons the plan gives, one line each, beside the button.
-	TakeOffRefs []string
-	TakeOffWhys []string
-	Questions   []planQuestion
-	Holdouts    []planHoldout
-	Open        string // "<n> questions open" while any waits for its answer
+	Questions    []planQuestion
+	Holdouts     []planHoldout
+	Open         string // "<n> questions open" while any waits for its answer
 	// Confirm is the waiting confirmation itself, which the plan's own
 	// confirmation answers.
 	Confirm *planQuestion
@@ -180,22 +156,23 @@ func (q planQuestion) ChoiceWords() string {
 // its inputs and expected numbers, its state's words, and whether it is
 // a page of its own (a proposal, the round's confirmation unanswered).
 type planHoldout struct {
-	Index int
-	factoryd.PlanProof
-	Blurb   string
-	Decides bool
+	factoryd.HoldoutRow
+	Blurb string
 }
 
 // holdoutBlurbs are the hold-out states' words.
 var holdoutBlurbs = map[string]string{factoryd.ProofProposed: "waits for your answer", factoryd.ProofOkayed: "kept", factoryd.ProofDropped: "dropped"}
 
 func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, act actor, tasks map[string]factoryd.Task, csrf string, approver, face bool) approvalCard {
-	k := approvalCard{ApprovalRequest: a, CSRF: csrf, Approver: approver, Grantable: true}
+	t, ok := tasks[a.TaskID]
+	r, err := factoryd.ReadRequest(ctx, requestReads{c.cfg.Tasks, c.cfg.Events}, a, t, func(ctx context.Context, project, sha string) (bool, error) {
+		return c.headChecksGreen(ctx, act, project, sha)
+	})
+	k := approvalCard{Request: r, CSRF: csrf, Approver: approver}
 	if a.MonthlyEUR != nil {
 		k.Monthly = *a.MonthlyEUR
 	}
 	base := strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/") + "/" + a.Project
-	t, ok := tasks[a.TaskID]
 	k.TaskStatus = t.Status
 	if t.Track == policy.TrackPlan {
 		k.PlanName = cmp.Or(t.PlanName, factoryd.CardTitle(t))
@@ -203,41 +180,43 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 	if ok && t.IssueNumber > 0 {
 		k.IssueURL, k.Issue = fmt.Sprintf("%s/issues/%d", base, t.IssueNumber), t.IssueNumber
 	}
-	var err error
+	if r.HeadErr != nil {
+		log.Printf("console: approval request %d: %v", a.ID, r.HeadErr)
+		k.HeadUnread, k.HeadUnreadWhy = true, forgejoCause(r.HeadErr)
+	}
 	switch a.Kind {
 	case factoryd.ApprovalMerge:
 		k.PRURL = fmt.Sprintf("%s/pulls/%d", base, a.PRNumber)
-		err = json.Unmarshal(a.Spec, &k.Merge)
-		// a red request whose recorded head's checks are green now (#1013)
-		// merges again; a read that fails leaves the red face, which says so
-		if err == nil && k.Merge.RedChecks && k.Merge.HeadSHA != "" {
-			green, gerr := c.headChecksGreen(ctx, act, a.Project, k.Merge.HeadSHA)
-			if gerr != nil {
-				log.Printf("console: approval request %d: %v", a.ID, gerr)
-				k.HeadUnread, k.HeadUnreadWhy = true, forgejoCause(gerr)
-			} else {
-				k.Healed = green
-			}
-		}
-		if err == nil && !face {
-			if k.Opened, err = c.openedProofsOf(ctx, act, t, a.Project, k.Merge.HeadSHA); err != nil {
+		if !face {
+			var oerr error
+			if k.Opened, oerr = c.openedProofsOf(ctx, act, t, a.Project, k.Merge.HeadSHA); oerr != nil {
+				log.Printf("console: approval request %d: %v", a.ID, oerr)
 				k.OpenedUnread = true
 			}
 		}
-		if rows, open, ok, rerr := c.planRows(ctx, t); rerr != nil {
-			log.Printf("console: approval request %d: %v", a.ID, rerr)
-			k.Problem = "The console could not read the criterion rows: " + errText(rerr) + ". Reload the board."
-		} else if ok {
-			k.Criteria, k.Unsettled = rows, open
+		if err == nil {
+			k.Criteria, err = c.promiseRows(ctx, r.Promises, r.Integration)
+		}
+		if err != nil {
+			k.Problem = "The console could not read the criterion rows: " + errText(err) + ". Reload the board."
 		}
 	case factoryd.ApprovalResource:
 		err = json.Unmarshal(a.Spec, &k.Resource)
 	case factoryd.ApprovalPlan:
-		if err = c.planOf(ctx, &k); err != nil {
+		if err != nil {
 			k.Problem = "The plan could not be read: " + errText(err) + ". Open the plan's approval again, or read the plan on its issue."
 		}
+		k.planOf()
 	case factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
-		err = c.criteriaOf(ctx, &k)
+		for _, p := range r.Promises {
+			row := evidenceRow(criterionRow{PlanCriterion: p.PlanCriterion, Verdict: p.Verdict, Evidence: p.Evidence})
+			if p.GateLine() {
+				// a gate row that asks nothing: one line
+				k.GateLines = append(k.GateLines, row)
+				continue
+			}
+			k.Criteria = append(k.Criteria, row)
+		}
 	}
 	if err != nil {
 		log.Printf("console: approval request %d: %v", a.ID, err)
@@ -260,6 +239,12 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		k.Merge.Recommendation = faceLine(k.Merge.Recommendation, 300)
 	}
 	return k
+}
+
+// requestReads are the console's reads a request's rows come from.
+type requestReads struct {
+	Tasks
+	Events
 }
 
 // openedProofsOf are the opened proofs of plan card t's plan when t is its
@@ -305,58 +290,6 @@ func (c *Console) openedProofsOf(ctx context.Context, a actor, t factoryd.Task, 
 	return out, nil
 }
 
-// criteriaOf fills the criteria gap card k from its request's spec: the
-// plan's criteria with their standing verdicts (the approver's row over
-// the review's), the open ones the grant or a waiver answers.
-func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
-	if err := json.Unmarshal(k.Spec, &k.CriteriaSpec); err != nil {
-		return fmt.Errorf("spec: %w", err)
-	}
-	rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, k.TaskID, k.CriteriaSpec.Revision)
-	if err != nil {
-		return fmt.Errorf("revision %d of %s: %w", k.CriteriaSpec.Revision, k.TaskID, err)
-	}
-	if !ok {
-		return fmt.Errorf("revision %d of %s is not recorded", k.CriteriaSpec.Revision, k.TaskID)
-	}
-	var p factoryd.Plan
-	if err := json.Unmarshal(rev.Plan, &p); err != nil {
-		return fmt.Errorf("revision %d of %s: %w", k.CriteriaSpec.Revision, k.TaskID, err)
-	}
-	rows, err := c.cfg.Tasks.CriteriaVerdicts(ctx, k.CriteriaSpec.Task)
-	if err != nil {
-		return fmt.Errorf("verdicts of %s: %w", k.CriteriaSpec.Task, err)
-	}
-	if k.Delivered, _, err = c.cfg.Tasks.PlanDelivered(ctx, k.TaskID); err != nil {
-		return fmt.Errorf("the delivered cards of %s: %w", k.TaskID, err)
-	}
-	for _, c := range p.Criteria {
-		v, _ := factoryd.StandingRow(rows, c)
-		row := evidenceRow(criterionRow{PlanCriterion: c, Verdict: v.Verdict, Evidence: v.Evidence})
-		if row.Word != "" {
-			// a gate row that asks nothing: one line
-			k.GateLines = append(k.GateLines, row)
-			continue
-		}
-		k.Criteria = append(k.Criteria, row)
-	}
-	k.Grantable = slices.ContainsFunc(k.Criteria, func(c criterionRow) bool { return c.Verdict != "met" && c.Verdict != "waived" })
-	if k.Kind != factoryd.ApprovalCriteriaRerun {
-		return nil
-	}
-	runs, err := c.cfg.Events.TaskEventsOfKind(ctx, k.TaskID, factoryd.EventCriteriaGateRun, 50)
-	if err != nil {
-		return fmt.Errorf("the runs of %s's tests: %w", k.TaskID, err)
-	}
-	for _, e := range runs {
-		if run, asked := factoryd.RunOf(e); asked && e.Detail["task"] == k.CriteriaSpec.Task {
-			k.Run = &run
-			break
-		}
-	}
-	return nil
-}
-
 // evidenceRow is row with its evidence read by factoryd.GateEvidence: a met
 // gate row's blind or open as its Word, and its line as the full brief
 // shows it, as the row names its promise already.
@@ -369,68 +302,35 @@ func evidenceRow(row criterionRow) criterionRow {
 	return row
 }
 
-// planRows are planVerdicts' rows as the merge card shows them: a met
-// gate row's blind or open moved from its evidence to its Word, and each
-// human criterion's with its artifact, cut to maxCardArtifact bytes.
-func (c *Console) planRows(ctx context.Context, t factoryd.Task) (rows []criterionRow, open []string, ok bool, err error) {
-	rows, open, home, ok, err := c.planVerdicts(ctx, t)
-	if err != nil || !ok {
-		return nil, nil, ok, err
-	}
-	for i, row := range rows {
-		rows[i] = evidenceRow(row)
-		if row.Kind != factoryd.CriterionHuman {
-			continue
+// promiseRows are a merge card's rows of its plan's promises, standing on
+// the plan's integration card home, as the card shows them: a met gate
+// row's blind or open moved from its evidence to its Word, and each human
+// promise's with its artifact, cut to maxCardArtifact bytes.
+func (c *Console) promiseRows(ctx context.Context, promises []factoryd.PromiseRow, home string) ([]criterionRow, error) {
+	var rows []criterionRow
+	for _, p := range promises {
+		row := evidenceRow(criterionRow{PlanCriterion: p.PlanCriterion, Verdict: p.Verdict, Evidence: p.Evidence})
+		if p.Kind == factoryd.CriterionHuman {
+			row.Human = true
+			b, err := c.cfg.Timelines.Get(ctx, factoryd.ArtifactKey(home, p.ID))
+			if err != nil {
+				return nil, fmt.Errorf("the artifact of %s: %w", p.ID, err)
+			}
+			if b != nil {
+				a := &factoryd.GateArtifact{}
+				if err := json.Unmarshal(b, a); err != nil {
+					return nil, fmt.Errorf("the artifact of %s: %w", p.ID, err)
+				}
+				if len(a.Content) > maxCardArtifact {
+					row.CutLine = fmt.Sprintf("the first %d KiB of %d KiB", maxCardArtifact>>10, (len(a.Content)+1023)>>10)
+					a.Content = strings.ToValidUTF8(a.Content[:maxCardArtifact], "")
+				}
+				row.Artifact = a
+			}
 		}
-		rows[i].Human = true
-		b, err := c.cfg.Timelines.Get(ctx, factoryd.ArtifactKey(home, row.ID))
-		if err != nil {
-			return nil, nil, false, fmt.Errorf("the artifact of %s: %w", row.ID, err)
-		}
-		if b == nil {
-			continue
-		}
-		a := &factoryd.GateArtifact{}
-		if err := json.Unmarshal(b, a); err != nil {
-			return nil, nil, false, fmt.Errorf("the artifact of %s: %w", row.ID, err)
-		}
-		if len(a.Content) > maxCardArtifact {
-			rows[i].CutLine = fmt.Sprintf("the first %d KiB of %d KiB", maxCardArtifact>>10, (len(a.Content)+1023)>>10)
-			a.Content = strings.ToValidUTF8(a.Content[:maxCardArtifact], "")
-		}
-		rows[i].Artifact = a
+		rows = append(rows, row)
 	}
-	return rows, open, true, nil
-}
-
-// planVerdicts are plan card t's plan's criteria with their standing rows
-// on its integration card home, and open, the human criteria with no
-// verdict, which hold the card's Approve; ok false when t is not the
-// integration card or a delta card of a plan with criteria.
-func (c *Console) planVerdicts(ctx context.Context, t factoryd.Task) (rows []criterionRow, open []string, home string, ok bool, err error) {
-	if t.Source != factoryd.SourcePlan || t.Parent == "" {
-		return nil, nil, "", false, nil
-	}
-	_, p, ok, err := c.planTable(ctx, t.Parent, 0)
-	if err != nil || !ok || len(p.Criteria) == 0 || !factoryd.CriteriaCard(p, t.PlanKey) {
-		return nil, nil, "", false, err
-	}
-	integration, err := factoryd.IntegrationCard(ctx, c.cfg.Tasks, t.Parent, p)
-	if err != nil {
-		return nil, nil, "", false, err
-	}
-	verdicts, err := c.cfg.Tasks.CriteriaVerdicts(ctx, integration.ID)
-	if err != nil {
-		return nil, nil, "", false, fmt.Errorf("verdicts of %s: %w", integration.ID, err)
-	}
-	for _, pc := range p.Criteria {
-		v, _ := factoryd.StandingRow(verdicts, pc)
-		rows = append(rows, criterionRow{PlanCriterion: pc, Verdict: v.Verdict, Evidence: v.Evidence})
-		if v.Verdict == "" && pc.Kind == factoryd.CriterionHuman {
-			open = append(open, pc.ID)
-		}
-	}
-	return rows, open, integration.ID, true, nil
+	return rows, nil
 }
 
 // scrubLayers masks the model-written plan layers the drawer's copy holds
@@ -459,36 +359,21 @@ func (k *approvalCard) scrubLayers(hosts []string) {
 	}
 }
 
-// planOf fills plan card k from its request's revision.
-func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
-	if err := json.Unmarshal(k.Spec, &k.PlanSpec); err != nil {
-		return fmt.Errorf("spec: %w", err)
-	}
-	_, p, ok, err := c.planTable(ctx, k.TaskID, k.PlanSpec.Revision)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("revision %d of %s is not recorded", k.PlanSpec.Revision, k.TaskID)
-	}
-	k.PlanSummary, k.PlanRows = p.Summary, factoryd.PlanRows(p)
-	k.PlanStill = p.Outline
+// planOf fills plan card k from its request's revision: the plan's
+// layers, its promises as rows with no verdict, its questions and its
+// round's extra promises.
+func (k *approvalCard) planOf() {
+	p := k.Plan
+	k.PlanSummary, k.PlanRows, k.PlanStill = p.Summary, factoryd.PlanRows(p), p.Outline
 	if p.Spec != nil {
 		k.PlanOutcome, k.PlanGlossary = p.Spec.Outcome, p.Spec.Glossary
 	}
 	for _, c := range p.Criteria {
 		k.Criteria = append(k.Criteria, criterionRow{PlanCriterion: c})
 	}
-	if k.TakeOffRefs, k.TakeOffWhys, err = c.takeOffOf(ctx, k.TaskID, p); err != nil {
-		return err
-	}
-	qs, err := c.cfg.Tasks.PlanQuestions(ctx, k.TaskID, k.PlanSpec.Revision)
-	if err != nil {
-		return fmt.Errorf("questions of revision %d of %s: %w", k.PlanSpec.Revision, k.TaskID, err)
-	}
 	confirmAt := -1
 	open := 0
-	for i, q := range qs {
+	for i, q := range k.PlanQuestions {
 		pq := planQuestion{Index: i + 1, PlanQuestion: q}
 		for j, ch := range q.Choices {
 			pq.Picks = append(pq.Picks, planChoice{Index: j + 1, Label: scrubText(ch)})
@@ -507,48 +392,9 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	if open > 0 {
 		k.Open = fmt.Sprintf("%d %s open", open, plural(open, "question"))
 	}
-	proofs, err := c.cfg.Tasks.PlanProofs(ctx, k.TaskID)
-	if err != nil {
-		return fmt.Errorf("hold-outs of %s: %w", k.TaskID, err)
+	for _, h := range k.HoldoutRows {
+		k.Holdouts = append(k.Holdouts, planHoldout{HoldoutRow: h, Blurb: holdoutBlurbs[h.State]})
 	}
-	i := 0
-	for _, ho := range proofs {
-		if ho.Origin != factoryd.ProofOriginHoldout || ho.Round != k.PlanSpec.Revision {
-			continue
-		}
-		i++
-		k.Holdouts = append(k.Holdouts, planHoldout{Index: i, PlanProof: ho, Blurb: holdoutBlurbs[ho.State],
-			Decides: k.Confirm != nil && ho.State == factoryd.ProofProposed})
-	}
-	return nil
-}
-
-// takeOffOf are the cards plan p of task id takes off main, each as the
-// confirm button's line reads it (#its issue, else its key), and the
-// reason each gave.
-func (c *Console) takeOffOf(ctx context.Context, id string, p factoryd.Plan) (refs, whys []string, err error) {
-	if len(p.TakeOffMain) == 0 {
-		return nil, nil, nil
-	}
-	cards, err := c.cfg.Tasks.PlanCards(ctx, id)
-	if err != nil {
-		return nil, nil, fmt.Errorf("the cards of plan %s: %w", id, err)
-	}
-	issue := map[string]int64{}
-	for _, t := range cards {
-		issue[t.PlanKey] = t.IssueNumber
-	}
-	for _, key := range p.TakeOffMain {
-		ref := key
-		if n := issue[key]; n > 0 {
-			ref = fmt.Sprintf("#%d", n)
-		}
-		refs = append(refs, ref)
-		if why := p.TakeOffReason(key); why != "" {
-			whys = append(whys, ref+": "+why)
-		}
-	}
-	return refs, whys, nil
 }
 
 // planTable is revision n (0 the newest) of plan task id's plan: the

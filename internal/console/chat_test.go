@@ -2219,7 +2219,7 @@ func TestBoardWordsKeepsTheFinishedApart(t *testing.T) {
 	task := func(n int64, status, title string) card {
 		return card{Task: factoryd.Task{ID: fmt.Sprintf("t-%d", n), IssueNumber: n, Status: status, Objective: title}}
 	}
-	merge := &approvalCard{ApprovalRequest: factoryd.ApprovalRequest{ID: 4, Kind: "merge", TaskID: "t-1"}, Issue: 1}
+	merge := &approvalCard{Request: factoryd.Request{ApprovalRequest: factoryd.ApprovalRequest{ID: 4, Kind: "merge", TaskID: "t-1"}}, Issue: 1}
 	sized := task(2, "running", "Speed up the board.")
 	sized.Helper = &factoryd.Task{ID: "t-size", Source: factoryd.SourceSizing, Status: "waiting-human"}
 	d := boardData{Columns: []column{
@@ -2253,7 +2253,7 @@ func TestBoardWordsBoundsEveryList(t *testing.T) {
 	var requests []need
 	for i := 1; i <= 27; i++ {
 		cards = append(cards, card{Task: factoryd.Task{ID: fmt.Sprintf("t-%d", i), IssueNumber: int64(i), Status: "queued", Objective: "Fix."}})
-		requests = append(requests, need{Approval: &approvalCard{ApprovalRequest: factoryd.ApprovalRequest{ID: int64(i), Kind: "merge", TaskID: fmt.Sprintf("t-%d", i)}}})
+		requests = append(requests, need{Approval: &approvalCard{Request: factoryd.Request{ApprovalRequest: factoryd.ApprovalRequest{ID: int64(i), Kind: "merge", TaskID: fmt.Sprintf("t-%d", i)}}}})
 		d.Problems = append(d.Problems, fmt.Sprintf("problem %d", i))
 	}
 	done := []card{

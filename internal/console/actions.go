@@ -3011,7 +3011,7 @@ func (c *Console) approveMerge(ctx context.Context, a actor, q factoryd.Approval
 			return "", refuse(http.StatusConflict, fmt.Sprintf("The plan's revision %d drops the card %s, so it cannot merge, and `deny_merge` is its answer.", newest, t.PlanKey))
 		}
 	}
-	_, open, _, _, err := c.planVerdicts(ctx, t)
+	_, open, _, err := factoryd.MergeRows(ctx, c.cfg.Tasks, t)
 	switch {
 	case err != nil:
 		log.Printf("console: the criterion rows of %s: %v", t.ID, err)
@@ -3263,12 +3263,16 @@ func (c *Console) criterionVerdict(ctx context.Context, a actor, q factoryd.Appr
 			log.Printf("console: task %s: %v", q.TaskID, err)
 			return "", refuse(http.StatusInternalServerError, "cannot read the task")
 		}
-		rows, _, ok, err := c.planRows(ctx, t)
+		promises, _, home, err := factoryd.MergeRows(ctx, c.cfg.Tasks, t)
+		var rows []criterionRow
+		if err == nil {
+			rows, err = c.promiseRows(ctx, promises, home)
+		}
 		switch {
 		case err != nil:
 			log.Printf("console: the criterion rows of %s: %v", t.ID, err)
 			return "", refuse(http.StatusInternalServerError, "Cannot read the card's criterion rows. Press again.")
-		case !ok:
+		case home == "":
 			return "", refuse(http.StatusConflict, noRows)
 		}
 		i := slices.IndexFunc(rows, func(r criterionRow) bool { return r.ID == cid })
