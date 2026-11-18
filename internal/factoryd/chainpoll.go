@@ -1325,12 +1325,12 @@ func (p *ChainPoller) headVerdict(ctx context.Context, repo Repo, cfg policy.Cha
 		switch run.Status {
 		case "success":
 		case "failure":
-			red = append(red, fmt.Sprintf("run %d %s", run.Index, run.Status))
+			red = append(red, fmt.Sprintf("CI run %d %s", run.Index, run.Status))
 		default: // running, skipped, cancelled
 			if run.Status != "skipped" {
 				stuck = append(stuck, run)
 			}
-			part := fmt.Sprintf("run %d %s", run.Index, run.Status)
+			part := fmt.Sprintf("CI run %d %s", run.Index, run.Status)
 			if run.Index > 0 {
 				part += fmt.Sprintf(" (%s/%s/actions/runs/%d)", p.Forgejo.PublicURL, repo, run.Index)
 			}

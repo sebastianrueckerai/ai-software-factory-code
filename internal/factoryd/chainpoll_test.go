@@ -1869,7 +1869,7 @@ func TestRepairCardCarriesTheFindings(t *testing.T) {
 	}
 	card := cards[demoRepo][0]
 	for _, want := range []string{
-		"run 16 failure",
+		"CI run 16 failure",
 		"required context factory/roll: failure",
 		"/" + demoRepo + "/actions/runs/16",
 		"#77",
@@ -2053,7 +2053,7 @@ func TestAStallRerunsOnceThenAsks(t *testing.T) {
 	if card.SHA != demoCommit {
 		t.Fatalf("stall card on %q, want the head's commit %s", card.SHA, demoCommit)
 	}
-	for _, want := range []string{"since 2026-10-20 09:00 UTC", "run 16 running", "https://git.example/" + demoRepo + "/actions/runs/16", "The stall holds #76, #77:"} {
+	for _, want := range []string{"since 2026-10-20 09:00 UTC", "CI run 16 running", "https://git.example/" + demoRepo + "/actions/runs/16", "The stall holds #76, #77:"} {
 		if !strings.Contains(card.Objective, want) {
 			t.Fatalf("the card misses %q:\n%s", want, card.Objective)
 		}
@@ -2197,7 +2197,7 @@ func TestARedHeadClosesTheStallCardAndRepairs(t *testing.T) {
 	if want := fmt.Sprintf("%s#%d", demoRepo, cards[0].IssueNumber); !slices.Equal(f.closed, []string{want}) {
 		t.Fatalf("closed %q, want the stall card's issue %s", f.closed, want)
 	}
-	if repairs := repairCards(store)[demoRepo]; len(repairs) != 1 || !strings.Contains(repairs[0].Objective, "run 16 failure") {
+	if repairs := repairCards(store)[demoRepo]; len(repairs) != 1 || !strings.Contains(repairs[0].Objective, "CI run 16 failure") {
 		t.Fatalf("repair cards %+v, want the red head's", repairs)
 	}
 }
