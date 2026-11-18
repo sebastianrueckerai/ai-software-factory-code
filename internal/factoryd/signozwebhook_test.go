@@ -56,6 +56,8 @@ type alertForgejo struct {
 	listOpen bool
 	// fault, when set and true for a request, answers it 500
 	fault func(r *http.Request) bool
+	// downRepos are the repositories whose every call answers 500
+	downRepos map[string]bool
 	// refuseAll is the status every call on an issue answers, its reads
 	// too, as when Forgejo does not take the bot's credential
 	refuseAll map[int64]int
@@ -79,6 +81,10 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 		repo := strings.Join(parts[:6], "/")
 		var n int64
 		if fj.fault != nil && fj.fault(r) {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if fj.downRepos[parts[4]+"/"+parts[5]] {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}

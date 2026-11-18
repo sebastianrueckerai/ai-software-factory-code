@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -643,33 +644,44 @@ func TestRunReportCarriesTheAnswersToItsSession(t *testing.T) {
 	}
 }
 
-// Hand-derived from a report task that outlived its card: a human closes
-// card t-card while its sizing task t-size waits frozen to the provider's
-// reset, and plan t-plan fails while its prover t-prove runs. Each end
-// sends issue_closed, the factory's own close, to the card's open report
-// tasks and to no other: not to the screening task that is done, and not
-// to the work card the plan cut. A card that ends done ends none of its
-// report tasks: a done plan's prover still writes its proofs.
-func TestTaskEndedEndsTheOpenReportTasksOfAClosedCard(t *testing.T) {
+// Hand-derived from report tasks that outlived their cards: a human closed
+// card t-card while its sizing task t-size waited frozen to the
+// provider's reset, card t-failed failed under its screening t-screen, and
+// a human closed plan t-plan while its prover t-prove waited. The heal
+// pass reads the rows and sends each of the three issue_closed, the
+// factory's own close. It sends none to a report task that is final, to a
+// work card a plan cut, to the report task of a card that lives, to the
+// prover of a done plan, which still writes its proofs, or to the prover
+// of a failed plan, which a replan takes up again.
+func TestHealPassEndsTheOpenReportTasksOfAnEndedCard(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
+	ended := time.Now()
 	for _, c := range []Task{
-		{ID: "t-card", Status: "closed", Track: policy.TrackDirect},
-		{ID: "t-screen", Status: "done", Source: SourceScreening, Parent: "t-card", Track: policy.TrackDirect},
-		{ID: "t-size", Status: "running", Source: SourceSizing, Parent: "t-card", Track: policy.TrackDirect},
-		{ID: "t-plan", Status: "failed", Track: policy.TrackPlan},
-		{ID: "t-prove", Status: "queued", Source: SourceProver, Parent: "t-plan", Track: policy.TrackDirect},
-		{ID: "t-cut", Status: "running", Parent: "t-plan", Track: policy.TrackDirect},
+		{ID: "t-card", Status: "closed"},
+		{ID: "t-card-screen", Status: "done", Source: SourceScreening, Parent: "t-card"},
+		{ID: "t-size", Status: "running", Source: SourceSizing, Parent: "t-card"},
+		{ID: "t-failed", Status: "failed"},
+		{ID: "t-screen", Status: "queued", Source: SourceScreening, Parent: "t-failed"},
+		{ID: "t-plan", Status: "closed", Track: policy.TrackPlan},
+		{ID: "t-prove", Status: "waiting-human", Source: SourceProver, Parent: "t-plan"},
+		{ID: "t-cut", Status: "running", Parent: "t-plan"},
+		{ID: "t-live", Status: "running"},
+		{ID: "t-live-size", Status: "running", Source: SourceSizing, Parent: "t-live"},
 		{ID: "t-done-plan", Status: "done", Track: policy.TrackPlan},
-		{ID: "t-done-prove", Status: "running", Source: SourceProver, Parent: "t-done-plan", Track: policy.TrackDirect},
+		{ID: "t-done-prove", Status: "running", Source: SourceProver, Parent: "t-done-plan"},
+		{ID: "t-failed-plan", Status: "failed", Track: policy.TrackPlan},
+		{ID: "t-failed-prove", Status: "running", Source: SourceProver, Parent: "t-failed-plan"},
 	} {
-		c.Kind, c.Repository = "agent", "demo/app"
+		c.Kind, c.Repository, c.Track = "agent", "demo/app", cmp.Or(c.Track, policy.TrackDirect)
+		if Final(c.Status) {
+			c.FinishedAt = &ended
+		}
 		store.tasks[c.ID] = c
 	}
 	wf := &fakeWorkflows{}
-	for id, final := range map[string]string{"t-card": "closed", "t-plan": "failed", "t-done-plan": "done"} {
-		taskEnded(ctx, &Timeline{Objects: &fakeObjectStore{}}, store, nil, wf, store.tasks[id], final, "")
-	}
+	forgejo, _ := newAlertForgejo(t)
+	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"}, &Completion{Store: store}, noneCompleted, nil)
 	var closes []string
 	for _, s := range wf.signals {
 		if strings.Contains(s, " "+SignalIssueClosed+" ") {
@@ -677,8 +689,42 @@ func TestTaskEndedEndsTheOpenReportTasksOfAClosedCard(t *testing.T) {
 		}
 	}
 	slices.Sort(closes)
-	want := []string{"t-prove issue_closed factoryd #0: ", "t-size issue_closed factoryd #0: "}
+	want := []string{"t-prove issue_closed factoryd #0: ", "t-screen issue_closed factoryd #0: ", "t-size issue_closed factoryd #0: "}
 	if !slices.Equal(closes, want) {
-		t.Fatalf("the ends sent the closes %q, want %q", closes, want)
+		t.Fatalf("the heal pass sent the closes %q, want %q", closes, want)
+	}
+	if slices.ContainsFunc(wf.started, func(id string) bool { return id == "t-size" || id == "t-screen" || id == "t-prove" }) {
+		t.Fatalf("the heal pass started %q, want no run started for a report task it ends", wf.started)
+	}
+}
+
+// Hand-derived from a card that lives again: card t-card closed while its
+// sizing task t-size ran, which the heal pass ended closed. A replan
+// revives the card, and its new run asks for its sizing. The closed
+// report task is opened again, queued with a new run, and the wait ends
+// with the report that run writes. A report task that ends closed under
+// the wait, as when the heal pass read the card's row before the revival,
+// is opened once more. A report task that is done is taken as it is.
+func TestAwaitReportOpensAClosedReportAgain(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	card := Task{ID: "t-card", Kind: "agent", Status: "running", Repository: "demo/app", Track: policy.TrackDirect, SHA: "abc"}
+	store.tasks[card.ID] = card
+	store.tasks["t-size"] = Task{ID: "t-size", Kind: "agent", Status: "closed", Repository: "demo/app", Track: policy.TrackDirect, Source: SourceSizing, Parent: card.ID}
+	wf := &fakeWorkflows{}
+	// each new run of the report task ends: closed under the wait first,
+	// then done
+	ends := []string{"closed", "done"}
+	wf.onReopen = func(id string) {
+		c := store.tasks[id]
+		c.Status, ends = ends[0], ends[1:]
+		store.tasks[id] = c
+	}
+	child, err := awaitReport(ctx, store, wf, policy.Budget{}, time.Millisecond, card, SourceSizing)
+	if err != nil || child.ID != "t-size" || child.Status != "done" {
+		t.Fatalf("awaitReport = %s %s, %v; want the report task done", child.ID, child.Status, err)
+	}
+	if len(wf.reopens) != 2 || wf.reopens[0].taskID != "t-size" || len(wf.started) != 0 {
+		t.Fatalf("reopens %+v, starts %q; want the closed report task run again twice and no other start", wf.reopens, wf.started)
 	}
 }

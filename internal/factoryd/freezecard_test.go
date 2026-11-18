@@ -46,7 +46,7 @@ type freezeFault struct {
 	at    int
 	ops   []string
 	fired bool
-	// paused counts nothing: a human's own writes and calls
+	// paused counts nothing: a webhook's own writes and calls
 	paused bool
 }
 
@@ -2733,7 +2733,9 @@ func (h *freezeTable) settle() {
 // humanClose is a human's close of the open card on issue number through
 // the console: recorded as factoryd's in the human's words. With webhook
 // the webhook of that close then ends the card; without, it never lands,
-// as Forgejo sends none for an issue that was closed already.
+// as Forgejo sends none for an issue that was closed already. A close
+// that fails on a fault run answers its error to the human, who closes
+// again at once or, with pressLater, leaves it at that.
 func (h *freezeTable) humanClose(number int64, webhook bool) {
 	h.t.Helper()
 	ctx := context.Background()
@@ -2741,25 +2743,38 @@ func (h *freezeTable) humanClose(number int64, webhook bool) {
 	if c.Status != "waiting-human" {
 		return
 	}
-	if h.fault != nil {
-		h.fault.mu.Lock()
-		h.fault.paused = true
-		h.fault.mu.Unlock()
-		defer func() {
-			h.fault.mu.Lock()
-			h.fault.paused = false
-			h.fault.mu.Unlock()
-		}()
+	err := closeIssueAsFactory(ctx, h.store, h.forgejo, c, "sebastian closed this card.")
+	if err != nil {
+		if h.fault == nil || h.fault.at == 0 {
+			h.t.Fatal(err)
+		}
+		h.pressFailed = true
+		if !h.pressLater {
+			if err = closeIssueAsFactory(ctx, h.store, h.forgejo, c, "sebastian closed this card."); err != nil {
+				h.t.Fatal(err)
+			}
+		}
 	}
-	if err := closeIssueAsFactory(ctx, h.store.fakeStore, h.forgejo, c, "sebastian closed this card."); err != nil {
-		h.t.Fatal(err)
-	}
-	if !webhook {
+	// Forgejo sends the webhook when the close changed the issue's state
+	if !webhook || h.fj.states[number] != "closed" {
 		return
 	}
+	h.pauseFault(true)
+	defer h.pauseFault(false)
 	if _, err := h.in.issueClosed(ctx, c, "factory-agent"); err != nil {
 		h.t.Fatal(err)
 	}
+}
+
+// pauseFault stops and starts the fault's count: the webhook's own writes
+// are not the watcher's.
+func (h *freezeTable) pauseFault(paused bool) {
+	if h.fault == nil {
+		return
+	}
+	h.fault.mu.Lock()
+	h.fault.paused = paused
+	h.fault.mu.Unlock()
 }
 
 var freezeCountdownText = regexp.MustCompile(`\(in \d+h \d\dm\)`)
@@ -2849,11 +2864,12 @@ type freezeFaultException struct{ why, reaches string }
 // counts the store's writes and Forgejo's calls, then once for each with
 // that one failing once, without a restart and with one right after the
 // pass or the press it failed in; a press that failed is made again, at
-// once and after the next pass. Each run settles a minute after the
+// once and later: a press after the next pass, a human's console close
+// not at all. Each run settles a minute after the
 // event, where check reads the run without a fault, and then three times
 // more to 13 minutes after it (freezeFaultLater). Every run must end
 // there as the run without a fault does, but those except names, by "<the failed write or
-// call>[/restart][/pressed again after a pass]", which must reach what
+// call>[/restart][/made again later]", which must reach what
 // they name. A wake is made until its record is written, so the run that
 // fails that record wakes the same cards once more and is no exception.
 // It answers the run without a fault, settled.
@@ -2895,7 +2911,7 @@ func freezeFaults(t *testing.T, build, event, check func(h *freezeTable), except
 					name += "/restart"
 				}
 				if pressLater {
-					name += "/pressed again after a pass"
+					name += "/made again later"
 				}
 				var h *freezeTable
 				t.Run("fault "+name, func(t *testing.T) {
@@ -3166,7 +3182,7 @@ var freezeTableExceptions = func() map[string]map[string]freezeFaultException {
 	// the self-resume's comment and not the press's
 	lost := freezeFaultException{"the press's write failed and a pass read the class_resumed before the second press: the card closes itself five minutes after the resume",
 		"#1 done resumed R1 | open  | 1 comments, 1 ends, 1 wakes"}
-	cell := map[string]freezeFaultException{"EndFreezeCard/pressed again after a pass": lost, "EndFreezeCard/restart/pressed again after a pass": lost}
+	cell := map[string]freezeFaultException{"EndFreezeCard/made again later": lost, "EndFreezeCard/restart/made again later": lost}
 	return map[string]map[string]freezeFaultException{"open frozen/press": cell, "open frozen/press/after a restart": cell}
 }()
 
@@ -3420,7 +3436,7 @@ func freezeScenario(t *testing.T, build, event func(h *freezeTable), want string
 // takes no press. reaches is where that run ends.
 func lostPress(reaches string) map[string]freezeFaultException {
 	lost := freezeFaultException{"the press's write failed and a pass read the class_resumed before the second press: no press closes the card", reaches}
-	return map[string]freezeFaultException{"EndFreezeCard/pressed again after a pass": lost, "EndFreezeCard/restart/pressed again after a pass": lost}
+	return map[string]freezeFaultException{"EndFreezeCard/made again later": lost, "EndFreezeCard/restart/made again later": lost}
 }
 
 // Hand-derived from a reopen the class's resume follows in one pass: #1,
@@ -3573,4 +3589,47 @@ func TestFreezeCardFaultsOfAReArmRightAfterThePress(t *testing.T) {
 		h.row("class_frozen", 5)
 		h.pass()
 	}, "#1 waiting frozen R1 | open #1 | 2 comments, 1 ends, 0 wakes", lostPress("#1 waiting frozen R1 | open #1 | 0 comments, 0 ends, 0 wakes"))
+}
+
+// Hand-derived from one repository whose Forgejo calls do not answer: one
+// pass reads the big class's dated refusal in sf/broken, whose every call
+// answers 500, the big class's resume, and the small class's dated refusal
+// in sf/acme. The pass ends past all three rows: sf/acme files small's #1
+// at once, and no card is filed for big, whose freeze is over. Big's
+// resume held, so big's frozen card wakes at 12:05. Small resumes at
+// 12:10, its card closes itself at 12:15 and small's frozen card wakes
+// then. sf/broken answers 500 through all thirty passes.
+func TestFreezeCardOneRepositorysForgejoStopsNoOtherClass(t *testing.T) {
+	h := newFreezeTable(t)
+	h.store.tasks["work-small"] = Task{ID: "work-small", Kind: "agent", Status: "running", Repository: "sf/acme", RequiredCapabilities: []string{"small"}}
+	h.fj.downRepos = map[string]bool{"sf/broken": true}
+	row := func(repo, kind, class string) {
+		h.store.rows = append(h.store.rows, FreezeEvent{ID: int64(len(h.store.rows) + 1), Repository: repo, At: h.now, Kind: kind, Class: class,
+			Reset: freezeTableBase.Add(120 * time.Hour).Format(time.RFC3339), Words: "free quota exhausted"})
+	}
+	row("sf/broken", "class_frozen", "big")
+	row("sf/broken", "class_resumed", "big")
+	row("sf/acme", "class_frozen", "small")
+	for minute := range 30 {
+		h.at(time.Duration(minute) * time.Minute)
+		if minute == 10 {
+			row("sf/acme", "class_resumed", "small")
+		}
+		if err := h.w.Check(context.Background()); err != nil {
+			t.Logf("the pass at %s: %v", h.now.Format("15:04"), err)
+		}
+		wantCursor, wantCard, wantWakes := int64(3), "#1 waiting frozen R1", []string(nil)
+		switch {
+		case minute >= 15:
+			wantCursor, wantCard, wantWakes = 4, "#1 done resumed R1", []string{"work-big", "work-small"}
+		case minute >= 10:
+			wantCursor, wantCard, wantWakes = 4, "#1 waiting resumed R1", []string{"work-big"}
+		case minute >= 5:
+			wantWakes = []string{"work-big"}
+		}
+		if got := h.cards(); h.store.storedCursor != wantCursor || got != wantCard || !slices.Equal(h.wakes, wantWakes) || h.fj.repos[0] != "sf/acme" {
+			t.Fatalf("at %s: cursor %d, cards %q in %q, wakes %q; want cursor %d, %q in sf/acme, wakes %q",
+				h.now.Format("15:04"), h.store.storedCursor, got, h.fj.repos, h.wakes, wantCursor, wantCard, wantWakes)
+		}
+	}
 }

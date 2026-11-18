@@ -305,7 +305,12 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 // reportOf opens t's report task of source, an analyzer session at t's
 // commit, and waits until it is final.
 func (r *Runner) reportOf(ctx context.Context, t Task, source string) (Task, error) {
-	child, err := openReport(ctx, r.store, r.cfg.Workflows, r.cfg.Policy().Document.Budget, t, source, policy.ClassAnalyzer, t.SHA)
+	return awaitReport(ctx, r.store, r.cfg.Workflows, r.cfg.Policy().Document.Budget, r.cfg.ChecksPoll, t, source)
+}
+
+// awaitReport is reportOf over its store and workflows, polling each poll.
+func awaitReport(ctx context.Context, store Store, workflows Workflows, budget policy.Budget, poll time.Duration, t Task, source string) (Task, error) {
+	child, err := openReport(ctx, store, workflows, budget, t, source, policy.ClassAnalyzer, t.SHA)
 	if err != nil {
 		return Task{}, err
 	}
@@ -313,11 +318,16 @@ func (r *Runner) reportOf(ctx context.Context, t Task, source string) (Task, err
 		select {
 		case <-ctx.Done():
 			return Task{}, ctx.Err()
-		case <-time.After(r.cfg.ChecksPoll):
+		case <-time.After(poll):
 		}
-		if child, _, err = r.task(ctx, child.ID); err != nil {
+		got, ok, err := store.Task(ctx, child.ID)
+		if err != nil {
 			return Task{}, err
 		}
+		if !ok {
+			return Task{}, terminalError("task %s not found", child.ID)
+		}
+		child = got
 	}
 	return child, nil
 }
