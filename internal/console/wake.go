@@ -72,6 +72,8 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 		return fmt.Errorf("store the wake's message: %w", err)
 	}
 	booked = true // from here a turn of the thread settles the cases: this one, or the one that reads the note
+	c.books.note(t.key(), id, cases)
+	t.wakeCases = cases
 	t.detach()
 	t.quiet()
 	t.takeTurn(pos, wait)
@@ -95,6 +97,8 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 type wakeBook struct {
 	cases []int64
 	eur   float64
+	// notes are the cases by the row of the wake that named them
+	notes map[int64][]int64
 }
 
 // wakeBooks holds the wakeBook of each thread.
@@ -135,25 +139,38 @@ func (b *wakeBooks) drop(key string, cases []int64) {
 	}
 }
 
-// named are the cases the thread's wakes not settled yet named.
-func (b *wakeBooks) named(key string) []int64 {
+// note keeps the cases a wake named under its row.
+func (b *wakeBooks) note(key string, row int64, cases []int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if w := b.by[key]; w != nil && len(cases) > 0 {
+		if w.notes == nil {
+			w.notes = map[int64][]int64{}
+		}
+		w.notes[row] = cases
+	}
+}
+
+// noted are the cases the wake of row named.
+func (b *wakeBooks) noted(key string, row int64) []int64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if w := b.by[key]; w != nil {
-		return slices.Clone(w.cases)
+		return w.notes[row]
 	}
 	return nil
 }
 
-// handUpStopped hands each case the thread's wakes named, and rung 2 still
-// holds, to the human: the turn stopped on its refused rounds, and no
-// human reads a wake's stop row at once.
+// handUpStopped hands each case of the turn's wakes (wakeCases) that rung 2
+// still holds to the human: the turn stopped on its refused rounds, and no
+// human reads a wake's stop row at once. A case of a wake queued behind the
+// turn stays: that wake's own turn follows.
 func (t *turn) handUpStopped() {
 	if t.c.cfg.HandUpRung2 == nil {
 		return
 	}
 	ctx := context.WithoutCancel(t.r.Context())
-	for _, id := range t.c.books.named(t.key()) {
+	for _, id := range t.wakeCases {
 		k, err := t.c.cfg.CaseByID(ctx, id)
 		if err == nil {
 			_, err = t.c.cfg.HandUpRung2(ctx, k.TaskID, id, factoryd.RungTwoStopped, factoryd.RungTwoRecommendation{}, t.readList())

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"slices"
 	"strconv"
@@ -528,5 +529,76 @@ func TestAWakesStopHandsItsCaseToTheHuman(t *testing.T) {
 	}
 	if faults := facefixtures.HumanFaults(said); len(faults) > 0 {
 		t.Errorf("%q: %v", said, faults)
+	}
+}
+
+// A human's turn that the refused rounds stop is not the wake's: the case a
+// wake queued behind it named stays with the factory agent, whose own turn
+// runs next.
+func TestAHumansStopLeavesAQueuedWakesCase(t *testing.T) {
+	ra := newRealAct(t, "t-hq", 51, factoryd.SourceProductionHeld, raHeldQuestion(), policy.AutonomyAutonomous)
+	ctx := t.Context()
+	if err := ra.pg.SetCaseStatus(ctx, ra.caseID, factoryd.CaseOpen); err != nil {
+		t.Fatal(err)
+	}
+	due := time.Now().Add(35 * time.Minute)
+	if _, err := ra.pg.StartRungStep(ctx, factoryd.CaseStep{CaseID: ra.caseID, Rung: 2, Actor: factoryd.ChatUser, Outcome: factoryd.StepInProgress, DueAt: &due}); err != nil {
+		t.Fatal(err)
+	}
+
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	r.ledger.files = map[string]policy.ProjectConfig{holdProject: {Repository: "sf/code", Autonomy: policy.AutonomyAutonomous, MergeRule: policy.MergeHuman}}
+	r.tasks.tasks = append(r.tasks.tasks, holdAsk())
+	r.c.cfg.CaseByID, r.c.cfg.HandUpRung2 = ra.pg.CaseByID, ra.runner.HandUpRung2
+	no := factoryd.ErrActRefused("the note, which the human reads as the grounds of your proposal: The text holds a semicolon. Write two sentences.")
+	r.actErrs = map[int]error{}
+	for i := 1; i <= 5; i++ {
+		r.actErrs[i] = no
+		g.replies = append(g.replies, []string{call(i, "answer", `{"task_id":"#77","text":"Deploy anyway"}`)})
+	}
+	g.replies = append(g.replies, []string{say("the wake's answer")})
+	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 6)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if code, _, _, err := postStream(r, ck, s, chatPath, url.Values{"message": {"deploy it"}}); err != nil || code != 200 {
+			t.Errorf("the human's turn = %d %v", code, err)
+		}
+	}()
+	<-g.arrived
+	wakeDone := make(chan error, 1)
+	go func() {
+		wakeDone <- r.c.StartWake(ctx, "ai-software-factory-code", "sebastian", 1, factoryd.EventCaseClimbed, "Wake: 1 case waits for the factory agent.", ra.caseID)
+	}()
+	if !waitFor(t, time.Second, func() bool {
+		rows, _ := chat.ChatMessages(ctx, "sf/code", "sebastian", 1, 10)
+		return len(rows) == 2 && rows[1].Queued && rows[1].BirthKind == factoryd.EventCaseClimbed
+	}) {
+		t.Fatal("the wake's row did not land queued while the human's turn ran")
+	}
+	close(g.hold)
+	if err := <-wakeDone; err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+	wg.Wait()
+
+	rows, _ := chat.ChatMessages(ctx, "sf/code", "sebastian", 1, 40)
+	const stopped = "The turn stopped: every action of its last 5 rounds was refused. Send a message to go on."
+	var stops, wakes int
+	for _, m := range rows {
+		if m.Role == "assistant" && m.Content == stopped {
+			stops++
+		}
+		if m.Role == "assistant" && m.Content == "the wake's answer" {
+			wakes++
+		}
+	}
+	if stops != 1 || wakes != 1 {
+		t.Fatalf("the thread holds %d stops and %d answers of the wake, want one of each: %+v", stops, wakes, rows)
+	}
+	if k := ra.caseNow(t); k.Status != factoryd.CaseOpen || k.OwnerRung != 2 {
+		t.Fatalf("case = %+v, want it open with the factory agent", k)
 	}
 }

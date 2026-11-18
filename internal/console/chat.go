@@ -140,9 +140,11 @@ type turn struct {
 	// line is the id of the human's row the turn was started for, set once
 	// the row holds its place in the thread: a turn with no row of its own
 	// (a wake, a retry, a resume) has none. absorbedWake says the turn landed
-	// a row a wake wrote.
+	// a row a wake wrote. wakeCases are the cases of the wakes whose rows the
+	// turn reads: its own wake's, and those of the rows it landed.
 	line         int64
 	absorbedWake bool
+	wakeCases    []int64
 	// task is the chat task whose account the turn's model calls and
 	// looks bill.
 	task string
@@ -1406,7 +1408,7 @@ func (t *turn) run(id, notice string) {
 
 // refusedRounds bounds a turn's rounds in a row whose every tool call was
 // refused: an agent that corrects nothing in that many ends its turn, and
-// not the chat's budget. The cases its wake named go to the human
+// not the chat's budget. The cases of its wakes go to the human
 // (handUpStopped).
 const refusedRounds = 5
 
@@ -1478,6 +1480,7 @@ func (t *turn) landUnread() {
 		if m.Queued {
 			ids = append(ids, m.ID)
 			t.absorbedWake = t.absorbedWake || m.BirthKind != ""
+			t.wakeCases = append(t.wakeCases, t.c.books.noted(t.key(), m.ID)...)
 		}
 	}
 	t.land(ids)
