@@ -1073,6 +1073,19 @@ func (s *fakeStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time
 	return out, nil
 }
 
+// UnconfirmedFreezeCloses lists the fake's closes of freeze cards that
+// stand on their issues unconfirmed for olderThan, oldest first.
+func (s *fakeStore) UnconfirmedFreezeCloses(ctx context.Context, olderThan time.Duration) ([]IntakeEvent, error) {
+	var out []IntakeEvent
+	for _, e := range s.intakeEvents {
+		if e.Kind == IntakeFactoryClosed && e.CommentID != 0 && s.tasks[e.TaskID].Source == SourceFreezeCard &&
+			!s.confirmedCloses[closeKey(e)] && s.clock().Sub(e.CreatedAt) > olderThan {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
 func (s *fakeStore) ReleaseHandover(ctx context.Context, taskID string) error {
 	s.intakeEvents = slices.DeleteFunc(s.intakeEvents, func(e IntakeEvent) bool {
 		return e.TaskID == taskID && e.Kind == IntakeHandover

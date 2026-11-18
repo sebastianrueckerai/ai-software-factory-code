@@ -56,6 +56,9 @@ type alertForgejo struct {
 	listOpen bool
 	// fault, when set and true for a request, answers it 500
 	fault func(r *http.Request) bool
+	// refuseAll is the status every call on an issue answers, its reads
+	// too, as when Forgejo does not take the bot's credential
+	refuseAll map[int64]int
 }
 
 func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
@@ -78,6 +81,13 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 		if fj.fault != nil && fj.fault(r) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
+		}
+		if rest := strings.TrimPrefix(r.URL.Path, repo+"/issues/"); rest != r.URL.Path {
+			fmt.Sscanf(rest, "%d", &n) // #nosec G104 -- test stub
+			if status := fj.refuseAll[n]; status != 0 {
+				http.Error(w, "refused", status)
+				return
+			}
 		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == repo:
