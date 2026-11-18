@@ -400,8 +400,9 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 		return nil
 	}
 	if !Final(t.Status) {
-		// the card first, as a resolve's: the row's start moves last
-		if row.Detail["resolved_at"] != nil && t.Kind == "human" {
+		// the card first, as a resolve's, whatever the row says: a resolve
+		// whose comment failed wrote the card and not the row
+		if t.Kind == "human" {
 			if err := in.alertOnCard(ctx, t, map[string]any{"resolved_at": "", "happened": firedLine(a)}); err != nil {
 				return err
 			}

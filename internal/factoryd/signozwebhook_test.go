@@ -1771,20 +1771,7 @@ func TestAClearedAlertSkipsAFinalCard(t *testing.T) {
 // whose write to the card fails leaves the row as it was, so the next
 // delivery of the same alert writes the card, and its comment posts once.
 func TestAResolvedAlertsCardSaysItResolved(t *testing.T) {
-	r := newAlertRig(t)
-	demo := r.in.Projects.(*memProjects).m["demo-app"]
-	demo.Agents = "none"
-	r.in.Projects.(*memProjects).m["demo-app"] = demo
-	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
-	task := r.store.tasks[r.store.alertRows()[0].TaskID]
-	i := slices.IndexFunc(r.store.events, func(e Event) bool { return e.TaskID == task.ID && e.Kind == EventQuestionAsked })
-	r.store.events[i].Detail["case_id"] = 3
-	c, err := CaseFromAsk(task, r.store.events[i], "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.ID = 3
-	r.store.cases = append(r.store.cases, c)
+	r, task, c := humanAlertCard(t)
 	if story := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: task}).Story; !strings.HasPrefix(story.Happened, "It has fired since ") {
 		t.Fatalf("the firing card's story = %q, want it firing", story.Happened)
 	}
@@ -1814,6 +1801,42 @@ func TestAResolvedAlertsCardSaysItResolved(t *testing.T) {
 	story, _ = face["story"].(Story)
 	if r.store.cases[k].Facts["resolved_at"] != "" || story.Happened != "It has fired since 28 September at 21:00 UTC, at 14.29." || face["preselected"] != nil {
 		t.Fatalf("after a new firing: resolved_at %v, face %+v; want the card firing again", r.store.cases[k].Facts["resolved_at"], face)
+	}
+}
+
+// humanAlertCard is the alert rig with fp1's human card filed on demo-app,
+// which runs no agents, and its ask's case 3 at the human.
+func humanAlertCard(t *testing.T) (*alertRig, Task, Case) {
+	t.Helper()
+	r := newAlertRig(t)
+	demo := r.in.Projects.(*memProjects).m["demo-app"]
+	demo.Agents = "none"
+	r.in.Projects.(*memProjects).m["demo-app"] = demo
+	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
+	task := r.store.tasks[r.store.alertRows()[0].TaskID]
+	i := slices.IndexFunc(r.store.events, func(e Event) bool { return e.TaskID == task.ID && e.Kind == EventQuestionAsked })
+	r.store.events[i].Detail["case_id"] = 3
+	c, err := CaseFromAsk(task, r.store.events[i], "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.ID = 3
+	r.store.cases = append(r.store.cases, c)
+	return r, task, c
+}
+
+// A resolve whose comment fails has written the card and not the row. A
+// new firing before the resolve is finished puts the card back to firing
+// all the same.
+func TestANewFiringCorrectsTheCardOfAHalfDoneResolve(t *testing.T) {
+	r, _, _ := humanAlertCard(t)
+	r.fj.failComments = 1
+	r.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp1", "demo-staging", firedAt, resolvedAt))
+	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", "2026-09-28T21:00:00Z", neverEnds))
+	k := slices.IndexFunc(r.store.cases, func(k Case) bool { return k.ID == 3 })
+	story, _ := r.store.faces[3]["story"].(Story)
+	if r.store.cases[k].Facts["resolved_at"] != "" || story.Happened != "It has fired since 28 September at 21:00 UTC, at 14.29." {
+		t.Fatalf("after a half-done resolve and a new firing: resolved_at %v, story %q; want the card firing", r.store.cases[k].Facts["resolved_at"], story.Happened)
 	}
 }
 
