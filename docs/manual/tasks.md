@@ -207,7 +207,9 @@ exceptions, since no rung can run while they stand. Every case opens
 `open`, and only one door (`ToHuman`) moves a case to the human: it passes
 a case a rung 1 or rung 2 step stands on, an exception's kind, or a case
 marked not judged, and refuses any other, naming the case, its kind and
-that it climbs first.
+that it climbs first. The monitor flags a case at the human that the door
+would refuse (`faced_unjudged`), and that flag's case is the human's,
+since only a commit fixes the door.
 
 ## Task workflow
 

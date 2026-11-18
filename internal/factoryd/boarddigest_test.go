@@ -108,6 +108,7 @@ func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 	}
 	g.store.cases = []Case{{ID: 1, TaskID: "t1410", Kind: CaseBudgetFloor, StateKey: "k-floor", Status: CaseAtHuman,
 		Money: &CaseMoney{Kind: string(CaseBudgetFloor), BudgetEUR: 5, SpentEUR: 4.9}}}
+	g.store.caseSteps = map[int64][]CaseStep{1: {{CaseID: 1, Rung: 2, Outcome: StepHandedUp}}}
 
 	g.card("t1452", 1452, "waiting-deps", "", 11, func(t *Task) { child("k1452")(t); admitted(t) })
 	g.moved("t1452", "waiting-deps", "", 3*time.Hour+2*time.Minute)

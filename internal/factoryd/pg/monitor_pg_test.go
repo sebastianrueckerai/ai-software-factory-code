@@ -564,8 +564,12 @@ func TestMonitorRungZeroClosesTheIssueOfAnEndedCard(t *testing.T) {
 		status string
 	}{{"t1", 12, "closed"}, {"t2", 13, "done"}, {"t3", 14, "failed"}, {"t4", 15, "done"}} {
 		g.card(t, c.id, c.issue, c.status)
-		if _, _, err := openAtHuman(ctx, g.s, Case{TaskID: c.id, Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
-			Problem: "Card used its sessions"}); err != nil {
+		capCase, _, err := openAtHuman(ctx, g.s, Case{TaskID: c.id, Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
+			Problem: "Card used its sessions"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: capCase.ID, Rung: 2, Outcome: StepHandedUp}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -624,8 +628,12 @@ func TestMonitorWithdrawsTheIssueCaseOnceTheIssueCloses(t *testing.T) {
 	g.rung1Off()
 	ctx := context.Background()
 	g.card(t, "t1", 13, "done")
-	if _, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
-		Problem: "Card used its sessions"}); err != nil {
+	capCase, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
+		Problem: "Card used its sessions"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: capCase.ID, Rung: 2, Outcome: StepHandedUp}); err != nil {
 		t.Fatal(err)
 	}
 	g.forge.failClose = true
@@ -687,8 +695,12 @@ func TestMonitorSweepWithdrawsAnEndedCardsFlagCaseOnceItsIssueCloses(t *testing.
 		issue int64
 	}{{"t1", 13}, {"t2", 14}} {
 		g.card(t, c.id, c.issue, "done")
-		if _, _, err := openAtHuman(ctx, g.s, Case{TaskID: c.id, Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
-			Problem: "Card used its sessions"}); err != nil {
+		capCase, _, err := openAtHuman(ctx, g.s, Case{TaskID: c.id, Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
+			Problem: "Card used its sessions"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: capCase.ID, Rung: 2, Outcome: StepHandedUp}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -922,6 +934,11 @@ func TestMonitorWithdrawsACaseWhoseFlagNoLongerHolds(t *testing.T) {
 		Problem: cut, Facts: map[string]any{"reason": cut, "flag": "checkin_cut", "state": "+0:20"}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, id := range []int64{run.ID, stale.ID} {
+		if _, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: id, Rung: 2, Outcome: StepHandedUp}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	const unasked = "Monitor flag: checkin_cut(+0:30)"
 	quiet, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:30",

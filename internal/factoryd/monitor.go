@@ -310,15 +310,16 @@ func (m *Monitor) wake(ctx context.Context, c Case) error {
 	return caseEnded(m.Store.SetCaseWake(ctx, c.ID, out.Rung, c.WakeOn, nil))
 }
 
-// eventFlags are the flags about an event of the card's life, whose detail
-// names the event.
+// eventFlags are the flags whose detail names what they fired on: an
+// event of the card's life, or one of its cases.
 var eventFlags = []string{"checkin_cut", "checkin_refused", "session_no_push", "grant_bought_nothing", "finding_confirmed_twice", "budget_moved_no_event",
-	"answer_changed_nothing"}
+	"answer_changed_nothing", "faced_unjudged"}
 
 // flagCase is the state flag f of digest d fired on, with the facts it
 // adds, and ok false for a flag that opens no case. An ended card opens
-// one only for what it left open where Finish closes it, until its
-// issue's close is among its events, and a merged or closing card none. A
+// one only for a case at the human no rung judged, some of which outlive
+// their card, and for what it left open where Finish closes it, until
+// its issue's close is among its events; a merged or closing card none. A
 // failed dependency is its run's, whose own trip takes it. A wait keys on
 // its kind and start, with its owner and its bound: one wait opens one
 // case, so queued_over_bound takes the queue's and wait_over_bound leaves
@@ -327,7 +328,7 @@ var eventFlags = []string{"checkin_cut", "checkin_refused", "session_no_push", "
 func flagCase(d CardDigest, f DigestFlag) (string, map[string]any, bool) {
 	switch status := d.Head.Status; {
 	case Final(status):
-		if f.Name != "issue_open_after_end" || !d.issueCloses || d.issueClosed {
+		if f.Name != "faced_unjudged" && (f.Name != "issue_open_after_end" || !d.issueCloses || d.issueClosed) {
 			return "", nil, false
 		}
 	case status == "merged", status == "closing", f.Name == "dependency_failed":

@@ -216,6 +216,8 @@ func TestHumanOnly(t *testing.T) {
 		{"day_cap", Case{Kind: CaseDayCap}, 0, true},
 		{"merge_approval", Case{Kind: CaseMergeApproval}, 0, false},
 		{"gate_stop", Case{Kind: CaseGateStop}, 0, false},
+		{"a case the door would refuse at the human", Case{Kind: CaseMonitorFlag, Facts: map[string]any{"flag": "faced_unjudged"}}, 0, true},
+		{"another monitor flag", Case{Kind: CaseMonitorFlag, Facts: map[string]any{"flag": "checkin_cut"}}, 0, false},
 		{"floor beyond pool", need(5), 4, true},
 		{"floor within pool", need(5), 60, false},
 		{"floor equal to pool", need(5), 5, false},

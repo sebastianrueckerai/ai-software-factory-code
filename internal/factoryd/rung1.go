@@ -36,6 +36,10 @@ func humanOnly(c Case, f CaseFacts) (bool, string) {
 		kind, _ := c.Facts["reason_kind"].(string)
 		why, ok := humanOnlyReasons[kind]
 		return ok, why
+	case CaseMonitorFlag:
+		if c.Facts["flag"] == "faced_unjudged" {
+			return true, "only a commit fixes the door"
+		}
 	case CaseBudgetFloor:
 		if c.Money != nil && slices.Contains(f.Partial, "pool") {
 			return true, "the pool could not be read, so the card's need of money cannot be weighed against it"
