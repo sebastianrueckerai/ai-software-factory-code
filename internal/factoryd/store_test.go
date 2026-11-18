@@ -53,6 +53,12 @@ type fakeStore struct {
 	settled         map[string]bool
 	intakeEvents    []IntakeEvent
 	confirmedCloses map[[2]any]bool
+	// webhookOnClose lands the intake's webhook of factoryd's own close as
+	// the close confirms: it ends a waiting human card (finishHumanTask)
+	// before the closer moves the row
+	webhookOnClose bool
+	// failFreezeCards is FreezeCards' error, set to test its readers
+	failFreezeCards error
 	// failIntakeEvent is InsertIntakeEvent's error, set to test the writers
 	failIntakeEvent error
 	events          []Event // newest last, as NewestTaskEvents reads them
@@ -1031,6 +1037,9 @@ func (s *fakeStore) ConfirmFactoryClose(ctx context.Context, taskID string, issu
 		s.confirmedCloses = map[[2]any]bool{}
 	}
 	s.confirmedCloses[[2]any{taskID, issue}] = true
+	if t, ok := s.tasks[taskID]; ok && s.webhookOnClose && t.Kind == "human" && t.Status == "waiting-human" {
+		return s.TransitionTask(ctx, taskID, []string{"waiting-human"}, "done")
+	}
 	return nil
 }
 
@@ -1597,6 +1606,9 @@ func (s *fakeStore) ListTasksByStatus(ctx context.Context, status string) ([]Tas
 
 // FreezeCards lists the fake's freeze cards in status, in id order.
 func (s *fakeStore) FreezeCards(ctx context.Context, status string) ([]Task, error) {
+	if s.failFreezeCards != nil {
+		return nil, s.failFreezeCards
+	}
 	var out []Task
 	for _, id := range slices.Sorted(maps.Keys(s.tasks)) {
 		if t := s.tasks[id]; t.Source == SourceFreezeCard && t.Status == status {

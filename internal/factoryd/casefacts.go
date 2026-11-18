@@ -354,7 +354,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			}
 			return err
 		}},
-		{"freeze", func() error {
+		{partialFreeze, func() error {
 			var err error
 			f.FreezeCard, f.NoFreeze, err = r.freezeCardOf(ctx, t, refused, !slices.Contains(f.Partial, partialTimeline))
 			return err
@@ -948,14 +948,20 @@ func (r *Runner) freezeCardOf(ctx context.Context, t Task, refused lineMark, rea
 	if t.Status != "running" || t.Gate != GateProvider || !read {
 		return "", "", nil // an unread timeline is actRefusal's to name
 	}
-	due := refused.Time.Add(refused.backoff())
-	if !limitAhead(refused.Time, refused.backoff(), r.Clock()) {
+	due, now := refused.Time.Add(refused.backoff()), r.Clock()
+	switch {
+	case refused.Time.IsZero():
+		return "", "the card waits on the provider, but its timeline records no provider refusal, so retry cannot tell a freeze from the ladder's backoff: " +
+			"its wait ends by itself, or Retry now on its class's open freeze card ends a freeze", nil
+	case refused.backoff() <= ladderBackoffMax:
 		when := "by itself"
-		if !refused.Time.IsZero() && due.After(r.Clock()) {
+		if due.After(now) {
 			when += " at " + stamp(due)
 		}
 		return "", fmt.Sprintf("no provider freeze holds the card: its newest provider refusal named no reset beyond the ladder's longest backoff of %s, so its next session starts %s, and retry ends no freeze there",
 			minutesWord(ladderBackoffMax), when), nil
+	case !now.Before(due):
+		return "", fmt.Sprintf("no provider freeze holds the card any more: the reset %s its provider limit named passed, so its next session starts by itself, and retry has no freeze to end", stamp(due)), nil
 	}
 	v := r.cfg.Policy()
 	class, _ := v.Document.ProviderLimitOf(t.RequiredCapabilities)

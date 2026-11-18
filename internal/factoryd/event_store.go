@@ -147,6 +147,12 @@ const EventIssueClosed = "issue_closed"
 // issue and the close ended nothing: detail {"issue"}.
 const EventIssueClosedWithoutWriteAccess = "issue_closed_without_write_access"
 
+// EventFreezeIssueRefused is factoryd's record that Forgejo refused a
+// freeze card's issue for good, a deleted issue or a 4xx, so the card is
+// given up and the class's next arm files a new one: detail {"class",
+// "issue", "error"}.
+const EventFreezeIssueRefused = "freeze_issue_refused"
+
 // EventPlanReplanned is factoryd's record of a replan's revision filed on
 // its plan: detail {"revision", "kept", "changed", "dropped", "added",
 // "origin", "by", "comment"}, the old cards' fates and the new cards

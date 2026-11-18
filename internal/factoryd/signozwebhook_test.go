@@ -40,6 +40,9 @@ type alertForgejo struct {
 	failComments int
 	// failClose is how many issue closes still answer 500
 	failClose int
+	// deleted are the issues whose patches answer 404, as a deleted
+	// issue's do
+	deleted map[int64]bool
 }
 
 func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
@@ -120,6 +123,10 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			}
 			fmt.Fprintf(w, `{"state":%q}`, state)
 		case r.Method == http.MethodPatch && fmtScan(r.URL.Path, repo+"/issues/%d", &n):
+			if fj.deleted[n] {
+				http.Error(w, "issue does not exist", http.StatusNotFound)
+				return
+			}
 			if fj.failClose > 0 {
 				fj.failClose--
 				w.WriteHeader(http.StatusInternalServerError)

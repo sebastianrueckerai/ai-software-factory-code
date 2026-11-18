@@ -297,11 +297,14 @@ func (a *MonthAlarm) closeLifted(ctx context.Context, v policy.Version, m MonthS
 			errs = append(errs, err)
 			continue
 		}
-		if err := a.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
+		moved, err := closeRow(ctx, a.Store, t.ID)
+		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
-		countOutcome(ctx, a.Metrics, a.Store, t, "done")
+		if moved {
+			countOutcome(ctx, a.Metrics, a.Store, t, "done")
+		}
 		log.Printf("month cap: %s closed issue #%d of task %s", msg, t.IssueNumber, t.ID)
 	}
 	return errors.Join(errs...)

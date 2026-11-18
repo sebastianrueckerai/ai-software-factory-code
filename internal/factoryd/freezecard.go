@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // SourceFreezeCard is the source of the human-lane card the freeze watcher
@@ -309,7 +310,12 @@ func (w *FreezeCard) event(ctx context.Context, ev FreezeEvent) error {
 			repos = append(repos, ev.Repository)
 		}
 		for _, repo := range repos {
-			if err := w.frozen(ctx, w.class(repo, ev.Class), ev); err != nil {
+			st := w.class(repo, ev.Class)
+			if err := w.frozen(ctx, st, ev); forgejoTerminal(err) {
+				if err := w.refused(ctx, st, err); err != nil {
+					return err
+				}
+			} else if err != nil {
 				return err
 			}
 		}
@@ -321,6 +327,30 @@ func (w *FreezeCard) event(ctx context.Context, ev FreezeEvent) error {
 		}
 	}
 	return nil
+}
+
+// refused gives up on st's card, whose issue Forgejo refuses for good — a
+// deleted issue, a 4xx no retry fixes — so that one card does not stop
+// the watcher for every class: the refusal is logged and recorded on the
+// card, its face no longer names the press, so no arm adopts it again,
+// and the memory forgets it, so the class's next arm files a new card.
+func (w *FreezeCard) refused(ctx context.Context, st *freezeClass, cause error) error {
+	why := textutil.Truncate(maskedErr(cause), 300)
+	log.Printf("freeze card: Forgejo refuses %s's %s card #%d for good, the class's next arm files a new card: %s", st.repo, st.class, st.issue, why)
+	if st.taskID != "" {
+		if err := w.Store.SetObjective(ctx, st.taskID, freezeRefusedBody(st.class, st.issue, why)); err != nil {
+			return err
+		}
+		w.Timeline.RecordRow(ctx, st.taskID, EventFreezeIssueRefused, FactoryDecider, ViaFactoryd, map[string]any{"class": st.class, "issue": st.issue, "error": why})
+	}
+	delete(w.classes, st.repo+"/"+st.class)
+	return nil
+}
+
+// freezeRefusedBody is the face of class's card whose issue Forgejo
+// refused for good, why.
+func freezeRefusedBody(class string, issue int64, why string) string {
+	return freezeCardTitle(class) + "\n\n" + fmt.Sprintf("Class: %s\n\nForgejo refused this card's issue #%d for good (%s): the class's next limit files a new card.", class, issue, why)
 }
 
 // class is the watcher's memory of repository's card of class.
@@ -516,7 +546,7 @@ func (w *FreezeCard) CloseOnRetry(ctx context.Context, repository, class, by str
 	if err := w.Store.SetObjective(ctx, t.ID, freezePressedBody(class, by, w.now(), reset)); err != nil {
 		return err
 	}
-	if err := closeRow(ctx, w.Store, t.ID); err != nil {
+	if _, err := closeRow(ctx, w.Store, t.ID); err != nil {
 		return err
 	}
 	if st != nil {
@@ -729,21 +759,10 @@ func (w *FreezeCard) close(ctx context.Context, st *freezeClass) error {
 	if err := closeIssueAsFactory(ctx, w.Store, w.Forgejo, t, "factoryd: "+msg); err != nil {
 		return err
 	}
-	if err := closeRow(ctx, w.Store, t.ID); err != nil {
+	if _, err := closeRow(ctx, w.Store, t.ID); err != nil {
 		return err
 	}
 	log.Printf("freeze card: %s (#%d)", msg, t.IssueNumber)
-	return nil
-}
-
-// closeRow moves freeze card id's row from waiting-human to done once its
-// issue closed. The webhook of that close, factoryd's own, ends the human
-// card too (finishHumanTask) and may come first: a row no longer waiting
-// is closed already.
-func closeRow(ctx context.Context, store FreezeCardStore, id string) error {
-	if err := store.TransitionTask(ctx, id, []string{"waiting-human"}, "done"); err != nil && !errors.Is(err, ErrNotFound) {
-		return err
-	}
 	return nil
 }
 

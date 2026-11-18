@@ -648,9 +648,11 @@ func TestFreezeCardRefusesAWatcherWithoutItsPolicyReader(t *testing.T) {
 // card is refused with its state and what follows: t-y, waiting on the
 // provider under a class that names none, with no refusal recorded; t-x, a
 // coder card in its session; t-w, a coder card on the undated ladder's
-// two-minute step to 12:01; t-v, a big card waiting to 16:00 with no big
-// freeze card open; t-fr, the plain class's freeze card whose class
-// resumed on its own; and t-fd, a done freeze card.
+// two-minute step to 12:01; t-u, a coder card whose limit's reset 11:00
+// passed; t-v, a big card waiting to 16:00 with no big freeze card open;
+// t-fr, the plain class's freeze card whose class resumed on its own; and
+// t-fd, a done freeze card. With the freeze cards unread, t-z's retry is
+// refused as unknown.
 func TestActRetryOnAFrozenCaseRunsTheRetrySwitch(t *testing.T) {
 	ctx := context.Background()
 	r, store, objects, _, _ := newRetryRig(t)
@@ -671,6 +673,7 @@ func TestActRetryOnAFrozenCaseRunsTheRetrySwitch(t *testing.T) {
 		{ID: "t-x", Kind: "agent", Status: "running", Gate: GateSession, RequiredCapabilities: []string{"coder"}},
 		{ID: "t-w", Kind: "agent", Status: "running", Gate: GateProvider, RequiredCapabilities: []string{"coder"}},
 		{ID: "t-v", Kind: "agent", Status: "running", Gate: GateProvider, RequiredCapabilities: []string{"big"}},
+		{ID: "t-u", Kind: "agent", Status: "running", Gate: GateProvider, RequiredCapabilities: []string{"coder"}},
 		{ID: "t-fz", Kind: "human", Status: "waiting-human", Source: SourceFreezeCard, IssueNumber: 8,
 			Objective: freezeCardTitle("coder") + "\n\n" + freezeClassMarker("coder")},
 		{ID: "t-fr", Kind: "human", Status: "waiting-human", Source: SourceFreezeCard, IssueNumber: 10,
@@ -684,7 +687,7 @@ func TestActRetryOnAFrozenCaseRunsTheRetrySwitch(t *testing.T) {
 		}
 	}
 	for id, line := range map[string]string{"t-z": `"2026-11-21T11:00:00Z","backoff_s":18000`, "t-v": `"2026-11-21T11:00:00Z","backoff_s":18000`,
-		"t-w": `"2026-11-21T11:59:00Z","backoff_s":120`} {
+		"t-w": `"2026-11-21T11:59:00Z","backoff_s":120`, "t-u": `"2026-11-21T10:00:00Z","backoff_s":3600`} {
 		if err := objects.Put(ctx, "sessions/"+id+"/timeline.jsonl", []byte(`{"step":"provider_refused","time":`+line+"}\n")); err != nil {
 			t.Fatal(err)
 		}
@@ -715,7 +718,8 @@ func TestActRetryOnAFrozenCaseRunsTheRetrySwitch(t *testing.T) {
 	}
 	const ladder = "no provider freeze holds the card: its newest provider refusal named no reset beyond the ladder's longest backoff of 30 minutes, so its next session starts by itself"
 	for id, want := range map[string]string{
-		"t-y":  ladder + ", and retry ends no freeze there",
+		"t-y":  "the card waits on the provider, but its timeline records no provider refusal, so retry cannot tell a freeze from the ladder's backoff: its wait ends by itself, or Retry now on its class's open freeze card ends a freeze",
+		"t-u":  "no provider freeze holds the card any more: the reset 2026-11-21T11:00:00Z its provider limit named passed, so its next session starts by itself, and retry has no freeze to end",
 		"t-x":  "no failed dependency is open to a retry, and no provider freeze holds the card: retry files a failed dependency again or ends a freeze, so pick the action the card's wait needs",
 		"t-w":  ladder + " at 2026-11-21T12:01:00Z, and retry ends no freeze there",
 		"t-v":  "the card waits to the provider limit's reset 2026-11-21T16:00:00Z, and no freeze card of the big class stands open to end the freeze sooner: the card starts by itself at the reset",
@@ -726,6 +730,12 @@ func TestActRetryOnAFrozenCaseRunsTheRetrySwitch(t *testing.T) {
 			t.Fatalf("the retry on %s = %v, want the refusal %q", id, err, want)
 		}
 	}
+	store.failFreezeCards = errors.New("the store is down")
+	if _, err := r.Act(ctx, ActInput{TaskID: "t-z", By: "sebastian", Rung: 3, Res: Resolution{Action: ActRetry}}); !errors.As(err, &refused) ||
+		!strings.Contains(err.Error(), "the class's freeze cards could not be read, so it is unknown whether a provider freeze holds the card, which retry needs: try again in a minute") {
+		t.Fatalf("the retry on t-z with the freeze cards unread = %v, want the unread refusal", err)
+	}
+	store.failFreezeCards = nil
 	got, err := r.Act(ctx, ActInput{TaskID: "t-b", By: "sebastian", Rung: 3, Res: Resolution{Action: ActRetry}})
 	if err != nil || len(got.Did) != 1 || got.Did[0].Args["task_id"] != "t-a" || got.Did[0].Args["replacement"] != int64(9) {
 		t.Fatalf("t-b's retry = %+v, %v; want #9 filed in place of t-a", got.Did, err)

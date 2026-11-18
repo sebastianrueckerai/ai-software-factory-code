@@ -524,6 +524,12 @@ func TestRetryTakesARetryableFailedDependency(t *testing.T) {
 	if got := retry.refusal(unread, 3, Resolution{}); got != "" {
 		t.Errorf("the retry of an open dependency with the timeline unread = %q, want none", got)
 	}
+	// the class's freeze cards unread, the same is unknown
+	freezeUnread := f
+	freezeUnread.Stage, freezeUnread.Partial = GateProvider, []string{partialFreeze}
+	if got, want := retry.refusal(freezeUnread, 2, Resolution{}), "the class's freeze cards could not be read, so it is unknown whether a provider freeze holds the card, which retry needs: try again in a minute, or hand it up"; got != want {
+		t.Errorf("rung 2's retry with the freeze cards unread = %q, want %q", got, want)
+	}
 	frozen := f
 	frozen.FreezeCard = "t-fz"
 	if got := applies(t, ActRetry, frozen, Resolution{}); got != "" {
