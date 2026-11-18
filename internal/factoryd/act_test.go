@@ -304,7 +304,7 @@ func TestIDidItWaitsForTheCardBeforeIt(t *testing.T) {
 	g := humanCardRig(t)
 	var refused ErrActRefused
 	_, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: 3, Res: Resolution{Action: AnswerDone}})
-	const end = "End the card (close) with your note, which lets the plan go on without this card's work"
+	const end = "End the card (close) with your note, and the cards that wait for it ask you first"
 	if want := "card #14 waits for #13 (queued), so its work cannot be done yet: answer Not now (park) until it is done, or " + end; !errors.As(err, &refused) || err.Error() != want {
 		t.Fatalf("I did it while #13 waits = %v, want %q", err, want)
 	}
@@ -334,6 +334,51 @@ func TestIDidItWaitsForTheCardBeforeIt(t *testing.T) {
 	g.store.cases[0].Status = CaseAtHuman
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: 3, Res: Resolution{Action: AnswerDone}}); err != nil {
 		t.Fatalf("I did it once #13 is done = %v, want it taken", err)
+	}
+}
+
+// End the card on a plan's human card ends it closed: the issue's close,
+// which may reach factoryd before Act ends the case, takes the answer that
+// ended the card, so the card after it finds its dependency ended closed
+// and asks the human (dependency_closed). "I did it" ends it done, and the
+// card after it starts.
+func TestEndTheCardEndsAHumanCardClosed(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		res   Resolution
+		final string
+	}{{Resolution{Action: ActClose, Note: "The runner team did it in their repository."}, "closed"}, {Resolution{Action: AnswerDone}, "done"}} {
+		g := humanCardRig(t)
+		d := g.store.tasks["d1"]
+		d.Status = "done"
+		g.store.tasks["d1"] = d
+		g.store.tasks["k1"] = Task{ID: "k1", Kind: "agent", Repository: "demo-app/demo-app", IssueNumber: 16, PlanKey: "image", Status: "waiting-deps", Source: SourcePlan, Parent: "p"}
+		g.store.deps["k1"] = []string{"h1"}
+		h := g.store.tasks["h1"]
+		h.PlanKey = "manifests"
+		g.store.tasks["h1"] = h
+		forgejo, _ := intakeForgejoStub(t)
+		in := &Intake{Store: g.store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent",
+			Timeline: &Timeline{Objects: &fakeObjectStore{}, Store: g.store, Events: g.store}}
+		// the issue's close reaches the intake while the answer's work runs
+		closeIssue := func(ctx context.Context) (int64, error) {
+			return 0, in.endByClose(ctx, g.store.tasks["h1"], "sebastian")
+		}
+		if _, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: 3, Res: tc.res, Work: closeIssue}); err != nil {
+			t.Fatalf("%s: %v", tc.res.Action, err)
+		}
+		if got := g.store.tasks["h1"].Status; got != tc.final {
+			t.Fatalf("%s ends the card %s, want %s", tc.res.Action, got, tc.final)
+		}
+		st, err := g.r.Dependencies(ctx, "k1")
+		switch {
+		case err != nil:
+			t.Fatal(err)
+		case tc.final == "closed" && (st.Ended == nil || DepEndedReason(*st.Ended) != "dependency #14 (manifests) ended closed: close this card, or answer to start it anyway"):
+			t.Fatalf("after End the card the next card's dependencies = %+v, want #14 ended closed, which asks", st)
+		case tc.final == "done" && (st.Ended != nil || len(st.Waiting) != 0):
+			t.Fatalf("after I did it the next card's dependencies = %+v, want none left, so it starts", st)
+		}
 	}
 }
 

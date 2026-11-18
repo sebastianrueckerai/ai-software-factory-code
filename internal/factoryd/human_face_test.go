@@ -113,8 +113,8 @@ func TestHumanCardsAskOneThing(t *testing.T) {
 		t.Errorf("I cannot do this opens %+v, want one required note with its hint", back.Fields)
 	}
 	if i := slices.IndexFunc(face.More, func(a factoryd.Answer) bool { return a.Label == "End the card" }); i < 0 ||
-		face.More[i].Effect != "Ends the card and closes its issue. The plan goes on without its work." {
-		t.Errorf("#2101's End the card = %+v, want it to say the plan goes on without its work", face.More)
+		face.More[i].Effect != "Ends the card and closes its issue. The cards that wait for it ask you first." {
+		t.Errorf("#2101's End the card = %+v, want it to say the cards that wait for it ask first", face.More)
 	}
 	pr := fixture(t, facefixtures.GroupCard, "factory pull request on a project without agents").face
 	if merge, reject := pr.Answers[0].Effect, pr.Answers[1].Effect; merge != "Merges the pull request as you. The card ends." || reject != "Closes the pull request. The card ends." {

@@ -1481,7 +1481,11 @@ func (in *Intake) endByClose(ctx context.Context, t Task, closer string) error {
 	case t.Kind == "human" && t.PRNumber != 0 && closer == in.BotUser:
 		return nil // endPRCard closed the issue and ends the card itself
 	case t.Kind == "human":
-		return in.finishHumanTask(ctx, t, "done", "", closer, nil)
+		final, err := humanEndOf(ctx, in.Store, t)
+		if err != nil {
+			return err
+		}
+		return in.finishHumanTask(ctx, t, final, "", closer, nil)
 	case t.Status == "failed":
 		return in.closeFailed(ctx, t.ID)
 	case t.Status == "merged":

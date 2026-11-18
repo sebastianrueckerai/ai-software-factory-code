@@ -305,6 +305,13 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	answers := ends && res.Action != ActWithdraw
 	var worked int64
 	if in.Work != nil {
+		if choice && ends && t.Kind == "human" {
+			// the issue's close this work makes can reach the intake before
+			// the case ends: the case carries how that close ends the card
+			if err := r.store.SetCaseFacts(ctx, c.ID, map[string]any{endsFact: humanEnd(res.Action)}); err != nil {
+				return out, err
+			}
+		}
 		if worked, err = in.Work(ctx); err != nil {
 			return out, ranErr(out.Did, err)
 		}
@@ -978,7 +985,7 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) (
 	}
 	end := "End the card (close) with your note"
 	if InPlan(t) {
-		end += ", which lets the plan go on without this card's work"
+		end += ", and the cards that wait for it ask you first"
 	}
 	var waits, closed []string
 	for _, d := range deps {
@@ -1005,6 +1012,41 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) (
 	}
 	return fmt.Sprintf("card %s waits for %s, so its work cannot be done yet: answer Not now (park) until %s done, or %s",
 		cardName(t), textutil.AndList(waits), until, end), nil
+}
+
+// endsFact is the case fact that says how the issue's close ends the human
+// card the case's answer closes: done or closed (humanEnd).
+const endsFact = "ends"
+
+// humanEnd is how the issue's close ends a human card after answer action:
+// End the card ends it closed, so the cards after it ask first; every other
+// answer, "I did it" among them, ends it done.
+func humanEnd(action string) string {
+	if action == ActClose || action == AnswerDismiss {
+		return "closed"
+	}
+	return "done"
+}
+
+// humanEndOf is how the close of human card t's issue ends it: as its
+// newest ask's answer recorded (humanEnd), done for a close no answer made,
+// such as a human's close in the forge, which the cards' texts ask for once
+// the work is done.
+func humanEndOf(ctx context.Context, store Store, t Task) (string, error) {
+	cases, err := store.CasesOf(ctx, t.ID)
+	if err != nil {
+		return "", err
+	}
+	var newest Case
+	for _, c := range cases {
+		if AnsweredOnCard(c.Kind) && c.ID > newest.ID {
+			newest = c
+		}
+	}
+	if newest.Facts[endsFact] == "closed" {
+		return "closed", nil
+	}
+	return "done", nil
 }
 
 // choiceRefusal says card t takes one of offers, with a note beside it.

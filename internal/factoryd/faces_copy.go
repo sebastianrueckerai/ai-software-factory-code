@@ -300,9 +300,9 @@ var effectFills = map[string]func(Facts) string{
 		switch {
 		case f.Kind == CaseMonitorFlag && f.Final != "":
 			return "Closes the card's issue."
-		case ChoiceCase(f.Case, f.Card.Kind) && f.Plan != "":
-			// a human card ends done, so the plan's cards after it start
-			return "Ends the card and closes its issue. The plan goes on without its work."
+		case ChoiceCase(f.Case, f.Card.Kind) && InPlan(f.Card):
+			// the card ends closed (humanEnd), so its dependents ask first
+			return "Ends the card and closes its issue. The cards that wait for it ask you first."
 		case f.Card.ID != "" && f.Card.IssueNumber == 0:
 			return "Ends the card. Nothing more runs."
 		}
