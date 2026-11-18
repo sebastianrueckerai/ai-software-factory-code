@@ -258,7 +258,7 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 			if calls := stub.calls(); len(calls) != 4 {
 				t.Errorf("provider calls %v, want the arm, the re-arm and both probes of the success", calls)
 			}
-			rows, err := r.store.DB().QueryContext(ctx, `SELECT kind, COALESCE(detail->>'reset', task_id, '') FROM events
+			rows, err := r.store.DB().QueryContext(ctx, `SELECT kind, CASE WHEN kind = $1 THEN COALESCE(task_id, '') ELSE COALESCE(detail->>'reset', '') END FROM events
 				WHERE kind IN ('class_frozen', 'class_resumed', $1) ORDER BY id`, factoryd.EventQuestionAsked)
 			if err != nil {
 				t.Fatal(err)

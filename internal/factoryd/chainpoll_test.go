@@ -1682,7 +1682,7 @@ func TestACardMergedUnderAGreenHeadEndsOnTheNextTick(t *testing.T) {
 		if ends != 1 {
 			t.Fatalf("ended %d times after tick %d past the merge, want once", ends, tick)
 		}
-		if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by run 56"}) {
+		if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by CI run 56"}) {
 			t.Fatalf("task_ended after tick %d = %q, want one naming the run's number 56", tick, got)
 		}
 		if len(store.alerts) != 0 {

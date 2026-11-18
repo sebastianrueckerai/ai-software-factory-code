@@ -3097,7 +3097,7 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 // chain, covers it. The chain poller's reconciler calls it every tick, so
 // a card already done is a no-op.
 func (r *Runner) EndCovered(ctx context.Context, taskID string, run int64) error {
-	return r.finish(ctx, taskID, "done", fmt.Sprintf("live: covered by run %d", run), true)
+	return r.finish(ctx, taskID, "done", fmt.Sprintf("live: covered by CI run %d", run), true)
 }
 
 // CloseMerged ends merged card taskID closed on closer's close of its

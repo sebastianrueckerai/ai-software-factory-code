@@ -292,7 +292,7 @@ func TestTheReconcilerEndsACoveredMergedCardOnce(t *testing.T) {
 		}
 		ended = append(ended, e)
 	}
-	if !slices.Equal(ended, []string{"t-live live: covered by run 10"}) {
+	if !slices.Equal(ended, []string{"t-live live: covered by CI run 10"}) {
 		t.Fatalf("task_ended rows = %q, want one for t-live naming run 10", ended)
 	}
 	if err := poker.Pass(ctx); err != nil {

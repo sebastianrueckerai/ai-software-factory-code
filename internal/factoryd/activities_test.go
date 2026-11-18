@@ -1398,7 +1398,7 @@ func TestFinishDoneFromInReview(t *testing.T) {
 // done each time a revision files its cards, keeps its issue open.
 func TestFinishDoneClosesTheIssueOfAnEndedCard(t *testing.T) {
 	merged := `{"number":12,"state":"closed","merged":true,"merge_commit_sha":"m12"}`
-	covered := `live: covered by run 5`
+	covered := `live: covered by CI run 5`
 	for _, tc := range []struct {
 		name, reason, source, track string
 		pr                          int64
@@ -1410,7 +1410,7 @@ func TestFinishDoneClosesTheIssueOfAnEndedCard(t *testing.T) {
 			[]string{"Pull request #12 merged, and this card ends with it."}, []int64{4}},
 		{"an agent card whose merge closed its issue", "pull request merged by factory-merge", "api", "direct", 12, true, nil, nil},
 		{"a covered card without a pull request", covered, SourcePlan, "direct", 0, false,
-			[]string{"Live: covered by run 5. This card ends with it."}, []int64{4}},
+			[]string{"Live: covered by CI run 5. This card ends with it."}, []int64{4}},
 		{"a plan card", "the plan's revision 2 filed its cards", "webhook", policy.TrackPlan, 0, false, nil, nil},
 	} {
 		fj := &prForgejo{issueOff: tc.issueOff, pulls: map[int64]string{12: merged}, labels: map[int64][]string{4: {"state/in-review"}}}
@@ -1543,7 +1543,7 @@ func TestFinishEndsAnUnmergedPullRequestDone(t *testing.T) {
 	} {
 		r, hub, store, objects := chainRunner(t, mergedCard, policy.ChainModeRun)
 		hub.pulls, hub.pullStatus = tc.pulls, map[int64]int{7: tc.status}
-		reason := `live: covered by run 5`
+		reason := `live: covered by CI run 5`
 		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", reason); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -1598,7 +1598,7 @@ func TestEndCoveredKeepsAMergedCardMergedWhenItsRecheckFails(t *testing.T) {
 	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" {
 		t.Fatalf("status = %q, want done", got.Status)
 	}
-	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by run 12"}) {
+	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by CI run 12"}) {
 		t.Fatalf("task_ended = %q, want one naming the run", got)
 	}
 }
@@ -1671,7 +1671,7 @@ func TestEndCoveredEndsAMergedCardDone(t *testing.T) {
 	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" {
 		t.Fatalf("status = %q, want done", got.Status)
 	}
-	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by run 12"}) {
+	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by CI run 12"}) {
 		t.Fatalf("task_ended = %q, want one naming the run", got)
 	}
 }
