@@ -396,12 +396,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if purpose != "" {
 		card = strings.Split(r.Header.Get(HeaderFactoryCard), ",")
 	}
-	if class, _ := pv.Document.HeldClass(task.Classes, purpose, chatReq.Model, card); class != "" {
-		if h := s.holdFor(ctx, task, class); h != nil {
+	held, heldLimit := pv.Document.HeldClass(task.Classes, purpose, chatReq.Model, card)
+	held = policyClass(&pv.Document, held)
+	if held != "" {
+		if h := s.holdFor(ctx, task, held); h != nil {
 			s.audit(pid, task.ID, purpose, RefusedProviderLimit,
-				"provider limit hold for class "+class+": reset "+h.reset+": "+h.words, chatReq.Model, &task.SpentEUR)
+				"provider limit hold for class "+held+": reset "+h.reset+": "+h.words, chatReq.Model, &task.SpentEUR)
 			w.Header().Set(HeaderDecision, RefusedProviderLimit)
-			writeProviderLimit(w, class, h.reset, h.words)
+			writeProviderLimit(w, held, h.reset, h.words)
 			return
 		}
 	}
@@ -495,7 +497,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, pid, id.TaskID, purpose, "error_store", err.Error(), chatReq.Model, http.StatusInternalServerError, "server_error")
 		return
 	}
-	call := &modelCall{pid: pid, task: task, hold: hold, alias: served, kind: purpose, card: card,
+	call := &modelCall{pid: pid, task: task, hold: hold, alias: served, kind: purpose, held: held, heldLimit: heldLimit,
 		slot: slot, saUID: id.SAUID, models: models, pv: pv, started: s.now(), imgStripped: chatReq.image.stripped, note: note}
 	if purpose != "" && purpose != auditFactoryd {
 		// read only behind factoryd's token: a sandbox names no thread
@@ -1030,15 +1032,19 @@ func (s *Server) block(slot string, k *liveKey) {
 
 // modelCall is one admitted call: its hold is released exactly once.
 type modelCall struct {
-	pid        *int64
-	task       Task
-	hold       policy.Hold
-	alias      string
-	kind       string   // the factoryd purpose, "" for an agent's call
-	thread     string   // the chat thread a factoryd call serves, "" for none
-	card       []string // the classes of the card a factoryd call on the chat task runs for
-	slot       string   // the key slot: the task, or the task's factoryd slot
-	saUID      string   // what the slot's key was minted for, to re-mint it
+	pid    *int64
+	task   Task
+	hold   policy.Hold
+	alias  string
+	kind   string // the factoryd purpose, "" for an agent's call
+	thread string // the chat thread a factoryd call serves, "" for none
+	// held is the class a dated refusal of the call freezes and heldLimit
+	// its provider's entry, read at the door on the requested model
+	// (policy.Document.HeldClass): "" and nil when the call holds none
+	held       string
+	heldLimit  *policy.ProviderLimit
+	slot       string // the key slot: the task, or the task's factoryd slot
+	saUID      string // what the slot's key was minted for, to re-mint it
 	models     []string
 	pv         *policy.Version
 	key        *liveKey
@@ -1240,7 +1246,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 			// a dated provider limit freezes the class: the parse reads an
 			// absolute reset, a bare or relative error keeps the ladder
 			if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusPaymentRequired {
-				if class, entry := c.pv.Document.HeldClass(c.task.Classes, c.kind, c.alias, c.card); entry != nil {
+				if class, entry := c.held, c.heldLimit; entry != nil {
 					if reset, ok := ParseProviderReset(res.Header, respBody, entry); ok {
 						until := reset.Add(time.Minute).UTC().Format(time.RFC3339)
 						words := upstreamMessage(respBody)

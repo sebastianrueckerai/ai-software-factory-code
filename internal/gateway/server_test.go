@@ -3484,6 +3484,46 @@ func TestProviderLimitHoldsTheChatTasksCalls(t *testing.T) {
 	}
 }
 
+// A card class whose brief runs on premium is held on the requested
+// model when the premium cap serves the call on big: the dated 429 of the
+// fallback call freezes the card's class, and the next brief is answered
+// by the hold.
+func TestProviderLimitArmsTheCardClassOnThePremiumFallback(t *testing.T) {
+	stub := newStubUpstream(t)
+	task := Task{Classes: []string{policy.ClassChat}, ID: "t-chat-code-2026-11", BudgetEUR: 5, Status: "running", Repository: "sf/code"}
+	store := newMemStore(task)
+	pv := providerLimitPolicy()
+	pv.Document.Classes["writer"] = policy.Class{Models: []string{"premium"}, SupervisorModel: policy.Premium, Provider: "zai"}
+	pv.Document.Budget.PremiumMonthEUR = 0.001
+	pv.Document.Prices.MaxOutputTokens[policy.Premium] = 32768
+	store.setPolicy(pv)
+	s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: stub.URL,
+		Prices: fakePrices{"big": testPrice, "small": testPrice, "premium": testPrice}, FactorydToken: testFactorydToken})
+	s.now = func() time.Time { return time.Date(2026, 11, 14, 16, 0, 0, 0, time.UTC) }
+	h := s.Routes("test")
+	brief := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody(policy.Premium)))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Authorization", "Bearer "+testFactorydToken)
+		r.Header.Set(HeaderFactoryTask, task.ID)
+		r.Header.Set(HeaderFactoryPurpose, policy.PurposeBrief)
+		r.Header.Set(HeaderFactoryCard, "writer")
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, r)
+		return rr
+	}
+	stub.setResp(stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"Usage limit reached for 5 hour. Your limit will reset at 2026-11-15 01:04:50"}}`})
+	for _, what := range []string{"the brief served on big", "the next brief"} {
+		rr := brief()
+		if rr.Code != http.StatusTooManyRequests || rr.Header().Get(HeaderDecision) != RefusedProviderLimit || !strings.Contains(rr.Body.String(), `"class":"writer"`) {
+			t.Fatalf("%s = %d %q: %s, want writer's named refusal", what, rr.Code, rr.Header().Get(HeaderDecision), rr.Body.String())
+		}
+	}
+	if len(stub.bodies) != 1 || !strings.Contains(stub.bodies[0], `"model":"big"`) {
+		t.Fatalf("upstream bodies %q, want the one call served on big: the hold answers the next", stub.bodies)
+	}
+}
+
 // TestHoldClearPath: the hold-clear door ends the class's armed hold on
 // factoryd's token alone. A request without it, a sandbox's token among
 // them, is refused and leaves the hold armed: the next call is still

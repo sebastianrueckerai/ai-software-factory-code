@@ -428,9 +428,16 @@ func forCard(ctx context.Context, t Task) context.Context {
 	return context.WithValue(ctx, cardClassesKey{}, t.RequiredCapabilities)
 }
 
+// cardHeader is the X-Factory-Card value of the card ctx carries: its
+// classes, comma-separated, "" for none.
+func cardHeader(ctx context.Context) string {
+	classes, _ := ctx.Value(cardClassesKey{}).([]string)
+	return strings.Join(classes, ",")
+}
+
 // setCard names the card ctx carries on req, when it carries one.
 func setCard(ctx context.Context, req *http.Request) {
-	if classes, _ := ctx.Value(cardClassesKey{}).([]string); len(classes) > 0 {
-		req.Header.Set(gateway.HeaderFactoryCard, strings.Join(classes, ","))
+	if h := cardHeader(ctx); h != "" {
+		req.Header.Set(gateway.HeaderFactoryCard, h)
 	}
 }
