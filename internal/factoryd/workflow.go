@@ -2514,7 +2514,7 @@ func (t *taskRun) factoryPR(head string) (string, error) {
 
 // factoryPRClosed heads the reason of a factory pull request card a change
 // request closed.
-const factoryPRClosed = "no agent answers a change request on a pull request factoryd opened, so it closes"
+const factoryPRClosed = "no agent answers a change request on a pull request the factory opened, so it closes"
 
 // factoryActions: the card's approval offers what fits a factory pull
 // request's head.

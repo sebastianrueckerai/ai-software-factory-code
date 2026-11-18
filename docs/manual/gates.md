@@ -244,8 +244,8 @@ A merge card of a plan's integration or delta card holds a row per
 criterion, and “Merge it” opens once every human row stands (`console.md`).
 `Merge` treats approver `factory-chat` as the merge gate's own
 decision: on the merge rule `auto` it approves the head as `factory-gate`
-with `factoryd: the project agent approved <head> on the project's merge
-rule auto`; on any other rule, or without a gate token, it refuses as
+with `The project agent approved <head> on the project's merge rule
+auto`; on any other rule, or without a gate token, it refuses as
 above. `Merge` then merges as the
 dedicated user `factory-merge` (`FORGEJO_MERGE_TOKEN`, secret
 `factory/forgejo-merge`, on the factory's own repositories; a registered

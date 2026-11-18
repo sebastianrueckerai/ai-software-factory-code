@@ -908,7 +908,7 @@ func (a *ConfigAlarm) Resolve(ctx context.Context, v policy.Version) error {
 				return err
 			}
 		}
-		msg := fmt.Sprintf("factoryd loaded commit %s (version %d); this rejection is resolved.", v.Commit, v.ID)
+		msg := fmt.Sprintf("The factory loaded commit %s as version %d, so this rejection is resolved.", ShortSHA(v.Commit), v.ID)
 		if err := closeIssueAsFactory(ctx, a.Store, a.Forgejo, t, msg); err != nil {
 			return err
 		}

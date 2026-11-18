@@ -33,6 +33,10 @@ var (
 	notAHuman = regexp.MustCompile(`(?i)\b(members?|operators?)\b`)
 	// selfNamed is a text that opens with the service's name as its writer
 	selfNamed = regexp.MustCompile(`^factoryd:`)
+	// serviceName is the service factoryd as the one who acts or owns,
+	// where the factory speaks of itself: a service named factoryd in an
+	// alert or an image list is a name
+	serviceName = regexp.MustCompile(`\bfactoryd(?:'s| [a-z]+(?:ed|s))\b|\bby factoryd\b`)
 	// quoteLine is a line of markup that quotes a writer's words
 	quoteLine = regexp.MustCompile(`(?m)^>.*$`)
 )
@@ -73,11 +77,16 @@ func TextFaults(text string) []string {
 }
 
 // HumanFaults are the faults of text a human reads at a door, a refusal or
-// a comment, as factoryd.ForHuman renders it for a human: TextFaults, and
-// a code span that names no path or URL, as a human reads an answer by its
-// label and types no key.
+// a comment, as factoryd.ForHuman renders it for a human: TextFaults, the
+// service factoryd as the one who acts, where "the factory" says it, and a code span
+// that names no path or URL, as a human reads an answer by its label and
+// types no key.
 func HumanFaults(text string) []string {
 	faults := TextFaults(text)
+	prose := place.ReplaceAllString(codeSpan.ReplaceAllString(quoteLine.ReplaceAllString(text, ""), " "), " ")
+	if serviceName.MatchString(prose) {
+		faults = append(faults, "The text names the service factoryd as the one who acts. Say “the factory”.")
+	}
 	for _, span := range codeSpan.FindAllString(quoteLine.ReplaceAllString(text, ""), -1) {
 		if inner := strings.Trim(span, "`"); place.ReplaceAllString(inner, "") != "" {
 			faults = append(faults, fmt.Sprintf("The text names the key %s, which a human does not type.", span))

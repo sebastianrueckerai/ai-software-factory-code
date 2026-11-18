@@ -2829,7 +2829,7 @@ func (c *Console) doDeleteComment(ctx context.Context, a actor, id string, poste
 // scrubbed before it is sent or recorded.
 func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string, error) {
 	if c.cfg.Steer == nil {
-		return "", refuse(http.StatusNotImplemented, "This console cannot message a running session: it runs without factoryd's steer.")
+		return "", refuse(http.StatusNotImplemented, "This console cannot message a running session: it runs without the factory's steering.")
 	}
 	text, github, chat := scrubTokens(strings.TrimSpace(text))
 	if text == "" || len(text) > 8<<10 {
@@ -3026,14 +3026,14 @@ func (c *Console) approveMerge(ctx context.Context, a actor, q factoryd.Approval
 			return "", refusal
 		}
 		log.Printf("console: the review and audit rows of %s: %v", q.TaskID, err)
-		return "", refuse(http.StatusInternalServerError, "Cannot read the card's review and audit rows. Approve again.")
+		return "", refuse(http.StatusInternalServerError, "The card's review and audit rows could not be read. Try the merge again.")
 	}
-	unsignalled := "the task's workflow could not be signalled; approve again"
+	unsignalled := "The card's run did not get the approval. Try the merge again."
 	if !agent {
 		if err := c.review(ctx, a, q, "APPROVED", "Approved in the factory console.", spec.HeadSHA); err != nil {
 			return "", &forgejoRefusal{what: "submit the approving review", err: err}
 		}
-		unsignalled = "your approving review is on the pull request, but " + unsignalled
+		unsignalled = "Your approving review is on the pull request, but the card's run did not get the approval. Try the merge again."
 	}
 	if err := c.cfg.ApproveMerge(ctx, q.TaskID, q.PRNumber, a.approver()); err != nil {
 		if refusal, ok := unreviewedRefusal(err, t, spec); ok {
@@ -3165,7 +3165,7 @@ func (c *Console) denyMerge(ctx context.Context, a actor, q factoryd.ApprovalReq
 			return "", refuse(http.StatusBadGateway, "The card's run could not be told. End the card again.")
 		}
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeDenied, map[string]any{"pr": q.PRNumber, "action": "close"})
-		return fmt.Sprintf("Closing pull request #%d and its card with your words: no agent works on a pull request factoryd opened.", q.PRNumber), nil
+		return fmt.Sprintf("Closing pull request #%d and its card with your words: no agent works on a pull request the factory opened.", q.PRNumber), nil
 	}
 	repo, err := factoryd.SplitRepo(q.Project)
 	if err != nil {
@@ -3376,8 +3376,7 @@ func (c *Console) doRerun(ctx context.Context, a actor, id int64) (string, error
 	}
 	switch {
 	case !spec.Factory:
-		return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is no merge request of a pull request factoryd opened: "+
-			"its checks run again by a push to its branch, and approve and deny decide it", q.ID))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The factory did not open pull request #%d, so it runs no checks again. Its checks run again when its author pushes, and `approve_merge` or `deny_merge` decides it.", q.PRNumber))
 	case !spec.RedChecks:
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks are green, so nothing runs again: `approve_merge` merges it, and `deny_merge` with `reject` closes it.", q.PRNumber))
 	}

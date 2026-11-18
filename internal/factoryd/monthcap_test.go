@@ -88,7 +88,7 @@ func TestMonthAlarm(t *testing.T) {
 	for _, want := range []string{"This month's spending reached the factory's limit of 50.00 EUR\n\n",
 		"49.98 EUR of the cap of 50.00 EUR",
 		"https://git.example/sf/ai-software-factory-infra/src/commit/c9/factory/policy.yaml#L7",
-		"refused_month_cap", "The newest refusal:\n\n```\n" + gatewayRefusal + "\n```"} {
+		"The gateway refuses every further call until the month ends or the cap is raised.", "The newest refusal:\n\n```\n" + gatewayRefusal + "\n```"} {
 		if !strings.Contains(fj.issues[0], want) {
 			t.Errorf("issue lacks %q:\n%s", want, fj.issues[0])
 		}
@@ -382,7 +382,7 @@ func TestMonthAlarmClosesTheCardARaiseLifted(t *testing.T) {
 	if got := taskOf(t, store, "2026-10/100/544"); got.Status != "done" {
 		t.Fatalf("first card = %s, want done", got.Status)
 	}
-	if got := closeComments(t, store, first.ID); !slices.Equal(got, []string{"budget.month_eur is 600 in policy version 5: the cap card closes."}) {
+	if got := closeComments(t, store, first.ID); !slices.Equal(got, []string{"The month cap is 600.00 EUR in policy version 5, so the cap card closes."}) {
 		t.Fatalf("close comments = %q", got)
 	}
 	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 600}
@@ -446,7 +446,7 @@ func TestMonthAlarmClosesLastMonthsCard(t *testing.T) {
 	if got := taskOf(t, store, "2026-09/100/50"); got.Status != "done" {
 		t.Fatalf("September's card = %s, want done", got.Status)
 	}
-	if got := closeComments(t, store, card.ID); !slices.Equal(got, []string{"The UTC month 2026-09 ended: the cap card closes."}) {
+	if got := closeComments(t, store, card.ID); !slices.Equal(got, []string{"The UTC month 2026-09 ended, so the cap card closes."}) {
 		t.Fatalf("close comments = %q", got)
 	}
 }

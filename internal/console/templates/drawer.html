@@ -20,7 +20,7 @@
 <dt>Base</dt><dd class="mono">{{.Base}}</dd>
 <dt>Head</dt><dd class="mono">{{.Head}}</dd>
 {{with .MergeCommit}}<dt>Merge commit</dt><dd class="mono">{{.}}</dd>{{end}}
-<dt>diff_sha256</dt><dd class="mono">{{if .DiffSHA256}}{{.DiffSHA256}}{{else}}—{{end}}</dd>
+<dt>Diff SHA-256</dt><dd class="mono">{{if .DiffSHA256}}{{.DiffSHA256}}{{else}}—{{end}}</dd>
 <dt>Policy version</dt><dd class="mono">{{if .PolicyVersion}}{{.PolicyVersion}}{{else}}—{{end}}</dd>
 <dt>Cost</dt><dd class="mono">{{eur .CostEUR}} EUR</dd>
 </dl>

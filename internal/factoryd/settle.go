@@ -245,11 +245,13 @@ func caseEnds(ask Event, events []Event) func(Event) bool {
 func ReasonLine(s PokeSettle) string {
 	word, by := s.Word, DeciderWords(s.By)
 	if s.By == FactoryDecider {
-		// the factory answers no ask: it withdraws one that no longer holds
-		if word == "answered" {
-			word = "withdrawn"
+		switch {
+		case s.Event.Kind == EventCardClosed || s.Event.Kind == EventPlanClosed:
+			// the factory's close of a card or a plan withdraws its ask
+			word, by = "withdrawn", ""
+		case word != "answered":
+			by = ""
 		}
-		by = ""
 	}
 	if by != "" {
 		return word + " by " + by + " · " + s.At.UTC().Format("15:04")

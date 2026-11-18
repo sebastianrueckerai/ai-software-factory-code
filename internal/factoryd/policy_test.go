@@ -790,7 +790,7 @@ func TestConfigAlarm(t *testing.T) {
 		"attempts=0,merge_rule=human,model_alias=none,process=none,project=sf-ai-software-factory-infra,state=done,track=none": 1,
 	})
 	if !slices.Equal(fj.closed, []int64{41}) || len(fj.comments) != 1 ||
-		!strings.Contains(fj.comments[0], "#41 factoryd loaded commit cacacacacaca (version 13)") {
+		!strings.Contains(fj.comments[0], "#41 The factory loaded commit cacacac as version 13, so this rejection is resolved.") {
 		t.Fatalf("closed %v, comments %q", fj.closed, fj.comments)
 	}
 	if got := store.tasks[task.ID]; got.Status != "done" || got.FinishedAt == nil {

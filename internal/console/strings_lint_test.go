@@ -425,6 +425,53 @@ func literalText(e ast.Expr) (string, bool) {
 
 // Every refusal a door gives and every comment the factory posts passes
 // the guide's checks and the face's in the words the code holds, as its
+// assignedTexts is the literal texts that the innermost function on stack
+// sets the variable name to: a door call that passes a variable writes one
+// of them.
+func assignedTexts(stack []ast.Node, name string) []string {
+	var body ast.Node
+	for i := len(stack) - 1; i >= 0 && body == nil; i-- {
+		switch f := stack[i].(type) {
+		case *ast.FuncDecl:
+			body = f.Body
+		case *ast.FuncLit:
+			body = f.Body
+		}
+	}
+	if body == nil {
+		return nil
+	}
+	var out []string
+	add := func(id *ast.Ident, e ast.Expr) {
+		if id.Name != name {
+			return
+		}
+		if text, ok := literalText(e); ok {
+			out = append(out, text)
+		}
+	}
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch s := n.(type) {
+		case *ast.AssignStmt:
+			if (s.Tok == token.ASSIGN || s.Tok == token.DEFINE) && len(s.Lhs) == len(s.Rhs) {
+				for i, l := range s.Lhs {
+					if id, ok := l.(*ast.Ident); ok {
+						add(id, s.Rhs[i])
+					}
+				}
+			}
+		case *ast.ValueSpec:
+			for i, id := range s.Names {
+				if i < len(s.Values) {
+					add(id, s.Values[i])
+				}
+			}
+		}
+		return true
+	})
+	return out
+}
+
 // reader reads it (doorFaults): each call of doorCalls, its literal text
 // with each value as "X".
 func TestEveryRefusalAndCommentPassesTheGuide(t *testing.T) {
@@ -477,7 +524,13 @@ func TestEveryRefusalAndCommentPassesTheGuide(t *testing.T) {
 				if !ok || i >= len(call.Args) {
 					return true
 				}
+				var texts []string
 				if text, ok := literalText(call.Args[i]); ok {
+					texts = append(texts, text)
+				} else if id, ok := call.Args[i].(*ast.Ident); ok {
+					texts = assignedTexts(stack, id.Name)
+				}
+				for _, text := range texts {
 					if faults := doorFaults(pkg, fn, agent > 0, text); len(faults) > 0 {
 						t.Errorf("%s: %q\n\t%s", fs.Position(call.Pos()), text, strings.Join(faults, " "))
 					}

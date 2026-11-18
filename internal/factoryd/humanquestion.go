@@ -227,7 +227,7 @@ func MonthCapCardQuestion(limit float64, month string, eur float64, link, refusa
 			Waits:    "Model calls fail until the guard's limit is raised.",
 		}
 	}
-	info := "The gateway refuses every further call with `refused_month_cap` until the month ends or the cap is raised. " +
+	info := "The gateway refuses every further call until the month ends or the cap is raised. " +
 		"A task it refused waits on its card and resumes on its own once the cap is raised or the month turns. Raising the cap is a commit to the `month_eur` line, " +
 		"like any setting: " + link + "\n\nClose this issue once decided."
 	if refusal != "" {

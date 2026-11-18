@@ -678,6 +678,8 @@ func TestMetricsFormatters(t *testing.T) {
 		{"mEur two sixty", mEur(2.6), "2.60 EUR"},
 		{"mEurMove up", mEurMove(9.1), "+9.10 EUR"},
 		{"mEurMove down", mEurMove(-0.3), "−0.30 EUR"},
+		{"mEurMove below a cent", mEurMove(0.004), "+<0.01 EUR"},
+		{"mEurMove down below a cent", mEurMove(-0.001), "−<0.01 EUR"},
 		{"mDec", mDec(1.4), "1.4"},
 		{"mDecMove", mDecMove(-0.3), "−0.3"},
 		{"mShare", mShare(71.4), "71 %"},

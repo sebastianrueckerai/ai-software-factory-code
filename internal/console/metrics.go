@@ -105,7 +105,15 @@ func mDecMove(d float64) string   { return msign(d) + mDec(math.Abs(d)) }
 func mPct(ratio float64) string   { return mCount(ratio*100) + " %" }
 func mPctMove(d float64) string   { return msign(d) + mCount(math.Abs(d)*100) }
 func mEur(v float64) string       { return textutil.EUR(v) + " EUR" }
-func mEurMove(d float64) string   { return msign(d) + mEur(math.Abs(d)) }
+
+// mEurMove is a money move with its sign; a move above zero that two
+// decimals would show as nothing reads "<0.01".
+func mEurMove(d float64) string {
+	if a := math.Abs(d); a > 0 && a < 0.005 {
+		return msign(d) + "<0.01 EUR"
+	}
+	return msign(d) + mEur(math.Abs(d))
+}
 
 // mK reads token counts: whole thousands as k, whole millions as M,
 // fractions to one digit.

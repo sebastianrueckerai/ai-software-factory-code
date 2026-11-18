@@ -243,3 +243,31 @@ func TestAMessageFindsItsAskByItsWhy(t *testing.T) {
 		t.Fatalf("the flag's message while the card runs = %+v, want it open on its case", s)
 	}
 }
+
+// TestReasonLineNamesTheFactorysAnswerAndItsWithdrawal: the factory's
+// close of a card or a plan withdraws the ask, while an ask the factory
+// answers, a rung-0 press or a plan question's confirmation, reads as
+// answered by the factory.
+func TestReasonLineNamesTheFactorysAnswerAndItsWithdrawal(t *testing.T) {
+	at := time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC)
+	settle := func(kind, by string) PokeSettle {
+		return PokeSettle{Word: SettleWord(kind), By: by, At: at, Event: Event{Kind: kind, Actor: by}}
+	}
+	for _, c := range []struct {
+		s    PokeSettle
+		want string
+	}{
+		{settle(EventCardClosed, FactoryDecider), "withdrawn · 09:30"},
+		{settle(EventPlanClosed, FactoryDecider), "withdrawn · 09:30"},
+		{settle(EventQuestionWithdrawn, FactoryDecider), "withdrawn · 09:30"},
+		{settle(EventQuestionAnswered, FactoryDecider), "answered by the factory · 09:30"},
+		{settle(EventPlanQuestionAnswered, FactoryDecider), "answered by the factory · 09:30"},
+		{settle(EventTaskEnded, FactoryDecider), "moved on · 09:30"},
+		{settle(EventCardClosed, "sebastian"), "answered by sebastian · 09:30"},
+		{settle(EventQuestionAnswered, ChatUser), "answered by the factory agent · 09:30"},
+	} {
+		if got := ReasonLine(c.s); got != c.want {
+			t.Errorf("ReasonLine(%s by %s) = %q, want %q", c.s.Event.Kind, c.s.By, got, c.want)
+		}
+	}
+}

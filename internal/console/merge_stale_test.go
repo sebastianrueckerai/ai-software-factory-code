@@ -88,7 +88,7 @@ func TestApproveReadsTheGateRowsBeforeTheReview(t *testing.T) {
 	r.c.cfg.CheckMerge = func(context.Context, string, int64, string) error { return fmt.Errorf("the store is down") }
 	ck, s := r.loggedIn(t)
 	rec := r.do(post("/approvals/31/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
-	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "Cannot read the card's review and audit rows. Approve again.") {
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "The card's review and audit rows could not be read. Try the merge again.") {
 		t.Fatalf("approve = %d %q", rec.Code, rec.Body.String())
 	}
 	if len(r.fg.reviews) != 0 {

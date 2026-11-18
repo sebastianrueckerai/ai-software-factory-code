@@ -252,11 +252,11 @@ func TestSchemaCopierOpensOnePullRequest(t *testing.T) {
 	if got := branch["factory/schema/commit"]; got != codeMine+"\n" {
 		t.Errorf("the commit file holds %q, want this build's commit", got)
 	}
-	body := "Main's copies of these schemas differ from what factoryd build 0123456789ab generates; this pull request writes them whole:\n\n" +
+	body := "Main's copies of these schemas differ from what the factory's build 0123456789ab generates. This pull request writes them whole:\n\n" +
 		"- `factory/schema/policy.schema.json`: differs\n" +
 		"- `factory/schema/process.schema.json`: missing\n\n" +
 		"`factory/schema/commit` names the build's commit " + codeMine + ": a later build writes over these copies, an older one leaves them.\n\n" +
-		"factoryd opens it when it starts and never merges it, an approver does. `factoryd config check` only warns about a stale copy.\n"
+		"The factory opens it when it starts and never merges it: a human does. `factoryd config check` only warns about a stale copy.\n"
 	want := []schemaPR{{number: 1, head: "factory/schema-0123456789ab", headRepo: "factory-agent/ai-software-factory-infra",
 		title: "Schema copies for 0123456789ab", body: body, poster: "bot", state: "open"}}
 	writes := []string{"POST " + schemaUp + "/forks by bot", "POST " + schemaFork + "/contents by bot", "POST " + schemaUp + "/pulls by bot"}

@@ -288,9 +288,9 @@ func (a *MonthAlarm) closeLifted(ctx context.Context, v policy.Version, m MonthS
 		var msg string
 		switch {
 		case month < m.Month:
-			msg = fmt.Sprintf("The UTC month %s ended: the cap card closes.", month)
+			msg = fmt.Sprintf("The UTC month %s ended, so the cap card closes.", month)
 		case month == m.Month && limit > capEUR:
-			msg = fmt.Sprintf("budget.month_eur is %s in policy version %d: the cap card closes.", strconv.FormatFloat(limit, 'f', -1, 64), v.ID)
+			msg = fmt.Sprintf("The month cap is %s EUR in policy version %d, so the cap card closes.", textutil.EUR(limit), v.ID)
 		default:
 			continue
 		}

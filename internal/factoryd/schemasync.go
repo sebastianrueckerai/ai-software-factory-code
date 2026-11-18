@@ -180,7 +180,7 @@ func (c *SchemaCopier) sync(ctx context.Context) error {
 // card carries and how it ends.
 func SchemaCopyCard(pr PullRequestRef, repo, build string, paths []string) BriefText {
 	b := SourceBriefs[SourceSchemaCopy](BriefFacts{Name: repo})
-	b.Body = fmt.Sprintf("factoryd opened pull request [#%d](%s) on %s: main's copies of the generated schemas differ from what build %s generates.\n\nFiles: %s\n\nThe card's work is that very pull request: its gates verify it, an approval merges it as the merge rule of the project says, and the merge closes this card. factoryd files it and never merges anything itself.\n",
+	b.Body = fmt.Sprintf("The factory opened pull request [#%d](%s) on %s: main's copies of the generated schemas differ from what build %s generates.\n\nFiles: %s\n\nThe card's work is that very pull request: its gates verify it, an approval merges it as the merge rule of the project says, and the merge closes this card. factoryd files it and never merges anything itself.\n",
 		pr.Number, pr.URL, repo, build, strings.Join(paths, ", "))
 	return b
 }
@@ -337,12 +337,12 @@ func (c *SchemaCopier) open(ctx context.Context, fork Repo, branch string, diffs
 		return nil, err
 	}
 	var body strings.Builder
-	fmt.Fprintf(&body, "Main's copies of these schemas differ from what factoryd build %s generates; this pull request writes them whole:\n\n", c.Build)
+	fmt.Fprintf(&body, "Main's copies of these schemas differ from what the factory's build %s generates. This pull request writes them whole:\n\n", c.Build)
 	for _, path := range slices.Sorted(maps.Keys(why)) {
 		fmt.Fprintf(&body, "- `%s`: %s\n", path, why[path])
 	}
 	fmt.Fprintf(&body, "\n`%s` names the build's commit %s: a later build writes over these copies, an older one leaves them.\n", stamp, c.Commit)
-	body.WriteString("\nfactoryd opens it when it starts and never merges it, an approver does. `factoryd config check` only warns about a stale copy.\n")
+	body.WriteString("\nThe factory opens it when it starts and never merges it: a human does. `factoryd config check` only warns about a stale copy.\n")
 	ref, err := c.Forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, "main", title, body.String())
 	if err != nil {
 		return nil, err

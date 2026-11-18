@@ -3110,7 +3110,7 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	}
 	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"high","head_sha":"abc123"}`)
 	rec = r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "approval request 4 is no merge request of a pull request factoryd opened") ||
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "The factory did not open pull request #9, so it runs no checks again. Its checks run again when its author pushes, and “Merge it” or “Send it back” decides it.") ||
 		len(r.fg.calls) != 0 {
 		t.Fatalf("re-run of an agent's pull request = %d %q, calls %q", rec.Code, rec.Body, r.fg.calls)
 	}

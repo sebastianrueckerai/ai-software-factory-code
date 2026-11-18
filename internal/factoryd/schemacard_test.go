@@ -311,7 +311,7 @@ func TestSchemaCopierFilesCard(t *testing.T) {
 		t.Fatalf("card = %+v, want the policy's task default of 2 EUR", card)
 	}
 	if card.Repository != cardUpstream || card.SHA != "0123456789ab" ||
-		!strings.HasPrefix(card.Objective, "Copy the changed schemas to "+cardUpstream+"\n\nfactoryd opened pull request [#1]") ||
+		!strings.HasPrefix(card.Objective, "Copy the changed schemas to "+cardUpstream+"\n\nThe factory opened pull request [#1]") ||
 		!strings.Contains(card.Objective, "what build 0123456789ab generates") {
 		t.Fatalf("card = %+v, want it on %s naming this build", card, cardUpstream)
 	}
@@ -324,7 +324,7 @@ func TestSchemaCopierFilesCard(t *testing.T) {
 	}
 	wantBody := "Why: A new build changed the configuration schemas, and their copies in sf/ai-software-factory-infra no longer match.\n\n" +
 		"Summary: A pull request that writes the changed schemas into their copies. The policy check runs on it, and its merge makes the copies match the build.\n\n---\n\n" +
-		"factoryd opened pull request [#1](https://git.example/sf/ai-software-factory-infra/pulls/1) on sf/ai-software-factory-infra: " +
+		"The factory opened pull request [#1](https://git.example/sf/ai-software-factory-infra/pulls/1) on sf/ai-software-factory-infra: " +
 		"main's copies of the generated schemas differ from what build 0123456789ab generates.\n\n" +
 		"Files: factory/schema/policy.schema.json\n\n"
 	if !strings.HasPrefix(issues[0].body, wantBody) {
