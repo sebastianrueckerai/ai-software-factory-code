@@ -152,7 +152,7 @@ var SourceBriefs = map[string]func(BriefFacts) BriefText{
 			Why: "The factory refused the newest configuration, so the version before it stays in force."}
 	},
 	SourceProductionHeld: func(f BriefFacts) BriefText {
-		return BriefText{Title: "Deploys of " + f.Name + " to production wait for an open plan. Deploy now, or send the plan back?",
+		return BriefText{Title: "Deploys of " + f.Name + " to production wait for an open plan. How should the deploys go on?",
 			Why: "While a plan is open on main, no merge goes to production, so a half-built feature never goes live."}
 	},
 	SourceRoutine: func(f BriefFacts) BriefText {

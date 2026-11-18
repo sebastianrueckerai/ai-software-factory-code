@@ -164,11 +164,11 @@ func TestNoFaceHoldsARawStopReason(t *testing.T) {
 // money line's.
 func TestAStopOnStartsCountsNoSessions(t *testing.T) {
 	want := map[factoryd.CaseKind][2]string{
-		factoryd.CasePodNeverStarted: {"No machine could start the card's session. Try again, or end the card?",
+		factoryd.CasePodNeverStarted: {"No machine could start the card's session. How should the card go on?",
 			"Several starts in a row waited for a machine with room, and no agent ran."},
-		factoryd.CaseProviderRefused: {"The model provider refused the card's last starts. Try again, or switch the model?",
+		factoryd.CaseProviderRefused: {"The model provider refused the card's last starts. How should the card go on?",
 			"The provider turned down the first call of several starts in a row."},
-		factoryd.CaseNoAnswer: {"The model gave no answer to the card's last starts. Try again, or switch the model?",
+		factoryd.CaseNoAnswer: {"The model gave no answer to the card's last starts. How should the card go on?",
 			"Several starts in a row ended without an answer from the model."},
 	}
 	for kind, w := range want {

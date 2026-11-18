@@ -907,23 +907,24 @@ func TestACapsWhyNamesTheFileOfItsLimit(t *testing.T) {
 // pairAsk matches an ask whose question names two ways out.
 var pairAsk = regexp.MustCompile(`, or [^.?]*\?$`)
 
-// The asks of a card at a limit, of repeated findings and of a gate stop
-// hold more answers than two: each keeps its facts and asks how the card
-// goes on, so a pick may be any answer the face holds.
+// An ask whose face holds more answers than two names no pair of them: it
+// keeps its facts and asks how the card goes on, so a pick may be any
+// answer the face holds.
 func TestTheAsksWithManyAnswersNameNoPair(t *testing.T) {
-	kinds := []factoryd.CaseKind{factoryd.CaseSessionCap, factoryd.CaseAgentTimeCap, factoryd.CaseFindingsRepeated, factoryd.CaseGateStop}
-	seen := map[factoryd.CaseKind]bool{}
+	pairs := 0
 	for _, x := range facedFixtures(t) {
-		if x.fx.Case == nil || !slices.Contains(kinds, x.fx.Case.Kind) {
+		if !pairAsk.MatchString(x.face.Ask) {
 			continue
 		}
-		seen[x.fx.Case.Kind] = true
-		if ask := x.face.Ask; pairAsk.MatchString(ask) || !strings.HasSuffix(ask, " go on?") {
-			t.Errorf("%s/%s: the ask %q does not ask how the card goes on, and the face holds %v", x.fx.Group, x.fx.Kind, ask, labels(x.face.Answers))
+		pairs++
+		ways := labels(x.face.Answers)
+		ways = slices.DeleteFunc(ways, func(l string) bool { return l == "Not now" })
+		if len(ways) > 2 {
+			t.Errorf("%s/%s: the ask %q names a pair, and the face holds %v", x.fx.Group, x.fx.Kind, x.face.Ask, ways)
 		}
 	}
-	if len(seen) != len(kinds) {
-		t.Errorf("the fixtures hold %v of %v", seen, kinds)
+	if pairs == 0 {
+		t.Error("no fixture's ask names a pair, so the check reads nothing")
 	}
 	for ask, f := range map[string]factoryd.Facts{
 		"The checks ran past their time limit. How should the card go on?":       {CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseGateStop, Gate: factoryd.ActivityWaitChecks}},
@@ -933,6 +934,21 @@ func TestTheAsksWithManyAnswersNameNoPair(t *testing.T) {
 		f.Case = factoryd.Case{Kind: f.Kind}
 		if got := factoryd.FaceOf(f.Case, f).Ask; got != ask {
 			t.Errorf("%s: the ask %q, want %q", f.Kind, got, ask)
+		}
+	}
+	for kind, ask := range map[factoryd.CaseKind]string{
+		factoryd.CaseCheckinHuman:     "The session's check found a question only you can settle. How should the card go on?",
+		factoryd.CasePodNeverStarted:  "No machine could start the card's session. How should the card go on?",
+		factoryd.CaseProviderRefused:  "The model provider refused the card's last starts. How should the card go on?",
+		factoryd.CaseNoAnswer:         "The model gave no answer to the card's last starts. How should the card go on?",
+		factoryd.CaseContentFilter:    "The provider's content filter refused the session. How should the card go on?",
+		factoryd.CaseOther:            "The card stopped on a problem it cannot fix by itself. How should it go on?",
+		factoryd.CaseDependencyFailed: "A card this one waits for failed. How should this card go on?",
+		factoryd.CaseDependencyClosed: "A card this one waits for was closed. How should this card go on?",
+		factoryd.CaseRollHeld:         "Deploys of code to production wait for an open plan. How should the deploys go on?",
+	} {
+		if got := fixture(t, "case", string(kind)).face.Ask; got != ask {
+			t.Errorf("%s: the ask %q, want %q", kind, got, ask)
 		}
 	}
 }

@@ -476,7 +476,7 @@ func TestCaseFaceShowsTheBriefMasked(t *testing.T) {
 	r.caseAsks = map[int64]factoryd.CaseAsk{3: {At: time.Now().Add(-time.Hour), Detail: map[string]any{"info": "the digest's info"}}}
 	ck, _ := r.loggedIn(t)
 	drawer := getAs(r, ck, "/cards/t-a/drawer?tab=overview&case=t-a:3", false).Body.String()
-	for _, want := range []string{"<li>No session has run on this card. The fetch of", "<li>Another session fixes both findings. All of its work is still to do.</li>", "<p>the digest's info</p>"} {
+	for _, want := range []string{`<li>No <span class="term">session</span> has run on this card. The fetch of`, "<li>Another session fixes both findings. All of its work is still to do.</li>", "<p>the digest's info</p>"} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the opened card lacks %q:\n%s", want, drawer)
 		}
@@ -572,7 +572,7 @@ func TestACasesCardAsksItsResourceRequestAsAPage(t *testing.T) {
 	}
 	r.tasks.mu.Unlock()
 	ck, _ := r.loggedIn(t)
-	const caseAsk, serverAsk = "The card stopped on a problem it cannot fix by itself. Run one more session, or send it back to the planner?",
+	const caseAsk, serverAsk = "The card stopped on a problem it cannot fix by itself. How should it go on?",
 		"Rent a cx33 server for 5 hours at about 0.07 EUR?"
 	small := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), "t-res")
 	if !strings.Contains(small, serverAsk) || !strings.Contains(small, "1 of 2") || !strings.Contains(small, "/cards/t-res/cases/5?") {

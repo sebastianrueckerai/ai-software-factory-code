@@ -481,8 +481,14 @@ func init() {
 		return s
 	}
 	limit := work(FaceSpec{Ask: limitAsk, Why: limitWhy, Answers: keys(ActExtend, ActSuccessor, ActClose, ActNote)})
-	modelStop := func(ask, why string) FaceSpec {
-		return work(FaceSpec{Ask: fixed(ask), Why: fixed(why), Answers: func(f Facts) []string {
+	modelStop := func(stop, why string) FaceSpec {
+		ask := func(f Facts) string {
+			if len(holding(f, ActHandover)) > 0 {
+				return stop + " How should the card go on?"
+			}
+			return stop + " Try again, or end the card?"
+		}
+		return work(FaceSpec{Ask: ask, Why: fixed(why), Answers: func(f Facts) []string {
 			// a helper runs its report on its own model
 			return slices.Concat([]string{ActResume}, holding(f, ActHandover), []string{ActClose, ActNote})
 		}})
@@ -497,7 +503,7 @@ func init() {
 		CaseDayCap:     capFace("The factory's spending limit for today is reached. Wait for it to reset, or end the card?"),
 		CaseMonthCap:   capFace("The factory's spending limit for this month is reached. Wait for it to reset, or end the card?"),
 		CaseProjectCap: capFace("This project's spending limit for the month is reached. Wait for it to reset, or end the card?"),
-		CaseCheckinHuman: work(FaceSpec{Ask: fixed("The session's check found a question only you can settle. Answer it, or send the card back to the planner?"),
+		CaseCheckinHuman: work(FaceSpec{Ask: fixed("The session's check found a question only you can settle. How should the card go on?"),
 			Why:     reasonWhy("A check during the session found a question that only a human can settle."),
 			Answers: keys(ActContinue, ActReplan, ActClose, ActNote)}),
 		CasePolicyClass: work(FaceSpec{Ask: fixed("The change touches files only a human may approve. Let the card go on with it?"),
@@ -516,13 +522,13 @@ func init() {
 			Why: depWhy, Answers: func(f Facts) []string { return append(holding(f, ActRemoveDependency), ActReplan, ActClose) }}),
 		CaseWaitExpired: work(FaceSpec{Ask: fixed("The card's author has not answered its question. Go on without the answer, or end the card?"),
 			Why: fixed("The card's question waited past its time limit without an answer."), Answers: keys(ActNote, ActResume, ActClose)}),
-		CasePodNeverStarted: modelStop("No machine could start the card's session. Try again, or end the card?",
+		CasePodNeverStarted: modelStop("No machine could start the card's session.",
 			"Several starts in a row waited for a machine with room, and no agent ran."),
-		CaseProviderRefused: modelStop("The model provider refused the card's last starts. Try again, or switch the model?",
+		CaseProviderRefused: modelStop("The model provider refused the card's last starts.",
 			"The provider turned down the first call of several starts in a row."),
-		CaseNoAnswer: modelStop("The model gave no answer to the card's last starts. Try again, or switch the model?",
+		CaseNoAnswer: modelStop("The model gave no answer to the card's last starts.",
 			"Several starts in a row ended without an answer from the model."),
-		CaseContentFilter: modelStop("The provider's content filter refused the session. Try again, or switch the model?",
+		CaseContentFilter: modelStop("The provider's content filter refused the session.",
 			"The factory does not send a refused request again by itself."),
 		CaseImageWait: work(FaceSpec{Ask: fixed("The card waits for another card to add a tool it needs. Let it wait, or end it?"),
 			Why: fixed("The card needs a tool that another card is still installing for it."), Answers: keys(ActNote, ActClose)}),
@@ -558,7 +564,7 @@ func init() {
 		CaseRedMain:          humanFace,
 		CaseRollHeld:         humanFace,
 		CaseConfigRefused:    humanFace,
-		CaseOther: work(FaceSpec{Ask: fixed("The card stopped on a problem it cannot fix by itself. Run one more session, or send it back to the planner?"),
+		CaseOther: work(FaceSpec{Ask: fixed("The card stopped on a problem it cannot fix by itself. How should it go on?"),
 			Why:     reasonWhy("The card stopped for a reason the factory has no rule for."),
 			Answers: keys(ActResume, ActReplan, ActClose, ActNote)}),
 		CaseMonitorFlag: {Ask: fixed("The factory flagged something odd on this card. Is that fine?"),
@@ -1267,19 +1273,17 @@ func depFailedAsk(f Facts) string {
 		return "A card of this plan failed. Try it again, or end it so the plan goes on?"
 	}
 	switch retry, free := len(holding(f, ActRetry)) > 0, len(holding(f, ActRemoveDependency)) > 0; {
-	case retry && free:
-		return "A card this one waits for failed. Try it again, or stop waiting for it?"
 	case retry:
-		return "A card this one waits for failed. Try it again, or send this card back to the planner?"
+		return "A card this one waits for failed. How should this card go on?"
 	case free:
-		return "A card this one waits for failed for good. Stop waiting for it, or send this card back to the planner?"
+		return "A card this one waits for failed for good. How should this card go on?"
 	}
 	return "A card this one waits for failed for good. Send this card back to the planner, or end it?"
 }
 
 func depClosedAsk(f Facts) string {
 	if len(holding(f, ActRemoveDependency)) > 0 {
-		return "A card this one waits for was closed. Stop waiting for it, or send this card back to the planner?"
+		return "A card this one waits for was closed. How should this card go on?"
 	}
 	return "A card this one waits for was closed. Send this card back to the planner, or end it?"
 }
