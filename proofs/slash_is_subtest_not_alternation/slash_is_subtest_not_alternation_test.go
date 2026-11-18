@@ -105,7 +105,7 @@ func TestSlashIsSubtestNotAlternation(t *testing.T) {
 			t.Errorf("the slashed name ran another test: %+v", tc)
 		}
 	}
-	if piped := runCheck(t, "./internal/console", "TestConfirmationLead|TestRefusalScrolls"); len(piped) != 0 {
+	if piped := runCheck(t, "./internal/console", "TestACompoundHoldoutClaimRendersWhole|TestPlanCardHoldoutsSettleWithTheConfirmation"); len(piped) != 0 {
 		t.Errorf("the piped name ran %d tests, want none: %+v", len(piped), piped)
 	}
 }
