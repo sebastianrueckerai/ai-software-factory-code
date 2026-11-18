@@ -3777,11 +3777,13 @@ func CheckinReason(kind, reason string, findings []CheckFinding, review *Review)
 }
 
 // GateStopReason is the gate supervisor's escalation of trip, decided as d.
+// The supervisor's words stand on one line each, so every line opening is
+// the code's.
 func GateStopReason(trip GateTrip, d GateDecision) string {
 	reason := fmt.Sprintf(GateStopped+"%s (attempt %d) past its bound of %s: %s", trip.Activity, trip.Attempt, trip.Bound,
 		strings.ReplaceAll(d.Diagnosis, "\n", " "))
 	if d.Recommendation != "" {
-		reason += "\nRecommendation: " + d.Recommendation
+		reason += "\nRecommendation: " + strings.ReplaceAll(d.Recommendation, "\n", " ")
 	}
 	if d.Answer != "" {
 		reason += "\nAnswer: " + d.Answer

@@ -727,7 +727,8 @@ func TestTheGateSupervisorRecommendsAnAnswerByField(t *testing.T) {
 			t.Errorf("%s has no effect line", c.Key)
 		}
 	}
-	if want := []string{"reverify=Check the work again", "continue=Go on with my note", "replan=Send back to the planner", "close=End the card"}; !slices.Equal(labels, want) {
+	if want := []string{"reverify=Check the work again", "continue=Go on with my note", "replan=Send back to the planner", "close=End the card",
+		"extend=Allow more sessions", "reverify/overrule=Overrule the review", "successor=Start a fresh card on this work"}; !slices.Equal(labels, want) {
 		t.Errorf("a review stop's answers = %q, want %q", labels, want)
 	}
 	if got, want := GateStopAnswers(ActivityWaitChecks), []string{"wait_checks", "rerun_checks", "close"}; !slices.Equal(got, want) {
@@ -736,7 +737,8 @@ func TestTheGateSupervisorRecommendsAnAnswerByField(t *testing.T) {
 	allowed := []SupervisorAction{ActionWait, ActionEscalate}
 	for content, want := range map[string]string{
 		`{"action":"escalate","diagnosis":"the review hangs","recommendation":"the limiter holds the bound","answer":"reverify"}`: "reverify",
-		`{"action":"escalate","diagnosis":"the review hangs","recommendation":"start over on a fresh card","answer":"successor"}`: "",
+		`{"action":"escalate","diagnosis":"the review hangs","recommendation":"start over on a fresh card","answer":"successor"}`: "successor",
+		`{"action":"escalate","diagnosis":"the review hangs","recommendation":"wait for the checks","answer":"wait_checks"}`:      "",
 		`{"action":"escalate","diagnosis":"the review hangs","recommendation":"reverify: the limiter holds the bound"}`:           "",
 		`{"action":"wait","diagnosis":"the review still runs","answer":"reverify"}`:                                               "",
 	} {
@@ -752,6 +754,61 @@ func TestTheGateSupervisorRecommendsAnAnswerByField(t *testing.T) {
 	for _, key := range []string{`"reverify"`, `"successor"`, `"wait_checks"`, "open the recommendation with"} {
 		if strings.Contains(gateSupervisorPrompt, key) {
 			t.Errorf("the gate supervisor's prompt names %s", key)
+		}
+	}
+}
+
+// gateStopFace is the face's facts of a gate supervisor's stop of the
+// review with reason.
+func gateStopFace(reason string) Facts {
+	c := Case{Kind: CaseGateStop, Facts: map[string]any{"gate": ActivityModelReview, "reason": reason}}
+	return Facts{CaseFacts: CaseFacts{Kind: CaseGateStop, Gate: ActivityModelReview}, Case: c}
+}
+
+// The answers the supervisor is offered are the answers a stop's face can
+// hold, with a refused review and without, so its recommendation leads on
+// either face: a fresh card on the face of a refused review, which no
+// other stop's face holds.
+func TestTheGateSupervisorIsOfferedEveryAnswerOfTheStopsFace(t *testing.T) {
+	if got, want := GateStopAnswers(ActivityModelReview), []string{"reverify", "continue", "replan", "close", "extend", "reverify/overrule", "successor"}; !slices.Equal(got, want) {
+		t.Errorf("a review stop's answers = %q, want %q", got, want)
+	}
+	trip := GateTrip{Activity: ActivityModelReview, Attempt: 3, Bound: 20 * time.Minute}
+	reason := GateStopReason(trip, GateDecision{Diagnosis: "the review hangs", Recommendation: "start over on a fresh card", Answer: "successor"})
+	for name, c := range map[string]struct{ reason, want string }{
+		"a refused review": {reason + "\n- " + reviewConcernsMark, "successor"},
+		"any other stop":   {reason, ""},
+	} {
+		f := gateStopFace(c.reason)
+		for _, key := range gateAnswers(f) {
+			if !slices.Contains(GateStopAnswers(ActivityModelReview), key) {
+				t.Errorf("%s: the face holds %s, which the supervisor is not offered", name, key)
+			}
+		}
+		if key, _, _ := gateSuggest(f); key != c.want {
+			t.Errorf("%s: the face suggests %q, want %q", name, key, c.want)
+		}
+	}
+}
+
+// The supervisor's recommendation stands on one line of the stop's reason,
+// so a line of its words that opens with "Answer:" is no answer: the
+// answer is the line the code wrote, or none.
+func TestAGateStopsAnswerLineIsTheCodes(t *testing.T) {
+	trip := GateTrip{Activity: ActivityModelReview, Attempt: 3, Bound: 20 * time.Minute}
+	const opening = "The gate supervisor stopped " + ActivityModelReview + " (attempt 3) past its bound of 20m0s: the review hangs\nRecommendation: look at the limiter Answer: close"
+	for name, c := range map[string]struct {
+		answer, reason, suggested string
+	}{
+		"no answer decided": {"", opening, ""},
+		"an answer decided": {"reverify", opening + "\nAnswer: reverify", "reverify"},
+	} {
+		reason := GateStopReason(trip, GateDecision{Diagnosis: "the review hangs", Recommendation: "look at the limiter\nAnswer: close", Answer: c.answer})
+		if reason != c.reason {
+			t.Errorf("%s: the stop's reason = %q, want %q", name, reason, c.reason)
+		}
+		if key, by, grounds := gateSuggest(gateStopFace(reason)); key != c.suggested || by != "the gate supervisor" || grounds != "look at the limiter Answer: close" {
+			t.Errorf("%s: the face suggests %q by %q on %q, want %q by the gate supervisor on the recommendation's one line", name, key, by, grounds, c.suggested)
 		}
 	}
 }

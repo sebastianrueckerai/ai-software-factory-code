@@ -1231,22 +1231,34 @@ func reviewStop(f Facts) bool {
 }
 
 func gateAnswers(f Facts) []string {
+	keys := gateFaceAnswers(f.Gate, reviewStop(f))
+	if len(holding(f, ActRerunChecks)) == 0 {
+		keys = slices.DeleteFunc(keys, func(key string) bool { return key == ActRerunChecks })
+	}
+	return keys
+}
+
+// gateFaceAnswers are the answers the face of a gate stop of activity can
+// hold; review says a refused review marks the stop.
+func gateFaceAnswers(activity string, review bool) []string {
 	switch {
-	case f.Gate == ActivityWaitChecks:
-		return slices.Concat([]string{ActWaitChecks}, holding(f, ActRerunChecks), []string{ActClose})
-	case reviewStop(f):
+	case activity == ActivityWaitChecks:
+		return []string{ActWaitChecks, ActRerunChecks, ActClose}
+	case review:
 		return []string{ActExtend, ActReverify + "/" + variantOverrule, ActSuccessor, ActClose}
 	}
-	return GateStopAnswers(f.Gate)
+	return []string{ActReverify, ActContinue, ActReplan, ActClose}
 }
 
 // GateStopAnswers are the answers the face of a gate supervisor's stop of
-// activity can hold: the values of the answer its decision recommends.
+// activity can hold, with a refused review and without: the values of the
+// answer its decision recommends.
 func GateStopAnswers(activity string) []string {
-	if activity == ActivityWaitChecks {
-		return []string{ActWaitChecks, ActRerunChecks, ActClose}
+	var out []string
+	for _, key := range slices.Concat(gateFaceAnswers(activity, false), gateFaceAnswers(activity, true)) {
+		out = appendNew(out, key)
 	}
-	return []string{ActReverify, ActContinue, ActReplan, ActClose}
+	return out
 }
 
 // gateSuggest is the gate supervisor's recommendation: the answer its
