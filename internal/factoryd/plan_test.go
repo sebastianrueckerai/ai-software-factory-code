@@ -2599,6 +2599,42 @@ func TestPlanLoopDropsALateResolutionOfItsTakenCase(t *testing.T) {
 	}
 }
 
+// A case that asks the plan's question again is the plan's: waiting on the
+// cap's case 701, the plan loop takes the extend of case 709, whose Again
+// is 701, as its answer, and the fourth session files revision 1, which
+// waits on its answers to the close. The same extend with no Again is
+// another case's and is dropped: the cap's wait goes on to the close with
+// no fourth session.
+func TestPlanLoopTakesTheResolutionOfTheCaseThatAsksItsQuestionAgain(t *testing.T) {
+	invalid := []string{"plan: card web: size huge: split it; a card is one package, one page or one set of endpoints"}
+	run := func(t *testing.T, again int64) *planHarness {
+		h := newPlanHarness(t, PlanResult{Findings: invalid}, PlanResult{Findings: invalid}, PlanResult{Findings: invalid}, PlanResult{Revision: 1, SHA256: "sha-1"})
+		start := h.env.Now()
+		h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (TaskUsage, error) {
+			row := h.rowUsage
+			if h.env.Now().Sub(start) >= time.Hour {
+				row.RaisedSessions = 2
+			}
+			return row, nil
+		})
+		sig := caseResolved(709, Resolution{Action: ActExtend, Note: "one more go"}, 610)
+		sig.Case.Again = again
+		h.signalAfter(time.Hour, SignalCaseResolved, sig)
+		h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+		if final := h.run(t); final != "closed" {
+			t.Fatalf("finals %v", h.finals)
+		}
+		return h
+	}
+	asks := capReachedLadder + "\nlast: the planner filed no plan\n- " + invalid[0]
+	if h := run(t, 701); len(h.plans) != 4 || !slices.Equal(h.requests, []int{1}) || !slices.Equal(h.escalated, []string{asks}) {
+		t.Fatalf("with case 709 asking 701's question again: plans %q, requests %v, escalated %q; want revision 1 waiting on its answers to the close", h.plans, h.requests, h.escalated)
+	}
+	if h := run(t, 0); len(h.plans) != 3 || len(h.requests) != 0 || !slices.Equal(h.escalated, []string{asks}) {
+		t.Fatalf("with another case's extend: plans %q, requests %v, escalated %q; want the cap's wait to the close", h.plans, h.requests, h.escalated)
+	}
+}
+
 // A healed run's filing waits, as every filing does, until the cards the
 // newest revision drops have stopped: the healed RequestPlan starts only
 // after the ask that finds them stopped.

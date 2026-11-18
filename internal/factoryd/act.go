@@ -382,7 +382,7 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	if !runHears(t, c) {
 		return out, nil
 	}
-	r.signalRun(ctx, t.ID, SignalCaseResolved, resolvedSignal(in, res, c.ID, out.Comment))
+	r.signalRun(ctx, t.ID, SignalCaseResolved, resolvedSignal(in, res, c, out.Comment))
 	if out.Comment != 0 {
 		r.signalRun(ctx, t.ID, SignalAnswerWhole, TaskSignal{Author: in.By, Comment: out.Comment})
 	}
@@ -614,7 +614,7 @@ func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, own 
 			step.Outcome = StepWithdrawn
 			resolution.Reason = cmp.Or(strings.TrimSpace(res.Note), "withdrawn by "+in.By)
 		} else if runHears(t, c) {
-			resolved := resolvedSignal(in, res, c.ID, comment)
+			resolved := resolvedSignal(in, res, c, comment)
 			sig = &resolved
 		}
 		err = r.store.ResolveCase(ctx, c.ID, resolution, draw, &step, sig)
@@ -698,9 +698,9 @@ func runHears(t Task, c Case) bool {
 }
 
 // resolvedSignal is the case_resolved of answer in, res as the run takes
-// it, on case caseID, carried by comment.
-func resolvedSignal(in ActInput, res Resolution, caseID, comment int64) TaskSignal {
-	return TaskSignal{Author: in.By, Comment: comment, Case: &CaseSignal{CaseID: caseID, Rung: in.Rung, By: in.By, Res: res, Comment: comment}}
+// it, on case c, carried by comment.
+func resolvedSignal(in ActInput, res Resolution, c Case, comment int64) TaskSignal {
+	return TaskSignal{Author: in.By, Comment: comment, Case: &CaseSignal{CaseID: c.ID, Rung: in.Rung, By: in.By, Res: res, Comment: comment, Again: asksAgain(c)}}
 }
 
 // signalRun signals card taskID's run. A failed signal is logged: the

@@ -336,7 +336,7 @@ func TestOpenTripHealedFindsTheLiveAsk(t *testing.T) {
 	if err := g.s.WithdrawCase(ctx, asked.CaseID, "moved on"); err != nil {
 		t.Fatal(err)
 	}
-	again := g.trip(t, HealedReason)
+	again := g.rung2Faces(t, g.trip(t, HealedReason))
 	c := caseByID(t, g.s, again.CaseID)
 	if again.Comment != 502 || c.Kind != CaseAgentEscalate || c.Status != CaseAtHuman || c.Problem != "Which file?" || c.CommentID != 502 {
 		t.Fatalf("outcome %+v, case %+v; want the question asked again on comment 502 as the agent's ask", again, c)
@@ -740,7 +740,7 @@ func TestOpenTripRestartWithNoLiveCaseAsksItsStopAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.forge.comments = nil
-	out := g.trip(t, HealedReason)
+	out := g.rung2Faces(t, g.trip(t, HealedReason))
 	c := caseByID(t, g.s, out.CaseID)
 	if c.Kind != CaseSessionCap || c.Status != CaseAtHuman || out.Comment != 501 || c.CommentID != 501 {
 		t.Fatalf("outcome %+v, case %+v; want the session cap's case at the human on comment 501", out, c)
@@ -753,6 +753,95 @@ func TestOpenTripRestartWithNoLiveCaseAsksItsStopAgain(t *testing.T) {
 	}
 	if raised, _ := g.extendOne(t, c.ID); raised != 1 {
 		t.Fatalf("raised sessions = %d, want 1: the run under the gate reads the row", raised)
+	}
+}
+
+var whichFile = AgentAsks + "Which file?\nWhy: two match\nRecommendation: a.txt"
+
+// A restart with no live case asks the card's last stop again through the
+// rungs: the new case takes rung 0's restart step and rung 1's
+// conversation, and no comment is posted while they work. Once rung 1 has
+// handed up and rung 2 let its bound pass, the one face asks the stop's
+// own question, says above the stop that the restart asks it again, and
+// its info carries what the check-in found.
+func TestARestartsCaseClimbsBeforeItsFace(t *testing.T) {
+	ctx := context.Background()
+	g := newRungRig(t, "success")
+	if _, err := g.r.FaceStop(ctx, "t1", whichFile, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.s.WithdrawCase(ctx, onlyLiveCase(t, g.s, "t1").ID, "the run that asked it is gone"); err != nil {
+		t.Fatal(err)
+	}
+	g.forge.comments = nil
+	entered, release := g.holdFirstCall()
+	g.chat.answers = []CheckinResponse{g.handUp(t)}
+	out := g.trip(t, HealedReason)
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		close(release)
+		t.Fatalf("outcome %+v, comments %q: no rung 1 conversation started", out, g.forge.comments)
+	}
+	steps := g.steps(t, out.CaseID)
+	if out.Rung != 1 || out.Comment != 0 || len(steps) != 2 || steps[0].Rung != 0 || steps[0].Outcome != StepHandedUp ||
+		steps[0].Found != "asked again after a restart" || steps[1].Rung != 1 || steps[1].Outcome != StepInProgress || len(g.forge.comments) != 0 {
+		t.Fatalf("outcome %+v, steps %+v, comments %q; want rung 0's restart step, rung 1 at work and no comment", out, steps, g.forge.comments)
+	}
+	close(release)
+	g.settle()
+	g.afterRung2(t, out.CaseID)
+	asks := g.asks(t)
+	face := asks[len(asks)-1].Detail
+	info, _ := face["info"].(string)
+	if len(g.forge.comments) != 1 || !strings.Contains(g.forge.comments[0], HealedReason) || !strings.Contains(g.forge.comments[0], "Which file?") ||
+		face["ask"] != "Which file?" || !strings.Contains(info, "The check-in found: ") {
+		t.Fatalf("comments %q, face %+v; want one face asking the stop's own question with the check-in's finding", g.forge.comments, face)
+	}
+}
+
+// A restart with no ask before it asks its own sentence again through
+// rung 2: rung 1 does not judge below autonomous, so rung 2 takes the case,
+// and the face after its hand-up shapes the sentence into a decision with
+// what rung 2 found and its recommendation.
+func TestARestartWithNoAskFacesRung2sAnalysis(t *testing.T) {
+	g, _, _ := rungTwoRig(t, policy.JudgmentAutonomousAndAbove)
+	out := g.trip(t, HealedReason)
+	if out.Rung != 2 || len(g.forge.comments) != 0 {
+		t.Fatalf("outcome %+v, comments %q; want rung 2 on the case and no comment", out, g.forge.comments)
+	}
+	if _, err := g.r.HandUpRung2(context.Background(), "t1", out.CaseID, "the restart lost the card's question",
+		RungTwoRecommendation{Action: ActClose, Grounds: "the card's work is done on main"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	asks := g.asks(t)
+	if len(asks) != 1 || len(g.forge.comments) != 1 {
+		t.Fatalf("asks %+v, comments %q; want one face", asks, g.forge.comments)
+	}
+	face := asks[0].Detail
+	info, _ := face["info"].(string)
+	if face["ask"] != "This card stopped and needs your decision: how should it go on?" || face["why"] != HealedReason ||
+		!strings.Contains(info, "The factory agent found: the restart lost the card's question") ||
+		face["recommendation"] != "close: the card's work is done on main" || face["recommended_by"] != "the factory agent" {
+		t.Fatalf("face %+v; want the decision with rung 2's finding and recommendation", face)
+	}
+}
+
+// A restart that finds its case at the human leaves it there: no rung takes
+// the case, the face it had stands alone, and the case's last step is the
+// restart's.
+func TestARestartLeavesACaseAtTheHumanWithItsFace(t *testing.T) {
+	ctx := context.Background()
+	g := newRungRig(t, "success")
+	if _, err := g.r.FaceStop(ctx, "t1", whichFile, nil); err != nil {
+		t.Fatal(err)
+	}
+	c := onlyLiveCase(t, g.s, "t1")
+	out := g.trip(t, HealedReason)
+	steps := g.steps(t, c.ID)
+	rung := slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 1 || s.Rung == 2 })
+	if out.CaseID != c.ID || out.Comment != 501 || len(g.forge.comments) != 1 || rung || steps[len(steps)-1].Found != "asked again after a restart" {
+		t.Fatalf("outcome %+v, steps %+v, comments %d; want case %d on comment 501, no rung step and the restart's step last", out, steps, len(g.forge.comments), c.ID)
 	}
 }
 

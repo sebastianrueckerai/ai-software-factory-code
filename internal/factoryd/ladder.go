@@ -239,9 +239,9 @@ func caseDep(c Case, f CaseFacts) *DepFact {
 // row that fires resolves the case through Act. With none the case climbs
 // (climb): to rung 1 when it judges, else to the human. A
 // restart's trip (healedReason) waits on the card's newest live ask,
-// faces it when it has no face yet, and with none opens the stop the card
-// asked last as its own case again (healedTrip). An attempt after the
-// first takes what the attempts before left (retriedTrip).
+// climbs it when it has no face yet, and with none opens the stop the card
+// asked last as its own case again, which climbs (healedTrip). An attempt
+// after the first takes what the attempts before left (retriedTrip).
 func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (TripOutcome, error) {
 	t, _, err := r.task(ctx, in.TaskID)
 	if err != nil {
@@ -410,7 +410,7 @@ func (r *Runner) Climb(ctx context.Context, t Task, c Case, f CaseFacts, from in
 		r.rungs.Add(1)
 		go func() {
 			defer r.rungs.Done()
-			r.signalFaced(context.WithoutCancel(ctx), t.ID, live.ID, out.Comment)
+			r.signalFaced(context.WithoutCancel(ctx), t.ID, live, out.Comment)
 		}()
 	}
 	return out, err
@@ -586,20 +586,20 @@ const FacedTries = 4
 
 var FacedBackoff = time.Second
 
-// signalFaced tells card taskID's run the comment of case caseID's face: a
+// signalFaced tells card taskID's run the comment of case c's face: a
 // failed send is tried again, with a doubling pause, up to facedTries times
 // or until ctx ends, and one that delivers ends the signal's pending row,
 // which the heal pass sends again until one does.
-func (r *Runner) signalFaced(ctx context.Context, taskID string, caseID, comment int64) {
-	sig := facedSignal(caseID, comment)
+func (r *Runner) signalFaced(ctx context.Context, taskID string, c Case, comment int64) {
+	sig := facedSignal(c, comment)
 	pause := FacedBackoff
 	for try := 1; ; try++ {
 		err := r.cfg.Workflows.Signal(ctx, taskID, SignalCaseFaced, sig)
 		if err == nil {
-			r.settleSignal(ctx, caseID, SignalCaseFaced)
+			r.settleSignal(ctx, c.ID, SignalCaseFaced)
 			return
 		}
-		log.Printf("task %s: signal %s of case %d (try %d): %s", taskID, SignalCaseFaced, caseID, try, r.scrub(err.Error()))
+		log.Printf("task %s: signal %s of case %d (try %d): %s", taskID, SignalCaseFaced, c.ID, try, r.scrub(err.Error()))
 		if try == FacedTries {
 			return
 		}
@@ -681,10 +681,17 @@ func (r *Runner) startRung2(ctx context.Context, t Task, c Case) (started bool, 
 	return true, nil, nil
 }
 
-// facedSignal is the case_faced that tells a run the comment of case
-// caseID's face.
-func facedSignal(caseID, comment int64) TaskSignal {
-	return TaskSignal{Author: FactoryDecider, Comment: comment, Case: &CaseSignal{CaseID: caseID, Rung: 3, By: FactoryDecider, Comment: comment}}
+// facedSignal is the case_faced that tells a run the comment of case c's
+// face.
+func facedSignal(c Case, comment int64) TaskSignal {
+	return TaskSignal{Author: FactoryDecider, Comment: comment, Case: &CaseSignal{CaseID: c.ID, Rung: 3, By: FactoryDecider, Comment: comment, Again: asksAgain(c)}}
+}
+
+// asksAgain is the case whose question case c asks again (its fact
+// asks_again), 0 for none.
+func asksAgain(c Case) int64 {
+	id, _ := toInt(c.Facts["asks_again"])
+	return int64(id)
 }
 
 // rungOneJudges reports whether rung 1 takes the case c, on facts f.
@@ -1034,11 +1041,13 @@ func askedAgainFound(reason string) string {
 // healedTrip is the trip, of id trip, that asks card t's standing question
 // again for in's reason (askedAgain): the card's newest live ask
 // (NewestAskCase) at the human waits on with a step and no new face. One
-// with no face yet gets it, on its own reason. With none, the stop the
-// card asked last (restartedStop) opens its own case again, as its trip
-// opened it. Either way the case takes the reason's step of rung 0, a trip
-// under the gate's mark (runGrants), and the face names what moves the
-// card on by the case's kind and reason.
+// with no face yet climbs on the facts it was opened with. With none, the
+// stop the card asked last (restartedStop) opens its own case again, as
+// its trip opened it, and the case names the case whose question it asks
+// again (asks_again): that ask's, else the card's newest ask case. Either
+// way the case takes the reason's step of rung 0, a trip under the gate's
+// mark (runGrants), and climbs from rung 0 with no resolver: the stop's
+// own rung 0 ran when it was first asked.
 func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip string) (TripOutcome, error) {
 	found := askedAgainFound(in.Reason)
 	c, err := r.store.NewestAskCase(ctx, t.ID)
@@ -1048,17 +1057,34 @@ func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip stri
 	if c.Status == CaseAtHuman {
 		return r.waitsAtHuman(ctx, t, c, found)
 	}
-	stop, _ := c.Facts["reason"].(string)
+	head, model := in.Head, in.Model
+	if c.ID != 0 {
+		head, _ = c.Facts["head"].(string)
+		model, _ = c.Facts["model"].(string)
+	}
+	f, err := r.tripFacts(ctx, t, head, model)
+	if err != nil {
+		return TripOutcome{}, err
+	}
 	if c.ID == 0 {
-		if stop, err = r.restartedStop(ctx, t, in.Reason); err != nil {
-			return TripOutcome{}, err
-		}
-		f, err := r.tripFacts(ctx, t, in.Head, in.Model)
+		stop, again, err := r.restartedStop(ctx, t, in.Reason)
 		if err != nil {
 			return TripOutcome{}, err
 		}
-		if c, _, err = r.tripCase(ctx, t, f, TripInput{TaskID: t.ID, Reason: stop, Choices: in.Choices, Head: in.Head}); err != nil {
+		var cases []Case
+		if c, cases, err = r.tripCase(ctx, t, f, TripInput{TaskID: t.ID, Reason: stop, Choices: in.Choices, Head: in.Head,
+			Extra: map[string]any{"asked_again": in.Reason}}); err != nil {
 			return TripOutcome{}, err
+		}
+		if again == 0 {
+			for _, e := range cases {
+				if AnsweredOnCard(e.Kind) {
+					again = max(again, e.ID)
+				}
+			}
+		}
+		if again != 0 {
+			c.Facts["asks_again"] = again
 		}
 		if trip != "" {
 			c.Facts["trip"] = trip
@@ -1067,13 +1093,14 @@ func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip stri
 			return TripOutcome{}, err
 		}
 	}
+	r.atCaseOf(ctx, &f, t, c)
 	if err := r.tripStep(ctx, c.ID, found); err != nil {
 		return TripOutcome{}, err
 	}
 	if out, ok, err := r.waitsOnRung(ctx, c); ok || err != nil {
 		return out, err
 	}
-	return r.Face(ctx, t, c, in.Reason, tripNext(c, stop), in.Choices, nil)
+	return r.Climb(ctx, t, c, f, 0, found)
 }
 
 // refreshDraftInfo swaps the draft note have in the info of the question
@@ -1101,16 +1128,17 @@ func (r *Runner) refreshDraftInfo(ctx context.Context, taskID, have, note string
 }
 
 // restartedStop is the reason of the stop card t asked last, which reason
-// asks again: its newest ask's words, reason itself when it has none.
-func (r *Runner) restartedStop(ctx context.Context, t Task, reason string) (string, error) {
+// asks again, and the case that asked it: its newest ask's words and case,
+// reason itself and 0 when it has none.
+func (r *Runner) restartedStop(ctx context.Context, t Task, reason string) (string, int64, error) {
 	asks, err := r.store.AskAnchors(ctx, t.ID)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if i := len(asks) - 1; i >= 0 && strings.TrimSpace(asks[i].Body) != "" {
-		return asks[i].Body, nil
+		return asks[i].Body, asks[i].CaseID, nil
 	}
-	return reason, nil
+	return reason, 0, nil
 }
 
 // retriedTrip is what the attempts before trip's left on a case, ok false
@@ -1516,8 +1544,11 @@ func outlivesCard(c Case, t Task) bool {
 // plan's case on its failed card and its criteria case beside the plan at
 // rest: its face is the comment, the row and the alert, and moves no
 // status, writes no ask the run reads and no timeline line. A criteria
-// case's comment is its request's words. It returns the comment's id: only
-// later comments answer it.
+// case's comment is its request's words. A case that asks its card's stop
+// again (asked_again) says so above the stop. An asked-again reason is a
+// stop of its own on a case that has no face yet, and on a case at the
+// human repeats the face it had (repeatFace). It returns the comment's id:
+// only later comments answer it.
 func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next string, choices []string, up *HandUp) (int64, error) {
 	beside := caseBesideRun(c, t)
 	repo, err := SplitRepo(t.Repository)
@@ -1537,7 +1568,11 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 	}
 	// the reason in a code block: a mention the agent wrote rings no bell
 	safe := r.untrusted(t, reason)
-	body := "factoryd: task " + t.ID + " needs a human.\n\n" + fenced(safe)
+	body := "factoryd: task " + t.ID + " needs a human.\n\n"
+	if again, _ := c.Facts["asked_again"].(string); again != "" && !askedAgain(reason) {
+		body += again + "\n\n"
+	}
+	body += fenced(safe)
 	if links := sanitize.Links(safe, r.linkHosts(t)); len(links) > 0 {
 		// the fence renders no link: the ones the sanitiser keeps follow it
 		body += "\n\nLinks:\n- " + strings.Join(links, "\n- ")
@@ -1577,7 +1612,7 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 	}
 	question := EscalationQuestion(reason)
 	var shaped *HumanQuestion
-	if !askedAgain(reason) && !strings.HasPrefix(reason, screeningAsks) {
+	if (!askedAgain(reason) || c.Status == CaseOpen) && !strings.HasPrefix(reason, screeningAsks) {
 		// the deterministic stops shape their five-part question from the
 		// stop's own numbers; every other ask gets the same five parts
 		// from its reason, so no card asks with words alone

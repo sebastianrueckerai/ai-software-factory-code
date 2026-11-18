@@ -384,8 +384,10 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 // included. A plan whose newest revision still waits on its questions
 // gets their cases back from their own rows (restorePlanAsk). Else once
 // the wait is older than the repository's at_human bound, healedTrip's
-// no-case arm opens the stop the card asked last again, with its face on
-// the card's issue, so the console's answer paths find an ask to press.
+// no-case arm opens the stop the card asked last again as a case that
+// names the case it asks again and climbs the rungs to its face, so the
+// console's answer paths find an ask to press and the waiting run hears
+// its answer.
 func healParkedAsk(ctx context.Context, store Store, r *Runner, tree func() policy.Tree, t Task) {
 	if t.Kind == "human" || t.Kind == KindChat {
 		return

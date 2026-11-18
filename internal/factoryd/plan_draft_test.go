@@ -243,6 +243,7 @@ func questionInfo(store *fakeStore, comment int64) string {
 // A restart's re-ask of a time-cap stop shows the draft note too.
 func TestHealedReAskNamesTheDraft(t *testing.T) {
 	r, store, fj := outsidePlanRig(t)
+	rung1Off(r)
 	ctx := context.Background()
 	store.face("t-b", 1, CaseAgentTimeCap, 77, timeCapAsk, time.Now())
 	store.cases[len(store.cases)-1].Status = CaseWithdrawn
@@ -250,6 +251,9 @@ func TestHealedReAskNamesTheDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: HealedReason}, tripAttempt{N: 1})
+	if err == nil {
+		out = rung2Faces(t, r, "t-b", out)
+	}
 	if err != nil || out.Comment == 0 {
 		t.Fatalf("the re-ask %+v, %v", out, err)
 	}

@@ -2537,14 +2537,17 @@ func (t *taskRun) planCommentsWhole(floor int64) (final, why string, out []strin
 }
 
 // planResolution takes the resolutions of the case the plan waits on
-// signalled so far (versionCases), as awaitAnswer takes the card's:
-// another case's is dropped, as one rung 0 resolved in place. A
+// signalled so far (versionCases), as awaitAnswer takes the card's, and
+// of the case that asks its question again, which becomes the plan's
+// (versionAskedAgainCase): another case's is dropped, as one rung 0
+// resolved in place. A
 // resolution's note is a finding unless the webhook's copy of its comment
 // came first; ok: one came.
 func (t *taskRun) planResolution() (notes []string, ok bool) {
 	var done TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalCaseResolved).ReceiveAsync(&done) {
-		if c := done.Case; c != nil && t.caseID != 0 && c.CaseID == t.caseID {
+		if c := done.Case; c != nil && t.caseID != 0 && (c.CaseID == t.caseID || t.askedAgainCase(c)) {
+			t.caseID = c.CaseID
 			res := c.Res
 			t.resolution, ok = &res, true
 			if note := strings.TrimSpace(res.Note); note != "" && (c.Comment == 0 || !slices.Contains(t.planTaken, c.Comment)) {

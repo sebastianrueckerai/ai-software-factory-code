@@ -597,7 +597,7 @@ func pendFaced(ctx context.Context, tx *sql.Tx, id, comment int64) error {
 	if err != nil || !runHears(t, c) || caseBesideRun(c, t) {
 		return err
 	}
-	return pendCaseSignal(ctx, tx, id, t.ID, SignalCaseFaced, facedSignal(id, comment))
+	return pendCaseSignal(ctx, tx, id, t.ID, SignalCaseFaced, facedSignal(c, comment))
 }
 
 // caseEnded drops ErrNotFound from err: the case had ended already.
