@@ -315,12 +315,14 @@ func (s *Server) currentPolicy(ctx context.Context) (*policy.Version, error) {
 }
 
 // Routes is the gateway's full HTTP surface: the model route, the MCP
-// tools and the pinned healthz shape from internal/health.
+// tools, the retry switch's hold-clear door and the pinned healthz shape
+// from internal/health.
 func (s *Server) Routes(version string) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/chat/completions", http.HandlerFunc(s.handleChat))
 	mux.Handle("GET /v1/window/{alias}", http.HandlerFunc(s.handleWindow))
 	mux.Handle("POST /v1/tools/{tool}", http.HandlerFunc(s.handleChatTool))
+	mux.Handle("POST /v1/hold/clear", http.HandlerFunc(s.handleHoldClear))
 	mux.Handle("/mcp", s.mcpHandler())
 	mux.Handle("/healthz", health.Handler("factory-gateway", version))
 	return telemetry.Handler(s.tel.tp, "factory-gateway", mux)
@@ -541,6 +543,47 @@ func (s *Server) handleWindow(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(struct { // #nosec G104 -- best-effort response write
 		Window int `json:"window"`
 	}{price.Window})
+}
+
+// handleHoldClear is the retry switch's door: the caller the gateway
+// identifies ends a class's provider-limit hold at once (ClearClassHold),
+// so every card the press wakes probes the provider on its next session.
+// The class named in the body is the cleared class answered; a class with
+// no armed hold is a success, the press is idempotent. No call is made
+// and nothing is booked.
+func (s *Server) handleHoldClear(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id, _, err := s.identify(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxDoorBody))
+	if err != nil {
+		http.Error(w, "request body too large or unreadable", http.StatusRequestEntityTooLarge)
+		return
+	}
+	var req struct {
+		Class string `json:"class"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil || req.Class == "" {
+		http.Error(w, `the body names the class to clear as {"class": ...}`, http.StatusBadRequest)
+		return
+	}
+	task, ok, err := s.opts.Store.Task(ctx, id.TaskID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, "no task row for "+id.TaskID, http.StatusNotFound)
+		return
+	}
+	s.ClearClassHold(ctx, task, req.Class)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(struct { // #nosec G104 -- best-effort response write
+		Class string `json:"class"`
+	}{req.Class})
 }
 
 // price is alias's LiteLLM price under the version's output limit; a

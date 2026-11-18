@@ -3419,3 +3419,75 @@ func TestProviderLimitHoldLocalRefusal(t *testing.T) {
 		}
 	}
 }
+
+// TestHoldClearPath: the retry switch's POST /v1/hold/clear ends the
+// class's armed hold behind the per-request identity auth — the next call
+// probes the upstream once — writes one class_resumed row beside the
+// class_frozen, and a press on a class with no armed hold is a quiet
+// success.
+func TestHoldClearPath(t *testing.T) {
+	stub := newStubUpstream(t)
+	store := newMemStore()
+	task := Task{Classes: []string{"big"}, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running", ModelAlias: "big", Repository: "sf/code"}
+	store.tasks[task.ID] = task
+	store.setPolicy(providerLimitPolicy())
+	s := NewServer(ServerOptions{
+		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
+		Store:      store,
+		Minter:     &fakeMinter{},
+		LiteLLMURL: stub.URL,
+		Prices:     testPrices,
+	})
+	base := time.Date(2026, 11, 14, 16, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return base }
+	h := s.Routes("test")
+
+	// the hold arms on the first dated refusal (TestProviderLimitHoldLocalRefusal's zai body)
+	first := `{"error":{"message":"Usage limit reached for 5 hour. Your limit will reset at 2026-11-15 01:04:50","type":"rate_limit_error","param":null,"code":"429"}}`
+	stub.setResp(stubResp{status: http.StatusTooManyRequests, body: first})
+	if rr := doChat(t, h, chatBody("big")); rr.Header().Get(HeaderDecision) != RefusedProviderLimit {
+		t.Fatalf("the arming call = %d %q: %s, want a refused_provider_limit", rr.Code, rr.Header().Get(HeaderDecision), rr.Body.String())
+	}
+
+	clear := func(h http.Handler) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/v1/hold/clear", strings.NewReader(`{"class":"big"}`))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Authorization", "Bearer forged-but-fakeAuth-ignores")
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, r)
+		return rr
+	}
+	// the press clears the hold through the door, behind the identity auth
+	if rr := clear(h); rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"big"`) {
+		t.Fatalf("the clear = %d %s, want 200 naming the cleared class", rr.Code, rr.Body.String())
+	}
+	events := store.eventRows()
+	if len(events) != 2 || events[0].Kind != "class_frozen" || events[1].Kind != "class_resumed" ||
+		events[1].TaskID != "42" || events[1].Repository != "sf/code" || events[1].Detail["class"] != "big" {
+		t.Fatalf("events = %+v, want the arm then one class_resumed of class big on task 42 (sf/code)", events)
+	}
+
+	// inside the old freeze window the next call is the probe: one upstream hit, served
+	s.now = func() time.Time { return base.Add(time.Minute) }
+	stub.setResp(stubResp{status: http.StatusOK, body: `{}`})
+	if rr := doChat(t, h, chatBody("big")); rr.Code != http.StatusOK {
+		t.Fatalf("the call after the clear = %d %s, want the probe served", rr.Code, rr.Body.String())
+	}
+	if hits := len(stub.auths); hits != 2 {
+		t.Fatalf("upstream hits after the clear = %d, want 2: the hold is gone", hits)
+	}
+
+	// a press on the class with no armed hold is a quiet success, no new row
+	if rr := clear(h); rr.Code != http.StatusOK {
+		t.Fatalf("the second clear = %d %s, want a quiet 200", rr.Code, rr.Body.String())
+	}
+	if events = store.eventRows(); len(events) != 2 {
+		t.Fatalf("events after the second clear = %+v, want no new row", events)
+	}
+
+	// a caller the gateway cannot identify does not reach the hold
+	denied := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("no token")}, Store: store, Minter: &fakeMinter{}, Prices: testPrices})
+	if rr := clear(denied.Routes("test")); rr.Code != http.StatusUnauthorized {
+		t.Fatalf("an unidentified clear = %d %s, want 401", rr.Code, rr.Body.String())
+	}
+}
