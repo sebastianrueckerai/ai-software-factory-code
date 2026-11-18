@@ -398,6 +398,39 @@ func TestMonthAlarmClosesTheCardARaiseLifted(t *testing.T) {
 	}
 }
 
+// Hand-derived from a raise past the cap card's 544 EUR to 600: the cap
+// card closes, and the webhook of factoryd's own close ends the human card
+// before the alarm moves its row. The pass ends with no error, the card
+// done and its close said once.
+func TestMonthAlarmCloseOutrunByItsWebhook(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	alarm, _ := monthAlarm(t, store, 544)
+	now := time.Now()
+	alarm.Current = func() policy.Version {
+		return policy.Version{ID: 4, Commit: "c9", ActivatedAt: now.Add(-48 * time.Hour), Tree: policy.Tree{Document: policy.Document{Budget: policy.Budget{MonthEUR: 544}}}}
+	}
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 544}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	card := taskOf(t, store, "2026-10/100/544")
+	alarm.Current = func() policy.Version {
+		return policy.Version{ID: 5, Commit: "c9", ActivatedAt: now.Add(-time.Minute), Tree: policy.Tree{Document: policy.Document{Budget: policy.Budget{MonthEUR: 600}}}}
+	}
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 543.90}
+	store.webhookOnClose = true
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatalf("the close the webhook outran = %v, want it done", err)
+	}
+	if got := taskOf(t, store, "2026-10/100/544"); got.Status != "done" {
+		t.Fatalf("the cap card stands %s, want done", got.Status)
+	}
+	if got := closeComments(t, store, card.ID); !slices.Equal(got, []string{"budget.month_eur is 600 in policy version 5: the cap card closes."}) {
+		t.Fatalf("close comments = %q", got)
+	}
+}
+
 // A refusal counts toward the cap in force only once the gateway enforced
 // it: with the raise activated at T, one made at T+10s was under 544 and
 // does not count toward 600; one made at T+40s (PolicyTTL is 30 s) does,

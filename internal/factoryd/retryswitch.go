@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
@@ -24,23 +25,43 @@ import (
 // with no ask.
 type RetrySwitch struct {
 	// Freeze is the freeze-card watcher: its CloseOnRetry closes a
-	// class's open card at once, and its policy says which cards the
-	// class's hold freezes.
+	// class's open card at once, its policy says which cards the class's
+	// hold freezes, and its Signal wakes them.
 	Freeze *FreezeCard
 	// GatewayURL and Token are the gateway's address and the
 	// gateway-factoryd token its hold-clear door takes; HTTP nil =
 	// http.DefaultClient.
 	GatewayURL, Token string
 	HTTP              *http.Client
-	// Signal delivers the provider_retry signal to a task's workflow.
-	Signal func(ctx context.Context, taskID string) error
 }
+
+// errNoSignal refuses a press through a watcher wired without its Signal,
+// which would clear the hold and wake no frozen card.
+var errNoSignal = errors.New("the freeze card watcher has no Signal (FreezeCard.Signal): a press would wake no frozen card")
 
 // ErrNoFreeze refuses a retry press on a card that holds no open provider
 // freeze, naming the card's state and the action that fits.
 type ErrNoFreeze string
 
 func (e ErrNoFreeze) Error() string { return string(e) }
+
+// freezeEnded is why freeze card t holds no freeze a retry ends, and what
+// follows: its freeze ended and the card is done, or its class resumed on
+// its own and the card closes itself; "" while it holds.
+func freezeEnded(t Task) string {
+	switch {
+	case t.Status != "waiting-human":
+		return fmt.Sprintf("the freeze of %s ended, the card is %s: no hold waits on a retry, and a new limit on the class opens a freeze card again", cardName(t), t.Status)
+	case strings.Contains(t.Objective, freezeResumedSentence):
+		closes := ""
+		if at, ok := freezeResumeStamp(t.Objective); ok {
+			closes = " at " + stamp(at)
+		}
+		return fmt.Sprintf("the %s class resumed on its own and %s closes itself%s: no hold waits on a retry, its frozen cards wake once the resume holds five minutes, and a new limit opens a freeze card again",
+			freezeCardClass(t.Objective), cardName(t), closes)
+	}
+	return ""
+}
 
 // PartialPressError is a press that cleared the hold and then failed part
 // of what follows: Err joins the closes and the wakes that failed.
@@ -50,12 +71,14 @@ func (e *PartialPressError) Error() string { return "the hold cleared, but " + e
 func (e *PartialPressError) Unwrap() error { return e.Err }
 
 // RetryFreeze is the press on freeze card cardID, by a human or the
-// project agent: it ends the freeze of the class on the card's face, the
-// gateway writing the class_resumed event on the card's row. It reads the
-// frozen cards first, so a read that fails moves nothing, and a hold the
-// gateway did not clear moves nothing else. With no hold armed and no
-// frozen card it is a quiet success.
-func (s *RetrySwitch) RetryFreeze(ctx context.Context, cardID, by string) error {
+// project agent, reaching the factory via (ViaButton, ViaChat): it ends the
+// freeze of the class on the card's face, the gateway writing the
+// class_resumed event on the card's row. It reads the frozen cards first,
+// so a read that fails moves nothing, and a hold the gateway did not clear
+// moves nothing else; once the hold cleared, the press runs to its end
+// whatever becomes of the caller. With no hold armed and no frozen card it
+// is a quiet success.
+func (s *RetrySwitch) RetryFreeze(ctx context.Context, cardID, by, via string) error {
 	card, ok, err := s.Freeze.Store.Task(ctx, cardID)
 	if err != nil {
 		return fmt.Errorf("read card %s: %w", cardID, err)
@@ -66,8 +89,10 @@ func (s *RetrySwitch) RetryFreeze(ctx context.Context, cardID, by string) error 
 		return ErrNoFreeze("no card " + cardID + " stands: the retry switch ends a provider freeze from the class's open freeze card")
 	case card.Source != SourceFreezeCard || class == "":
 		return ErrNoFreeze(fmt.Sprintf("%s is no freeze card: the retry switch ends a provider freeze from the class's open freeze card, and Retry files a failed card again", cardName(card)))
-	case card.Status != "waiting-human":
-		return ErrNoFreeze(fmt.Sprintf("the freeze of %s ended, the card is %s: no hold waits on a retry, and the class's next freeze opens its card again", cardName(card), card.Status))
+	case !FreezeCardHolds(card):
+		return ErrNoFreeze(freezeEnded(card))
+	case s.Freeze.Signal == nil:
+		return errNoSignal
 	}
 	cards, err := s.Freeze.classCards(ctx, class)
 	if err != nil {
@@ -76,7 +101,7 @@ func (s *RetrySwitch) RetryFreeze(ctx context.Context, cardID, by string) error 
 	if err := s.clearHold(ctx, cardID, class); err != nil {
 		return fmt.Errorf("clear the %s class's hold: %w", class, err)
 	}
-	return s.retryFreeze(ctx, class, by, cards)
+	return s.retryFreeze(context.WithoutCancel(ctx), cardID, class, by, via, cards)
 }
 
 // retryFreeze follows a cleared hold: the hold is the class's in every
@@ -84,8 +109,9 @@ func (s *RetrySwitch) RetryFreeze(ctx context.Context, cardID, by string) error 
 // then every running card of cards, the ones the hold froze, is woken.
 // The cards close before any probe can answer, so a probe's dated refusal
 // re-arms the same card. One failed close or wake does not stop the others,
-// and the failures come back as a PartialPressError.
-func (s *RetrySwitch) retryFreeze(ctx context.Context, class, by string, cards []Task) error {
+// and the failures come back as a PartialPressError. The press is recorded
+// on card cardID, the one pressed (EventFreezeRetried).
+func (s *RetrySwitch) retryFreeze(ctx context.Context, cardID, class, by, via string, cards []Task) error {
 	var errs []error
 	repos, err := s.Freeze.openCardRepositories(ctx, class)
 	if err != nil {
@@ -99,19 +125,10 @@ func (s *RetrySwitch) retryFreeze(ctx context.Context, class, by string, cards [
 		}
 		closed++
 	}
-	woken, frozen := 0, 0
-	for _, c := range cards {
-		if c.Status != "running" {
-			continue
-		}
-		frozen++
-		if err := s.Signal(ctx, c.ID); err != nil {
-			errs = append(errs, fmt.Errorf("wake %s: %w", c.ID, err))
-			continue
-		}
-		woken++
-	}
+	woken, frozen, failed := s.Freeze.wake(ctx, cards)
+	errs = append(errs, failed...)
 	log.Printf("retry switch: %s cleared the %s class's hold, %d freeze cards closed, %d of %d frozen cards woken", by, class, closed, woken, frozen)
+	s.Freeze.Timeline.RecordRow(ctx, cardID, EventFreezeRetried, by, via, map[string]any{"class": class, "closed": closed, "woken": woken, "frozen": frozen})
 	if len(errs) > 0 {
 		return &PartialPressError{Err: errors.Join(errs...)}
 	}

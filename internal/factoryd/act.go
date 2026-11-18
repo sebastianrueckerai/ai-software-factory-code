@@ -908,7 +908,7 @@ func (r *Runner) endFreeze(ctx context.Context, card string, in ActInput) ([]Cas
 	if r.RetryFreeze == nil {
 		return nil, errors.New("no retry switch is wired (Runner.RetryFreeze)")
 	}
-	err := r.RetryFreeze(ctx, card, in.By)
+	err := r.RetryFreeze(ctx, card, in.By, cmp.Or(in.Via, ViaFactoryd))
 	var no ErrNoFreeze
 	if errors.As(err, &no) {
 		return nil, ErrActRefused(no.Error())

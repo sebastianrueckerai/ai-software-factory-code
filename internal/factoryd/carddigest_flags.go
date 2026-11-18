@@ -132,7 +132,7 @@ func (d CardDigest) providerRefused() bool {
 // ahead — its backoff outlasts the ladder's longest — so the card waits
 // on the provider-limit wait, owned by the freeze card's one escalation.
 func (d CardDigest) frozen() bool {
-	return d.refusedBackoff > ladderBackoffMax && !d.retryDue.IsZero() && d.at.Before(d.retryDue)
+	return limitAhead(d.refusedAt, d.refusedBackoff, d.at)
 }
 
 // frozenAt reports whether a freeze covers the moment at: a check-in the

@@ -190,6 +190,16 @@ type lineMark struct {
 // the provider set.
 const ladderBackoffMax = 30 * time.Minute
 
+// backoff is a provider_refused line's backoff.
+func (l lineMark) backoff() time.Duration { return time.Duration(l.BackoffS * float64(time.Second)) }
+
+// limitAhead reports whether a provider refusal at at, waiting backoff,
+// is the provider-limit wait's — its backoff outlasts the ladder's longest
+// — and its reset lies after now.
+func limitAhead(at time.Time, backoff time.Duration, now time.Time) bool {
+	return backoff > ladderBackoffMax && !at.IsZero() && now.Before(at.Add(backoff))
+}
+
 // freezeSpan is one provider-limit freeze of a card's life: from the
 // refusal that named a reset, to that reset.
 type freezeSpan struct{ since, until time.Time }
@@ -204,7 +214,7 @@ func freezeSpans(tl []byte) []freezeSpan {
 		if json.Unmarshal(raw, &l) != nil || l.Step != StepProviderRefused || l.Time.IsZero() {
 			continue
 		}
-		if backoff := time.Duration(l.BackoffS * float64(time.Second)); backoff > ladderBackoffMax {
+		if backoff := l.backoff(); backoff > ladderBackoffMax {
 			out = append(out, freezeSpan{since: l.Time, until: l.Time.Add(backoff)})
 		}
 	}

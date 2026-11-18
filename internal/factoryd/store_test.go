@@ -53,6 +53,15 @@ type fakeStore struct {
 	settled         map[string]bool
 	intakeEvents    []IntakeEvent
 	confirmedCloses map[[2]any]bool
+	// webhookOnClose lands the intake's webhook of factoryd's own close as
+	// the close confirms: it ends a waiting human card (finishHumanTask)
+	// before the closer moves the row
+	webhookOnClose bool
+	// now is the clock that stamps intake events, as the database's does;
+	// nil is the wall clock
+	now func() time.Time
+	// failFreezeCards is FreezeCards' error, set to test its readers
+	failFreezeCards error
 	// failIntakeEvent is InsertIntakeEvent's error, set to test the writers
 	failIntakeEvent error
 	events          []Event // newest last, as NewestTaskEvents reads them
@@ -1002,6 +1011,13 @@ func (s *fakeStore) SetQuestionProposal(ctx context.Context, taskID string, case
 	return nil
 }
 
+func (s *fakeStore) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
 func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
 	if s.failIntakeEvent != nil {
 		return 0, s.failIntakeEvent
@@ -1015,7 +1031,7 @@ func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64
 	}
 	e.ID = int64(len(s.intakeEvents) + 1)
 	if e.CreatedAt.IsZero() {
-		e.CreatedAt = time.Now()
+		e.CreatedAt = s.clock()
 	}
 	s.intakeEvents = append(s.intakeEvents, e)
 	return e.ID, nil
@@ -1031,13 +1047,26 @@ func (s *fakeStore) ConfirmFactoryClose(ctx context.Context, taskID string, issu
 		s.confirmedCloses = map[[2]any]bool{}
 	}
 	s.confirmedCloses[[2]any{taskID, issue}] = true
+	if t, ok := s.tasks[taskID]; ok && s.webhookOnClose && t.Kind == "human" && t.Status == "waiting-human" {
+		return s.TransitionTask(ctx, taskID, []string{"waiting-human"}, "done")
+	}
 	return nil
+}
+
+// closeKey keys a close record's confirmation: by its task and issue, and
+// by its own id once the record is off its issue (ForgetFactoryClose), so
+// each forgotten record of a task keeps its own.
+func closeKey(e IntakeEvent) [2]any {
+	if e.CommentID == 0 {
+		return [2]any{e.TaskID, fmt.Sprintf("forgotten %d", e.ID)}
+	}
+	return [2]any{e.TaskID, e.CommentID}
 }
 
 func (s *fakeStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error) {
 	var out []IntakeEvent
 	for _, e := range s.intakeEvents {
-		if e.Kind == IntakeFactoryClosed && !s.confirmedCloses[[2]any{e.TaskID, e.CommentID}] && time.Since(e.CreatedAt) > olderThan && len(out) < limit {
+		if e.Kind == IntakeFactoryClosed && !s.confirmedCloses[closeKey(e)] && s.clock().Sub(e.CreatedAt) > olderThan && len(out) < limit {
 			out = append(out, e)
 		}
 	}
@@ -1593,6 +1622,36 @@ func (s *fakeStore) ListTasksByStatus(ctx context.Context, status string) ([]Tas
 		return tasks[i].ID < tasks[j].ID
 	})
 	return tasks, nil
+}
+
+// FreezeCards lists the fake's freeze cards in status, in id order.
+func (s *fakeStore) FreezeCards(ctx context.Context, status string) ([]Task, error) {
+	if s.failFreezeCards != nil {
+		return nil, s.failFreezeCards
+	}
+	var out []Task
+	for _, id := range slices.Sorted(maps.Keys(s.tasks)) {
+		if t := s.tasks[id]; t.Source == SourceFreezeCard && t.Status == status {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+// ForgetFactoryClose takes the fake's record of factoryd's close of task
+// taskID's issue off the issue, as the store's does: the record keeps its
+// confirmation.
+func (s *fakeStore) ForgetFactoryClose(ctx context.Context, taskID string, issue int64) error {
+	for i, e := range s.intakeEvents {
+		if e.TaskID == taskID && e.Kind == IntakeFactoryClosed && e.CommentID == issue {
+			s.intakeEvents[i].CommentID = 0
+			if s.confirmedCloses[closeKey(e)] {
+				delete(s.confirmedCloses, closeKey(e))
+				s.confirmedCloses[closeKey(s.intakeEvents[i])] = true
+			}
+		}
+	}
+	return nil
 }
 
 // TasksByParent is the tasks whose parent is task id, in any status.

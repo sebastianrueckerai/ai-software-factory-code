@@ -336,8 +336,13 @@ func (f *Forgejo) doLimit(ctx context.Context, method, path string, payload []by
 		default:
 			if res.StatusCode >= 400 && res.StatusCode < 500 {
 				refused := ErrRefused
-				if res.StatusCode == http.StatusForbidden {
+				switch res.StatusCode {
+				case http.StatusForbidden:
 					refused = errForgejoForbidden
+				case http.StatusGone:
+					refused = errForgejoGone
+				case http.StatusUnprocessableEntity:
+					refused = errForgejoUnprocessable
 				}
 				return nil, fmt.Errorf("forgejo %s %s: %w: status %d: %s", method, path, refused, res.StatusCode, quoted)
 			}

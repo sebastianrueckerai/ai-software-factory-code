@@ -256,11 +256,11 @@ type Config struct {
 	// replacement's issue (factoryd's Runner.RetryCard): a refusal is
 	// factoryd.ErrNoRetry.
 	RetryCard func(ctx context.Context, taskID, by string) (int64, error)
-	// RetryFreeze presses the retry switch on freeze card taskID for by
-	// (factoryd's RetrySwitch.RetryFreeze): the class's hold clears, its
-	// freeze cards close and its frozen cards call the provider again. A
-	// refusal is factoryd.ErrNoFreeze.
-	RetryFreeze func(ctx context.Context, taskID, by string) error
+	// RetryFreeze presses the retry switch on freeze card taskID for by,
+	// reaching the factory via (factoryd's RetrySwitch.RetryFreeze): the
+	// class's hold clears, its freeze cards close and its frozen cards call
+	// the provider again. A refusal is factoryd.ErrNoFreeze.
+	RetryFreeze func(ctx context.Context, taskID, by, via string) error
 	// GoCard files human card taskID's work as an agent card for by and
 	// returns its issue (factoryd's Runner.Go): the go of a card that
 	// waits on a person. A refusal is factoryd.ErrNoGo.

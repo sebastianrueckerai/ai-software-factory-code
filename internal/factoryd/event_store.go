@@ -53,6 +53,11 @@ const (
 	EventDependencySet        = "dependency_set"
 	EventCardReplanned        = "card_replanned"
 	EventCardFunded           = "card_funded"
+	// EventFreezeRetried is the retry press on a freeze card, a human's or
+	// the project agent's, which cleared its class's hold: detail
+	// {"class", "closed", the freeze cards it closed, "woken" of "frozen",
+	// the frozen cards it woke}.
+	EventFreezeRetried = "freeze_retried"
 	// EventCardHeld is a human's hold put on a card, or put on it again:
 	// detail {"reason", and "release", the release card's issue, when it
 	// names one}.
@@ -141,6 +146,12 @@ const EventIssueClosed = "issue_closed"
 // the actor, a user who cannot write the repository, closed a live card's
 // issue and the close ended nothing: detail {"issue"}.
 const EventIssueClosedWithoutWriteAccess = "issue_closed_without_write_access"
+
+// EventFreezeIssueRefused is factoryd's record that Forgejo refused a
+// freeze card's issue for good, a deleted issue or a 4xx, so the card is
+// given up and the class's next arm files a new one: detail {"class",
+// "issue", "error"}.
+const EventFreezeIssueRefused = "freeze_issue_refused"
 
 // EventPlanReplanned is factoryd's record of a replan's revision filed on
 // its plan: detail {"revision", "kept", "changed", "dropped", "added",

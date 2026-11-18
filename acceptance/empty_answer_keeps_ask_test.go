@@ -333,7 +333,9 @@ func newParkRig(t *testing.T) *parkRig {
 	ccfg.BoardDigest = runner.BoardDigest
 	// a freeze card's Retry now presses the switch the chat's retry does,
 	// the one a test wires on the runner
-	ccfg.RetryFreeze = func(ctx context.Context, cardID, by string) error { return runner.RetryFreeze(ctx, cardID, by) }
+	ccfg.RetryFreeze = func(ctx context.Context, cardID, by, via string) error {
+		return runner.RetryFreeze(ctx, cardID, by, via)
+	}
 	board, err := console.New(ccfg)
 	if err != nil {
 		t.Fatal(err)
