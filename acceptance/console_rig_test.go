@@ -300,7 +300,7 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 	}
 	var d *AccDocs
 	if docs != nil {
-		d = &AccDocs{t: t, files: docs,
+		d = &AccDocs{t: t, files: maps.Clone(docs),
 			versions: []accVersion{{files: maps.Clone(docs), author: "Sebastian", at: "2026-10-15T14:00:00Z"}}}
 		next, err := url.Parse(fg.URL)
 		if err != nil {

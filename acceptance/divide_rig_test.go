@@ -13,7 +13,6 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/console"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // the store's driver, for the seeds no writer exports
 )
@@ -170,11 +169,11 @@ func holds(t *testing.T, body string, want, masked []string) {
 	}
 }
 
-// divideStore answers a real PostgreSQL, its read tables emptied so
-// every test's fixtures stand alone.
+// divideStore answers a real PostgreSQL of the test's own (accDatabase),
+// so every test's fixtures stand alone.
 func divideStore(t *testing.T) (*factoryd.PGStore, *sql.DB) {
 	t.Helper()
-	dsn := schematest.DSN(t, "acceptance_divide")
+	dsn := accDatabase(t, "acceptance_divide")
 	s, err := factoryd.OpenStore(context.Background(), dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -185,12 +184,6 @@ func divideStore(t *testing.T) (*factoryd.PGStore, *sql.DB) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	for _, table := range []string{"events", "alerts", "ledger", "audit", "project_rolls", "ci_runs",
-		"rolls", "chat_messages", "tasks", "releases", "plan_revisions"} {
-		if _, err := db.ExecContext(context.Background(), `TRUNCATE `+table+` CASCADE`); err != nil {
-			t.Fatal(err)
-		}
-	}
 	return s, db
 }
 

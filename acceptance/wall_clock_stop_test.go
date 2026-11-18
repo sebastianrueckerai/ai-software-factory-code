@@ -21,7 +21,6 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
@@ -361,7 +360,7 @@ func TestWallClockStopShipsTheWork(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 			ctx := context.Background()
-			store, err := factoryd.OpenStore(ctx, schematest.DSN(t, "acceptance_wall_clock_"+name))
+			store, err := factoryd.OpenStore(ctx, accDatabase(t, "acceptance_wall_clock_"+name))
 			if err != nil {
 				t.Fatal(err)
 			}

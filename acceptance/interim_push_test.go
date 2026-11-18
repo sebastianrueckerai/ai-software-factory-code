@@ -17,7 +17,6 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	"go.temporal.io/sdk/activity"
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/testsuite"
@@ -246,7 +245,7 @@ func wipPolicy() policy.Version {
 // worker's pushes onto the git target the faked Forgejo serves.
 func TestWorkSurvivesTheDeadSession(t *testing.T) {
 	ctx := context.Background()
-	dsn := schematest.DSN(t, "acceptance_wip")
+	dsn := accDatabase(t, "acceptance_wip")
 	store, err := factoryd.OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
