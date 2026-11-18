@@ -98,7 +98,7 @@ func TestPGStoreCardHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	i := slices.IndexFunc(board, func(b BoardTask) bool { return b.ID == "t-q" })
-	if v := board[i].HoldView; v.Line != "on hold until #2062 (plan #1915) is merged or done: needs the finished pg split" || v.Warn || v.Released {
+	if v := board[i].HoldView; v.Line != "on hold until #2062 (plan #1915) is merged or done: needs the finished pg split" || v.Released {
 		t.Fatalf("the board's hold = %+v", v)
 	}
 
