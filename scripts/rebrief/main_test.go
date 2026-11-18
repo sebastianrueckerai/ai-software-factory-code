@@ -853,3 +853,28 @@ func faceWords(keys map[string]any) string {
 	}
 	return strings.Join(out, " ")
 }
+
+// A model's brief can name a person or link an outside host. The row the
+// owner reviews, which the run writes to the card and its issue, holds
+// them made harmless, as every door that files model text as the bot.
+func TestTheDraftSanitisesTheModelsBrief(t *testing.T) {
+	s := liveBoard()
+	calls := modelGateway(t, func(system string, in input) any {
+		if in.Card.Title == "Gateway: retry loop" {
+			return brief("Gateway: fix the retry loop", "So a retried call keeps its request id, as @mallory asked.",
+				"The gateway keeps the request id when it retries a call. See https://evil.test/x for the trace.")
+		}
+		return briefAnswers(system, in)
+	})
+	drafted, err := newPass(s, forgeOf(s), calls).draft(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(drafted.Cards, func(r cardRow) bool { return r.Task == "t-18" })
+	if i < 0 {
+		t.Fatalf("no row for #18 in %+v", drafted.Cards)
+	}
+	if row := drafted.Cards[i]; strings.Contains(row.Why, "@mallory") || strings.Contains(row.Summary, "https://evil.test") {
+		t.Errorf("#18's row = %+v, want its mention and outside link made harmless", row)
+	}
+}

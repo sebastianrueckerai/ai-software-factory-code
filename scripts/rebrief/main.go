@@ -48,6 +48,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
@@ -84,7 +85,7 @@ func run(ctx context.Context, dry bool, tablePath, gateway string, out io.Writer
 		return fmt.Errorf("%s unset", strings.Join(unset, ", "))
 	}
 	forgejo, forge := forgejoOf(base, cmp.Or(os.Getenv("FORGEJO_USER"), "factory-agent"), token)
-	p := &pass{forge: forge, out: out, now: time.Now}
+	p := &pass{forge: forge, forgeURL: base, out: out, now: time.Now}
 	var pg *factoryd.PGStore
 	var err error
 	if dry {
@@ -321,13 +322,15 @@ func (i issues) call(ctx context.Context, method, repository string, number int6
 // the policy in force, the small model (nil without -dry), where it
 // prints and its clock.
 type pass struct {
-	store  store
-	forge  forge
-	refs   func(ctx context.Context, repository string) (factoryd.RefResolver, error)
-	policy policy.Version
-	model  *factoryd.SupervisorModel
-	out    io.Writer
-	now    func() time.Time
+	store store
+	forge forge
+	// forgeURL is Forgejo's address, whose host a brief's link may name
+	forgeURL string
+	refs     func(ctx context.Context, repository string) (factoryd.RefResolver, error)
+	policy   policy.Version
+	model    *factoryd.SupervisorModel
+	out      io.Writer
+	now      func() time.Time
 }
 
 // bill is the task a model call for a card of repository books on: the
@@ -696,6 +699,10 @@ func (p *pass) rebrief(ctx context.Context, t factoryd.Task) (cardRow, error) {
 			in.LastRefusal = []string{`The answer is no JSON object with title, why and summary: answer with that object alone.`}
 			continue
 		}
+		// the bot files these words on the card and its issue, as every
+		// door that files model text
+		hosts := factoryd.OutboundHosts(p.policy.Tree, p.forgeURL, t.Repository)
+		b.Title, b.Why, b.Summary = sanitize.Outbound(b.Title, hosts), sanitize.Outbound(b.Why, hosts), sanitize.Outbound(b.Summary, hosts)
 		refs, err := p.refs(ctx, t.Repository)
 		if err != nil {
 			return cardRow{}, err

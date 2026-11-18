@@ -83,7 +83,7 @@ func DelegationHandler(d DelegationDeps) http.HandlerFunc {
 		if d.Policy != nil {
 			tree = d.Policy()
 		}
-		hosts := outboundHosts(tree, d.Forgejo.PublicURL, parent.Repository)
+		hosts := OutboundHosts(tree, d.Forgejo.PublicURL, parent.Repository)
 		b := BriefText{Title: sanitize.Outbound(in.Title, hosts), Why: sanitize.Outbound(in.Why, hosts), Summary: sanitize.Outbound(in.Summary, hosts),
 			Body: sanitize.Outbound(in.Brief, hosts)}
 		if n := utf8.RuneCountInString(b.Title); n > 255 {
