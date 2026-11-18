@@ -1704,7 +1704,7 @@ func TestQueuedOverBoundNamesAResumedWait(t *testing.T) {
 func TestTheDigestsAskLineNamesTheCasesQuestion(t *testing.T) {
 	c := Case{ID: 7, Kind: CaseAgentEscalate, Problem: "Which store keeps the snapshots?"}
 	e := Event{ID: 1, Kind: EventQuestionAsked, Detail: map[string]any{"case_id": int64(7), "reason": AgentAsks + "Which store keeps the snapshots?",
-		"ask": "The card used all 3 sessions. Allow more, or end the card?"}}
+		"ask": "The card used all 3 sessions. How should it go on?"}}
 	steps := eventSteps(redact.New(), Task{ID: "t1"}, []Event{e}, []Case{c}, nil)
 	if len(steps) != 1 || steps[0].Outcome != "agent_escalate: Which store keeps the snapshots?" || steps[0].Ref.Case != "7" {
 		t.Fatalf("steps = %+v, want the ask line naming the case's question", steps)

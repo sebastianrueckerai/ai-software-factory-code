@@ -301,7 +301,7 @@ func TestTheRigOpensTheTripsCase(t *testing.T) {
 		BudgetEUR: 2, SpentEUR: 1.48, CreatedAt: time.Now()}
 	k.Usage.Attempts = 3
 	r.tasks.tasks = []factoryd.BoardTask{{Task: k, Escalation: factoryd.CapReached, AskCase: 1}}
-	const ask = `<strong class="title">The card used all 3 sessions. Allow more, or end the card?</strong>`
+	const ask = `<strong class="title">The card used all 3 sessions. How should it go on?</strong>`
 	if face := smallCard(t, r, ck, "t-cap"); !strings.Contains(face, ask) {
 		t.Errorf("the card at its session cap does not ask the session cap's ask:\n%s", face)
 	}

@@ -3783,6 +3783,9 @@ func GateStopReason(trip GateTrip, d GateDecision) string {
 	if d.Recommendation != "" {
 		reason += "\nRecommendation: " + d.Recommendation
 	}
+	if d.Answer != "" {
+		reason += "\nAnswer: " + d.Answer
+	}
 	return reason
 }
 

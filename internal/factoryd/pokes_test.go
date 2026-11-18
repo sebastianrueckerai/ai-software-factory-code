@@ -48,7 +48,7 @@ func TestPokeOf(t *testing.T) {
 			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. Which store?", Choices: []string{"Postgres", "SQLite"}}, true},
 		{"a question with its why", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: map[string]any{"question": "Which store?", "why": "Both stores pass the load test", "source": "agent"}}, card,
 			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. Both stores pass the load test."}, true},
-		{"a session cap names its why, not the budget", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: map[string]any{"question": "The card used all 3 sessions. Allow more, or end the card?",
+		{"a session cap names its why, not the budget", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: map[string]any{"question": "The card used all 3 sessions. How should it go on?",
 			"why": "A card runs only the sessions it was given, and this one has used all 3.", "source": "cap",
 			"offers":      []any{map[string]any{"value": "extend", "label": "Allow more sessions", "effect": "Gives the card more sessions or agent time, and it goes on."}},
 			"preselected": map[string]any{"action": "extend"}, "recommended_by": "the factory agent"}}, card,

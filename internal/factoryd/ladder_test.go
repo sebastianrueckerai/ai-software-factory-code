@@ -178,7 +178,7 @@ func TestATripNamesTheQuestionNotItsCap(t *testing.T) {
 	if c.Kind != CaseAgentEscalate || c.Problem != "Which store keeps the snapshots?" {
 		t.Fatalf("the trip's case is %s with the problem %q, want the agent's question", c.Kind, c.Problem)
 	}
-	if face := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: card}); face.Ask != "The card used all 3 sessions. Allow more, or end the card?" {
+	if face := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: card}); face.Ask != "The card used all 3 sessions. How should it go on?" {
 		t.Fatalf("the face asks %q, want the session cap's ask", face.Ask)
 	}
 }
@@ -373,16 +373,16 @@ func TestCapAskCountsTheReviewAndAuditFindings(t *testing.T) {
 		FindingTexts:   map[string]string{"r1": "the review's finding", "a1": "the audit's finding", "c1": "the checks' finding"},
 		ReviewFindings: []string{"r1"}, AuditFindings: []string{"a1"}}
 	c := Case{Kind: CaseSessionCap}
-	if got := FaceOf(c, Facts{CaseFacts: f}).Ask; got != "The card used all 3 sessions with 2 findings open. Allow more, or end the card?" {
+	if got := FaceOf(c, Facts{CaseFacts: f}).Ask; got != "The card used all 3 sessions with 2 findings open. How should it go on?" {
 		t.Fatalf("ask = %q", got)
 	}
 	audit := f
 	audit.ReviewFindings, audit.AuditFindings = nil, []string{"r1", "a1"}
-	if got := FaceOf(c, Facts{CaseFacts: audit}).Ask; got != "The card used all 3 sessions with 2 audit findings open. Allow more, or end the card?" {
+	if got := FaceOf(c, Facts{CaseFacts: audit}).Ask; got != "The card used all 3 sessions with 2 audit findings open. How should it go on?" {
 		t.Fatalf("the audit's findings alone: ask = %q", got)
 	}
 	f.ReviewFindings, f.AuditFindings = nil, nil
-	if got := FaceOf(c, Facts{CaseFacts: f}).Ask; got != "The card used all 3 sessions. Allow more, or end the card?" {
+	if got := FaceOf(c, Facts{CaseFacts: f}).Ask; got != "The card used all 3 sessions. How should it go on?" {
 		t.Fatalf("the checks' findings alone: ask = %q", got)
 	}
 }

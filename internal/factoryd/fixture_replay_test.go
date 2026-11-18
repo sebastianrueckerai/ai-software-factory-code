@@ -1007,7 +1007,7 @@ func rung2Fixture() Fixture {
 		Note:     "a human or the factory agent decides", Recommendation: RungRecommendation{Action: "extend", Grounds: "one session fixes it"}}
 	fx.Script.Rung2 = []FixtureRung2Answer{{CaseKind: "session_cap", Answer: FixtureTool{Tool: "answer",
 		Args: map[string]any{"action": "extend", "args": map[string]any{"sessions": 1}, "note": "one more session", "found": "the finding stands"}}}}
-	fx.Expect = &FixtureExpect{ResolvedByRung: []int{ResolvedOpen}, Sessions: 3, HumanCases: 1, Face: []FixtureFace{{Ask: "Allow more, or end the card?"}}, Rung2Turns: 1}
+	fx.Expect = &FixtureExpect{ResolvedByRung: []int{ResolvedOpen}, Sessions: 3, HumanCases: 1, Face: []FixtureFace{{Ask: "How should it go on?"}}, Rung2Turns: 1}
 	return fx
 }
 

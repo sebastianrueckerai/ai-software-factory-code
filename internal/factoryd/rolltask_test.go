@@ -1005,7 +1005,7 @@ func TestRollerFilesOneRollPerCommit(t *testing.T) {
 	head := "Why: Main published new images, and the cluster runs the old ones until they are deployed.\n\n" +
 		"Summary: It points the image digests under k8s/ at the images main published and merges the change. " +
 		"Flux deploys it, and the card ends once every image runs live.\n\n---\n\n"
-	body := "Main CI's push run 57 published the images of " + commitC1 + ". The digests under k8s/ that change:\n\n" +
+	body := "Main's push run published the images of commit " + commitC1 + ". The digests under k8s/ that change:\n\n" +
 		"- factoryd: " + newGw + "\n- gateway: " + newGw + "\n\n" +
 		"Commits it carries since the last roll:\n\n- a1a1a1a Stop blocking keys at every session, (fixes) #3 for ＠admin, see hxxps://evil[.]test/x\n- c1c1c1c Tighten the gateway's upstream timeout\n\n" +
 		"Merged pull requests it carries:\n\n- #12 Keys are no longer blocked at every session ((closes) #4, ＠bob)"
@@ -3381,5 +3381,30 @@ func TestRollerOnlyK8sBoundsItsCommitReads(t *testing.T) {
 				t.Fatalf("onlyK8s = %v, %v with %d file reads; want %v and %d", only, err, reads, tc.only, tc.reads)
 			}
 		})
+	}
+}
+
+// A roll's text names the run that published its images by the number a
+// reader can open on the forge, as a CI run, and by no id where the run
+// holds no such number; the failed rolls' list names each roll by its
+// title, which holds its commit, and by no run id.
+func TestARollNamesOnlyARunTheForgeCanOpen(t *testing.T) {
+	changes, refs := map[string]string{"gateway": "sha256:new"}, map[string]string{"gateway": "ghcr.example/gateway@sha256:new"}
+	for index, want := range map[int64]string{
+		3384: "roll c1c1c1c: gateway\n\nCI run 3384 on main published the images of commit " + commitC1 + ". The digests under k8s/ that change:\n\n- gateway: ghcr.example/gateway@sha256:new",
+		0:    "roll c1c1c1c: gateway\n\nMain's push run published the images of commit " + commitC1 + ". The digests under k8s/ that change:\n\n- gateway: ghcr.example/gateway@sha256:new",
+	} {
+		if got := RollSummary(ActionRun{ID: 90417, Index: index, CommitSHA: commitC1}, changes, refs, nil, nil, nil); !strings.HasPrefix(got, want) || strings.Contains(got, "90417") {
+			t.Errorf("run number %d: the roll's text\n%s\nwant it to open with\n%s", index, got, want)
+		}
+	}
+	q := RollFailedQuestion([]RollFailure{{Title: "roll c1c1c1c: gateway", Issue: 41}, {Title: "roll c2c2c2c: gateway"}})
+	for _, want := range []string{"\n- roll c1c1c1c: gateway — roll task failed: the change does not run live (card #41)", "\n- roll c2c2c2c: gateway — roll task failed: the change does not run live"} {
+		if !strings.Contains(q.Info, want) {
+			t.Errorf("the failed rolls' brief lacks %q:\n%s", want, q.Info)
+		}
+	}
+	if strings.Contains(q.Info, "- run ") {
+		t.Errorf("the failed rolls' brief names a run id:\n%s", q.Info)
 	}
 }

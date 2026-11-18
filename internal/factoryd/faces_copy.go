@@ -508,7 +508,7 @@ func init() {
 		CaseCheckinFailed: work(FaceSpec{Ask: fixed("The factory's own check of the session failed, not the work. Run one more session?"),
 			Why: fixed("The check that judges each session gave no answer, so the card stopped to be safe."), Answers: keys(ActResume, ActClose, ActNote)}),
 		CaseGateStop: work(FaceSpec{Ask: gateAsk, Why: gateWhy, Story: gateStory, Answers: gateAnswers, Suggest: gateSuggest}),
-		CaseFindingsRepeated: work(FaceSpec{Ask: fixed("The review keeps raising the same findings. Overrule it, or allow more sessions?"),
+		CaseFindingsRepeated: work(FaceSpec{Ask: fixed("The review keeps raising the same findings. How should the card go on?"),
 			Why:     fixed("The review raised the same findings after each of the last sessions, so the card stopped."),
 			Answers: keys(ActExtend, ActReverify+"/"+variantOverrule, ActSuccessor, ActClose)}),
 		CaseDependencyFailed: work(FaceSpec{Ask: depFailedAsk, Why: depWhy, Answers: depFailedAnswers}),
@@ -1068,9 +1068,9 @@ func limitAsk(f Facts) string {
 		what = "its agent time of " + minutesWord(time.Duration(f.AgentTimeCapS)*time.Second)
 	}
 	if n := openFindings(f.CaseFacts); n > 0 {
-		return fmt.Sprintf("The card used %s with %s open. Allow more, or end the card?", what, plural(n, openWord(f.CaseFacts)))
+		return fmt.Sprintf("The card used %s with %s open. How should it go on?", what, plural(n, openWord(f.CaseFacts)))
 	}
-	return fmt.Sprintf("The card used %s. Allow more, or end the card?", what)
+	return fmt.Sprintf("The card used %s. How should it go on?", what)
 }
 
 func limitWhy(f Facts) string {
@@ -1181,17 +1181,17 @@ var gateShape = regexp.MustCompile(`stopped (\S+) \(attempt (\d+)\)`)
 func gateAsk(f Facts) string {
 	switch {
 	case f.Gate == ActivityWaitChecks:
-		return "The checks ran past their time limit. Wait for them once more, or end the card?"
+		return "The checks ran past their time limit. How should the card go on?"
 	case reviewStop(f):
-		return "The review keeps raising findings on this card. Overrule it, or allow more sessions?"
+		return "The review keeps raising findings on this card. How should it go on?"
 	case strings.HasPrefix(factString(f.Case, "reason"), leftQueue):
-		return "The pull request left the merge queue with red checks. Check the work again, or tell the card how to go on?"
+		return "The pull request left the merge queue with red checks. How should the card go on?"
 	}
 	step := "A step of the work"
 	if m := gateShape.FindStringSubmatch(factString(f.Case, "reason")); m != nil {
 		step = cmp.Or(gateWords[m[1]], step)
 	}
-	return step + " ran past its time limit. Check the work again, or tell the card how to go on?"
+	return step + " ran past its time limit. How should the card go on?"
 }
 
 // gateWords name each long gate's step in plain words.
@@ -1231,18 +1231,26 @@ func gateAnswers(f Facts) []string {
 	case reviewStop(f):
 		return []string{ActExtend, ActReverify + "/" + variantOverrule, ActSuccessor, ActClose}
 	}
+	return GateStopAnswers(f.Gate)
+}
+
+// GateStopAnswers are the answers the face of a gate supervisor's stop of
+// activity can hold: the values of the answer its decision recommends.
+func GateStopAnswers(activity string) []string {
+	if activity == ActivityWaitChecks {
+		return []string{ActWaitChecks, ActRerunChecks, ActClose}
+	}
 	return []string{ActReverify, ActContinue, ActReplan, ActClose}
 }
 
-// gateSuggest is the gate supervisor's recommendation: the answer of the
-// face it opens with and the words after it as grounds, else its words
-// whole, which lead no answer.
+// gateSuggest is the gate supervisor's recommendation: the answer its
+// decision names, where the face holds it, with the recommendation's words
+// as grounds; else its words alone, which lead no answer.
 func gateSuggest(f Facts) (key, by, grounds string) {
-	rec := agentLine(f, "Recommendation")
-	if name, rest, ok := strings.Cut(rec, ": "); ok && slices.Contains(gateAnswers(f), name) {
-		return name, "the gate supervisor", rest
+	if key = agentLine(f, "Answer"); !slices.Contains(gateAnswers(f), key) {
+		key = ""
 	}
-	return "", "the gate supervisor", rec
+	return key, "the gate supervisor", agentLine(f, "Recommendation")
 }
 
 // failedDep is the failed dependency with no replacement the card waits

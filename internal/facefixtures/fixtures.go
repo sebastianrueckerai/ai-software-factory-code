@@ -664,8 +664,8 @@ var humanSources = []humanSource{
 	}), factoryd.BriefFacts{Name: "factoryd, gateway"}},
 	{factoryd.SourceRollFailed, escalates(factoryd.SourceRollFailed, "the roller", func(*builder) factoryd.HumanQuestion {
 		title, _, _ := strings.Cut(rollSummary(), "\n\n")
-		return factoryd.RollFailedQuestion([]factoryd.RollFailure{{RunID: 3384, Title: title, Issue: 2088}, {RunID: 3386, Title: title, Issue: 2089},
-			{RunID: 3391, Title: title, Issue: 2090}})
+		return factoryd.RollFailedQuestion([]factoryd.RollFailure{{Title: title, Issue: 2088}, {Title: title, Issue: 2089},
+			{Title: title, Issue: 2090}})
 	}), factoryd.BriefFacts{Name: "3"}},
 	{factoryd.SourceRerun, escalates(factoryd.SourceRerun, "factoryd", func(*builder) factoryd.HumanQuestion {
 		return factoryd.RerunQuestion(3380, mainRedSHA, "test", []string{factoryd.LostRunnerLine("test, https://git.example/sf/code/actions/runs/3380/jobs/0", "", 0, time.Time{})},
@@ -767,7 +767,7 @@ var caseStops = map[factoryd.CaseKind]caseStop{
 	factoryd.CaseCheckinFailed: {"Intake: refuse an issue without a body", "An issue with no body files a card no agent can work. Refuse it with a comment.",
 		checkin(factoryd.CheckTimeCap, factoryd.CheckinTimeCapStop(2*time.Minute))},
 	factoryd.CaseGateStop: {"Pulse: recompute on a card's status change", "The pulse recomputes only every ten minutes. Recompute it on each status change of a card, at most once a minute.",
-		gateStop(factoryd.ActivityModelReview, "the review keeps one finding the agent says main already fixes", "reverify: the limiter in pulse.go:88 holds the bound")},
+		gateStop(factoryd.ActivityModelReview, "the review keeps one finding the agent says main already fixes", "the limiter in pulse.go:88 holds the bound", factoryd.ActReverify)},
 	factoryd.CaseFindingsRepeated: {"Drawer: the Activity tab", "Show the card's gates and steps in the drawer's Activity tab.",
 		func(_ *builder, t *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
 			t.Usage.Attempts, f.Attempts = 3, 3
@@ -879,11 +879,11 @@ func checkin(kind, reason string) func(*builder, *factoryd.Task, *factoryd.CaseF
 
 // gateStop is the gate supervisor's stop of activity past its bound, with
 // its diagnosis and recommendation.
-func gateStop(activity, diagnosis, recommendation string) func(*builder, *factoryd.Task, *factoryd.CaseFacts) factoryd.TripInput {
+func gateStop(activity, diagnosis, recommendation, answer string) func(*builder, *factoryd.Task, *factoryd.CaseFacts) factoryd.TripInput {
 	return func(_ *builder, _ *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
 		withFindings(f, false, "pulse.go: the recompute runs on every row, not once a minute")
 		return factoryd.TripInput{Reason: factoryd.GateStopReason(factoryd.GateTrip{Activity: activity, Attempt: 3, Bound: 20 * time.Minute},
-			factoryd.GateDecision{Diagnosis: diagnosis, Recommendation: recommendation})}
+			factoryd.GateDecision{Diagnosis: diagnosis, Recommendation: recommendation, Answer: answer})}
 	}
 }
 

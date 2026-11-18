@@ -141,7 +141,7 @@ func TestOpenedCardSaysItsAskOnce(t *testing.T) {
 	equal(t, "a card whose title names its work", texts("action/extend", "o-title", "o-why", "o-question", "o-askwhy"), []string{
 		"Board export: import a snapshot back.",
 		"Read a nightly snapshot back into an empty database.",
-		"The card used all 3 sessions with 2 review findings open. Allow more, or end the card?",
+		"The card used all 3 sessions with 2 review findings open. How should it go on?",
 		"A card runs only the sessions it was given, and this one has used all 3."})
 	_, _, _, _, asks := openedEntry(t, "card", "roll refused", "")
 	if want := `<h2 class="o-title" tabindex="-1">Fix the signing of the images <span class="term">factoryd</span>, <span class="term">gateway</span>, then close this card.</h2>`; !strings.Contains(asks, want) {

@@ -59,6 +59,9 @@ type GateDecision struct {
 	Action         SupervisorAction `json:"action"`
 	Diagnosis      string           `json:"diagnosis"`
 	Recommendation string           `json:"recommendation,omitempty"`
+	// Answer is the key of the human's answer the supervisor recommends, one
+	// the stop's face can hold (GateStopAnswers); empty for none.
+	Answer string `json:"answer,omitempty"`
 }
 
 // attemptEnded is the answer on a trip whose attempt ended before the
@@ -77,7 +80,7 @@ func (d GateDecision) verdict() string {
 
 // detail is the decision as its alert's detail.
 func (d GateDecision) detail() map[string]any {
-	return map[string]any{"action": string(d.Action), "diagnosis": d.Diagnosis, "recommendation": d.Recommendation}
+	return map[string]any{"action": string(d.Action), "diagnosis": d.Diagnosis, "recommendation": d.Recommendation, "answer": d.Answer}
 }
 
 // gateBundle is what the gate supervisor reads, assembled by factoryd with
@@ -94,6 +97,29 @@ type gateBundle struct {
 	State     map[string]any     `json:"state,omitempty"`
 	Cost      *CostState         `json:"cost,omitempty"` // the deterministic cost and state block, read from the store
 	Allowed   []SupervisorAction `json:"allowed_actions"`
+	// Answers are the answers a human gets when the activity's stop reaches
+	// them, each with what it does: the values of the decision's answer.
+	Answers []gateAnswerChoice `json:"human_answers"`
+}
+
+// gateAnswerChoice is one answer of a gate stop's face as the supervisor
+// reads it.
+type gateAnswerChoice struct {
+	Key    string `json:"key"`
+	Label  string `json:"label"`
+	Effect string `json:"effect"`
+}
+
+// gateAnswerChoices are the answers a stop of activity can hold, in the
+// vocabulary's words.
+func gateAnswerChoices(activity string) []gateAnswerChoice {
+	var out []gateAnswerChoice
+	for _, key := range GateStopAnswers(activity) {
+		if a, ok := AnswerOf(key); ok {
+			out = append(out, gateAnswerChoice{Key: key, Label: a.Label, Effect: a.Effect})
+		}
+	}
+	return out
 }
 
 const (
@@ -109,7 +135,7 @@ var gateSupervisorPrompt = `You supervise the machine gates of an autonomous sof
 - "retry": the attempt is stuck and a fresh attempt is likely to succeed (a hung poll, a lost connection). The attempt is stopped and runs again.
 - "cancel": the activity cannot succeed and no human could change that. The task fails with your diagnosis as the reason.
 - "escalate": a human must decide or act (access, infrastructure, a judgement). The task waits for a human with your diagnosis and recommendation.
-Answer with one JSON object and nothing else: {"action": "wait|retry|cancel|escalate", "diagnosis": "...", "recommendation": "..."}. diagnosis (what is happening and why) is required, recommendation (what a human should do) for escalate; each under 1000 characters. To suggest one of the human's answers, open the recommendation with its name and a colon: "reverify" (check the work again), "continue" (go on with a note of the human), "replan" (cut the work into cards again), "extend" (allow more sessions), "successor" (start a fresh card on the work), "wait_checks" (wait for the checks once more), "rerun_checks" (run the checks again) or "close" (end the card).` + "\n\n" + writingguide.For(writingguide.JobFinding)
+Answer with one JSON object and nothing else: {"action": "wait|retry|cancel|escalate", "diagnosis": "...", "recommendation": "...", "answer": "..."}. diagnosis (what is happening and why) is required, recommendation (what a human should do) for escalate; each under 1000 characters. answer is optional: the key of the one of human_answers you recommend.` + "\n\n" + writingguide.For(writingguide.JobFinding)
 
 // SuperviseGate asks the supervisor model what to do with a long gate's
 // attempt past its bound, acts on that attempt when it still runs here
@@ -151,7 +177,7 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 			d = GateDecision{Action: ActionEscalate, Diagnosis: "the gate supervisor could not be asked: " + err.Error(),
 				Recommendation: fmt.Sprintf("look at %s of task %s yourself", in.Trip.Activity, t.ID)}
 		} else {
-			d = parseGateDecision(content, bundle.Allowed)
+			d = parseGateDecision(content, bundle.Allowed, GateStopAnswers(in.Trip.Activity))
 		}
 		// the gate may have ended during the call: the answer
 		// is recorded and acts on nothing
@@ -299,7 +325,7 @@ func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in G
 	}
 	b := gateBundle{Activity: in.Trip.Activity, Attempt: in.Trip.Attempt, Bound: in.Trip.Bound.String(),
 		Elapsed: time.Since(in.Trip.Started).Round(time.Second).String(), Objective: objective,
-		Input: textutil.Truncate(string(input), bundleInput), Allowed: in.allowed()}
+		Input: textutil.Truncate(string(input), bundleInput), Allowed: in.allowed(), Answers: gateAnswerChoices(in.Trip.Activity)}
 	b.Cost = r.costState(ctx, t, 0)
 	tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 	if err != nil {
@@ -434,8 +460,9 @@ func scrubbed(b gateBundle, s *redact.Scrubber) any {
 
 // parseGateDecision validates the answer: one JSON object, a known and
 // allowed action, a diagnosis, a recommendation for escalate. Anything
-// else escalates.
-func parseGateDecision(content string, allowed []SupervisorAction) GateDecision {
+// else escalates. A recommended answer the stop's face cannot hold is
+// dropped, and the recommendation stands as words.
+func parseGateDecision(content string, allowed []SupervisorAction, answers []string) GateDecision {
 	invalid := func(why string) GateDecision {
 		return GateDecision{Action: ActionEscalate, Diagnosis: "supervisor answer invalid (" + why + "): " + textutil.Truncate(content, 300),
 			Recommendation: "read the bundle on the alert's timeline and decide"}
@@ -446,6 +473,9 @@ func parseGateDecision(content string, allowed []SupervisorAction) GateDecision 
 	}
 	d.Diagnosis = textutil.Truncate(strings.TrimSpace(d.Diagnosis), maxDecisionText)
 	d.Recommendation = textutil.Truncate(strings.TrimSpace(d.Recommendation), maxDecisionText)
+	if d.Action != ActionEscalate || !slices.Contains(answers, d.Answer) {
+		d.Answer = ""
+	}
 	switch {
 	case !slices.Contains([]SupervisorAction{ActionWait, ActionRetry, ActionCancel, ActionEscalate}, d.Action):
 		return invalid(fmt.Sprintf("unknown action %q", d.Action))

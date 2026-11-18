@@ -713,3 +713,45 @@ func TestWithdrawQuestionWithNoCaseFailsWithoutRetry(t *testing.T) {
 		t.Fatalf("status = %q, want the card left as it was", got.Status)
 	}
 }
+
+// The gate supervisor recommends a human's answer in a field of its own,
+// whose values are the answers the stop's face can hold: the bundle lists
+// them in the vocabulary's words, the parser keeps a listed one on an
+// escalation and drops any other, the stop's reason carries it on a line
+// of its own, and the prompt names no answer.
+func TestTheGateSupervisorRecommendsAnAnswerByField(t *testing.T) {
+	var labels []string
+	for _, c := range gateAnswerChoices(ActivityModelReview) {
+		labels = append(labels, c.Key+"="+c.Label)
+		if c.Effect == "" {
+			t.Errorf("%s has no effect line", c.Key)
+		}
+	}
+	if want := []string{"reverify=Check the work again", "continue=Go on with my note", "replan=Send back to the planner", "close=End the card"}; !slices.Equal(labels, want) {
+		t.Errorf("a review stop's answers = %q, want %q", labels, want)
+	}
+	if got, want := GateStopAnswers(ActivityWaitChecks), []string{"wait_checks", "rerun_checks", "close"}; !slices.Equal(got, want) {
+		t.Errorf("a check wait's answers = %q, want %q", got, want)
+	}
+	allowed := []SupervisorAction{ActionWait, ActionEscalate}
+	for content, want := range map[string]string{
+		`{"action":"escalate","diagnosis":"the review hangs","recommendation":"the limiter holds the bound","answer":"reverify"}`: "reverify",
+		`{"action":"escalate","diagnosis":"the review hangs","recommendation":"start over on a fresh card","answer":"successor"}`: "",
+		`{"action":"escalate","diagnosis":"the review hangs","recommendation":"reverify: the limiter holds the bound"}`:           "",
+		`{"action":"wait","diagnosis":"the review still runs","answer":"reverify"}`:                                               "",
+	} {
+		if d := parseGateDecision(content, allowed, GateStopAnswers(ActivityModelReview)); d.Answer != want || d.Diagnosis == "" || strings.Contains(d.Diagnosis, "invalid") {
+			t.Errorf("%s: answer %q, diagnosis %q; want the answer %q on a valid decision", content, d.Answer, d.Diagnosis, want)
+		}
+	}
+	trip := GateTrip{Activity: ActivityModelReview, Attempt: 3, Bound: 20 * time.Minute}
+	if got, want := GateStopReason(trip, GateDecision{Diagnosis: "the review hangs", Recommendation: "the limiter holds the bound", Answer: "reverify"}),
+		"The gate supervisor stopped "+ActivityModelReview+" (attempt 3) past its bound of 20m0s: the review hangs\nRecommendation: the limiter holds the bound\nAnswer: reverify"; got != want {
+		t.Errorf("the stop's reason = %q, want %q", got, want)
+	}
+	for _, key := range []string{`"reverify"`, `"successor"`, `"wait_checks"`, "open the recommendation with"} {
+		if strings.Contains(gateSupervisorPrompt, key) {
+			t.Errorf("the gate supervisor's prompt names %s", key)
+		}
+	}
+}

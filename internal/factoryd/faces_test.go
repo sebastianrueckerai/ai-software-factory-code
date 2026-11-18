@@ -396,7 +396,7 @@ func TestAnAgentsAnswersLeaveAFaceWhereNoSessionCanStart(t *testing.T) {
 	}
 	f.Attempts, f.SessionCap = 3, 3
 	capped := factoryd.FaceOf(x.c, f)
-	if want := "The card used all 3 sessions. Allow more, or end the card?"; capped.Ask != want {
+	if want := "The card used all 3 sessions. How should it go on?"; capped.Ask != want {
 		t.Errorf("at the session cap the ask is %q, want %q", capped.Ask, want)
 	}
 	if got, want := labels(capped.Answers), []string{"Allow more sessions", "End the card", "Not now"}; !slices.Equal(got, want) {
@@ -453,11 +453,14 @@ func TestAGateStopSuggestsTheAnswerItsRecommendationNames(t *testing.T) {
 		t.Errorf("suggested %q by %q on %q, first answer %q, view %q; want reverify by the gate supervisor on its grounds, and no view",
 			x.face.Suggested, x.face.SuggestedBy, x.face.Grounds, x.face.Answers[0].Label, x.face.Story.View)
 	}
-	for _, rec := range []string{"look at the gateway's log first", "successor: start over on a fresh card"} {
+	// no answer, an answer the face does not hold, and an answer's name in
+	// the words alone lead no answer
+	for rec, answer := range map[string]string{"look at the gateway's log first": "", "start over on a fresh card": factoryd.ActSuccessor,
+		"reverify: the limiter holds the bound": ""} {
 		c := x.c
 		c.Facts = maps.Clone(c.Facts)
 		c.Facts["reason"] = factoryd.GateStopReason(factoryd.GateTrip{Activity: factoryd.ActivityModelReview, Attempt: 3, Bound: 20 * time.Minute},
-			factoryd.GateDecision{Diagnosis: "the review hangs", Recommendation: rec})
+			factoryd.GateDecision{Diagnosis: "the review hangs", Recommendation: rec, Answer: answer})
 		delete(c.Facts, "face")
 		f := x.facts
 		f.Case, f.Recommend = c, factoryd.Recommendation{}
@@ -492,7 +495,7 @@ func TestTheHoldsReplansNameThePlan(t *testing.T) {
 // code name.
 func TestAGateStopNamesItsStepInWords(t *testing.T) {
 	x := fixture(t, "case", string(factoryd.CaseGateStop))
-	if want := "The review ran past its time limit. Check the work again, or tell the card how to go on?"; x.face.Ask != want {
+	if want := "The review ran past its time limit. How should the card go on?"; x.face.Ask != want {
 		t.Errorf("ask %q, want %q", x.face.Ask, want)
 	}
 }
@@ -682,9 +685,9 @@ func TestAnAgentsQuestionAtEveryCapIsTheCapsFace(t *testing.T) {
 		{"project cap", capWait(policy.RefusedProjectCap), "This project's spending limit for the month is reached. Wait for it to reset, or end the card?", wait},
 		{"budget floor", func(f *factoryd.CaseFacts) { f.LeftEUR = 0.1 }, "The card is out of money, and adding 0.38 EUR lets it run again. How should it go on?",
 			[]string{"Add money", "End the card", "Not now"}},
-		{"session cap", func(f *factoryd.CaseFacts) { f.Attempts = f.SessionCap }, "The card used all 3 sessions. Allow more, or end the card?",
+		{"session cap", func(f *factoryd.CaseFacts) { f.Attempts = f.SessionCap }, "The card used all 3 sessions. How should it go on?",
 			[]string{"Allow more sessions", "End the card", "Not now"}},
-		{"agent time cap", func(f *factoryd.CaseFacts) { f.AgentTimeS = f.AgentTimeCapS }, "The card used its agent time of 120 minutes. Allow more, or end the card?",
+		{"agent time cap", func(f *factoryd.CaseFacts) { f.AgentTimeS = f.AgentTimeCapS }, "The card used its agent time of 120 minutes. How should it go on?",
 			[]string{"Allow more sessions", "End the card", "Not now"}},
 	} {
 		y := x
@@ -897,6 +900,39 @@ func TestACapsWhyNamesTheFileOfItsLimit(t *testing.T) {
 		}
 		if faults := writingguide.Lint(got); len(faults) > 0 {
 			t.Errorf("%s: the guide refuses %q: %v", name, got, faults)
+		}
+	}
+}
+
+// pairAsk matches an ask whose question names two ways out.
+var pairAsk = regexp.MustCompile(`, or [^.?]*\?$`)
+
+// The asks of a card at a limit, of repeated findings and of a gate stop
+// hold more answers than two: each keeps its facts and asks how the card
+// goes on, so a pick may be any answer the face holds.
+func TestTheAsksWithManyAnswersNameNoPair(t *testing.T) {
+	kinds := []factoryd.CaseKind{factoryd.CaseSessionCap, factoryd.CaseAgentTimeCap, factoryd.CaseFindingsRepeated, factoryd.CaseGateStop}
+	seen := map[factoryd.CaseKind]bool{}
+	for _, x := range facedFixtures(t) {
+		if x.fx.Case == nil || !slices.Contains(kinds, x.fx.Case.Kind) {
+			continue
+		}
+		seen[x.fx.Case.Kind] = true
+		if ask := x.face.Ask; pairAsk.MatchString(ask) || !strings.HasSuffix(ask, " go on?") {
+			t.Errorf("%s/%s: the ask %q does not ask how the card goes on, and the face holds %v", x.fx.Group, x.fx.Kind, ask, labels(x.face.Answers))
+		}
+	}
+	if len(seen) != len(kinds) {
+		t.Errorf("the fixtures hold %v of %v", seen, kinds)
+	}
+	for ask, f := range map[string]factoryd.Facts{
+		"The checks ran past their time limit. How should the card go on?":       {CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseGateStop, Gate: factoryd.ActivityWaitChecks}},
+		"The card used all 3 sessions. How should it go on?":                     {CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseSessionCap, SessionCap: 3}},
+		"The review keeps raising the same findings. How should the card go on?": {CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseFindingsRepeated}},
+	} {
+		f.Case = factoryd.Case{Kind: f.Kind}
+		if got := factoryd.FaceOf(f.Case, f).Ask; got != ask {
+			t.Errorf("%s: the ask %q, want %q", f.Kind, got, ask)
 		}
 	}
 }

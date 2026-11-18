@@ -927,7 +927,7 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 	for _, req := range reqs {
 		title, _, _ := strings.Cut(req.Summary, "\n\n")
 		for _, id := range append(slices.Clone(req.FailedTasks), req.TaskID) {
-			f := RollFailure{RunID: req.RunID, Title: title}
+			f := RollFailure{Title: title}
 			if t, ok, err := r.Store.Task(ctx, id); err == nil && ok {
 				f.Issue = t.IssueNumber
 			}
@@ -940,10 +940,9 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 	}
 }
 
-// RollFailure is one failed roll task of the roll ladder's end: the run
-// whose images it rolled, the roll's title and its card's issue, 0 for none.
+// RollFailure is one failed roll task of the roll ladder's end: the roll's
+// title, which names its commit, and its card's issue, 0 for none.
 type RollFailure struct {
-	RunID int64
 	Title string
 	Issue int64
 }
@@ -953,7 +952,7 @@ type RollFailure struct {
 func RollFailedQuestion(failed []RollFailure) HumanQuestion {
 	facts := make([]string, len(failed))
 	for i, f := range failed {
-		facts[i] = fmt.Sprintf("- run %d: %s — roll task failed: the change does not run live", f.RunID, f.Title)
+		facts[i] = fmt.Sprintf("- %s — roll task failed: the change does not run live", f.Title)
 		if f.Issue > 0 {
 			facts[i] += fmt.Sprintf(" (card #%d)", f.Issue)
 		}
@@ -1338,8 +1337,13 @@ func RollSummary(run ActionRun, changes, refs map[string]string, commits []Compa
 	var b strings.Builder
 	// an open roll takes a run whose every image is main's: cut at it, the
 	// roll has nothing to roll (nothingToRoll)
-	fmt.Fprintf(&b, "roll %s: %s\n\nMain CI's push run %d published the images of %s. The digests under k8s/ that change:\n",
-		ShortSHA(run.CommitSHA), cmp.Or(strings.Join(rollNames(changes), ", "), "no image changed"), run.ID, run.CommitSHA)
+	// the run's number on the forge is the one a reader can open
+	ran := "Main's push run"
+	if run.Index > 0 {
+		ran = fmt.Sprintf("CI run %d on main", run.Index)
+	}
+	fmt.Fprintf(&b, "roll %s: %s\n\n%s published the images of commit %s. The digests under k8s/ that change:\n",
+		ShortSHA(run.CommitSHA), cmp.Or(strings.Join(rollNames(changes), ", "), "no image changed"), ran, run.CommitSHA)
 	for _, name := range rollNames(changes) {
 		fmt.Fprintf(&b, "\n- %s: %s", name, refs[name])
 	}

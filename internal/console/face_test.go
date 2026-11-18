@@ -1005,7 +1005,7 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	// asks how many sessions, so it opens the card rather than sends
 	face := faceOf(t, page(bt, "/?project=ai-software-factory-code", true), "t-q")
 	for _, want := range []string{
-		`<strong class="title">The card used all 3 sessions. Allow more, or end the card?</strong>`,
+		`<strong class="title">The card used all 3 sessions. How should it go on?</strong>`,
 		`<a class="pick-link" href="#card=t-q:press=extend">Allow more sessions</a>`,
 		`<span class="by">factory question&#39;s pick</span><span class="others">or <a href="#card=t-q">2 others ›</a></span>`,
 	} {
@@ -1020,7 +1020,7 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	}
 	esc := askBlockOf(t, page(bt, "/cards/t-q/drawer?tab=overview", true))
 	for _, want := range []string{
-		`<p class="o-question">The card used all 3 <span class="term">sessions</span>. Allow more, or end the card?</p>`,
+		`<p class="o-question">The card used all 3 <span class="term">sessions</span>. How should it go on?</p>`,
 		`class="answer suggested" data-answer="extend" data-to="running">`,
 		`<p class="o-by">suggested by the factory question: <span class="quote">Grant one session</span></p>`,
 		`data-press="extend">Allow more sessions</button>`,
@@ -1105,7 +1105,7 @@ func TestBoardFixturesRenderTheirAsks(t *testing.T) {
 	}{
 		{"board-agent-escalate.json", "The shared cache, or a shard per feed?",
 			"The agent stopped because it needs a decision only a human can make.", "continue/own_words", "the factory agent", "Shard the feed cache", true},
-		{"board-session-cap.json", `The card used all 3 <span class="term">sessions</span>. Allow more, or end the card?`,
+		{"board-session-cap.json", `The card used all 3 <span class="term">sessions</span>. How should it go on?`,
 			"A card runs only the sessions it was given, and this one has used all 3.", "extend", "the factory agent", "Extend by one session", true},
 		{"board-plan-question.json", "Which storage backs the short links?",
 			`The <span class="term">planner</span> needs your answer before it can finish the plan.`, "", "the planner", "a store the operator already runs asks no new standing cost", false},
@@ -1677,7 +1677,7 @@ func TestTheNoteGoesWhereTheCardSays(t *testing.T) {
 	}{
 		{id: "t-e", caseID: 5, card: caseCard, ask: "Go on with the replica?", why: "The agent stopped because it needs a decision only a human can make.",
 			ends: "Ends the card and closes its issue. Nothing more runs.", gone: "kept on the card", posts: true},
-		{id: "t-r", caseID: 7, card: reportCard, ask: "A step of the work ran past its time limit. Check the work again, or tell the sizing how to go on?",
+		{id: "t-r", caseID: 7, card: reportCard, ask: "A step of the work ran past its time limit. How should the sizing go on?",
 			why: "A step of the work did not finish in the time it was given.", ends: "Ends the sizing. This card goes on at the size it was filed with.", gone: "issue"},
 	} {
 		r, ev := newRigWithEvents(t)

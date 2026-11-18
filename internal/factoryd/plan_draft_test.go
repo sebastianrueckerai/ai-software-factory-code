@@ -197,7 +197,7 @@ func TestTimeCapAskNamesTheDraft(t *testing.T) {
 			face = cm.body
 		}
 	}
-	if !strings.Contains(face, want) || !strings.Contains(face, "The card used its agent time of 20 minutes. Allow more, or end the card?") {
+	if !strings.Contains(face, want) || !strings.Contains(face, "The card used its agent time of 20 minutes. How should it go on?") {
 		t.Fatalf("the face %q lacks the note or the ask", face)
 	}
 	if err := store.SetPlanDraft(ctx, "t-b", json.RawMessage(`{}`), []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"}); err != nil {

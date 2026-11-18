@@ -70,7 +70,7 @@ func TestHumanCardQuestions(t *testing.T) {
 			"Bump the pins", []QuestionChoice{did, notNow}, ""},
 		"issue without agents": {IssueQuestion("Two\nlines  here", "text", "sebastian", false),
 			"Two lines here", []QuestionChoice{did, notNow}, ""},
-		"failed roll": {RollFailedQuestion([]RollFailure{{RunID: 7, Title: "Roll the images", Issue: 41}}), "",
+		"failed roll": {RollFailedQuestion([]RollFailure{{Title: "Roll the images", Issue: 41}}), "",
 			[]QuestionChoice{{AnswerRetryRoll, "Try the roll again"}, notNow, {AnswerClose, "End the card"}},
 			"The failed roll cards: #41."},
 		"chain stall": {StallQuestion("sf/code", "abc1234def", time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC), []string{"ci / test"}, nil), "",

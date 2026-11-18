@@ -717,7 +717,7 @@ func TestTheOffersPassKeepsAQuestionsFaceWithItsCaps(t *testing.T) {
 		}
 		return nil
 	}
-	const question, sessions = "Which store keeps the snapshots?", "The card used all %d sessions. Allow more, or end the card?"
+	const question, sessions = "Which store keeps the snapshots?", "The card used all %d sessions. How should it go on?"
 	set(limit-1, 1)
 	asked()
 	if got := pass(); got != nil {
@@ -1192,7 +1192,7 @@ func TestAQuestionKeepsItsRecommendationThroughACap(t *testing.T) {
 	}
 	set(limit)
 	g.r.StoreMissedOffers(ctx)
-	if got := row()["ask"]; got != fmt.Sprintf("The card used all %d sessions. Allow more, or end the card?", limit) {
+	if got := row()["ask"]; got != fmt.Sprintf("The card used all %d sessions. How should it go on?", limit) {
 		t.Fatalf("the cap bound: the row asks %v, want the cap's ask", got)
 	}
 	set(limit - 1)

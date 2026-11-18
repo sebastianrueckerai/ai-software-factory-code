@@ -107,7 +107,7 @@ func inboxEntries(all []facefixtures.Fixture) []galleryEntry {
 		factoryd.EventPullRequestMerged: {poke(factoryd.Event{Kind: factoryd.EventPullRequestMerged, Detail: map[string]any{"chain": "failure", "repair": float64(2190)}}, merged)},
 		factoryd.EventRoutineRan: {poke(factoryd.Event{Kind: factoryd.EventRoutineRan, Detail: map[string]any{"routine": "long-waits", "run": float64(3), "schedule": "every day at 08:00",
 			"poke": "Cards that wait long for a human\n\n- " + ref + " “" + factoryd.CardTitle(card) + "” · code · since 09:12 · waits for: a human's answer"}}, factoryd.Task{})},
-		factoryd.WakeAsk: note(factoryd.WakeAsk, "Wake: 1 ask waits for a human: "+ref+".\n"+ref+": The card used all 3 sessions. Allow more, or end the card?",
+		factoryd.WakeAsk: note(factoryd.WakeAsk, "Wake: 1 ask waits for a human: "+ref+".\n"+ref+": The card used all 3 sessions. How should it go on?",
 			said("The card waits for a human's call on its sessions. I left the ask on the card.")),
 		factoryd.EventCaseClimbed: note(factoryd.EventCaseClimbed, "Wake: 1 case waits for the factory agent: "+ref+".\n"+ref+":\n"+statement,
 			factoryd.ChatMessage{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{{Name: "escalate", Arguments: `{"ask":"Raise the session cap?"}`, Result: "Filed the escalation as #2190 in Needs you."}}},

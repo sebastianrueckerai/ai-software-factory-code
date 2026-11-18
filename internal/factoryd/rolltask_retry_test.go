@@ -255,7 +255,7 @@ func TestTheBoundQuestionNamesEachAttempt(t *testing.T) {
 	}
 	var cards []string
 	for _, line := range strings.Split(asks[0].Objective, "\n") {
-		if strings.HasPrefix(line, "- run 57: ") {
+		if strings.HasPrefix(line, "- roll c1c1c1c: ") && !strings.Contains(line, "run 57") {
 			_, card, _ := strings.Cut(line, "(card #")
 			cards = append(cards, card)
 		}
