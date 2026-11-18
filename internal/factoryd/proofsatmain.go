@@ -50,7 +50,7 @@ type mainOutcome struct {
 func (r *Runner) ProofsAtMain(ctx context.Context, taskID string) (ProofsAtMain, error) {
 	defer beatUntilDone(ctx, "proofs at main")()
 	t, repo, err := r.task(ctx, taskID)
-	if err != nil || t.Source != SourcePlan || t.Parent == "" {
+	if err != nil || !t.PlanCard() {
 		return ProofsAtMain{}, err
 	}
 	p, err := r.filedPlan(ctx, t.Parent, t.ID)

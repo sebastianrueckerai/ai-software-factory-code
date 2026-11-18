@@ -2776,6 +2776,39 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 	}
 }
 
+// The successor that carries a plan card's key is that key's card: its
+// session carries the plan's spec, the key's role and its plan row's
+// directories, and its clone holds the plan's salvage branch, which a
+// revision's card that lands work again applies from.
+func TestASuccessorsSessionCarriesItsKeysSpecAndSalvage(t *testing.T) {
+	ctx := context.Background()
+	card := Task{ID: "t1", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec", Repository: "sf/r", SHA: "abc123",
+		IssueNumber: 4, Source: SourceSuccessor, Parent: "t-plan", PlanKey: "integration", Author: "sebastian", AuthorWriter: true,
+		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "Integration: acceptance tests\n\nTurn A1 to A9 into tests."}
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, card, kube, &fakeObjectStore{})
+	hub.branches = map[string]string{"salvage/t-plan": "s1"}
+	if err := store.CreateTask(ctx, Task{ID: "t-plan", Kind: "agent", Status: "done", Repository: "sf/r", IssueNumber: 1,
+		Objective: "Link shortener\n\nBuild a link shortener, cc @ops.", Track: policy.TrackPlan}); err != nil {
+		t.Fatal(err)
+	}
+	raw, sha, _ := planSHA(testPlan())
+	if _, err := store.AddPlanRevision(ctx, "t-plan", raw, sha); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil, resultLine(true, "built")); err != nil {
+		t.Fatal(err)
+	}
+	env := podEnv(kube.podAt(0))
+	spec := "Link shortener\n\nBuild a link shortener, cc @ops.\n\nThe plan's summary: The foundation first, then links and redirects, then the acceptance tests."
+	if env["SPEC"] != spec || env["CARD_ROLE"] != RoleIntegration || env["DIRECTORIES"] != `["acceptance/","internal/links"]` {
+		t.Fatalf("SPEC %q CARD_ROLE %q DIRECTORIES %q", env["SPEC"], env["CARD_ROLE"], env["DIRECTORIES"])
+	}
+	if clone := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "clone")); clone["BRANCHES"] != "salvage/t-plan:salvage" {
+		t.Fatalf("clone BRANCHES %q, want the plan's salvage branch", clone["BRANCHES"])
+	}
+}
+
 // A carry card: its issue's Carries line names a pull request whose head
 // the clone container supplies as branch pull/<n>, and its spec says so
 // and why — the sandbox holds no git credential, so the agent cannot

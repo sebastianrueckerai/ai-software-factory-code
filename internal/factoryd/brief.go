@@ -344,7 +344,7 @@ func (b *BriefWriter) criteriaFacts(ctx context.Context, a ApprovalRequest) ([]c
 // verdicts on its integration card, when t is that card or a delta card;
 // none for any other card.
 func (b *BriefWriter) mergeFacts(ctx context.Context, t Task) ([]criterionFact, error) {
-	if t.Source != SourcePlan || t.Parent == "" {
+	if !t.PlanCard() {
 		return nil, nil
 	}
 	p, err := b.newestPlan(ctx, t.Parent)

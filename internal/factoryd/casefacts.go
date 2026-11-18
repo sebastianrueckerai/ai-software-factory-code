@@ -450,7 +450,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			return err
 		}},
 		{"criteria", func() error {
-			if t.Source != SourcePlan || t.Parent == "" {
+			if !t.PlanCard() {
 				return nil
 			}
 			rev, ok, err := r.store.PlanRevision(ctx, t.Parent, 0)

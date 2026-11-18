@@ -1835,6 +1835,10 @@ func TestRecordReplanCountsAKeyOnce(t *testing.T) {
 			t.Fatalf("%s's replanned steps %+v, want %+v", id, got, want)
 		}
 	}
+	// the cut successor's group is its plan's, which the plan's close closes
+	if rows := rowsOfKind(store, EventCut); len(rows) != 1 || rows[0].TaskID != succ || rows[0].Detail["group"] != "t-plan" {
+		t.Fatalf("cut rows %+v, want the successor's in group t-plan", rows)
+	}
 }
 
 // A former direct card that the sizing switched to the plan track, with
@@ -2275,6 +2279,51 @@ func TestReplanOffMainOutlivesItsRequest(t *testing.T) {
 	if pause, ok := g.store.pauses["sf/repo"]; !ok || g.store.tasks[pause.RevertTask].IssueNumber != 21 {
 		t.Fatalf("pause %+v (%t), want it on the revert's card #21", pause, ok)
 	}
+}
+
+// A key whose merge its successor made is on main as that successor: an
+// off-main replan takes it off main, and so does a revision whose
+// take_off_main names the key.
+func TestReplanOffMainRevertsAKeyMergedByItsSuccessor(t *testing.T) {
+	ctx := context.Background()
+	rig := func(t *testing.T) (*groupRevertRig, string) {
+		g := offMainRig(t)
+		c1 := g.store.tasks["c1"]
+		c1.RevertedAt = finishedAgo(time.Hour)
+		g.store.tasks["c1"] = c1
+		c2 := g.store.tasks["c2"]
+		c2.Status, c2.MergeCommit = "failed", ""
+		g.store.tasks["c2"] = c2
+		succ := SuccessorID("c2")
+		if err := g.store.CreateTask(ctx, Task{ID: succ, Kind: "agent", Track: policy.TrackDirect, Source: SourceSuccessor, Parent: "p", Repository: "sf/repo",
+			PlanKey: "int", IssueNumber: 17, Status: "done", MergeCommit: "m3", PlanRevision: 1}); err != nil {
+			t.Fatal(err)
+		}
+		return g, succ
+	}
+	check := func(t *testing.T, g *groupRevertRig, succ string) {
+		t.Helper()
+		if pause := g.store.pauses["sf/repo"]; !slices.Equal(pause.Reverts, []string{succ}) {
+			t.Fatalf("pause %+v, want the revert of the successor %s", pause, succ)
+		}
+		if len(g.calls) != 1 || !strings.HasPrefix(g.calls[0], `sf/repo ["m3"]`) {
+			t.Fatalf("groupRevertBranch calls = %q, want one reverting m3", g.calls)
+		}
+	}
+	t.Run("an off-main replan", func(t *testing.T) {
+		g, succ := rig(t)
+		if _, err := g.r.Replan(ctx, "p", ReplanAsk{By: "sebastian", Comment: "the api is wrong", OffMain: true}); err != nil {
+			t.Fatal(err)
+		}
+		check(t, g, succ)
+	})
+	t.Run("a revision that takes the key off main", func(t *testing.T) {
+		g, succ := rig(t)
+		if err := g.r.revertTakenOff(ctx, g.store.tasks["p"], Repo{Owner: "sf", Name: "repo"}, 2, Plan{TakeOffMain: []string{"int"}}); err != nil {
+			t.Fatal(err)
+		}
+		check(t, g, succ)
+	})
 }
 
 // An off-main Replan of a plan with no merged card on main, or under a
@@ -2764,6 +2813,34 @@ func TestReplanRecordOfCardsTakenOffMain(t *testing.T) {
 	}
 	if text := rec.files[0].Text; !strings.HasPrefix(text, "# #30 Links API\n\ntaken off main (it was merged as 0123abcd); spent 1.20 of 3.00 EUR in 2 sessions\n\n") {
 		t.Fatalf("card-30.md starts %.120q", text)
+	}
+}
+
+// The record of the successor that carries the integration card's key
+// holds the plan's criteria verdicts, read on the plan-filed integration
+// card where they stand.
+func TestReplanRecordOfAnIntegrationSuccessorReadsThePlansRows(t *testing.T) {
+	ctx := context.Background()
+	succ := SuccessorID("t-cli")
+	step := map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "the ui is too wide", "stops": []string{"t-ui", succ}, "revision": 1}
+	r, store, _, _, _ := oldCardsRig(t, step)
+	if err := store.CreateTask(ctx, Task{ID: succ, Kind: "agent", Track: policy.TrackDirect, Source: SourceSuccessor, Parent: "t-plan",
+		Repository: "linkshort/linkshort", PlanKey: "cli", IssueNumber: 34, Status: "closed", PlanRevision: 1, BudgetEUR: 2,
+		Objective: "Command line\n\nCarried on."}); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok, err := r.replanRecord(ctx, store.tasks["t-plan"], planTimeline(t, r))
+	if err != nil || !ok {
+		t.Fatalf("replanRecord: %t, %v", ok, err)
+	}
+	text := ""
+	for _, f := range rec.files {
+		if f.Name == "card-34.md" {
+			text = f.Text
+		}
+	}
+	if !strings.Contains(text, "## Criteria verdicts\n- links_crud: unmet: POST /api/links answers 500\n") {
+		t.Fatalf("the successor's record lacks the plan's criteria verdicts: %+v", rec.files)
 	}
 }
 

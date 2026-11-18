@@ -926,7 +926,24 @@ const (
 	// as the plan card it carries on would, and ends closed. A run from
 	// before turns the successor plan-track.
 	versionSuccessorReplansItsPlan workflow.Version = 1
+	// versionSuccessorIsItsKeysCard (change id
+	// "successor-is-its-keys-card", read by a plan card's successor at its
+	// merge press and at a session that pushed nothing): the successor is
+	// its key's card, so its press runs the criteria gate again as the
+	// card's does, and a session of it that pushed nothing runs its proofs
+	// at main. A run from before merges on the press and goes on to its
+	// next session.
+	versionSuccessorIsItsKeysCard workflow.Version = 1
 )
+
+// keysCard tells whether the run's card is its key's card in its plan: a
+// card the plan filed, or its successor (versionSuccessorIsItsKeysCard).
+// It goes last in a branch's condition, so a history that never reaches
+// the branch records no marker.
+func (t *taskRun) keysCard() bool {
+	return t.source == SourcePlan || t.planCard &&
+		workflow.GetVersion(t.ctx, "successor-is-its-keys-card", workflow.DefaultVersion, versionSuccessorIsItsKeysCard) >= versionSuccessorIsItsKeysCard
+}
 
 // budgetRefused opens the card of a task whose remaining budget cannot
 // fund a call: an answer would start an attempt whose first
@@ -1980,7 +1997,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				handoverNote = res.CheckIn.Handover
 			}
 		}
-		if t.source == SourcePlan && res.Outcome == OutcomeNoPush {
+		if res.Outcome == OutcomeNoPush && t.keysCard() {
 			var atMain ProofsAtMain
 			if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reproOptions()), ActivityProofsAtMain, t.taskID).Get(t.ctx, &atMain); err != nil {
 				workflow.GetLogger(t.ctx).Warn("proofs at main", "task", t.taskID, "error", err)
@@ -3045,7 +3062,7 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 		}
 		cancelRetry = nil
 		retry = nil
-		if signalled && t.source == SourcePlan {
+		if signalled && t.keysCard() {
 			var stand *CriteriaStand
 			v, stop, held, stand := t.regate(commit, g, approver)
 			if stand != nil {

@@ -800,6 +800,38 @@ func TestRetryRefusesACardCutIntoASuccessor(t *testing.T) {
 	}
 }
 
+// A failed successor that carries a plan card's key is retried as the
+// card would be: its replacement keeps the source, the plan and the key,
+// takes its dependents, and the plan reads the key through the
+// replacement, which its waits and its replans see.
+func TestRetryCardOfAPlanCardsSuccessor(t *testing.T) {
+	ctx := context.Background()
+	r, store, objects, _, _ := newRetryRig(t)
+	setStatus(store, "t-a", "running")
+	succ, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setStatus(store, "t-a", "failed")
+	setStatus(store, succ, "failed")
+	objects.Put(ctx, "sessions/"+succ+"/timeline.jsonl", []byte(`{"step":"final","state":"failed","reason":"budget spent"}`+"\n"))
+	issue, err := r.RetryCard(ctx, succ, "alice")
+	if err != nil || issue != 10 {
+		t.Fatalf("RetryCard of the successor = %d, %v; want #10", issue, err)
+	}
+	n := store.tasks[RetryID(succ)]
+	if n.Source != SourceSuccessor || n.Parent != "t-plan" || n.PlanKey != "links-api" || n.Status != "queued" || store.tasks[succ].PlanKey != "" {
+		t.Fatalf("replacement %+v, the successor's key %q; want the key moved to a queued replacement in t-plan", n, store.tasks[succ].PlanKey)
+	}
+	if !slices.Equal(store.deps["t-b"], []string{n.ID}) {
+		t.Fatalf("B waits on %v, want the replacement %s", store.deps["t-b"], n.ID)
+	}
+	waits, err := planWaits(ctx, store, "t-plan")
+	if i := slices.IndexFunc(waits, func(c Task) bool { return c.PlanKey == "links-api" }); err != nil || i < 0 || waits[i].ID != n.ID {
+		t.Fatalf("the plan's waits %+v, %v; want key links-api read as the replacement %s", waits, err, n.ID)
+	}
+}
+
 func TestRetryRefusedTwice(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, fj, _ := newRetryRig(t)
@@ -1301,9 +1333,9 @@ func TestContinuedCardResumesOnTheBranch(t *testing.T) {
 }
 
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). Every wait
-// of the plan's own cards on the cut card moves onto the plan, and one a
-// card already had stays once; the card the cut card delegated keeps its
-// wait.
+// of the plan's own cards on the cut card moves onto the plan, the
+// successor's that carries a key among them, and one a card already had
+// stays once; the card the cut card delegated keeps its wait.
 func TestMoveDependents(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_move_deps"))
@@ -1316,6 +1348,7 @@ func TestMoveDependents(t *testing.T) {
 		{ID: "c", Status: "running", IssueNumber: 2, Track: policy.TrackDirect, Source: SourcePlan, Parent: "p"},
 		{ID: "s1", Status: "waiting-deps", IssueNumber: 3, Track: policy.TrackDirect, Source: SourcePlan, Parent: "p"},
 		{ID: "s2", Status: "waiting-deps", IssueNumber: 4, Track: policy.TrackDirect, Source: SourcePlan, Parent: "p"},
+		{ID: "s3", Status: "waiting-deps", IssueNumber: 6, Track: policy.TrackDirect, Source: SourceSuccessor, Parent: "p", PlanKey: "k3"},
 		{ID: "d", Status: "waiting-deps", IssueNumber: 5, Track: policy.TrackDirect, Source: SourceDelegate, Parent: "c"},
 	} {
 		tk.BudgetEUR, tk.Repository, tk.Kind = 1, "sf/r", "agent"
@@ -1323,14 +1356,14 @@ func TestMoveDependents(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for id, deps := range map[string][]string{"s1": {"c"}, "s2": {"c", "p"}, "d": {"c"}} {
+	for id, deps := range map[string][]string{"s1": {"c"}, "s2": {"c", "p"}, "s3": {"c"}, "d": {"c"}} {
 		if err := s.AddTaskDeps(ctx, id, deps); err != nil {
 			t.Fatal(err)
 		}
 	}
 	moved, err := s.MoveDependents(ctx, "c", "p")
-	if err != nil || !slices.Equal(moved, []string{"s1", "s2"}) {
-		t.Fatalf("MoveDependents = %v, %v; want s1 and s2 moved", moved, err)
+	if err != nil || !slices.Equal(moved, []string{"s1", "s2", "s3"}) {
+		t.Fatalf("MoveDependents = %v, %v; want s1, s2 and the successor s3 moved", moved, err)
 	}
 	var edges []string
 	rows, err := s.db.QueryContext(ctx, `SELECT task_id || '>' || depends_on FROM task_deps ORDER BY 1`)
@@ -1345,7 +1378,7 @@ func TestMoveDependents(t *testing.T) {
 		}
 		edges = append(edges, e)
 	}
-	if want := []string{"d>c", "s1>p", "s2>p"}; !slices.Equal(edges, want) {
+	if want := []string{"d>c", "s1>p", "s2>p", "s3>p"}; !slices.Equal(edges, want) {
 		t.Fatalf("edges %v, want %v", edges, want)
 	}
 }

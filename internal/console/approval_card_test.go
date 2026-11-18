@@ -122,6 +122,32 @@ func TestDrawerShowsTheOpenedProofBesideTheRepositorysVersion(t *testing.T) {
 	}
 }
 
+// The merge card of the successor that carries the integration card's key
+// shows the plan's opened proof as the card's own does.
+func TestDrawerOfAnIntegrationSuccessorShowsTheOpenedProof(t *testing.T) {
+	r := newRig(t)
+	plan, _ := json.Marshal(factoryd.Plan{Summary: "The opening hours", Cards: []factoryd.PlanCard{
+		{Key: "integration", Role: factoryd.RoleIntegration, Title: "Integration"},
+	}})
+	r.tasks.set("",
+		factoryd.Task{ID: "t-plan", Kind: "agent", Status: "done", Process: "spec", Objective: "Opening hours", Repository: "sf/code", IssueNumber: 3},
+		factoryd.Task{ID: "t-int", Kind: "agent", Status: "failed", Repository: "sf/code", IssueNumber: 12, Parent: "t-plan",
+			Source: factoryd.SourcePlan, PlanKey: "integration", PlanRevision: 1},
+		factoryd.Task{ID: "t-is", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 13, Parent: "t-plan",
+			Source: factoryd.SourceSuccessor, PlanKey: "integration", PlanRevision: 1, PRNumber: 14})
+	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan, SHA256: "sha-1"}}}
+	r.tasks.proofs = map[string][]factoryd.PlanProof{"t-plan": {{Idx: 1, Origin: factoryd.ProofOriginCriterion, Criterion: "group_open", ID: "group_open",
+		Path: "acceptance/group_open_test.go", Code: "v1 code", State: factoryd.ProofOpened}}}
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 41, Kind: factoryd.ApprovalMerge, TaskID: "t-is",
+		Project: "sf/code", PRNumber: 14, Status: "pending", Spec: json.RawMessage(`{"risk_class":"normal","head_sha":"8e3a1b0c"}`)})
+	r.fg.rawAt = map[string]string{"8e3a1b0c acceptance/group_open_test.go": "v2 code"}
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-is/drawer?tab=overview", nil), ck).Body.String()
+	if !strings.Contains(body, `<h5>group_open: acceptance/group_open_test.go, changed</h5>`) {
+		t.Fatalf("the successor's drawer lacks the opened proof:\n%s", body)
+	}
+}
+
 // The drawer's pill reads the card's state like the face's: a merged
 // card's drawer says merged, a done card's says done.
 func TestDrawerPillReadsTheState(t *testing.T) {

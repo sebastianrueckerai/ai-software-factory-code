@@ -511,7 +511,7 @@ func CriteriaCard(p Plan, key string) bool {
 
 // openedProofs are the proofs in state opened of p, t's plan, when t is its integration card or a delta card; nil for any other task.
 func (r *Runner) openedProofs(ctx context.Context, t Task, p Plan) ([]PlanProof, error) {
-	if t.Source != SourcePlan || t.Parent == "" || !CriteriaCard(p, t.PlanKey) {
+	if !t.PlanCard() || !CriteriaCard(p, t.PlanKey) {
 		return nil, nil
 	}
 	rows, err := r.store.PlanProofs(ctx, t.Parent)
@@ -570,7 +570,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	if err != nil {
 		return CriteriaResult{}, err
 	}
-	if t.Source != SourcePlan || t.Parent == "" {
+	if !t.PlanCard() {
 		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "skipped": "no plan filed"}))
 		return CriteriaResult{Skipped: "no plan filed"}, nil
 	}

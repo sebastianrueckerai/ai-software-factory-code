@@ -125,6 +125,13 @@ func TestChatPlanRead(t *testing.T) {
 		[]string{plan, "card of plan #20\n" + plan, "Refused: Card #5 is no plan and belongs to none."})
 	status, _ := refused(t, r, "plan", toolInput{TaskID: "t-m"})
 	equal(t, "the refusal's status", status, http.StatusConflict)
+	// the successor that carries a plan card's key reads its plan's
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-s1", Kind: "agent", Repository: "sf/code", Status: "running",
+		Track: policy.TrackDirect, Process: "maintenance", IssueNumber: 25, Source: factoryd.SourceSuccessor, Parent: "t-p", PlanKey: "api",
+		Objective: "Build the API, carried on."}})
+	r.tasks.mu.Unlock()
+	equal(t, "the successor's plan read", reads(t, r, g, "plan", `{"task_id":"t-s1"}`), []string{"card of plan #20\n" + plan})
 	r.tasks.mu.Lock()
 	r.tasks.plans = nil
 	r.tasks.mu.Unlock()

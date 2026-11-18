@@ -456,6 +456,30 @@ func TestBehavioursCallReadsNoDiffText(t *testing.T) {
 	}
 }
 
+// A key cut into a successor reads as the successor in the feature the
+// integration card's review sees: its pull request's files, not the cut
+// card's.
+func TestIntegrationReviewReadsACutKeyThroughItsSuccessor(t *testing.T) {
+	diffs := map[int64]string{9: featureDiffs[9], 11: featureDiffs[11], 12: featureDiffs[12], 21: markedFile("s.go", "FromS", "MARK-S")}
+	r, store := featureRunner(t, "I", map[string]int64{"A": 11, "B": 12}, diffs)
+	cut := store.tasks["t-A"]
+	cut.Status = "failed"
+	store.tasks["t-A"] = cut
+	succ := SuccessorID("t-A")
+	store.tasks[succ] = Task{ID: succ, Repository: "sf/repo", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "A", PRNumber: 21,
+		Objective: "Card A title\n\nthe card's body", Status: "merged"}
+	ll := &fakeLiteLLM{answer: featureAnswer}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	if rv := getInto[Review](t, val, err); rv.Note != "" {
+		t.Fatalf("review = %+v", rv)
+	}
+	calls := featureCalls(ll)["behaviours"]
+	if len(calls) != 1 || !strings.Contains(calls[0], "s.go +2 -0 (card 1)") || strings.Contains(calls[0], "a.go") {
+		t.Fatalf("the behaviours call does not read key A as its successor's s.go alone: %v", calls)
+	}
+}
+
 // A card no plan revision holds arrived by a delta round: its review
 // notes the feature's behaviours over every card, the delta card D's and
 // its own among them.
@@ -2669,6 +2693,21 @@ func TestPlanGateReadsMergeTimesAndReverts(t *testing.T) {
 				t.Fatalf("onMain = %v, %v; want %v", g.onMain, err, c.onMain)
 			}
 		})
+	}
+}
+
+// The successor that carries the integration card's key, gated at its own
+// pull request and merged at the head the gate judged, is the newest
+// criteria card the rows judge main by, as the card would be.
+func TestPlanGateReadsMainThroughALandedSuccessorOfTheIntegrationCard(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-plan", "t-int", "failed")
+	succ := SuccessorID("t-int")
+	s.tasks[succ] = Task{ID: succ, Repository: "sf/code", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "integration", Status: "done"}
+	mergeCard(s, succ)
+	g, err := planGateOf(ctx, s, "t-plan", s.tasks["t-int"])
+	if err != nil || !g.onMain || g.pr != 0 {
+		t.Fatalf("onMain %v, pr %d, %v; want the rows judging main, with main's head to run on", g.onMain, g.pr, err)
 	}
 }
 

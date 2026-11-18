@@ -580,6 +580,52 @@ func TestGateCriteriaRunsOnADeltaCard(t *testing.T) {
 	}
 }
 
+// The successor that carries the integration card's key runs the gate on
+// its own head as the card would; the rows land on the plan-filed
+// integration card, where the plan's rows stand. Its sessions get the
+// gate's opened proofs.
+func TestGateCriteriaRunsOnASuccessorOfTheIntegrationCard(t *testing.T) {
+	ctx := context.Background()
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	task := seedCriteriaPlan(t)
+	task.Source = SourceSuccessor
+	r, _, store := newTestRunner(t, task, kube, objects)
+	proofsWorker(t, r)
+	seedPlan(t, store, map[string]string{"integ": RoleIntegration, "sizes": RoleFeature},
+		`{"id":"size_bound","kind":"test","claim":"c","inputs":"i","expected":"e"}`)
+	store.tasks["t-int"] = Task{ID: "t-int", Status: "failed", Repository: "sf/repo", Parent: "plan1", Source: SourcePlan, PlanKey: "integ",
+		Kind: "agent", Track: "direct"}
+	if _, err := store.PutPlanProofs(ctx, "plan1", 1, blindRows()[:2]); err != nil {
+		t.Fatal(err)
+	}
+	p, err := r.filedPlan(ctx, "plan1", "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened, err := r.openedProofs(ctx, store.tasks["t1"], p); err != nil || len(opened) != 1 || opened[0].ID != "group_open" {
+		t.Fatalf("the successor's opened proofs = %+v, %v; want group_open", opened, err)
+	}
+	store.proofs["plan1"] = store.proofs["plan1"][:1]
+	done := make(chan struct{})
+	var res CriteriaResult
+	go func() {
+		defer close(done)
+		res, err = runCriteria(t, r)
+	}()
+	scriptReproPods(kube, proofLines(harness.ProofRun{ID: "size_bound", Report: junitGz(t, wrap(`<testcase name="TestSizeBound"></testcase>`))}))
+	<-done
+	if err != nil || res.Skipped != "" || len(kube.podOrder) != 1 {
+		t.Fatalf("result = %+v, %v, pods %d; want the gate run in one pod", res, err, len(kube.podOrder))
+	}
+	if rows, _ := store.CriteriaVerdicts(ctx, "t-int"); len(rows) != 1 || rows[0].Criterion != "size_bound" || rows[0].Verdict != "met" {
+		t.Fatalf("rows on the integration card = %+v, want size_bound met", rows)
+	}
+	if rows, _ := store.CriteriaVerdicts(ctx, "t1"); len(rows) != 0 {
+		t.Fatalf("rows on the successor = %+v, want none", rows)
+	}
+}
+
 // A plan that names no criteria names no proof: a card finding for the
 // human, no sandbox, no stand. A plan whose gate criteria are all tests or judgements runs
 // no sandbox either: each, with no stored proof yet, is its unmet row and

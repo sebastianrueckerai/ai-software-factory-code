@@ -1057,7 +1057,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			t.PlanRevision = rev.Revision
 		}
 	}
-	if t.Source != SourcePlan && t.Standing() == harness.StandingWriter {
+	if !t.PlanCard() && t.Standing() == harness.StandingWriter {
 		_, body, _ := strings.Cut(t.Objective, "\n\n")
 		s.directories = askedDirectories(body)
 	}
@@ -1066,7 +1066,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	// a plan's work its first revert took off main is on its salvage
 	// branch, which a card that lands it again applies from
-	if t.Source == SourcePlan && t.Parent != "" {
+	if t.PlanCard() {
 		pair, err := r.salvagePair(ctx, repo, t.Parent)
 		if err != nil {
 			return SessionResult{}, named("salvage branch", err)

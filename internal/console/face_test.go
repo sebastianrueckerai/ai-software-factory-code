@@ -249,6 +249,22 @@ func TestCardFaceChips(t *testing.T) {
 	}
 }
 
+// The successor that carries a plan card's key is that plan's card: its
+// face's chip names the plan, and its drawer relates it to the plan.
+func TestAPlanCardsSuccessorNamesItsPlan(t *testing.T) {
+	r, ck := drawerRig(t)
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-s4", Kind: "agent", Status: "running", Track: "direct",
+		Process: "spec", Objective: "Links API, carried on", Repository: "linkshort/linkshort", IssueNumber: 14, Source: factoryd.SourceSuccessor,
+		Parent: "t-plan", PlanKey: "links-api"}})
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-s4"); !strings.Contains(face, `<span class="chip plan">from plan #1</span>`) {
+		t.Errorf("the successor's face lacks its plan chip:\n%s", face)
+	}
+	if card := drawer(t, r, ck, "t-s4", "overview"); !strings.Contains(card, `<li><span class="why">part of plan</span>`) {
+		t.Errorf("the successor's drawer does not relate it to its plan:\n%s", card)
+	}
+}
+
 // A plan child's chip carries the plan's name after the plan reference:
 // "from plan #1 · fix prod latency"; an unnamed plan reads "from plan
 // #1"; a parent that has no issue number yet keeps the chip with the key

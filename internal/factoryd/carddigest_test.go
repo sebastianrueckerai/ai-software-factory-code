@@ -416,6 +416,9 @@ func TestCardDigestFlagsTheOtherPatterns(t *testing.T) {
 func TestCardDigestNamesThePlanOfASuccessorsParent(t *testing.T) {
 	g := newDigestRig(func(c *Task) { c.Source, c.Parent, c.PlanKey = SourceSuccessor, "t1344", "k1" })
 	g.store.tasks["t1344"] = Task{ID: "t1344", Kind: "agent", Repository: "sf/app", IssueNumber: 1344, Track: policy.TrackPlan, PlanName: "session-metrics"}
+	if _, err := g.store.AddPlanRevision(context.Background(), "t1344", mustJSON(Plan{Summary: "s", Cards: []PlanCard{{Key: "k1", Role: RoleFeature}}}), "r1"); err != nil {
+		t.Fatal(err)
+	}
 	if h := g.digest(t).Head; h.Plan != 1344 || h.PlanName != "session-metrics" {
 		t.Fatalf("Head = %+v, want plan #1344 session-metrics", h)
 	}
@@ -905,6 +908,31 @@ func digestPlanRig(t *testing.T, key string) digestRig {
 		t.Fatal(err)
 	}
 	return g
+}
+
+// The digest of the successor that carries the integration card's key
+// counts the plan's criteria and reads their rows on the plan-filed
+// integration card: at its approval the one criterion no row holds there
+// flags.
+func TestCardDigestOfASuccessorReadsTheIntegrationCardsRows(t *testing.T) {
+	var rows []CriterionVerdict
+	for _, c := range digestPlan().Criteria {
+		if c.ID != "pages_ok" {
+			rows = append(rows, CriterionVerdict{Criterion: c.ID, Verdict: "met", Kind: c.Kind, Source: CriteriaSourceGate,
+				DecidedBy: FactoryDecider, CreatedAt: digestAt(30)})
+		}
+	}
+	g := digestPlanRig(t, "integ")
+	card := g.store.tasks["t1410"]
+	card.Source, card.Status, card.Gate = SourceSuccessor, "in-review", GateApproval
+	g.store.tasks["t1410"] = card
+	g.store.tasks["t-int"] = Task{ID: "t-int", Kind: "agent", Repository: "sf/app", IssueNumber: 1400, Source: SourcePlan, Parent: "plan1",
+		PlanKey: "integ", Status: "failed"}
+	g.store.criteriaVerdicts = map[string][]CriterionVerdict{"t-int": rows}
+	d := g.digest(t)
+	if want := []DigestFlag{{"criterion_unproven", "pages_ok"}}; d.Head.Criteria != 7 || !slices.Equal(d.Flags, want) {
+		t.Fatalf("Head criteria %d, flags %+v; want 7 and %+v", d.Head.Criteria, d.Flags, want)
+	}
 }
 
 // The gate's line with states counts blind and open, a proof's opening is

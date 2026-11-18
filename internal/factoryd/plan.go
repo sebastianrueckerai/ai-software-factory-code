@@ -3771,7 +3771,7 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 	if len(p.TakeOffMain) == 0 {
 		return nil
 	}
-	cards, err := r.store.PlanCards(ctx, t.ID)
+	cards, err := planWaits(ctx, r.store, t.ID)
 	if err != nil {
 		return err
 	}
@@ -4166,11 +4166,12 @@ func (r *Runner) filedPlan(ctx context.Context, parent, child string) (Plan, err
 	return p, nil
 }
 
-// planOf is plan card t's plan, its section "The spec and the plan" (its
-// plan's issue text and the plan's summary), its role and its plan row's
-// directories; the zero plan, "" and none for a task no plan filed.
+// planOf is plan card t's plan (Task.PlanCard), its section "The spec and
+// the plan" (its plan's issue text and the plan's summary), its role and
+// its plan row's directories; the zero plan, "" and none for a task no
+// plan filed.
 func (r *Runner) planOf(ctx context.Context, t Task) (p Plan, spec, role string, dirs []string, err error) {
-	if t.Source != SourcePlan || t.Parent == "" {
+	if !t.PlanCard() {
 		return Plan{}, "", "", nil, nil
 	}
 	plan, _, err := r.task(ctx, t.Parent)
