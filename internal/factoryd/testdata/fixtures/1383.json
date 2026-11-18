@@ -88,7 +88,7 @@
     "human_cases": 1,
     "face": [
       {
-        "ask": "Allow more, or end the card?",
+        "ask": "How should it go on?",
         "why": "A card runs only",
         "recommendation": "extend"
       }
