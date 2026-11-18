@@ -626,6 +626,40 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 	return fmt.Sprintf("Retried #%d as #%d; it starts once a work slot is free.", t.IssueNumber, issue), nil
 }
 
+// doRetryFreeze presses the retry switch on freeze card id (factoryd's
+// RetrySwitch.RetryFreeze): the class's hold clears at the gateway, the
+// class's freeze cards close, and its frozen cards call the provider again,
+// their first answer deciding whether the freeze ends or holds again. A
+// card that holds no open freeze is refused with its state.
+func (c *Console) doRetryFreeze(ctx context.Context, a actor, id string) (string, error) {
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	err = c.cfg.RetryFreeze(ctx, t.ID, a.approver())
+	var no factoryd.ErrNoFreeze
+	var part *factoryd.PartialPressError
+	switch {
+	case errors.As(err, &no):
+		return "", refuse(http.StatusConflict, no.Error())
+	case errors.As(err, &part):
+		log.Printf("console: %s presses the retry switch on %s: %v", a.s.user, t.ID, err)
+		return "", partialPress(part)
+	case err != nil:
+		log.Printf("console: %s presses the retry switch on %s: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusInternalServerError, "The freeze could not be ended: "+errText(err)+". Press Retry now again, or wait for the reset on the card.")
+	}
+	log.Printf("console: %s pressed the retry switch on %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
+	return fmt.Sprintf("Ended the freeze of #%d: the hold cleared and its frozen cards call the provider again; a new limit freezes them to its reset.", t.IssueNumber), nil
+}
+
+// partialPress is the answer, on every entry, to a press that cleared the
+// hold and failed part of what follows: what failed, and what comes of it.
+func partialPress(part *factoryd.PartialPressError) error {
+	return refuse(http.StatusInternalServerError, "The hold cleared, but part of the press failed: "+errText(part.Err)+
+		". A frozen card it did not wake starts at its reset, and a freeze card it did not close closes five minutes after its class resumed.")
+}
+
 // filedReplacement is the issue of the replacement a retry among did
 // filed; false when it filed none, as when it named one a retry filed
 // before.
@@ -1159,7 +1193,8 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, i
 // routeAnswer routes an answer to its work before Act, on every entry (the
 // board's button, the chat, the api): a running agent card's words steer its
 // session where an answer with an action never does, and a human card's
-// choice goes to its work (doHumanAnswer, typed's action its value). It
+// choice goes to its work (doHumanAnswer, typed's action its value); a
+// freeze card asks nothing, so its answers go to Act. It
 // refuses nothing about the card's state: Act is the one gate. typed is the
 // chat's answer with an action (nil for none). done: routed, with said or err.
 func (c *Console) routeAnswer(ctx context.Context, a actor, id, text, value string, typed *factoryd.Resolution) (t factoryd.Task, said string, done bool, err error) {
@@ -1173,7 +1208,7 @@ func (c *Console) routeAnswer(ctx context.Context, a actor, id, text, value stri
 	case t.Kind == "agent" && t.Status == "running" && text != "" && typed == nil && c.cfg.Steer != nil:
 		said, err = c.doSteer(ctx, a, id, text)
 		return t, said, true, err
-	case t.Kind == "human" && t.Status == "waiting-human" && t.IssueNumber != 0:
+	case t.Kind == "human" && t.Status == "waiting-human" && t.IssueNumber != 0 && t.Source != factoryd.SourceFreezeCard:
 		said, err = c.doHumanAnswer(ctx, a, t, text, value, typed)
 		return t, said, true, err
 	}
@@ -1748,10 +1783,10 @@ func (c *Console) newestCase(ctx context.Context, t factoryd.Task) (factoryd.Cas
 }
 
 // liveCase is newestCase, a card waiting on a human with none refused
-// (noCase).
+// (noCase), but for a freeze card, which asks nothing and holds none.
 func (c *Console) liveCase(ctx context.Context, t factoryd.Task) (factoryd.Case, error) {
 	k, err := c.newestCase(ctx, t)
-	if err == nil && k.ID == 0 && t.Status == "waiting-human" {
+	if err == nil && k.ID == 0 && t.Status == "waiting-human" && t.Source != factoryd.SourceFreezeCard {
 		err = refuse(http.StatusConflict, noCase)
 	}
 	return k, err
@@ -1816,7 +1851,8 @@ func (c *Console) actOnWork(ctx context.Context, a actor, t factoryd.Task, caseI
 // callAct answers card t's case caseID (0 for none) with res through Act, as
 // a's user on a's rung, the rows carrying a's chat detail and token, post
 // the answer's comment (nil for none). Money a human draws is an
-// approver's, as the Fund form's. Act's own errors come back as they are.
+// approver's, as the Fund form's, and so is a retry on either rung, as
+// Retry's. Act's own errors come back as they are.
 func (c *Console) callAct(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post func(context.Context) (int64, error)) (factoryd.ActResult, error) {
 	return c.callActWork(ctx, a, t, caseID, res, post, nil)
 }
@@ -1824,6 +1860,11 @@ func (c *Console) callAct(ctx context.Context, a actor, t factoryd.Task, caseID 
 func (c *Console) callActWork(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post, work func(context.Context) (int64, error)) (factoryd.ActResult, error) {
 	if a.rung() == 3 && (res.Action == factoryd.ActFund || res.Action == factoryd.ActRaiseCeiling || res.Fund != nil && res.Fund.EUR > 0) {
 		if err := c.admit(ctx, accessTable["fund"], a, t.Repository, "task "+t.ID); err != nil {
+			return factoryd.ActResult{}, err
+		}
+	}
+	if res.Action == factoryd.ActRetry {
+		if err := c.admit(ctx, accessTable["retry"], a, t.Repository, "task "+t.ID); err != nil {
 			return factoryd.ActResult{}, err
 		}
 	}
@@ -1853,6 +1894,7 @@ func (c *Console) actErr(ctx context.Context, a actor, t factoryd.Task, res fact
 	var ended factoryd.ErrCaseEnded
 	var noRetry factoryd.ErrNoRetry
 	var capped *factoryd.CardCapError
+	var part *factoryd.PartialPressError
 	var fj *forgejoRefusal
 	switch {
 	case err == nil:
@@ -1869,6 +1911,9 @@ func (c *Console) actErr(ctx context.Context, a actor, t factoryd.Task, res fact
 		return refuse(http.StatusConflict, err.Error())
 	case errors.As(err, &capped):
 		return refuse(http.StatusConflict, capSpent(t.IssueNumber, capped.Budget, res, c.ceilingOf(ctx, t), a.via))
+	case errors.As(err, &part):
+		log.Printf("console: %s answers %s with %s: %v", a.s.user, t.ID, res.Action, err)
+		return partialPress(part)
 	case errors.Is(err, factoryd.ErrNotFound):
 		return refuse(http.StatusNotFound, "There is no card "+t.ID+" in this project.")
 	}

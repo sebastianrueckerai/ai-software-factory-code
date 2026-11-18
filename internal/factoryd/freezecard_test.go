@@ -261,7 +261,7 @@ func TestFreezeCardCloseOnRetry(t *testing.T) {
 	}
 	// the retry press: the card closes at once, no five-minute wait, and
 	// only the big class's card closes
-	if err := w.CloseOnRetry(ctx, repo.String(), "big"); err != nil {
+	if err := w.CloseOnRetry(ctx, repo.String(), "big", "sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	closed, _, _ := store.Task(ctx, card.ID)
@@ -275,7 +275,7 @@ func TestFreezeCardCloseOnRetry(t *testing.T) {
 		t.Errorf("the press closed bigv2's card too: %s", nb.Status)
 	}
 	// a second press is quiet: no open card stands
-	if err := w.CloseOnRetry(ctx, repo.String(), "big"); err != nil {
+	if err := w.CloseOnRetry(ctx, repo.String(), "big", "sebastian"); err != nil {
 		t.Fatalf("the second press: %v", err)
 	}
 	if n := len(fj.closed); n != 1 {
@@ -367,7 +367,7 @@ func TestFreezeCardCloseSurvivesRestart(t *testing.T) {
 	}
 	// the retry press closes it at once, then factoryd restarts: a fresh
 	// watcher over the same store, no memory of the press
-	if err := w.CloseOnRetry(ctx, repo.String(), "big"); err != nil {
+	if err := w.CloseOnRetry(ctx, repo.String(), "big", "sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	if closed, _, _ := store.Task(ctx, card.ID); closed.Status != "done" {
@@ -808,7 +808,7 @@ func TestFreezeCardSameResetArm(t *testing.T) {
 	reset := base.Add(5 * time.Hour).Format(time.RFC3339)
 	for name, between := range map[string]func(ctx context.Context, store *freezeStore, w *FreezeCard, now *time.Time) error{
 		"after the press": func(ctx context.Context, store *freezeStore, w *FreezeCard, now *time.Time) error {
-			if err := w.CloseOnRetry(ctx, "sf/acme", "big"); err != nil {
+			if err := w.CloseOnRetry(ctx, "sf/acme", "big", "sebastian"); err != nil {
 				return err
 			}
 			store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: "sf/acme", At: *now, Kind: "class_resumed", Class: "big", Reset: reset})

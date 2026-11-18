@@ -23,7 +23,7 @@ var ActionEffects = map[string]string{
 	ActFund:             "Raise the card's budget by the amount in the fund field.",
 	ActRaiseCeiling:     "Raise the card's ceiling by the amount you enter.",
 	ActSuccessor:        "End this card and start a successor on its branch.",
-	ActRetry:            "File the failed dependency again as a new card.",
+	ActRetry:            "File the failed dependency again as a new card, or end the provider freeze that holds the card.",
 	ActReplan:           "Send the card, or a failed dependency's work, back to the planner.",
 	ActClose:            "End the card and close its issue, if it has one.",
 	ActDeployNow:        "Release the held production now.",

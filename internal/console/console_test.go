@@ -1259,6 +1259,8 @@ type rig struct {
 	signalErr   error
 	retried     []string // "task by user" per RetryCard
 	retryErr    error
+	unfrozen    []string // "task by user" per RetryFreeze
+	unfreezeErr error
 	handed      []string // "task by user" per GoCard
 	goErr       error
 	metrics     *sdkmetric.ManualReader
@@ -1720,6 +1722,10 @@ func newRig(t *testing.T) *rig {
 		RetryCard: func(_ context.Context, taskID, by string) (int64, error) {
 			r.retried = append(r.retried, taskID+" by "+by)
 			return 9, r.retryErr
+		},
+		RetryFreeze: func(_ context.Context, taskID, by string) error {
+			r.unfrozen = append(r.unfrozen, taskID+" by "+by)
+			return r.unfreezeErr
 		},
 		GoCard: func(_ context.Context, taskID, by string) (int64, error) {
 			r.handed = append(r.handed, taskID+" by "+by)

@@ -256,6 +256,11 @@ type Config struct {
 	// replacement's issue (factoryd's Runner.RetryCard): a refusal is
 	// factoryd.ErrNoRetry.
 	RetryCard func(ctx context.Context, taskID, by string) (int64, error)
+	// RetryFreeze presses the retry switch on freeze card taskID for by
+	// (factoryd's RetrySwitch.RetryFreeze): the class's hold clears, its
+	// freeze cards close and its frozen cards call the provider again. A
+	// refusal is factoryd.ErrNoFreeze.
+	RetryFreeze func(ctx context.Context, taskID, by string) error
 	// GoCard files human card taskID's work as an agent card for by and
 	// returns its issue (factoryd's Runner.Go): the go of a card that
 	// waits on a person. A refusal is factoryd.ErrNoGo.
@@ -607,6 +612,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/plan/holdout", http.HandlerFunc(c.planHoldout), nil},
 		{"POST /tasks/{id}/plan/changes", http.HandlerFunc(c.planChanges), nil},
 		{"POST /tasks/{id}/retry", http.HandlerFunc(c.retryCard), nil},
+		{"POST /tasks/{id}/retry-freeze", http.HandlerFunc(c.retryFreeze), nil},
 		{"POST /tasks/{id}/close", http.HandlerFunc(c.closeCard), nil},
 		{"POST /tasks/{id}/steer", http.HandlerFunc(c.steerCard), nil},
 		{"POST /tasks/{id}/replan", http.HandlerFunc(c.replanCard), nil},
@@ -702,6 +708,8 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no ConfirmDeliveredCriteria")
 	case cfg.RetryCard == nil:
 		return nil, errors.New("console: no RetryCard")
+	case cfg.RetryFreeze == nil:
+		return nil, errors.New("console: no RetryFreeze")
 	case cfg.GoCard == nil:
 		return nil, errors.New("console: no GoCard")
 	case cfg.HoldCard == nil || cfg.ReleaseCardHold == nil:

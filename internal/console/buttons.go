@@ -14,6 +14,11 @@ func (c *Console) retryCard(w http.ResponseWriter, r *http.Request) {
 	c.press(w, r, c.doRetry)
 }
 
+// retryFreeze is a freeze card's Retry now (doRetryFreeze).
+func (c *Console) retryFreeze(w http.ResponseWriter, r *http.Request) {
+	c.press(w, r, c.doRetryFreeze)
+}
+
 // closeCard is the face's Close and Close with note (doClose, on the form's note).
 func (c *Console) closeCard(w http.ResponseWriter, r *http.Request) {
 	c.press(w, r, func(ctx context.Context, a actor, id string) (string, error) {
