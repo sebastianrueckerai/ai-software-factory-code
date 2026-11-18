@@ -1710,7 +1710,7 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 // the cards whose change the head carried.
 func RepairCard(repository, sha string, findings []string, runURL string, cards []int64) BriefText {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("The chain of %s is red at %s:\n", repository, sha))
+	b.WriteString(fmt.Sprintf("The chain of %s is red at commit %s:\n", repository, sha))
 	for _, f := range findings {
 		fmt.Fprintf(&b, "- %s\n", f)
 	}

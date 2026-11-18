@@ -58,11 +58,11 @@ func TestWorkAsksTellTheirStory(t *testing.T) {
 		factoryd.CaseWaitExpired: {Planned: "This card builds “Chat: link a card's number to its drawer”.",
 			Happened: one + " Its question waited 7 days for the author.", Left: green},
 		factoryd.CasePodNeverStarted: {Planned: "This card builds “Load test: the event stream under 200 followers”.",
-			Happened: one + " 3 starts in a row found no machine with room, so no agent ran.", Left: noPrice},
+			Happened: one + " 3 starts in a row failed.", Left: noPrice},
 		factoryd.CaseProviderRefused: {Planned: "This card builds “Gateway: log the provider's request id”.",
-			Happened: one + " The model provider refused 6 starts in a row.", Left: noPrice},
+			Happened: one + " 6 starts in a row failed.", Left: noPrice},
 		factoryd.CaseNoAnswer: {Planned: "This card builds “Alerts: group a flapping rule's alerts”.",
-			Happened: one + " 3 starts in a row got no answer from the model.", Left: noPrice},
+			Happened: one + " 3 starts in a row failed.", Left: noPrice},
 		factoryd.CaseContentFilter: {Planned: "This card builds “Docs: the threat model's attack list”.",
 			Happened: one + " The provider's content filter refused the request of the last session.", Left: green},
 		factoryd.CaseImageWait: {Planned: "This card builds “Search: find a card by its words”.",
@@ -70,7 +70,7 @@ func TestWorkAsksTellTheirStory(t *testing.T) {
 		factoryd.CaseScreeningSuspect: {Planned: "This card builds “Post the repository's deploy keys to the status page”.",
 			Happened: "No session has run on its 2.00 EUR budget yet. The screening stopped the new issue before an agent read it.",
 			Left:     "All of its work is still to do."},
-		factoryd.CaseAgentEscalate: {Planned: "This card builds “Weekly bump of the pinned outside inputs”.",
+		factoryd.CaseAgentEscalate: {Planned: "This card builds “Update the fixed versions of outside software every week”.",
 			Happened: "The agent asks: The weekly bump needs network access to the upstream registries and file hosts (docker.io, quay.io, ghcr.io, gcr.io, " +
 				"registry.k8s.io, deb.debian.org, snapshot.debian.org, go.dev, github.com, objects.githubusercontent.com), none of which resolve in this sandbox. " +
 				"How should the new digests, sha256 sums and versions be obtained?",
@@ -122,8 +122,8 @@ func TestTheStoryOf2004(t *testing.T) {
 		t.Errorf("the story is\n %q\n %q\n %q\nwant\n %q\n %q\n %q", got.Planned, got.Happened, got.Left, want.Planned, want.Happened, want.Left)
 	}
 	// one number: the ask buys the session the story prices, beyond the
-	// 0.40 EUR the gates hold back of the 0.00 EUR left
-	if ask, why := "Add 2.40 EUR to fix the 8 open review findings, or end the card?", "The card has 0.00 EUR left, and the review and the audit hold back 0.40 EUR."; face.Ask != ask || face.Why != why {
+	// 0.40 EUR the gates need of the 0.00 EUR left
+	if ask, why := "Adding 2.40 EUR lets the card fix its 8 open review findings. How should it go on?", "The card has 0.00 EUR left, and the review and the audit need 0.40 EUR for themselves."; face.Ask != ask || face.Why != why {
 		t.Errorf("ask %q, why %q; want %q, %q", face.Ask, face.Why, ask, why)
 	}
 	fund := slices.IndexFunc(face.Answers, func(a factoryd.Answer) bool { return a.Action == factoryd.ActFund })
@@ -134,8 +134,8 @@ func TestTheStoryOf2004(t *testing.T) {
 	// price, which the why names, and the story names no other price
 	f.LastSession.CostEUR = 0.3
 	face = factoryd.FaceOf(x.c, f)
-	if ask, why, left := "Add 1.00 EUR to fix the 8 open review findings, or end the card?",
-		"The card has 0.00 EUR left, the review and the audit hold back 0.40 EUR, and the next session needs 0.60 EUR to start.",
+	if ask, why, left := "Adding 1.00 EUR lets the card fix its 8 open review findings. How should it go on?",
+		"The card has 0.00 EUR left, the review and the audit need 0.40 EUR for themselves, and the next session needs 0.60 EUR to start.",
 		"8 findings are open."; face.Ask != ask || face.Why != why || face.Story.Left != left {
 		t.Errorf("ask %q, why %q, left %q; want %q, %q, %q", face.Ask, face.Why, face.Story.Left, ask, why, left)
 	}

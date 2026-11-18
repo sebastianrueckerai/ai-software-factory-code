@@ -2358,7 +2358,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 			s.Hold = &holdLine{For: coarse(time.Since(h.Since)), Reason: factoryd.HoldReason(h.Groups)}
 			for _, g := range h.Groups {
 				merged, total := g.Merged()
-				s.Hold.Groups = append(s.Hold.Groups, fmt.Sprintf("plan #%d · %d of %d merged", g.Issue, merged, total))
+				s.Hold.Groups = append(s.Hold.Groups, fmt.Sprintf("%s · %d of %d merged", factoryd.PlanWords(g.Name, g.Issue), merged, total))
 			}
 			if h.DeployNow != "" && c.cfg.MainCommit != nil {
 				switch head, err := c.cfg.MainCommit(ctx, p.Repository); {

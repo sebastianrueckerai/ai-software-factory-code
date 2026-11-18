@@ -8,8 +8,8 @@
 {{end}}{{range .Problems}}<p class="problem" role="status">{{.}}</p>
 {{end}}{{with .Ask}}<section class="o-ask" aria-label="Your call">
 <p class="o-label">Your call{{if gt .Of 1}} · {{.Position}} of {{.Of}}<span class="o-pages">{{if .Prev}}<a class="prev" href="{{.Prev}}" hx-get="{{.Prev}}" hx-target="#drawer" hx-swap="innerHTML" aria-label="The ask before">‹</a>{{else}}<span class="prev" aria-hidden="true">‹</span>{{end}}{{if .Next}}<a class="next" href="{{.Next}}" hx-get="{{.Next}}" hx-target="#drawer" hx-swap="innerHTML" aria-label="The ask after">›</a>{{else}}<span class="next" aria-hidden="true">›</span>{{end}}</span>{{end}}</p>
-<p class="o-question">{{.Question}}</p>
-{{with .Why}}<p class="o-askwhy">{{.}}</p>
+{{with .Question}}<p class="o-question">{{.}}</p>
+{{end}}{{with .Why}}<p class="o-askwhy">{{.}}</p>
 {{end}}{{with .Story}}<ul class="o-story">{{range .}}<li>{{.Lead}}{{with .Quote}}<span class="quote">{{.}}</span>{{end}}</li>{{end}}</ul>
 {{end}}{{with .Note}}<p class="o-note">{{.}}</p>
 {{end}}{{with .Who}}<p class="o-who">{{.}}</p>

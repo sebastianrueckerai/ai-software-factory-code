@@ -101,33 +101,33 @@ func TestPokeOf(t *testing.T) {
 		// a title past 70 characters is cut at a word: "Board export: keep the nightly snapshots in Postgres and SQLite" is 63
 		{"a long title is cut at a word", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}},
 			Task{ID: "t-1", Kind: "agent", IssueNumber: 603, Objective: "Board export: keep the nightly snapshots in Postgres and SQLite beside the export", SpentEUR: 0.214},
-			ChatMessage{Kind: MessagePoke, Content: "#603 (Board export: keep the nightly snapshots in Postgres and SQLite…) is done and live. It cost 0.21 EUR."}, true},
+			ChatMessage{Kind: MessagePoke, Content: "Nothing for you. #603 (Board export: keep the nightly snapshots in Postgres and SQLite…) is done and live. It cost 0.21 EUR."}, true},
 		{"a card done", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}}, card,
-			ChatMessage{Kind: MessagePoke, Content: named + " is done and live. It cost 0.21 EUR."}, true},
+			ChatMessage{Kind: MessagePoke, Content: "Nothing for you. " + named + " is done and live. It cost 0.21 EUR."}, true},
 		{"a plan's card done", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}}, child, ChatMessage{}, false},
 		// a merged card informs once at its merge; the done poke comes at
 		// live, so a card already done by then (live at once) is quiet here
 		{"a merge waits for the chain", Event{Kind: EventPullRequestMerged, TaskID: "t-1", Detail: map[string]any{"pr": float64(9), "by": MergeUser}}, func() Task { c := card; c.Status = "merged"; return c }(),
-			ChatMessage{Kind: MessagePoke, Content: named + " is merged. The checks on main run now."}, true},
+			ChatMessage{Kind: MessagePoke, Content: "Nothing for you. " + named + " is merged. The checks on main run now."}, true},
 		{"a merge already done informs nobody", Event{Kind: EventPullRequestMerged, TaskID: "t-1", Detail: map[string]any{"pr": float64(9), "by": MergeUser}}, func() Task { c := card; c.Status = "done"; return c }(),
 			ChatMessage{}, false},
 		{"a closed card", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "closed"}}, card, ChatMessage{}, false},
 		{"a chat task", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed"}}, Task{ID: "t-1", Kind: KindChat}, ChatMessage{}, false},
 		{"a plan done", Event{Kind: EventAllChildrenDone, TaskID: "t-plan", Detail: map[string]any{"cards": float64(6)}}, plan,
-			ChatMessage{Kind: MessagePoke, Content: "The plan #558 (Members page) is done: all 6 cards."}, true},
+			ChatMessage{Kind: MessagePoke, Content: "Nothing for you. The plan #558 (Members page) is done: all 6 cards."}, true},
 		{"a chat budget spent", Event{Kind: EventChatBudgetSpent, TaskID: "t-chat-linkshort-2000-01", Actor: FactoryDecider, Via: ViaFactoryd,
 			Detail: map[string]any{"budget_eur": float64(15), "spent_eur": 14.96, "suggest_eur": float64(3)}}, Task{ID: "t-chat-linkshort-2000-01", Kind: KindChat},
 			ChatMessage{Kind: MessagePoke, Content: "The chat's budget for this month is used up: 14.96 of 15.00 EUR spent. Its turns wait until it is funded or the month turns."}, true},
 		{"a level change", Event{Kind: EventAutonomyChanged, Actor: "sebastian", Detail: map[string]any{"from": "manual", "to": "assisted"}}, Task{},
-			ChatMessage{Kind: MessagePoke, Content: "sebastian set the autonomy from manual to assisted."}, true},
+			ChatMessage{Kind: MessagePoke, Content: "Nothing for you. sebastian set the autonomy from manual to assisted."}, true},
 		{"a cap change", Event{Kind: EventAutonomyChanged, Actor: "sebastian", Detail: map[string]any{"from": "assisted", "to": "assisted", "queue_cap": float64(5)}}, Task{},
-			ChatMessage{Kind: MessagePoke, Content: "sebastian set the queue cap to 5."}, true},
+			ChatMessage{Kind: MessagePoke, Content: "Nothing for you. sebastian set the queue cap to 5."}, true},
 		{"the agent's retry", agentDid(EventCardRetried, "assisted", map[string]any{}), card,
-			ChatMessage{Kind: MessagePoke, Content: "The agent tried " + named + " again.", Decider: "assisted level · retried by the agent"}, true},
+			ChatMessage{Kind: MessagePoke, Content: "Nothing for you. The agent tried " + named + " again.", Decider: "assisted level · retried by the agent"}, true},
 		{"the agent's filing at full auto", agentDid(EventCardFiled, "autonomous", map[string]any{"merge_rule": "auto"}), card,
-			ChatMessage{Kind: MessagePoke, Content: "The agent filed " + named + ".", Decider: "full auto level · filed by the agent"}, true},
+			ChatMessage{Kind: MessagePoke, Content: "Nothing for you. The agent filed " + named + ".", Decider: "full auto level · filed by the agent"}, true},
 		{"the agent's grant", agentDid(EventSessionGranted, "assisted", map[string]any{}), card,
-			ChatMessage{Kind: MessagePoke, Content: "The agent gave " + named + " one more session.", Decider: "assisted level · granted by the agent"}, true},
+			ChatMessage{Kind: MessagePoke, Content: "Nothing for you. The agent gave " + named + " one more session.", Decider: "assisted level · granted by the agent"}, true},
 		{"the agent's filing at manual", agentDid(EventCardFiled, "manual", map[string]any{}), card, ChatMessage{}, false},
 		{"the member's retry", Event{Kind: EventCardRetried, TaskID: "t-1", Detail: map[string]any{"autonomy": "assisted", "decider": "member"}}, card, ChatMessage{}, false},
 		{"a stranded hold", stranded, heldOn("t-9"),
@@ -190,7 +190,7 @@ func TestAHelpersPokesNameItsStep(t *testing.T) {
 		{"its failure", event(EventTaskEnded, map[string]any{"state": "failed", "reason": "checks: the session found no plan."}),
 			"The sizing of " + of + " failed: the session found no plan.", nil},
 		{"the agent's grant", Event{Kind: EventSessionGranted, TaskID: "t-size", IssueNumber: 2003, Detail: map[string]any{"autonomy": "assisted", "merge_rule": "human", "decider": "agent"}},
-			"The agent gave the sizing of " + of + " one more session.", nil},
+			"Nothing for you. The agent gave the sizing of " + of + " one more session.", nil},
 	} {
 		m, ok := PokeOf(tt.e, sizing, parent)
 		if !ok || m.Content != tt.want || !slices.Equal(m.Choices, tt.choices) {
@@ -222,10 +222,10 @@ func TestMergedPokeInformsOnce(t *testing.T) {
 		want string
 		ok   bool
 	}{
-		{"the chain running", merge("running", 0, false), "#603 is merged. The checks on main run now.", true},
-		{"the chain red with its repair", merge("failure", 1139, false), "#603 is merged, and the checks on main failed. #1139 repairs them.", true},
-		{"the chain red before its repair card files", merge("failure", 0, false), "#603 is merged, and the checks on main failed.", true},
-		{"another head's red, its repair on it", merge("running", 1139, false), "#603 is merged, and the checks on main failed. #1139 repairs them.", true},
+		{"the chain running", merge("running", 0, false), "Nothing for you. #603 is merged. The checks on main run now.", true},
+		{"the chain red with its repair", merge("failure", 1139, false), "Nothing for you. #603 is merged, and the checks on main failed. #1139 repairs them.", true},
+		{"the chain red before its repair card files", merge("failure", 0, false), "Nothing for you. #603 is merged, and the checks on main failed.", true},
+		{"another head's red, its repair on it", merge("running", 1139, false), "Nothing for you. #603 is merged, and the checks on main failed. #1139 repairs them.", true},
 		{"a chain that already covers the card", merge("failure", 0, true), "", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -249,7 +249,7 @@ func TestDonePokeSaysLive(t *testing.T) {
 	if !ok {
 		t.Fatal("pokeOf ok = false, want the done poke")
 	}
-	want := "#603 (Session store: pick the table's store) is done and live. It cost 0.21 EUR."
+	want := "Nothing for you. #603 (Session store: pick the table's store) is done and live. It cost 0.21 EUR."
 	if m.Content != want {
 		t.Fatalf("poke = %q, want %q", m.Content, want)
 	}
@@ -379,12 +379,12 @@ func TestPGStorePokes(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, _ = s.ChatMessages(ctx, "sf/code", "bob", inbox, 10)
-	if len(rows) != 4 || !rows[3].Queued || rows[3].Content != "#603 (Session store) is done and live. It cost 0.00 EUR." || !slices.Equal(line.landed["bob"], []int64{rows[3].ID}) {
+	if len(rows) != 4 || !rows[3].Queued || rows[3].Content != "Nothing for you. #603 (Session store) is done and live. It cost 0.00 EUR." || !slices.Equal(line.landed["bob"], []int64{rows[3].ID}) {
 		t.Fatalf("bob's inbox = %+v, landed %v: want the poke queued as its newest row and its id handed to the line", rows, line.landed["bob"])
 	}
 	mine, _ := s.EnsureInbox(ctx, "sf/code", "sebastian")
 	rows, _ = s.ChatMessages(ctx, "sf/code", "sebastian", mine, 10)
-	if last := rows[len(rows)-1]; last.Queued || last.Content != "#603 (Session store) is done and live. It cost 0.00 EUR." || line.landed["sebastian"] != nil {
+	if last := rows[len(rows)-1]; last.Queued || last.Content != "Nothing for you. #603 (Session store) is done and live. It cost 0.00 EUR." || line.landed["sebastian"] != nil {
 		t.Fatalf("sebastian's newest row = %+v, landed %v: want the poke at once", last, line.landed["sebastian"])
 	}
 
@@ -415,7 +415,7 @@ func TestPGStorePokes(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, _ = s.ChatMessages(ctx, "sf/code", "bob", inbox, 20)
-	if len(rows) != 5 || rows[4].Content != "#604 (Feed page) is merged, and the checks on main failed. #1139 repairs them." {
+	if len(rows) != 5 || rows[4].Content != "Nothing for you. #604 (Feed page) is merged, and the checks on main failed. #1139 repairs them." {
 		t.Fatalf("bob's inbox = %+v, want the merged inform naming the repair as its newest row", rows)
 	}
 }
@@ -507,7 +507,7 @@ func TestTheMergedInformReachesACardOnItsWayToMerged(t *testing.T) {
 			got = append(got, r.Content)
 		}
 	}
-	if want := []string{"#601 (Feed page) is merged. The checks on main run now.", "#602 (Feed page) is merged. The checks on main run now."}; !slices.Equal(got, want) {
+	if want := []string{"Nothing for you. #601 (Feed page) is merged. The checks on main run now.", "Nothing for you. #602 (Feed page) is merged. The checks on main run now."}; !slices.Equal(got, want) {
 		t.Fatalf("bob's inboxes = %q, want %q", got, want)
 	}
 }
@@ -550,7 +550,7 @@ func TestPGStorePokeLevelChangeTellsTheOthers(t *testing.T) {
 	}
 	inbox, _ := s.EnsureInbox(ctx, "sf/code", "bob")
 	rows, _ := s.ChatMessages(ctx, "sf/code", "bob", inbox, 10)
-	if len(rows) != 1 || rows[0].Content != "sebastian set the autonomy from manual to assisted." {
+	if len(rows) != 1 || rows[0].Content != "Nothing for you. sebastian set the autonomy from manual to assisted." {
 		t.Fatalf("bob's inbox = %+v, want the level change", rows)
 	}
 	mine, _ := s.EnsureInbox(ctx, "sf/code", "sebastian")

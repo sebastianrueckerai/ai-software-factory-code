@@ -33,8 +33,10 @@ func InPlan(t Task) bool {
 
 // Group is an open plan with a card merged into main.
 type Group struct {
-	Plan       string
-	Issue      int64
+	Plan  string
+	Issue int64
+	// Name is the plan's name (planName), "" for a plan without one.
+	Name       string
 	Repository string
 	// FirstMerge is when the group opened on main: its children's earliest
 	// pull_request_merged event, else the earliest finish of a child with a
@@ -97,7 +99,7 @@ const groupOpenings = `SELECT plan, repository, min(merged) AS first_merge FROM 
 
 func (s *PGStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
 	rows, err := s.db.QueryContext(ctx, `WITH merged AS (`+groupOpenings+`)
-		SELECT p.id, p.issue_number, p.repository, m.first_merge
+		SELECT p.id, p.issue_number, p.repository, m.first_merge, COALESCE(p.plan_name, ''), p.objective
 		FROM merged m JOIN tasks p ON p.id = m.plan
 		WHERE NOT EXISTS (SELECT 1 FROM events WHERE task_id = p.id AND kind = 'plan_closed')
 		ORDER BY m.first_merge NULLS FIRST, p.id`)
@@ -109,9 +111,11 @@ func (s *PGStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
 	for rows.Next() {
 		var g Group
 		var first sql.NullTime
-		if err := rows.Scan(&g.Plan, &g.Issue, &g.Repository, &first); err != nil {
+		var p Task
+		if err := rows.Scan(&g.Plan, &g.Issue, &g.Repository, &first, &p.PlanName, &p.Objective); err != nil {
 			return nil, err
 		}
+		g.Name = planName(p)
 		g.FirstMerge, g.Children = first.Time, map[string]int{}
 		open = append(open, g)
 	}

@@ -504,7 +504,7 @@ func init() {
 			Why: fixed("A session may spend only a share of the card's money before a human looks."), Answers: keys(ActExtend, ActClose, ActNote)}),
 		CaseCheckinFailed: work(FaceSpec{Ask: fixed("The factory's own check of the session failed, not the work. Run one more session?"),
 			Why: fixed("The check that judges each session gave no answer, so the card stopped to be safe."), Answers: keys(ActResume, ActClose, ActNote)}),
-		CaseGateStop: work(FaceSpec{Ask: gateAsk, Why: gateWhy, Story: gateStory, Answers: gateAnswers}),
+		CaseGateStop: work(FaceSpec{Ask: gateAsk, Why: gateWhy, Story: gateStory, Answers: gateAnswers, Suggest: gateSuggest}),
 		CaseFindingsRepeated: work(FaceSpec{Ask: fixed("The review keeps raising the same findings. Overrule it, or allow more sessions?"),
 			Why:     fixed("The review raised the same findings after each of the last sessions, so the card stopped."),
 			Answers: keys(ActExtend, ActReverify+"/"+variantOverrule, ActSuccessor, ActClose)}),
@@ -681,9 +681,9 @@ var stopSentences = map[CaseKind]func(Facts) string{
 	CaseDependencyClosed: depLine,
 	CaseDependencyFailed: depLine,
 	CaseWaitExpired:      waitedLine,
-	CasePodNeverStarted:  inARow(`(\d+) sessions in a row waited`, "%s in a row found no machine with room, so no agent ran."),
-	CaseProviderRefused:  inARow(`first call of (\d+) sessions in a row`, "The model provider refused %s in a row."),
-	CaseNoAnswer:         inARow(`(\d+) sessions in a row ended without one`, "%s in a row got no answer from the model."),
+	CasePodNeverStarted:  inARow(`(\d+) sessions in a row waited`),
+	CaseProviderRefused:  inARow(`first call of (\d+) sessions in a row`),
+	CaseNoAnswer:         inARow(`(\d+) sessions in a row ended without one`),
 	CaseContentFilter:    fixed("The provider's content filter refused the request of the last session."),
 	CaseImageWait:        imageWaitLine,
 	CaseScreeningSuspect: fixed("The screening stopped the new issue before an agent read it."),
@@ -889,9 +889,9 @@ func waitedLine(f Facts) string {
 
 // inARow is the stop sentence of a stop whose reason counts the sessions
 // in a row that never reached a model answer: they are starts, not the
-// sessions the money line counts. shape reads the count, line takes it in
-// words.
-func inARow(shape, line string) func(Facts) string {
+// sessions the money line counts. shape reads the count, the one fact the
+// why line lacks.
+func inARow(shape string) func(Facts) string {
 	re := regexp.MustCompile(shape)
 	return func(f Facts) string {
 		m := re.FindStringSubmatch(factString(f.Case, "reason"))
@@ -899,7 +899,7 @@ func inARow(shape, line string) func(Facts) string {
 			return ""
 		}
 		n, _ := strconv.Atoi(m[1])
-		return fmt.Sprintf(line, plural(n, "start"))
+		return plural(n, "start") + " in a row failed."
 	}
 }
 
@@ -1081,42 +1081,42 @@ func budgetFaceAsk(f Facts) string {
 	n, need := openFindings(f.CaseFacts), textutil.EUR(shortfall(f.CaseFacts))
 	if ceilingPass(f.CaseFacts) > 0 {
 		if n > 0 {
-			return fmt.Sprintf("Raise the spend limit and add %s EUR to fix the %s, or end the card?", need, plural(n, "open "+openWord(f.CaseFacts)))
+			return fmt.Sprintf("A higher spend limit and %s EUR more let the card fix its %s. How should it go on?", need, plural(n, "open "+openWord(f.CaseFacts)))
 		}
-		return fmt.Sprintf("The card is out of money and at its spend limit. Raise the limit and add %s EUR, or end the card?", need)
+		return fmt.Sprintf("The card is out of money and at its spend limit, and it needs %s EUR more. How should it go on?", need)
 	}
 	if n > 0 {
-		return fmt.Sprintf("Add %s EUR to fix the %s, or end the card?", need, plural(n, "open "+openWord(f.CaseFacts)))
+		return fmt.Sprintf("Adding %s EUR lets the card fix its %s. How should it go on?", need, plural(n, "open "+openWord(f.CaseFacts)))
 	}
-	return fmt.Sprintf("The card is out of money. Add %s EUR, or end the card?", need)
+	return fmt.Sprintf("The card is out of money, and adding %s EUR lets it run again. How should it go on?", need)
 }
 
 // budgetWhy says what the card has left, what the review and the audit
-// hold back of it, and what the next session needs to start where the
+// need of it, and what the next session needs to start where the
 // story names no price: with the price, the sums of the ask.
 func budgetWhy(f Facts) string {
 	switch reserve, priced := f.ReserveEUR > 0, pricedBySession(f.CaseFacts); {
 	case reserve && priced:
-		return fmt.Sprintf("The card has %s EUR left, and the review and the audit hold back %s EUR.", textutil.EUR(f.LeftEUR), textutil.EUR(f.ReserveEUR))
+		return fmt.Sprintf("The card has %s EUR left, and the review and the audit need %s EUR for themselves.", textutil.EUR(f.LeftEUR), textutil.EUR(f.ReserveEUR))
 	case priced:
 		return fmt.Sprintf("The card has %s EUR left.", textutil.EUR(f.LeftEUR))
 	case reserve:
-		return fmt.Sprintf("The card has %s EUR left, the review and the audit hold back %s EUR, and the next session needs %s EUR to start.",
+		return fmt.Sprintf("The card has %s EUR left, the review and the audit need %s EUR for themselves, and the next session needs %s EUR to start.",
 			textutil.EUR(f.LeftEUR), textutil.EUR(f.ReserveEUR), textutil.EUR(f.FloorEUR))
 	}
 	return fmt.Sprintf("The card has %s EUR left, and the next session needs %s EUR to start.", textutil.EUR(f.LeftEUR), textutil.EUR(f.FloorEUR))
 }
 
-// capWhy names the limit and the file that sets it.
+// capWhy names the limit and where an approver changes it.
 func capWhy(f Facts) string {
-	limit, file := "The daily limit", "policy.yaml"
+	limit, where := "the daily limit", "the factory's configuration"
 	switch f.Kind {
 	case CaseMonthCap:
-		limit = "The monthly limit"
+		limit = "the monthly limit"
 	case CaseProjectCap:
-		limit, file = "The project's monthly limit", cmp.Or(projectFile.FindString(f.CapWait+" "+factString(f.Case, "reason")), "the project's file")
+		limit, where = "the project's monthly limit", "the project's configuration"
 	}
-	return fmt.Sprintf("%s is set in %s, and %s when it resets.", limit, file, onward(f, "the card goes on by itself"))
+	return fmt.Sprintf("An approver changes %s in %s, and %s when it resets.", limit, where, onward(f, "the card goes on by itself"))
 }
 
 // factString is fact key of case c as a string.
@@ -1227,6 +1227,17 @@ func gateAnswers(f Facts) []string {
 		return []string{ActExtend, ActReverify + "/" + variantOverrule, ActSuccessor, ActClose}
 	}
 	return []string{ActReverify, ActContinue, ActReplan, ActClose}
+}
+
+// gateSuggest is the gate supervisor's recommendation: the answer of the
+// face it opens with and the words after it as grounds, else its words
+// whole, which lead no answer.
+func gateSuggest(f Facts) (key, by, grounds string) {
+	rec := agentLine(f, "Recommendation")
+	if name, rest, ok := strings.Cut(rec, ": "); ok && slices.Contains(gateAnswers(f), name) {
+		return name, "the gate supervisor", rest
+	}
+	return "", "the gate supervisor", rec
 }
 
 // failedDep is the failed dependency with no replacement the card waits
@@ -1551,7 +1562,7 @@ func firstAsk(asks ...string) string {
 // askedPlan is the plan of card f as an ask names it: "plan “<name>”",
 // else "this plan".
 func askedPlan(f Facts) string {
-	name := strings.TrimSpace(cmp.Or(f.Card.PlanName, strings.TrimRight(CardTitle(f.Card), ".?! ")))
+	name := planName(f.Card)
 	if f.Card.Track != policy.TrackPlan {
 		name = f.PlanName
 	}
@@ -1559,6 +1570,20 @@ func askedPlan(f Facts) string {
 		return "this plan"
 	}
 	return "plan \u201c" + name + "\u201d"
+}
+
+// planName is plan p's name: its short name, else its title.
+func planName(p Task) string {
+	return strings.TrimSpace(cmp.Or(p.PlanName, strings.TrimRight(CardTitle(p), ".?! ")))
+}
+
+// PlanWords names the plan of issue in a card that is not its own: plan
+// “<name>” (#N), plan #N for a plan without a name.
+func PlanWords(name string, issue int64) string {
+	if name == "" {
+		return fmt.Sprintf("plan #%d", issue)
+	}
+	return fmt.Sprintf("plan \u201c%s\u201d (#%d)", name, issue)
 }
 
 // titled is card f's title in quotes, "" for a card without one.
@@ -2144,7 +2169,7 @@ func HumanMergeEffect(head string) string {
 	if head == "" {
 		return "Merges the pull request as you. The card ends."
 	}
-	return "Merges " + ShortSHA(head) + " as you. The card ends."
+	return "Merges commit " + ShortSHA(head) + " as you. The card ends."
 }
 
 // WorkDoneAsk is a human card's ask where neither its stored ask nor its
@@ -2241,9 +2266,24 @@ func choiceAnswer(value string, f Facts) (Answer, bool) {
 	a, ok := AnswerFor(key, f)
 	a.Value = value
 	if plan := planRef.FindString(c.Label); plan != "" && a.Action == ActReplan {
-		a.Effect = strings.Replace(a.Effect, "the plan", "plan "+plan, 1)
+		a.Effect = strings.Replace(a.Effect, "the plan", heldPlanWords(f.Case, plan), 1)
 	}
 	return a, ok
+}
+
+// heldPlanWords names the plan ref, "#N", of a held production's case c,
+// by the name the case's facts hold for it.
+func heldPlanWords(c Case, ref string) string {
+	var plans []HoldPlan
+	if raw, err := json.Marshal(c.Facts["plans"]); err == nil {
+		_ = json.Unmarshal(raw, &plans)
+	}
+	for _, p := range plans {
+		if fmt.Sprintf("#%d", p.Issue) == ref {
+			return PlanWords(p.Name, p.Issue)
+		}
+	}
+	return "plan " + ref
 }
 
 // planRef finds the plan a held production's replan names in its label.

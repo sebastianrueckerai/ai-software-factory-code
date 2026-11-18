@@ -123,9 +123,35 @@ func (v *boardView) refsOf(ctx context.Context, c *Console, repo string) renderR
 	return r
 }
 
+// forgeRef is a CI run or a commit named in words, as the factory's texts
+// name them: "CI run 3384", "commit 3c9a1e0".
+var forgeRef = regexp.MustCompile(`\bCI run (\d+)\b|\b[Cc]ommit ([0-9a-f]{7,40})\b`)
+
 // issueLinks is text, which holds no code and no link, with each #N
-// linked and named.
+// linked and named, and each CI run and commit named in words linked to
+// its page of r's repository on the forge.
 func (c *Console) issueLinks(v *boardView, r *cardRefs, text string) string {
+	if c.cfg.ForgejoPublicURL == "" || r.t.Repository == "" {
+		return c.numberLinks(v, r, text)
+	}
+	base := strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/") + "/" + r.t.Repository
+	var b strings.Builder
+	at := 0
+	for _, m := range forgeRef.FindAllStringSubmatchIndex(text, -1) {
+		href := base + "/actions/runs/"
+		if m[4] >= 0 {
+			href = base + "/commit/"
+		}
+		b.WriteString(c.numberLinks(v, r, text[at:m[0]]))
+		b.WriteString(`<a class="ref-link" href="` + template.HTMLEscapeString(href+text[max(m[2], m[4]):max(m[3], m[5])]) + `" target="_blank" rel="noopener">` + text[m[0]:m[1]] + `</a>`)
+		at = m[1]
+	}
+	b.WriteString(c.numberLinks(v, r, text[at:]))
+	return b.String()
+}
+
+// numberLinks is text with each #N linked and named.
+func (c *Console) numberLinks(v *boardView, r *cardRefs, text string) string {
 	var b strings.Builder
 	at := 0
 	for _, m := range factoryd.RefPattern.FindAllStringSubmatchIndex(text, -1) {

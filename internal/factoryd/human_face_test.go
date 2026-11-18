@@ -36,7 +36,7 @@ var humanKinds = []struct {
 	{"alert that cleared (human)", []string{"Noted", "Not now"}, true, "", stays},
 	{"chain stall", []string{"Run the chain again", "Look again", "End the card"}, true, "", ""},
 	{"chain repair (human)", []string{"I did it", "Not now"}, true,
-		"Closes the card and lets the red at 3c9a1e0 stand. A red chain at a newer head files a new card.", stays},
+		"Closes the card and lets the red at commit 3c9a1e0 stand. A red chain at a newer head files a new card.", stays},
 	{"roll refused", []string{"I did it", "Not now"}, true,
 		"Closes the card. The factory judges the images of main's next green run again.", stays + " The new images stay off the cluster until they are signed."},
 	{"roll failed", []string{"Try the roll again", "Not now", "End the card"}, true, "", stays + " Every card merged since the last roll waits for a green chain."},
@@ -47,7 +47,7 @@ var humanKinds = []struct {
 	{"month cap", []string{"Noted", "Not now"}, true, "", stays + " Every model call waits until the limit is raised or the month ends."},
 	{"judgment budget", []string{"Add money to the chat", "Not now", "Noted"}, true, "", stays + " Every stopped card comes to you until the budget is raised or the month ends."},
 	{"production held", []string{"Not now", "Deploy now", "Send back to the planner", "Take the plan off main"}, true, "",
-		stays + " Production of code stays held while plan #1947 is open on main."},
+		stays + " Production of code stays held while plan “empty commit fires gate” (#1947) is open on main."},
 	{"routine for a human", []string{"I did it", "Have the factory do it", "Not now"}, false, noCheck, stays},
 }
 

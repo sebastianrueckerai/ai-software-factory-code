@@ -246,7 +246,7 @@ func TestTheRungsWeighTheBoardsAmount(t *testing.T) {
 	if got := (&Runner{}).rungStatement(c, f, "D", nil, 1); !strings.Contains(got, "; the next session needs 2.68 EUR more.\n") {
 		t.Errorf("the statement names no 2.68 EUR:\n%s", got)
 	}
-	if ask := FaceOf(c, Facts{CaseFacts: f}).Ask; !strings.Contains(ask, "Add 2.68 EUR") {
+	if ask := FaceOf(c, Facts{CaseFacts: f}).Ask; !strings.Contains(ask, "adding 2.68 EUR") {
 		t.Errorf("the face asks %q, want 2.68 EUR", ask)
 	}
 	opened := func(f CaseFacts) Case {

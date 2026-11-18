@@ -455,9 +455,17 @@ func (cs caseSet) holds(t factoryd.Task) bool { return len(cs.byCard[t.ID]) > 0 
 // askOf is the ask block of face on card k: the question and its why in
 // the factory's words with their terms marked into seen, and the story,
 // whose writer's words stand quoted. A planned line that only names the
-// card's title, which the opened card's head shows, stays out.
+// card's title, which the opened card's head shows, stays out, and so do
+// a question that is the card's title and a why that is the card's own.
 func (c *Console) askOf(ctx context.Context, v *boardView, k card, face factoryd.Face, seen map[string]int) *askBlock {
-	a := &askBlock{Question: c.factoryText(ctx, v, k.Repository, face.Ask, seen), Why: c.factoryText(ctx, v, k.Repository, face.Why, seen)}
+	a := &askBlock{}
+	bare := func(t string) string { return strings.TrimRight(strings.TrimSpace(t), ".?!") }
+	if bare(face.Ask) != bare(k.Title) {
+		a.Question = c.factoryText(ctx, v, k.Repository, face.Ask, seen)
+	}
+	if bare(face.Why) != bare(k.Why) {
+		a.Why = c.factoryText(ctx, v, k.Repository, face.Why, seen)
+	}
 	planned := face.Story.Planned
 	if factoryd.TitleLine(planned, k.Task) {
 		planned = ""

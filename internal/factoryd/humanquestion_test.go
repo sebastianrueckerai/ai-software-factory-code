@@ -53,10 +53,10 @@ func TestHumanCardQuestions(t *testing.T) {
 			"SigNoz fires the alert “Job failed” on forgejo", []QuestionChoice{noted, notNow}, "It has fired since 1 October at 08:00 UTC."},
 		"roll refused": {RollRefusedQuestion("abc1234", []string{"gateway", "worker"}, []string{"gateway: x", "worker: y"}, "https://git/run/1"),
 			"Fix the signing of the images gateway, worker, then close this card", []QuestionChoice{did, notNow},
-			"Main's run is green at abc1234, and 2 images of it carry no signature by the factory's key."},
+			"Main's run is green at commit abc1234, and 2 images of it carry no signature by the factory's key."},
 		"rerun": {RerunQuestion(1208, "abc1234def5678", "ci / test", []string{"ci / test: lost"}, "The factory re-ran it once."),
 			"Re-run the check ci / test on main after a lost runner", []QuestionChoice{did, notNow},
-			"Main's push run 1208 failed in ci / test, and each failed job lost its runner while it ran."},
+			"CI run 1208 on main failed in ci / test, and each failed job lost its runner while it ran."},
 		"config": {ConfigRejectedQuestion("factory", "c9c9c9c9c9", "https://git/tree", "Version 1 stays current.", "bad key"),
 			"Fix the rejected configuration in factory/ and push", []QuestionChoice{did, notNow}, "The factory refused commit c9c9c9c9c9 of factory/. Version 1 stays current."},
 		"month cap": {MonthCapCardQuestion(50, "2026-09", 49.98, "https://git/policy#L7", "refused"),
@@ -72,12 +72,12 @@ func TestHumanCardQuestions(t *testing.T) {
 			"Two lines here", []QuestionChoice{did, notNow}, ""},
 		"failed roll": {RollFailedQuestion([]RollFailure{{RunID: 7, Title: "Roll the images", Issue: 41}}), "",
 			[]QuestionChoice{{AnswerRetryRoll, "Try the roll again"}, notNow, {AnswerClose, "End the card"}},
-			"The roll of run 7 failed, so main's newest images do not run live."},
+			"The failed roll cards: #41."},
 		"chain stall": {StallQuestion("sf/code", "abc1234def", time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC), []string{"ci / test"}, nil), "",
 			[]QuestionChoice{{AnswerRerunAgain, "Run the chain again"}, {AnswerCheckAgain, "Look again"}, {AnswerDismiss, "End the card"}},
-			"The chain at abc1234 has been pending since 1 November at 08:00 UTC, waiting on 1 check."},
+			"The chain at commit abc1234 has been pending since 1 November at 08:00 UTC, waiting on 1 check."},
 		"chain repair": {RepairQuestion("sf/code", "abc1234def", []string{"run 16 failure", "required context deploy/staging: failure"}, "", nil), "",
-			[]QuestionChoice{did, notNow}, "The chain of sf/code is red at abc1234, with 2 failed checks."},
+			[]QuestionChoice{did, notNow}, "The chain of sf/code is red at commit abc1234, with 2 failed checks."},
 		"production held": {HoldQuestion("code", time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC), time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC),
 			[]Group{{Plan: "t-plan", Issue: 12, Repository: "sf/code"}}, nil, nil), "",
 			[]QuestionChoice{{AnswerHoldWait, "Not now"}, {ActDeployNow, "Deploy now"},
@@ -100,7 +100,7 @@ func TestHumanCardQuestions(t *testing.T) {
 			}
 		})
 	}
-	const lostWhy = "Main CI's push run 1208 of abc1234 failed, but none of its steps did: each failed job lost its runner while it ran " +
+	const lostWhy = "CI run 1208 on main, at commit abc1234, failed, but none of its steps did: each failed job lost its runner while it ran " +
 		"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card. The factory re-ran it once."
 	if info := RerunQuestion(1208, "abc1234def5678", "ci / test", nil, "The factory re-ran it once.").Info; !strings.HasPrefix(info, lostWhy+"\n\n") {
 		t.Errorf("rerun info = %q, want it to open with %q", info, lostWhy)

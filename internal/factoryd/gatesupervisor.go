@@ -109,7 +109,7 @@ var gateSupervisorPrompt = `You supervise the machine gates of an autonomous sof
 - "retry": the attempt is stuck and a fresh attempt is likely to succeed (a hung poll, a lost connection). The attempt is stopped and runs again.
 - "cancel": the activity cannot succeed and no human could change that. The task fails with your diagnosis as the reason.
 - "escalate": a human must decide or act (access, infrastructure, a judgement). The task waits for a human with your diagnosis and recommendation.
-Answer with one JSON object and nothing else: {"action": "wait|retry|cancel|escalate", "diagnosis": "...", "recommendation": "..."}. diagnosis (what is happening and why) is required, recommendation (what a human should do) for escalate; each under 1000 characters.` + "\n\n" + writingguide.For(writingguide.JobFinding)
+Answer with one JSON object and nothing else: {"action": "wait|retry|cancel|escalate", "diagnosis": "...", "recommendation": "..."}. diagnosis (what is happening and why) is required, recommendation (what a human should do) for escalate; each under 1000 characters. To suggest one of the human's answers, open the recommendation with its name and a colon: "reverify" (check the work again), "continue" (go on with a note of the human), "replan" (cut the work into cards again), "extend" (allow more sessions), "successor" (start a fresh card on the work), "wait_checks" (wait for the checks once more), "rerun_checks" (run the checks again) or "close" (end the card).` + "\n\n" + writingguide.For(writingguide.JobFinding)
 
 // SuperviseGate asks the supervisor model what to do with a long gate's
 // attempt past its bound, acts on that attempt when it still runs here

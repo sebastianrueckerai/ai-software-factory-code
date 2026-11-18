@@ -1224,11 +1224,11 @@ func (r *Runner) deployNow(ctx context.Context, t Task, in ActInput) ([]CaseActi
 	case errors.Is(err, ErrNotHeld):
 		return nil, ErrActRefused("production of " + t.Repository + " is not held: every merge goes to production on its own")
 	case errors.As(err, &red):
-		return nil, ErrActRefused(fmt.Sprintf("main of %s at %s is red: `deploy_now` waits for a green run on main", t.Repository, ShortSHA(red.Commit)))
+		return nil, ErrActRefused(fmt.Sprintf("main of %s at commit %s is red: `deploy_now` waits for a green run on main", t.Repository, ShortSHA(red.Commit)))
 	case err != nil:
 		return nil, ErrActRefused("production of " + t.Repository + " could not be released: " + r.scrub(err.Error()))
 	}
-	return []CaseAction{{Action: ActDeployNow, Result: fmt.Sprintf("Deploy now: main of %s at %s goes to production. A merge after it waits for the open plans again.",
+	return []CaseAction{{Action: ActDeployNow, Result: fmt.Sprintf("Deploy now: main of %s at commit %s goes to production. A merge after it waits for the open plans again.",
 		t.Repository, ShortSHA(commit))}}, nil
 }
 

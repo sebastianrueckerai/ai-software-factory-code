@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -48,12 +48,12 @@ func (g Group) Merged() (merged, total int) {
 
 // HoldReason names the plans that hold production.
 func HoldReason(groups []Group) string {
+	if len(groups) == 1 {
+		return PlanWords(groups[0].Name, groups[0].Issue) + " is open on main"
+	}
 	plans := make([]string, len(groups))
 	for i, g := range groups {
-		plans[i] = fmt.Sprintf("#%d", g.Issue)
-	}
-	if len(plans) == 1 {
-		return "plan " + plans[0] + " is open on main"
+		plans[i] = strings.TrimPrefix(PlanWords(g.Name, g.Issue), "plan ")
 	}
 	return "plans " + textutil.AndList(plans) + " are open on main"
 }

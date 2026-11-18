@@ -75,8 +75,8 @@ buildctl fetches the VM's registry tokens. Debian
 packages come from snapshot.debian.org at one `DEBIAN_SNAPSHOT` and
 PostgreSQL's from apt-archive.postgresql.org at exact versions. Nothing
 moves on its own: the code project's routine `weekly-bump` files a
-human card on this repository every Monday 06:00, "Weekly bump of the
-pinned outside inputs", and holds while one is open (its project file and
+human card on this repository every Monday 06:00, "Update the fixed
+versions of outside software every week", and holds while one is open (its project file and
 brief `routines/weekly-bump.md` in the configuration,
 `internal/factoryd/routine_run.go`), naming the list,
 the snapshot, the PostgreSQL versions, the Go patch and the downloaded

@@ -238,8 +238,8 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 		t.Errorf("routine_ran %+v", ran)
 	}
 	title, text, _ := strings.Cut(issues.issues[0], "\n\n")
-	body, mirrored := strings.CutPrefix(text, "Why: The routine weekly-bump files this card on its schedule.\n\n---\n\n")
-	if title != "Weekly bump of the pinned outside inputs" || !mirrored || card.Objective != title+"\n\n"+body {
+	body, mirrored := strings.CutPrefix(text, "Why: Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update.\n\n---\n\n")
+	if title != "Update the fixed versions of outside software every week" || !mirrored || card.Objective != title+"\n\n"+body {
 		t.Errorf("title %q, issue %q, objective %q", title, text, card.Objective)
 	}
 	if !strings.Contains(body, "```\n\nInfo: The factory pins every outside input of its builds and its cluster") ||
@@ -262,8 +262,8 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 		t.Fatalf("routine pokes %+v, want none: the card's question_asked row pokes", pokes)
 	}
 	asked := recordedEvents(r, EventQuestionAsked)
-	if len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Detail["ask"] != "Weekly bump of the pinned outside inputs" ||
-		asked[0].Detail["why"] != "The routine weekly-bump files this card on its schedule." || !reflect.DeepEqual(asked[0].Detail["choices"], []string{"I did it", "Have the factory do it", "Not now"}) {
+	if len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Detail["ask"] != "Update the fixed versions of outside software every week" ||
+		asked[0].Detail["why"] != "Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update." || !reflect.DeepEqual(asked[0].Detail["choices"], []string{"I did it", "Have the factory do it", "Not now"}) {
 		t.Fatalf("question_asked %+v, want the card's one", asked)
 	}
 	// the poke names the routine (docs/routines.md rule 5)
@@ -325,7 +325,7 @@ func TestGoHandsTheCardOver(t *testing.T) {
 	if want := title + "\n\n" + text; n.Objective != want {
 		t.Fatalf("objective %q, want %q", n.Objective, want)
 	}
-	if len(issues.issues) != 2 || issues.issues[1] != title+"\n\n"+"Why: The routine weekly-bump files this card on its schedule.\n\n---\n\n"+text {
+	if len(issues.issues) != 2 || issues.issues[1] != title+"\n\n"+"Why: Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update.\n\n---\n\n"+text {
 		t.Fatalf("issues %q, want the hand-over's issue carrying the objective", issues.issues)
 	}
 	if got := issues.labels[72]; !slices.Equal(got, []string{"routine", "state/queued"}) {
@@ -402,7 +402,7 @@ func TestGoJoinsTheHandOverWithoutBlankLines(t *testing.T) {
 	if want := "Bump the dependencies\n\nContinues #71.\n\nhanded over by sebastian"; n.Objective != want {
 		t.Fatalf("objective %q, want %q", n.Objective, want)
 	}
-	if issues.issues[1] != "Bump the dependencies\n\n"+"Why: The routine weekly-bump files this card on its schedule.\n\n---\n\n"+"Continues #71.\n\nhanded over by sebastian" {
+	if issues.issues[1] != "Bump the dependencies\n\n"+"Why: Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update.\n\n---\n\n"+"Continues #71.\n\nhanded over by sebastian" {
 		t.Fatalf("the issue %q, want the objective", issues.issues[1])
 	}
 	if err := store.CreateTask(ctx, Task{ID: "t-one", Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-code",
@@ -491,7 +491,7 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 			bump, _ := routineTree(t).Routine(codeProject, "weekly-bump")
 			bump.WhileOpen, bump.Tell = tt.whileOpen, tt.tell
 			r, store, issues, _ := routineRunner(t, withRoutines(routineTree(t), codeProject, bump))
-			issues.older = map[int64]string{781: "Weekly bump of the pinned outside inputs"}
+			issues.older = map[int64]string{781: "Update the fixed versions of outside software every week"}
 			store.tasks["t-781"] = Task{ID: "t-781", Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-code", IssueNumber: 781, Source: SourceRoutine}
 			last, _, _ := store.BeginRoutineRun(ctx, RoutineRun{Project: codeProject, Routine: "weekly-bump", Due: onTime.Add(-7 * 24 * time.Hour), Trigger: "cron"}, true)
 			if err := store.RoutineRunFiled(ctx, codeProject, "weekly-bump", last.Run, "t-781", 781); err != nil {
@@ -651,7 +651,7 @@ func TestRoutineRunFilesAnAgentCard(t *testing.T) {
 		t.Fatalf("run %+v", run)
 	}
 	want := fakePoke{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessagePoke,
-		Content: `Filed #71 "Audit: bug hunt and architecture review".`, TaskID: card.ID, Decider: "routine audit · run 1 · every 20 merges", BirthKind: EventRoutineRan}}
+		Content: `Nothing for you. Filed #71 "Audit: bug hunt and architecture review".`, TaskID: card.ID, Decider: "routine audit · run 1 · every 20 merges", BirthKind: EventRoutineRan}}
 	if pokes := routinePokes(t, r, store); !reflect.DeepEqual(pokes, []fakePoke{want}) {
 		t.Fatalf("pokes %+v,\nwant %+v", pokes, want)
 	}
@@ -699,7 +699,7 @@ func TestRoutineRunNeedsMeToggle(t *testing.T) {
 	if card.Kind != "agent" || card.Status != "queued" || card.Track != policy.TrackDirect || card.Source != SourceRoutine || card.BudgetEUR != 2 || card.IssueNumber != 71 || card.Author != "" {
 		t.Fatalf("the flipped bump's card %+v", card)
 	}
-	if obj := card.Objective; !strings.HasPrefix(obj, "Weekly bump of the pinned outside inputs\n\nThe factory pins") ||
+	if obj := card.Objective; !strings.HasPrefix(obj, "Update the fixed versions of outside software every week\n\nThe factory pins") ||
 		!strings.HasSuffix(obj, "does not start.") || strings.Contains(obj, "Run the skill") {
 		t.Errorf("objective:\n%s", obj)
 	}
@@ -713,7 +713,7 @@ func TestRoutineRunNeedsMeToggle(t *testing.T) {
 		t.Errorf("started %v, want the card's run", wf.started)
 	}
 	want := fakePoke{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessagePoke,
-		Content: `Filed #71 "Weekly bump of the pinned outside inputs".`, TaskID: card.ID, Decider: "routine weekly-bump · run 1 · every Monday 06:00", BirthKind: EventRoutineRan}}
+		Content: `Nothing for you. Filed #71 "Update the fixed versions of outside software every week".`, TaskID: card.ID, Decider: "routine weekly-bump · run 1 · every Monday 06:00", BirthKind: EventRoutineRan}}
 	if pokes := routinePokes(t, r, store); !reflect.DeepEqual(pokes, []fakePoke{want}) {
 		t.Fatalf("pokes %+v,\nwant %+v", pokes, want)
 	}

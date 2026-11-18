@@ -388,9 +388,6 @@ func GroupRevertBrief(p Task, merges []Task, situation string) BriefText {
 	return b
 }
 
-// planName is plan p's name, else its title.
-func planName(p Task) string { return cmp.Or(p.PlanName, CardTitle(p)) }
-
 // revertEnded ends the group revert whose card t, the plain revert's or
 // its agent card's, ended final; merged says its change landed on main, as
 // a merge commit on t does. It acts only while t's project's pause names a

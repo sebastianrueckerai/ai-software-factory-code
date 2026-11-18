@@ -174,9 +174,10 @@ func (b *builder) briefed(n int64, status, source string, age time.Duration, br 
 	return t
 }
 
-// issue is the card of issue n a human filed with title and body.
+// issue is the card of issue n a human filed with title and body, its why
+// line the one intake gives a human's issue.
 func (b *builder) issue(n int64, status string, age time.Duration, title, body string) factoryd.Task {
-	return b.card(n, status, factoryd.SourceWebhook, age, factoryd.IssueObjective(title, body))
+	return b.briefed(n, status, factoryd.SourceWebhook, age, factoryd.HumanIssueBrief(title, body))
 }
 
 // facts are the facts of card t at a case of kind: room for a session, a
@@ -388,7 +389,7 @@ func (b *builder) plan1947() {
 // money, as its face names it.
 func (b *builder) plan1990() {
 	t := b.issue(1990, "done", 3*24*time.Hour, "Fix the price, the ask and the fund guard of the budget floor",
-		"Three fixes of the money faults the floor cases showed, then their acceptance tests.")
+		"Three fixes of the money faults the budget floor showed, then their acceptance tests.")
 	t.ID, t.Track, t.PlanName, t.Author, t.PRNumber, t.MergeCommit = "t-365470f78d3b", policy.TrackPlan, "price, ask, guard fixes", "controller", 0, ""
 	p := &factoryd.Plan{Summary: "The price fix and the guard fix side by side, then their acceptance tests on the pool funding rigs.",
 		Cards: []factoryd.PlanCard{
@@ -479,7 +480,7 @@ type agentSource struct {
 // the tool request belong to.
 func (b *builder) parentCard() factoryd.Task {
 	return b.issue(2003, "running", 6*time.Hour, "Board export: import a snapshot back",
-		"Read a nightly snapshot back into an empty database; every card keeps its lane and its accent.")
+		"Read a nightly snapshot back into an empty database. Every card keeps its lane and its accent.")
 }
 
 // oldCard is #2006, the card that failed and that a successor and a retry
@@ -492,9 +493,9 @@ func (b *builder) oldCard() factoryd.Task {
 	return t
 }
 
-// weeklyBump is the routine that files the weekly bump of the pinned inputs.
-var weeklyBump = policy.Routine{Name: "weekly-bump", Title: "Weekly bump of the pinned outside inputs", Files: policy.FilesAgent,
-	Why: "Pinned outside inputs miss their security fixes until something bumps them."}
+// weeklyBump is the routine that files the weekly update of the fixed versions.
+var weeklyBump = policy.Routine{Name: "weekly-bump", Title: "Update the fixed versions of outside software every week", Files: policy.FilesAgent,
+	Why: "Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update."}
 
 var agentSources = []agentSource{
 	{factoryd.SourceWebhook, func(b *builder, n int64, status string) factoryd.Task {
@@ -710,8 +711,8 @@ var humanSources = []humanSource{
 	}), factoryd.BriefFacts{Name: "factory/"}},
 	{factoryd.SourceProductionHeld, func(b *builder, group, name string, n int64) Fixture {
 		since := b.now.Add(-7 * time.Hour)
-		groups := []factoryd.Group{{Plan: plan1947ID, Issue: 1947, Children: map[string]int{"merged": 1, "queued": 2}}}
-		plans := []factoryd.HoldPlan{{Issue: 1947, Merged: 1, Total: 3, WaitsOn: []factoryd.HoldWait{{Issue: 2100, Status: "queued"}, {Issue: 2101, Status: "waiting-human"}}}}
+		groups := []factoryd.Group{{Plan: plan1947ID, Issue: 1947, Name: "empty commit fires gate", Children: map[string]int{"merged": 1, "queued": 2}}}
+		plans := []factoryd.HoldPlan{{Issue: 1947, Name: "empty commit fires gate", Merged: 1, Total: 3, WaitsOn: []factoryd.HoldWait{{Issue: 2100, Status: "queued"}, {Issue: 2101, Status: "waiting-human"}}}}
 		fix := factoryd.Task{IssueNumber: 2090, Source: factoryd.SourceMainFix}
 		q := factoryd.HoldQuestion(Project, since, b.now, groups, []factoryd.Task{fix}, plans)
 		return b.escalated(group, name, n, factoryd.SourceProductionHeld, "the production hold", q, factoryd.HoldFacts(plans, since), 35*time.Minute)
@@ -737,7 +738,7 @@ type caseStop struct {
 // caseStops are the stops of the case kinds an agent card's run opens,
 // each reason from the factoryd function that writes it.
 var caseStops = map[factoryd.CaseKind]caseStop{
-	factoryd.CaseSessionCap: {"Board export: import a snapshot back", "Read a nightly snapshot back into an empty database; every card keeps its lane and its accent.",
+	factoryd.CaseSessionCap: {"Board export: import a snapshot back", "Read a nightly snapshot back into an empty database. Every card keeps its lane and its accent.",
 		func(_ *builder, t *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
 			t.Usage.Attempts, f.Attempts, f.Checks = 3, 3, "red"
 			return capStop(f)
@@ -747,9 +748,9 @@ var caseStops = map[factoryd.CaseKind]caseStop{
 			t.Usage.Attempts, f.Attempts, f.AgentTimeS = 2, 2, 7200
 			return factoryd.TripInput{Reason: factoryd.CapStopReason(factoryd.TimeCapReachedLadder, "the session ran out of time", nil, []string{"the pulse's line is not written yet"})}
 		}},
-	factoryd.CaseDayCap: {"Review: retry the review on a provider refusal", "A refused review call fails the gate; retry it after the provider's backoff.",
+	factoryd.CaseDayCap: {"Review: retry the review on a provider refusal", "A refused review call fails the gate. Retry it after the provider's backoff.",
 		capWait(policy.RefusedDayCap)},
-	factoryd.CaseMonthCap: {"Pulse: name the failed cards first", "A pulse that lists a failure after the running cards hides it; name failed cards first.",
+	factoryd.CaseMonthCap: {"Pulse: name the failed cards first", "A pulse that lists a failure after the running cards hides it. Name failed cards first.",
 		capWait(policy.RefusedMonthCap)},
 	factoryd.CaseProjectCap: {"Costs: a per-model spend table", "Break the costs page's spend down by model, with a cap line per model.",
 		capWait(policy.RefusedProjectCap)},
@@ -763,9 +764,9 @@ var caseStops = map[factoryd.CaseKind]caseStop{
 			f.LastSession = &factoryd.LastSessionFacts{CostEUR: 1.4}
 			return factoryd.TripInput{Reason: factoryd.CheckinReason(factoryd.CheckSpend, "the session spent 1.40 EUR of the card's 2.00 EUR in 9 minutes, most of it on reads of the vendored SDK", nil, nil)}
 		}},
-	factoryd.CaseCheckinFailed: {"Intake: refuse an issue without a body", "An issue with no body files a card no agent can work; refuse it with a comment.",
+	factoryd.CaseCheckinFailed: {"Intake: refuse an issue without a body", "An issue with no body files a card no agent can work. Refuse it with a comment.",
 		checkin(factoryd.CheckTimeCap, factoryd.CheckinTimeCapStop(2*time.Minute))},
-	factoryd.CaseGateStop: {"Pulse: recompute on a card's status change", "The pulse recomputes every ten minutes; recompute on each task_status row, at most once a minute.",
+	factoryd.CaseGateStop: {"Pulse: recompute on a card's status change", "The pulse recomputes only every ten minutes. Recompute it on each status change of a card, at most once a minute.",
 		gateStop(factoryd.ActivityModelReview, "the review keeps one finding the agent says main already fixes", "reverify: the limiter in pulse.go:88 holds the bound")},
 	factoryd.CaseFindingsRepeated: {"Drawer: the Activity tab", "Show the card's gates and steps in the drawer's Activity tab.",
 		func(_ *builder, t *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
@@ -775,7 +776,7 @@ var caseStops = map[factoryd.CaseKind]caseStop{
 			mark := factoryd.CheckinStopMark{Kind: factoryd.CheckSpend, Tip: f.Head}
 			return factoryd.TripInput{Reason: factoryd.RepeatAsk(mark, mark)}
 		}},
-	factoryd.CaseDependencyClosed: {"Board export: a download button on the costs page", "Offer the newest snapshot as a download beside the costs table.",
+	factoryd.CaseDependencyClosed: {"Board export: a download button on the costs page", "Add a download of the newest snapshot beside the costs table.",
 		func(_ *builder, t *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
 			notStarted(t, f)
 			d := factoryd.Dependency{TaskID: TaskID(2188), Issue: 2188, Key: "snapshot-writer", Status: "closed"}
@@ -1193,7 +1194,7 @@ var flagCards = map[string]flagCard{
 		detail: "session 3"},
 	"session_no_push": {title: "Move the second group of pg tests into internal/factoryd/pg", body: "Move the Postgres-backed tests of the second group into their own package.",
 		detail: "session 2"},
-	"checkin_cut": {title: "Make a chat answer settle the question it answers", body: "A chat answer on an ask settles the case it answers.", detail: factoryd.OffsetText(4*time.Hour + 12*time.Minute)},
+	"checkin_cut": {title: "Make a chat answer settle the question it answers", body: "A chat answer on an ask settles the question it answers.", detail: factoryd.OffsetText(4*time.Hour + 12*time.Minute)},
 	"finding_confirmed_twice": {title: "The heal pass re-asks a card parked with no live ask", body: "The heal pass re-asks a parked card whose ask ended.",
 		detail: factoryd.FindingID("the heal pass skips a card whose ask was withdrawn")},
 	"checkin_refused": {title: "Pause and re-queue: a human and chat control", body: "A human pauses a card and re-queues it from the board or the chat.",
@@ -1215,7 +1216,7 @@ var flagCards = map[string]flagCard{
 		wait: "run_quiet", since: 41 * time.Minute, detail: "run_quiet since " + factoryd.OffsetText(5*time.Hour+19*time.Minute)},
 	"queued_over_bound": {title: "One freeze card speaks for the whole class and carries the retry switch", body: "File one freeze card for a frozen class.", status: "queued",
 		wait: "queued", since: 2*time.Hour + 10*time.Minute, detail: factoryd.WorkBoundReason + "4 of 4 for " + factoryd.DurationText(2*time.Hour+10*time.Minute)},
-	"review_refused_not_run": {title: "Read the provider's limit in the digest and split the frozen clock on the face", body: "Read provider_limit in the digest and split the frozen clock on the face.",
+	"review_refused_not_run": {title: "Read the provider's limit in the digest and split the frozen clock on the face", body: "Read the provider's limit in the digest and split the frozen clock on the face.",
 		status: "in-review", detail: "review: behaviours: model review answer invalid (json: unknown field \"behaviors\"): {\"behaviors\": [\"policy.ReadOpening windows on…"},
 }
 
@@ -1528,7 +1529,7 @@ func (b *builder) actions() {
 func (b *builder) waitChecks(name string) Fixture {
 	n := b.next()
 	t := b.issue(n, "waiting-human", 5*time.Hour, "Pulse: recompute on a card's status change",
-		"The pulse recomputes every ten minutes; recompute on each task_status row, at most once a minute.")
+		"The pulse recomputes only every ten minutes. Recompute it on each status change of a card, at most once a minute.")
 	f := facts(t, "")
 	f.Checks = "pending"
 	in := factoryd.TripInput{Reason: factoryd.GateStopReason(factoryd.GateTrip{Activity: factoryd.ActivityWaitChecks, Attempt: 1, Bound: 40 * time.Minute},

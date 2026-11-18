@@ -533,7 +533,7 @@ func TestTheConfirmBesideRealQuestionsSaysWhereTheAnswersGo(t *testing.T) {
 		}
 	}
 	ck, _ := r.loggedIn(t)
-	const want = `<button type="submit" class="pick">Confirm the plan</button> <span class="effect">The answers go to the next planner round.</span>`
+	const want = `<button type="submit" class="pick">Confirm the plan</button> <span class="effect">The answers go to the next <span class="term">planner</span> round.</span>`
 	for name, answer := range map[string]string{"open": "", "answered": "30 days"} {
 		r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": {
 			{Text: "How long are the results kept?", Choices: []string{"7 days", "30 days"}, Answer: answer},

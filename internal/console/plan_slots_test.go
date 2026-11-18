@@ -259,7 +259,7 @@ func TestTheConfirmationWhyClaimsNoAnsweredQuestions(t *testing.T) {
 	slotsRig(r)
 	ck, _ := r.loggedIn(t)
 	last := slotOf(t, r, ck, 503)
-	if strings.Contains(last, "are answered") || !strings.Contains(last, `<p class="o-askwhy">The plan&#39;s cards and promises are fixed only once a human confirms them.</p>`) {
+	if strings.Contains(last, "are answered") || !strings.Contains(last, `<p class="o-askwhy">The plan&#39;s cards and <span class="term">promises</span> are fixed only once a human confirms them.</p>`) {
 		t.Errorf("the confirmation's why:\n%s", last)
 	}
 }

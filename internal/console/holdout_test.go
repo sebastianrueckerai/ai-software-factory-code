@@ -113,7 +113,7 @@ func TestEachExtraPromiseAsksOnItsOwnPage(t *testing.T) {
 		page := pages[i]
 		for _, want := range []string{
 			fmt.Sprintf("Your call · %d of 3", i+1),
-			`<p class="o-question">Keep this extra promise for plan “Link shortener”?</p>`,
+			`<p class="o-question">Keep this extra <span class="term">promise</span> for plan “Link shortener”?</p>`,
 			"<li>An extra promise is one the plan&#39;s own list missed, and a test the agent never sees checks it.</li>",
 			"<li>The extra promise: " + claim + "</li>",
 			"<li>Keeping it adds one more test, which the plan&#39;s last card must pass.</li>",
@@ -131,7 +131,7 @@ func TestEachExtraPromiseAsksOnItsOwnPage(t *testing.T) {
 		}
 	}
 	confirm := pages[2]
-	for _, want := range []string{"Your call · 3 of 3", `<p class="o-question">Does plan “Link shortener” need changes before its 2 extra promises are settled?</p>`,
+	for _, want := range []string{"Your call · 3 of 3", `<p class="o-question">Does plan “Link shortener” need changes before its 2 extra <span class="term">promises</span> are settled?</p>`,
 		`<p class="o-askwhy">The plan&#39;s cards start only once its 2 extra promises are kept or dropped.</p>`, `data-answer="revise"`,
 		"<h4>The extra promises</h4>", `<p class="claim">Every key turn lands in the log <span class="meta">waits for your answer</span></p>`} {
 		if !strings.Contains(confirm, want) {

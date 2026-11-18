@@ -123,7 +123,7 @@ func TestMergeItTakesTheHeadTheHumanRead(t *testing.T) {
 	open := func(head string) answerPost {
 		t.Helper()
 		body := drawer(t, r, ck, card.ID, "overview")
-		if want := `<span class="effect">Merges ` + head[:7] + ` as you. The card ends.</span>`; !strings.Contains(body, want) {
+		if want := `<span class="effect">Merges commit ` + head[:7] + ` as you. The card ends.</span>`; !strings.Contains(body, want) {
 			t.Fatalf("the opened card lacks %q:\n%s", want, body)
 		}
 		form := answerForm(t, body, key)

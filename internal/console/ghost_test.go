@@ -338,12 +338,12 @@ func TestHeldGhostSpeaks(t *testing.T) {
 }
 
 // The strip's cell names a routine by the last segment of its name,
-// whatever its title: the weekly bump's real title ends in "inputs", the
+// whatever its title: the weekly bump's real title ends in "week", the
 // audit's in "review".
 func TestStripCellWordIsTheNamesLastSegment(t *testing.T) {
 	r := newRig(t)
 	bump := soonBump()
-	bump.Routine.Title = "Weekly bump of the pinned outside inputs"
+	bump.Routine.Title = "Update the fixed versions of outside software every week"
 	r.routines.views = []factoryd.RoutineView{bump}
 	ck, _ := r.loggedIn(t)
 	if body := r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String(); !strings.Contains(body, `<span class="cell routine">↻ bump in 20 min</span>`) {

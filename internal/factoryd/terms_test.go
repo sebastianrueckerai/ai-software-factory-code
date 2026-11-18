@@ -9,9 +9,11 @@ import (
 )
 
 // Each factory term reads as one sentence of at most 140 characters that
-// passes the writing guide, and the plan's ten terms are among them.
+// passes the writing guide, and the plan's ten terms and the words the faces use for the factory's
+// own parts are among them.
 func TestEveryTermIsOneSentence(t *testing.T) {
-	for _, term := range []string{"session", "criterion", "hold-out", "check-in", "spend limit", "successor", "replan", "proof", "plan round", "merge approval"} {
+	for _, term := range []string{"session", "criterion", "hold-out", "check-in", "spend limit", "successor", "replan", "proof", "plan round", "merge approval",
+		"promise", "planner", "heal pass", "model review", "factoryd", "signoz"} {
 		if Terms[term] == "" {
 			t.Errorf("Terms has no sentence for %q", term)
 		}

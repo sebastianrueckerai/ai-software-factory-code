@@ -120,7 +120,7 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 		if err != nil {
 			return RoutineRunResult{}, err
 		}
-		return filed(t.ID, ref.Number, told(fmt.Sprintf("Filed #%d %q.", ref.Number, rt.Title)))
+		return filed(t.ID, ref.Number, told(fmt.Sprintf("%s Filed #%d %q.", NothingForYou, ref.Number, rt.Title)))
 	case policy.FilesPullRequest:
 		cards, err := r.TemplatePass(ctx)
 		if err != nil {
@@ -133,7 +133,7 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 		if cards == 1 {
 			note = "1 card"
 		}
-		return end("filed", note, told(rt.Title+": "+note+"."))
+		return end("filed", note, told(NothingForYou+" "+rt.Title+": "+note+"."))
 	default: // a report: a poke and no card
 		if rt.Pass == policy.PassLongWaits {
 			list, note, err := r.longWaits(ctx, p, in, run, loc)

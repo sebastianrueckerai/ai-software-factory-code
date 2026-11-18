@@ -41,6 +41,24 @@ func holdRig(t *testing.T) (*rig, *[]deployCall) {
 	return r, calls
 }
 
+// The status panel names a plan that holds production by its name, with
+// its number.
+func TestBoardNamesThePlanThatHoldsProduction(t *testing.T) {
+	r, _ := holdRig(t)
+	r.c.cfg.Hold = func(context.Context, string) (factoryd.Hold, error) {
+		return factoryd.Hold{Since: time.Now().Add(-7*time.Hour - 30*time.Minute), Groups: []factoryd.Group{
+			{Plan: "t-pl", Issue: 12, Name: "members page", Children: map[string]int{"merged": 3, "queued": 2}}}}, nil
+	}
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	for _, want := range []string{`<span class="lchip wait">plan “members page” (#12) · 3 of 5 merged</span>`,
+		`<p class="sp-note warn">Held for 7 h: plan “members page” (#12) is open on main.`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the board lacks %q", want)
+		}
+	}
+}
+
 func TestBoardShowsTheProductionHold(t *testing.T) {
 	r, _ := holdRig(t)
 	ck, _ := r.loggedIn(t)

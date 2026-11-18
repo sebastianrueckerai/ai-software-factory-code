@@ -175,6 +175,18 @@ func TestLinkRefsWithoutDocuments(t *testing.T) {
 		template.HTML("See the plan and "+ref(7, "https://git.example/sf/code/issues/7", true, "Fix the cache, open")+"."))
 }
 
+// A CI run and a commit named in words link to their pages on the forge,
+// in the card's repository; a run or a hash without its word stays text.
+func TestLinkRefsLinksRunsAndCommits(t *testing.T) {
+	r, ctx, v := refsRig(t)
+	equal(t, "a run and a commit", r.c.linkRefs(ctx, v, "sf/code", "CI run 3384 on main failed at commit 3c9a1e0 after #12 merged."),
+		template.HTML(`<a class="ref-link" href="https://git.example/sf/code/actions/runs/3384" target="_blank" rel="noopener">CI run 3384</a> on main failed at `+
+			`<a class="ref-link" href="https://git.example/sf/code/commit/3c9a1e0" target="_blank" rel="noopener">commit 3c9a1e0</a> after `+
+			ref(12, "#card=t-12", false, "Add the login page, done")+" merged."))
+	equal(t, "no word, no link", r.c.linkRefs(ctx, v, "sf/code", "run 3384 failed at 3c9a1e0, and the commit message is short."),
+		template.HTML("run 3384 failed at 3c9a1e0, and the commit message is short."))
+}
+
 // The first use of each term on a face is marked, whole words only, in
 // any case and in the plural, and recorded in the order of first use; a
 // later use, a use another text of the face marked, and a use inside a
@@ -191,6 +203,17 @@ func TestExplainTermsMarksFirstUseOnly(t *testing.T) {
 		template.HTML("An obsession gated the sessional replanning."))
 	equal(t, "links, code and a reference's title", explainTerms(`<a href="#card=t-1">session</a>, <code>session</code>, <span class="ref-of">(Store the session, done)</span>, then a session.`, nil),
 		template.HTML(`<a href="#card=t-1">session</a>, <code>session</code>, <span class="ref-of">(Store the session, done)</span>, then a <span class="term">session</span>.`))
+}
+
+// The words the faces use for a plan's criteria and for the factory's own
+// parts are marked: "promise", not the verb, and "planner".
+func TestExplainTermsMarksTheWordsTheFacesUse(t *testing.T) {
+	seen := map[string]int{}
+	equal(t, "an effect line", explainTerms("Send it back to the planner. 4 promises are not met, as the plan promised. SigNoz fired on factoryd.", seen),
+		template.HTML(`Send it back to the <span class="term">planner</span>. 4 <span class="term">promises</span> are not met, as the plan promised. `+
+			`<span class="term">SigNoz</span> fired on <span class="term">factoryd</span>.`))
+	equal(t, "their sentences", glosses(seen), []gloss{{"planner", factoryd.Terms["planner"]}, {"promise", factoryd.Terms["promise"]},
+		{"signoz", factoryd.Terms["signoz"]}, {"factoryd", factoryd.Terms["factoryd"]}})
 }
 
 // explainTerms runs over linkRefs's output without breaking its tags and

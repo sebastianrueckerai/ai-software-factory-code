@@ -628,7 +628,7 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 		g := groups[c.Parent]
 		if g == nil {
 			p := s.tasks[c.Parent]
-			g = &Group{Plan: p.ID, Issue: p.IssueNumber, Repository: p.Repository, Children: map[string]int{}}
+			g = &Group{Plan: p.ID, Issue: p.IssueNumber, Name: planName(p), Repository: p.Repository, Children: map[string]int{}}
 			groups[c.Parent] = g
 		}
 		key := [2]string{c.Parent, c.PlanKey}

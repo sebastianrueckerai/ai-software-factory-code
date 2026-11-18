@@ -2,6 +2,7 @@ package factoryd_test
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -310,7 +311,7 @@ func TestBudgetFloorWithFindingsAsksOnce(t *testing.T) {
 	}
 	c := factoryd.Case{Kind: factoryd.CaseBudgetFloor, Facts: map[string]any{}}
 	face := factoryd.FaceOf(c, factoryd.Facts{CaseFacts: f, Card: factoryd.Task{Kind: "agent", Objective: "Prove the three money faults end to end"}})
-	if want := "Add 2.00 EUR to fix the 8 open review findings, or end the card?"; face.Ask != want {
+	if want := "Adding 2.00 EUR lets the card fix its 8 open review findings. How should it go on?"; face.Ask != want {
 		t.Errorf("ask %q, want %q", face.Ask, want)
 	}
 	shown := strings.Join([]string{face.Ask, face.Why, face.Story.Planned, face.Story.Happened, face.Story.Left}, "\n")
@@ -442,6 +443,31 @@ func TestARecommendationLeadsWithTheFacesOwnForm(t *testing.T) {
 	}
 }
 
+// A gate stop's recommendation that opens with an answer the face holds
+// leads as the suggested answer, with the words after it as its grounds.
+// One that names no such answer is its writer's view, a story line.
+func TestAGateStopSuggestsTheAnswerItsRecommendationNames(t *testing.T) {
+	x := fixture(t, "case", string(factoryd.CaseGateStop))
+	if x.face.Suggested != factoryd.ActReverify || x.face.SuggestedBy != "the gate supervisor" || x.face.Grounds != "the limiter in pulse.go:88 holds the bound" ||
+		x.face.Answers[0].Label != "Check the work again" || x.face.Story.View != "" {
+		t.Errorf("suggested %q by %q on %q, first answer %q, view %q; want reverify by the gate supervisor on its grounds, and no view",
+			x.face.Suggested, x.face.SuggestedBy, x.face.Grounds, x.face.Answers[0].Label, x.face.Story.View)
+	}
+	for _, rec := range []string{"look at the gateway's log first", "successor: start over on a fresh card"} {
+		c := x.c
+		c.Facts = maps.Clone(c.Facts)
+		c.Facts["reason"] = factoryd.GateStopReason(factoryd.GateTrip{Activity: factoryd.ActivityModelReview, Attempt: 3, Bound: 20 * time.Minute},
+			factoryd.GateDecision{Diagnosis: "the review hangs", Recommendation: rec})
+		delete(c.Facts, "face")
+		f := x.facts
+		f.Case, f.Recommend = c, factoryd.Recommendation{}
+		face := factoryd.FaceOf(c, f)
+		if want := "The gate supervisor's view: " + rec; face.Suggested != "" || face.Story.View != want {
+			t.Errorf("%q: suggested %q, view %q; want none and %q", rec, face.Suggested, face.Story.View, want)
+		}
+	}
+}
+
 // A real gate stop names its step in plain words, never the activity's
 // code name.
 func TestAGateStopNamesItsStepInWords(t *testing.T) {
@@ -460,7 +486,7 @@ func TestBudgetFloorAtTheSpendLimitAsksForTheRaise(t *testing.T) {
 		Head: "7eaf7c73121dd332c52b95bb5b024a08b3757146", PR: 9, PROpen: true, Pushed: true, Checks: "green",
 		PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
 	face := factoryd.FaceOf(factoryd.Case{Kind: factoryd.CaseBudgetFloor}, factoryd.Facts{CaseFacts: f, Card: factoryd.Task{ID: "t1", Kind: "agent", IssueNumber: 5}})
-	if want := "The card is out of money and at its spend limit. Raise the limit and add 2.00 EUR, or end the card?"; face.Ask != want {
+	if want := "The card is out of money and at its spend limit, and it needs 2.00 EUR more. How should it go on?"; face.Ask != want {
 		t.Errorf("ask %q, want %q", face.Ask, want)
 	}
 	raise := face.Answers[0]
@@ -634,7 +660,7 @@ func TestAnAgentsQuestionAtEveryCapIsTheCapsFace(t *testing.T) {
 		{"day cap", capWait(policy.RefusedDayCap), "The factory's spending limit for today is reached. Wait for it to reset, or end the card?", wait},
 		{"month cap", capWait(policy.RefusedMonthCap), "The factory's spending limit for this month is reached. Wait for it to reset, or end the card?", wait},
 		{"project cap", capWait(policy.RefusedProjectCap), "This project's spending limit for the month is reached. Wait for it to reset, or end the card?", wait},
-		{"budget floor", func(f *factoryd.CaseFacts) { f.LeftEUR = 0.1 }, "The card is out of money. Add 0.38 EUR, or end the card?",
+		{"budget floor", func(f *factoryd.CaseFacts) { f.LeftEUR = 0.1 }, "The card is out of money, and adding 0.38 EUR lets it run again. How should it go on?",
 			[]string{"Add money", "End the card", "Not now"}},
 		{"session cap", func(f *factoryd.CaseFacts) { f.Attempts = f.SessionCap }, "The card used all 3 sessions. Allow more, or end the card?",
 			[]string{"Allow more sessions", "End the card", "Not now"}},

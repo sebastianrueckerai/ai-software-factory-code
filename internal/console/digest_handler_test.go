@@ -41,7 +41,7 @@ func TestCardLifeFoldReadsTheDigestAndTheOpenCases(t *testing.T) {
 	want := `<ol class="life-log"><li><time>18 Nov 10:00</time> Filed by webhook: direct card.</li><li><time>18 Nov 11:00</time> The model review: concerns, 2 findings.</li><li><time>18 Nov 12:00</time> Handed over: <span class="quote">Fix the vet finding first.</span></li></ol>
 <h4>The open ask: A step of the work ran past its time limit. Check the work again, or tell the card how to go on?</h4><ul><li>The check-in passed it to the factory agent, and found: <span class="quote">the review &amp; the tests disagree</span></li></ul>
 <h4>The open ask: The card used all 0 sessions. Allow more, or end the card?</h4><ul><li>The factory agent passed it to a human.</li><li>sebastian is weighing it.</li></ul>
-<h4>The open ask: The card is out of money. Add 0.00 EUR, or end the card?</h4><p class="meta">Nobody has weighed this ask yet.</p>
+<h4>The open ask: The card is out of money, and adding 0.00 EUR lets it run again. How should it go on?</h4><p class="meta">Nobody has weighed this ask yet.</p>
 `
 	if rec.Code != http.StatusOK || rec.Body.String() != want {
 		t.Fatalf("the fold for alice = %d\n%s\nwant 200\n%s", rec.Code, rec.Body, want)

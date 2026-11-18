@@ -1150,7 +1150,7 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 	ask := "Fix the signing of the images factoryd, gateway, worker, then close this card"
 	why := "Why: The factory deploys only images signed with its key, so these images stay off the cluster.\n\n---\n\n"
 	body := "```\n" + ask + "\n```\n\n" +
-		"Info: Main CI's run is green at c1c1c1c, and the factory rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not.\n\n" +
+		"Info: Main CI's run is green at commit c1c1c1c, and the factory rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not.\n\n" +
 		"The run: https://git.example/sf/ai-software-factory-code/actions/runs/412\n\n" +
 		"- factoryd: " + gw + " carries no signature by this key over this digest (1 by another key or over another digest)\n" +
 		"- gateway: " + gw + " carries no signature by this key over this digest (1 by another key or over another digest)\n" +

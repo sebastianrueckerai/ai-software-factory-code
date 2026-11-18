@@ -411,7 +411,7 @@ func TestSettleCounts(t *testing.T) {
 	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, Content: "#18 is done: the cap line.", TaskID: "t-done", Conversation: done})
 	week, _ := chat.NewConversation(ctx, "sf/code", "sebastian")
 	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, BirthKind: factoryd.EventRoutineRan,
-		Content: "#19 needs you: Weekly bump of the pinned outside inputs.", TaskID: "t-week", Conversation: week})
+		Content: "#19 needs you: Update the fixed versions of outside software every week.", TaskID: "t-week", Conversation: week})
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/conversations", nil), ck)
 	var list []map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {

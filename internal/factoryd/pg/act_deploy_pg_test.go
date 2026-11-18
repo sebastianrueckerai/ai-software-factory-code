@@ -133,7 +133,7 @@ func TestRollHeldCaseHoldsThePlansStates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = `[{"issue":1580,"merged":2,"total":5,"waits_on":[{"issue":1609,"status":"running"},{"issue":1610,"status":"queued"},{"issue":1611,"status":"failed"}]}]`
+	const want = `[{"issue":1580,"merged":2,"name":"x","total":5,"waits_on":[{"issue":1609,"status":"running"},{"issue":1610,"status":"queued"},{"issue":1611,"status":"failed"}]}]`
 	if c.Kind != CaseRollHeld || string(got) != want || c.Facts["held_since"] != "2026-10-29T10:00:00Z" {
 		t.Errorf("case %s, plans %s, held_since %v; want roll_held, %s, 2026-10-29T10:00:00Z", c.Kind, got, c.Facts["held_since"], want)
 	}
@@ -156,7 +156,7 @@ func TestRollHeldFactsFollowTheHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = `[{"issue":1580,"merged":2,"total":5,"waits_on":[{"issue":1609,"status":"running"},{"issue":1610,"status":"queued"},{"issue":1611,"status":"failed"}]},{"issue":1590,"merged":1,"total":1,"waits_on":[]}]`
+	const want = `[{"issue":1580,"merged":2,"name":"x","total":5,"waits_on":[{"issue":1609,"status":"running"},{"issue":1610,"status":"queued"},{"issue":1611,"status":"failed"}]},{"issue":1590,"merged":1,"name":"x","total":1,"waits_on":[]}]`
 	if string(got) != want {
 		t.Errorf("plans %s, want %s", got, want)
 	}
@@ -165,7 +165,7 @@ func TestRollHeldFactsFollowTheHold(t *testing.T) {
 		t.Errorf("held_since %v, source %v after the refresh; want the hold's start and the ask's own keys kept", c.Facts["held_since"], c.Facts["source"])
 	}
 	ask, _ := h.r.CaseAsk(context.Background(), caseByID(t, h.s, h.caseID))
-	if info, _ := ask.Detail["info"].(string); !strings.Contains(info, "- plan #1590: 1 of 1 cards merged; waits for the plan to close.") {
+	if info, _ := ask.Detail["info"].(string); !strings.Contains(info, "- plan “x” (#1590): 1 of 1 cards merged; waits for the plan to close.") {
 		t.Errorf("the ask's info %q; want plan #1590 named", info)
 	}
 	events, err := h.s.TaskEvents(context.Background(), h.cardID, 100)
@@ -174,7 +174,7 @@ func TestRollHeldFactsFollowTheHold(t *testing.T) {
 	}
 	named := false
 	for _, e := range events {
-		if info, _ := e.Detail["info"].(string); e.Kind == EventQuestionAsked && strings.Contains(info, "- plan #1590") {
+		if info, _ := e.Detail["info"].(string); e.Kind == EventQuestionAsked && strings.Contains(info, "- plan “x” (#1590)") {
 			named = true
 		}
 	}
@@ -280,7 +280,7 @@ func TestRung2DeployNowRunsOrProposesByLevel(t *testing.T) {
 			if c.Status != CaseResolved || c.Resolution == nil || c.Resolution.Rung != 2 || c.Resolution.By != ChatUser {
 				t.Errorf("case %s, resolution %+v; want resolved on rung 2 by %s", c.Status, c.Resolution, ChatUser)
 			}
-			if want := "Deploy now: main of demo-app/demo-app at 9d9d9d9 goes to production."; !strings.Contains(out.Text, want) {
+			if want := "Deploy now: main of demo-app/demo-app at commit 9d9d9d9 goes to production."; !strings.Contains(out.Text, want) {
 				t.Errorf("text %q lacks %q", out.Text, want)
 			}
 		})
@@ -433,7 +433,7 @@ func TestDeployNowFailures(t *testing.T) {
 		want string
 	}{
 		{"not held", ErrNotHeld, "production of demo-app/demo-app is not held: every merge goes to production on its own"},
-		{"main red", ErrMainRed{Commit: "abcdef0123456789"}, "main of demo-app/demo-app at abcdef0 is red: `deploy_now` waits for a green run on main"},
+		{"main red", ErrMainRed{Commit: "abcdef0123456789"}, "main of demo-app/demo-app at commit abcdef0 is red: `deploy_now` waits for a green run on main"},
 		{"unknown", errors.New("forgejo: " + leaky), "production of demo-app/demo-app could not be released: forgejo: see https://[redacted]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1068,7 +1068,6 @@ func TestAHumanCardsOpenedCardRendersItsQuestionsParts(t *testing.T) {
 	page := drawer(t, r, ck, "t-h", "overview")
 	ask := askBlockOf(t, page)
 	for _, want := range []string{
-		`<p class="o-question">Renew the certificate?</p>`,
 		`<p class="o-askwhy">The certificate expires on Friday.</p>`,
 		`<button type="submit" class="pick">I did it</button>`,
 		`<button type="submit" class="pick">Not now</button>`,
@@ -1076,6 +1075,9 @@ func TestAHumanCardsOpenedCardRendersItsQuestionsParts(t *testing.T) {
 		if !strings.Contains(ask, want) {
 			t.Errorf("the human card's ask lacks %q:\n%s", want, ask)
 		}
+	}
+	if strings.Contains(ask, "o-question") || !strings.Contains(page, `<h2 class="o-title" tabindex="-1">Renew the certificate?</h2>`) {
+		t.Errorf("the human card asks other than once, as its title:\n%s", page)
 	}
 	for _, want := range []string{
 		`<h4>What the factory knows</h4><div class="info"><h2>What each answer does</h2>`,
@@ -1106,7 +1108,7 @@ func TestBoardFixturesRenderTheirAsks(t *testing.T) {
 		{"board-session-cap.json", `The card used all 3 <span class="term">sessions</span>. Allow more, or end the card?`,
 			"A card runs only the sessions it was given, and this one has used all 3.", "extend", "the factory agent", "Extend by one session", true},
 		{"board-plan-question.json", "Which storage backs the short links?",
-			"The planner needs your answer before it can finish the plan.", "", "the planner", "a store the operator already runs asks no new standing cost", false},
+			`The <span class="term">planner</span> needs your answer before it can finish the plan.`, "", "the planner", "a store the operator already runs asks no new standing cost", false},
 	} {
 		r := newRig(t)
 		fx := seatBoardFixture(t, r, tc.name)
@@ -1523,7 +1525,6 @@ func TestAHumanCardShowsItsQuestion(t *testing.T) {
 	drawer := drawer(t, r, ck, "t-hq", "overview")
 	esc := askBlockOf(t, drawer)
 	for _, want := range []string{
-		`<p class="o-question">` + ask + `</p>`,
 		`<p class="o-askwhy">Two stores fit.</p>`,
 		`The agent&#39;s view: <span class="quote">Postgres</span>`,
 		`action="/tasks/t-hq/answer"`,
@@ -1533,6 +1534,9 @@ func TestAHumanCardShowsItsQuestion(t *testing.T) {
 		if !strings.Contains(esc, want) {
 			t.Errorf("the human card's ask lacks %q:\n%s", want, esc)
 		}
+	}
+	if strings.Contains(esc, "o-question") || !strings.Contains(drawer, `<h2 class="o-title" tabindex="-1">`+ask+`</h2>`) {
+		t.Errorf("the human card's opened card asks other than once, as its title:\n%s", drawer)
 	}
 	if want := `<div class="info"><p>Postgres is shared, SQLite is local.</p>`; !strings.Contains(drawer, want) {
 		t.Errorf("the human card's full brief lacks %q:\n%s", want, drawer)

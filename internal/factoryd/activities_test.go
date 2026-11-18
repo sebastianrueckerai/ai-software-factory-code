@@ -3828,7 +3828,7 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 		}
 		facts := Facts{CaseFacts: f, Card: k}
 		face := FaceOf(Case{Kind: CaseBudgetFloor, Facts: map[string]any{"reason": why}}, facts)
-		if want := fmt.Sprintf("Add %.2f EUR", raise); !strings.Contains(face.Ask, want) {
+		if want := fmt.Sprintf("adding %.2f EUR", raise); !strings.Contains(face.Ask, want) {
 			t.Errorf("%.4f of %.2f spent: ask = %q, want it to name %q", spent, budget, face.Ask, want)
 		}
 		if eur := pressedFund(t, facts); eur != raise {

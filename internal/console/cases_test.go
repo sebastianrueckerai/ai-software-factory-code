@@ -585,7 +585,7 @@ func TestACasesCardAsksItsResourceRequestAsAPage(t *testing.T) {
 		}
 	}
 	ask = askBlockOf(t, drawer(t, r, ck, "t-res", "overview&case=t-res:5"))
-	if !strings.Contains(ask, `<p class="o-question">`+strings.Replace(caseAsk, " session,", ` <span class="term">session</span>,`, 1)+`</p>`) ||
+	if !strings.Contains(ask, `<p class="o-question">`+strings.NewReplacer(" session,", ` <span class="term">session</span>,`, " planner?", ` <span class="term">planner</span>?`).Replace(caseAsk)+`</p>`) ||
 		!strings.Contains(ask, "Your call · 2 of 2") || !strings.Contains(ask, "case=t-res:-3") {
 		t.Errorf("the case's page:\n%s", ask)
 	}

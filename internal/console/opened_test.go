@@ -106,6 +106,45 @@ func TestEveryOpenedCardMeetsTheContract(t *testing.T) {
 	}
 }
 
+// A card whose title is its ask shows the ask once: the head holds the
+// title and the why, and the ask block opens with its story. A card whose
+// title names its work keeps the question and its why in the ask block.
+func TestOpenedCardSaysItsAskOnce(t *testing.T) {
+	texts := func(kind string, classes ...string) []string {
+		t.Helper()
+		for _, e := range galleryEntries() {
+			if e.Group+"/"+e.Kind != kind {
+				continue
+			}
+			r := newRig(t)
+			ck, _ := r.loggedIn(t)
+			rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+e.Seat(r)+"/drawer?tab=overview", nil), ck)
+			o := openedOf(t, rec.Body.String())
+			var out []string
+			for _, class := range classes {
+				line := ""
+				for _, n := range classed(o, class) {
+					line += textOutside(n, func(*html.Node) bool { return false })
+				}
+				out = append(out, line)
+			}
+			return out
+		}
+		t.Fatalf("the gallery holds no %s", kind)
+		return nil
+	}
+	equal(t, "a card whose title asks", texts("card/roll refused", "o-title", "o-why", "o-label", "o-question", "o-askwhy", "o-story"), []string{
+		"Fix the signing of the images factoryd, gateway, then close this card.",
+		"The factory deploys only images signed with its key, so these images stay off the cluster.",
+		"Your call", "", "",
+		"Main's run is green at commit 50f5db9, and 2 images of it carry no signature by the factory's key."})
+	equal(t, "a card whose title names its work", texts("action/extend", "o-title", "o-why", "o-question", "o-askwhy"), []string{
+		"Board export: import a snapshot back.",
+		"Read a nightly snapshot back into an empty database.",
+		"The card used all 3 sessions with 2 review findings open. Allow more, or end the card?",
+		"A card runs only the sessions it was given, and this one has used all 3."})
+}
+
 func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(int64) bool) {
 	t.Helper()
 	o := openedOf(t, body)
@@ -127,6 +166,18 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 	head, ask, summary, folds := one("o-head"), one("o-ask"), one("o-summary"), one("o-folds")
 	if head == nil || folds == nil {
 		t.Fatalf("the opened card has no head or no folds:\n%s", shown)
+	}
+	bare := func(name string) string {
+		n := one(name)
+		if n == nil {
+			return ""
+		}
+		return strings.TrimRight(textOutside(n, func(*html.Node) bool { return false }), ".?!")
+	}
+	for _, pair := range [][2]string{{"o-title", "o-question"}, {"o-why", "o-askwhy"}} {
+		if said := bare(pair[1]); said != "" && said == bare(pair[0]) {
+			t.Errorf("the ask repeats the head's line %q", said)
+		}
 	}
 	order := map[*html.Node]int{}
 	i := 0
@@ -161,8 +212,8 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 	}
 
 	if ask != nil {
-		if len(classed(ask, "o-question")) != 1 {
-			t.Errorf("the ask block has no question:\n%s", shown)
+		if n := len(classed(ask, "o-question")); n > 1 {
+			t.Errorf("the ask block has %d questions:\n%s", n, shown)
 		}
 		answers := classed(ask, "answer")
 		disabled := slices.ContainsFunc(answers, func(a *html.Node) bool {

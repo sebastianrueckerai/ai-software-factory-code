@@ -22,13 +22,13 @@ func StallQuestion(repository, sha string, since time.Time, pending []string, ca
 	return HumanQuestion{
 		Ask: b.Title,
 		Why: b.Why,
-		Info: fmt.Sprintf("The chain of %s has been pending at %s since %s UTC, past the stall bound. It waits on %s.",
+		Info: fmt.Sprintf("The chain of %s has been pending at commit %s since %s UTC, past the stall bound. It waits on %s.",
 			repository, ShortSHA(sha), since.UTC().Format("2006-01-02 15:04"), textutil.AndList(pending)) +
 			"\n\n" + held + "\n\n“" + LabelOf(AnswerRerunAgain) + "” runs the pending run and keeps this card. “" + LabelOf(AnswerCheckAgain) +
 			"” closes it and lets the watch run on. A head still pending a stall bound later asks again. “" + LabelOf(ActClose+"/"+variantDismiss) +
 			"” resolves the stall alert and asks nothing more until the head changes. A head that concludes, green or red, closes this card by itself.",
 		Choices:  choices(AnswerRerunAgain, AnswerCheckAgain, ActClose+"/"+variantDismiss),
-		Happened: fmt.Sprintf("The chain at %s has been pending since %s, waiting on %s.", ShortSHA(sha), timeWords(since), plural(len(pending), "check")),
+		Happened: fmt.Sprintf("The chain at commit %s has been pending since %s, waiting on %s.", ShortSHA(sha), timeWords(since), plural(len(pending), "check")),
 	}
 }
 
@@ -49,13 +49,13 @@ func RepairQuestion(repository, sha string, findings []string, runURL string, ca
 	return HumanQuestion{
 		Ask: b.Title,
 		Why: b.Why,
-		Info: fmt.Sprintf("The chain of %s is red at %s: %s. The project runs no agents, so a human repairs it.", repository, short, textutil.AndList(findings)) +
+		Info: fmt.Sprintf("The chain of %s is red at commit %s: %s. The project runs no agents, so a human repairs it.", repository, short, textutil.AndList(findings)) +
 			"\n\n" + carried + "\n\nRead the run's log or the red status, find the cause, fix it from main's head, and push: the fix rides the chain again, and a green chain ends every wait. " +
-			"A green head closes this card by itself, and so does a head that moves on. Closing it yourself dismisses the red at " + short + ": no new card asks until the head changes.",
+			"A green head closes this card by itself, and so does a head that moves on. Closing it yourself dismisses the red at commit " + short + ": no new card asks until the head changes.",
 		Choices:  humanDoneChoices,
-		Happened: fmt.Sprintf("The chain of %s is red at %s, with %s.", repository, short, plural(len(findings), "failed check")),
+		Happened: fmt.Sprintf("The chain of %s is red at commit %s, with %s.", repository, short, plural(len(findings), "failed check")),
 		Waits:    waitOnChain(cards),
-		Check:    fmt.Sprintf("Closes the card and lets the red at %s stand. A red chain at a newer head files a new card.", short),
+		Check:    fmt.Sprintf("Closes the card and lets the red at commit %s stand. A red chain at a newer head files a new card.", short),
 	}
 }
 
@@ -138,13 +138,13 @@ func RollRefusedQuestion(short string, names, lines []string, runURL string) Hum
 	return HumanQuestion{
 		Ask: b.Title,
 		Why: b.Why,
-		Info: "Main CI's run is green at " + short + ", and the factory rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not." +
+		Info: "Main CI's run is green at commit " + short + ", and the factory rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not." +
 			"\n\nThe run: " + runURL + "\n\n- " + strings.Join(lines, "\n- ") + "\n\n" +
 			"Main CI's image jobs sign each image they push. No signature means a job did not sign it or the tag was pushed outside main CI. " +
 			"A signature by another key means the code repository's Actions secret `COSIGN_PRIVATE_KEY` is not the key k8s/cosign.pub holds. " +
 			"Find which, fix it, and close this issue. The next green push run of main is judged again, and an empty commit on main starts one.",
 		Choices:  humanDoneChoices,
-		Happened: fmt.Sprintf("Main's run is green at %s, and %s of it %s no signature by the factory's key.", short, plural(len(names), "image"), carry(len(names))),
+		Happened: fmt.Sprintf("Main's run is green at commit %s, and %s of it %s no signature by the factory's key.", short, plural(len(names), "image"), carry(len(names))),
 		Waits:    "The new images stay off the cluster until they are signed.",
 		Check:    "Closes the card. The factory judges the images of main's next green run again.",
 	}
@@ -159,13 +159,13 @@ func RerunQuestion(index int64, sha, failed string, lost []string, why string) H
 	return HumanQuestion{
 		Ask: b.Title,
 		Why: b.Why,
-		Info: fmt.Sprintf("Main CI's push run %d of %s failed, but none of its steps did: each failed job lost its runner while it ran "+
+		Info: fmt.Sprintf("CI run %d on main, at commit %s, failed, but none of its steps did: each failed job lost its runner while it ran "+
 			"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card. %s", index, ShortSHA(sha), why) +
 			"\n\n" + strings.Join(lost, "\n\n") + "\n\n" +
 			"Re-run each job from its page. The project's merge queue is paused until a push run of main is green: the re-run's green " +
 			"result ends the pause, and the factory closes this issue.",
 		Choices:  humanDoneChoices,
-		Happened: fmt.Sprintf("Main's push run %d failed in %s, and each failed job lost its runner while it ran.", index, failed),
+		Happened: fmt.Sprintf("CI run %d on main failed in %s, and each failed job lost its runner while it ran.", index, failed),
 		Waits:    queuePaused,
 		Check:    mainRunChecked,
 	}
@@ -178,12 +178,12 @@ func StillRedQuestion(index int64, sha, remedy, link string) HumanQuestion {
 	return HumanQuestion{
 		Ask: b.Title,
 		Why: b.Why,
-		Info: fmt.Sprintf("Main CI's push run %d of %s failed after %s merged. The factory files one automatic remedy for a red main, "+
+		Info: fmt.Sprintf("CI run %d on main, at commit %s, failed after %s merged. The factory files one automatic remedy for a red main, "+
 			"the fix-forward card or the revert after it, and main stayed red after it, so a human decides.", index, ShortSHA(sha), remedy) +
 			"\n\nThe run: " + link + "\n\nRead its log, then fix main or revert by hand. The project's merge queue is paused until a push run of " +
 			"main is green: that run ends the pause, and the factory closes this issue.",
 		Choices:  humanDoneChoices,
-		Happened: fmt.Sprintf("Main's push run %d failed at %s after %s merged.", index, ShortSHA(sha), remedy),
+		Happened: fmt.Sprintf("CI run %d on main failed at commit %s after %s merged.", index, ShortSHA(sha), remedy),
 		Waits:    queuePaused,
 		Check:    mainRunChecked,
 	}

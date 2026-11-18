@@ -99,7 +99,7 @@ func TestEachOpenPromiseOfAGapIsAPage(t *testing.T) {
 	r := newRig(t)
 	verdictRig(r)
 	ck, _ := r.loggedIn(t)
-	const ask = `<p class="o-question">Plan “Shortener” finished, but 2 of 3 promises are not met. Settle each one.</p>`
+	const ask = `<p class="o-question">Plan “Shortener” finished, but 2 of 3 <span class="term">promises</span> are not met. Settle each one.</p>`
 	const why = `<p class="o-askwhy">Until both are settled, the plan stays open and holds production deploys.</p>`
 	small := faceOf(t, needsOf(t, r, ck, "/"), "t-plan")
 	for _, want := range []string{`data-case="7030.1"`, `<strong class="title">Plan “Shortener” finished, but 2 of 3 promises are not met. Settle each one.</strong>`,
@@ -121,7 +121,7 @@ func TestEachOpenPromiseOfAGapIsAPage(t *testing.T) {
 		page := criteriaPage(t, r, ck, tc.key)
 		block := askBlockOf(t, page)
 		for _, want := range []string{fmt.Sprintf("Your call · %d of 2", i+1), ask, why, tc.story,
-			`<span class="effect">Files one more card for the open promises, which spends up to 4.00, 5.00 or 10.00 EUR by the size its planner gives it.</span>`} {
+			`<span class="effect">Files one more card for the open promises, which spends up to 4.00, 5.00 or 10.00 EUR by the size its <span class="term">planner</span> gives it.</span>`} {
 			if !strings.Contains(block, want) {
 				t.Errorf("page %d lacks %q:\n%s", i+1, want, block)
 			}
@@ -161,7 +161,7 @@ func TestTheGapsPagesFollowItsRows(t *testing.T) {
 		factoryd.CriterionVerdict{Criterion: "c3", Verdict: "waived", Evidence: "not worth the money", Kind: factoryd.CriterionInvariant, Source: "approver"})
 	ck, _ := r.loggedIn(t)
 	block := askBlockOf(t, criteriaPage(t, r, ck, ""))
-	for _, want := range []string{`<p class="o-question">Plan “Shortener” finished, but 1 of 3 promises is not met. Settle each one.</p>`,
+	for _, want := range []string{`<p class="o-question">Plan “Shortener” finished, but 1 of 3 <span class="term">promises</span> is not met. Settle each one.</p>`,
 		`<p class="o-askwhy">Until this promise is settled, the plan stays open and holds production deploys.</p>`, "<li>The plan promised: The pages read well.</li>"} {
 		if !strings.Contains(block, want) {
 			t.Errorf("the one page lacks %q:\n%s", want, block)
@@ -173,7 +173,7 @@ func TestTheGapsPagesFollowItsRows(t *testing.T) {
 	r.tasks.criteria["t-int"] = append(r.tasks.criteria["t-int"], factoryd.CriterionVerdict{Criterion: "c1", Verdict: "unmet",
 		Evidence: "criterion c1: suite ./... failed: Failed boom", Kind: factoryd.CriterionTest, Source: factoryd.CriteriaSourceGate})
 	first := askBlockOf(t, criteriaPage(t, r, ck, ""))
-	for _, want := range []string{"Your call · 1 of 2", `but 2 of 3 promises are not met.`,
+	for _, want := range []string{"Your call · 1 of 2", `but 2 of 3 <span class="term">promises</span> are not met.`,
 		"<li>The plan promised: A link is stored.</li><li>Its test ran and failed: Failed boom.</li>"} {
 		if !strings.Contains(first, want) {
 			t.Errorf("c1's page lacks %q:\n%s", want, first)
@@ -489,7 +489,7 @@ func TestTheGrantNeedsAnOpenCriterion(t *testing.T) {
 	if strings.Contains(card, `action="/approvals/30/approve"`) {
 		t.Errorf("the grant is offered with no criterion open:\n%s", card)
 	}
-	for _, want := range []string{`<p class="o-question">Every promise of plan “Shortener” is met or dropped. Close it now?</p>`,
+	for _, want := range []string{`<p class="o-question">Every <span class="term">promise</span> of plan “Shortener” is met or dropped. Close it now?</p>`,
 		`<button type="submit" class="pick">Close the plan now</button> <span class="effect">Closes the plan now, so production deploys go on.</span>`,
 		`<span class="effect">The plan closes by itself within minutes.</span>`, `<input type="hidden" name="action" value="close">`} {
 		if !strings.Contains(card, want) {
@@ -921,7 +921,7 @@ func TestTheMergeCardHoldsARowPerCriterion(t *testing.T) {
 		}
 	}
 	first := page("t-int", "")
-	for _, want := range []string{"Your call · 1 of 3", `<p class="o-question">Is this promise of the plan met?</p>`,
+	for _, want := range []string{"Your call · 1 of 3", `<p class="o-question">Is this <span class="term">promise</span> of the plan met?</p>`,
 		`<p class="o-askwhy">The pull request merges only once each of the 2 promises a human judges has a verdict.</p>`,
 		"<li>The plan promised: The pages read well.</li><li>What to look at: Open /sizes and /doors at 390 px.</li>"} {
 		if !strings.Contains(askBlockOf(t, first), want) {

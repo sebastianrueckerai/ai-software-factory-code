@@ -58,7 +58,7 @@ func TestRollerPausesTheQueueOnARedMain(t *testing.T) {
 	if !ok || pause.RunID != 58 || pause.SHA != commitC2 || pause.FixTask == "" || pause.RevertTask != "" {
 		t.Fatalf("pause = %+v (%v), want run 58's with its fix card", pause, ok)
 	}
-	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "Fix the failing checks ci / test (push), ci / image (push) on main\n\n") || !strings.Contains(f.issues[0], "run 0 of "+commitC2) ||
+	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "Fix the failing checks ci / test (push), ci / image (push) on main\n\n") || !strings.Contains(f.issues[0], "CI run 0 on main, at commit "+commitC2) ||
 		!strings.Contains(f.issues[0], "The run: https://git.example/"+codeRepo+"/actions/runs/0.") {
 		t.Fatalf("issues %q, want the one fix-forward card", f.issues)
 	}
@@ -311,7 +311,7 @@ func TestRollerStillRedAfterTheRemedyGoesToAHuman(t *testing.T) {
 			}
 			continue
 		}
-		if want := []string{"40 Main is still red at c2c2c2c after the revert #42 merged: the human card #31 replaces this card. Closing this issue."}; !slices.Equal(f.comments, want) || !slices.Equal(f.closed, []string{"40"}) {
+		if want := []string{"40 Main is still red at commit c2c2c2c after the revert #42 merged: the human card #31 replaces this card. Closing this issue."}; !slices.Equal(f.comments, want) || !slices.Equal(f.closed, []string{"40"}) {
 			t.Errorf("%s: comments %q, closed %q; want the failed fix card closed with %q", tc.name, f.comments, f.closed, want)
 		}
 		card := store.tasks[got.FixTask]
@@ -518,7 +518,7 @@ func TestRollerEndsTheFixCardWhenMainTurnsGreenWithoutIt(t *testing.T) {
 		}
 		var comments, closed []string
 		if tc.ends {
-			comments = []string{"40 Main's push run 0 at " + ShortSHA(commitC2) + " is green (https://git.example/" + codeRepo +
+			comments = []string{"40 CI run 0 on main, at commit " + ShortSHA(commitC2) + ", is green (https://git.example/" + codeRepo +
 				"/actions/runs/0): the red this card was filed for is gone. Closing this issue."}
 			closed = []string{"40"}
 		}
@@ -550,7 +550,7 @@ func (w *signalOrder) Signal(ctx context.Context, taskID, name string, sig TaskS
 // agents) through its pull request's, which the heal pass takes to the
 // card. A revert that merged made main green itself and stays as it is.
 func TestRollerEndsTheRevertWhenMainTurnsGreenWithoutIt(t *testing.T) {
-	green := "Main's push run 0 at " + ShortSHA(commitC2) + " is green (https://git.example/" + codeRepo + "/actions/runs/0)"
+	green := "CI run 0 on main, at commit " + ShortSHA(commitC2) + ", is green (https://git.example/" + codeRepo + "/actions/runs/0)"
 	for _, tc := range []struct {
 		name        string
 		rev         Task
@@ -788,7 +788,7 @@ func TestRollerFixCardCarriesTheFailedJobsLogTails(t *testing.T) {
 		"\U0001F3C1  Job failed\n```"
 	fix := store.tasks[pause.FixTask]
 	for what, text := range map[string]string{"objective": fix.Objective, "issue": f.issues[0]} {
-		if !strings.Contains(text, "Read the run's log, find the cause in main at c2c2c2c, ") || !strings.HasSuffix(text, ". A fix that does not land by 2026-10-30T05:30:07Z has factoryd file the revert of c2c2c2c."+tails) {
+		if !strings.Contains(text, "Read the run's log, find the cause in main at commit c2c2c2c, ") || !strings.HasSuffix(text, ". A fix that does not land by 2026-10-30T05:30:07Z has factoryd file the revert of commit c2c2c2c."+tails) {
 			t.Errorf("the card's %s %q, want its sentences, then the log tails %q", what, text, tails)
 		}
 	}
@@ -1015,7 +1015,7 @@ func TestRollerFilesARerunCardWhenTheReRunLostItsRunnerToo(t *testing.T) {
 	if !ok || pause.RunID != 58 || pause.SHA != commitC2 || pause.FixTask == "" || pause.RevertTask != "" {
 		t.Fatalf("pause = %+v (%v), want run 58's with its card", pause, ok)
 	}
-	if len(f.reruns) != 1 || len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "Re-run the check ci / test (push) on main after a lost runner\n\nWhy: A lost runner, not the code, turned main red.\n\n---\n\n```\nRe-run the check ci / test (push) on main after a lost runner\n```\n\nInfo: Main CI's push run 1208 of "+ShortSHA(commitC2)+" failed, but none of its steps did") ||
+	if len(f.reruns) != 1 || len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "Re-run the check ci / test (push) on main after a lost runner\n\nWhy: A lost runner, not the code, turned main red.\n\n---\n\n```\nRe-run the check ci / test (push) on main after a lost runner\n```\n\nInfo: CI run 1208 on main, at commit "+ShortSHA(commitC2)+", failed, but none of its steps did") ||
 		!strings.Contains(f.issues[0], "No change to the code fixes that, so no agent works on this card. The factory re-ran it once, and the re-run's jobs lost their runner too: "+
 			"the runner or its node is at fault, not the code. Check the forgejo-runner pod in namespace forgejo (its restarts, its dind container, its node), then re-run the run from its page.") ||
 		!strings.Contains(f.issues[0], "ci / test (push), https://git.example"+job+":\n\n```\n⚙️ [runner]: context canceled\\nGet \"https://127.0.0.1:2376/v1.51/containers/6e2dfaae97bc") ||
@@ -1066,7 +1066,7 @@ func TestRollerFilesARerunCardWhenTheReRunLostItsRunnerToo(t *testing.T) {
 	if !slices.Contains(wf.signals, "w1 queue_turn  #0: ") {
 		t.Fatalf("signals = %q, want the waiting head woken", wf.signals)
 	}
-	want := "31 Main's push run 1208 at " + ShortSHA(commitC2) + " is green (https://git.example/" + codeRepo + "/actions/runs/1208): the merge queue's pause has ended. Closing this issue."
+	want := "31 CI run 1208 on main, at commit " + ShortSHA(commitC2) + ", is green (https://git.example/" + codeRepo + "/actions/runs/1208): the merge queue's pause has ended. Closing this issue."
 	if !slices.Equal(f.comments, []string{want}) || !slices.Equal(f.closed, []string{"31"}) {
 		t.Fatalf("comments %q, closed issues %q; want the card's issue closed with %q", f.comments, f.closed, want)
 	}

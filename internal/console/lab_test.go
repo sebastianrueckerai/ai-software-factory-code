@@ -1377,7 +1377,7 @@ const labBumpBrief = "The factory pins every outside input of its builds and its
 // The round's four routines of the code project: its weekly bump, the
 // factory's template pass, a dependency update and an audit.
 var (
-	labBump = policy.Routine{Name: "weekly-bump", Title: "Weekly bump", Why: "So security fixes reach the factory within a week.",
+	labBump = policy.Routine{Name: "weekly-bump", Title: "Update the fixed versions of outside software every week", Why: "Outside software held at one version misses its makers' fixes, so each week an agent updates it and the checks prove the update.",
 		Schedule: []policy.Trigger{{Cron: "0 6 * * 1"}}, Files: policy.FilesHuman,
 		Brief: "routines/weekly-bump.md", WhileOpen: policy.WhileOpenHold, Missed: policy.MissedFileOnce, Tell: policy.TellInbox}
 	labTemplatePass = policy.Routine{Name: "template-pass", Title: "Template pass", Schedule: []policy.Trigger{{Cron: "3 * * * *"},
@@ -1469,7 +1469,7 @@ func (s *labScene) addRoutines(now time.Time, held bool) {
 	if held {
 		bump[0].Outcome, bump[0].Ended, status781 = "filed", time.Time{}, "waiting-human"
 	}
-	k781 := card(labBump, bump[0], status781, "Weekly bump of the pinned outside inputs", labBumpBrief)
+	k781 := card(labBump, bump[0], status781, "Update the fixed versions of outside software every week", labBumpBrief)
 	s.tasks = append(s.tasks, factoryd.BoardTask{Task: k781}, factoryd.BoardTask{Task: card(labDeps, s.runs[labDeps.Name][0], "done",
 		"Dependency update: go.mod and package.json, patch and minor", "Run the skill dependency-update.")})
 	var open *factoryd.Task

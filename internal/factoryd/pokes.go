@@ -299,9 +299,9 @@ func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
 		if t.Status != "merged" || bl("covered") {
 			return m, false
 		}
-		m.Content = name + " is merged. The checks on main run now."
+		m.Content = NothingForYou + " " + name + " is merged. The checks on main run now."
 		if repair := num("repair"); str("chain") == "failure" || repair > 0 {
-			m.Content = name + " is merged, and the checks on main failed."
+			m.Content = NothingForYou + " " + name + " is merged, and the checks on main failed."
 			if repair > 0 {
 				m.Content = notice(m.Content+fmt.Sprintf(" #%d repairs them.", repair), m.Content)
 			}
@@ -329,12 +329,12 @@ func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
 				m.Choices = []string{LabelOf(ActRetry), LabelOf(ActNote)}
 			}
 		case str("state") == "done" && t.Parent == "":
-			m.Content = fmt.Sprintf("%s is done and live. It cost %s EUR.", name, textutil.EUR(t.SpentEUR))
+			m.Content = fmt.Sprintf("%s %s is done and live. It cost %s EUR.", NothingForYou, name, textutil.EUR(t.SpentEUR))
 		default:
 			return m, false
 		}
 	case EventAllChildrenDone:
-		m.Content = fmt.Sprintf("The plan %s is done: all %d cards.", name, num("cards"))
+		m.Content = fmt.Sprintf("%s The plan %s is done: all %d cards.", NothingForYou, name, num("cards"))
 	case EventCardHoldStranded:
 		// a hold the human released, or one a retry's card took over,
 		// before the pass strands nothing
@@ -366,9 +366,9 @@ func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
 		from, to := str("from"), str("to")
 		switch {
 		case from != to:
-			m.Content = fmt.Sprintf("%s set the autonomy from %s to %s.", e.Actor, from, to)
+			m.Content = fmt.Sprintf("%s %s set the autonomy from %s to %s.", NothingForYou, e.Actor, from, to)
 		case num("queue_cap") > 0:
-			m.Content = fmt.Sprintf("%s set the queue cap to %d.", e.Actor, num("queue_cap"))
+			m.Content = fmt.Sprintf("%s %s set the queue cap to %d.", NothingForYou, e.Actor, num("queue_cap"))
 		default:
 			return m, false
 		}
@@ -382,16 +382,20 @@ func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
 		}
 		switch e.Kind {
 		case EventCardFiled:
-			m.Content = "The agent filed " + name + "."
+			m.Content = NothingForYou + " The agent filed " + name + "."
 		case EventCardRetried:
-			m.Content = "The agent tried " + name + " again."
+			m.Content = NothingForYou + " The agent tried " + name + " again."
 		case EventSessionGranted:
-			m.Content = "The agent gave " + name + " one more session."
+			m.Content = NothingForYou + " The agent gave " + name + " one more session."
 		}
 		m.Decider = level + " level · " + verb + " by the agent"
 	}
 	return m, true
 }
+
+// NothingForYou opens every inbox message that needs nothing from the
+// human.
+const NothingForYou = "Nothing for you."
 
 // reasonCode is the code word a gate's reason opens with ("checks").
 var reasonCode = regexp.MustCompile(`^[a-z][a-z_]*$`)

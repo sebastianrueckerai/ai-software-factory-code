@@ -90,7 +90,7 @@ const mustHave = {
     "The failing run is img1", "analyze_image", "In #606's session", "A fresh session",
     "?", "Find on the board", "Find: a word, #612, plan:558",
     "Order and show", "Order", "Show", "newest first", "oldest first", "next up", "by stage", "by spend", "blocked only", "exceptional only", "failed only",
-    "↻ routines", "within", "Weekly bump", "Template pass", "Dependency update", "Audit", "every Monday 06:00", "after 6 more merges",
+    "↻ routines", "within", "Update the fixed versions of outside software every week", "Template pass", "Dependency update", "Audit", "every Monday 06:00", "after 6 more merges",
     "#779"],
   idle: ["idle", "0 working", "0 need you", "144.16 of 120.00 EUR", "#455", "#178", "Done", "#618", "#597", "failed"],
   fire: ["#610", "Fund", "2 waiting on the provider",
@@ -1407,7 +1407,7 @@ async function text(page) {
         const tabs = await d.getByRole("tab").allInnerTexts();
         if (tabs.join(",") !== "Overview,Runs,Config") fails.push("routines: the drawer's tabs are " + tabs.join(", "));
         const title = (await d.locator("h2").innerText()).trim();
-        if (title !== "↻ Weekly bump") fails.push('routines: the drawer\'s title is "' + title + '"');
+        if (title !== "↻ Update the fixed versions of outside software every week") fails.push('routines: the drawer\'s title is "' + title + '"');
         await p.page.keyboard.press("Escape");
         await p.page.waitForTimeout(300);
         if (await d.isVisible()) fails.push("routines: Escape does not close the routine's drawer");
@@ -1522,8 +1522,8 @@ async function text(page) {
       const d = p.page.locator("#drawer");
       await p.page.evaluate(() => document.querySelectorAll('#drawer details[data-sec="life"]').forEach((l) => { l.open = true; }));
       const prov = (await d.locator(".provenance").allInnerTexts()).map((t) => t.trim());
-      if (prov.join() !== "filed by the routine Weekly bump, run 14, last run held") {
-        fails.push('fire: #781\'s life reads ' + JSON.stringify(prov) + ', want "filed by the routine Weekly bump, run 14, last run held"');
+      if (prov.join() !== "filed by the routine Update the fixed versions of outside software every week, run 14, last run held") {
+        fails.push('fire: #781\'s life reads ' + JSON.stringify(prov) + ', want "filed by the routine Update the fixed versions of outside software every week, run 14, last run held"');
       } else {
         await d.locator(".provenance [data-open-routine]").click();
         await p.page.waitForTimeout(600);

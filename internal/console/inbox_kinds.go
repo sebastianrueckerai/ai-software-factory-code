@@ -118,7 +118,7 @@ func agentDid(r inboxRow, d deed) string {
 		}):
 			return "The agent's turn on " + d.on + " failed: nothing was looked at."
 		}
-		lead = "Nothing for you."
+		lead = factoryd.NothingForYou
 	}
 	if strings.HasPrefix(lead, who) {
 		who = "It"

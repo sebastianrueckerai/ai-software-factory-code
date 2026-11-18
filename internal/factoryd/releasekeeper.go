@@ -41,7 +41,7 @@ var ErrNotHeld = errors.New("production is not held")
 type ErrMainRed struct{ Commit string }
 
 func (e ErrMainRed) Error() string {
-	return "main's newest push run at " + ShortSHA(e.Commit) + " is red"
+	return "main's newest push run at commit " + ShortSHA(e.Commit) + " is red"
 }
 
 // promoteJob is the job of a project's main run that asks /release and
@@ -253,7 +253,7 @@ func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, n
 	}
 	sent := "main"
 	if fresh.DeployNow != "" {
-		sent = "main at " + ShortSHA(fresh.DeployNow)
+		sent = "main at commit " + ShortSHA(fresh.DeployNow)
 	}
 	return k.closeAsk(ctx, repository, "Deploy now sent "+sent+" to production while this ask was filed. Closing this issue.")
 }
@@ -324,7 +324,7 @@ func HoldQuestion(name string, since, now time.Time, groups []Group, fixes []Tas
 	}
 	q.Happened = fmt.Sprintf("Production of %s has waited %s: %s.", name, hours(now.Sub(since)), HoldReason(groups))
 	if len(plans) == 1 {
-		q.Happened = fmt.Sprintf("Production of %s has waited %s for plan #%d, which has %d of %d cards merged.", name, hours(now.Sub(since)), plans[0].Issue, plans[0].Merged, plans[0].Total)
+		q.Happened = fmt.Sprintf("Production of %s has waited %s for %s, which has %d of %d cards merged.", name, hours(now.Sub(since)), PlanWords(plans[0].Name, plans[0].Issue), plans[0].Merged, plans[0].Total)
 	}
 	q.Waits = fmt.Sprintf("Production of %s stays held while %s.", name, HoldReason(groups))
 	q.Info = strings.Join(append(why, fmt.Sprintf("Merged is not live: while a plan is open on main, no merge of %s goes to production. Production has waited since %s UTC.",
@@ -347,7 +347,7 @@ func holdInfo(plans []HoldPlan) string {
 			}
 			waits = "waits on " + strings.Join(on, ", ")
 		}
-		info = append(info, fmt.Sprintf("- plan #%d: %d of %d cards merged; %s.", plan.Issue, plan.Merged, plan.Total, waits))
+		info = append(info, fmt.Sprintf("- %s: %d of %d cards merged; %s.", PlanWords(plan.Name, plan.Issue), plan.Merged, plan.Total, waits))
 		if i > 0 {
 			others = append(others, fmt.Sprintf("#%d", plan.Issue))
 		}
@@ -377,7 +377,7 @@ func (k *ReleaseKeeper) holdPlans(ctx context.Context, groups []Group) ([]HoldPl
 		cards = slices.DeleteFunc(cards, func(c Task) bool { return c.Status == "merged" || c.Status == "done" || c.Status == "closed" })
 		slices.SortFunc(cards, func(a, b Task) int { return cmp.Compare(a.IssueNumber, b.IssueNumber) })
 		merged, total := g.Merged()
-		plans[i] = HoldPlan{Issue: g.Issue, Merged: merged, Total: total, WaitsOn: make([]HoldWait, len(cards))}
+		plans[i] = HoldPlan{Issue: g.Issue, Name: g.Name, Merged: merged, Total: total, WaitsOn: make([]HoldWait, len(cards))}
 		for j, c := range cards {
 			plans[i].WaitsOn[j] = HoldWait{Issue: c.IssueNumber, Status: c.Status}
 		}
@@ -391,9 +391,11 @@ func HoldFacts(plans []HoldPlan, since time.Time) map[string]any {
 }
 
 // HoldPlan is one open plan of a held production as the roll-held case's
-// facts carry it: its merged and total cards and the cards it waits on.
+// facts carry it: its name, its merged and total cards and the cards it
+// waits on.
 type HoldPlan struct {
 	Issue   int64      `json:"issue"`
+	Name    string     `json:"name,omitempty"`
 	Merged  int        `json:"merged"`
 	Total   int        `json:"total"`
 	WaitsOn []HoldWait `json:"waits_on"`
@@ -529,7 +531,7 @@ func (k *ReleaseKeeper) DeployNow(ctx context.Context, repository, by, via, deci
 	if decider == "agent" {
 		who = "The factory agent"
 	}
-	note := fmt.Sprintf("%s chose Deploy now: main at %s goes to production. Closing this issue.", who, ShortSHA(commit))
+	note := fmt.Sprintf("%s chose Deploy now: main at commit %s goes to production. Closing this issue.", who, ShortSHA(commit))
 	if err := k.closeAsk(ctx, repository, note); err != nil {
 		log.Printf("release keeper: %s: close the ask after Deploy now: %v", repository, err)
 	}

@@ -129,3 +129,17 @@ func TestEveryFixtureHasACardBrief(t *testing.T) {
 		}
 	}
 }
+
+// A fixture's card a human filed carries the why line intake gives a
+// human's issue, the opening sentence of its text.
+func TestHumanFiledFixturesCarryTheirWhy(t *testing.T) {
+	for _, fx := range facefixtures.All() {
+		if fx.Group == facefixtures.GroupAction && fx.Kind == factoryd.ActExtend {
+			if want := "Read a nightly snapshot back into an empty database."; fx.Task.Why != want {
+				t.Errorf("why %q, want %q", fx.Task.Why, want)
+			}
+			return
+		}
+	}
+	t.Fatal("no fixture of the action extend")
+}

@@ -133,6 +133,29 @@ func TestReleaseKeeperStartsTheClockAtTheFirstMerge(t *testing.T) {
 	}
 }
 
+// The hold's ask names a plan that has a name by it, with its number: the
+// card is not the plan's own.
+func TestReleaseKeeperNamesThePlanItWaitsFor(t *testing.T) {
+	f := &chainForgejo{}
+	k, store, clock := newKeeper(t, f)
+	plan := store.tasks["t-plan"]
+	plan.PlanName = "members page"
+	store.tasks["t-plan"] = plan
+	*clock = keeperAt(16, 0)
+	keeperPass(t, k)
+	keeperPass(t, k)
+	_, q := askOfHold(t, store)
+	if want := "Production of sf-demo-app has waited 6 hours for plan “members page” (#12), which has 2 of 4 cards merged."; q.Happened != want {
+		t.Errorf("happened %q, want %q", q.Happened, want)
+	}
+	if want := "Production of sf-demo-app stays held while plan “members page” (#12) is open on main."; q.Waits != want {
+		t.Errorf("waits %q, want %q", q.Waits, want)
+	}
+	if want := "- plan “members page” (#12): 2 of 4 cards merged; waits on #45 (failed), #46 (queued)."; !strings.Contains(q.Info, want) {
+		t.Errorf("info %q lacks %q", q.Info, want)
+	}
+}
+
 func TestReleaseKeeperAsksAfterSixHours(t *testing.T) {
 	f := &chainForgejo{}
 	k, store, clock := newKeeper(t, f)
@@ -500,7 +523,7 @@ func TestReleaseKeeperClosesAnAskADeployNowOvertook(t *testing.T) {
 	k.Store = &deployNowAfterAsk{store}
 	*clock = keeperAt(16, 0)
 	keeperPass(t, k)
-	note := demoRepo + "#31 Deploy now sent main at 9d9d9d9 to production while this ask was filed. Closing this issue."
+	note := demoRepo + "#31 Deploy now sent main at commit 9d9d9d9 to production while this ask was filed. Closing this issue."
 	if len(f.issues) != 1 || !slices.Equal(f.closed, []string{demoRepo + "#31"}) || !slices.Equal(f.comments, []string{note}) {
 		t.Errorf("issues %d, closed %q, comments %q; want #31 filed and closed with %q", len(f.issues), f.closed, f.comments, note)
 	}
@@ -769,7 +792,7 @@ func TestReleaseKeeperDeployNowByTheAgentSaysSo(t *testing.T) {
 	if _, err := k.DeployNow(context.Background(), demoRepo, "sebastian", ViaChat, "agent"); err != nil {
 		t.Fatal(err)
 	}
-	note := demoRepo + "#77 The factory agent chose Deploy now: main at 9d9d9d9 goes to production. Closing this issue."
+	note := demoRepo + "#77 The factory agent chose Deploy now: main at commit 9d9d9d9 goes to production. Closing this issue."
 	if !slices.Equal(f.comments, []string{note}) {
 		t.Errorf("comments %q, want %q", f.comments, note)
 	}
@@ -787,7 +810,7 @@ func TestReleaseKeeperDeployNow(t *testing.T) {
 	if got, want := releaseRow(store, demoRepo), (Release{Repository: demoRepo, AsksAt: keeperAt(9, 0), HeldSince: keeperAt(12, 0), ToldHeld: demoCommit, DeployNow: demoCommit}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row %+v, want %+v", got, want)
 	}
-	note := demoRepo + "#77 sebastian chose Deploy now: main at 9d9d9d9 goes to production. Closing this issue."
+	note := demoRepo + "#77 sebastian chose Deploy now: main at commit 9d9d9d9 goes to production. Closing this issue."
 	if !slices.Equal(f.closed, []string{demoRepo + "#77"}) || !slices.Equal(f.comments, []string{note}) {
 		t.Errorf("closed %q, comments %q; want #77 closed with %q", f.closed, f.comments, note)
 	}
