@@ -161,7 +161,7 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 			`<p class="o-askwhy">The agent stopped because it needs a decision only a human can make.</p>`,
 			`data-press="continue/own_words">Answer in my words</button>`, `<span class="effect">The card keeps waiting for your answer.</span>`},
 		"t-bp": {`<p class="o-question">Which cache holds the reads?</p>`,
-			`<p class="o-askwhy">The planner needs your answer before it can finish the plan.</p>`,
+			`<p class="o-askwhy">The <span class="term">planner</span> needs your answer before it can finish the plan.</p>`,
 			`<p class="o-by">suggested by the planner: <span class="quote">it already holds the board keys</span></p>`,
 			`<input type="hidden" name="choice" value="1">`, `<input type="hidden" name="choice" value="2">`},
 	} {

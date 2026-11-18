@@ -251,7 +251,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 			}
 			f.Waiters = factoryd.LiveDependents(waiters)
 		}
-		o.Ask = c.askOf(ctx, v, k, row.Face, seen)
+		o.Ask = c.askOf(ctx, v, k, &o.Face, row.Face, seen)
 		o.Ask.Position, o.Ask.Of = row.At, row.Of
 		if p, ok := factoryd.PromiseOn(row.Case); ok && !factoryd.PromiseFits(p.Promise) {
 			// a promise in a plan's own words too long for the story
@@ -345,7 +345,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 			ask += fmt.Sprintf("-q%v", kase.Facts["index"])
 		}
 		face = v.scrubbed(face)
-		o.Ask = c.askOf(ctx, v, k, face, seen)
+		o.Ask = c.askOf(ctx, v, k, &o.Face, face, seen)
 		o.Ask.Position, o.Ask.Of = 1, 1
 		f := factoryd.Facts{CaseFacts: factoryd.FactsOf(kase), Card: bt.Task, Case: kase}
 		o.Ask.Answers = c.answersOf(ctx, v, k, ask, face, f, press, r.URL.Query().Get("press"), seen)
@@ -455,15 +455,20 @@ func (cs caseSet) holds(t factoryd.Task) bool { return len(cs.byCard[t.ID]) > 0 
 // askOf is the ask block of face on card k: the question and its why in
 // the factory's words with their terms marked into seen, and the story,
 // whose writer's words stand quoted. A planned line that only names the
-// card's title, which the opened card's head shows, stays out, and so do
-// a question that is the card's title and a why that is the card's own.
-func (c *Console) askOf(ctx context.Context, v *boardView, k card, face factoryd.Face, seen map[string]int) *askBlock {
+// card's title, which the opened card's head shows, stays out. A question
+// that is the card's title and a why that is the card's own stand once, in
+// head, as the factory's words with their terms marked.
+func (c *Console) askOf(ctx context.Context, v *boardView, k card, head *faceView, face factoryd.Face, seen map[string]int) *askBlock {
 	a := &askBlock{}
 	bare := func(t string) string { return strings.TrimRight(strings.TrimSpace(t), ".?!") }
-	if bare(face.Ask) != bare(k.Title) {
+	if bare(face.Ask) == bare(k.Title) {
+		head.title(c.factoryText(ctx, v, k.Repository, k.Title, seen), k.Title)
+	} else {
 		a.Question = c.factoryText(ctx, v, k.Repository, face.Ask, seen)
 	}
-	if bare(face.Why) != bare(k.Why) {
+	if bare(face.Why) == bare(k.Why) {
+		head.Why = c.factoryText(ctx, v, k.Repository, k.Why, seen)
+	} else {
 		a.Why = c.factoryText(ctx, v, k.Repository, face.Why, seen)
 	}
 	planned := face.Story.Planned

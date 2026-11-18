@@ -893,7 +893,7 @@ func (r *rig) seedScene(s labScene) string {
 			return factoryd.Hold{}, nil
 		}
 		return factoryd.Hold{Since: time.Now().Add(-7 * time.Hour), Groups: []factoryd.Group{
-			{Plan: "t-pl", Issue: 12, Children: map[string]int{"merged": 2, "done": 1, "queued": 2}}}}, nil
+			{Plan: "t-pl", Issue: 12, Name: "link shortener", Children: map[string]int{"merged": 2, "done": 1, "queued": 2}}}}, nil
 	}
 	r.alerts.rows = s.alerts
 	r.resources.rows = s.resources

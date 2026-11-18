@@ -468,6 +468,26 @@ func TestAGateStopSuggestsTheAnswerItsRecommendationNames(t *testing.T) {
 	}
 }
 
+// A held production's replans name the plan by its name and its number.
+func TestTheHoldsReplansNameThePlan(t *testing.T) {
+	x := fixture(t, "case", string(factoryd.CaseRollHeld))
+	want := map[string]string{
+		"Send back to the planner": "The planner plans plan “empty commit fires gate” (#1947) again on top of what is merged.",
+		"Take the plan off main":   "Reverts the merged cards of plan “empty commit fires gate” (#1947), then the planner plans it again.",
+	}
+	for _, a := range x.face.Answers {
+		if effect, ok := want[a.Label]; ok {
+			if a.Effect != effect {
+				t.Errorf("%s: effect %q, want %q", a.Label, a.Effect, effect)
+			}
+			delete(want, a.Label)
+		}
+	}
+	if len(want) > 0 {
+		t.Errorf("the face lacks the answers %v", want)
+	}
+}
+
 // A real gate stop names its step in plain words, never the activity's
 // code name.
 func TestAGateStopNamesItsStepInWords(t *testing.T) {

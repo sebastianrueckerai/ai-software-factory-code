@@ -143,6 +143,14 @@ func TestOpenedCardSaysItsAskOnce(t *testing.T) {
 		"Read a nightly snapshot back into an empty database.",
 		"The card used all 3 sessions with 2 review findings open. Allow more, or end the card?",
 		"A card runs only the sessions it was given, and this one has used all 3."})
+	_, _, _, _, asks := openedEntry(t, "card", "roll refused", "")
+	if want := `<h2 class="o-title" tabindex="-1">Fix the signing of the images <span class="term">factoryd</span>, <span class="term">gateway</span>, then close this card.</h2>`; !strings.Contains(asks, want) {
+		t.Errorf("the title that asks marks no factory words, want %s:\n%s", want, asks)
+	}
+	_, _, _, _, names := openedEntry(t, "action", "extend", "")
+	if want := `<h2 class="o-title" tabindex="-1">Board export: import a snapshot back.</h2>`; !strings.Contains(names, want) {
+		t.Errorf("the title that names the work is not plain, want %s:\n%s", want, names)
+	}
 }
 
 func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(int64) bool) {
@@ -708,7 +716,7 @@ func TestALongQuoteStandsInItsOwnFold(t *testing.T) {
 	long := strings.Repeat("The registries do not resolve in this sandbox. ", 5) + "How should the agent get the new digests?"
 	short := "Rotate it now, the old one expires Friday."
 	face := factoryd.Face{Ask: "How should it go on?", Story: factoryd.Story{Happened: factoryd.AgentAsks + long, View: "The project agent's view: " + short}}
-	a := r.c.askOf(ctx, v, card{Task: factoryd.Task{ID: "t-1", Repository: "sf/code"}}, face, map[string]int{})
+	a := r.c.askOf(ctx, v, card{Task: factoryd.Task{ID: "t-1", Repository: "sf/code"}}, &faceView{}, face, map[string]int{})
 	equal(t, "the story", a.Story, []storyLine{{Lead: "The agent&#39;s own words stand whole in the fold below."}, {Lead: "The project agent&#39;s view: ", Quote: short}})
 	equal(t, "the folds", a.Words, []ownWords{{Title: "The agent's own words", Hint: "48 words", Text: long}})
 

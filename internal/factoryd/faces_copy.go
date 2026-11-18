@@ -2266,7 +2266,12 @@ func choiceAnswer(value string, f Facts) (Answer, bool) {
 	a, ok := AnswerFor(key, f)
 	a.Value = value
 	if plan := planRef.FindString(c.Label); plan != "" && a.Action == ActReplan {
-		a.Effect = strings.Replace(a.Effect, "the plan", heldPlanWords(f.Case, plan), 1)
+		words := heldPlanWords(f.Case, plan)
+		if owned := "the plan's merged cards"; strings.Contains(a.Effect, owned) {
+			a.Effect = strings.Replace(a.Effect, owned, "the merged cards of "+words, 1)
+		} else {
+			a.Effect = strings.Replace(a.Effect, "the plan", words, 1)
+		}
 	}
 	return a, ok
 }
