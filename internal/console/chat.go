@@ -1275,7 +1275,7 @@ func (t *turn) run(id, notice string) {
 			t.parked[b.Tool] = true
 		}
 	}
-	forced := 0
+	forced, refused := 0, 0
 	for {
 		if sctx.Err() != nil {
 			t.stopEnd("")
@@ -1344,11 +1344,15 @@ func (t *turn) run(id, notice string) {
 		}
 		row := factoryd.ChatMessage{Role: "assistant", Content: answer.Content}
 		proposed := false
+		refused++
 		var results []factoryd.OperatorMessage
 		for i, call := range answer.ToolCalls {
 			start := time.Now()
 			result, token, code := t.call(call)
 			proposed = proposed || token != ""
+			if code == 0 {
+				refused = 0
+			}
 			answer.ToolCalls[i].Arguments = objectArgs(call.Arguments)
 			row.ToolCalls = append(row.ToolCalls, factoryd.ChatToolCall{ID: call.ID, Name: call.Name, Arguments: answer.ToolCalls[i].Arguments,
 				Result: result, At: start, Ms: time.Since(start).Milliseconds(), ReadAt: t.freshRead, Proposal: token, Trail: t.trail, Status: code})
@@ -1378,6 +1382,7 @@ func (t *turn) run(id, notice string) {
 				t.fail("The project could not be read.")
 				return
 			}
+			refused = 0
 			continue
 		}
 		if ended {
@@ -1385,9 +1390,23 @@ func (t *turn) run(id, notice string) {
 			t.send("done", struct{}{})
 			return
 		}
+		if refused == refusedRounds {
+			stopped := fmt.Sprintf("The turn stopped: every action of its last %d rounds was refused. Send a message to go on.", refusedRounds)
+			if _, ok := t.save(factoryd.ChatMessage{Role: "assistant", Content: stopped}); ok {
+				t.carryQuestion()
+				t.send("text", map[string]string{"text": stopped})
+				t.send("done", struct{}{})
+			}
+			return
+		}
 		msgs = append(append(msgs, answer), results...)
 	}
 }
+
+// refusedRounds bounds a turn's rounds in a row whose every tool call was
+// refused: an agent that corrects nothing in that many ends its turn, and
+// not the chat's budget.
+const refusedRounds = 5
 
 // questionTurn settles the thread's open question at the turn's end: the
 // reply after a carried question clears it — unless the turn ends on an

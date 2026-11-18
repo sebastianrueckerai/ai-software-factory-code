@@ -243,7 +243,9 @@ decimals: a task's model calls cost fractions of a cent.
   approver Fund and go on under the row (`POST
   /projects/{name}/chat/budget`, `eur`): the budget rises and every
   stopped turn goes on. A factory cap's refusal names the cap and what
-  raises it. The resumed context leaves the `budget` rows out. Its tools (`policy.ChatTools`) are the reads `system` (the
+  raises it. The resumed context leaves the `budget` rows out. A turn
+  whose every tool call was refused in 5 rounds in a row ends on a row
+  that says so, and the next message goes on. Its tools (`policy.ChatTools`) are the reads `system` (the
   factory's manual, rendered from the code at call time; its states,
   gates and section on sandbox images come from `internal/manual`, which
   the workers' `manual` tool reads too), `board`,
