@@ -3420,6 +3420,48 @@ func TestProviderLimitHoldLocalRefusal(t *testing.T) {
 	}
 }
 
+// A factoryd call on the project's chat task, whose class is none of the
+// policy's, is held under the classes whose alias of its purpose it runs
+// on: the brief's first call on big's supervisor alias reaches zai and
+// freezes big, the brief's retry and a check-in on the same alias are
+// answered by the hold with no upstream call, and the chat's own operator
+// call on another alias is not held.
+func TestProviderLimitHoldsTheChatTasksCalls(t *testing.T) {
+	stub := newStubUpstream(t)
+	task := Task{Classes: []string{policy.ClassChat}, ID: "t-chat-code-2026-11", BudgetEUR: 5, Status: "running", Repository: "sf/code"}
+	store := newMemStore(task)
+	pv := providerLimitPolicy()
+	big := pv.Document.Classes["big"]
+	big.SupervisorModel, big.CheckinModel = "big", "big"
+	pv.Document.Classes["big"] = big
+	pv.Document.Chat = &policy.ChatConfig{Model: policy.Small}
+	store.setPolicy(pv)
+	s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: &fakeMinter{},
+		LiteLLMURL: stub.URL, Prices: testPrices, FactorydToken: testFactorydToken})
+	base := time.Date(2026, 11, 14, 16, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return base }
+	h := s.Routes("test")
+
+	stub.setResp(stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"Usage limit reached for 5 hour. Your limit will reset at 2026-11-15 01:04:50"}}`})
+	for _, call := range []struct{ what, purpose string }{{"the brief", policy.PurposeBrief}, {"the brief's retry", policy.PurposeBrief}, {"a check-in", policy.PurposeCheckin}} {
+		rr := doFactorydChat(t, h, testFactorydToken, task.ID, call.purpose, chatBody("big"))
+		if rr.Code != http.StatusTooManyRequests || rr.Header().Get(HeaderDecision) != RefusedProviderLimit ||
+			!strings.Contains(rr.Body.String(), `"class":"big"`) || !strings.Contains(rr.Body.String(), `"reset":"2026-11-14T17:05:50Z"`) {
+			t.Fatalf("%s = %d %q: %s, want big's named refusal with the reset", call.what, rr.Code, rr.Header().Get(HeaderDecision), rr.Body.String())
+		}
+	}
+	if hits := len(stub.auths); hits != 1 {
+		t.Fatalf("upstream hits = %d, want the brief's one: the hold answers the retry and the check-in", hits)
+	}
+	stub.setResp(stubResp{status: http.StatusOK, body: `{}`})
+	if rr := doFactorydChat(t, h, testFactorydToken, task.ID, policy.PurposeOperator, chatBody(policy.Small)); rr.Code != http.StatusOK {
+		t.Fatalf("the chat's operator call on small = %d: %s, want it served", rr.Code, rr.Body.String())
+	}
+	if events := store.eventRows(); len(events) != 1 || events[0].Kind != "class_frozen" || events[0].Detail["class"] != "big" {
+		t.Fatalf("events = %+v, want the one class_frozen on big", events)
+	}
+}
+
 // TestHoldClearPath: the hold-clear door ends the class's armed hold on
 // factoryd's token alone. A request without it, a sandbox's token among
 // them, is refused and leaves the hold armed: the next call is still

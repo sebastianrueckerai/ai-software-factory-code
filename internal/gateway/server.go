@@ -387,7 +387,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// the provider-limit hold speaks first: a class frozen by a dated
 	// refusal answers every work call locally, no upstream call, until
 	// the hold lapses
-	if class, _ := pv.Document.ProviderLimitOf(task.Classes); class != "" {
+	if class, _ := pv.Document.ProviderLimitOf(heldClasses(&pv.Document, task, purpose, chatReq.Model)); class != "" {
 		if h := s.holdFor(ctx, task, class); h != nil {
 			s.audit(pid, task.ID, purpose, RefusedProviderLimit,
 				"provider limit hold for class "+class+": reset "+h.reset+": "+h.words, chatReq.Model, &task.SpentEUR)
@@ -1230,7 +1230,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 			// a dated provider limit freezes the class: the parse reads an
 			// absolute reset, a bare or relative error keeps the ladder
 			if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusPaymentRequired {
-				if class, entry := c.pv.Document.ProviderLimitOf(c.task.Classes); entry != nil {
+				if class, entry := c.pv.Document.ProviderLimitOf(heldClasses(&c.pv.Document, c.task, c.kind, c.alias)); entry != nil {
 					if reset, ok := ParseProviderReset(res.Header, respBody, entry); ok {
 						until := reset.Add(time.Minute).UTC().Format(time.RFC3339)
 						words := upstreamMessage(respBody)

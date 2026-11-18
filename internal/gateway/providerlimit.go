@@ -1,8 +1,10 @@
 package gateway
 
 import (
+	"maps"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -127,4 +129,21 @@ func ParseProviderReset(h http.Header, body []byte, entry *policy.ProviderLimit)
 		}
 	}
 	return time.Time{}, false
+}
+
+// heldClasses are the classes a call is held under: the task's own, or for
+// a factoryd call on the project's chat task, which holds no class of its
+// own, every class whose alias of the purpose the call runs on, the card
+// classes the brief and the check-in read a case with.
+func heldClasses(doc *policy.Document, task Task, purpose, model string) []string {
+	if purpose == "" || !slices.Contains(task.Classes, policy.ClassChat) {
+		return task.Classes
+	}
+	var classes []string
+	for _, name := range slices.Sorted(maps.Keys(doc.Classes)) {
+		if doc.FactoryModel([]string{name}, purpose) == model {
+			classes = append(classes, name)
+		}
+	}
+	return classes
 }
