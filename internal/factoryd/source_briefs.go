@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -10,8 +11,9 @@ import (
 
 // BriefFacts are the plain names a Go-filed card's brief is written from:
 // Name what the card is about and Of where it is, each "" where its source
-// names none. A name is a word a human reads, never an id.
-type BriefFacts struct{ Name, Of string }
+// names none, and Why the why line a routine's file holds. A name is a
+// word a human reads, never an id.
+type BriefFacts struct{ Name, Of, Why string }
 
 // SourceBriefs are the briefs of the cards Go code files, by source: the
 // title, the why line and the summary, written at filing and stored; the
@@ -135,11 +137,11 @@ var SourceBriefs = map[string]func(BriefFacts) BriefText{
 	// of Name, "" when the cap itself is reached
 	SourceMonthCap: func(f BriefFacts) BriefText {
 		if f.Of != "" {
-			return BriefText{Title: "LiteLLM's outer guard refused calls at " + f.Of + ", below the month cap of " + f.Name + ". Raise its limit?",
-				Why: "The guard behind the cap refuses model calls the cap still allows."}
+			return BriefText{Title: "LiteLLM's outer guard refused model calls at " + f.Of + ", below the month cap of " + f.Name,
+				Why: "The guard behind the cap refuses the calls the cap still allows, until its own limit is raised."}
 		}
-		return BriefText{Title: "The factory spent its monthly limit of " + f.Name + ". Raise it in policy.yaml, or wait for the month to end?",
-			Why: "The gateway refuses every further model call until the limit is raised or the month ends."}
+		return BriefText{Title: "This month's spending reached the factory's limit of " + f.Name,
+			Why: "The gateway refuses every further model call until the limit is raised in policy.yaml or the month ends."}
 	},
 	SourceConfig: func(f BriefFacts) BriefText {
 		return BriefText{Title: "Fix the rejected configuration in " + f.Name + " and push",
@@ -151,7 +153,7 @@ var SourceBriefs = map[string]func(BriefFacts) BriefText{
 	},
 	SourceRoutine: func(f BriefFacts) BriefText {
 		return BriefText{Title: f.Name,
-			Why: "The routine " + f.Of + " files this card on its schedule.",
+			Why: cmp.Or(f.Why, "The routine "+f.Of+" files this card on its schedule."),
 			Summary: "The agent works the routine's brief and opens one pull request. " +
 				"The card's checks and its review judge the work before it merges."}
 	},

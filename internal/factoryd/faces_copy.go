@@ -55,6 +55,19 @@ const (
 	variantOffMain  = "off_main"
 	variantPlan     = "plan"
 	variantKeepOpen = "keep_open"
+	variantIssue    = "issue"
+	variantUndo     = "undo"
+	variantAlone    = "alone"
+	variantFile     = "file"
+	variantOpen     = "open"
+)
+
+// The keys of a routine's answers in their other states: the undo of a
+// skip, and the two other sides of who its card is for.
+const (
+	KeyUndoSkip   = AnswerSkipRun + "/" + variantUndo
+	KeyRunAlone   = AnswerNeedsMe + "/" + variantAlone
+	KeyFollowFile = AnswerNeedsMe + "/" + variantFile
 )
 
 // noteField is the field of an answer that takes the human's note.
@@ -113,6 +126,10 @@ var Vocabulary = []Answer{
 	{Action: ActHandBack, Label: "I cannot do this", Effect: "This card ends, and the planner plans the whole plan again with your note. Its started cards stop.",
 		Fields: []Field{requiredNote("What stops you", "One line for the planner: what keeps you from doing it")}},
 	{Action: ActClose, Variant: variantNoted, Label: "Noted", Effect: "Ends this notice."},
+	{Action: ActClose, Variant: variantIssue, Label: "Close the issue", Effect: "Closes the card's issue."},
+	{Action: ActClose, Variant: SourceScreening, Label: "End the screening", Effect: "Ends the screening. You then decide whether an agent may work on this card."},
+	{Action: ActClose, Variant: SourceSizing, Label: "End the sizing", Effect: "Ends the sizing. This card goes on at the size it was filed with."},
+	{Action: ActClose, Variant: SourceProver, Label: "End the proof writing", Effect: "Ends the proof writing. The plan goes on without its tests."},
 	{Action: ActClose, Variant: variantDismiss, Label: "End the card", Effect: "Ends the card and stops watching the chain until main moves."},
 	{Action: ActClose, Variant: variantPlanWait, Label: "End the failed card", Effect: "Ends the failed card. The plan goes on without it.",
 		Fields: []Field{optionalNote("A note on why")}},
@@ -147,6 +164,7 @@ var Vocabulary = []Answer{
 	{Action: ActDeployNow, Label: "Deploy now", Effect: "Releases the held production deploy."},
 	{Action: ActSettle, Label: "It is fine, go on", Effect: "Ends this notice. Nothing else changes."},
 	{Action: ActSettle, Variant: variantNoted, Label: "Noted", Effect: "Ends this notice. Nothing else changes."},
+	{Action: ActSettle, Variant: variantOpen, Label: "Leave the issue open", Effect: "Ends this notice. The issue stays open."},
 	{Action: ActSalvage, Label: "Rescue the work into a new card", Effect: "Ends the card's run and starts a new card from its branch."},
 	{Action: ActNote, Label: "Not now", Effect: "The card keeps waiting for your answer.", Fields: []Field{optionalNote("A note")}},
 	{Action: ActNote, Variant: variantPark, Label: "Not now", Effect: "The card keeps waiting for your answer."},
@@ -174,8 +192,11 @@ var Vocabulary = []Answer{
 	{Action: AnswerThread, Label: "Talk about this card", Effect: "Opens a chat thread on this card."},
 	{Action: AnswerFundChat, Label: "Add money to the chat", Effect: "Raises the chat's budget for this month. The card closes.",
 		Fields: []Field{{Name: "eur", Label: "EUR to add", Kind: FieldMoney, Default: func(f Facts) string { return money(f.Card.BudgetEUR) }}}},
-	{Action: AnswerSkipRun, Label: "Skip the next run", Effect: "The routine misses its next run. Undo the skip reverses it."},
+	{Action: AnswerSkipRun, Label: "Skip the next run", Effect: "The routine misses its next run. “Undo the skip” reverses it."},
+	{Action: AnswerSkipRun, Variant: variantUndo, Label: "Undo the skip", Effect: "The routine runs at its next time again."},
 	{Action: AnswerNeedsMe, Label: "Give it to me", Effect: "The routine files its card for you."},
+	{Action: AnswerNeedsMe, Variant: variantAlone, Label: "Let it run alone", Effect: "The routine files its card for an agent."},
+	{Action: AnswerNeedsMe, Variant: variantFile, Label: "Follow the file", Effect: "The routine files its card as its file says."},
 	{Action: AnswerRunNow, Label: "Run it now", Effect: "Files the routine's card now."},
 	{Action: AnswerKeepHoldout, Label: "Keep it", Effect: "The promise joins the plan."},
 	{Action: AnswerDropHoldout, Label: "Drop it", Effect: "The promise leaves the plan."},
@@ -433,7 +454,10 @@ func init() {
 	}
 	limit := work(FaceSpec{Ask: limitAsk, Why: limitWhy, Answers: keys(ActExtend, ActSuccessor, ActClose, ActNote)})
 	modelStop := func(ask, why string) FaceSpec {
-		return work(FaceSpec{Ask: fixed(ask), Why: fixed(why), Answers: keys(ActResume, ActHandover, ActClose, ActNote)})
+		return work(FaceSpec{Ask: fixed(ask), Why: fixed(why), Answers: func(f Facts) []string {
+			// a helper runs its report on its own model
+			return slices.Concat([]string{ActResume}, holding(f, ActHandover), []string{ActClose, ActNote})
+		}})
 	}
 	for kind, s := range map[CaseKind]FaceSpec{
 		CaseSessionCap:   limit,
@@ -574,12 +598,13 @@ func plannedLine(f Facts) string {
 	if t == "" {
 		return ""
 	}
+	if f.Report {
+		// a helper's title says what its step does to the card
+		return line(t + ".")
+	}
 	verb := "builds"
-	switch {
-	case f.Planner:
+	if f.Planner {
 		verb = "plans"
-	case f.Report:
-		verb = "writes the report"
 	}
 	return line(fmt.Sprintf("This card %s \u201c%s\u201d.", verb, t))
 }
@@ -930,6 +955,8 @@ func leftLine(f Facts) string {
 		out = capitalize(strings.Join(parts, ", and ")) + ". " + capitalize(unchecked) + "."
 	case len(parts) > 0:
 		out = capitalize(strings.Join(parts, ", and ")) + "."
+	case f.Report:
+		out = "Its report is not written yet."
 	case f.Head == "" && f.Attempts == 0:
 		return "All of its work is still to do."
 	case f.Head == "":
@@ -2064,11 +2091,7 @@ var humanFace = FaceSpec{
 		return cmp.Or(depWait(f), whyOf(factString(f.Case, "why")), whyOf(f.Card.Why), "Only a human can do this work.")
 	},
 	Story: func(f Facts) Story {
-		happened := factString(f.Case, "happened")
-		if at, err := time.Parse(time.RFC3339, factString(f.Case, "resolved_at")); err == nil {
-			happened = "It resolved at " + timeWords(at) + "."
-		}
-		return Story{Planned: line(title(f)), Happened: line(happened)}
+		return Story{Planned: line(title(f)), Happened: line(factString(f.Case, "happened"))}
 	},
 	Answers: humanAnswers,
 	Suggest: func(f Facts) (string, string, string) {
@@ -2191,6 +2214,12 @@ func flagStory(f Facts) Story {
 	return s
 }
 
+// endedStory is the story of a flag on an ended card: what its sessions
+// spent, and no session left to run.
+func endedStory(f Facts) Story {
+	return Story{Happened: line(spentLine(f))}
+}
+
 // waitSentence is what the card waits on in dependency d, which waits on a
 // human's answer or holds its status since a time.
 func (d DepFact) waitSentence() string {
@@ -2211,18 +2240,23 @@ func (d DepFact) waitSentence() string {
 // flagFace is one monitor flag's face: the fact it found on the card, why
 // that matters, and the answer that fits it with the question it answers.
 // A notice states its fact and asks nothing: it is noted, or kept for later.
+// settle is the variant of the answer that leaves things as they are, and
+// story the flag's story, flagStory where it names none.
 type flagFace struct {
 	fact         func(Facts) string
 	why, fitting string
 	question     string
 	notice       bool
+	settle       string
+	story        func(Facts) Story
 }
 
 func flagFaces() map[string]FaceSpec {
+	const replanQuestion = "Send the plan back to the planner?"
 	unjudged := "A check judges each session, and a session no check judged may have gone wrong unseen."
 	out := map[string]FaceSpec{}
 	for flag, ff := range map[string]flagFace{
-		"answer_changed_nothing": {notice: true, fact: fixed("Your last answer on this card changed nothing."),
+		"answer_changed_nothing": {notice: true, fact: fixed("This card's last answer changed nothing."),
 			why: "The card stopped again where it stopped before, and its other question asks how to go on."},
 		"budget_moved_no_event": {fact: budgetMoved, why: "Every change of a card's budget should leave a record."},
 		"checkin_cut":           {notice: true, fact: fixed("This card's last session went unjudged because its check ended early."), why: unjudged},
@@ -2233,28 +2267,32 @@ func flagFaces() map[string]FaceSpec {
 			fitting: ActRetry, question: "Try it again?"},
 		"finding_confirmed_twice": {fact: fixed("The review found the same fault twice on this card."),
 			why: "A fault the review finds twice may need a fresh start, not another session.", fitting: ActSalvage, question: "Rescue the work into a new card?"},
-		"grant_bought_nothing": {notice: true, fact: fixed("This card's last session, which you allowed, changed nothing."),
+		"grant_bought_nothing": {notice: true, fact: fixed("This card's last session, which a human or the project agent allowed, changed nothing."),
 			why: "The session pushed no change and moved no check, so another one may not help."},
-		"issue_open_after_end": {fact: fixed("The card ended and its issue is still open."), why: "An ended card should not leave its issue open.",
-			fitting: ActClose, question: "Close it?"},
+		"issue_open_after_end": {fact: fixed("This card ended, and its issue is still open."),
+			why:     "An open issue says the work is still to do, though no card works on it any more.",
+			fitting: ActClose + "/" + variantIssue, question: "Close the issue?", settle: ActSettle + "/" + variantOpen, story: endedStory},
 		"opened_proof_changed": {fact: fixed("A test of the plan changed after the plan was confirmed."),
-			why: "A plan's test should not change once the plan is confirmed.", fitting: ActReplan, question: "Plan this part again?"},
+			why: "A plan's test should not change once the plan is confirmed.", fitting: ActReplan, question: replanQuestion},
 		"opened_proof_red_twice": {fact: fixed("A test of the plan failed on two versions of this card's work."),
-			why: "A test that fails twice may test the wrong thing.", fitting: ActReplan, question: "Plan this part again?"},
-		"proofs_missing": {fact: fixed("The plan has no tests for its promises."), why: "A plan's promises need tests before its cards finish.",
-			fitting: ActReplan, question: "Plan this part again?"},
-		"prover_refused_thrice": {fact: fixed("The plan has no tests for its promises."), why: "The writer of the plan's tests refused three times.",
-			fitting: ActReplan, question: "Plan this part again?"},
+			why: "A test that fails twice may test the wrong thing.", fitting: ActReplan, question: replanQuestion},
+		"proofs_missing": {fact: fixed("The plan's promises have no tests yet."), why: "A plan's promises need tests before its cards finish.",
+			fitting: ActReplan, question: replanQuestion},
+		"prover_refused_thrice": {fact: fixed("No test could be written for one of the plan's promises."),
+			why: "The agent that writes the plan's tests refused this promise three times.", fitting: ActReplan, question: replanQuestion},
 		"queued_over_bound": {fact: waitedFact, why: "A card that waits this long in the queue may never get its turn."},
 		"review_refused_not_run": {notice: true, fact: fixed("This card cannot merge yet because the review did not run on its newest work."),
 			why: "The review must run on a card's newest work before the card merges."},
 		"session_no_push": {notice: true, fact: fixed("This card's last sessions changed no code."),
 			why: "A session that changes no code spends money and moves the work no closer to done."},
-		"wait_over_bound": {fact: waitedFact, why: "A card that waits past its limit may be stuck.", fitting: ActSalvage, question: "Rescue the work into a new card?"},
+		"wait_over_bound": {fact: waitedFact, why: "A card that waits this long may be stuck.", fitting: ActSalvage, question: "Rescue the work into a new card?"},
 	} {
 		fits := func(f Facts) bool {
 			a, ok := AnswerFor(ff.fitting, f)
 			return ff.fitting != "" && ok && answerHolds(a, f)
+		}
+		if ff.story == nil {
+			ff.story = flagStory
 		}
 		out[flag] = FaceSpec{
 			Ask: func(f Facts) string {
@@ -2267,12 +2305,12 @@ func flagFaces() map[string]FaceSpec {
 				return ff.fact(f) + " Is that fine?"
 			},
 			Why:   fixed(ff.why),
-			Story: flagStory,
+			Story: ff.story,
 			Answers: func(f Facts) []string {
 				if ff.notice {
 					return []string{ActSettle + "/" + variantNoted, ActNote}
 				}
-				return append(holding(f, ff.fitting), ActSettle, ActNote)
+				return append(holding(f, ff.fitting), cmp.Or(ff.settle, ActSettle), ActNote)
 			},
 		}
 	}
@@ -2286,36 +2324,36 @@ func budgetMoved(f Facts) string {
 	if !ok {
 		return "This card's budget changed, and no record says why."
 	}
-	return fmt.Sprintf("This card's budget reads %s, and its records add up to %s.", reads, records)
+	return fmt.Sprintf("This card's budget reads %s, but its records add up to %s.", reads, records)
 }
 
-// waitedFact is a wait flag's fact: what the card waits for, past its
-// limit.
+// waitedFact is a wait flag's fact: what the card waits for, and that the
+// wait lasted more than its limit, which stays true while it lasts.
 func waitedFact(f Facts) string {
-	wait := factString(f.Case, "wait")
+	wait, over := factString(f.Case, "wait"), cmp.Or(boundWords(f), "too long")
 	if wait == "run_quiet" {
-		return "This card's run has neither moved nor answered past its limit" + boundWords(f) + "."
+		return "This card's run has not moved or answered for " + over + "."
 	}
 	what, ok := waitWords[wait]
 	if !ok {
 		what = "its turn"
 	}
-	return "This card has waited for " + what + " past its limit" + boundWords(f) + "."
+	return "This card has waited " + over + " for " + what + "."
 }
 
 // waitWords say what a card waits for in each kind of wait.
 var waitWords = map[string]string{"queued": "a free place to run", "dependency": "the cards it depends on", "gate": "a check of its work",
 	"merge_retry": "its merge to be tried again", "provider_backoff": "the model provider", "provider_recheck": "the model provider",
-	"provider_limit": "the model provider", "rung_answer": "the factory's own answer", "checks": "its checks"}
+	"provider_limit": "the model provider", "rung_answer": "the factory to decide how it goes on", "checks": "its checks"}
 
-// boundWords is " of <the wait's bound>" in words, "" when the case names
-// none.
+// boundWords is "more than <the wait's bound>" in words, "" when the case
+// names none.
 func boundWords(f Facts) string {
 	d, err := time.ParseDuration(factString(f.Case, "bound"))
 	if err != nil || d <= 0 {
 		return ""
 	}
-	return " of " + spanWords(d)
+	return "more than " + spanWords(d)
 }
 
 // spanWords is d in hours and minutes, as words.

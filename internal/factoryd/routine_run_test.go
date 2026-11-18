@@ -159,7 +159,7 @@ func routinePokes(t *testing.T, r *Runner, store *fakeStore) []fakePoke {
 		if err := json.Unmarshal(b, &e.Detail); err != nil {
 			t.Fatal(err)
 		}
-		if m, ok := PokeOf(e, store.tasks[e.TaskID]); ok {
+		if m, ok := PokeOf(e, store.tasks[e.TaskID], Task{}); ok {
 			out = append(out, fakePoke{repository: e.Repository, logins: pokeTo(r.cfg.Policy().Tree, e.Repository), m: m})
 		}
 	}
@@ -267,7 +267,7 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 		t.Fatalf("question_asked %+v, want the card's one", asked)
 	}
 	// the poke names the routine (docs/routines.md rule 5)
-	if m, ok := PokeOf(asked[0], card); !ok || m.Kind != MessageEscalation || m.Decider != "routine weekly-bump · run 1 · every Monday 06:00" {
+	if m, ok := PokeOf(asked[0], card, Task{}); !ok || m.Kind != MessageEscalation || m.Decider != "routine weekly-bump · run 1 · every Monday 06:00" {
 		t.Fatalf("the card's poke %+v, %v; want its decider line", m, ok)
 	}
 

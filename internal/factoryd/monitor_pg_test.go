@@ -226,15 +226,16 @@ const (
 	queuedSince    = "2026-11-04T09:00:00Z"
 	queuedKey      = "queued_over_bound|queued|" + queuedSince
 	queuedLine     = "Monitor flag: queued_over_bound(work bound 3 of 3 for 3h)"
-	queuedAsk      = "This card has waited for a free place to run past its limit of 2 hours. Is that fine?"
+	queuedAsk      = "This card has waited more than 2 hours for a free place to run. Is that fine?"
+	queuedPress    = "“It is fine, go on” or “Not now”"
 	monitorHandsUp = "no resolver fits"
 )
 
 // face is the comment of a monitor case's face on card id for line: the
-// card goes on, and the flag is answered in the chat.
-func face(id, line string) string {
+// card goes on, and press names the answers its face on the board offers.
+func face(id, line, press string) string {
 	return "factoryd: task " + id + " needs a human.\n\n```\n" + line + "\n```\n\n" +
-		"The card goes on meanwhile. Answer the flag in the project chat."
+		"The card goes on meanwhile. Press " + press + " on the board."
 }
 
 // assertQueueCase checks that card id carries the queue's flag case alone,
@@ -298,7 +299,7 @@ func TestMonitorPassOpensOneCasePerNewFlag(t *testing.T) {
 	g.pass(t)
 	g.assertQueueCase(t, "t1")
 	n := g.flagCases(t, "t1")[queuedKey].ID
-	if want := []string{face("t1", queuedLine)}; !slices.Equal(g.forge.comments[12], want) {
+	if want := []string{face("t1", queuedLine, queuedPress)}; !slices.Equal(g.forge.comments[12], want) {
 		t.Fatalf("comments = %q, want %q", g.forge.comments[12], want)
 	}
 	if got := g.cursor(t); got != filed {
@@ -566,6 +567,18 @@ func TestMonitorWithdrawsTheIssueCaseOnceTheIssueCloses(t *testing.T) {
 	if !ok || c.Status != CaseAtHuman || len(asks) != 1 || asks[0].Detail["case_id"] != float64(c.ID) || asks[0].Detail["flag"] != "issue_open_after_end" {
 		t.Fatalf("t1's flag case = %+v (found %v), asks %+v; want issue_open_after_end at the human with its ask", c, ok, asks)
 	}
+	// the issue and the inbox read the one face the ask row stores
+	var offered []string
+	for _, o := range offersOf(asks[0].Detail["offers"]) {
+		offered = append(offered, o.Label)
+	}
+	g.forge.mu.Lock()
+	comments := slices.Clone(g.forge.comments[13])
+	g.forge.mu.Unlock()
+	const line = "This card has ended. Press “Close the issue”, “Leave the issue open” or “Not now” on the board."
+	if !slices.Equal(offered, []string{"Close the issue", "Leave the issue open", "Not now"}) || len(comments) == 0 || !strings.Contains(comments[len(comments)-1], line) {
+		t.Fatalf("the ask row offers %v, the issue's comments %q; want the three answers, and the last comment to say %q", offered, comments, line)
+	}
 	settled := func() PokeSettle {
 		t.Helper()
 		events, err := g.s.TaskEvents(ctx, "t1", 100)
@@ -757,7 +770,7 @@ func TestMonitorRungZeroEndsAStepPastItsBound(t *testing.T) {
 	const ended = "ended the overdue step: rung 1 did not answer within 35m"
 	cases := g.flagCases(t, "t1")
 	c, ok := cases["wait_over_bound|rung_answer|2026-11-04T11:20:00Z"]
-	if len(cases) != 1 || !ok || c.Problem != "This card has waited for the factory's own answer past its limit of 35 minutes. Is that fine?" ||
+	if len(cases) != 1 || !ok || c.Problem != "This card has waited more than 35 minutes for the factory to decide how it goes on. Is that fine?" ||
 		c.Facts["reason"] != "Monitor flag: wait_over_bound(rung_answer since +3:20)" ||
 		c.Facts["wait"] != "rung_answer" || c.Facts["owner_rung"] != 1.0 || c.Status != CaseWithdrawn ||
 		!reflect.DeepEqual(c.Resolution, &CaseResolution{By: FactoryDecider, Rung: 0, Action: ActWithdraw, Reason: ended}) {
@@ -838,10 +851,10 @@ func TestMonitorFacesAQuietRunBesideIt(t *testing.T) {
 	const line = "Monitor flag: wait_over_bound(run_quiet since +0:00)"
 	cases := g.flagCases(t, "t1")
 	c, ok := cases["wait_over_bound|run_quiet|2026-11-04T08:00:00Z"]
-	if len(cases) != 1 || !ok || c.Status != CaseAtHuman || c.Problem != "This card's run has neither moved nor answered past its limit of 30 minutes. Rescue the work into a new card?" || c.Facts["reason"] != line {
+	if len(cases) != 1 || !ok || c.Status != CaseAtHuman || c.Problem != "This card's run has not moved or answered for more than 30 minutes. Rescue the work into a new card?" || c.Facts["reason"] != line {
 		t.Fatalf("t1's flag cases = %v, want wait_over_bound on run_quiet since 08:00 at the human", cases)
 	}
-	if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "running" || !slices.Equal(g.forge.comments[12], []string{face("t1", line)}) {
+	if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "running" || !slices.Equal(g.forge.comments[12], []string{face("t1", line, "“Rescue the work into a new card”, “It is fine, go on” or “Not now”")}) {
 		t.Fatalf("t1 %s, comments %q; want it running with the case's one face", task.Status, g.forge.comments[12])
 	}
 	if tl, _ := g.objects.Get(ctx, "sessions/t1/timeline.jsonl"); len(tl) != 0 {
@@ -943,7 +956,7 @@ func TestMonitorFacesACaseWhoseFaceFailed(t *testing.T) {
 	g.event(t, "t1", 12, EventMergeDenied, nil, monitorAt)
 	g.pass(t)
 	g.assertQueueCase(t, "t1")
-	if !slices.Equal(g.forge.comments[12], []string{face("t1", queuedLine)}) {
+	if !slices.Equal(g.forge.comments[12], []string{face("t1", queuedLine, queuedPress)}) {
 		t.Fatalf("comments = %q, want the case's one face", g.forge.comments[12])
 	}
 }

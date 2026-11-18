@@ -1901,7 +1901,7 @@ func init() {
 				return s, nil, err
 			}},
 		{name: "routine_write", title: "Write a routine", write: true,
-			params: map[string]any{"name": routineName, "title": str(writingguide.TitleLine),
+			params: map[string]any{"name": routineName, "title": str(writingguide.TitleLine), "why": str(writingguide.WhyLine),
 				"schedule": map[string]any{"type": "array", "description": "the triggers, any one of which starts a run", "minItems": 1,
 					"items": map[string]any{"type": "object", "description": "exactly one of cron, merges or on", "properties": map[string]any{
 						"cron":   str("five fields in the factory's zone, day and weekday ANDed"),
@@ -1913,7 +1913,7 @@ func init() {
 				"while_open": enum("what a run does while the last card is open, unset keeps it", policy.WhileOpenHold, policy.WhileOpenFile),
 				"missed":     enum("what a run does when the factory was down, unset keeps it", policy.MissedValues...),
 				"tell":       enum("whether a filing tells the inbox, unset keeps it", policy.TellValues...)},
-			required: []string{"name", "title", "schedule", "files"},
+			required: []string{"name", "title", "why", "schedule", "files"},
 			about:    "Create or change one of the project's routines through a pull request on its project file.",
 			run: func(t *turn, in toolInput) (string, *inverse, error) {
 				s, err := t.writeRoutine(in)

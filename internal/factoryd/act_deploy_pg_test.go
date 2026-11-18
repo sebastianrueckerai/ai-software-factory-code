@@ -467,7 +467,7 @@ func TestAChoiceAfterTheCardEndedNamesTheEnd(t *testing.T) {
 	}
 	for _, rung := range []int{2, 3} {
 		_, err := h.r.Act(context.Background(), ActInput{TaskID: h.cardID, CaseID: h.caseID, By: "sebastian", Via: ViaChat, Rung: rung, Res: Resolution{Action: AnswerHoldWait, Note: "Wait"}})
-		if want := "ended done: its case closes on its own, so hold_wait changes nothing; a new card carries the work on"; err == nil || !strings.Contains(err.Error(), want) {
+		if want := "ended done, so hold_wait changes nothing: an ended card does no more work, and a new card carries the work on"; err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("rung %d: Act = %v, want a refusal with %q", rung, err, want)
 		}
 	}

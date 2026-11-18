@@ -216,11 +216,19 @@ func RoutineProvenanceLine(name string, run int) string {
 	return fmt.Sprintf("%s%s · run %d", RoutineProvenance, name, run)
 }
 
+// RoutineBrief is the brief of the cards routine rt files: its title, and
+// the why line its file holds, else the line that says the routine files
+// the card.
+func RoutineBrief(rt policy.Routine) BriefText {
+	return SourceBriefs[SourceRoutine](BriefFacts{Name: oneLine(rt.Title), Of: rt.Name, Why: rt.Why})
+}
+
 // RoutineCard is the brief of the agent card routine rt files with
-// brief: the routine's title, and as its text its skill's line first,
-// until the prompt pack maps skills (roadmap 226), then the brief.
+// brief: the routine's brief (RoutineBrief), and as its text its skill's
+// line first, until the prompt pack maps skills (roadmap 226), then the
+// brief.
 func RoutineCard(rt policy.Routine, brief string) BriefText {
-	b := SourceBriefs[SourceRoutine](BriefFacts{Name: oneLine(rt.Title), Of: rt.Name})
+	b := RoutineBrief(rt)
 	b.Body = strings.TrimSpace(brief)
 	if rt.Skill != "" {
 		b.Body = strings.TrimSpace("Run the skill " + rt.Skill + ".\n\n" + b.Body)

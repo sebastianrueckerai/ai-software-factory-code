@@ -78,3 +78,15 @@ func TestMonitorLeavesAFailedDependencyToItsRun(t *testing.T) {
 		t.Fatalf("t-b's cases = %+v, t-a retried %v; want none and no retry", cases, retried)
 	}
 }
+
+// A flag's issue line names the answers the board shows on its face, as
+// every stop's does: the card goes on, and no line sends the human to the
+// chat. A quiet run's flag offers the rescue first. An ended card's line
+// is AskHuman's, from its row's face (monitor_pg_test.go).
+func TestAFlagsIssueLineNamesItsAnswers(t *testing.T) {
+	quiet := Case{Kind: CaseMonitorFlag, Facts: map[string]any{"flag": "wait_over_bound", "wait": "run_quiet", "bound": "30m"}}
+	want := "The card goes on meanwhile. Press “Rescue the work into a new card”, “It is fine, go on” or “Not now” on the board."
+	if got := tripNext(quiet, MonitorFlagReason(DigestFlag{Name: "wait_over_bound", Detail: "run_quiet since +5:19"})); got != want {
+		t.Errorf("the issue line %q, want %q", got, want)
+	}
+}

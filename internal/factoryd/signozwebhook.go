@@ -163,6 +163,9 @@ type AlertBook interface {
 	MergeAlertDetail(ctx context.Context, id int64, detail map[string]any) error
 	NewestAlertRows(ctx context.Context, kind, namespace string) ([]Alert, error)
 	CloseClearedCard(ctx context.Context, alertID int64, taskID string) error
+	// SetAskFace writes card t's objective and why line and merges facts
+	// into its live case caseID, in one transaction.
+	SetAskFace(ctx context.Context, t Task, caseID int64, facts map[string]any) error
 }
 
 // AlertIntake serves POST /webhooks/signoz, SigNoz's webhook channel
@@ -346,7 +349,7 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 		// the card first: a failure here leaves the row unresolved, so the
 		// next delivery or the sweep walks the whole resolve again
 		if filed && t.Kind == "human" && !Final(t.Status) && row.Detail["event"] != true {
-			if err := in.alertOnCard(ctx, t, map[string]any{"resolved_at": at}); err != nil {
+			if err := in.alertOnCard(ctx, t, p, clearedQuestion(row, a.EndsAt), map[string]any{"resolved_at": at}); err != nil {
 				return err
 			}
 		}
@@ -403,7 +406,7 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 		// the card first, as a resolve's, whatever the row says: a resolve
 		// whose comment failed wrote the card and not the row
 		if t.Kind == "human" {
-			if err := in.alertOnCard(ctx, t, map[string]any{"resolved_at": "", "happened": firedLine(a)}); err != nil {
+			if err := in.alertOnCard(ctx, t, p, AlertQuestion(a, p.Name, ns, AlertHumanWhy(p, a), ""), map[string]any{"resolved_at": ""}); err != nil {
 				return err
 			}
 		}
@@ -541,6 +544,20 @@ func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// clearedQuestion is the face of the human card of alert row, which
+// cleared at until.
+func clearedQuestion(row Alert, until time.Time) HumanQuestion {
+	labels := map[string]string{}
+	for _, k := range []string{"alertname", "service", "service.name", "k8s.deployment.name", "deployment"} {
+		labels[k] = rowLabel(row, k)
+	}
+	ns, _ := row.Detail["namespace"].(string)
+	starts, _ := row.Detail["starts_at"].(string)
+	from, _ := time.Parse(time.RFC3339, starts)
+	_, _, source := alertParts(SigNozAlert{Fingerprint: row.Fingerprint})
+	return AlertClearedQuestion(source, cmp.Or(labels["alertname"], row.Source), cmp.Or(alertService(labels), ns), from, until)
 }
 
 // CloseCleared closes each human card of a cleared SigNoz alert that no
@@ -1158,34 +1175,46 @@ func namespaceOf(labels map[string]string) string {
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
-// alertOnCard writes how its alert stands on human card t's live ask: the
-// case's facts take facts, a resolve's resolved_at or a new firing's story
-// line, and its face is stored again on them, so the card says whether its
-// alert still fires.
-func (in *AlertIntake) alertOnCard(ctx context.Context, t Task, facts map[string]any) error {
+// alertOnCard writes how its alert stands on human card t of project p
+// and its live ask (AlertOnCard): q's words, cleaned as the filing cleans
+// them, with facts beside them, a resolve's resolved_at, go on the card
+// and the case in one write, and the ask's face is stored again on them,
+// so the card says whether its alert still fires. A card with no live ask
+// keeps its face.
+func (in *AlertIntake) alertOnCard(ctx context.Context, t Task, p Project, q HumanQuestion, facts map[string]any) error {
 	c, err := in.Store.NewestAskCase(ctx, t.ID)
 	if err != nil || c.ID == 0 {
 		return err
 	}
-	switch err := in.Store.SetCaseFacts(ctx, c.ID, facts); {
+	q.Ask, q.Why = sanitize.Outbound(q.Ask, in.hostsFor(p)), sanitize.Outbound(q.Why, in.hostsFor(p))
+	ask, _ := caseAskIn(ctx, in.Store, c)
+	card, set, face := AlertOnCard(t, c, q, facts, ask.Detail)
+	switch err := in.Store.SetAskFace(ctx, card, c.ID, set); {
 	case errors.Is(err, ErrNotFound):
 		return nil // the case ended since the read
 	case err != nil:
 		return err
 	}
-	merged := maps.Clone(c.Facts)
-	if merged == nil {
-		merged = map[string]any{}
+	return in.Store.SetCaseFace(ctx, c.ID, face)
+}
+
+// AlertOnCard is human card t with live ask c once q says how its alert
+// stands, with facts beside q's words: the card (Refaced), the facts its
+// case takes, and the face its ask row, asked, stores again on them, the
+// factory's own pick on the old facts dropped.
+func AlertOnCard(t Task, c Case, q HumanQuestion, facts, asked map[string]any) (Task, map[string]any, map[string]any) {
+	card, set := Refaced(t, q)
+	maps.Copy(set, facts)
+	c.Facts = maps.Clone(c.Facts)
+	if c.Facts == nil {
+		c.Facts = map[string]any{}
 	}
-	maps.Copy(merged, facts)
-	c.Facts = merged
-	ask, _ := caseAskIn(ctx, in.Store, c)
-	rec := RecommendationOf(ask.Detail)
+	maps.Copy(c.Facts, set)
+	rec := RecommendationOf(asked)
 	if rec.By == "the factory" {
 		rec = Recommendation{} // the face's own pick, which the new facts write again
 	}
-	face := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: t, Recommend: rec})
-	return in.Store.SetCaseFace(ctx, c.ID, FaceKeys(face))
+	return card, set, FaceKeys(FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: card, Recommend: rec}))
 }
 
 // oneLine is s on one line, whitespace collapsed; sanitize.Outbound, applied

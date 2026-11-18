@@ -299,7 +299,7 @@ func TestChatRoutineRunAndSkip(t *testing.T) {
 	const undo = `{"name":"weekly-bump","undo":true}`
 	proposed, done, _ = proposeAndDo(t, r, g, "routine_skip", undo)
 	equal(t, "the undo's proposal", proposed, []string{`proposal {"arguments":` + undo + `,"description":"Skip a routine's next run, name weekly-bump, undo the pending skip","expires":"EXPIRES","id":"TOKEN","tool":"routine_skip"}`, `done {}`})
-	equal(t, "the undo", done, ran("routine_skip", undo, "Skip once undone"))
+	equal(t, "the undo", done, ran("routine_skip", undo, "The skip is undone"))
 	routine := func(more map[string]any) map[string]any {
 		d := map[string]any{"project": "ai-software-factory-code", "routine": "weekly-bump"}
 		for k, v := range more {

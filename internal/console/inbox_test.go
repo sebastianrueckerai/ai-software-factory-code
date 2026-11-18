@@ -167,7 +167,7 @@ func TestTheInboxSaysWhatTheCardAsks(t *testing.T) {
 			t.Fatal(err)
 		}
 		c.Facts["kind"], c.Facts["problem"] = fx.Approval.Kind, c.Problem
-		m, ok := factoryd.PokeOf(factoryd.Event{Kind: factoryd.EventApprovalRequested, TaskID: fx.Task.ID, Repository: fx.Task.Repository, Detail: c.Facts}, fx.Task)
+		m, ok := factoryd.PokeOf(factoryd.Event{Kind: factoryd.EventApprovalRequested, TaskID: fx.Task.ID, Repository: fx.Task.Repository, Detail: c.Facts}, fx.Task, factoryd.Task{})
 		if !ok {
 			continue
 		}
@@ -203,9 +203,13 @@ func TestEveryInboxMessageFitsItsBound(t *testing.T) {
 		if fx.Ask != nil {
 			events = append(events, factoryd.Event{Kind: factoryd.EventQuestionAsked, Detail: fx.Ask.Detail})
 		}
+		var parent factoryd.Task
+		if fx.Parent != nil {
+			parent = *fx.Parent
+		}
 		for _, e := range events {
 			e.TaskID, e.Repository = fx.Task.ID, fx.Task.Repository
-			m, ok := factoryd.PokeOf(e, fx.Task)
+			m, ok := factoryd.PokeOf(e, fx.Task, parent)
 			if !ok {
 				continue
 			}

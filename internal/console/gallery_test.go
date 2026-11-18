@@ -73,7 +73,7 @@ func inboxEntries(all []facefixtures.Fixture) []galleryEntry {
 	ref := "#" + strconv.FormatInt(card.IssueNumber, 10)
 	poke := func(e factoryd.Event, t factoryd.Task) factoryd.ChatMessage {
 		e.TaskID, e.Repository = t.ID, t.Repository
-		m, ok := factoryd.PokeOf(e, t)
+		m, ok := factoryd.PokeOf(e, t, factoryd.Task{})
 		if !ok {
 			panic("gallery: no poke of " + e.Kind)
 		}

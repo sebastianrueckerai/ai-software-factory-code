@@ -121,7 +121,10 @@ func TestAHelpersAskIsAPageOfItsParent(t *testing.T) {
 	if want := `<p class="o-note">This ask is the sizing&#39;s, a step of this card: its answers act on the sizing alone.</p>`; !strings.Contains(drawerBody, want) {
 		t.Errorf("the opened card does not say whose ask it shows, %s:\n%s", want, drawerBody)
 	}
-	pressed := answerForm(t, drawerBody, factoryd.ActClose)
+	if !strings.Contains(drawerBody, `<button type="submit" class="pick">End the sizing</button>`) {
+		t.Errorf("the sizing's page offers no end of the sizing:\n%s", drawerBody)
+	}
+	pressed := answerForm(t, drawerBody, factoryd.ActClose+"/"+factoryd.SourceSizing)
 	if pressed.Action != "/tasks/t-size/resolve" || pressed.Values.Get("case_id") != "7" {
 		t.Fatalf("the sizing's answer posts to %s with case %q, want /tasks/t-size/resolve with case 7", pressed.Action, pressed.Values.Get("case_id"))
 	}
@@ -241,10 +244,11 @@ func proverAsk(prover string) factoryd.Case {
 	return factoryd.Case{ID: 9, TaskID: prover, Kind: factoryd.CaseGateStop, Status: factoryd.CaseAtHuman, OpenedAt: time.Now().Add(-time.Hour)}
 }
 
-// Beside a helper's page only the parent's tools stand among the other
-// actions: a monitor flag on the sizing offers none of the parent's own
-// actions, which would act on the parent under the sizing's ask.
-func TestAHelpersPageOffersNoneOfItsParentsActions(t *testing.T) {
+// Beside a helper's page only the parent's tools and its end stand among
+// the other actions: a monitor flag on the sizing offers none of the
+// parent's other actions, which would act on the parent under the sizing's
+// ask, and the card can still be ended, under its own label.
+func TestAHelpersPageOffersOnlyItsParentsEnd(t *testing.T) {
 	r, ck, _ := helperRig(t)
 	r.openCases = map[string][]factoryd.Case{"t-size": {{ID: 7, TaskID: "t-size", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman,
 		OpenedAt: time.Now().Add(-time.Hour), Facts: map[string]any{"flag": "wait_over_bound"}}}}
@@ -252,11 +256,16 @@ func TestAHelpersPageOffersNoneOfItsParentsActions(t *testing.T) {
 	if !strings.Contains(opened, `action="/tasks/t-size/resolve"`) {
 		t.Fatalf("the sizing's flag offers no answer of its own:\n%s", opened)
 	}
-	tools := []string{factoryd.AnswerAccent, factoryd.AnswerEditBrief, factoryd.AnswerSteer, factoryd.AnswerThread}
+	kept := []string{factoryd.AnswerAccent, factoryd.AnswerEditBrief, factoryd.AnswerSteer, factoryd.AnswerThread, factoryd.ActClose}
+	ended := false
 	for _, m := range regexp.MustCompile(`action="/tasks/t-c/resolve"[^>]*data-answer="([^"]+)"`).FindAllStringSubmatch(opened, -1) {
-		if !slices.Contains(tools, m[1]) {
+		if !slices.Contains(kept, m[1]) {
 			t.Errorf("the sizing's page offers the parent's own %s", m[1])
 		}
+		ended = ended || m[1] == factoryd.ActClose
+	}
+	if !ended || !strings.Contains(opened, `data-press="close">End the card</button>`) {
+		t.Errorf("the sizing's page offers no end of the card:\n%s", opened)
 	}
 }
 

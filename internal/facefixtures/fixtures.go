@@ -185,7 +185,7 @@ func (b *builder) issue(n int64, status string, age time.Duration, title, body s
 func facts(t factoryd.Task, kind factoryd.CaseKind) factoryd.CaseFacts {
 	f := factoryd.CaseFacts{Kind: kind, Attempts: t.Usage.Attempts, SessionCap: 3, AgentTimeS: 1500, AgentTimeCapS: 7200, SessionLeastS: 300,
 		Model: "big", BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, LeftEUR: t.BudgetEUR - t.SpentEUR, FloorEUR: 0.3, CeilingEUR: 18,
-		Autonomy: policy.AutonomyManual, Stage: t.Gate, Running: t.Status == "running", PosterGrant: t.Usage.PosterAttempts < factoryd.MaxPosterAttempts,
+		Autonomy: policy.AutonomyManual, Stage: t.Gate, Running: t.Status == "running", PosterGrant: t.Usage.PosterAttempts < factoryd.MaxPosterAttempts, Report: t.Report(),
 		DayCapEUR: 40, MonthCapEUR: 450, ProjectCapEUR: 100, SpendShare: 0.6,
 		PoolLeft:     policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60},
 		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
@@ -444,7 +444,15 @@ func (b *builder) sources() {
 			}
 			t.Usage.Attempts = 3
 			f := facts(t, "")
-			in := capStop(&f)
+			var in factoryd.TripInput
+			if t.Report() {
+				// a helper's session pushes nothing and has no review:
+				// its stop is a start that found no machine
+				t.Usage.Attempts, f.Attempts = 1, 1
+				in = caseStops[factoryd.CasePodNeverStarted].in(b, &t, &f)
+			} else {
+				in = capStop(&f)
+			}
 			fx := b.stop(GroupSource, kind, n*3, t, f, in, nil, 40*time.Minute)
 			fx.Brief = s.brief
 			b.out = append(b.out, b.onParent(fx))
@@ -484,7 +492,8 @@ func (b *builder) oldCard() factoryd.Task {
 }
 
 // weeklyBump is the routine that files the weekly bump of the pinned inputs.
-var weeklyBump = policy.Routine{Name: "weekly-bump", Title: "Weekly bump of the pinned outside inputs", Files: policy.FilesAgent}
+var weeklyBump = policy.Routine{Name: "weekly-bump", Title: "Weekly bump of the pinned outside inputs", Files: policy.FilesAgent,
+	Why: "Pinned outside inputs miss their security fixes until something bumps them."}
 
 var agentSources = []agentSource{
 	{factoryd.SourceWebhook, func(b *builder, n int64, status string) factoryd.Task {
@@ -519,7 +528,7 @@ var agentSources = []agentSource{
 			"Bump every pinned outside input (image digests, the Debian snapshot, Go, the tools, buildkit, vulndb) to its newest release in one pull request."))
 		t.Author, t.AuthorWriter = "factory-agent", false
 		return t
-	}, factoryd.BriefFacts{Name: weeklyBump.Title, Of: weeklyBump.Name}},
+	}, factoryd.BriefFacts{Name: weeklyBump.Title, Of: weeklyBump.Name, Why: weeklyBump.Why}},
 	{factoryd.SourceScreening, helper(factoryd.SourceScreening), factoryd.BriefFacts{}},
 	{factoryd.SourceSizing, helper(factoryd.SourceSizing), factoryd.BriefFacts{}},
 	{factoryd.SourceProver, helper(factoryd.SourceProver), factoryd.BriefFacts{}},
@@ -583,7 +592,7 @@ func helper(source string) func(b *builder, n int64, status string) factoryd.Tas
 		br := factoryd.SourceBriefs[source](factoryd.BriefFacts{})
 		br.Body = parent.Objective
 		t := b.briefed(n, status, source, 3*time.Hour, br)
-		t.Parent, t.IssueNumber, t.Author = parent.ID, 0, parent.Author
+		t.Parent, t.IssueNumber, t.Author, t.PRNumber = parent.ID, 0, parent.Author, 0
 		return t
 	}
 }
@@ -1131,8 +1140,18 @@ func (b *builder) card2091(group, name string) Fixture {
 func (b *builder) flag(group, name, flag string) Fixture {
 	n := b.next()
 	fc := flagCards[flag]
-	t := b.issue(n, cmp.Or(fc.status, "running"), 6*time.Hour, fc.title, fc.body)
+	status := cmp.Or(fc.status, "running")
+	t := b.issue(n, status, 6*time.Hour, fc.title, fc.body)
+	if fc.key != "" {
+		t = b.planChild(n, status, fc.key, 6*time.Hour)
+	}
+	if fc.plan == planTask {
+		t.Track = policy.TrackPlan
+	}
 	f := facts(t, "")
+	if fc.plan == planTask {
+		f.Planner, f.Plan = true, t.ID
+	}
 	state, extra := fc.detail, map[string]any{}
 	if fc.wait != "" {
 		since := b.now.Add(-fc.since).UTC().Format(time.RFC3339)
@@ -1147,15 +1166,19 @@ func (b *builder) flag(group, name, flag string) Fixture {
 
 // flagCard is a monitor flag's card, in status ("" running), and the
 // detail the digest raises the flag with; a wait's flag names the wait and
-// how long ago it started.
+// how long ago it started. A flag of a plan's tests stands on the plan
+// (planTask) or on plan #1947's card of key, as the digest raises it.
 type flagCard struct {
-	title, body, status, detail, wait string
-	since                             time.Duration
+	title, body, status, detail, wait, plan, key string
+	since                                        time.Duration
 }
+
+// planTask puts a flag on a plan.
+const planTask = "plan"
 
 // flagCards hold each flag's detail as the digest writes it.
 var flagCards = map[string]flagCard{
-	"prover_refused_thrice": {title: "Write the blind proofs of plan #1955", body: "One hidden test per criterion of plan #1955, on main.", detail: "confirm_view_layered"},
+	"prover_refused_thrice": {title: "The board's layered confirm view", body: "Show a plan's confirmation in layers on the board.", detail: "confirm_view_layered", plan: planTask},
 	"grant_bought_nothing": {title: "Make the budget floor ask for the price the next session needs", body: "Make the budget floor's ask name the price the next opening needs.",
 		detail: "session 3"},
 	"session_no_push": {title: "Move the second group of pg tests into internal/factoryd/pg", body: "Move the Postgres-backed tests of the second group into their own package.",
@@ -1165,9 +1188,8 @@ var flagCards = map[string]flagCard{
 		detail: factoryd.FindingID("the heal pass skips a card whose ask was withdrawn")},
 	"checkin_refused": {title: "Pause and re-queue: a human and chat control", body: "A human pauses a card and re-queues it from the board or the chat.",
 		detail: factoryd.OffsetText(2*time.Hour + 5*time.Minute)},
-	"opened_proof_red_twice": {title: "The split receipt suites run at the proofs' head", body: "Run the receipt suites at the proofs' head.", detail: "receipt_holds"},
-	"opened_proof_changed": {title: "Land the assessments test an earlier card wrote", body: "Land the assessments proof from card/1885.",
-		detail: "assessments_hold proofs/assessments_test.go"},
+	"opened_proof_red_twice": {key: "reconciled-head-merge", detail: "confirm_view_layered"},
+	"opened_proof_changed":   {key: "reconciled-head-merge", detail: "confirmation_lead proofs/confirmation_lead_test.go"},
 	"criterion_unproven": {title: "Acceptance: every criterion of the plan holds on the landed cards", body: "Prove every criterion of plan #1947 on main.",
 		detail: "confirm_view_layered"},
 	"answer_changed_nothing": {title: "A cap ask answered emptily never parks the card", body: "An empty answer at a cap leaves the card waiting.",
@@ -1176,7 +1198,7 @@ var flagCards = map[string]flagCard{
 		detail: string(factoryd.CaseSessionCap)},
 	"dependency_failed": {title: "Run every proof and every suite row on the split packages", body: "Run every proof on the split packages, and close the plan.", detail: "#2059"},
 	"proofs_missing": {title: "The plan's hand-derived tests as acceptance tests", body: "Write the plan's hand-derived tests under acceptance/.",
-		detail: textutil.Plural(3, "hour", "hours")},
+		detail: textutil.Plural(3, "hour", "hours"), plan: planTask},
 	"budget_moved_no_event": {title: "Briefs, gate retries and check-ins schedule at the reset", body: "Schedule the briefs, the gate retries and the check-ins at the provider's reset.",
 		detail: "2.70 EUR not 2.00 EUR"},
 	"wait_over_bound": {title: "Rebuild the wall-clock stop test so the real session stops at the cap", body: "Rebuild the wall-clock stop test on the merged rig.",
@@ -1573,9 +1595,26 @@ func (b *builder) cards() {
 	pr.Task.PRNumber = 14
 	b.out = append(b.out, pr)
 	b.out = append(b.out, humanSourceOf(factoryd.SourceChat).file(b, GroupCard, "chat escalation", b.next()))
-	b.out = append(b.out, b.escalated(GroupCard, "alert (human)", b.next(), factoryd.SourceAlert, "factoryd",
-		factoryd.AlertQuestion(fiveXX, Project, "factory", factoryd.AlertHumanWhy(factoryd.Project{Agents: policy.AgentsNone}, fiveXX),
-			factoryd.AlertIssue(fiveXX, Project, "factory", nil).Body), nil, 2*time.Hour))
+	firing := factoryd.AlertQuestion(fiveXX, Project, "factory", factoryd.AlertHumanWhy(factoryd.Project{Agents: policy.AgentsNone}, fiveXX),
+		factoryd.AlertIssue(fiveXX, Project, "factory", nil).Body)
+	b.out = append(b.out, b.escalated(GroupCard, "alert (human)", b.next(), factoryd.SourceAlert, "factoryd", firing, nil, 2*time.Hour))
+	// a human kept the card, and the alert cleared: the intake puts the
+	// cleared face on the card, its live ask and the ask's row (AlertOnCard)
+	cleared := b.escalated(GroupCard, "alert that cleared (human)", b.next(), factoryd.SourceAlert, "factoryd", firing, nil, 3*time.Hour)
+	until := fiveXX.StartsAt.Add(52 * time.Minute)
+	var set, face map[string]any
+	cleared.Task, set, face = factoryd.AlertOnCard(cleared.Task, *cleared.Case,
+		factoryd.AlertClearedQuestion("SigNoz", fiveXX.Labels["alertname"], "factoryd", fiveXX.StartsAt, until),
+		map[string]any{"resolved_at": until.UTC().Format(time.RFC3339)}, cleared.Ask.Detail)
+	maps.Copy(cleared.Case.Facts, set)
+	cleared.Facts = factoryd.FactsOf(*cleared.Case)
+	row := maps.Clone(cleared.Ask.Detail)
+	for _, k := range []string{"preselected", "recommended_by", "recommendation"} {
+		delete(row, k) // as SetCaseFace stores a face again
+	}
+	maps.Copy(row, face)
+	cleared.Ask.Detail = roundTrip(row)
+	b.out = append(b.out, cleared)
 	b.out = append(b.out, humanSourceOf(factoryd.SourceChainStall).file(b, GroupCard, "chain stall", b.next()))
 	b.out = append(b.out, b.filedHuman(GroupCard, "chain repair (human)", b.next(), factoryd.SourceChainRepair, "",
 		factoryd.RepairQuestion(Repository, chainSHA, []string{factoryd.RequiredContextLine("deploy/staging", "failure")}, "https://git.example/sf/code/actions/runs/88", nil), 2*time.Hour))

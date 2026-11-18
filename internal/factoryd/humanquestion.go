@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"fmt"
 	"strings"
 	"time"
@@ -72,12 +73,14 @@ func FactoryPRQuestion(b BriefText, number int64, url string) HumanQuestion {
 	}
 }
 
-// AlertQuestion is the human card of alert a on project in namespace ns:
-// why says why no agent takes it, body is the alert's write-up. An event's
-// card (eventLabel) says that no resolve clears it and names the failed Job
-// its labels carry.
+// AlertQuestion is the human card of alert a on project in namespace ns,
+// which informs: what fires where, and why a human looks into it. why says
+// why no agent takes it, body is the alert's write-up. An event's card
+// (eventLabel) says that no resolve clears it and names the failed Job its
+// labels carry.
 func AlertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
-	b := alertBrief(a, ns)
+	name, of := oneLine(a.Labels["alertname"]), cmp.Or(alertService(a.Labels), ns)
+	_, _, source := alertParts(a)
 	if a.Labels[eventLabel] == "true" {
 		info := "The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card stays open until a human closes it."
 		if job := a.Labels["k8s.object.name"]; dnsLabel.MatchString(job) {
@@ -88,10 +91,14 @@ func AlertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
 		}
 		body = info + "\n\n" + body
 	}
+	whyLine := "It may point at a fault on " + of
+	if why != "" {
+		whyLine += ", and " + why
+	}
 	q := HumanQuestion{
-		Ask:     b.Title,
-		Why:     b.Why,
-		Info:    why + "\n\n" + body,
+		Ask:     source + " fires the alert \u201c" + name + "\u201d on " + of,
+		Why:     whyLine + ".",
+		Info:    body,
 		Choices: choices(ActClose+"/"+variantNoted, ActNote+"/"+variantPark),
 	}
 	q.Happened = firedLine(a)
@@ -108,6 +115,19 @@ func firedLine(a SigNozAlert) string {
 		line += ", at " + v
 	}
 	return line + "."
+}
+
+// AlertClearedQuestion is the face of the human card of alert name on of,
+// raised by source (SigNoz or Flux), once it cleared: what happened, why
+// it still matters, and when it fired, from to until. Its answers stay
+// the firing card's.
+func AlertClearedQuestion(source, name, of string, from, until time.Time) HumanQuestion {
+	q := HumanQuestion{Ask: source + " cleared the alert \u201c" + oneLine(name) + "\u201d on " + of,
+		Why: "The fault behind it may still be there, though the alert no longer fires."}
+	if !from.IsZero() {
+		q.Happened = "It fired from " + timeWords(from) + " until " + timeWords(until) + "."
+	}
+	return q
 }
 
 // RollRefusedQuestion is the card of a green main CI run whose images the
@@ -201,7 +221,7 @@ func MonthCapCardQuestion(limit float64, month string, eur float64, link, refusa
 				"if it passes, the counter ran ahead and `max_budget` needs the raise all the same.", month, eur, limit) +
 				"\n\nRaise `max_budget` in k8s/platform/litellm/helmrelease.yaml, the LiteLLM helmrelease, which stays at 1.25 times the cap or more: " + link +
 				"\n\nThe policy cap needs no change. Close this issue once decided.\n\nThe newest refusal:\n\n" + fenced(refusal),
-			Choices:  choices(ActNote+"/"+variantPark, ActClose+"/"+variantNoted),
+			Choices:  choices(ActClose+"/"+variantNoted, ActNote+"/"+variantPark),
 			Happened: fmt.Sprintf("LiteLLM refused a model call at %.2f EUR of spend this month, below the cap of %.2f EUR.", eur, limit),
 			Waits:    "Model calls fail until the guard's limit is raised.",
 		}
@@ -218,7 +238,7 @@ func MonthCapCardQuestion(limit float64, month string, eur float64, link, refusa
 		Why: b.Why,
 		Info: fmt.Sprintf("The factory's variable spend in %s (UTC, over the cost ledger: model calls, paid tools, commissioned servers) is %.2f EUR of the cap of %.2f EUR (`budget.month_eur`). ", month, eur, limit) +
 			info,
-		Choices:  choices(ActNote+"/"+variantPark, ActClose+"/"+variantNoted),
+		Choices:  choices(ActClose+"/"+variantNoted, ActNote+"/"+variantPark),
 		Happened: fmt.Sprintf("The factory spent %.2f EUR of its %.2f EUR limit in %s.", eur, limit, monthWords(month)),
 		Waits:    "Every model call waits until the limit is raised or the month ends.",
 	}
@@ -227,7 +247,7 @@ func MonthCapCardQuestion(limit float64, month string, eur float64, link, refusa
 // RoutineQuestion is the card a routine that files to a person puts: its
 // title the ask, its brief and provenance the info.
 func RoutineQuestion(rt policy.Routine, brief, provenance string, agents bool) HumanQuestion {
-	b := SourceBriefs[SourceRoutine](BriefFacts{Name: oneLine(rt.Title), Of: rt.Name})
+	b := RoutineBrief(rt)
 	return HumanQuestion{
 		Ask:     b.Title,
 		Why:     b.Why,

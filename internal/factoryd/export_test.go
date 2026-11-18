@@ -10,6 +10,12 @@ func PressRefusal(f Facts, res Resolution) string {
 	return a.refusal(f.CaseFacts, 3, res)
 }
 
+// EndedRefusal is why Act refuses action on case c of card t because the
+// card ended, "" where it takes it.
+func EndedRefusal(t Task, c Case, action string) string {
+	return endedRefusal(t.Status, PlanWaitCase(c, t), action)
+}
+
 // OfferRefusal is why action name is not on offer to the human on f.
 func OfferRefusal(f Facts, name string) string {
 	a, ok := ActionByName(name)

@@ -19,7 +19,8 @@ import (
 // The chat's routine tools (roadmap 267, C16): routines reads the chat
 // project's routines, routine_write and routine_delete change its file
 // through commitProjectFile after a confirm, and routine_run and
-// routine_skip are the board's Run now and Skip once.
+// routine_skip are the opened routine card's "Run it now" and "Skip the
+// next run".
 
 // routinesText is the routines read: one line per routine of the chat's
 // project.
@@ -100,7 +101,7 @@ func (t *turn) routineChange(tool string, in toolInput) (routineChange, error) {
 		for i := range schedule {
 			schedule[i].Cron = strings.Join(strings.Fields(schedule[i].Cron), " ")
 		}
-		ch.rt = policy.Routine{Name: in.Name, Title: in.Title, Schedule: schedule, Files: in.Files, Brief: ch.old.Brief, Skill: in.Skill,
+		ch.rt = policy.Routine{Name: in.Name, Title: in.Title, Why: in.Why, Schedule: schedule, Files: in.Files, Brief: ch.old.Brief, Skill: in.Skill,
 			WhileOpen: cmp.Or(in.WhileOpen, ch.old.WhileOpen), Missed: cmp.Or(in.Missed, ch.old.Missed), Tell: cmp.Or(in.Tell, ch.old.Tell)}
 		if in.Files == policy.FilesAgent {
 			ch.rt.Skill = cmp.Or(in.Skill, ch.old.Skill)
@@ -136,8 +137,7 @@ func (t *turn) routineBrief(rt policy.Routine) error {
 	if rt.Files == policy.FilesHuman {
 		track = factoryd.LabelHuman
 	}
-	_, err := t.c.cardBrief(t.r.Context(), t.a, t.p.Repository, factoryd.SourceBriefs[factoryd.SourceRoutine](factoryd.BriefFacts{Name: rt.Title, Of: rt.Name}),
-		track, t.briefTry("routine_write"))
+	_, err := t.c.cardBrief(t.r.Context(), t.a, t.p.Repository, factoryd.RoutineBrief(rt), track, t.briefTry("routine_write"))
 	t.briefDone("routine_write", err)
 	return err
 }

@@ -519,7 +519,7 @@ func TestAHeldPlansAskReachesTheInbox(t *testing.T) {
 		t.Fatalf("the plan's ask rows %+v, want one naming the held plan's case", asks)
 	}
 	plan := s.tasks["t-plan"]
-	m, ok := PokeOf(asks[0], plan)
+	m, ok := PokeOf(asks[0], plan, Task{})
 	if !ok || m.Content != "#1 needs you. Until it closes, the plan holds production deploys." {
 		t.Fatalf("the inbox's message = %q, %v", m.Content, ok)
 	}

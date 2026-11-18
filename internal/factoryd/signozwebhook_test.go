@@ -746,9 +746,9 @@ func TestAlertIntakeOnTheFactorysOwnNamespaces(t *testing.T) {
 	if gwTitle != "Look into the alert 5xx rate above 5 % on factory-gateway" ||
 		!strings.HasPrefix(gwBody, "Why: The alert 5xx rate above 5 % fires on factory-gateway and may point at a fault there.\n\nSummary: The agent reads the alert, finds the cause and fixes it, or shows that the alert is noise. The alert resolves once the fault is gone.\n\n---\n\nfactoryd: SigNoz fires the alert 5xx rate above 5 % on service factory-gateway in namespace factory of project ai-software-factory-code.\n\n"+
 			"Firing since 2026-09-28T20:01:29Z. SigNoz: hxxps://signoz[.]example/alerts/overview?ruleId=r-1\n\n") ||
-		chTitle != "Look into the alert ClickHouse disk above 80 % on clickhouse" ||
-		!strings.HasPrefix(chBody, "Why: The alert ClickHouse disk above 80 % fires on clickhouse and may point at a fault there.\n\n---\n\n") ||
-		!strings.Contains(chBody, "\n\nInfo: the project runs no agents\n\nfactoryd: SigNoz fires the alert ClickHouse disk above 80 % on service clickhouse in namespace platform of project ai-software-factory-infra.") {
+		chTitle != "SigNoz fires the alert “ClickHouse disk above 80 %” on clickhouse" ||
+		!strings.HasPrefix(chBody, "Why: It may point at a fault on clickhouse, and the project runs no agents.\n\n---\n\n") ||
+		!strings.Contains(chBody, "\n\nInfo: factoryd: SigNoz fires the alert ClickHouse disk above 80 % on service clickhouse in namespace platform of project ai-software-factory-infra.") {
 		t.Fatalf("issues\n%s\n---\n%s", r.fj.issues[0], r.fj.issues[1])
 	}
 	if !slices.Equal(r.fj.labels[1], []string{"bug", "state/queued"}) || !slices.Equal(r.fj.labels[2], []string{"human", "bug", "state/waiting-human"}) {
@@ -1159,7 +1159,7 @@ func TestAlertInsidePlatformRolloutWaitsForItsWindow(t *testing.T) {
 	for _, a := range r.store.alertRows() {
 		rows[a.Fingerprint] = a
 	}
-	if len(r.fj.issues) != 1 || !strings.HasPrefix(r.fj.issues[0], "Look into the alert ClickHouse disk above 80 % on clickhouse\n\n") ||
+	if len(r.fj.issues) != 1 || !strings.HasPrefix(r.fj.issues[0], "SigNoz fires the alert “ClickHouse disk above 80 %” on clickhouse\n\n") ||
 		len(r.flows.started) != 0 || len(r.store.tasks) != 1 {
 		t.Fatalf("the push's first minutes: issues %q, started %v, %d tasks; want ClickHouse's alone, from before the push, no agent card",
 			r.fj.issues, r.flows.started, len(r.store.tasks))
@@ -1201,8 +1201,8 @@ func TestAlertInsidePlatformRolloutWaitsForItsWindow(t *testing.T) {
 	if err := r.in.SweepSigNoz(ctx, at("2026-10-15T11:07:46Z")); err != nil {
 		t.Fatal(err)
 	}
-	ask := "Look into the alert Forgejo 5xx rate above 5 % on forgejo"
-	want := "Info: the project runs no agents\n\nfactoryd: the alert fired while HelmRelease forgejo/forgejo rolled out and still fires 10m0s after the rollouts settled.\n\n" +
+	ask := "SigNoz fires the alert “Forgejo 5xx rate above 5 %” on forgejo"
+	want := "Info: factoryd: the alert fired while HelmRelease forgejo/forgejo rolled out and still fires 10m0s after the rollouts settled.\n\n" +
 		"factoryd: SigNoz fires the alert Forgejo 5xx rate above 5 % on service forgejo in namespace forgejo of project ai-software-factory-infra.\n\n" +
 		"Firing since 2026-10-15T10:48:00Z."
 	if len(r.fj.issues) != 2 || !strings.HasPrefix(r.fj.issues[1], ask+"\n\n") || !strings.Contains(r.fj.issues[1], want) || r.fj.repos[1] != "sf/ai-software-factory-infra" ||
@@ -1258,10 +1258,9 @@ func TestRolloutNotSettledAtTheCapReleasesItsAlertsAndRaisesItsOwn(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	ask := "Look into the alert HelmRelease signoz not settled on platform"
-	want := ask + "\n\nWhy: The alert HelmRelease signoz not settled fires on platform and may point at a fault there.\n\n---\n\n```\n" + ask + "\n```\n\n" +
-		"Info: the project runs no agents\n\n" +
-		"factoryd: Flux fires the alert HelmRelease signoz not settled in namespace platform of project ai-software-factory-infra.\n\n" +
+	ask := "Flux fires the alert “HelmRelease signoz not settled” on platform"
+	want := ask + "\n\nWhy: It may point at a fault on platform, and the project runs no agents.\n\n---\n\n```\n" + ask + "\n```\n\n" +
+		"Info: factoryd: Flux fires the alert HelmRelease signoz not settled in namespace platform of project ai-software-factory-infra.\n\n" +
 		"Firing since 2026-10-15T12:30:00Z.\n\n" +
 		"Value and annotations:\n\n```\nvalue=Running 'upgrade' action with timeout of 5m0s\n" +
 		"action=find why Flux has not settled HelmRelease platform/signoz 30m0s after applying it, from its status and events; " +
@@ -1682,6 +1681,81 @@ func TestAClearedAlertKeepsATouchedCard(t *testing.T) {
 	}
 }
 
+// A human card informs: it names what fires where, and once the alert
+// clears, a card a human keeps says the alert cleared and when it fired,
+// with the same two answers, "Noted" and "Not now". A firing after that
+// says the alert fires again, since when. The card's title and why line
+// say what its ask says, so its head never reads "fires" above "cleared".
+func TestAnAlertsHumanCardSaysWhatHappened(t *testing.T) {
+	r := newAlertRig(t)
+	demo := r.in.Projects.(*memProjects).m["demo-app"]
+	demo.Agents = "none"
+	r.in.Projects.(*memProjects).m["demo-app"] = demo
+	r.in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: r.store, Store: r.store}
+	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
+	task := r.store.tasks[r.store.alertRows()[0].TaskID]
+	face := func() AskFace {
+		t.Helper()
+		c, err := r.store.NewestAskCase(context.Background(), task.ID)
+		if err != nil || c.ID == 0 {
+			t.Fatalf("the card's live ask: %+v, %v", c, err)
+		}
+		return FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: r.store.tasks[task.ID]})
+	}
+	head := func(ask, why string) {
+		t.Helper()
+		card := r.store.tasks[task.ID]
+		if CardTitle(card) != ask || card.Why != why || !strings.HasSuffix(card.Objective, "filed by factoryd") {
+			t.Fatalf("the card's title %q, why %q, text %q; want %q, %q and the text as filed", CardTitle(card), card.Why, card.Objective, ask, why)
+		}
+		// the board reads the card's newest ask row, whose face is stored again
+		c, _ := r.store.NewestAskCase(context.Background(), task.ID)
+		var row map[string]any
+		for _, e := range r.store.events {
+			if e.TaskID == task.ID && e.Kind == EventQuestionAsked {
+				row = e.Detail
+			}
+		}
+		if _, _, q := BoardAsk(c, row); q == nil || q.Ask != ask || q.Why != why {
+			t.Fatalf("the board's question %+v, want ask %q and why %q", q, ask, why)
+		}
+		// and Act reads its choices from that row
+		var choices []string
+		for _, o := range AskOffers(row) {
+			choices = append(choices, o.Value)
+		}
+		if !slices.Equal(choices, []string{AnswerNoted, AnswerPark}) {
+			t.Fatalf("the ask row offers %v, want %v", choices, []string{AnswerNoted, AnswerPark})
+		}
+	}
+	answers := func(f AskFace) []string {
+		var out []string
+		for _, a := range f.Answers {
+			out = append(out, a.Label)
+		}
+		return out
+	}
+	firing := face()
+	if firing.Ask != "SigNoz fires the alert “5xx rate above 5 %” on demo-staging" || firing.Why != "It may point at a fault on demo-staging, and the project runs no agents." ||
+		!slices.Equal(answers(firing), []string{"Noted", "Not now"}) {
+		t.Fatalf("the firing card asks %q, why %q, answers %v", firing.Ask, firing.Why, answers(firing))
+	}
+	head(firing.Ask, firing.Why)
+	r.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp1", "demo-staging", firedAt, resolvedAt))
+	cleared := face()
+	if cleared.Ask != "SigNoz cleared the alert “5xx rate above 5 %” on demo-staging" || cleared.Why != "The fault behind it may still be there, though the alert no longer fires." ||
+		cleared.Story.Happened != "It fired from 28 September at 20:01 UTC until 28 September at 20:40 UTC." || !slices.Equal(answers(cleared), []string{"Noted", "Not now"}) {
+		t.Fatalf("the cleared card asks %q, why %q, happened %q, answers %v", cleared.Ask, cleared.Why, cleared.Story.Happened, answers(cleared))
+	}
+	head(cleared.Ask, cleared.Why)
+	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", "2026-09-28T21:10:00Z", neverEnds))
+	again := face()
+	if again.Ask != firing.Ask || again.Why != firing.Why || again.Story.Happened != "It has fired since 28 September at 21:10 UTC, at 14.29." {
+		t.Fatalf("the card fired again asks %q, why %q, happened %q", again.Ask, again.Why, again.Story.Happened)
+	}
+	head(firing.Ask, firing.Why)
+}
+
 func TestAClearedAlertLeavesAnAgentCard(t *testing.T) {
 	r := newAlertRig(t)
 	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
@@ -1766,8 +1840,8 @@ func TestAClearedAlertSkipsAFinalCard(t *testing.T) {
 
 // A resolve of the alert of a human card that stays open writes
 // resolved_at on the card's live case and stores the face those facts
-// give: the story says when the alert resolved, and Noted leads as the
-// factory's pick. A new firing puts the card back to firing. A delivery
+// give: the story says when the alert fired and resolved, and Noted leads
+// as the factory's pick. A new firing puts the card back to firing. A delivery
 // whose write to the card fails leaves the row as it was, so the next
 // delivery of the same alert writes the card, and its comment posts once.
 func TestAResolvedAlertsCardSaysItResolved(t *testing.T) {
@@ -1788,7 +1862,7 @@ func TestAResolvedAlertsCardSaysItResolved(t *testing.T) {
 	face := r.store.faces[3]
 	story, _ := face["story"].(Story)
 	pick, _ := face["preselected"].(map[string]any)
-	if story.Happened != "It resolved at 28 September at 20:40 UTC." || pick["action"] != "choice:"+AnswerNoted || face["recommended_by"] != "the factory" {
+	if story.Happened != "It fired from 28 September at 20:01 UTC until 28 September at 20:40 UTC." || pick["action"] != "choice:"+AnswerNoted || face["recommended_by"] != "the factory" {
 		t.Fatalf("the stored face = %+v, want the resolve's time and Noted as the factory's pick", face)
 	}
 	r.store.caseFactsFails = 1
@@ -1899,8 +1973,8 @@ func TestAnEventAlertKeepsItsCardPastTheResolve(t *testing.T) {
 			t.Fatalf("status %d: %s", rr.Code, rr.Body)
 		}
 	}
-	ask := "Look into the alert Job failed on demo-staging"
-	info := "Info: the project runs no agents\n\nThe Job `forgejo-dump-29885910` in namespace `demo-staging` failed: read its pods' logs " +
+	ask := "SigNoz fires the alert “Job failed” on demo-staging"
+	info := "Info: The Job `forgejo-dump-29885910` in namespace `demo-staging` failed: read its pods' logs " +
 		"(`kubectl -n demo-staging logs job/forgejo-dump-29885910 --all-containers`). " +
 		"The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card closes when the CronJob `forgejo-dump` completes a run, or when a human closes it.\n\n" +
 		"factoryd: SigNoz fires the alert Job failed in namespace demo-staging of project demo-app."

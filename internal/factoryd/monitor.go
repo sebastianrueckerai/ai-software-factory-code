@@ -7,12 +7,10 @@ import (
 	"fmt"
 	"log"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // monitorKinds are the events that move a card's flags: task_status,
@@ -237,7 +235,7 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 			// the row names its case, which the events writer withdraws,
 			// and settles the case's ask in the inbox
 			_, err = m.Store.Record(ctx, Event{Repository: c.Repository, TaskID: c.TaskID, IssueNumber: int64(d.Head.Issue), Kind: EventQuestionWithdrawn,
-				Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": c.ID, "case_kind": string(c.Kind), "reason": reason, "problem": monitorFlagText(c.Problem)}})
+				Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": c.ID, "case_kind": string(c.Kind), "reason": reason, "problem": c.Problem}})
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("withdraw %s: %w", c.StateKey, err))
@@ -382,9 +380,4 @@ const monitorFlagPrefix = "Monitor flag: "
 // MonitorFlagReason is the reason of flag f's monitor case.
 func MonitorFlagReason(f DigestFlag) string {
 	return monitorFlagPrefix + flagsText([]DigestFlag{f})
-}
-
-// monitorFlagText is the flag a monitor reason or problem names, cut short.
-func monitorFlagText(s string) string {
-	return textutil.Truncate(strings.TrimPrefix(s, monitorFlagPrefix), 80)
 }

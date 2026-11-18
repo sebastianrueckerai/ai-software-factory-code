@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 	// The zone database travels in the binary: time_zone means the same
 	// in config check, factoryd and the gateway, whatever the image holds.
 	_ "time/tzdata"
@@ -35,6 +36,9 @@ type Routine struct {
 	Name string `yaml:"name" json:"name"`
 	// Title is the filed card's title.
 	Title string `yaml:"title" json:"title"`
+	// Why is the routine's why line: one sentence that says why it runs,
+	// which its card and the cards it files show.
+	Why string `yaml:"why,omitempty" json:"why,omitempty"`
 	// Schedule lists the triggers, any one of which starts a run.
 	Schedule []Trigger `yaml:"schedule" json:"schedule"`
 	// Files is the kind of work a run files: human, agent, pull-request
@@ -61,6 +65,9 @@ type Routine struct {
 	// its report is the poke.
 	Tell string `yaml:"tell,omitempty" json:"tell,omitempty"`
 }
+
+// WhyMax bounds a routine's why line, in runes, as every card's.
+const WhyMax = 160
 
 const (
 	FilesHuman       = "human"
@@ -113,6 +120,9 @@ func (r Routine) Validate(where string) error {
 	}
 	if r.Title == "" {
 		return fmt.Errorf("%s: no title", at)
+	}
+	if strings.Contains(r.Why, "\n") || utf8.RuneCountInString(r.Why) > WhyMax {
+		return fmt.Errorf("%s: the why: one sentence on one line, at most %d characters", at, WhyMax)
 	}
 	switch r.Files {
 	case FilesHuman:

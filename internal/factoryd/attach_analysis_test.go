@@ -65,7 +65,7 @@ func askOn(t *testing.T, s *PGStore, card Task, key, question string) (Case, Eve
 // Poker writes it, and answers the row's words.
 func seedRow(t *testing.T, s *PGStore, e Event, card Task) string {
 	t.Helper()
-	m, ok := PokeOf(e, card)
+	m, ok := PokeOf(e, card, Task{})
 	if !ok {
 		t.Fatalf("no poke of %s", e.Kind)
 	}
@@ -201,12 +201,12 @@ func TestAttachAnalysisLeavesAMonitorsAskOut(t *testing.T) {
 	s := newAskStore(t)
 	own, seededRow := seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
 	flag, _, err := s.OpenCase(t.Context(), Case{TaskID: "t-1", Repository: "sf/wake", Kind: CaseMonitorFlag, StateKey: "flag", Status: CaseAtHuman,
-		Problem: "The card waits past its bound."})
+		Problem: "This card's run has not moved or answered for more than 30 minutes. Rescue the work into a new card?"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: "t-1", IssueNumber: 40, Kind: EventQuestionAsked, Actor: FactoryDecider,
-		Via: ViaFactoryd, Detail: map[string]any{"question": "The monitor flagged this card: what should happen? Answer case 12 in the project chat.",
+		Via: ViaFactoryd, Detail: map[string]any{"question": "This card's run has not moved or answered for more than 30 minutes. Rescue the work into a new card?",
 			"case_id": flag.ID, "case_kind": string(CaseMonitorFlag)}}); err != nil {
 		t.Fatal(err)
 	}

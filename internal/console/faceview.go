@@ -54,6 +54,20 @@ type faceView struct {
 	// Found is the card's own title, linked, on a face that asks, where a
 	// find matched the title alone; own is that title.
 	Found, own template.HTML
+	// Routine is the routine the face stands for, nil for a card.
+	Routine *routineFoot
+}
+
+// routineFoot is the foot of a routine's face (C16, C46): its key, the
+// project and name its drawer opens by, its title in words, which names
+// its door, its schedule in words, its next
+// run (Soon under an hour away), and its last run, a held run's words
+// (Held) or the card it runs (Running).
+type routineFoot struct {
+	Key, Title          string
+	Schedule, Next      string
+	Soon, Held, Running bool
+	Last                template.HTML
 }
 
 // text is what face f says, in words: a card in Needs you its band, its
@@ -111,12 +125,14 @@ type answerView struct {
 	Open          bool
 }
 
-// pressForm is the form of the one button: where it posts, with what.
+// pressForm is the form of the one button: where it posts, with what,
+// and Target, the element its answer replaces, "" for an answer that
+// replaces none.
 type pressForm struct {
-	Post, DataTo string
-	Values       []hidden
-	CSRF         string
-	Filter       boardFilter
+	Post, DataTo, Target string
+	Values               []hidden
+	CSRF                 string
+	Filter               boardFilter
 	// Max bounds the press's words where its door takes fewer than an
 	// answer's, 0 where it takes as many.
 	Max int
@@ -155,7 +171,7 @@ func (c *Console) faceOf(ctx context.Context, v *boardView, n need, needs bool) 
 				f.Since = "waits for you, " + f.Since
 			}
 			if row.Owner != nil {
-				f.Marks = append(f.Marks, fine{helperSteps[row.Owner.Source] + " asks", "flag"})
+				f.Marks = append(f.Marks, fine{factoryd.HelperStep(row.Owner.Source) + " asks", "flag"})
 			}
 			c.askFace(ctx, v, &f, k, *row)
 		} else {
@@ -381,16 +397,13 @@ type planRead struct {
 }
 
 // helperWords are the states a card reads while its helper task of each
-// source runs, and helperSteps the steps that ask on the card.
-var (
-	helperWords = map[string]string{factoryd.SourceScreening: "screening", factoryd.SourceSizing: "sizing", factoryd.SourceProver: "writing the proofs"}
-	helperSteps = map[string]string{factoryd.SourceScreening: "the screening", factoryd.SourceSizing: "the sizing", factoryd.SourceProver: "the proof writing"}
-)
+// source runs.
+var helperWords = map[string]string{factoryd.SourceScreening: "screening", factoryd.SourceSizing: "sizing", factoryd.SourceProver: "writing the proofs"}
 
 // helperNote is what the opened card says of a page of helper task h:
 // whose ask it is and what its answers act on.
 func helperNote(h card) string {
-	step := helperSteps[h.Source]
+	step := factoryd.HelperStep(h.Source)
 	return "This ask is " + step + "'s, a step of this card: its answers act on " + step + " alone."
 }
 

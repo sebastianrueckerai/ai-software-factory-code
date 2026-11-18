@@ -103,6 +103,20 @@ var outsideActions = []string{ActRetry, ActReplan, ActClose, ActDeployNow, ActSa
 var endedCardActions = []string{ActClose, ActNote, ActSettle, ActWithdraw, ActRestartPlan,
 	ActAnswerCriteria, ActGrantCriteria, ActConfirmCriteria, ActRunCriteria}
 
+// endedRefusal is why a case of a card in status takes no action: an
+// ended card does no more work, so its case takes endedCardActions alone,
+// and a plan's wait on its failed card (planWait) its retry too. "" for a
+// live card, or an action the case takes. Act and every face read it.
+func endedRefusal(status string, planWait bool, action string) string {
+	if !Final(status) || planWait && action == ActRetry || slices.Contains(endedCardActions, action) {
+		return ""
+	}
+	if _, known := ActionByName(action); !known {
+		return fmt.Sprintf("ended %s, so %s changes nothing: an ended card does no more work, and a new card carries the work on", status, action)
+	}
+	return fmt.Sprintf("ended %s, so its case takes no %s: an ended card does no more work, and a new card carries the work on", status, action)
+}
+
 // lockWithin takes mu, or gives up when ctx ends: the wait for a case's
 // lock is bounded by the answer's own context.
 func lockWithin(ctx context.Context, mu *sync.Mutex) error {
@@ -181,11 +195,8 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	if err != nil {
 		return ActResult{Case: c}, err
 	}
-	if c.ID != 0 && Final(t.Status) && !(PlanWaitCase(c, t) && in.Res.Action == ActRetry) && !slices.Contains(endedCardActions, in.Res.Action) {
-		if _, known := ActionByName(in.Res.Action); !known {
-			return ActResult{Case: c}, ErrActRefused(fmt.Sprintf("card %s ended %s: its case closes on its own, so %s changes nothing; a new card carries the work on", cardName(t), t.Status, in.Res.Action))
-		}
-		return ActResult{Case: c}, ErrActRefused(fmt.Sprintf("card %s ended %s, so its case takes no %s: its case closes on its own, and a new card carries the work on", cardName(t), t.Status, in.Res.Action))
+	if why := endedRefusal(t.Status, PlanWaitCase(c, t), in.Res.Action); c.ID != 0 && why != "" {
+		return ActResult{Case: c}, ErrActRefused("card " + cardName(t) + " " + why)
 	}
 	own, err := r.ownStep(ctx, c, in)
 	if err != nil {

@@ -256,12 +256,16 @@ func faceSpecOf(c Case, f Facts) FaceSpec {
 	return CaseFaces[CaseOther]
 }
 
-// facing is case c on facts f as its face reads them: f holds c, and a
-// question of the agent's at a cap is its cap's case (atCap).
+// facing is case c on facts f as its face reads them: f holds c, an
+// ended card's facts say how it ended, and a question of the agent's at a
+// cap is its cap's case (atCap).
 func facing(c Case, f Facts) (Case, Facts) {
 	f.Case = c
 	if f.Kind == "" {
 		f.Kind = c.Kind
+	}
+	if f.Final == "" && Final(f.Card.Status) {
+		f.Final = f.Card.Status
 	}
 	if capped := f.atCap(); capped.Kind != f.Kind {
 		f.CaseFacts, c.Kind = capped, capped.Kind
@@ -362,10 +366,14 @@ func FaceOf(c Case, f Facts) AskFace {
 	}
 	for _, a := range more {
 		if !slices.ContainsFunc(slices.Concat(answers, face.More), func(o Answer) bool {
-			return o.Key() == a.Key() || o.Label == a.Label || o.Action == a.Action && o.Effect == a.Effect
+			// a settle ends the case and does nothing else: one is enough
+			return o.Key() == a.Key() || o.Label == a.Label || o.Action == a.Action && (o.Effect == a.Effect || a.Action == ActSettle)
 		}) {
 			face.More = append(face.More, a)
 		}
+	}
+	if step := HelperStep(f.Card.Source); step != "" {
+		return face.ofStep(step)
 	}
 	return face
 }
@@ -435,6 +443,18 @@ func AnswerFor(key string, f Facts) (Answer, bool) {
 	if fill, ok := effectFills[a.Key()]; ok {
 		if e := fill(f); e != "" {
 			a.Effect = e
+		}
+	}
+	if step := HelperStep(f.Card.Source); step != "" && a.Variant != f.Card.Source {
+		// a helper's ask stands on its parent: its end is the step's own
+		if a.Key() == ActClose {
+			return AnswerOf(ActClose + "/" + f.Card.Source)
+		}
+		a.Effect = stepWords(a.Effect, step)
+		if !strings.Contains(a.Effect, step) {
+			// a session it starts is the step's, not the card's
+			a.Effect = aSession.ReplaceAllString(a.Effect, "a session of "+step)
+			a.Effect = nextSession.ReplaceAllString(a.Effect, step+"'s next session")
 		}
 	}
 	return a, true
@@ -686,4 +706,53 @@ func Overruled(f CaseFacts, reason string) map[string]CheckVerdict {
 		}
 	}
 	return out
+}
+
+// stepNames are the steps of a card its helper tasks are, as a line
+// names them.
+var stepNames = map[string]string{SourceScreening: "the screening", SourceSizing: "the sizing", SourceProver: "the proof writing"}
+
+// HelperStep is the step of its parent a helper task of source is, as a
+// line names it ("the sizing"); "" for a source of no helper.
+func HelperStep(source string) string { return stepNames[source] }
+
+// theCard finds "the card" and "this card", not "the cards"; aSession
+// and nextSession the session an effect line starts.
+var (
+	theCard     = regexp.MustCompile(`\b(?:[Tt]his|[Tt]he) card\b`)
+	aSession    = regexp.MustCompile(`\ba session\b`)
+	nextSession = regexp.MustCompile(`\bthe next session\b`)
+)
+
+// stepWords is s with "the card" said as step: a helper's ask stands on
+// its parent's card, where "the card" reads as the parent. Quoted words
+// stay as written.
+func stepWords(s, step string) string {
+	parts := strings.Split(s, "\u201c")
+	for i, p := range parts {
+		quoted, rest := "", p
+		if i > 0 {
+			q, after, ok := strings.Cut(p, "\u201d")
+			if !ok {
+				continue
+			}
+			quoted, rest = q+"\u201d", after
+		}
+		parts[i] = quoted + theCard.ReplaceAllStringFunc(rest, func(m string) string {
+			if m[0] == 'T' {
+				return capitalize(step)
+			}
+			return step
+		})
+	}
+	return strings.Join(parts, "\u201c")
+}
+
+// ofStep is face as the page of a helper's ask on its parent: its ask,
+// why line and story name the step where they name the card. Its planned
+// line is the helper's title, whose "the card" is the parent.
+func (face AskFace) ofStep(step string) AskFace {
+	face.Ask, face.Why = stepWords(face.Ask, step), stepWords(face.Why, step)
+	face.Story.Happened, face.Story.Left = stepWords(face.Story.Happened, step), stepWords(face.Story.Left, step)
+	return face
 }

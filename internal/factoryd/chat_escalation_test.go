@@ -78,7 +78,7 @@ func TestEscalateToHuman(t *testing.T) {
 	if err := json.Unmarshal(b, &stored.Detail); err != nil {
 		t.Fatal(err)
 	}
-	if m, ok := PokeOf(stored, got); !ok || m.Kind != MessageEscalation ||
+	if m, ok := PokeOf(stored, got, Task{}); !ok || m.Kind != MessageEscalation ||
 		m.Content != "#40 (Nothing on the roadmap is ready. Item 12: no acceptance…) needs you. The plan needs its acceptance criteria before the build can start." || !slices.Equal(m.Choices, []string{"Write the criteria", "Park"}) {
 		t.Fatalf("its poke = %+v", m)
 	}

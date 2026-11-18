@@ -244,7 +244,7 @@ footer#live:empty { display: none; }
 .card.face { padding: 8px 10px 9px; }
 .card.face > .open { position: absolute; inset: 0; z-index: 0; }
 .card.face > .open:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-.card.face :is(a:not(.open), button, form, .carousel) { position: relative; z-index: 1; }
+.card.face :is(a:not(.open), button:not(.open), form, .carousel) { position: relative; z-index: 1; }
 .card.face:has(> .open) { cursor: pointer; }
 .para { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
 .para .title { color: var(--text); font-weight: 600; }
@@ -321,9 +321,8 @@ footer#live:empty { display: none; }
    no fill, no edge, its words faint; a run under an hour away names its
    time in the text colour, a held one in amber, a running card breathes */
 .card.ghost { border: 1px dashed var(--btn-line); background: none; box-shadow: none; }
-.card.ghost > .open { display: block; width: 100%; height: auto; margin: 0; padding: 0; border: 0; background: none; color: var(--text-faint); font: 13px/1.38 var(--font-ui); text-align: left; white-space: normal; }
-.card.ghost:has(> .open:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
-.card.ghost .para, .card.ghost .para .title, .card.ghost .foot { color: var(--text-faint); }
+.card.ghost > .open { height: auto; padding: 0; border: 0; background: none; }
+.card.ghost .para, .card.ghost .para :is(.title, .why), .card.ghost .foot { color: var(--text-faint); }
 .card.ghost .foot .soon { color: var(--text); }
 .card.ghost .held { color: var(--need-text); }
 .card.ghost .run .dot { display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; color: var(--st-running); background: currentColor; vertical-align: 1px; animation: live 2.2s ease-in-out infinite; }
@@ -472,7 +471,7 @@ fieldset.question legend { float: none; color: var(--text); font-weight: 600; fo
 .drawer h2 .glyph { color: var(--text-muted); font-weight: 400; }
 .top-block .why { color: var(--text-muted); font-size: 12.5px; }
 [data-routine-drawer] .top-block { grid-template-columns: 84px minmax(0, 1fr); }
-[data-routine-drawer] .acts { margin: 0 0 16px; }
+[data-routine-drawer] .o-answers { margin: 0 0 16px; }
 .drawer-body .quiet { margin: 0 0 8px; color: var(--text-muted); font-size: 12.5px; }
 .objective-body { white-space: pre-wrap; margin: 0 0 8px; }
 .related { list-style: none; padding: 0; margin: 0; }
@@ -971,7 +970,6 @@ form.poolctl button { height: 28px; background: none; color: var(--text); border
   .menu-pop .within input[type=number], .menu-pop .within select { height: 44px; font-size: 14px; }
   .menu-pop .within select { background-position-y: center; }
   .menu-pop .apply { height: 44px; }
-  .card.ghost > button.open, [data-routine-drawer] .acts button { min-height: 44px; }
   .life.runs a { display: inline-flex; align-items: center; min-height: 44px; }
   .ghosts-hidden a { display: inline-flex; align-items: center; min-height: 44px; }
   #board { overflow: visible; }
@@ -1375,7 +1373,7 @@ form.composer:has(> .growbar:hover), form.composer:has(> .growbar:focus-visible)
 .opened { display: flex; flex-direction: column; min-width: 0; }
 .opened .o-head { padding: 0 0 14px; }
 .opened .o-title { margin: 0; color: var(--text); font-size: 20px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
-.opened .o-why { margin: 6px 0 0; color: var(--text-muted); font-size: 16px; line-height: 1.45; overflow-wrap: anywhere; }
+.o-why { margin: 6px 0 0; color: var(--text-muted); font-size: 16px; line-height: 1.45; overflow-wrap: anywhere; }
 .opened .o-line { display: flex; flex-wrap: wrap; gap: 0 6px; margin: 8px 0 0; color: var(--text-faint); font: 12px/1.6 var(--font-mono); overflow-wrap: anywhere; }
 .opened .o-line .it:not(:last-child)::after { content: " ·"; color: var(--text-faint); }
 .opened .o-line :is(.flag, .unchecked) { color: var(--need-text); }
@@ -1390,19 +1388,19 @@ form.composer:has(> .growbar:hover), form.composer:has(> .growbar:focus-visible)
 .opened .o-story { margin: 6px 0 0; padding: 0; list-style: none; color: var(--text-muted); font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
 .opened .o-story li + li { margin-top: 2px; }
 .opened .o-who, .opened .o-note { margin: 10px 0 0; color: var(--text-muted); font-size: 13px; }
-.opened .o-answers { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
-.opened .answer { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 4px 12px; align-items: center; margin: 0; }
-.opened .answer .o-by { grid-column: 1 / -1; margin: 0; color: var(--text-faint); font-size: 12px; overflow-wrap: anywhere; }
-.opened .answer .pick { width: 100%; height: auto; min-height: 36px; padding: 6px 12px; border: 1px solid var(--btn-line); background: transparent; color: var(--text); font-weight: 500; line-height: 1.3; white-space: normal; overflow-wrap: anywhere; }
-.opened .answer.suggested .pick { min-height: 40px; border-color: var(--need); background: var(--need); color: var(--need-ink); font-weight: 600; }
-.opened .answer .pick[aria-expanded="true"] { border-color: var(--need); box-shadow: 0 0 0 1px var(--need); }
-.opened .answer .effect { color: var(--text-muted); font-size: 12px; line-height: 1.4; }
-.opened .answer .fields { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; margin: 4px 0 0; padding: 0; border: 0; min-width: 0; }
-.opened .answer .fields[hidden] { display: none; }
-.opened .answer .field { margin: 0; color: var(--text-muted); font-size: 12px; }
-.opened .answer .fields :is(input[type=text], input[type=number], textarea, select) { width: 100%; max-width: 100%; box-sizing: border-box; }
-.opened .answer .fields label:has(input[type=checkbox]) { display: flex; gap: 6px; align-items: baseline; color: var(--text); font-size: 13px; }
-.opened .answer .send { width: 220px; max-width: 100%; min-height: 36px; border: 0; background: var(--need); color: var(--need-ink); font-weight: 600; }
+.o-answers { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.o-answers .answer { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 4px 12px; align-items: center; margin: 0; }
+.o-answers .answer .o-by { grid-column: 1 / -1; margin: 0; color: var(--text-faint); font-size: 12px; overflow-wrap: anywhere; }
+.o-answers .answer .pick { width: 100%; height: auto; min-height: 36px; padding: 6px 12px; border: 1px solid var(--btn-line); background: transparent; color: var(--text); font-weight: 500; line-height: 1.3; white-space: normal; overflow-wrap: anywhere; }
+.o-answers .answer.suggested .pick { min-height: 40px; border-color: var(--need); background: var(--need); color: var(--need-ink); font-weight: 600; }
+.o-answers .answer .pick[aria-expanded="true"] { border-color: var(--need); box-shadow: 0 0 0 1px var(--need); }
+.o-answers .answer .effect { color: var(--text-muted); font-size: 12px; line-height: 1.4; }
+.o-answers .answer .fields { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; margin: 4px 0 0; padding: 0; border: 0; min-width: 0; }
+.o-answers .answer .fields[hidden] { display: none; }
+.o-answers .answer .field { margin: 0; color: var(--text-muted); font-size: 12px; }
+.o-answers .answer .fields :is(input[type=text], input[type=number], textarea, select) { width: 100%; max-width: 100%; box-sizing: border-box; }
+.o-answers .answer .fields label:has(input[type=checkbox]) { display: flex; gap: 6px; align-items: baseline; color: var(--text); font-size: 13px; }
+.o-answers .answer .send { width: 220px; max-width: 100%; min-height: 36px; border: 0; background: var(--need); color: var(--need-ink); font-weight: 600; }
 .opened .o-sent { color: var(--text-muted); font-size: 13px; }
 .opened .o-summary { color: var(--text); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
 .opened .o-folds { display: flex; flex-direction: column; padding: 0; }
@@ -1420,8 +1418,8 @@ form.composer:has(> .growbar:hover), form.composer:has(> .growbar:focus-visible)
 .opened .plan-rows .this { color: var(--text); font-weight: 600; }
 .face .sent, .face .found { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; }
 @media (max-width: 600px) {
-  .opened .answer { grid-template-columns: 1fr; }
-  .opened .answer :is(.pick, .send) { width: 100%; min-height: 44px; }
+  .o-answers .answer { grid-template-columns: 1fr; }
+  .o-answers .answer :is(.pick, .send) { width: 100%; min-height: 44px; }
   .opened .o-folds > .fold > summary { min-height: 44px; flex-wrap: wrap; }
   .opened .o-pages :is(a, span) { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
 }

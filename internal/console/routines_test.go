@@ -245,23 +245,23 @@ func TestRoutineToggle(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	queued := col(t, r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String(), "Queued")
 	// the side shows on the ghost; its flip is the routine drawer's act
-	form := `<form method="post" action="/routines/ai-software-factory-code/%s/needs-me" hx-post="/routines/ai-software-factory-code/%s/needs-me" hx-target="#drawer" hx-swap="innerHTML">` +
-		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="from" value="drawer"><input type="hidden" name="tab" value="overview">` +
-		`%s<input type="hidden" name="project" value="ai-software-factory-code">` +
-		`<button type="submit" class="xs" aria-label="%s">%s</button></form>`
+	form := `<form method="post" action="/routines/ai-software-factory-code/%s/needs-me" hx-post="/routines/ai-software-factory-code/%s/needs-me" hx-target="#drawer" hx-swap="innerHTML" class="answer" data-answer="%s">` +
+		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">` +
+		`<input type="hidden" name="from" value="drawer"><input type="hidden" name="tab" value="overview">%s` + "\n" +
+		`<button type="submit" class="pick">%s</button>`
 	acts := func(name string) string {
 		return r.do(httptest.NewRequest(http.MethodGet, "/routines/ai-software-factory-code/"+name+"/drawer?project=ai-software-factory-code", nil), ck).Body.String()
 	}
-	if want := fmt.Sprintf(form, "weekly-bump", "weekly-bump", `<input type="hidden" name="needs_me" value="0">`, "Weekly bump runs on its own", "Runs on its own"); !strings.Contains(acts("weekly-bump"), want) {
+	if want := fmt.Sprintf(form, "weekly-bump", "weekly-bump", factoryd.KeyRunAlone, `<input type="hidden" name="needs_me" value="0">`, "Let it run alone"); !strings.Contains(acts("weekly-bump"), want) {
 		t.Fatalf("the bump's drawer lacks its flip to the agent side:\n%s", acts("weekly-bump"))
 	}
 	if !strings.Contains(ghostIn(t, queued, "weekly-bump"), "human card") {
 		t.Fatalf("the bump's ghost names no side:\n%s", ghostIn(t, queued, "weekly-bump"))
 	}
-	if want := fmt.Sprintf(form, "audit", "audit", `<input type="hidden" name="needs_me" value="1">`, "Audit needs you", "Needs me"); !strings.Contains(acts("audit"), want) {
+	if want := fmt.Sprintf(form, "audit", "audit", factoryd.AnswerNeedsMe, `<input type="hidden" name="needs_me" value="1">`, "Give it to me"); !strings.Contains(acts("audit"), want) {
 		t.Fatalf("the audit's drawer lacks its flip to the human side:\n%s", acts("audit"))
 	}
-	if want := fmt.Sprintf(form, "nightly-hold", "nightly-hold", `<input type="hidden" name="undo" value="1">`, "Nightly hold follows its config", "Follow the config"); !strings.Contains(acts("nightly-hold"), want) {
+	if want := fmt.Sprintf(form, "nightly-hold", "nightly-hold", factoryd.KeyFollowFile, `<input type="hidden" name="undo" value="1">`, "Follow the file"); !strings.Contains(acts("nightly-hold"), want) {
 		t.Fatalf("an overridden routine's drawer lacks the undo:\n%s", acts("nightly-hold"))
 	}
 	if !strings.Contains(ghostIn(t, queued, "nightly-hold"), "agent card") {

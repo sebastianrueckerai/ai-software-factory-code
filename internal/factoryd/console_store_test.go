@@ -740,3 +740,50 @@ func TestCloseClearedCardIsOneStep(t *testing.T) {
 		}
 	}
 }
+
+// SetAskFace writes the card's title and why line and its live case's
+// facts together, or neither: a case that ended leaves the card as it was.
+func TestSetAskFaceIsOneStep(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, cases, events CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/r", IssueNumber: 1,
+		Objective: "SigNoz fires the alert\n\nthe body", Why: "It fires."}); err != nil {
+		t.Fatal(err)
+	}
+	ask, _, err := s.OpenCase(ctx, Case{TaskID: "t-h", Repository: "sf/r", Kind: CaseAgentEscalate, StateKey: "ask", Status: CaseAtHuman, Problem: "fires"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func() (objective, why, said string) {
+		t.Helper()
+		if err := s.db.QueryRowContext(ctx, `SELECT t.objective, t.why, coalesce(c.facts->>'ask', '') FROM tasks t, cases c WHERE t.id = 't-h' AND c.id = $1`, ask.ID).
+			Scan(&objective, &why, &said); err != nil {
+			t.Fatal(err)
+		}
+		return objective, why, said
+	}
+	card := Task{ID: "t-h", Objective: "SigNoz cleared the alert\n\nthe body", Why: "It may still be there."}
+	if err := s.SetAskFace(ctx, card, ask.ID, map[string]any{"ask": "SigNoz cleared the alert"}); err != nil {
+		t.Fatal(err)
+	}
+	if o, w, a := read(); o != card.Objective || w != card.Why || a != "SigNoz cleared the alert" {
+		t.Fatalf("after the write: objective %q, why %q, ask %q", o, w, a)
+	}
+	if err := s.WithdrawCase(ctx, ask.ID, "answered"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAskFace(ctx, Task{ID: "t-h", Objective: "SigNoz fires again", Why: "It fires again."}, ask.ID, map[string]any{"ask": "again"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("an ended case: err = %v, want ErrNotFound", err)
+	}
+	if o, w, a := read(); o != card.Objective || w != card.Why || a != "SigNoz cleared the alert" {
+		t.Fatalf("an ended case changed the card: objective %q, why %q, ask %q", o, w, a)
+	}
+}

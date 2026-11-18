@@ -27,7 +27,7 @@ func fixtureOf(t *testing.T, group, kind string) facefixtures.Fixture {
 // answer's label. It names the sessions, never the budget.
 func TestCardMessageComesFromTheFace(t *testing.T) {
 	fx := fixtureOf(t, facefixtures.GroupCase, string(factoryd.CaseSessionCap))
-	m, ok := factoryd.PokeOf(factoryd.Event{Kind: factoryd.EventQuestionAsked, TaskID: fx.Task.ID, Detail: fx.Ask.Detail}, fx.Task)
+	m, ok := factoryd.PokeOf(factoryd.Event{Kind: factoryd.EventQuestionAsked, TaskID: fx.Task.ID, Detail: fx.Ask.Detail}, fx.Task, factoryd.Task{})
 	want := "#2291 (Board export: import a snapshot back) needs you. A card runs only the sessions it was given, and this one has used all 3."
 	if !ok || m.Content != want {
 		t.Fatalf("the message = %q, %v\nwant %q", m.Content, ok, want)
@@ -37,7 +37,7 @@ func TestCardMessageComesFromTheFace(t *testing.T) {
 	}
 	suggested := fx.Ask.Detail
 	suggested["preselected"], suggested["recommended_by"] = map[string]any{"action": factoryd.ActExtend}, "the factory agent"
-	m, _ = factoryd.PokeOf(factoryd.Event{Kind: factoryd.EventQuestionAsked, TaskID: fx.Task.ID, Detail: suggested}, fx.Task)
+	m, _ = factoryd.PokeOf(factoryd.Event{Kind: factoryd.EventQuestionAsked, TaskID: fx.Task.ID, Detail: suggested}, fx.Task, factoryd.Task{})
 	if want += " The factory agent suggests “Allow more sessions”."; m.Content != want {
 		t.Errorf("the suggested message = %q\nwant %q", m.Content, want)
 	}
@@ -95,7 +95,7 @@ func TestEveryPokePassesLint(t *testing.T) {
 	add(factoryd.Event{Kind: factoryd.EventRoutineRan, Detail: map[string]any{"poke": "Weekly bump: 1 card."}}, factoryd.Task{})
 	seen := map[string]bool{}
 	for _, x := range events {
-		m, ok := factoryd.PokeOf(x.e, x.card)
+		m, ok := factoryd.PokeOf(x.e, x.card, factoryd.Task{})
 		if !ok {
 			continue
 		}

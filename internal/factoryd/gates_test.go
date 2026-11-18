@@ -1735,7 +1735,7 @@ func TestRequestApprovalOfAFactoryPullRequest(t *testing.T) {
 				}
 			}
 		}
-		if m, ok := PokeOf(e, task); !ok || m.Content != c.content || !slices.Equal(m.Choices, c.choices) {
+		if m, ok := PokeOf(e, task, Task{}); !ok || m.Content != c.content || !slices.Equal(m.Choices, c.choices) {
 			t.Fatalf("red %t: the poke = %+v, want %q with %q", c.red, m, c.content, c.choices)
 		}
 	}

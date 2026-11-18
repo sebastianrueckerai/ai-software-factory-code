@@ -124,7 +124,7 @@ func TestPokeOf(t *testing.T) {
 		{"the member's retry", Event{Kind: EventCardRetried, TaskID: "t-1", Detail: map[string]any{"autonomy": "assisted", "decider": "member"}}, card, ChatMessage{}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := PokeOf(tt.e, tt.t)
+			got, ok := PokeOf(tt.e, tt.t, Task{})
 			if ok != tt.ok {
 				t.Fatalf("pokeOf ok = %v, want %v", ok, tt.ok)
 			}
@@ -143,6 +143,48 @@ func TestPokeOf(t *testing.T) {
 				t.Fatalf("pokeOf = %+v,\nwant %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+// A helper's poke names its step on the parent, the card the step stands
+// on: a withdrawn ask, a flag's and a failure say "the sizing of #2003",
+// never the parent alone, and a failed helper offers no retry, which
+// files no report again. Its ask names the parent and says which step
+// asks; its end done is the parent's to tell.
+func TestAHelpersPokesNameItsStep(t *testing.T) {
+	parent := Task{ID: "t-c", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 2003, Objective: "Board export: import a snapshot back"}
+	sizing := Task{ID: "t-size", Kind: "agent", Status: "failed", Repository: "sf/code", Source: SourceSizing, Parent: "t-c"}
+	const of = "#2003 (Board export: import a snapshot back)"
+	event := func(kind string, detail map[string]any) Event {
+		return Event{Kind: kind, TaskID: "t-size", IssueNumber: 2003, Detail: detail}
+	}
+	for _, tt := range []struct {
+		name    string
+		e       Event
+		want    string
+		choices []string
+	}{
+		{"its ask", event(EventQuestionAsked, map[string]any{"ask": "No machine could start the sizing's session. Try again, or end the sizing?",
+			"why": "Several starts in a row waited for a machine with room, and no agent ran."}),
+			of + " needs you. The sizing asks. Several starts in a row waited for a machine with room, and no agent ran.", nil},
+		{"its withdrawn ask", event(EventQuestionWithdrawn, map[string]any{"reason": "the sizing ended"}),
+			"The sizing of " + of + " needs you no more: the sizing ended.", nil},
+		{"its withdrawn flag", event(EventQuestionWithdrawn, map[string]any{"reason": "the issue is closed", "case_kind": string(CaseMonitorFlag)}),
+			"The flag on the sizing of " + of + " needs you no more: the issue is closed.", nil},
+		{"its failure", event(EventTaskEnded, map[string]any{"state": "failed", "reason": "checks: the session found no plan."}),
+			"The sizing of " + of + " failed: the session found no plan.", nil},
+		{"the agent's grant", Event{Kind: EventSessionGranted, TaskID: "t-size", IssueNumber: 2003, Detail: map[string]any{"autonomy": "assisted", "merge_rule": "human", "decider": "agent"}},
+			"The agent gave the sizing of " + of + " one more session.", nil},
+	} {
+		m, ok := PokeOf(tt.e, sizing, parent)
+		if !ok || m.Content != tt.want || !slices.Equal(m.Choices, tt.choices) {
+			t.Errorf("%s: the poke = %q, choices %v (ok %v); want %q, choices %v", tt.name, m.Content, m.Choices, ok, tt.want, tt.choices)
+		}
+	}
+	done := sizing
+	done.Status = "done"
+	if m, ok := PokeOf(event(EventTaskEnded, map[string]any{"state": "done"}), done, parent); ok {
+		t.Errorf("the sizing's done end pokes %q, want no poke", m.Content)
 	}
 }
 
@@ -171,7 +213,7 @@ func TestMergedPokeInformsOnce(t *testing.T) {
 		{"a chain that already covers the card", merge("failure", 0, true), "", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			m, ok := PokeOf(tt.e, merged)
+			m, ok := PokeOf(tt.e, merged, Task{})
 			if ok != tt.ok {
 				t.Fatalf("pokeOf ok = %v, want %v", ok, tt.ok)
 			}
@@ -187,7 +229,7 @@ func TestMergedPokeInformsOnce(t *testing.T) {
 func TestDonePokeSaysLive(t *testing.T) {
 	m, ok := PokeOf(Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}},
 		Task{ID: "t-1", Kind: "agent", IssueNumber: 603, Status: "done", SpentEUR: 0.214,
-			Objective: "Session store: pick the table's store\n\nAcceptance:\n- one store", Track: "direct"})
+			Objective: "Session store: pick the table's store\n\nAcceptance:\n- one store", Track: "direct"}, Task{})
 	if !ok {
 		t.Fatal("pokeOf ok = false, want the done poke")
 	}
@@ -202,7 +244,7 @@ func TestDonePokeSaysLive(t *testing.T) {
 // is, for the chat stands until someone funds it.
 func TestChatBudgetPokeDeliversAtNeedsYou(t *testing.T) {
 	e := Event{Kind: EventChatBudgetSpent, TaskID: "t-chat-linkshort-2000-01", Detail: map[string]any{"budget_eur": float64(5)}}
-	m, ok := PokeOf(e, Task{ID: "t-chat-linkshort-2000-01", Kind: KindChat})
+	m, ok := PokeOf(e, Task{ID: "t-chat-linkshort-2000-01", Kind: KindChat}, Task{})
 	if !ok || m.Kind != MessagePoke {
 		t.Fatalf("pokeOf = %+v, %v", m, ok)
 	}
@@ -391,7 +433,7 @@ func TestFinishRecordsTheIssueCommentsReason(t *testing.T) {
 	if detail["reason"] != reason {
 		t.Fatalf("the task_ended row's reason = %v, want %q", detail["reason"], reason)
 	}
-	m, ok := PokeOf(Event{Kind: EventTaskEnded, TaskID: "t1", Detail: detail}, task)
+	m, ok := PokeOf(Event{Kind: EventTaskEnded, TaskID: "t1", Detail: detail}, task, Task{})
 	if want := "#4 (Add a make check target) failed: policy version 669: risk class forbidden is forbidden to agents: .forgejo/workflows/ci.yml, .forgejo/workflows/pr.yml."; !ok || m.Content != want {
 		t.Fatalf("the poke = %+v, %t, want %q", m, ok, want)
 	}
@@ -526,8 +568,9 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 	if err := p.Pass(ctx); err != nil {
 		t.Fatal(err)
 	}
+	const flagged = "This card's run has not moved or answered for more than 30 minutes. Rescue the work into a new card?"
 	flag, _, err := s.OpenCase(ctx, Case{TaskID: "t-1", Repository: "sf/code", Kind: CaseMonitorFlag, StateKey: "wait_over_bound|x",
-		Problem: "Monitor flag: wait_over_bound"})
+		Problem: flagged})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,7 +580,6 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	const flagged = "The monitor flagged this card: what should happen? Answer it in the project chat."
 	record(EventQuestionAsked, map[string]any{"question": "Use a replica?"})
 	record(EventQuestionAsked, map[string]any{"question": flagged, "case_id": flag.ID, "case_kind": string(CaseMonitorFlag)})
 	if err := p.Pass(ctx); err != nil {
@@ -599,13 +641,14 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 		t.Fatal(err)
 	}
 	var faced []int64
+	flagAsks := map[string]string{"issue_open_after_end": "This card ended, and its issue is still open. Close the issue?", "checkin_cut": "This card's last session went unjudged because its check ended early."}
 	for _, flag := range []string{"issue_open_after_end", "checkin_cut"} {
-		c, _, err := s.OpenCase(ctx, Case{TaskID: "t-1", Repository: "sf/code", Kind: CaseMonitorFlag, StateKey: flag + "|x", Problem: "Monitor flag: " + flag})
+		c, _, err := s.OpenCase(ctx, Case{TaskID: "t-1", Repository: "sf/code", Kind: CaseMonitorFlag, StateKey: flag + "|x", Problem: flagAsks[flag]})
 		if err != nil {
 			t.Fatal(err)
 		}
 		faced = append(faced, c.ID)
-		record(EventQuestionAsked, map[string]any{"question": "The monitor flagged this card (" + flag + "): what should happen? Answer it in the project chat.",
+		record(EventQuestionAsked, map[string]any{"question": flagAsks[flag],
 			"case_id": c.ID, "case_kind": string(CaseMonitorFlag), "flag": flag})
 	}
 	copyWords := func() []string {

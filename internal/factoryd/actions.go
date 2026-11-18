@@ -451,6 +451,8 @@ var Actions = []Action{
 		switch {
 		case f.Final != "":
 			return "this card ended " + f.Final + " and no run of it is left to end"
+		case f.Report:
+			return "a report card pushes no branch, so no new card can go on from it: resume it or close it"
 		case f.Kind == CaseMonitorFlag && (f.Flag == "wait_over_bound" && f.Wait == "run_quiet" || f.Flag == "finding_confirmed_twice"), f.RunGone:
 			return ""
 		}
@@ -673,6 +675,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	if !a.Rungs[rung] && !ended {
 		return fmt.Sprintf("%s may not pick %s: %s may", who(rung), a.Name, rungsText(a.Rungs))
 	}
+	// Act's rule for an ended card's case (endedRefusal), read before a cap
+	// stands in for the case's kind; a press with no case is the card's own
+	onCase, planWait := f.Kind != "", f.Kind == CaseDependencyFailed && f.Planner
 	if rung == 1 && a.Name == ActWithdraw && f.Kind != CaseMonitorFlag {
 		return "withdraw ends a monitor flag's case alone: the card's run waits on this case, so rung 1 answers it or hands it up"
 	}
@@ -699,6 +704,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	}
 	if why := a.Applies(f, r); why != "" {
 		return why
+	}
+	if why := endedRefusal(f.Final, planWait, a.Name); onCase && why != "" {
+		return "the card " + why
 	}
 	if i := slices.IndexFunc(f.Partial, func(p string) bool { return strings.HasPrefix(p, partialHumanClasses) }); rung == 2 && a.Name == ActApproveMerge && i >= 0 {
 		return fmt.Sprintf("the classes that keep a human on a merge could not be read (%s), so rung 2 cannot tell whether class %s keeps one: hand_up with approve_merge as the recommendation",

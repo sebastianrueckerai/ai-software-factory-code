@@ -113,7 +113,7 @@ const mustOpen = {
     [labID(607)]: ["pull request #612", "Merge this card's pull request?", "high risk", "Migration", "Merge it", "Send it back", "Reject and close it"],
     [labID(558)]: ["How far back does the feed page by default?", "One day", "One week", "The 500 newest rows", "Answer in my words"],
     [labID(601)]: ["pull request #605"],
-    "ai-software-factory-code/weekly-bump": ["Skip once", "Run now"],
+    "ai-software-factory-code/weekly-bump": ["Skip the next run", "Run it now", "The routine misses its next run."],
   },
   fire: {
     [labID(619) + ":overview"]: ["Rent a cx33 server for 5 hours at about 0.07 EUR?", "nothing for over 41 min", "Beyond the project's envelope", "Approve it", "Refuse it"],
@@ -1372,7 +1372,7 @@ async function text(page) {
     if (sc === "busy") {
       // the routines (C16): every ghost at the foot of Queued, Needs you holds only the
       // filed card (the 2026-10-17 ruling), the control in the
-      // board's head, the strip's cell, the chip, the routine's drawer and its Skip once
+      // board's head, the strip's cell, the chip, the routine's drawer and its skip
       await seed("busy");
       await p.page.goto(base + "/", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
@@ -1416,15 +1416,15 @@ async function text(page) {
       await p.page.goto(base + "/#routine=ai-software-factory-code/weekly-bump:runs", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
       if (!(await d.locator('a[href="#card=' + labID(781) + '"]').count())) fails.push("routines: the Runs tab does not link #781");
-      // Skip once is the routine drawer's act: the ghost then reads skipped
-      // once, and the drawer offers the undo
+      // "Skip the next run" is the routine's opened card's answer: the ghost
+      // then reads skipped once, and the drawer offers the undo
       await p.page.goto(base + "/#routine=ai-software-factory-code/weekly-bump", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
-      await d.getByRole("button", { name: "Skip Weekly bump once" }).click();
+      await d.getByRole("button", { name: "Skip the next run" }).click();
       await p.page.waitForTimeout(800);
       const skipped = await p.page.locator('#board [data-ghost="ai-software-factory-code/weekly-bump"]').innerText();
-      if (!skipped.includes("skipped once")) fails.push("routines: after Skip once the ghost reads " + JSON.stringify(skipped) + ", want skipped once");
-      if (!(await d.getByRole("button", { name: "Undo the skip of Weekly bump" }).count())) fails.push("routines: after Skip once the drawer offers no Undo skip");
+      if (!skipped.includes("skipped once")) fails.push("routines: after the skip the ghost reads " + JSON.stringify(skipped) + ", want skipped once");
+      if (!(await d.getByRole("button", { name: "Undo the skip" }).count())) fails.push("routines: after the skip the drawer offers no Undo the skip");
       await p.page.goto(base + "/?routines=none", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
       if (await p.page.locator("#board .card.ghost").count()) fails.push("routines: ?routines=none leaves a ghost");

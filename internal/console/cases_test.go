@@ -87,7 +87,7 @@ func TestNeedsYouShowsOneRowPerCardAndACarouselForMany(t *testing.T) {
 	if next.Code != http.StatusOK {
 		t.Fatalf("case 2 = %d %s", next.Code, next.Body)
 	}
-	for _, want := range []string{`<span class="why">A card that waits past its limit may be stuck.</span>`, `<span class="pos" aria-live="polite">2 of 3</span>`,
+	for _, want := range []string{`<span class="why">A card that waits this long may be stuck.</span>`, `<span class="pos" aria-live="polite">2 of 3</span>`,
 		`id="ask-prev-t-a" aria-label="The ask before" hx-get="/projects/` + casesProject + `/cards/t-a/cases/1?`,
 		`id="ask-next-t-a" aria-label="The ask after" hx-get="/projects/` + casesProject + `/cards/t-a/cases/3?`} {
 		if !strings.Contains(next.Body.String(), want) {
@@ -122,7 +122,7 @@ func TestBoardReadKeepsTheCaseInView(t *testing.T) {
 	r := newRig(t)
 	seatCases(r)
 	ck, _ := r.loggedIn(t)
-	if needs := needsOf(t, r, ck, "/?case=t-a:2&case=t-b:4"); !strings.Contains(needs, `<span class="why">A card that waits past its limit may be stuck.</span>`) || !strings.Contains(needs, `2 of 3`) {
+	if needs := needsOf(t, r, ck, "/?case=t-a:2&case=t-b:4"); !strings.Contains(needs, `<span class="why">A card that waits this long may be stuck.</span>`) || !strings.Contains(needs, `2 of 3`) {
 		t.Errorf("the board dropped the case in view:\n%s", needs)
 	}
 	if needs := needsOf(t, r, ck, "/?case=t-a:99"); !strings.Contains(needs, `<span class="why">A session that changes no code spends money and moves the work no closer to done.</span>`) {
@@ -497,6 +497,25 @@ func TestAFinalCardsApprovalStillShows(t *testing.T) {
 	needs := needsOf(t, r, ck, "/")
 	if face := faceOf(t, needs, "t-done"); strings.Count(needs, `data-card="t-done"`) != 1 || !strings.Contains(face, `<strong class="title">Merge this card&#39;s pull request?</strong>`) || strings.Contains(face, `data-case=`) {
 		t.Errorf("the ended card's pending approval is not on the board alone:\n%s", needs)
+	}
+}
+
+// An ended card whose issue stayed open stands in Needs you with the
+// flag's ask, and its opened card offers the flag's three answers.
+func TestAnEndedCardsOpenIssueStandsInNeedsYou(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("", factoryd.Task{ID: "t-end", Kind: "agent", Status: "failed", Repository: "sf/code", IssueNumber: 8, BudgetEUR: 2})
+	r.openCases = map[string][]factoryd.Case{"t-end": {{ID: 6, TaskID: "t-end", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman,
+		StateKey: "issue_open_after_end|", Facts: map[string]any{"flag": "issue_open_after_end"}}}}
+	ck, _ := r.loggedIn(t)
+	if face := faceOf(t, needsOf(t, r, ck, "/"), "t-end"); !strings.Contains(face, `<strong class="title">This card ended, and its issue is still open. Close the issue?</strong>`) {
+		t.Errorf("the ended card's open issue does not stand in Needs you with its ask:\n%s", face)
+	}
+	opened := getPage(r, ck, "/cards/t-end/drawer?tab=overview").Body.String()
+	for _, key := range []string{factoryd.ActClose + "/issue", factoryd.ActSettle + "/open", factoryd.ActNote} {
+		if !strings.Contains(opened, `action="/tasks/t-end/resolve" hx-post="/tasks/t-end/resolve" class="answer" data-answer="`+key+`"`) {
+			t.Errorf("the ended card's opened card offers no %s:\n%s", key, opened)
+		}
 	}
 }
 

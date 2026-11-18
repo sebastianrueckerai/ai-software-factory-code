@@ -66,6 +66,21 @@ func askTitle(q HumanQuestion) string {
 	return oneLine(q.Ask)
 }
 
+// askQuestion is an ask as its row's question holds it: one line of at
+// most 300 runes.
+func askQuestion(ask string) string {
+	return textutil.Truncate(strings.Join(strings.Fields(ask), " "), 300)
+}
+
+// Refaced is human card t once its live ask says q, with the facts that
+// ask's case takes: the card's title and why line are q's ask and why, as
+// HumanCardText files them, and its text stays as it was filed.
+func Refaced(t Task, q HumanQuestion) (Task, map[string]any) {
+	_, body, _ := strings.Cut(t.Objective, "\n\n")
+	t.Objective, t.Why = IssueObjective(askTitle(q), body), q.Why
+	return t, map[string]any{"ask": q.Ask, "question": askQuestion(q.Ask), "why": q.Why, "happened": q.Happened}
+}
+
 // questionBody is a human card's text: the question's parts in order but
 // its why, which the issue's mirror leads with, then footer.
 func questionBody(q HumanQuestion, footer string) string {
@@ -98,7 +113,7 @@ func (a HumanAsk) Event(t Task) Event {
 	asked := map[string]any{}
 	maps.Copy(asked, a.Facts)
 	maps.Copy(asked, map[string]any{
-		"question": textutil.Truncate(strings.Join(strings.Fields(a.Q.Ask), " "), 300),
+		"question": askQuestion(a.Q.Ask),
 		"ask":      a.Q.Ask,
 		"why":      a.Q.Why,
 		"info":     a.Q.Info,

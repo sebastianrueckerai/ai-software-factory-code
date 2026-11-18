@@ -135,7 +135,7 @@ func TestCardDoorSeedsTheCardsOwnAskNotAMonitors(t *testing.T) {
 	seedAsk(t, r)
 	if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", TaskID: "t-e",
 		Kind: factoryd.EventQuestionAsked, Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd,
-		Detail: map[string]any{"ask": "The monitor flagged this card: what should happen? Answer case 7 in the project chat.",
+		Detail: map[string]any{"ask": "This card's run has not moved or answered for more than 30 minutes. Rescue the work into a new card?",
 			"case_id": 7, "case_kind": string(factoryd.CaseMonitorFlag)}}); err != nil {
 		t.Fatal(err)
 	}

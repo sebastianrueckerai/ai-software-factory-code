@@ -108,7 +108,7 @@ func TestSettleOfByCase(t *testing.T) {
 	ev := func(id int64, sec int, kind, actor string, detail map[string]any) Event {
 		return Event{ID: id, At: at.Add(time.Duration(sec) * time.Second), Kind: kind, Actor: actor, TaskID: "t-e", Detail: detail}
 	}
-	const flagged = "The monitor flagged this card: what should happen? Answer case 12 in the project chat."
+	const flagged = "This card's run has not moved or answered for more than 30 minutes. Rescue the work into a new card?"
 	ownAsk := ev(20, 0, EventQuestionAsked, FactoryDecider, map[string]any{"question": "Use a replica?"})
 	ownAsk5 := ev(20, 0, EventQuestionAsked, FactoryDecider, map[string]any{"question": "Use a replica?", "case_id": float64(5)})
 	monAsk := ev(21, 1, EventQuestionAsked, FactoryDecider, map[string]any{"question": flagged, "case_id": float64(12), "case_kind": string(CaseMonitorFlag)})
@@ -140,7 +140,7 @@ func TestSettleOfByCase(t *testing.T) {
 			Content: "#13 needs you: " + question}
 	}
 	// the monitor's ask on an ended card whose issue is open
-	issueAsk := ev(44, 600, EventQuestionAsked, FactoryDecider, map[string]any{"question": "The monitor flagged this card: what should happen? Answer case 14 in the project chat.",
+	issueAsk := ev(44, 600, EventQuestionAsked, FactoryDecider, map[string]any{"question": "This card ended, and its issue is still open. Close the issue?",
 		"case_id": float64(14), "case_kind": string(CaseMonitorFlag), "flag": "issue_open_after_end"})
 	issueRow := ChatMessage{At: issueAsk.At, Kind: MessageEscalation, BirthKind: EventQuestionAsked}
 	issueClosed := ev(45, 700, EventQuestionWithdrawn, FactoryDecider, map[string]any{"case_id": float64(14), "reason": "the issue is closed"})
@@ -234,7 +234,7 @@ func TestAMessageFindsItsAskByItsWhy(t *testing.T) {
 			"case_kind": string(CaseMonitorFlag), "flag": "issue_open_after_end"}}
 	own := Event{ID: 2, Kind: EventQuestionAsked, TaskID: "t-1", At: at, Actor: FactoryDecider,
 		Detail: map[string]any{"question": "Allow more sessions?", "why": "its work is not done, and it has no session left", "case_id": float64(8)}}
-	m, ok := PokeOf(flag, Task{ID: "t-1", IssueNumber: 4})
+	m, ok := PokeOf(flag, Task{ID: "t-1", IssueNumber: 4}, Task{})
 	if !ok || m.Content != "#4 needs you. The card ended while its issue stays open." {
 		t.Fatalf("the flag's message = %q, %v", m.Content, ok)
 	}

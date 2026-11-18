@@ -19,7 +19,7 @@ import (
 // checks, as the Poker writes it.
 func failedPoke(id string, n int64) factoryd.ChatMessage {
 	m, _ := factoryd.PokeOf(factoryd.Event{Kind: factoryd.EventTaskEnded, TaskID: id, Detail: map[string]any{"state": "failed", "reason": "checks: the checks failed on c1."}},
-		factoryd.Task{ID: id, Kind: "agent", IssueNumber: n})
+		factoryd.Task{ID: id, Kind: "agent", IssueNumber: n}, factoryd.Task{})
 	return m
 }
 
@@ -373,8 +373,9 @@ func TestChatAskFactsReadAnEndedCardsNewestRows(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-d", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 17}})
 	var rows []factoryd.ChatMessage
+	asks := map[string]string{"issue_open_after_end": "This card ended, and its issue is still open. Close the issue?", "checkin_cut": "This card's last session went unjudged because its check ended early."}
 	for i, flag := range []string{"issue_open_after_end", "checkin_cut"} {
-		question := fmt.Sprintf("The monitor flagged this card: what should happen? Answer case %d in the project chat.", 21+i)
+		question := asks[flag]
 		if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", TaskID: "t-d", Kind: factoryd.EventQuestionAsked, Actor: factoryd.FactoryDecider,
 			Via: factoryd.ViaFactoryd, At: at, Detail: map[string]any{"question": question, "case_id": float64(21 + i), "case_kind": string(factoryd.CaseMonitorFlag), "flag": flag}}); err != nil {
 			t.Fatal(err)

@@ -74,7 +74,9 @@ var openedProse = []string{"o-title", "o-why", "o-question", "o-askwhy", "o-stor
 // button with its effect line, and beside an answer the viewer may not
 // press, or in place of all, the line that names who can; no field shows
 // before a press; every fold is
-// closed; every answer posts what it names; a plan's card has the plan
+// closed; every answer posts what it names on the card it stands on; no
+// label stands twice; a
+// plan's card has the plan
 // with its own row marked; every card says what each session got; a live
 // card can be ended; and the texts pass the guide's checks and name none
 // of the factory's own words.
@@ -186,6 +188,9 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 		if n.Type != html.ElementNode {
 			continue
 		}
+		if n.Data == "form" && hasClass(n, "answer") && htmlAttr(n, "hx-target") != "" {
+			t.Errorf("an answer targets %s, not the card it stands on:\n%s", htmlAttr(n, "hx-target"), shown)
+		}
 		if n.Data == "input" && htmlAttr(n, "type") == "hidden" && htmlAttr(n, "value") == "" && within(n, o, func(p *html.Node) bool { return hasClass(p, "answer") }) {
 			t.Errorf("an answer posts %s empty:\n%s", htmlAttr(n, "name"), shown)
 		}
@@ -229,6 +234,15 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 			}
 		}
 		return nil
+	}
+	picks := map[string]int{}
+	for _, p := range classed(o, "pick") {
+		picks[nodeText(p)]++
+	}
+	for label, n := range picks {
+		if n > 1 {
+			t.Errorf("the opened card offers %q %d times:\n%s", label, n, shown)
+		}
 	}
 	if fold("What each session got") == nil {
 		t.Errorf("the opened card does not say what each session got:\n%s", shown)

@@ -604,7 +604,7 @@ document.addEventListener("click", function (e) {
   function lockAll(a) {
     var q = CSS.escape(a.id);
     onBoard(a.id).forEach(function (el) { lock(a, el); });
-    document.querySelectorAll("#drawer [data-drawer=\"" + q + "\"] .o-answers, #drawer [data-routine-drawer^=\"" + q + ":\"] .acts").forEach(function (el) { lock(a, el); });
+    document.querySelectorAll("#drawer [data-drawer=\"" + q + "\"] .o-answers, #drawer [data-routine-drawer^=\"" + q + ":\"] .o-answers").forEach(function (el) { lock(a, el); });
   }
   function glide(el, was) {
     if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;

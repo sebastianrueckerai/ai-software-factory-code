@@ -154,7 +154,13 @@ func (p *Poker) Pass(ctx context.Context) error {
 				}
 				e.Detail["chain"], e.Detail["repair"], e.Detail["covered"] = state, float64(repair), covered
 			}
-			m, ok := PokeOf(e, t)
+			var parent Task
+			if HelperStep(t.Source) != "" && t.Parent != "" {
+				if parent, _, err = p.Store.Task(ctx, t.Parent); err != nil {
+					return err
+				}
+			}
+			m, ok := PokeOf(e, t, parent)
 			var to []string
 			if ok {
 				to = pokeTo(tree, e.Repository)
@@ -239,9 +245,17 @@ func pokeTo(tree policy.Tree, repository string) []string {
 
 // PokeOf is event e's poke, t the card it names, false for an event that
 // pokes nobody. A message about a card's ask is its face's words
-// (askMessage); a notice is one line of at most noticeMax runes.
-func PokeOf(e Event, t Task) (ChatMessage, bool) {
-	name := inboxName(e, t)
+// (askMessage); a notice is one line of at most noticeMax runes. A helper
+// task's message names its step on parent, the card the step stands on:
+// its ask is the parent's, and says which step asks.
+func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
+	name, step := inboxName(e, t), ""
+	if s := HelperStep(t.Source); s != "" && parent.ID != "" {
+		name = s + " of " + inboxName(e, parent)
+		if e.Kind == EventQuestionAsked {
+			name, step = inboxName(e, parent), capitalize(s)+" asks."
+		}
+	}
 	str := func(k string) string { s, _ := e.Detail[k].(string); return s }
 	num := func(k string) int64 { n, _ := e.Detail[k].(float64); return int64(n) }
 	bl := func(k string) bool { v, _ := e.Detail[k].(bool); return v }
@@ -258,7 +272,7 @@ func PokeOf(e Event, t Task) (ChatMessage, bool) {
 			// an ask whose row stores no why says its question where it fits
 			why = q
 		}
-		m.Content = askMessage(name, "", why, suggestion(e.Detail, offersOf(e.Detail["offers"])))
+		m.Content = askMessage(name, step, why, suggestion(e.Detail, offersOf(e.Detail["offers"])))
 		m.Decider = str("decider_line")
 		if cs, ok := e.Detail["choices"].([]any); ok {
 			for _, c := range cs {
@@ -271,7 +285,7 @@ func PokeOf(e Event, t Task) (ChatMessage, bool) {
 		// a row after the card's escalation: the inbox offers its answer
 		// row no more. A monitor's case sits beside the card's own ask, so
 		// its row names the flag; the case id stays in the event's detail
-		who := name
+		who := capitalize(name)
 		if e.Detail["case_kind"] == string(CaseMonitorFlag) {
 			who = "The flag on " + name
 		}
@@ -308,8 +322,11 @@ func PokeOf(e Event, t Task) (ChatMessage, bool) {
 				// the gate's code word leads a machine's reason, not a human's line
 				reason = rest
 			}
-			m.Content = notice(name+" failed: "+strings.TrimSuffix(reason, ".")+".", name+" failed.")
-			m.Choices = []string{LabelOf(ActRetry), LabelOf(ActNote)}
+			m.Content = notice(capitalize(name)+" failed: "+strings.TrimSuffix(reason, ".")+".", capitalize(name)+" failed.")
+			if !t.Report() {
+				// a helper's report is no work card: no retry files it again
+				m.Choices = []string{LabelOf(ActRetry), LabelOf(ActNote)}
+			}
 		case str("state") == "done" && t.Parent == "":
 			m.Content = fmt.Sprintf("%s is done and live. It cost %s EUR.", name, money(t.SpentEUR))
 		default:

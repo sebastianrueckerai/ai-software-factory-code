@@ -475,7 +475,7 @@ func (s labScene) poke(n int64, at time.Time, e factoryd.Event) factoryd.ChatMes
 	}
 	t := s.tasks[i].Task
 	e.TaskID, e.Repository = t.ID, t.Repository
-	m, ok := factoryd.PokeOf(e, t)
+	m, ok := factoryd.PokeOf(e, t, factoryd.Task{})
 	if !ok {
 		panic(fmt.Sprintf("lab: no poke of %s on #%d", e.Kind, n))
 	}
@@ -1377,12 +1377,14 @@ const labBumpBrief = "The factory pins every outside input of its builds and its
 // The round's four routines of the code project: its weekly bump, the
 // factory's template pass, a dependency update and an audit.
 var (
-	labBump = policy.Routine{Name: "weekly-bump", Title: "Weekly bump", Schedule: []policy.Trigger{{Cron: "0 6 * * 1"}}, Files: policy.FilesHuman,
+	labBump = policy.Routine{Name: "weekly-bump", Title: "Weekly bump", Why: "So security fixes reach the factory within a week.",
+		Schedule: []policy.Trigger{{Cron: "0 6 * * 1"}}, Files: policy.FilesHuman,
 		Brief: "routines/weekly-bump.md", WhileOpen: policy.WhileOpenHold, Missed: policy.MissedFileOnce, Tell: policy.TellInbox}
 	labTemplatePass = policy.Routine{Name: "template-pass", Title: "Template pass", Schedule: []policy.Trigger{{Cron: "3 * * * *"},
 		{On: policy.OnConfigurationVersion}}, Files: policy.FilesPullRequest, Pass: policy.PassTemplate, WhileOpen: policy.WhileOpenFold, Tell: policy.TellQuiet}
-	labDeps = policy.Routine{Name: "dependency-update", Title: "Dependency update", Schedule: []policy.Trigger{{Cron: "0 6 * * 4"}},
-		Files: policy.FilesAgent, Skill: "dependency-update", Tell: policy.TellQuiet}
+	labDeps = policy.Routine{Name: "dependency-update", Title: "Dependency update", Why: "Outside libraries fall behind their fixes unless someone updates them.",
+		Schedule: []policy.Trigger{{Cron: "0 6 * * 4"}},
+		Files:    policy.FilesAgent, Skill: "dependency-update", Tell: policy.TellQuiet}
 	labAudit = policy.Routine{Name: "audit", Title: "Audit", Schedule: []policy.Trigger{{Merges: 20}}, Files: policy.FilesAgent, Skill: "audit"}
 )
 

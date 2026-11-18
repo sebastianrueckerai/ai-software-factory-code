@@ -91,7 +91,7 @@ func AdmitBrief(b BriefText, job BriefJob, refs RefResolver, try int) (unchecked
 const (
 	titleMax   = 70
 	askMax     = 110
-	whyMax     = 160
+	whyMax     = policy.WhyMax
 	summaryMax = 600
 )
 

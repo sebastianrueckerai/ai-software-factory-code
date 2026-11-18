@@ -80,7 +80,8 @@ func storedFace(detail map[string]any) (AskFace, bool) {
 }
 
 // AskOffers are the choices a human card's ask recorded: the offers that
-// carry no effect line.
+// carry no effect line, as the card was filed, and the choices of a face
+// stored on the row again (SetCaseFace), which carry their effect.
 func AskOffers(detail map[string]any) []QuestionChoice {
 	raw, ok := detail["offers"]
 	if !ok {
@@ -96,8 +97,8 @@ func AskOffers(detail map[string]any) []QuestionChoice {
 	}
 	var out []QuestionChoice
 	for _, o := range all {
-		if o.Effect == "" {
-			out = append(out, QuestionChoice{Value: o.Value, Label: o.Label})
+		if v, stored := strings.CutPrefix(o.Value, choicePrefix); stored || o.Effect == "" {
+			out = append(out, QuestionChoice{Value: v, Label: o.Label})
 		}
 	}
 	return out

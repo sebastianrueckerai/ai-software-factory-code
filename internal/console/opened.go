@@ -239,7 +239,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 			row = n.Case
 		}
 	}
-	onCase := false
+	onCase, helperPage := false, false
 	switch {
 	case row != nil:
 		f := factoryd.Facts{CaseFacts: factoryd.FactsOf(row.Case), Card: row.card(k).Task, Case: row.Case}
@@ -294,8 +294,10 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 			requestAsk(o.Ask, *row.Approval)
 		}
 		// a monitor's flag sits beside the card's run, so the card's own
-		// actions stand beside its answers
+		// actions stand beside its answers; a helper's page ends its step,
+		// so of the card's own actions only its end stands beside it
 		onCase = row.Case.Kind != factoryd.CaseMonitorFlag || row.Owner != nil
+		helperPage = row.Owner != nil
 		live := factoryd.FaceOf(row.Case, f)
 		for _, a := range append(live.Answers, live.More...) {
 			if !mayAnswer(v, k, a.Action) || slices.ContainsFunc(row.Face.Offers, func(m factoryd.AskOffer) bool { return m.Value == a.Key() || m.Label == a.Label }) ||
@@ -348,8 +350,9 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 	for _, a := range factoryd.MoreOf(bt.Task, facts) {
 		tool := a.Action == factoryd.AnswerSteer || a.Action == factoryd.AnswerEditBrief || a.Action == factoryd.AnswerAccent || a.Action == factoryd.AnswerThread
 		switch {
-		case onCase && !tool, !c.mayPress(v, k, a):
-		case slices.ContainsFunc(o.More, func(m answerView) bool { return m.Label == a.Label }):
+		case onCase && !tool && !(helperPage && a.Action == factoryd.ActClose), !c.mayPress(v, k, a):
+		case slices.ContainsFunc(o.More, func(m answerView) bool { return m.Label == a.Label }),
+			o.Ask != nil && slices.ContainsFunc(o.Ask.Answers, func(m answerView) bool { return m.Label == a.Label }):
 		default:
 			o.More = append(o.More, c.answerOf(ctx, v, k, k.ID, a.Key(), a, facts, func(a factoryd.Answer, key string) (*pressForm, func(string) string) {
 				return cardPress(v, k, a, key)
@@ -440,12 +443,13 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 
 // holds says card t holds a case at the human that its row of Needs you
 // shows: a live card's, a done plan's wait on its failed card, its
-// criteria request and a closed plan's ask to close it, and its helper
-// task's whatever its state. The board, a card's swap and its opened card
-// read it alike.
+// criteria request and a closed plan's ask to close it, an ended card's
+// open issue, and its helper task's whatever its state. The board, a
+// card's swap and its opened card read it alike.
 func (cs caseSet) holds(t factoryd.Task) bool {
 	return slices.ContainsFunc(cs.byCard[t.ID], func(o factoryd.Case) bool {
-		return !factoryd.Final(t.Status) || factoryd.PlanWaitCase(o, t) || o.Kind == factoryd.CasePlanCriteria || o.Kind == factoryd.CasePlanHeld || o.TaskID != t.ID
+		return !factoryd.Final(t.Status) || factoryd.PlanWaitCase(o, t) || o.Kind == factoryd.CasePlanCriteria || o.Kind == factoryd.CasePlanHeld ||
+			factoryd.EndedCardCase(o, t) || o.TaskID != t.ID
 	})
 }
 

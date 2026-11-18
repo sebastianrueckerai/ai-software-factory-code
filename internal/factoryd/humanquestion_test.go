@@ -46,11 +46,11 @@ func TestHumanCardQuestions(t *testing.T) {
 		happened string
 	}{
 		"alert": {AlertQuestion(alert, "shop", "prod", "the project runs no agents", "body"),
-			"Look into the alert disk full on db", []QuestionChoice{noted, notNow}, "It has fired since 1 October at 08:00 UTC."},
+			"SigNoz fires the alert “disk full” on db", []QuestionChoice{noted, notNow}, "It has fired since 1 October at 08:00 UTC."},
 		"flux alert": {AlertQuestion(SigNozAlert{Fingerprint: "rollout/x", Labels: map[string]string{"alertname": "stuck"}, StartsAt: alert.StartsAt}, "shop", "prod", "w", "b"),
-			"Look into the alert stuck on prod", []QuestionChoice{noted, notNow}, "It has fired since 1 October at 08:00 UTC."},
+			"Flux fires the alert “stuck” on prod", []QuestionChoice{noted, notNow}, "It has fired since 1 October at 08:00 UTC."},
 		"event alert": {AlertQuestion(SigNozAlert{Fingerprint: "fp", Labels: map[string]string{"alertname": "Job failed", "event": "true"}, StartsAt: alert.StartsAt}, "infra", "forgejo", "w", "b"),
-			"Look into the alert Job failed on forgejo", []QuestionChoice{noted, notNow}, "It has fired since 1 October at 08:00 UTC."},
+			"SigNoz fires the alert “Job failed” on forgejo", []QuestionChoice{noted, notNow}, "It has fired since 1 October at 08:00 UTC."},
 		"roll refused": {RollRefusedQuestion("abc1234", []string{"gateway", "worker"}, []string{"gateway: x", "worker: y"}, "https://git/run/1"),
 			"Fix the signing of the images gateway, worker, then close this card", []QuestionChoice{did, notNow},
 			"Main's run is green at abc1234, and 2 images of it carry no signature by the factory's key."},
@@ -60,7 +60,7 @@ func TestHumanCardQuestions(t *testing.T) {
 		"config": {ConfigRejectedQuestion("factory", "c9c9c9c9c9", "https://git/tree", "Version 1 stays current.", "bad key"),
 			"Fix the rejected configuration in factory/ and push", []QuestionChoice{did, notNow}, "The factory refused commit c9c9c9c9c9 of factory/. Version 1 stays current."},
 		"month cap": {MonthCapCardQuestion(50, "2026-09", 49.98, "https://git/policy#L7", "refused"),
-			"The factory spent its monthly limit of 50.00 EUR. Raise it in policy.yaml, or wait for the month to end?", []QuestionChoice{notNow, noted},
+			"This month's spending reached the factory's limit of 50.00 EUR", []QuestionChoice{noted, notNow},
 			"The factory spent 49.98 EUR of its 50.00 EUR limit in September."},
 		"routine": {RoutineQuestion(policy.Routine{Name: "bump", Title: "Bump the pins"}, "brief", "prov", true),
 			"Bump the pins", []QuestionChoice{did, factory, notNow}, ""},
@@ -111,10 +111,10 @@ func TestHumanCardQuestions(t *testing.T) {
 // whose next run closes the card, and only a name Kubernetes could have
 // given: anything else leaves the Job out.
 func TestEventAlertCardNamesTheJob(t *testing.T) {
-	const note = "w\n\nThe alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card stays open until a human closes it.\n\nbody"
+	const note = "The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card stays open until a human closes it.\n\nbody"
 	a := SigNozAlert{Labels: map[string]string{"alertname": "Job failed", "event": "true", "k8s.object.name": "forgejo-dump-29885910"}}
 	const cronNote = "The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card closes when the CronJob `forgejo-dump` completes a run, or when a human closes it.\n\nbody"
-	want := "w\n\nThe Job `forgejo-dump-29885910` in namespace `forgejo` failed: read its pods' logs " +
+	want := "The Job `forgejo-dump-29885910` in namespace `forgejo` failed: read its pods' logs " +
 		"(`kubectl -n forgejo logs job/forgejo-dump-29885910 --all-containers`). " + cronNote
 	if got := AlertQuestion(a, "infra", "forgejo", "w", "body").Info; got != want {
 		t.Errorf("info = %q, want %q", got, want)
@@ -158,5 +158,22 @@ func TestQuestionCapIsTheEscalationsWords(t *testing.T) {
 		if got := QuestionCap(tc.reason); got != tc.want {
 			t.Errorf("%s: QuestionCap = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// A routine's why line is its cards' why: the human card it files and the
+// agent card's brief. A routine whose file holds none says that it files
+// the card.
+func TestARoutinesWhyLeadsItsCards(t *testing.T) {
+	rt := policy.Routine{Name: "bump", Title: "Bump the pins", Why: "Pinned inputs miss their fixes until a bump."}
+	if q := RoutineQuestion(rt, "brief", "prov", true); q.Why != rt.Why {
+		t.Errorf("the human card's why = %q, want %q", q.Why, rt.Why)
+	}
+	if b := RoutineCard(rt, "brief"); b.Why != rt.Why {
+		t.Errorf("the agent card's why = %q, want %q", b.Why, rt.Why)
+	}
+	rt.Why = ""
+	if b := RoutineCard(rt, "brief"); b.Why != "The routine bump files this card on its schedule." {
+		t.Errorf("the why of a routine with none = %q", b.Why)
 	}
 }

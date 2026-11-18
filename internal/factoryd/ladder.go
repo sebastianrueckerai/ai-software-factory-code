@@ -1223,16 +1223,16 @@ func noRoom(c Case, refund, waiting bool) string {
 }
 
 // boardAnswers names, for the issue, the answers the board shows on case
-// c's face whose action is one of actions: each by its label, with the
-// amount its money field asks. "" when the face shows none of them. No
-// issue line names an answer by hand.
+// c's face whose action is one of actions, every answer when actions
+// names none: each by its label, with the amount its money field asks. ""
+// when the face shows none of them. No issue line names an answer by hand.
 func boardAnswers(c Case, actions ...string) string {
 	f := Facts{CaseFacts: FactsOf(c)}
 	face := FaceOf(c, f)
 	_, f = facing(c, f)
 	var names []string
 	for _, a := range face.Answers {
-		if !slices.Contains(actions, a.Action) {
+		if len(actions) > 0 && !slices.Contains(actions, a.Action) {
 			continue
 		}
 		name := "“" + a.Label + "”"
@@ -1246,10 +1246,29 @@ func boardAnswers(c Case, actions ...string) string {
 		}
 		names = append(names, name)
 	}
+	return orJoin(names)
+}
+
+// orJoin is names as one list: "a, b or c".
+func orJoin(names []string) string {
 	if n := len(names); n > 1 {
 		return strings.Join(names[:n-1], ", ") + " or " + names[n-1]
 	}
 	return strings.Join(names, "")
+}
+
+// flagNext is the issue's line of monitor flag c: its card goes on beside
+// it, or has ended, and offers, the answers on its face, by label.
+func flagNext(c Case, offers []AskOffer) string {
+	lead := "The card goes on meanwhile."
+	if c.Facts["flag"] == "issue_open_after_end" {
+		lead = "This card has ended."
+	}
+	names := make([]string, len(offers))
+	for i, o := range offers {
+		names[i] = "“" + o.Label + "”"
+	}
+	return lead + " Press " + orJoin(names) + " on the board."
 }
 
 // moveLine is the issue's line of what starts the next attempt of case c:
@@ -1281,12 +1300,12 @@ func factsOf(c Case) CaseFacts {
 // tripNext is the last line of a trip's face for case c: at a cap or a
 // budget floor, where a reply is a continue that asks again, the face's
 // answer that buys the next attempt or the chat's extend or fund, for a
-// monitor flag, whose card goes on, the flag in the chat, and elsewhere a
-// reply (replyNext).
+// monitor flag the answers on its face (flagNext; AskHuman names those of
+// the face its row stores), and elsewhere a reply (replyNext).
 func tripNext(c Case, reason string) string {
 	switch c.Kind {
 	case CaseMonitorFlag:
-		return "The card goes on meanwhile. Answer the flag in the project chat."
+		return flagNext(c, offersOfAnswers(FaceOf(c, Facts{CaseFacts: FactsOf(c)}).Answers))
 	case CaseSessionCap, CaseAgentTimeCap:
 		return moveLine(c, "extend", ActExtend)
 	case CaseCheckinFailed:
@@ -1349,6 +1368,13 @@ func PlanWaitCase(c Case, t Task) bool {
 	return c.Kind == CaseDependencyFailed && t.Track == policy.TrackPlan
 }
 
+// EndedCardCase says case c is the open-issue flag of ended card t
+// (issue_open_after_end): it asks about the issue the card left open, so
+// it stands beside the card at rest.
+func EndedCardCase(c Case, t Task) bool {
+	return Final(t.Status) && c.Kind == CaseMonitorFlag && c.Facts["flag"] == "issue_open_after_end"
+}
+
 // askHuman is a case's human face (architecture 6.6): state
 // waiting-human, mirrored on the issue, a comment with the reason and
 // next, the line that says what moves the card on, and a question_asked
@@ -1383,7 +1409,6 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// the fence renders no link: the ones the sanitiser keeps follow it
 		body += "\n\nLinks:\n- " + strings.Join(links, "\n- ")
 	}
-	body += "\n\n" + next
 	stop := reason
 	if reason == HealedReason {
 		stop, _ = c.Facts["reason"].(string)
@@ -1392,28 +1417,7 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 	if err != nil {
 		return 0, err
 	}
-	if note != "" {
-		body += "\n\n" + note
-	}
-	if strings.HasPrefix(reason, screeningAsks) {
-		// the reasons go to the card only: they would teach the author
-		body = screenedLine
-	}
-	var id int64
-	if t.IssueNumber != 0 {
-		// a task without one (a report task) has its question on the card alone
-		if id, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body); err != nil {
-			return 0, err
-		}
-	}
-	// a clicked choice is posted as the member's comment: agent text,
-	// sanitised like the reason
-	choices = slices.Clone(choices)
-	for i, c := range choices {
-		choices[i] = r.untrusted(t, c)
-	}
 	question := EscalationQuestion(reason)
-	step := map[string]any{"reason": reason, "comment": id}
 	var face map[string]any
 	whole := reason != HealedReason && !strings.HasPrefix(reason, screeningAsks)
 	if whole {
@@ -1437,7 +1441,33 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 				face["info"] = strings.TrimSpace(view + "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal))
 			}
 		}
+		if offers, ok := face["offers"].([]AskOffer); ok && c.Kind == CaseMonitorFlag {
+			// the issue names the answers the inbox and the board offer
+			next = flagNext(c, offers)
+		}
 	}
+	body += "\n\n" + next
+	if note != "" {
+		body += "\n\n" + note
+	}
+	if strings.HasPrefix(reason, screeningAsks) {
+		// the reasons go to the card only: they would teach the author
+		body = screenedLine
+	}
+	var id int64
+	if t.IssueNumber != 0 {
+		// a task without one (a report task) has its question on the card alone
+		if id, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body); err != nil {
+			return 0, err
+		}
+	}
+	// a clicked choice is posted as the member's comment: agent text,
+	// sanitised like the reason
+	choices = slices.Clone(choices)
+	for i, c := range choices {
+		choices[i] = r.untrusted(t, c)
+	}
+	step := map[string]any{"reason": reason, "comment": id}
 	if reason == HealedReason {
 		// the restart's sentence asks nothing: the row names the question it asks again
 		asks, err := r.store.AskAnchors(ctx, t.ID)

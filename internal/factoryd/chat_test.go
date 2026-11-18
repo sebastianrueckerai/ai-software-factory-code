@@ -286,7 +286,7 @@ func TestPGStoreBudgetStoppedThreads(t *testing.T) {
 func TestPGStoreChatAsks(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()
 	failed := func(task string, n int64) ChatMessage {
-		m, _ := PokeOf(Event{Kind: EventTaskEnded, TaskID: task, Detail: map[string]any{"state": "failed"}}, Task{ID: task, Kind: "agent", IssueNumber: 21})
+		m, _ := PokeOf(Event{Kind: EventTaskEnded, TaskID: task, Detail: map[string]any{"state": "failed"}}, Task{ID: task, Kind: "agent", IssueNumber: 21}, Task{})
 		m.Conversation = n
 		return m
 	}

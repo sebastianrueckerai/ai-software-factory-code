@@ -800,38 +800,10 @@ type column struct {
 	Finished string
 	Whole    int
 	More     *more
-	// Ghosts are the column's routines at its foot (C16), and
-	// GhostsHidden those the board's routines choice hides.
-	Ghosts       []ghost
+	// Ghosts are the faces of the column's routines at its foot (C16),
+	// and GhostsHidden those the board's routines choice hides.
+	Ghosts       []faceView
 	GhostsHidden int
-}
-
-// ghost is a routine as a card that is not yet there (C16): its schedule
-// in words, its next run ("Mon 06:00 · in 20 min · human card"), its last
-// ("last #781 done in 2 d"), a held run's words, the open card (Open) it
-// runs, and its acts, offered to a writer (CSRF set) with the board's
-// filter. Skipped says a Skip once is pending, which its act undoes.
-type ghost struct {
-	Project, Name, Title        string
-	Words, NextWords, LastWords string
-	Soon, Held, Running         bool
-	Skipped                     bool
-	HeldWords                   string
-	Open                        int64
-	Filter                      boardFilter
-	CSRF                        string
-	// Files is the config's side of what the routine files, Side the one
-	// in force; Toggled says a live override set the side, so the
-	// toggle's act is the undo.
-	Files, Side string
-	Toggled     bool
-	// Drawer says the acts sit in the routine's drawer, which answers them
-	// on its tab Tab.
-	Drawer bool
-	Tab    string
-	// Last is the board's line of the open card running, else of the last
-	// run, its card a link.
-	Last template.HTML
 }
 
 // Count is the number the column's head shows: its needs, else its
@@ -1306,7 +1278,7 @@ func (d boardData) faces() string {
 			add(k)
 		}
 		for _, g := range col.Ghosts {
-			fmt.Fprintf(&b, "ghost %s %s\n", g.Name, g.NextWords)
+			fmt.Fprintf(&b, "ghost %s %s\n", g.Routine.Key, g.Routine.Next)
 		}
 		for _, n := range col.Needs {
 			if n.Approval == nil {
@@ -2345,22 +2317,12 @@ func (c *Console) placeGhosts(ctx context.Context, v *boardView, d *boardData, r
 	all := d.boardFilter
 	all.Routines = "all"
 	d.AllRoutines = all.query()
-	csrf := ""
-	if d.Writes {
-		csrf = d.CSRF
-	}
 	for _, rv := range views {
 		if d.Routines == "none" || d.Routines == "within" && rv.Next.Sub(now) > d.period() {
 			d.Columns[colQueued].GhostsHidden++
 			continue
 		}
-		g := ghostOf(rv, now, d.boardFilter, csrf)
-		last := g.LastWords
-		if g.Running {
-			last = fmt.Sprintf("#%d running", g.Open)
-		}
-		g.Last = c.linkRefs(ctx, v, repository, last)
-		d.Columns[colQueued].Ghosts = append(d.Columns[colQueued].Ghosts, g)
+		d.Columns[colQueued].Ghosts = append(d.Columns[colQueued].Ghosts, c.routineFace(ctx, v, repository, rv, now, d.Writes))
 	}
 }
 
@@ -2368,44 +2330,53 @@ func (c *Console) placeGhosts(ctx context.Context, v *boardView, d *boardData, r
 var filesWords = map[string]string{policy.FilesHuman: "human card", policy.FilesAgent: "agent card",
 	policy.FilesPullRequest: "pull request", policy.FilesReport: "report"}
 
-// ghostOf is routine rv's ghost at now. Its next line names the run's
-// time, how soon it comes and what it files. A merge-counted routine's
-// names the merges it lacks, an event's only what it files, as the
-// schedule line names the event. A pending Skip once leads the line, the
-// run it names being the one after the skipped. Its last line names the
-// newest run, by the card it filed when it filed one.
-func ghostOf(rv factoryd.RoutineView, now time.Time, f boardFilter, csrf string) ghost {
+// routineFace is routine rv's face at now (C16, C46), which a writer may
+// open: one paragraph of its title and the why line its file holds, and a
+// foot of its schedule, its next run and its last. The next names the
+// run's time, how soon it comes and what it files; a merge-counted
+// routine's the merges it lacks, an event's only what it files, as the
+// schedule names the event. A pending skip leads it, the run it
+// names being the one after the skipped. The last names a held run's
+// words, the open card running, or the newest run by the card it filed.
+// It holds no button: its answers are its opened card's.
+func (c *Console) routineFace(ctx context.Context, v *boardView, repository string, rv factoryd.RoutineView, now time.Time, open bool) faceView {
 	rt := rv.Routine
-	g := ghost{Project: rv.Project, Name: rt.Name, Title: rt.Title, Words: rt.Words(), Soon: rv.Soon, Held: rv.Held, Skipped: rv.State.SkipNext,
-		Files: rt.Files, Side: rv.FilesInForce(), Toggled: rv.State.NeedsMe != nil, Filter: f, CSRF: csrf}
+	foot := &routineFoot{Key: rv.Project + "/" + rt.Name, Title: oneLine(rt.Title), Schedule: rt.Words(), Soon: rv.Soon, Held: rv.Held}
+	f := faceView{Open: open, Routine: foot}
+	f.title(c.linkRefs(ctx, v, repository, rt.Title), rt.Title)
+	if rt.Why != "" {
+		f.Why = c.linkRefs(ctx, v, repository, rt.Why)
+	}
 	when, in, kind := nextWords(rv, now)
 	switch {
 	case in != "":
-		g.NextWords = when + " · in " + in + " · " + kind
+		foot.Next = when + " · in " + in + " · " + kind
 	case when != "":
-		g.NextWords = when
+		foot.Next = when
 	default:
-		g.NextWords = kind
+		foot.Next = kind
 	}
 	switch {
-	case g.Skipped && when == "":
-		g.NextWords = "skipped once · " + kind
-	case g.Skipped:
-		g.NextWords = "skipped once · next " + g.NextWords
+	case rv.State.SkipNext && when == "":
+		foot.Next = "skipped once · " + kind
+	case rv.State.SkipNext:
+		foot.Next = "skipped once · next " + foot.Next
 	}
+	var last string
 	switch l := runWords(rv.Last); {
+	case rv.Held:
+		last = rv.Last.Note
+	case rv.Open != nil && rv.Open.Status == "running":
+		foot.Running, last = true, fmt.Sprintf("#%d running", rv.Open.IssueNumber)
 	case rv.Last.Issue > 0:
-		g.LastWords = fmt.Sprintf("last run #%d", rv.Last.Issue)
+		last = fmt.Sprintf("last run #%d", rv.Last.Issue)
 	case l != "":
-		g.LastWords = "last " + l
+		last = "last " + l
 	}
-	if g.Held {
-		g.HeldWords = rv.Last.Note
+	if last != "" {
+		foot.Last = c.linkRefs(ctx, v, repository, last)
 	}
-	if rv.Open != nil {
-		g.Open, g.Running = rv.Open.IssueNumber, rv.Open.Status == "running"
-	}
-	return g
+	return f
 }
 
 // nextWords are routine rv's next run at now as its ghost and its drawer
@@ -3281,7 +3252,7 @@ func (c *Console) seedCardAsk(ctx context.Context, bt factoryd.BoardTask, who st
 		BirthKind: factoryd.EventQuestionAsked, At: ask.At}, events, bt.Status, false); !s.Open {
 		return
 	}
-	m, ok := factoryd.PokeOf(*ask, bt.Task)
+	m, ok := factoryd.PokeOf(*ask, bt.Task, factoryd.Task{})
 	if !ok {
 		return
 	}

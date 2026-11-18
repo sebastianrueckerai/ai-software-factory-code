@@ -34,7 +34,7 @@ func TestCaseWordsNameTheCardAndTheProblemNotTheNumber(t *testing.T) {
 
 func TestFacesOfAMonitorFlagNameNoCaseId(t *testing.T) {
 	c := Case{ID: 396, Kind: CaseMonitorFlag}
-	if got := tripNext(c, "r"); strings.Contains(got, "396") || !strings.Contains(got, "project chat") {
+	if got := tripNext(c, "r"); strings.Contains(got, "396") || !strings.HasSuffix(got, " on the board.") {
 		t.Fatalf("tripNext = %q", got)
 	}
 	c.Facts = map[string]any{"flag": "wait_over_bound", "reason": "r"}
