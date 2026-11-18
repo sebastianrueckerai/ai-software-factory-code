@@ -13,6 +13,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 )
 
 // casesFromEvent writes, inside the transaction tx that inserted event e,
@@ -350,25 +351,27 @@ func resolvePlanCase(ctx context.Context, q rowQuerier, e Event) error {
 }
 
 // openRequestCase opens the case of approval request id while it is
-// pending: a merge request's merge case, its pull request at the head the
-// gates passed, or a plan's criteria request's plan_criteria case. It
-// tells whether it opened one.
+// pending: a merge request's merge case at the human, its pull request at
+// the head the gates passed, or a plan's criteria request's plan_criteria
+// case, open at rung 0 and due at the request's opening, with the words
+// its face posts. It tells whether it opened one.
 func openRequestCase(ctx context.Context, q rowQuerier, id int64) (bool, error) {
 	var kind, reason string
 	var c Case
 	var pr int64
 	var raw []byte
-	err := q.QueryRowContext(ctx, `SELECT kind, task_id, project, COALESCE(pr_number, 0), spec, reason FROM approval_requests
+	var created time.Time
+	err := q.QueryRowContext(ctx, `SELECT kind, task_id, project, COALESCE(pr_number, 0), spec, reason, created_at FROM approval_requests
 		WHERE id = $1 AND kind IN ($2, $3, $4) AND status = 'pending'`, id, ApprovalMerge, ApprovalCriteria, ApprovalCriteriaRerun).
-		Scan(&kind, &c.TaskID, &c.Repository, &pr, &raw, &reason)
+		Scan(&kind, &c.TaskID, &c.Repository, &pr, &raw, &reason, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	c.Status = CaseAtHuman
 	if kind == ApprovalMerge {
+		c.Status = CaseAtHuman
 		var spec MergeSpec
 		if err := json.Unmarshal(raw, &spec); err != nil {
 			return false, err
@@ -387,17 +390,24 @@ func openRequestCase(ctx context.Context, q rowQuerier, id int64) (bool, error) 
 			c.Facts["review_not_run"] = why[0]
 		}
 	} else {
-		c.Kind = CasePlanCriteria
+		var spec CriteriaSpec
+		if err := json.Unmarshal(raw, &spec); err != nil {
+			return false, err
+		}
+		c.Kind, c.Status, c.NextWakeAt = CasePlanCriteria, CaseOpen, &created
 		c.StateKey = fmt.Sprintf("%s:%d", kind, id)
 		c.Problem = cmp.Or(reason, "The plan's criteria wait for a verdict")
 		c.Facts = map[string]any{"approval": id, "approval_kind": kind}
+		if spec.Face != "" {
+			c.Facts["face"] = spec.Face
+		}
 	}
 	if c.Follows, err = newestEndedCase(ctx, q, c.TaskID); err != nil {
 		return false, err
 	}
 	got, opened, err := openCase(ctx, q, c)
-	if err != nil || !opened {
-		return false, err
+	if err != nil || !opened || c.Status == CaseOpen {
+		return opened, err
 	}
 	_, err = appendCaseStep(ctx, q, CaseStep{CaseID: got.ID, Rung: 3, Actor: FactoryDecider})
 	return err == nil, err

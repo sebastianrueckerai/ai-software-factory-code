@@ -221,6 +221,20 @@ func templateQuestion(reason string, f QuestionFacts, choices []string) *HumanQu
 	return plainQuestion(reason, f, choices)
 }
 
+// criteriaInfo is what answers a plan's criteria case: its criteria card.
+const criteriaInfo = "The plan's criteria card answers it: grant one more bounded card, which the planner drafts, waive a criterion with your reason, or confirm with your evidence that the delivered cards meet them. Every criterion met or waived ends the request on the next sweep."
+
+// criteriaQuestion is the face of a plan's criteria case: problem, its
+// request's reason, asks, the first line of reason, its request's words,
+// says why, and the criteria card answers it, so it offers no choice.
+func criteriaQuestion(problem, reason string) *HumanQuestion {
+	why := strings.TrimPrefix(EscalationQuestion(reason), "factoryd: ")
+	if why != "" {
+		why = upperFirst(why)
+	}
+	return &HumanQuestion{Ask: problem, Why: why, Info: criteriaInfo}
+}
+
 // planWaitMark is the phrase of a plan's wait on its failed card
 // (planCardFailedReason), whose face the plan's wait carries.
 const planWaitMark = "this plan's close and its next round wait on it"

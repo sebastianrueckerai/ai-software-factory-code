@@ -122,6 +122,7 @@ var (
 	ErrDrawRefused            = factoryd.ErrDrawRefused
 	ErrNotDonePlan            = factoryd.ErrNotDonePlan
 	ErrNotHeld                = factoryd.ErrNotHeld
+	CriteriaSourceGate        = factoryd.CriteriaSourceGate
 	ErrNotPerson              = factoryd.ErrNotPerson
 	ErrNotFound               = factoryd.ErrNotFound
 	ErrPlanClosed             = factoryd.ErrPlanClosed
@@ -132,6 +133,7 @@ var (
 	EventCardExtended         = factoryd.EventCardExtended
 	EventCardFunded           = factoryd.EventCardFunded
 	EventCaseClimbed          = factoryd.EventCaseClimbed
+	EventCriteriaGateRun      = factoryd.EventCriteriaGateRun
 	EventGateHead             = factoryd.EventGateHead
 	EventModelReview          = factoryd.EventModelReview
 	EventPlanClosed           = factoryd.EventPlanClosed

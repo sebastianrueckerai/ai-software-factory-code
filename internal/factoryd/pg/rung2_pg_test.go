@@ -835,3 +835,169 @@ func TestFaceAfterRung2ExpiryKeepsTheMomentsReasonAndRungOnesExpiry(t *testing.T
 		t.Fatalf("info = %q, want rung 1's expiry in the same words", info)
 	}
 }
+
+// pokeRows are the inbox rows the Poker wrote about card t1, by the kind of
+// the event each was born of, after one pass over every event on record.
+func (g rungRig) pokeRows(t *testing.T) []string {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := g.s.PgDB().ExecContext(ctx, `TRUNCATE chat_poke_cursor; INSERT INTO chat_poke_cursor (event_id) VALUES (0)`); err != nil {
+		t.Fatal(err)
+	}
+	poker := &Poker{Store: g.s, Current: g.r.PgCfg().Policy, Line: &busyLine{busy: map[string]bool{}, landed: map[string][]int64{}}}
+	if err := poker.Pass(ctx); err != nil {
+		t.Fatalf("Poker.Pass: %v", err)
+	}
+	rows, err := g.s.PgDB().QueryContext(ctx, `SELECT birth_kind FROM chat_messages WHERE task_id = 't1' AND kind = $1 ORDER BY id`, MessageEscalation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, k)
+	}
+	return out
+}
+
+// A plan's criteria case climbs as a trip's does. Its request's row opens
+// it at rung 0 with no face and no poke; the case-wake pass runs rung 0 on
+// the done plan, where main has not moved past the gate's two cut runs, so
+// no rerun, and hands it to rung 2, whose one wake turn takes it. Rung 2's
+// hand-up faces it: the case at the human with its steps of rung 0, 2 and 3,
+// one comment holding the request's words as factoryd wrote them, an ask
+// naming the case and the request whose info holds rung 2's finding and
+// which carries its recommendation,
+// one poke, the ask's, and no case_faced, for no run waits on the plan.
+func TestACriteriaCaseClimbsToRung2AndFacesItsHandUp(t *testing.T) {
+	g, w, starter, stub, c := planCriteriaRig(t, "m1", "m1", "m1")
+	ctx := context.Background()
+	if len(g.forge.comments) != 0 || len(g.pokeRows(t)) != 0 {
+		t.Fatalf("comments %q, pokes %v at the opening; want none", g.forge.comments, g.pokeRows(t))
+	}
+	g.wakePass(t)
+	if rows := g.rows(t, EventCriteriaGateRun); len(rows) != 2 {
+		t.Fatalf("gate rows = %+v, want the two cut runs alone", rows)
+	}
+	// the rig's process has no plan track, so the plan card's config reads
+	// partly: rung 0's other rows take nothing either way
+	steps := g.steps(t, c.ID)
+	if len(steps) != 2 || steps[0].Rung != 0 || steps[0].Found != "facts read partly: config, so rung 0 took nothing" || steps[1].Rung != 2 || steps[1].Outcome != StepInProgress {
+		t.Fatalf("steps = %+v, want rung 0's hand-up and rung 2 in progress", steps)
+	}
+	if climbed := g.rows(t, EventCaseClimbed); len(climbed) != 1 || climbed[0].Detail["case_id"] != float64(c.ID) {
+		t.Fatalf("case_climbed rows = %+v, want one for case %d", climbed, c.ID)
+	}
+	if err := drainPass(t, w); err != nil {
+		t.Fatal(err)
+	}
+	if calls := starter.recorded(); len(calls) != 1 || calls[0].birth != EventCaseClimbed || !slices.Equal(calls[0].cases, []int64{c.ID}) {
+		t.Fatalf("wakes = %+v, want one case_climbed turn on case %d", calls, c.ID)
+	}
+
+	if _, err := g.r.HandUpRung2(ctx, "t1", c.ID, "k1 to k3 still fail on main",
+		RungTwoRecommendation{Action: ActGrantCriteria, Grounds: "one more card can make the pages load"}, nil); err != nil {
+		t.Fatalf("HandUpRung2: %v", err)
+	}
+	got := caseByID(t, g.s, c.ID)
+	steps = g.steps(t, c.ID)
+	if got.Status != CaseAtHuman || len(steps) != 3 || steps[0].Rung != 0 || steps[1].Rung != 2 || steps[2].Rung != 3 {
+		t.Fatalf("case %s, steps %+v; want it at the human with steps of rung 0, 2 and 3", got.Status, steps)
+	}
+	if len(g.forge.comments) != 1 || !strings.Contains(g.forge.comments[0], "every card of the plan has ended with a criterion still unmet.\\n\\n- k1 (test): the page k1 loads") ||
+		strings.Contains(g.forge.comments[0], "```") {
+		t.Fatalf("comments = %q, want one with the request's words, unfenced", g.forge.comments)
+	}
+	asks := g.asks(t)
+	if len(asks) != 1 || asks[0].Detail["case_id"] != float64(c.ID) || asks[0].Detail["approval"] != float64(stub.approval) ||
+		asks[0].Detail["ask"] != "criteria not met once every card of the plan ended: k1, k2, k3" ||
+		asks[0].Detail["why"] != "Every card of the plan has ended with a criterion still unmet." || fmt.Sprint(asks[0].Detail["choices"]) != "[]" ||
+		!strings.HasPrefix(asks[0].Detail["info"].(string), "The plan's criteria card answers it: ") ||
+		!strings.Contains(asks[0].Detail["info"].(string), "The factory agent found: k1 to k3 still fail on main") ||
+		asks[0].Detail["recommendation"] != "grant_criteria: one more card can make the pages load" || asks[0].Detail["recommended_by"] != "the factory agent" {
+		t.Fatalf("asks = %+v, want one asking the request's reason, its words' first line as the why, no choice, rung 2's finding and recommendation", asks)
+	}
+	if pokes := g.pokeRows(t); !slices.Equal(pokes, []string{EventQuestionAsked}) {
+		t.Fatalf("pokes = %v, want the face's ask alone", pokes)
+	}
+	if faced := g.signalsOf(SignalCaseFaced); len(faced) != 0 {
+		t.Fatalf("case_faced signals = %+v, want none: no run waits on the done plan", faced)
+	}
+}
+
+// Rung 2 grants one more bounded card on the criteria case: the grant
+// decides the request and resolves the case on rung 2, not withdrawn, and
+// files no card yet: the delta pass drafts it from the grant's dues.
+func TestRung2GrantsACriteriaCase(t *testing.T) {
+	g, _, _, stub, c := planCriteriaRig(t, "m1", "m1", "m1")
+	g.atAutonomy(policy.AutonomyAutonomous)
+	g.wakePass(t)
+	if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActGrantCriteria}}); err != nil {
+		t.Fatalf("rung 2's grant: %v", err)
+	}
+	got := caseByID(t, g.s, c.ID)
+	if got.Status != CaseResolved || got.Resolution == nil || got.Resolution.Action != ActGrantCriteria || got.Resolution.Rung != 2 {
+		t.Fatalf("case = %+v, want it resolved by rung 2's grant", got)
+	}
+	cards, err := g.s.PlanCards(context.Background(), "t1")
+	if err != nil || len(cards) != 1 || len(g.forge.comments) != 0 {
+		t.Fatalf("plan cards %+v (%v), comments %q; want t1-int alone and no face", cards, err, g.forge.comments)
+	}
+}
+
+// A plan's criteria case outlives its done plan card: the case-wake pass
+// climbs it, its rung 2 step past its bound ends in the pass and climbs it
+// on, and its face stands with no withdrawal, at the human with one
+// comment. The heal pass leaves it and opens no second case.
+func TestACriteriaCaseOnADonePlanReachesItsFace(t *testing.T) {
+	g, _, _, _, c := planCriteriaRig(t, "m1", "m1", "m1")
+	ctx := context.Background()
+	g.wakePass(t)
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE case_steps SET due_at = now() - interval '1 minute', started_at = now() - interval '36 minutes'
+		WHERE case_id = $1 AND rung = 2`, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	g.wakePass(t)
+	if got := caseByID(t, g.s, c.ID); got.Status != CaseAtHuman || len(g.forge.comments) != 1 {
+		t.Fatalf("case %s with %d comments, want it at the human with one face", got.Status, len(g.forge.comments))
+	}
+	rep, err := g.s.ReconcileCases(ctx, "demo-app/demo-app")
+	if err != nil || rep.Opened != 0 || rep.Withdrawn != 0 {
+		t.Fatalf("ReconcileCases = %+v, %v; want nothing opened or withdrawn", rep, err)
+	}
+	if open, _ := g.s.OpenCasesOf(ctx, "t1"); len(open) != 1 || open[0].ID != c.ID || open[0].Status != CaseAtHuman {
+		t.Fatalf("open cases = %+v, want case %d at the human alone", open, c.ID)
+	}
+}
+
+// Main moved past the gate's last run: rung 0 runs the gate once more and
+// holds the case for it, with its one step and no rung 2. The gate meets
+// every criterion, and the close check's resolve ends the case resolved by
+// factoryd at rung 0, its one step the rerun's, with no step of rung 2 or 3.
+func TestACriteriaCaseTheRerunMeetsEndsAtRungZero(t *testing.T) {
+	g, _, _, _, c := planCriteriaRig(t, "m2", "m1", "m1")
+	ctx := context.Background()
+	g.wakePass(t)
+	steps := g.steps(t, c.ID)
+	if len(steps) != 1 || steps[0].Rung != 0 || steps[0].Found != "criteria gate run again at main m2" {
+		t.Fatalf("steps = %+v, want rung 0's rerun step alone", steps)
+	}
+	held := caseByID(t, g.s, c.ID)
+	if held.Status != CaseOpen || held.OwnerRung != 0 || held.NextWakeAt == nil || time.Until(*held.NextWakeAt) < 50*time.Minute {
+		t.Fatalf("case = %+v, want it open, held at rung 0 for the gate's run", held)
+	}
+	if err := g.s.ResolveApprovals(ctx, "t1", ApprovalCriteria, "approved", FactoryDecider, "every criterion is met or waived"); err != nil {
+		t.Fatal(err)
+	}
+	got := caseByID(t, g.s, c.ID)
+	if got.Status != CaseResolved || got.Resolution == nil || got.Resolution.By != FactoryDecider || got.Resolution.Rung != 0 {
+		t.Fatalf("case = %+v, want it resolved by factoryd at rung 0", got)
+	}
+	if steps := g.steps(t, c.ID); len(steps) != 1 || steps[0].Rung != 0 {
+		t.Fatalf("steps = %+v, want the rerun's alone", steps)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -96,26 +97,43 @@ func TestChatDecidesAHumanRowOnTheHumansWord(t *testing.T) {
 	}
 }
 
-// The chat approves the grant of one more bounded card on the human's
-// word: the approval names them, not the chat identity.
+// grantArgs are answer's arguments for the grant on verdictRig's plan:
+// its criteria request 30's case, 7030 on the rig.
+const grantArgs = `{"task_id":"t-plan","case_id":7030,"action":"grant_criteria"}`
+
+// grantOnDoIt has the chat propose answer's grant on the plan's criteria
+// case and the human press Do it, and answers the press's stream; after
+// are the model's replies to what the press answers.
+func grantOnDoIt(t *testing.T, r *rig, g *chatGateway, after ...[]string) []string {
+	t.Helper()
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{"answer"}}
+	ck, s := r.loggedIn(t)
+	g.replies = append([][]string{{call(1, "answer", grantArgs)}}, after...)
+	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"grant the plan one more bounded card"}})
+	if len(events) != 2 || !strings.HasPrefix(events[0], `proposal {"arguments":`+grantArgs) || len(tokens) != 1 {
+		t.Fatalf("stream %q, tokens %q; want the grant proposed", events, tokens)
+	}
+	_, events, _ = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	return events
+}
+
+// The chat grants one more bounded card on the human's press: answer's
+// grant on the plan's criteria case runs on their Do it as theirs, so the
+// approval names them, not the chat identity.
 func TestChatGrantsTheCriteriaCardOnTheHumansWord(t *testing.T) {
 	r, _, g := newChatRig(t)
 	verdictRig(r)
-	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
 	var calls []string
 	r.c.cfg.GrantCriteria = func(_ context.Context, id, by string, approval int64) (int, error) {
 		calls = append(calls, fmt.Sprintf("grant %s by %s approval %d", id, by, approval))
 		return 2, nil
 	}
-	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	g.replies = [][]string{{call(1, "answer_criteria", `{"task_id":"t-plan","action":"grant"}`)}, {say("Granted.")}}
-	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"grant the plan one more bounded card"}})
+	events := grantOnDoIt(t, r, g)
 	note := "Granted one more bounded card for 2 criteria; the planner drafts it and the board shows it."
-	equal(t, "stream", events, []string{
-		`tool {"arguments":{"task_id":"t-plan","action":"grant"},"duration_ms":0,"name":"answer_criteria","result":"` + note + `"}`,
-		`applied {"result":"` + note + `","tool":"answer_criteria"}`,
-		`text {"text":"Granted."}`, `done {}`})
+	equal(t, "Do it", events, []string{
+		`tool {"arguments":` + grantArgs + `,"duration_ms":0,"name":"answer","result":"` + note + `"}`,
+		`applied {"result":"` + note + `","tool":"answer"}`, `done {}`})
 	if want := []string{"grant t-plan by sebastian approval 30"}; fmt.Sprint(calls) != fmt.Sprint(want) {
 		t.Errorf("calls = %q, want %q", calls, want)
 	}
@@ -127,6 +145,25 @@ func TestChatGrantsTheCriteriaCardOnTheHumansWord(t *testing.T) {
 	}
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-plan", IssueNumber: 3,
 		Kind: factoryd.EventCriterionDecided, Detail: map[string]any{"approval": int64(30), "criteria": 2, "verb": "granted"}})
+}
+
+// answer_criteria takes no grant: the chat's one grant door is answer on
+// the plan's criteria case, which the refusal names, and nothing is granted.
+func TestChatGrantsNoCriteriaCardThroughAnswerCriteria(t *testing.T) {
+	r, _, g := newChatRig(t)
+	verdictRig(r)
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	r.c.cfg.GrantCriteria = func(context.Context, string, string, int64) (int, error) {
+		t.Fatal("answer_criteria granted a card")
+		return 0, nil
+	}
+	ck, s := r.loggedIn(t)
+	args := `{"task_id":"t-plan","action":"grant"}`
+	g.replies = [][]string{{call(1, "answer_criteria", args)}, {say("No.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"grant the plan one more bounded card"}})
+	refused := "Refused: The action must be waive, confirm, met or not_met; a grant answers the plan's criteria case with answer and grant_criteria."
+	equal(t, "stream", events, []string{
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"answer_criteria","result":"` + refused + `"}`, `text {"text":"No."}`, `done {}`})
 }
 
 // The chat confirms the delivered cards on the human's word: their line
@@ -186,46 +223,54 @@ func TestChatMetOnACriteriaRerunNamesConfirmAndWaive(t *testing.T) {
 }
 
 // A wake's turn acts on no human's word: with no line of theirs in the
-// thread, answer_criteria refuses naming the state and the fitting
-// action, and nothing is decided.
+// thread, answer_criteria refuses and nothing is decided. Rung 2's own
+// turn on a case gets rung 2's text, which names the grant and the
+// hand-up it may take; a wake on no case the text that names the human's
+// doors.
 func TestChatAnswersCriteriaOnlyOnTheHumansLine(t *testing.T) {
-	r, chat, g := newChatRig(t)
-	verdictRig(r)
-	var calls []string
-	r.c.cfg.DecideCriterion = func(_ context.Context, id, cid, verdict, by, reason string) error {
-		calls = append(calls, id+" "+cid+" "+verdict)
-		return nil
-	}
-	g.replies = [][]string{{call(1, "answer_criteria", `{"task_id":"t-plan","action":"waive","criterion":"c3","reason":"not mine to decide"}`)}, {say("I asked them.")}}
-	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "The criteria gap of #3 waits."); err != nil {
-		t.Fatalf("StartWake: %v", err)
-	}
-	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 3 || len(rows[1].ToolCalls) != 1 || rows[1].Content != "" || rows[2].Content != "I asked them." {
-		t.Fatalf("the wake's rows = %+v", rows)
-	}
-	want := "Refused: This turn runs on no line the human typed, so their word decides no criteria: give them choices with ask, or let them answer on the board's card, and answer_criteria runs on their word."
-	if got := rows[1].ToolCalls[0].Result; got != want {
-		t.Errorf("the wake's tool result = %q\nwant %q", got, want)
-	}
-	r.tasks.mu.Lock()
-	criteria := len(r.tasks.criteria["t-int"])
-	r.tasks.mu.Unlock()
-	if len(calls) != 0 || criteria != 1 {
-		t.Fatalf("a wake without the human's line decided something: calls %v, %d verdict rows", calls, criteria)
+	for _, tc := range []struct{ birth, want string }{
+		{"wake_ask", "Refused: Settling a plan's criteria by word is the human's: take grant_criteria for one more bounded card, or hand the case up with attach_analysis and recommend answer_criteria (waive), deny_criteria or confirm_criteria."},
+		{"wake_timer", "Refused: This turn runs on no line the human typed, so their word decides no criteria: give them choices with ask, or let them answer on the board's card, and answer_criteria runs on their word."},
+	} {
+		t.Run(tc.birth, func(t *testing.T) {
+			r, chat, g := newChatRig(t)
+			verdictRig(r)
+			var calls []string
+			r.c.cfg.DecideCriterion = func(_ context.Context, id, cid, verdict, by, reason string) error {
+				calls = append(calls, id+" "+cid+" "+verdict)
+				return nil
+			}
+			g.replies = [][]string{{call(1, "answer_criteria", `{"task_id":"t-plan","action":"waive","criterion":"c3","reason":"not mine to decide"}`)}, {say("I asked them.")}}
+			conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, tc.birth, "The criteria gap of #3 waits."); err != nil {
+				t.Fatalf("StartWake: %v", err)
+			}
+			rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 3 || len(rows[1].ToolCalls) != 1 || rows[1].Content != "" || rows[2].Content != "I asked them." {
+				t.Fatalf("the wake's rows = %+v", rows)
+			}
+			if got := rows[1].ToolCalls[0].Result; got != tc.want {
+				t.Errorf("the wake's tool result = %q\nwant %q", got, tc.want)
+			}
+			r.tasks.mu.Lock()
+			criteria := len(r.tasks.criteria["t-int"])
+			r.tasks.mu.Unlock()
+			if len(calls) != 0 || criteria != 1 {
+				t.Fatalf("a wake without the human's line decided something: calls %v, %d verdict rows", calls, criteria)
+			}
+		})
 	}
 }
 
 // A wake over a thread that already holds a line of the human's acts on
 // no word of theirs: an older line is not this turn's trigger, so
-// answer_criteria refuses and nothing is decided.
+// answer_criteria refuses with rung 2's text and nothing is decided.
 func TestChatRefusesTheWakeOverAnOlderHumanLine(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	verdictRig(r)
@@ -260,7 +305,7 @@ func TestChatRefusesTheWakeOverAnOlderHumanLine(t *testing.T) {
 			}
 		}
 	}
-	want := "Refused: This turn runs on no line the human typed, so their word decides no criteria: give them choices with ask, or let them answer on the board's card, and answer_criteria runs on their word."
+	want := "Refused: Settling a plan's criteria by word is the human's: take grant_criteria for one more bounded card, or hand the case up with attach_analysis and recommend answer_criteria (waive), deny_criteria or confirm_criteria."
 	if refusal != want {
 		t.Errorf("the wake's tool result = %q\nwant %q", refusal, want)
 	}

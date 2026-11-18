@@ -957,6 +957,19 @@ func (t *turn) criteriaRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 	return q, err
 }
 
+// criteriaWordRefusal is answer_criteria's refusal in rung 2's own turn on
+// a case (caseWake), rung 2's on its case's kind: a criteria card's merge
+// where the card's merge request pends and the action may judge one, else
+// a plan's criteria case.
+func (t *turn) criteriaWordRefusal(in toolInput) string {
+	kind := factoryd.CasePlanCriteria
+	if _, _, merge, err := t.pending(in, factoryd.ApprovalMerge); err == nil && merge && in.Action != "confirm" {
+		kind = factoryd.CaseMergeApproval
+	}
+	why := factoryd.CriteriaWordRefusal(kind)
+	return strings.ToUpper(why[:1]) + why[1:] + "."
+}
+
 // humanAnswerLine is the line this turn answers, when the human typed it
 // themselves: the turn's own row (line), read from the thread by its id, in
 // a turn no wake started and that landed no row a wake wrote. It is the
@@ -1688,7 +1701,7 @@ var tools = []chatTool{
 		}},
 	{name: "answer_criteria", title: "Answer a plan's criteria", write: true,
 		params: map[string]any{"task_id": taskParam,
-			"action":    enum("met or not_met on a human row, waive any row, grant, confirm", "waive", "grant", "confirm", "met", "not_met"),
+			"action":    enum("met or not_met on a human row, waive any row, confirm", "waive", "confirm", "met", "not_met"),
 			"criterion": str("the criterion a waive, met or not_met names"),
 			"reason":    str("a waive's or a not_met's reason, or a met's words")},
 		required: []string{"task_id", "action"},
@@ -1697,6 +1710,9 @@ var tools = []chatTool{
 			line, ok, err := t.humanAnswerLine()
 			if err != nil {
 				return "", nil, err
+			}
+			if !ok && t.a.caseWake() {
+				return "", nil, refuse(http.StatusConflict, t.criteriaWordRefusal(in))
 			}
 			if !ok {
 				return "", nil, refuse(http.StatusConflict, "This turn runs on no line the human typed, so their word decides no criteria: give them choices with ask, or let them answer on the board's card, and answer_criteria runs on their word.")
@@ -1721,14 +1737,11 @@ var tools = []chatTool{
 			case "met", "not_met":
 				note, err := t.c.doDecide(t.r.Context(), t.a, q.ID, in.Criterion, in.Action, in.Reason)
 				return note, nil, err
-			case "grant":
-				note, err := t.c.doApprove(t.r.Context(), t.a, q.ID, "", 0)
-				return note, nil, err
 			case "confirm":
 				note, err := t.c.doConfirmCriteria(t.r.Context(), t.a, q.ID, line)
 				return note, nil, err
 			}
-			return "", nil, refuse(http.StatusBadRequest, "The action must be waive, grant, confirm, met or not_met.")
+			return "", nil, refuse(http.StatusBadRequest, "The action must be waive, confirm, met or not_met; a grant answers the plan's criteria case with answer and grant_criteria.")
 		}},
 	{name: "set_summary", title: "Set a card's summary", write: true,
 		params:   map[string]any{"task_id": taskParam, "summary": str("one line, empty restores the generated title")},

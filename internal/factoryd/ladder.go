@@ -70,9 +70,9 @@ type tripAttempt struct {
 // TripOutcome is what the run gets back: the case, the comment the human
 // face posted (0 when rung 0 resolved it and nobody was asked), and the
 // resolution when rung 0 resolved it in place. Rung is the rung that holds
-// the case: 0 when it resolved it, 1 when rung 1 works on it in the
-// background and the run waits on its resolution, 3 when the case waits on
-// the human.
+// the case: 0 when it resolved it or holds it until the wake it set, 1 when
+// rung 1 works on it in the background and the run waits on its
+// resolution, 3 when the case waits on the human.
 type TripOutcome struct {
 	CaseID     int64
 	Comment    int64
@@ -81,10 +81,13 @@ type TripOutcome struct {
 }
 
 // resolver is one row of rung 0: it fires on a case's kind and facts and
-// returns the resolution it took, or nil.
+// returns the resolution it took, or nil. A row that holds its case in
+// place of a resolution has Hold instead: it sets the case's wake itself
+// and answers held, and its error hands the case up with why.
 type resolver struct {
 	Name string
 	Fire func(ctx context.Context, r *Runner, c Case, f CaseFacts) (*Resolution, error)
+	Hold func(ctx context.Context, r *Runner, c Case) (held bool, err error)
 }
 
 // headKinds are the stops keyed on the card's head, whose way on rung 0
@@ -158,6 +161,14 @@ var rung0 = []resolver{
 			what = "steps"
 		}
 		return &Resolution{Action: ActWithdraw, Note: "ended the overdue " + what + ": " + textutil.AndList(ended)}, nil
+	}},
+	// a plan's criteria case whose gate last judged another head than
+	// main's: the gate runs once more on main, and the case waits for it
+	{Name: "rerun_criteria_gate", Hold: func(ctx context.Context, r *Runner, c Case) (bool, error) {
+		if c.Kind != CasePlanCriteria {
+			return false, nil
+		}
+		return r.rerunCriteriaGate(ctx, c)
 	}},
 }
 
@@ -287,7 +298,8 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 		}
 	}
 	res, found, err := r.rungZero(ctx, t, c, f, cases)
-	if err != nil || res != nil {
+	if err != nil || res != nil || found == "" {
+		// found "": a row holds the case at rung 0 until the wake it set
 		return TripOutcome{CaseID: c.ID, Resolution: res}, err
 	}
 	return r.Climb(ctx, t, c, f, 0, found)
@@ -629,11 +641,11 @@ func boardLevel(c Case) bool {
 
 // rungTwoTakes reports whether rung 2 takes case c: at every autonomy
 // level, where below autonomous its answer is a proposal the human
-// confirms (Proposes), every kind but a human card, the judgment budget's,
-// a merge approval and a plan's criteria. A case only a human decides is
-// taken for its analysis alone.
+// confirms (Proposes), every kind but a human card, the judgment budget's
+// and a merge approval. A case only a human decides is taken for its
+// analysis alone.
 func rungTwoTakes(c Case) bool {
-	return c.Kind != CaseHumanCard && c.Kind != CaseJudgmentBudget && c.Kind != CaseMergeApproval && c.Kind != CasePlanCriteria
+	return c.Kind != CaseHumanCard && c.Kind != CaseJudgmentBudget && c.Kind != CaseMergeApproval
 }
 
 // startRung2 hands case c to rung 2 as a step in progress due after the
@@ -943,14 +955,30 @@ func (r *Runner) ClimbExpired(ctx context.Context, steps []CaseStep) error {
 	return errors.Join(errs...)
 }
 
-// rungZero runs rung 0 on fresh case c of card t: no row on facts read
+// rungZero runs rung 0 on fresh case c of card t: first a row that holds
+// its case, which reads what it needs itself; then no row on facts read
 // partly, which could hide what a row needs (a head a rerun made), none
 // when rung 0 resolved a case of c's kind and key before, for the stop
 // came back, else the first row of rung0 that fires, which Act carries
 // out on rung 0. It answers the resolution taken, or nil and what rung 0
-// found: a row Act refused or failed hands the case up with why, so rung
-// 0 never keeps the human from being asked.
+// found, "" for a case a row holds: a row Act refused or failed, or a hold
+// that failed, hands the case up with why, so rung 0 never keeps the human
+// from being asked.
 func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, cases []Case) (*Resolution, string, error) {
+	for _, row := range rung0 {
+		if row.Hold == nil {
+			continue
+		}
+		held, err := row.Hold(ctx, r, c)
+		switch {
+		case ctx.Err() != nil:
+			return nil, "", ctx.Err()
+		case err != nil:
+			return nil, row.Name + " failed: " + r.scrub(err.Error()), nil
+		case held:
+			return nil, "", nil
+		}
+	}
 	// an unread hold refuses the answers it guards itself (holdRefusal)
 	if partial := slices.DeleteFunc(slices.Clone(f.Partial), func(n string) bool {
 		return slices.Contains([]string{"siblings", "head_commits", "checks_log", partialHold, partialPlanHold}, n)
@@ -963,6 +991,9 @@ func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, case
 		return nil, "rung 0 took this stop with " + cases[i].Resolution.Action + " before, and it came back", nil
 	}
 	for _, row := range rung0 {
+		if row.Fire == nil {
+			continue
+		}
 		res, err := row.Fire(ctx, r, c, f)
 		if err != nil {
 			return nil, "", err
@@ -1463,17 +1494,17 @@ func PlanWaitCase(c Case, t Task) bool {
 }
 
 // caseBesideRun says no run of card t waits on case c's face: a monitor
-// flag's case, beside the card's run, and a plan's wait on its failed
-// card. Its face moves no card, writes no escalated step and sends no
-// case_faced.
+// flag's case, beside the card's run, a plan's wait on its failed card and
+// a plan's criteria case, opened on the done plan. Its face moves no card,
+// writes no escalated step and sends no case_faced.
 func caseBesideRun(c Case, t Task) bool {
-	return c.Kind == CaseMonitorFlag || PlanWaitCase(c, t)
+	return c.Kind == CaseMonitorFlag || c.Kind == CasePlanCriteria || PlanWaitCase(c, t)
 }
 
 // outlivesCard says case c stays live after card t ended: it is woken,
 // climbed and faced on a card that cannot wait for a human.
 func outlivesCard(c Case, t Task) bool {
-	return c.Kind == CaseMonitorFlag || PlanWaitCase(c, t)
+	return c.Kind == CaseMonitorFlag || c.Kind == CasePlanCriteria || PlanWaitCase(c, t)
 }
 
 // askHuman is a case's human face (architecture 6.6): state
@@ -1482,10 +1513,11 @@ func outlivesCard(c Case, t Task) bool {
 // row, written before the wait, with its question and case c (none for the
 // zero Case); the agent's choices, if any, ride on that row and the
 // timeline's step. A monitor flag's case sits beside the card's run, and a
-// plan's case on its failed card beside the plan at rest: its face is the
-// comment, the row and the alert, and moves no status,
-// writes no ask the run reads and no timeline line. It returns the
-// comment's id: only later comments answer it.
+// plan's case on its failed card and its criteria case beside the plan at
+// rest: its face is the comment, the row and the alert, and moves no
+// status, writes no ask the run reads and no timeline line. A criteria
+// case's comment is its request's words. It returns the comment's id: only
+// later comments answer it.
 func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next string, choices []string, up *HandUp) (int64, error) {
 	beside := caseBesideRun(c, t)
 	repo, err := SplitRepo(t.Repository)
@@ -1526,6 +1558,10 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// the reasons go to the card only: they would teach the author
 		body = screenedLine
 	}
+	if c.Kind == CasePlanCriteria {
+		// the plan's criteria in factoryd's own words, as its request wrote them
+		body = reason
+	}
 	var id int64
 	if t.IssueNumber != 0 {
 		// a task without one (a report task) has its question on the card alone
@@ -1545,9 +1581,12 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// the deterministic stops shape their five-part question from the
 		// stop's own numbers; every other ask gets the same five parts
 		// from its reason, so no card asks with words alone
-		if c.Kind == CaseMonitorFlag {
+		switch c.Kind {
+		case CaseMonitorFlag:
 			shaped = r.monitorFace(t, reason)
-		} else {
+		case CasePlanCriteria:
+			shaped = criteriaQuestion(c.Problem, reason)
+		default:
 			qf, held := r.questionFacts(ctx, t, reason), factsOf(c)
 			qf.BranchRead, qf.BranchHead = held.BranchRead, held.BranchHead
 			shaped = ShapedQuestion(reason, qf, choices)
@@ -1612,6 +1651,9 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// the card's own ask stays the card's: its thread seeds from that.
 		// The flag tells the settle the ask of an ended card's open issue
 		asked["case_kind"], asked["flag"] = string(c.Kind), c.Facts["flag"]
+	}
+	if c.Kind == CasePlanCriteria {
+		asked["approval"] = c.Facts["approval"]
 	}
 	if shaped != nil {
 		asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Why, shaped.Info

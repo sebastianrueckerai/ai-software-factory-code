@@ -2597,11 +2597,22 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		if a.Project != shown.Repository {
 			continue
 		}
-		// the card's row holds its approvals, unless the card has ended and has no row
-		if t := v.byID[a.TaskID]; len(cs.byCard[a.TaskID]) > 0 && !factoryd.Final(t.Status) {
+		// the card's row holds its approvals, unless the card has ended and
+		// has no row; a card outside the board's pages has ended
+		if t, ok := v.byID[a.TaskID]; ok && len(cs.byCard[a.TaskID]) > 0 && !factoryd.Final(t.Status) {
+			continue
+		}
+		// a plan's criteria request waits for its case to reach the human,
+		// whose face the card carries
+		criteria := a.Kind == factoryd.ApprovalCriteria || a.Kind == factoryd.ApprovalCriteriaRerun
+		held, faced := cs.faced(a)
+		if criteria && !faced {
 			continue
 		}
 		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver, true)
+		if criteria {
+			k.faceOf(cs, held, v.policy.Document.LinkHosts)
+		}
 		k.Filter, k.Writer = f, d.Writes
 		k.buildDecide()
 		k.Asks = a.Kind == factoryd.ApprovalPlan

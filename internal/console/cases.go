@@ -367,6 +367,16 @@ func approvalOf(a factoryd.ApprovalRequest, k factoryd.Case) bool {
 	return false
 }
 
+// faced is the case at the human that holds criteria request a, false
+// while none does: the request waits for its case's face.
+func (cs caseSet) faced(a factoryd.ApprovalRequest) (factoryd.Case, bool) {
+	i := slices.IndexFunc(cs.byCard[a.TaskID], func(k factoryd.Case) bool { return approvalOf(a, k) })
+	if i < 0 {
+		return factoryd.Case{}, false
+	}
+	return cs.byCard[a.TaskID][i], true
+}
+
 // caseBriefOf is the brief the case that holds request a wrote, "" while it
 // has none.
 func (c *Console) caseBriefOf(ctx context.Context, a factoryd.ApprovalRequest, hosts []string) string {

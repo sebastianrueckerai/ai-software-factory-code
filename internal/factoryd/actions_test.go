@@ -1440,12 +1440,15 @@ func TestBoardRowsApplyOnTheirPreconditions(t *testing.T) {
 
 // Settling a plan's criteria by word is a human's act. On a criteria case
 // and on the merge of a criteria card, rung 2 takes no verdict (waive, met,
-// not_met), no confirmation and no denial: each is refused with the
-// hand-up, and its statement lists each as not offered with that reason.
-// The human takes all of them, and rung 2 keeps the grant, which buys a
-// card and waives nothing.
+// not_met), no confirmation and no denial: each is refused with what rung 2
+// may do instead, which on a criteria case is the grant or the hand-up with
+// the word as its recommendation, and on a merge the hand-up alone; its
+// statement lists each as not offered with that reason. The human takes
+// all of them, and rung 2 keeps the grant, which buys a card and waives
+// nothing.
 func TestSettlingCriteriaByWordIsTheHumans(t *testing.T) {
-	const want = "settling a plan's criteria by word is the human's: hand it up with your recommendation; the human waives, denies or confirms"
+	const want = "settling a plan's criteria by word is the human's: take grant_criteria for one more bounded card, or hand the case up with attach_analysis and recommend answer_criteria (waive), deny_criteria or confirm_criteria"
+	const onMerge = "settling a plan's criteria by word is the human's: hand the case up with attach_analysis and recommend answer_criteria"
 	criteria := CaseFacts{Kind: CasePlanCriteria}
 	merge := CaseFacts{Kind: CaseMergeApproval, Criteria: true, Head: "h1", PR: 9, PROpen: true, Checks: "green"}
 	verdict := func(v, note string) Resolution {
@@ -1455,17 +1458,18 @@ func TestSettlingCriteriaByWordIsTheHumans(t *testing.T) {
 		name, action string
 		f            CaseFacts
 		r            Resolution
+		want         string
 	}{
-		{"waive", ActAnswerCriteria, criteria, verdict("waive", "out of scope")},
-		{"met on a merge", ActAnswerCriteria, merge, verdict("met", "")},
-		{"not_met on a merge", ActAnswerCriteria, merge, verdict("not_met", "the page breaks")},
-		{"confirm", ActConfirmCriteria, criteria, Resolution{Note: "main holds every page"}},
-		{"deny", ActDenyCriteria, criteria, Resolution{Note: "not now"}},
+		{"waive", ActAnswerCriteria, criteria, verdict("waive", "out of scope"), want},
+		{"met on a merge", ActAnswerCriteria, merge, verdict("met", ""), onMerge},
+		{"not_met on a merge", ActAnswerCriteria, merge, verdict("not_met", "the page breaks"), onMerge},
+		{"confirm", ActConfirmCriteria, criteria, Resolution{Note: "main holds every page"}, want},
+		{"deny", ActDenyCriteria, criteria, Resolution{Note: "not now"}, want},
 	} {
 		a, _ := ActionByName(c.action)
 		c.r.Action = c.action
-		if got := a.refusal(c.f, 2, c.r); got != want {
-			t.Errorf("%s: rung 2's refusal = %q, want %q", c.name, got, want)
+		if got := a.refusal(c.f, 2, c.r); got != c.want {
+			t.Errorf("%s: rung 2's refusal = %q, want %q", c.name, got, c.want)
 		}
 		if got := a.refusal(c.f, 3, c.r); got != "" {
 			t.Errorf("%s: the human's refusal = %q, want none", c.name, got)

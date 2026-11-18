@@ -320,6 +320,9 @@ type tripForge struct {
 	files     map[string]string
 	prCommits string
 	redLog    string
+	// mainHead is main's head, which GET /branches/main answers; none
+	// answers 404
+	mainHead string
 }
 
 func (f *tripForge) serve(t *testing.T) *httptest.Server {
@@ -340,6 +343,8 @@ func (f *tripForge) serve(t *testing.T) *httptest.Server {
 			fmt.Fprint(w, f.prCommits)
 		case r.URL.Path == repo+"/pulls/9/commits":
 			fmt.Fprint(w, `[]`)
+		case r.URL.Path == repo+"/branches/main" && f.mainHead != "":
+			fmt.Fprintf(w, `{"name":"main","commit":{"id":%q}}`, f.mainHead)
 		case r.URL.Path == repo+"/actions/runs":
 			fmt.Fprint(w, `{"workflow_runs":[{"id":70,"index_in_repo":7}]}`)
 		case r.URL.Path == repo+"/actions/runs/70/jobs":

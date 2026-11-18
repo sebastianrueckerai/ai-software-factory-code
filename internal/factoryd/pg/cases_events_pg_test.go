@@ -909,8 +909,8 @@ func TestCreateHumanCardWritesTheCardAndItsAskOrNeither(t *testing.T) {
 
 // The criteria pass resolves a plan's criteria_rerun requests on every pass;
 // with none pending it decides nothing, so the plan's criteria case, which
-// its pending criteria request owns, stays at the human until that request
-// is decided.
+// its pending criteria request owns and which opens at rung 0, stays live
+// until that request is decided.
 func TestAResolveWithNothingDecidedLeavesThePlansCriteriaCase(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
@@ -925,15 +925,15 @@ func TestAResolveWithNothingDecidedLeavesThePlansCriteriaCase(t *testing.T) {
 	}
 	recordCaseEvent(t, s, EventApprovalRequested, FactoryDecider, ViaFactoryd, map[string]any{"approval": id, "kind": ApprovalCriteria})
 	c := onlyOpenCase(t, s)
-	if c.Kind != CasePlanCriteria || c.Status != CaseAtHuman {
-		t.Fatalf("case = %+v; want the plan's criteria case at the human", c)
+	if c.Kind != CasePlanCriteria || c.Status != CaseOpen {
+		t.Fatalf("case = %+v; want the plan's criteria case open", c)
 	}
 
 	if err := s.ResolveApprovals(ctx, caseTask, ApprovalCriteriaRerun, "approved", FactoryDecider, "every criterion has a verdict row"); err != nil {
 		t.Fatalf("ResolveApprovals rerun: %v", err)
 	}
-	if got := caseByID(t, s, c.ID); got.Status != CaseAtHuman || got.Resolution != nil {
-		t.Fatalf("case after a rerun resolve with none pending = %+v, resolution %+v; want it at the human", got, got.Resolution)
+	if got := caseByID(t, s, c.ID); got.Status != CaseOpen || got.Resolution != nil {
+		t.Fatalf("case after a rerun resolve with none pending = %+v, resolution %+v; want it open", got, got.Resolution)
 	}
 
 	if err := s.ResolveApprovals(ctx, caseTask, ApprovalCriteria, "approved", "sebastian", "granted one card"); err != nil {

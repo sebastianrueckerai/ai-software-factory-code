@@ -385,8 +385,8 @@ func routineDecider(routine string, n int, schedule string) string {
 }
 
 // approvalPoke is an approval request's poke row, its content and its
-// choices, false for a kind that pokes nobody: the one the Poker writes
-// and the analysis rebuilds to find the rows it rewrites.
+// choices, false for a kind that pokes nobody: a criteria request, whose
+// case climbs first and whose face's ask pokes.
 func approvalPoke(e Event, t Task) (string, []string, bool) {
 	ref := cardRef(e, t)
 	str := func(k string) string { s, _ := e.Detail[k].(string); return s }
@@ -403,10 +403,6 @@ func approvalPoke(e Event, t Task) (string, []string, bool) {
 		return fmt.Sprintf("%s waits for you: merge PR #%d, %s risk.", ref, num("pr"), str("class")), []string{"Approve"}, true
 	case ApprovalPlan:
 		return fmt.Sprintf("Plan %s %q waits for your answers: revision %d, %d cards; the planner revises it with them.", ref, CardTitle(t), num("revision"), num("cards")), nil, true
-	case ApprovalCriteria:
-		return fmt.Sprintf("Plan %s %q waits for you: every card of it has ended with a criterion still unmet. Waive one with your reason, grant one more bounded card, or confirm the delivered cards satisfy them.", ref, CardTitle(t)), nil, true
-	case ApprovalCriteriaRerun:
-		return fmt.Sprintf("Plan %s %q waits for you: its cards have ended and no verdict on main settles its criteria. Waive one with your reason, grant one more bounded card, or confirm with your evidence that the delivered cards meet them.", ref, CardTitle(t)), nil, true
 	}
 	return "", nil, false
 }

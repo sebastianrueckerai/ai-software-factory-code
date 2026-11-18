@@ -1339,6 +1339,18 @@ func (r *rig) forgetWriters() {
 
 // ownCasesOf are the cases the rig holds for a task: those a test seats, else
 // the one live case of a card waiting on a human.
+// liveCasesOf are card taskID's live cases: its own, and its pending
+// requests' cases, at the human, where none of its own holds the request.
+func (r *rig) liveCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
+	base, err := r.ownCasesOf(ctx, taskID)
+	for _, q := range r.requestCases(ctx, taskID) {
+		if !slices.ContainsFunc(base, func(k factoryd.Case) bool { return approvalOf(q.req, k) }) {
+			base = append(base, q.c)
+		}
+	}
+	return base, err
+}
+
 func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 	if r.openCases != nil {
 		return r.openCases[taskID], nil
@@ -1505,15 +1517,7 @@ func newRig(t *testing.T) *rig {
 		BoardDigest: func(_ context.Context, repository string) (factoryd.BoardDigest, error) {
 			return r.boardDigests[repository], nil
 		},
-		OpenCasesOf: func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
-			base, err := r.ownCasesOf(ctx, taskID)
-			for _, q := range r.requestCases(ctx, taskID) {
-				if !slices.ContainsFunc(base, func(k factoryd.Case) bool { return approvalOf(q.req, k) }) {
-					base = append(base, q.c)
-				}
-			}
-			return base, err
-		},
+		OpenCasesOf: r.liveCasesOf,
 		CaseByID: func(ctx context.Context, id int64) (factoryd.Case, error) {
 			all := slices.Clone(r.endedCases)
 			for _, open := range r.openCases {
@@ -1541,8 +1545,19 @@ func newRig(t *testing.T) *rig {
 			for id, ask := range r.caseAsks {
 				d.Asks[id] = ask
 			}
+			// a plan's criteria request's case is on the desk, its plan on the board or not
+			for _, a := range r.approvals.rows {
+				if a.Project == repository && !slices.ContainsFunc(tasks, func(bt factoryd.BoardTask) bool { return bt.ID == a.TaskID }) {
+					tasks = append(tasks, factoryd.BoardTask{Task: factoryd.Task{ID: a.TaskID, Repository: repository}})
+				}
+			}
 			for _, bt := range tasks {
 				open, _ := r.ownCasesOf(ctx, bt.ID)
+				for _, q := range r.requestCases(ctx, bt.ID) {
+					if q.c.Kind == factoryd.CasePlanCriteria && !slices.ContainsFunc(open, func(k factoryd.Case) bool { return approvalOf(q.req, k) }) {
+						open = append(open, q.c)
+					}
+				}
 				for _, k := range open {
 					d.Cases = append(d.Cases, k)
 					// a case reaches the human with its offers stored on its ask, as the Runner's passes write them

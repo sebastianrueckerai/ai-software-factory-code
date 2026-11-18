@@ -327,3 +327,56 @@ func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 		t.Fatalf("the browser's approve = %d to %q", rec.Code, rec.Header().Get("Location"))
 	}
 }
+
+// A plan's criteria request waits for its case's face: while the case is
+// open on its rungs the board lists no approval for the plan, the card's
+// page of criteria answers 404 and the plan's drawer holds no gap card;
+// once the case is at the human the gap card stands in Needs you, and on
+// each page of its criteria, with the rungs' analysis and recommendation
+// from the case's ask. A done plan outside the board's finished page is
+// listed all the same.
+func TestACriteriaRequestWaitsForItsCasesFace(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		onBoard bool
+	}{{"on the board", true}, {"past the finished page", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			verdictRig(r)
+			if !tc.onBoard {
+				r.tasks.tasks = slices.DeleteFunc(r.tasks.tasks, func(bt factoryd.BoardTask) bool { return bt.ID == "t-plan" })
+			}
+			r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 41, TaskID: "t-plan", Repository: "sf/code", Kind: factoryd.CasePlanCriteria,
+				Status: factoryd.CaseOpen, Problem: "criteria not met once every card of the plan ended: c2, c3", Facts: map[string]any{"approval": 30.0}}}}
+			ck, _ := r.loggedIn(t)
+			needs := func() string {
+				return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+			}
+			page := func() *httptest.ResponseRecorder {
+				return r.do(httptest.NewRequest(http.MethodGet, "/approvals/30/criteria/2?project=ai-software-factory-code", nil), ck)
+			}
+			if got := needs(); strings.Contains(got, "Criteria gap") {
+				t.Fatalf("Needs you lists the request while its case is open:\n%s", got)
+			}
+			if rec := page(); rec.Code != http.StatusNotFound {
+				t.Fatalf("the criteria page while the case is open = %d %q, want 404", rec.Code, rec.Body.String())
+			}
+			if tc.onBoard {
+				if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?tab=overview", nil), ck).Body.String(); strings.Contains(drawer, "Criteria gap") || strings.Contains(drawer, "/approvals/30/") {
+					t.Fatalf("the plan's drawer holds the request while its case is open:\n%s", drawer)
+				}
+			}
+			r.openCases["t-plan"][0].Status = factoryd.CaseAtHuman
+			r.caseAsks = map[int64]factoryd.CaseAsk{41: {Detail: map[string]any{"info": "The factory agent found: c3 fails on main's head.",
+				"recommendation": "grant_criteria: one more card fixes the suite", "recommended_by": "the factory agent"}}}
+			for where, got := range map[string]string{"Needs you": needs(), "the criteria page": page().Body.String()} {
+				for _, want := range []string{"Criteria gap", "The factory agent found: c3 fails on main's head.",
+					`<p class="recommendation">Recommendation (the factory agent): grant_criteria: one more card fixes the suite</p>`} {
+					if !strings.Contains(got, want) {
+						t.Fatalf("%s lacks %q once the case is at the human:\n%s", where, want, got)
+					}
+				}
+			}
+		})
+	}
+}
