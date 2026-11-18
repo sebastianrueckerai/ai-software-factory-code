@@ -1596,6 +1596,10 @@ func storePlanAnswers(ctx context.Context, store Store, taskID string, revision 
 	return nil
 }
 
+// errNoPlanWaiting is pendingPlan's refusal of a task with no pending
+// request of kind plan, as against a store that could not be read.
+var errNoPlanWaiting = errors.New("has no plan waiting for answers")
+
 // pendingPlan is the task's pending approval request of kind plan.
 func pendingPlan(ctx context.Context, store Store, taskID string) (ApprovalRequest, error) {
 	pending, err := store.ApprovalRequests(ctx, "pending")
@@ -1607,7 +1611,7 @@ func pendingPlan(ctx context.Context, store Store, taskID string) (ApprovalReque
 			return a, nil
 		}
 	}
-	return ApprovalRequest{}, fmt.Errorf("task %s has no plan waiting for answers", taskID)
+	return ApprovalRequest{}, fmt.Errorf("task %s %w", taskID, errNoPlanWaiting)
 }
 
 func (s *PGStore) AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error) {
@@ -3435,20 +3439,33 @@ func (r *Runner) AskQuestions(ctx context.Context, t Task, revision int, qs []Pl
 		}
 	}
 	for i, q := range asked {
-		row := map[string]any{"question": q.Text, "choices": q.Choices, "recommended": q.Recommended, "grounds": q.Grounds, "revision": revision, "index": i + 1}
-		offers := make([]QuestionChoice, len(q.Choices))
-		for j, c := range q.Choices {
-			offers[j] = QuestionChoice{Value: c, Label: c}
-		}
-		if len(offers) > 0 {
-			row["offers"] = offers
-		}
-		if q.Recommended != "" && q.Grounds != "" {
-			row["recommendation"], row["recommended_by"] = q.Recommended+": "+q.Grounds, "the planner"
-		}
-		r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, row)
+		r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, planAskRow(revision, i+1, q))
 	}
 	return nil
+}
+
+// planAskRow is the question_asked row of question idx (from 1) of plan
+// revision revision, whose case keys on its words and the revision: a
+// confirmation's kind, else a question's choices as offers and the
+// planner's recommendation.
+func planAskRow(revision, idx int, q PlanQuestion) map[string]any {
+	row := map[string]any{"question": q.Text, "revision": revision, "index": idx}
+	if q.Kind == QuestionConfirmation {
+		row["kind"] = QuestionConfirmation
+		return row
+	}
+	row["choices"], row["recommended"], row["grounds"] = q.Choices, q.Recommended, q.Grounds
+	offers := make([]QuestionChoice, len(q.Choices))
+	for j, c := range q.Choices {
+		offers[j] = QuestionChoice{Value: c, Label: c}
+	}
+	if len(offers) > 0 {
+		row["offers"] = offers
+	}
+	if q.Recommended != "" && q.Grounds != "" {
+		row["recommendation"], row["recommended_by"] = q.Recommended+": "+q.Grounds, "the planner"
+	}
+	return row
 }
 
 // askConfirmation appends the confirmation question to revision's stored
@@ -3473,14 +3490,14 @@ func (r *Runner) AskConfirmation(ctx context.Context, t Task, revision int, p Pl
 	case !ask && same == 0:
 		return nil
 	}
-	q := PlanQuestion{Text: r.untrusted(t, confirmationQuestion(revision, p))}
+	q := PlanQuestion{Text: r.untrusted(t, confirmationQuestion(revision, p)), Kind: QuestionConfirmation}
 	idx, inserted, err := r.store.PutPlanConfirmation(ctx, t.ID, revision, q)
 	if err != nil {
 		return err
 	}
 	answer := fmt.Sprintf("the same plan as revision %d, confirmed there", same)
 	if inserted {
-		asked := map[string]any{"question": q.Text, "revision": revision, "index": idx, "kind": "confirmation"}
+		asked := planAskRow(revision, idx, q)
 		if same > 0 {
 			asked["settled"] = answer
 		}

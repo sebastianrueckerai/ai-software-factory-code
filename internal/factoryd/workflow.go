@@ -4882,6 +4882,10 @@ const escalateFailed = "escalate: "
 // HealedReason is what a healed run waiting for a human asks again.
 const HealedReason = "factoryd restarted while the task waited for a human; the question above still stands."
 
+// AsklessReason is what the heal pass asks again of a card that waits for
+// a human with no live ask.
+const AsklessReason = "the task waited for a human with no question open; the question above still stands."
+
 // MaxAnswer bounds an answer's body, in bytes, in the list every later
 // session gets as the ANSWERS or POSTER_INFO env var (envFit and
 // maxCarriedAnswers bound the list); the issue keeps it whole, and the

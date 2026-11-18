@@ -63,6 +63,7 @@ var (
 	ApprovalCriteria       = factoryd.ApprovalCriteria
 	ApprovalMerge          = factoryd.ApprovalMerge
 	AskOffers              = factoryd.AskOffers
+	AsklessReason          = factoryd.AsklessReason
 	BriefTerminal          = factoryd.BriefTerminal
 	BudgetQuestion         = factoryd.BudgetQuestion
 	CapReached             = factoryd.CapReached
