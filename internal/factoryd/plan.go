@@ -685,11 +685,11 @@ const maxPlanChoices = 3
 // MaxPromise bounds a criterion's promise, in runes.
 const MaxPromise = 80
 
-// promiseBounds are the findings on the criteria's promises, which only
+// PromiseBounds are the findings on the criteria's promises, which only
 // the planner's filing judges, so a revision stored before them still
 // reads: each criterion states its promise, one line of at most MaxPromise
 // runes that passes the guide.
-func promiseBounds(cs []PlanCriterion) []string {
+func PromiseBounds(cs []PlanCriterion) []string {
 	var out []string
 	for _, c := range cs {
 		add := func(format string, args ...any) {
@@ -3146,7 +3146,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		p.Cards = append(settled, p.Cards...)
 	}
 	p, found = judgePlan(p, shape, v.Document.Limits, projectPins(v, t.Repository))
-	if found = slices.Concat(found, promiseBounds(p.Criteria), questionBounds(p.Questions), briefs); len(found) > 0 {
+	if found = slices.Concat(found, PromiseBounds(p.Criteria), questionBounds(p.Questions), briefs); len(found) > 0 {
 		return refuse(found)
 	}
 	// a re-file of the newest revision by value: already stored. By

@@ -519,7 +519,7 @@ func (b *BriefTally) Reset(key string) {
 // writer's try. On a pass, or on the try that files anyway, t takes the
 // brief's why line, summary and unchecked mark, and admit answers nil;
 // else the refusal, which goes back to the writer (pass).
-func admit(t *Task, b BriefText, refs *botRefs, try int) error {
+func admit(t *Task, b BriefText, refs RefResolver, try int) error {
 	unchecked, err := pass(b, BriefJobOf(*t), refs, try)
 	if err != nil {
 		return err
@@ -533,12 +533,11 @@ func admit(t *Task, b BriefText, refs *botRefs, try int) error {
 // unchecked, or the *BriefRefusal its writer's tries count, a failed read
 // included. A filing no writer corrects, refs nil, takes its references
 // as the factory read them (filedRefs).
-func pass(b BriefText, job BriefJob, refs *botRefs, try int) (bool, error) {
-	var check RefResolver = filedRefs{}
-	if refs != nil {
-		check = refs
+func pass(b BriefText, job BriefJob, refs RefResolver, try int) (bool, error) {
+	if refs == nil {
+		refs = filedRefs{}
 	}
-	unchecked, refused, err := AdmitBrief(b, job, check, try)
+	unchecked, refused, err := AdmitBrief(b, job, refs, try)
 	switch {
 	case err != nil:
 		return false, &BriefRefusal{Lines: []string{unreadRefs(err)}}

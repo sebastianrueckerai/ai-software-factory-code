@@ -164,7 +164,7 @@ func parseCaseBrief(content string) (happened, left string, err error) {
 		for _, f := range writingguide.Lint(l.text) {
 			faults = append(faults, l.name+": "+f)
 		}
-		if label := labelPattern.FindString(l.text); label != "" {
+		if label := LabelPattern.FindString(l.text); label != "" {
 			faults = append(faults, fmt.Sprintf("%s names the answer \u201c%s\u201d, which the card shows below the story: tell what happened in words of the work", l.name, label))
 		}
 	}
@@ -174,9 +174,9 @@ func parseCaseBrief(content string) (happened, left string, err error) {
 	return happened, left, nil
 }
 
-// labelPattern finds an answer's label of the vocabulary as written, the
+// LabelPattern finds an answer's label of the vocabulary as written, the
 // longest first: a story line that names one names a button.
-var labelPattern = func() *regexp.Regexp {
+var LabelPattern = func() *regexp.Regexp {
 	var labels []string
 	for _, a := range Vocabulary {
 		if !slices.Contains(labels, a.Label) {

@@ -1356,7 +1356,7 @@ func cardStands(ctx context.Context, forgejo *Forgejo, repo Repo, got Task, issu
 // for the retry to take on, and a human closes what no retry takes.
 func fileOnIssue(ctx context.Context, forgejo *Forgejo, repo Repo, b BriefText, labels []string, t Task, reuse int64, store func(Task) (Task, error)) (Task, IssueRef, error) {
 	try, writer := writerTry(ctx)
-	var refs *botRefs
+	var refs RefResolver
 	if writer {
 		docs, _ := ctx.Value(briefDocsKey{}).(Repo)
 		refs = &botRefs{ctx: ctx, f: forgejo, repo: repo, docs: docs}
