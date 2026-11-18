@@ -298,7 +298,7 @@ func TestFreezeCardSpeaksForTheClass(t *testing.T) {
 	if got := fj.patches[reopened.IssueNumber]; got != "closed" {
 		t.Errorf("issue #%d's last patch = %q, want closed", reopened.IssueNumber, got)
 	}
-	if want := fmt.Sprintf("#issues/%d factoryd: sebastian's retry press cleared the big class's hold: the freeze card closes at once.", reopened.IssueNumber); !slices.Contains(fj.comments, want) {
+	if want := fmt.Sprintf("#issues/%d sebastian's retry press cleared the big class's hold: the freeze card closes at once.", reopened.IssueNumber); !slices.Contains(fj.comments, want) {
 		t.Errorf("the issue's comments %q lack the press's close naming who pressed: %q", fj.comments, want)
 	}
 	// a second press is quiet: no open card stands, no second close
@@ -345,7 +345,7 @@ func TestFreezeCardAsksAtProviderLimit(t *testing.T) {
 	if err := w.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if asks := len(fj.comments); asks != 1 || !strings.Contains(fj.comments[0], "has held past waits.provider_limit (1m0s)") {
+	if asks := len(fj.comments); asks != 1 || !strings.Contains(fj.comments[0], "The provider's limit has held the big class for more than 1 minute.") {
 		t.Fatalf("comments %q, want the one provider-limit ask", fj.comments)
 	}
 	for _, want := range []string{"Add a fallback", "switch the class's model", "keep waiting", "The work cards ask nothing"} {
@@ -357,7 +357,7 @@ func TestFreezeCardAsksAtProviderLimit(t *testing.T) {
 		t.Errorf("the ask %q is not on the card's issue #%d: the work cards ask nothing", fj.comments[0], card.IssueNumber)
 	}
 	asked, _ := plFreezeCard(ctx, t, s)
-	if !strings.Contains(asked.Objective, "has held past waits.provider_limit") {
+	if !strings.Contains(asked.Objective, "The provider's limit has held the big class for more than 1 minute.") {
 		t.Errorf("the card's face lacks the ask:\n%s", asked.Objective)
 	}
 
