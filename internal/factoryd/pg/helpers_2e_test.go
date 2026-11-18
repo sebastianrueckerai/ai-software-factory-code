@@ -332,6 +332,80 @@ func planCriteriaRig(t *testing.T, head string, cuts ...string) (rungRig, *Waker
 	return g, w, starter, &boardStub{s: g.s, approval: id}, g.liveCase(t, CasePlanCriteria)
 }
 
+// planWakeRig is the rung 2 rig at autonomy state whose card t1 is a plan
+// waiting for its answers at revision, under plan: its questions qs come
+// through AskQuestions, a confirmation among them as AskConfirmation's row
+// asks it, and its plan request is pending. Each question's case is open
+// at rung 0 with no step. It answers the request's id.
+func planWakeRig(t *testing.T, state string, revision int, plan Plan, qs ...PlanQuestion) (rungRig, *Waker, *fakeWakeStarter, int64) {
+	t.Helper()
+	g, w, starter := rungTwoRig(t, policy.JudgmentAlways)
+	g.atAutonomy(state)
+	ctx := context.Background()
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'waiting-human', track = 'plan' WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for n := 1; n <= revision; n++ {
+		if _, err := g.s.AddPlanRevision(ctx, "t1", raw, fmt.Sprint("s", n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	task, _, err := g.r.PgTask(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asked []PlanQuestion
+	for _, q := range qs {
+		if q.Kind != QuestionConfirmation {
+			asked = append(asked, q)
+		}
+	}
+	if err := g.r.AskQuestions(ctx, task, revision, asked); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range qs {
+		if q.Kind != QuestionConfirmation {
+			continue
+		}
+		idx, _, err := g.s.PutPlanConfirmation(ctx, "t1", revision, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.record(t, EventQuestionAsked, map[string]any{"question": q.Text, "revision": revision, "index": idx, "kind": QuestionConfirmation})
+	}
+	spec, err := json.Marshal(factoryd.PlanSpec{Revision: revision, SHA256: fmt.Sprint("s", revision)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := g.s.OpenApproval(ctx, ApprovalRequest{Kind: factoryd.ApprovalPlan, TaskID: "t1", Project: "demo-app/demo-app", Spec: spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": factoryd.ApprovalPlan, "revision": revision, "cards": len(plan.Cards)})
+	return g, w, starter, id
+}
+
+// commentBodies are the bodies of the comments on t1's issue, oldest first,
+// as the last write left each.
+func (g rungRig) commentBodies(t *testing.T) []string {
+	t.Helper()
+	g.forge.mu.Lock()
+	defer g.forge.mu.Unlock()
+	out := make([]string, len(g.forge.comments))
+	for i, raw := range g.forge.comments {
+		var c struct{ Body string }
+		if err := json.Unmarshal([]byte(raw), &c); err != nil {
+			t.Fatal(err)
+		}
+		out[i] = c.Body
+	}
+	return out
+}
+
 // wakePass runs the case-wake pass on g's store and runner a second past
 // now, so the case its request opened is due.
 func (g rungRig) wakePass(t *testing.T) {

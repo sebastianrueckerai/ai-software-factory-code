@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -1157,5 +1158,212 @@ func TestAnUndoneRung2ApprovalReachesItsFaceInOneWakePass(t *testing.T) {
 	}
 	if asks := g.asks(t); len(asks) != 1 || !strings.Contains(asks[0].Detail["info"].(string), "The factory agent found: "+undone) {
 		t.Fatalf("asks = %+v, want one whose info carries the undo", asks)
+	}
+}
+
+// A plan's question at full auto climbs as a merge does. The planner's row
+// opens its case at rung 0, due at the row, with no step, no comment, no
+// poke and no wake; the case-wake pass runs rung 0, where no row fits a
+// plan's question, and hands the case to rung 2, whose one wake turn takes
+// it, told to end it with the plan's answer. Rung 2's answer through
+// AnswerPlan, by the factory agent, signals plan_answered, and the
+// console's row, whose actor in a wake is the venue's human, resolves the
+// case by the factory agent at rung 2, as the stored answer names it. No
+// human is asked: no comment, no face, no poke.
+func TestAPlanQuestionAtFullAutoClimbsToRung2WhichAnswersIt(t *testing.T) {
+	g, w, starter, _ := planWakeRig(t, policy.AutonomyFullAuto, 1, Plan{Summary: "the store"},
+		PlanQuestion{Text: "Which database?", Choices: []string{"Postgres", "SQLite"}, Recommended: "Postgres", Grounds: "it is shared"})
+	ctx := context.Background()
+	c := g.liveCase(t, CasePlanQuestion)
+	asked := g.asks(t)
+	if len(asked) != 1 || c.Status != CaseOpen || c.OwnerRung != 0 || c.NextWakeAt == nil || !c.NextWakeAt.Equal(asked[0].At) || len(g.steps(t, c.ID)) != 0 {
+		t.Fatalf("case = %+v with steps %+v, asks %+v; want it open at rung 0, due at the planner's row, with no step", c, g.steps(t, c.ID), asked)
+	}
+	if err := drainPass(t, w); err != nil {
+		t.Fatal(err)
+	}
+	if calls := starter.recorded(); len(calls) != 0 || len(g.forge.comments) != 0 || len(g.pokeRows(t)) != 0 {
+		t.Fatalf("wakes %+v, comments %q, pokes %v at the opening; want none", calls, g.forge.comments, g.pokeRows(t))
+	}
+	g.wakePass(t)
+	// rung 0 takes no plan answer: it hands the case up
+	steps := g.steps(t, c.ID)
+	if len(steps) != 2 || steps[0].Rung != 0 || steps[0].Outcome != StepHandedUp || steps[1].Rung != 2 || steps[1].Outcome != StepInProgress {
+		t.Fatalf("steps = %+v, want rung 0's hand-up and rung 2 in progress", steps)
+	}
+	if climbed := g.rows(t, EventCaseClimbed); len(climbed) != 1 || climbed[0].Detail["case_id"] != float64(c.ID) {
+		t.Fatalf("case_climbed rows = %+v, want one for case %d", climbed, c.ID)
+	}
+	if err := drainPass(t, w); err != nil {
+		t.Fatal(err)
+	}
+	end := fmt.Sprintf("End case %d with answer on the plan's revision and question, with no case_id, or with attach_analysis, case_id %d and the recommended answer.", c.ID, c.ID)
+	if calls := starter.recorded(); len(calls) != 1 || calls[0].birth != EventCaseClimbed || !slices.Equal(calls[0].cases, []int64{c.ID}) ||
+		!strings.Contains(calls[0].text, end) {
+		t.Fatalf("wakes = %+v, want one case_climbed turn on case %d that ends with %q", calls, c.ID, end)
+	}
+	if err := factoryd.AnswerPlan(ctx, g.s, g.signals, "t1", 1, 1, "", "Postgres", ChatUser); err != nil {
+		t.Fatalf("rung 2's answer: %v", err)
+	}
+	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", IssueNumber: 12, Kind: EventPlanQuestionAnswered,
+		Actor: "sebastian", Via: ViaChat, Detail: map[string]any{"revision": 1, "index": 1, "answer": "Postgres", "decider": "agent"}}); err != nil {
+		t.Fatal(err)
+	}
+	if answered := g.signalsOf(factoryd.SignalPlanAnswered); len(answered) != 1 || answered[0].taskID != "t1" || answered[0].sig.Author != ChatUser ||
+		answered[0].sig.Revision != 1 || answered[0].sig.Index != 1 {
+		t.Fatalf("plan_answered signals = %+v, want t1's question 1 of revision 1 by %s", answered, ChatUser)
+	}
+	got := caseByID(t, g.s, c.ID)
+	if got.Status != CaseResolved || got.Resolution == nil || got.Resolution.By != ChatUser || got.Resolution.Rung != 2 || got.Resolution.Action != CaseAnswer {
+		t.Fatalf("case = %+v, resolution %+v; want it resolved by %s at rung 2 with answer", got, got.Resolution, ChatUser)
+	}
+	if steps := g.steps(t, c.ID); len(steps) != 2 || steps[1].Rung != 2 || steps[1].Outcome != StepResolved {
+		t.Fatalf("steps = %+v, want rung 2's step ended with the case", steps)
+	}
+	if len(g.forge.comments) != 0 || len(g.asks(t)) != 1 || len(g.pokeRows(t)) != 0 {
+		t.Fatalf("comments %q, asks %+v, pokes %v; want no face and no poke", g.forge.comments, g.asks(t), g.pokeRows(t))
+	}
+}
+
+// A confirmation of a revision that takes merged work off main is the
+// human's at every level. Rung 2 hands it up, and an answer no confirmation
+// takes is refused naming the two it takes. With revise as its
+// recommendation the case is at the human beside the plan's run: the card
+// still waits for its answers, no case_faced goes out, and rung 2's step
+// holds its decision with no action proposed. The face's row carries the
+// revision, the index, the kind and the case's kind, rung 2's finding and
+// recommendation; one comment on the plan's issue names the confirmation
+// with that recommendation and that a reply asks the planner for a new
+// revision; one poke, the face's, asks it.
+func TestAPlanConfirmationThatTakesWorkOffMainIsHandedUp(t *testing.T) {
+	const confirmation = "Confirmation of the spec and the criteria of plan revision 1: Confirm fixes the spec and the criteria; Request changes sends your words to the next planner round."
+	g, _, _, _ := planWakeRig(t, policy.AutonomyFullAuto, 1, Plan{Summary: "the store", TakeOffMain: []string{"api"}},
+		PlanQuestion{Text: confirmation + "\nCriteria: c1 (test).", Kind: QuestionConfirmation})
+	ctx := context.Background()
+	c := g.liveCase(t, CasePlanConfirmation)
+	g.wakePass(t)
+	_, err := g.r.HandUpRung2(ctx, "t1", c.ID, "x", RungTwoRecommendation{Action: ActApproveMerge, Grounds: "y"}, nil)
+	var refused ErrActRefused
+	if want := `"approve_merge" is no decision of a plan's confirmation: recommend confirm or revise`; !errors.As(err, &refused) || err.Error() != want {
+		t.Fatalf("the hand-up with approve_merge = %v, want %q", err, want)
+	}
+	if _, err := g.r.HandUpRung2(ctx, "t1", c.ID, "revision 1 takes the merged api card off main",
+		RungTwoRecommendation{Action: factoryd.DecisionRevise, Grounds: "keep the api card on main"}, nil); err != nil {
+		t.Fatalf("HandUpRung2: %v", err)
+	}
+	task, _, err := g.s.Task(ctx, "t1")
+	if got := caseByID(t, g.s, c.ID); err != nil || got.Status != CaseAtHuman || task.Status != "waiting-human" {
+		t.Fatalf("case %s, card %s (%v); want the case at the human and the card waiting", got.Status, task.Status, err)
+	}
+	if faced := g.signalsOf(SignalCaseFaced); len(faced) != 0 {
+		t.Fatalf("case_faced %+v; want none", faced)
+	}
+	if steps := g.stepsOfRung(t, c.ID, 2); len(steps) != 1 || steps[0].Outcome != StepHandedUp || steps[0].Decision != factoryd.DecisionRevise ||
+		steps[0].Grounds != "keep the api card on main" || len(steps[0].Did) != 0 {
+		t.Fatalf("rung 2's steps = %+v, want one handed up with the decision revise and no action", steps)
+	}
+	asks := g.asks(t)
+	if len(asks) != 2 {
+		t.Fatalf("asks = %+v, want the planner's row and the face's", asks)
+	}
+	face := asks[1].Detail
+	if face["case_id"] != float64(c.ID) || face["case_kind"] != string(CasePlanConfirmation) || face["revision"] != float64(1) || face["index"] != float64(1) ||
+		face["kind"] != QuestionConfirmation || !strings.HasPrefix(face["question"].(string), confirmation) ||
+		!strings.HasPrefix(face["info"].(string), "The factory agent found: revision 1 takes the merged api card off main") ||
+		face["recommendation"] != "revise: keep the api card on main" || face["recommended_by"] != "the factory agent" || face["comment"] != float64(501) {
+		t.Fatalf("the face's row = %+v", face)
+	}
+	want := "factoryd: revision 1 of the plan waits for the humans' answers in Needs you on the factory console.\n\n" +
+		"1. " + confirmation + "\n   Recommendation (the factory agent): revise: keep the api card on main\n\n" +
+		"A reply on this issue asks the planner for a new revision instead. Closing the issue ends the plan.\n<!-- factoryd questions of plan t1 revision 1 -->"
+	if bodies := g.commentBodies(t); len(bodies) != 1 || bodies[0] != want {
+		t.Fatalf("comments %q, want one:\n%s", bodies, want)
+	}
+	if pokes := g.pokeRows(t); !slices.Equal(pokes, []string{EventQuestionAsked}) {
+		t.Fatalf("pokes %v, want the face's ask alone", pokes)
+	}
+}
+
+// The questions of one revision share one face comment. Three questions of
+// revision 2 handed up in turn: the first hand-up posts the comment, which
+// names its question with rung 2's recommendation; the next two edit it,
+// and after the third it names all three in the order of their numbers.
+// Rung 2's recommendation must be one of a question's choices.
+func TestTheQuestionsOfARevisionShareOneFaceComment(t *testing.T) {
+	qs := []PlanQuestion{
+		{Text: "Which database?", Choices: []string{"Postgres", "SQLite"}, Recommended: "Postgres", Grounds: "it is shared"},
+		{Text: "Which queue?", Choices: []string{"NATS", "none"}, Recommended: "none", Grounds: "one process"},
+		{Text: "Which cache?", Choices: []string{"none", "Redis"}, Recommended: "none", Grounds: "no hot path"},
+	}
+	g, _, _, _ := planWakeRig(t, policy.AutonomyAutonomous, 2, Plan{Summary: "the store"}, qs...)
+	ctx := context.Background()
+	open, err := g.s.OpenCasesOf(ctx, "t1")
+	if err != nil || len(open) != 3 {
+		t.Fatalf("open cases = %+v, %v; want the three questions'", open, err)
+	}
+	g.wakePass(t)
+	_, err = g.r.HandUpRung2(ctx, "t1", open[0].ID, "x", RungTwoRecommendation{Action: "MySQL", Grounds: "y"}, nil)
+	var refused ErrActRefused
+	if want := `"MySQL" is no choice of this plan question: recommend one of Postgres and SQLite`; !errors.As(err, &refused) || err.Error() != want {
+		t.Fatalf("the hand-up with MySQL = %v, want %q", err, want)
+	}
+	recs := []RungTwoRecommendation{{Action: "SQLite", Grounds: "one process writes"}, {Action: "NATS", Grounds: "two services"}, {Action: "Redis", Grounds: "the board is hot"}}
+	head := "factoryd: revision 2 of the plan waits for the humans' answers in Needs you on the factory console.\n\n"
+	lines := []string{"1. Which database?\n   Recommendation (the factory agent): SQLite: one process writes\n",
+		"2. Which queue?\n   Recommendation (the factory agent): NATS: two services\n",
+		"3. Which cache?\n   Recommendation (the factory agent): Redis: the board is hot\n"}
+	const tail = "\nA reply on this issue asks the planner for a new revision instead. Closing the issue ends the plan.\n<!-- factoryd questions of plan t1 revision 2 -->"
+	for i, c := range open {
+		if _, err := g.r.HandUpRung2(ctx, "t1", c.ID, "read the plan", recs[i], nil); err != nil {
+			t.Fatalf("hand-up %d: %v", i+1, err)
+		}
+		want := head + strings.Join(lines[:i+1], "") + tail
+		if bodies := g.commentBodies(t); len(bodies) != 1 || bodies[0] != want {
+			t.Fatalf("after hand-up %d: comments %q, want one:\n%s", i+1, bodies, want)
+		}
+	}
+	for _, a := range g.asks(t)[3:] {
+		if a.Detail["comment"] != float64(501) {
+			t.Fatalf("face row %+v, want it on comment 501", a.Detail)
+		}
+	}
+}
+
+// The plan's request, denied by a decider's request for changes, ends its
+// live cases with that decider's revise: the factory agent's at rung 2,
+// with rung 2's step, a human's at rung 3. The factory's denial decides
+// nothing: it withdraws them.
+func TestADeniedPlanRequestEndsItsCases(t *testing.T) {
+	for _, tc := range []struct {
+		by     string
+		status string
+		rung   int
+	}{{ChatUser, CaseResolved, 2}, {"sebastian", CaseResolved, 3}, {FactoryDecider, CaseWithdrawn, 0}} {
+		t.Run(tc.by, func(t *testing.T) {
+			g, _, _, id := planWakeRig(t, policy.AutonomyFullAuto, 1, Plan{Summary: "the store"},
+				PlanQuestion{Text: "Which database?", Choices: []string{"Postgres", "SQLite"}}, PlanQuestion{Text: "Which queue?", Choices: []string{"NATS", "none"}})
+			ctx := context.Background()
+			g.wakePass(t)
+			if err := g.s.DecideApproval(ctx, id, factoryd.ApprovalPlan, "denied", tc.by, "changes requested: split the API card"); err != nil {
+				t.Fatalf("DecideApproval: %v", err)
+			}
+			cases, err := g.s.CasesOf(ctx, "t1")
+			if err != nil || len(cases) != 2 {
+				t.Fatalf("cases = %+v, %v; want the two questions'", cases, err)
+			}
+			for _, c := range cases {
+				want := &CaseResolution{By: tc.by, Rung: tc.rung, Action: CaseAnswer,
+					Args: map[string]any{"answer": "changes requested: split the API card", "decision": factoryd.DecisionRevise}}
+				if tc.by == FactoryDecider {
+					want = &CaseResolution{By: FactoryDecider, Action: "withdraw", Reason: "changes requested: split the API card"}
+				}
+				if c.Status != tc.status || !reflect.DeepEqual(c.Resolution, want) {
+					t.Fatalf("case = %+v, resolution %+v; want %s %+v", c, c.Resolution, tc.status, want)
+				}
+				if steps := g.stepsOfRung(t, c.ID, 2); len(steps) != 1 || steps[0].Outcome == StepInProgress {
+					t.Fatalf("rung 2's steps of case %d = %+v, want its one step ended", c.ID, steps)
+				}
+			}
+		})
 	}
 }

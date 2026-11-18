@@ -1367,12 +1367,15 @@ func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, e
 	if bt.Question != nil {
 		problem = bt.Question.Ask
 	}
+	key := ""
 	if k.Track == policy.TrackPlan {
 		if open := r.tasks.planCases(taskID); len(open) > 0 {
 			return open, nil
 		}
-		// a plan's case is its first open question
+		// a plan's case is its first open question, keyed on the newest
+		// revision as caseFromAsk keys it
 		if rev, ok, _ := r.tasks.PlanRevision(ctx, taskID, 0); ok {
+			key = fmt.Sprintf("rig@r%d", rev.Revision)
 			qs, _ := r.tasks.PlanQuestions(ctx, taskID, rev.Revision)
 			if i := slices.IndexFunc(qs, func(q factoryd.PlanQuestion) bool { return !q.Answered() }); i >= 0 {
 				problem = qs[i].Text
@@ -1386,7 +1389,7 @@ func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, e
 	case k.Track == policy.TrackPlan:
 		kind = factoryd.CasePlanQuestion
 	}
-	return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: kind, Status: factoryd.CaseAtHuman, Problem: problem, CommentID: bt.QuestionComment}}, nil
+	return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: kind, StateKey: key, Status: factoryd.CaseAtHuman, Problem: problem, CommentID: bt.QuestionComment}}, nil
 }
 
 // planCases are the cases of a plan's newest revision at the human, one for

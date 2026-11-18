@@ -45,7 +45,7 @@ const (
 const ChoiceRerun = "Re-run the checks"
 
 // pokeKinds are the events a poke may answer.
-var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventApprovalRequested, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
+var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
 	EventCardFiled, EventCardRetried, EventSessionGranted, EventRoutineRan, EventChatBudgetSpent,
 	EventPullRequestMerged, EventCardHoldStranded}
 
@@ -255,6 +255,10 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 			// the factory answered the ask as it asked it: no one is needed
 			return m, false
 		}
+		if revision, _ := toInt(e.Detail["revision"]); revision > 0 && str("case_kind") == "" {
+			// the planner's row: its case climbs, and its face's row asks
+			return m, false
+		}
 		m.Kind = MessageEscalation
 		m.Content = TitledRef(ref, t) + " needs you: " + str("question")
 		m.Decider = str("decider_line")
@@ -299,13 +303,6 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 			}
 			m.Content += "."
 		}
-	case EventApprovalRequested:
-		m.Kind = MessageEscalation
-		content, choices, ok := approvalPoke(e, t)
-		if !ok {
-			return m, false
-		}
-		m.Content, m.Choices = content, choices
 	case EventTaskEnded:
 		switch {
 		case t.Kind != "agent":
@@ -382,18 +379,6 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 // schedule its schedule in words.
 func routineDecider(routine string, n int, schedule string) string {
 	return fmt.Sprintf("routine %s · run %d · %s", routine, n, schedule)
-}
-
-// approvalPoke is an approval request's poke row, its content and its
-// choices, false for a kind that pokes nobody: a merge or a criteria
-// request, whose case climbs first and whose face's ask pokes.
-func approvalPoke(e Event, t Task) (string, []string, bool) {
-	ref := cardRef(e, t)
-	num := func(k string) int64 { n, _ := e.Detail[k].(float64); return int64(n) }
-	if kind, _ := e.Detail["kind"].(string); kind == ApprovalPlan {
-		return fmt.Sprintf("Plan %s %q waits for your answers: revision %d, %d cards; the planner revises it with them.", ref, CardTitle(t), num("revision"), num("cards")), nil, true
-	}
-	return "", nil, false
 }
 
 // cardRef is how a poke names e's card: its issue, else its task id.

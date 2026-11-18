@@ -1158,10 +1158,9 @@ func (s *PGStore) BudgetStoppedThreads(ctx context.Context, repository string) (
 // person there for an analysis to enrich.
 var ErrNoAsk = errors.New("the card asks nothing")
 
-// AskSettledError says the ask an analysis targeted is settled already:
-// Kind the ask's kind word (question, merge, plan, criteria), Word the
-// settling event's reason word, By its actor.
-type AskSettledError struct{ Kind, Word, By string }
+// AskSettledError says the question an analysis targeted is settled
+// already: Word the settling event's reason word, By its actor.
+type AskSettledError struct{ Word, By string }
 
 func (e *AskSettledError) Error() string {
 	if e.By != "" {
@@ -1170,24 +1169,14 @@ func (e *AskSettledError) Error() string {
 	return "the ask is " + e.Word
 }
 
-// askKind is ask event e's kind word: "question" for a question asked,
-// the approval's own kind (merge, plan, criteria) for a request.
-func askKind(e Event) string {
-	if e.Kind == EventApprovalRequested {
-		kind, _ := e.Detail["kind"].(string)
-		return kind
-	}
-	return "question"
-}
-
 // AttachAnalysis records what the chat agent found about the card's open
 // ask (the main agent concept): e, the analysis_attached row on the spine
 // with its repository, actor, via and detail, the store adding the card
 // and the findings, and the ask's escalation rows rewritten to carry the
 // findings after the ask, so every member reads them with the ask. The
-// ask is the card's newest open one of either family, a question asked or
-// an approval requested, a monitor's ask aside; none open, the newest ask there is refuses as
-// AskSettledError with its kind and state, a card without an ask row as
+// ask is the card's newest open question asked, a monitor's ask aside (a
+// request's ask is its case's face); none open, the newest ask there is
+// refuses as AskSettledError with its state, a card without an ask row as
 // ErrNoAsk.
 func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendation string, e Event) error {
 	repository := e.Repository
@@ -1210,31 +1199,15 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendat
 	var newestState PokeSettle
 	for i := range events { // newest first
 		e := &events[i]
-		var family string
-		switch {
-		case e.Kind == EventQuestionAsked && e.Detail["case_kind"] != string(CaseMonitorFlag):
+		if e.Kind != EventQuestionAsked || e.Detail["case_kind"] == string(CaseMonitorFlag) {
 			// a monitor's ask sits beside the card's own and is answered
 			// by its case's number: the analysis is the card's own ask's
-			family = "question"
-		case e.Kind == EventApprovalRequested:
-			if _, _, pokes := approvalPoke(*e, t); !pokes {
-				continue // a merge's or a criteria request's case climbs: its face is the ask
-			}
-			family = "approval"
-		default:
 			continue
 		}
-		var st PokeSettle
-		if family == "question" {
-			// the question is its own birth among the events: it settles
-			// nothing. A criteria case's face waits on its request
-			st = SettleOf(ChatMessage{Kind: MessageEscalation, BirthKind: EventQuestionAsked, At: e.At},
-				events, t.Status, ApprovalWaits(pending, taskID))
-		} else {
-			rest := append(append([]Event{}, events[:i]...), events[i+1:]...) // a request never supersedes itself
-			st = SettleOf(ChatMessage{Kind: MessageEscalation, BirthKind: EventApprovalRequested, At: e.At},
-				rest, t.Status, ApprovalWaits(pending, taskID))
-		}
+		// the question is its own birth among the events: it settles
+		// nothing. A criteria or merge case's face waits on its request
+		st := SettleOf(ChatMessage{Kind: MessageEscalation, BirthKind: EventQuestionAsked, At: e.At},
+			events, t.Status, ApprovalWaits(pending, taskID))
 		if newest == nil {
 			newest, newestState = e, st
 		}
@@ -1247,7 +1220,7 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendat
 		if newest == nil {
 			return ErrNoAsk
 		}
-		return &AskSettledError{Kind: askKind(*newest), Word: newestState.Word, By: newestState.By}
+		return &AskSettledError{Word: newestState.Word, By: newestState.By}
 	}
 	// the ask's rows: the poke line the Poker wrote, alone or with an
 	// earlier analysis a new attach replaces; rows of an older ask keep

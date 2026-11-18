@@ -62,8 +62,16 @@ func TestPokeOf(t *testing.T) {
 		{"a merge", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "high"}}, card, ChatMessage{}, false},
 		{"an agent's merge on red checks", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": false, "red_checks": true}}, card, ChatMessage{}, false},
 		{"a factory merge on red checks", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": true, "red_checks": true}}, card, ChatMessage{}, false},
-		{"a plan", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "plan", "revision": float64(2), "cards": float64(6)}}, plan,
-			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for your answers: revision 2, 6 cards; the planner revises it with them.`}, true},
+		// a plan's questions climb first: the face of each asks, never its
+		// request nor the planner's row
+		{"a plan", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "plan", "revision": float64(2), "cards": float64(6)}}, plan, ChatMessage{}, false},
+		{"a planner's question", Event{Kind: EventQuestionAsked, TaskID: "t-plan", Detail: map[string]any{"question": "Which database?", "revision": float64(2),
+			"index": float64(1), "case_id": float64(31), "choices": []any{"Postgres", "SQLite"}}}, plan, ChatMessage{}, false},
+		{"a plan question's face", Event{Kind: EventQuestionAsked, TaskID: "t-plan", Detail: map[string]any{"question": "Which database?", "revision": float64(2),
+			"index": float64(1), "case_id": float64(31), "case_kind": string(CasePlanQuestion), "why": "Plan revision 2 asks it: the planner revises the plan with the answers.",
+			"choices": []any{"Postgres", "SQLite"}}}, plan,
+			ChatMessage{Kind: MessageEscalation, Content: "#558 - Members page needs you: Which database?\nWhy: Plan revision 2 asks it: the planner revises the plan with the answers.",
+				Choices: []string{"Postgres", "SQLite"}}, true},
 		// a criteria request's case climbs first: its face's ask is the poke
 		{"a criteria gap", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria"}}, plan, ChatMessage{}, false},
 		{"criteria never judged", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria_rerun"}}, plan, ChatMessage{}, false},

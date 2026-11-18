@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // casesFromEvent writes, inside the transaction tx that inserted event e,
@@ -91,7 +93,11 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 // that names its case (OpenTrip's face) puts that case at the human with
 // its comment and appends the human's step, while the case is live and
 // the asking card's. One that names none, another card's case or a case
-// that ended goes by its words.
+// that ended goes by its words, but a plan's face whose case ended opens
+// none: its answer ended it. A planner's row opens its case open at rung
+// 0, due at the row, with no step: it climbs to its face. One the factory
+// answered as it asked it (settled) has no wake, for that answer comes in
+// the same filing.
 func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	if id, _ := toInt(e.Detail["case_id"]); id != 0 {
 		comment, _ := toInt(e.Detail["comment"])
@@ -110,6 +116,9 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return false, err
+		}
+		if revision, _ := toInt(e.Detail["revision"]); revision > 0 {
+			return false, nil
 		}
 	}
 	t, err := scanTask(tx.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = $1`, e.TaskID).Scan)
@@ -145,22 +154,25 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 		}
 		step.CaseID = live.ID
 	}
-	opened := false
+	opened, onRungs := false, false
 	if step.CaseID == 0 {
 		if c.Follows, err = newestEndedCase(ctx, tx, t.ID); err != nil {
 			return false, err
+		}
+		if _, settled := e.Detail["settled"]; c.Status == CaseOpen && !settled {
+			c.NextWakeAt = &e.At
 		}
 		var got Case
 		if got, opened, err = openCase(ctx, tx, c); err != nil {
 			return false, err
 		}
-		step.CaseID = got.ID
+		step.CaseID, onRungs = got.ID, got.Status == CaseOpen
 		if !opened && !healed {
 			step.Found = "asked again: " + c.Problem
 		}
 	}
-	if err := stampAsk(ctx, tx, e, step.CaseID); err != nil {
-		return false, err
+	if err := stampAsk(ctx, tx, e, step.CaseID); err != nil || onRungs {
+		return opened, err
 	}
 	_, err = appendCaseStep(ctx, tx, step)
 	return opened, err
@@ -201,7 +213,8 @@ var cardMoneyKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloo
 // caseFromAsk maps question_asked event e of task t to the case it opens
 // or appends to; head is the task's newest gate head, "" for none. A plan
 // question's case keys on its words and its revision, which its answer
-// finds it by: a later revision asking the same words opens its own.
+// finds it by: a later revision asking the same words opens its own. It
+// opens open, to climb to its face; every other ask's at the human.
 func CaseFromAsk(t Task, e Event, head string) (Case, error) {
 	ask := askSentence(e)
 	if strings.TrimSpace(ask) == "" {
@@ -211,7 +224,7 @@ func CaseFromAsk(t Task, e Event, head string) (Case, error) {
 	revision, _ := toInt(e.Detail["revision"])
 	facts := map[string]any{}
 	maps.Copy(facts, e.Detail)
-	var kind CaseKind
+	kind, status := CaseKind(""), CaseOpen
 	switch {
 	case revision > 0 && str("kind") == QuestionConfirmation:
 		kind, head = CasePlanConfirmation, planHead(revision)
@@ -221,9 +234,9 @@ func CaseFromAsk(t Task, e Event, head string) (Case, error) {
 		var named map[string]any
 		kind, named = CaseKindOf(str("source"), cmp.Or(str("reason"), ask))
 		maps.Copy(facts, named)
-		kind = HumanCardKind(kind, t)
+		kind, status = HumanCardKind(kind, t), CaseAtHuman
 	}
-	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: caseStateKey(kind, ask, head), Status: CaseAtHuman,
+	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: caseStateKey(kind, ask, head), Status: status,
 		Problem: ask, Facts: facts}
 	if slices.Contains(cardMoneyKinds, kind) {
 		c.Money = &CaseMoney{Kind: string(kind), BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR}
@@ -316,14 +329,16 @@ func caseStateKey(kind CaseKind, ask, head string) string {
 func planHead(revision int) string { return fmt.Sprintf("r%d", revision) }
 
 // resolvePlanCase resolves the live case of the plan question
-// plan_question_answered event e answers.
+// plan_question_answered event e answers, by who answered it as the
+// question stores it: the row's actor in a wake is the venue's human. A
+// question with no answer stored resolves nothing.
 func resolvePlanCase(ctx context.Context, q rowQuerier, e Event) error {
-	var text, kind string
+	var text, kind, by string
 	revision, _ := toInt(e.Detail["revision"])
 	index, _ := toInt(e.Detail["index"])
-	err := q.QueryRowContext(ctx, `SELECT text, COALESCE(kind, '') FROM plan_questions WHERE task_id = $1 AND revision = $2 AND idx = $3`,
-		e.TaskID, revision, index).Scan(&text, &kind)
-	if errors.Is(err, sql.ErrNoRows) {
+	err := q.QueryRowContext(ctx, `SELECT text, COALESCE(kind, ''), COALESCE(answered_by, '') FROM plan_questions WHERE task_id = $1 AND revision = $2 AND idx = $3`,
+		e.TaskID, revision, index).Scan(&text, &kind, &by)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && by == "" {
 		return nil
 	}
 	if err != nil {
@@ -347,7 +362,7 @@ func resolvePlanCase(ctx context.Context, q rowQuerier, e Event) error {
 	if decision, _ := e.Detail["decision"].(string); decision != "" {
 		args["decision"] = decision
 	}
-	return caseEnded(resolveCase(ctx, q, id, CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: "answer", Args: args}))
+	return caseEnded(resolveCase(ctx, q, id, CaseResolution{By: by, Rung: caseRung(by), Action: "answer", Args: args}))
 }
 
 // openRequestCase opens the case of approval request id while it is
@@ -448,8 +463,13 @@ func reopenMergeCase(ctx context.Context, q rowQuerier, id int64, reason string)
 var requestCaseKinds = map[string]CaseKind{ApprovalMerge: CaseMergeApproval, ApprovalCriteria: CasePlanCriteria, ApprovalCriteriaRerun: CasePlanCriteria}
 
 // endRequestCase ends task taskID's live case of approval request kind by
-// the request's decision: status approved or denied, by whom, with note.
+// the request's decision: status approved or denied, by whom, with note. A
+// plan's request denied by its decider (request_changes) ends every live
+// case of the plan's questions with that decider's revise.
 func endRequestCase(ctx context.Context, q rowQuerier, taskID, kind, status, by, note string) error {
+	if kind == ApprovalPlan && status == "denied" {
+		return revisePlanCases(ctx, q, taskID, by, note)
+	}
 	ck, ok := requestCaseKinds[kind]
 	if !ok {
 		return nil
@@ -465,6 +485,30 @@ func endRequestCase(ctx context.Context, q rowQuerier, taskID, kind, status, by,
 	}
 	_, err = decideRequestCase(ctx, q, id, ck, status, by, note)
 	return caseEnded(err)
+}
+
+// revisePlanCases ends plan taskID's live question and confirmation cases
+// by by's request for changes, note: resolved with by's revise, or
+// withdrawn with note when the factory denied the request.
+func revisePlanCases(ctx context.Context, q rowQuerier, taskID, by, note string) error {
+	var ids []int64
+	if err := q.QueryRowContext(ctx, `SELECT COALESCE(array_agg(id ORDER BY id), '{}') FROM cases WHERE task_id = $1 AND kind IN ($2, $3) AND `+caseLive,
+		taskID, CasePlanQuestion, CasePlanConfirmation).Scan(pgtype.NewMap().SQLScanner(&ids)); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		var err error
+		if by == FactoryDecider {
+			err = withdrawCase(ctx, q, id, note)
+		} else {
+			err = resolveCase(ctx, q, id, CaseResolution{By: by, Rung: caseRung(by), Action: CaseAnswer,
+				Args: map[string]any{"answer": note, "decision": DecisionRevise}})
+		}
+		if err := caseEnded(err); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // decideRequestCase ends live case id of kind by its request's decision and

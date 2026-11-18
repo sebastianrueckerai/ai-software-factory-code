@@ -2,6 +2,7 @@ package pg
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -359,6 +360,23 @@ func (f *tripForge) serve(t *testing.T) *httptest.Server {
 			f.comments = append(f.comments, string(b))
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id": %d}`, 500+len(f.comments))
+		case r.Method == http.MethodGet && r.URL.Path == issue+"/comments":
+			list := make([]map[string]any, len(f.comments))
+			for i, raw := range f.comments {
+				var c struct{ Body string }
+				_ = json.Unmarshal([]byte(raw), &c)
+				list[i] = map[string]any{"id": 501 + i, "body": c.Body, "user": map[string]any{"login": "factory-agent"}}
+			}
+			_ = json.NewEncoder(w).Encode(list)
+		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, repo+"/issues/comments/"):
+			n, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, repo+"/issues/comments/"))
+			if err != nil || n < 501 || n > 500+len(f.comments) {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			b, _ := io.ReadAll(r.Body)
+			f.comments[n-501] = string(b)
+			fmt.Fprint(w, `{}`)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/repos/demo-app/demo-app/commits/") && strings.HasSuffix(r.URL.Path, "/status") &&
 			f.checks[strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/demo-app/demo-app/commits/"), "/status")] != "":
 			state := f.checks[strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/demo-app/demo-app/commits/"), "/status")]

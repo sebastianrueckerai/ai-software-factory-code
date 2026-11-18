@@ -377,8 +377,8 @@ func planAwaitingConfirmation(t *testing.T, s *PGStore) int {
 
 // A plan whose newest revision waits on its confirmation under its
 // request, its case gone, gets that case back from its own ask row, with
-// the same key: the plan's answer path resolves it, and no askless ask is
-// put to the human.
+// the same key, open on the rungs with its wake: the plan's answer path
+// resolves it, and no askless ask is put to the human.
 func TestHealPassRestoresAPlansConfirmation(t *testing.T) {
 	ctx := context.Background()
 	g := newHealAskRig(t, "heal_ask_restore")
@@ -387,8 +387,9 @@ func TestHealPassRestoresAPlansConfirmation(t *testing.T) {
 	g.pass(t)
 
 	restored := onlyOpenCase(t, g.s)
-	if restored.Kind != factoryd.CasePlanConfirmation || !strings.HasSuffix(restored.StateKey, "@r1") || restored.Status != CaseAtHuman {
-		t.Fatalf("the live case = %+v; want revision 1's confirmation at the human", restored)
+	if restored.Kind != factoryd.CasePlanConfirmation || !strings.HasSuffix(restored.StateKey, "@r1") || restored.Status != CaseOpen ||
+		restored.OwnerRung != 0 || restored.NextWakeAt == nil {
+		t.Fatalf("the live case = %+v; want revision 1's confirmation open at rung 0 with its wake, to climb to its face", restored)
 	}
 	cases, err := g.s.CasesOf(ctx, caseTask)
 	if err != nil {

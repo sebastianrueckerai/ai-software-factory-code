@@ -853,8 +853,12 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 	for i := range tasks {
 		tasks[i].Accent = "teal"
 	}
+	// t-spec2 waits for the answer to its revision's question, faced
+	i := slices.IndexFunc(tasks, func(k factoryd.BoardTask) bool { return k.ID == "t-spec2" })
+	tasks[i].Status = "waiting-human"
 	r.tasks.tasks = tasks
 	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-spec2": {planRevision("t-spec2", 1, "sha-1")}}
+	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-spec2 1": {{Text: "Which region?", Choices: []string{"eu", "us"}}}}
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 20, Kind: factoryd.ApprovalPlan, TaskID: "t-spec2",
 		Project: "linkshort/linkshort", Status: "pending", Spec: json.RawMessage(`{"revision":1,"sha256":"sha-1"}`)})
 	ck, s := r.loggedIn(t)

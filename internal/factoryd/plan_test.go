@@ -1287,7 +1287,7 @@ func TestChildrenFiledInTopologicalOrder(t *testing.T) {
 			onPlan = append(onPlan, c.body)
 		}
 	}
-	if len(onPlan) != 1 || !strings.HasPrefix(onPlan[0], "factoryd: plan revision 1 of task t-plan, written by the planner. It asks no question, so its cards are filed") ||
+	if len(onPlan) != 1 || !strings.HasPrefix(onPlan[0], "factoryd: revision 1 of the plan of task t-plan, written by the planner. It asks no question, so its cards are filed") ||
 		!strings.Contains(onPlan[0], "| 3 | redirects | feature | Redirects and clicks | small | foundation, links-api | #4 |") {
 		t.Fatalf("the plan's comments %q, want one naming the issues", onPlan)
 	}
@@ -1464,7 +1464,7 @@ func TestPlanCommentMarker(t *testing.T) {
 	}
 	body := fj.comments[0].body
 	for _, want := range []string{
-		"factoryd: plan revision 1 of task t-plan, written by the planner. Its open questions wait for the humans' answers on the factory console",
+		"factoryd: revision 1 of the plan of task t-plan, written by the planner.\n\nLinks first.",
 		"Links first.  ＠sebastian",
 		"Spec: A link shortener: links with slugs that redirect and count clicks.\nGlossary:\n- slug: the short key a link gets\n- click: one redirect served",
 		"| # | key | role | title | size | depends on | issue |",
@@ -1479,6 +1479,10 @@ func TestPlanCommentMarker(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("comment lacks %q:\n%s", want, body)
 		}
+	}
+	// the revision's record: its face, at the hand-up, asks for the answers
+	if strings.Contains(body, "the humans' answers") || strings.Contains(body, "asks the planner") {
+		t.Fatalf("the record asks for answers:\n%s", body)
 	}
 	if !strings.HasSuffix(body, "\n<!-- factoryd plan t-plan revision 1 -->") || strings.Count(body, "<!--") != 1 {
 		t.Fatalf("comment's markers:\n%s", body)
@@ -2254,7 +2258,8 @@ func TestFileRevisionRefusesACycle(t *testing.T) {
 // whose confirmation was confirmed, its whitespace aside. The filing still
 // asks 6's confirmation and the factory answers it at once naming 5, so
 // the record shows the ask and its answer, no one is poked and the cards
-// file. A changed spec asks the human as before.
+// file. A changed spec asks its confirmation, whose case climbs to its
+// face: the planner's row pokes no one either.
 func TestIdenticalPlanRefileConfirmsItself(t *testing.T) {
 	drifted := testPlan()
 	drifted.Spec.Outcome = "  A link shortener:\n links  with slugs that redirect and count clicks.\n"
@@ -2313,8 +2318,8 @@ func TestIdenticalPlanRefileConfirmsItself(t *testing.T) {
 			}
 			_, poked := pokeOf(asked[0], store.tasks["t-plan"])
 			if !tc.same {
-				if qs[0].Decision != "" || open != 1 || !poked || asked[0].Detail["settled"] != nil || len(answered) != 0 || len(ref.Filed) != 0 || ref.Comment == 0 {
-					t.Fatalf("confirmation %+v, open %d, poked %v, ask %v, answers %+v, ref %+v; want it asked of the human", qs[0], open, poked, asked[0].Detail, answered, ref)
+				if qs[0].Decision != "" || open != 1 || poked || asked[0].Detail["settled"] != nil || len(answered) != 0 || len(ref.Filed) != 0 || ref.Comment == 0 {
+					t.Fatalf("confirmation %+v, open %d, poked %v, ask %v, answers %+v, ref %+v; want it asked, its case to climb to its face", qs[0], open, poked, asked[0].Detail, answered, ref)
 				}
 				return
 			}

@@ -101,9 +101,8 @@ type approvalCard struct {
 	Confirming  bool   // the revision's confirmation waits; its Request changes is the card's
 	// Confirm is the waiting confirmation itself, hoisted above the card's
 	// other questions: the lead and the two forms answer it.
-	Confirm    *planQuestion
-	Escalation string // the plan task's escalation, such as its session cap
-	Problem    string // why the human's last action on the card was refused
+	Confirm *planQuestion
+	Problem string // why the human's last action on the card was refused
 	// TaskStatus is its task's, where the task's card stands once the
 	// request is decided
 	TaskStatus string

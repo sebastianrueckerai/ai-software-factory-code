@@ -258,6 +258,9 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 		if settled, _ := e.Detail["settled"].(string); e.Kind == EventQuestionAsked && settled != "" {
 			continue // the factory answered the ask as it asked it: it wakes nobody
 		}
+		if revision, _ := toInt(e.Detail["revision"]); e.Kind == EventQuestionAsked && revision > 0 {
+			continue // a plan's question, the planner's row or its face's: its case climbs to rung 2 on case_climbed
+		}
 		if e.Kind == EventCaseClimbed || e.Kind == EventQuestionAsked && judges {
 			if worked, err := w.staleCaseEvent(ctx, e); err != nil {
 				return err
@@ -549,7 +552,11 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk, repository strin
 			fmt.Fprintf(&b, " %s\nThe statement of case %d could not be built: %s", line, id, err)
 			continue
 		}
-		fmt.Fprintf(&b, "\n%s\nEnd case %d with answer and its case_id, or with attach_analysis, its case_id and the recommended action.", statement, id)
+		end := fmt.Sprintf("End case %d with answer and its case_id, or with attach_analysis, its case_id and the recommended action.", id)
+		if kind := a.e.Detail["kind"]; kind == string(CasePlanQuestion) || kind == string(CasePlanConfirmation) {
+			end = fmt.Sprintf("End case %d with answer on the plan's revision and question, with no case_id, or with attach_analysis, case_id %d and the recommended answer.", id, id)
+		}
+		fmt.Fprintf(&b, "\n%s\n%s", statement, end)
 	}
 	if w.Board != nil {
 		if board, err := w.Board(ctx, repository); err != nil {
@@ -584,9 +591,9 @@ func (w *Waker) staleCaseEvent(ctx context.Context, e Event) (bool, error) {
 // askKey is the ask's own identity on its mark: the issue comment the ask
 // filed, so a new ask wakes however it is worded, for two asks of one
 // sentence are two asks, and a reprocessed batch still wakes once, the
-// same comment keeping its key. An ask that files no comment (the
-// planner's) falls back to its sentence's hash. A case handed to rung 2
-// keys its case id.
+// same comment keeping its key. An ask that files no comment (a merge's
+// face) falls back to its sentence's hash. A case handed to rung 2 keys
+// its case id.
 func askKey(e Event) string {
 	if id, _ := toInt(e.Detail["case_id"]); e.Kind == EventCaseClimbed {
 		return "case:" + strconv.Itoa(id)

@@ -257,6 +257,28 @@ func mergeQuestion(c Case) *HumanQuestion {
 	return q
 }
 
+// planQuestion is the face of plan question or confirmation case c, from
+// the planner's row its facts hold: the question, why a human answers it,
+// its choices and the planner's recommendation, which a rung's replaces.
+// The rungs' lines are its info.
+func planQuestion(c Case) *HumanQuestion {
+	question, _ := c.Facts["question"].(string)
+	revision, _ := toInt(c.Facts["revision"])
+	q := &HumanQuestion{Ask: cmp.Or(question, c.Problem), Why: fmt.Sprintf("Plan revision %d asks it: the planner revises the plan with the answers.", revision)}
+	if c.Kind == CasePlanConfirmation {
+		q.Why = fmt.Sprintf("Plan revision %d waits for its confirmation: Confirm fixes the spec and the criteria; Request changes sends your words to the next planner round.", revision)
+	}
+	choices, _ := c.Facts["choices"].([]any)
+	for _, ch := range choices {
+		if s, _ := ch.(string); s != "" {
+			q.Choices = append(q.Choices, QuestionChoice{Value: s, Label: s})
+		}
+	}
+	q.Recommendation, _ = c.Facts["recommendation"].(string)
+	q.Source, _ = c.Facts["recommended_by"].(string)
+	return q
+}
+
 // planWaitMark is the phrase of a plan's wait on its failed card
 // (planCardFailedReason), whose face the plan's wait carries.
 const planWaitMark = "this plan's close and its next round wait on it"

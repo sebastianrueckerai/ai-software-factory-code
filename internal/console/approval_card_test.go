@@ -77,6 +77,56 @@ func TestAMergeRequestWaitsForItsCasesFace(t *testing.T) {
 	}
 }
 
+// A plan's request waits for its revision's face: while the revision's case
+// climbs, Needs you lists no plan approval, the waiting plan sits in In
+// progress and its drawer offers no plan approval. A case of an older
+// revision at the human is no face of the newer request: the card's row is
+// that case's, with no plan approval in it. Once a case of the request's
+// revision is at the human the card's row carries the plan's approval card,
+// In progress holds the card no more and the drawer offers it.
+func TestAPlanRequestWaitsForItsCasesFace(t *testing.T) {
+	r := newRig(t)
+	planRig(r)
+	question := func(id int64, status string, revision float64, text string) factoryd.Case {
+		return factoryd.Case{ID: id, TaskID: "t-plan", Repository: "linkshort/linkshort", Kind: factoryd.CasePlanQuestion, Status: status, OwnerRung: 2,
+			Problem: text, Facts: map[string]any{"revision": revision, "index": 1.0, "question": text, "choices": []any{"Postgres", "SQLite"}}}
+	}
+	r.openCases = map[string][]factoryd.Case{"t-plan": {question(61, factoryd.CaseOpen, 2, "Which store?")}}
+	ck, _ := r.loggedIn(t)
+	board := func() string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	}
+	drawer := func() string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?tab=overview", nil), ck).Body.String()
+	}
+	const plan = `class="card approval plan"`
+	body := board()
+	if needs := col(t, body, "Needs you"); strings.Contains(needs, `data-card="t-plan"`) || strings.Contains(needs, plan) {
+		t.Fatalf("Needs you lists the plan while its case climbs:\n%s", needs)
+	}
+	if progress := col(t, body, "In progress"); !strings.Contains(progress, `data-card="t-plan"`) {
+		t.Fatalf("In progress lacks the plan whose case climbs:\n%s", progress)
+	}
+	if got := drawer(); strings.Contains(got, plan) {
+		t.Fatalf("the drawer offers the plan's approval while its case climbs:\n%s", got)
+	}
+	r.openCases["t-plan"] = append(r.openCases["t-plan"], question(60, factoryd.CaseAtHuman, 1, "Which cache?"))
+	if needs := col(t, board(), "Needs you"); !strings.Contains(needs, `data-case="60"`) || strings.Contains(needs, plan) {
+		t.Fatalf("Needs you: want revision 1's case row with no approval of revision 2:\n%s", needs)
+	}
+	r.openCases["t-plan"] = []factoryd.Case{question(61, factoryd.CaseAtHuman, 2, "Which store?")}
+	body = board()
+	if needs := col(t, body, "Needs you"); !strings.Contains(needs, `data-case="61"`) || strings.Count(needs, plan) != 1 {
+		t.Fatalf("Needs you: want case 61's row carrying the plan's approval once:\n%s", needs)
+	}
+	if strings.Contains(col(t, body, "In progress"), `data-card="t-plan"`) {
+		t.Fatal("In progress holds the plan whose case is at the human")
+	}
+	if got := drawer(); !strings.Contains(got, plan) {
+		t.Fatalf("the drawer lacks the plan's approval once its case is at the human:\n%s", got)
+	}
+}
+
 // A merge request whose case climbs its rungs rides no other case's row:
 // card t-m's monitor flag at the human is its row in Needs you, in its
 // carousel's page and in its card swap, each with no approval of the

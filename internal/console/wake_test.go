@@ -645,7 +645,7 @@ func TestWakeApproveMergeAfterAHumanApprovedAnswers409(t *testing.T) {
 		// the store's answer on a card whose merge request a human approved
 		r.c.cfg.AttachAnalysis = func(_ context.Context, taskID, _, _ string, _ factoryd.Event) error {
 			if q := r.approvals.get(4); q.TaskID == taskID && q.Status == "approved" {
-				return &factoryd.AskSettledError{Kind: factoryd.ApprovalMerge, Word: "approved", By: q.DecidedBy}
+				return &factoryd.AskSettledError{Word: "approved", By: q.DecidedBy}
 			}
 			return nil
 		}
@@ -657,7 +657,7 @@ func TestWakeApproveMergeAfterAHumanApprovedAnswers409(t *testing.T) {
 		{name: "approve_merge", status: http.StatusConflict,
 			result: "Refused: Card #5 passes the gates after its session, not a pending merge request: its gates run; nothing to do until they end."},
 		{name: "attach_analysis", status: http.StatusConflict,
-			result: "Refused: The merge request of #5 is approved by sebastian. A settled ask is done; escalate files a new one when you need a person."}})
+			result: "Refused: The question of #5 is approved by sebastian. A settled ask is done; escalate files a new one when you need a person."}})
 }
 
 // By hand: a card the agent files in a human's turn goes out as its

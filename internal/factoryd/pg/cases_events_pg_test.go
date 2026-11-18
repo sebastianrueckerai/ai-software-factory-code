@@ -541,17 +541,73 @@ func TestAPlanAnswerResolvesItsQuestionsCase(t *testing.T) {
 	if c.Kind != CasePlanQuestion || c.Problem != "Which database?" || c.StateKey != "77a551c3111d00d9@r1" {
 		t.Fatalf("plan case = %+v", c)
 	}
-	recordCaseEvent(t, s, EventPlanQuestionAnswered, "sebastian", ViaButton, map[string]any{"revision": rev, "index": 1, "answer": "Postgres"})
+	if err := s.AnswerPlanQuestion(ctx, caseTask, rev, 1, "", "Postgres", ChatUser); err != nil {
+		t.Fatalf("AnswerPlanQuestion: %v", err)
+	}
+	// the console's row in a wake names the venue's human; the stored answer names who answered
+	recordCaseEvent(t, s, EventPlanQuestionAnswered, "sebastian", ViaChat, map[string]any{"revision": rev, "index": 1, "answer": "Postgres"})
 	got := caseByID(t, s, c.ID)
-	if want := (&CaseResolution{By: "sebastian", Rung: 3, Action: "answer", Args: map[string]any{"answer": "Postgres"}}); got.Status != CaseResolved ||
+	if want := (&CaseResolution{By: ChatUser, Rung: 2, Action: "answer", Args: map[string]any{"answer": "Postgres"}}); got.Status != CaseResolved ||
 		!reflect.DeepEqual(got.Resolution, want) {
 		t.Fatalf("answered plan case = %+v, resolution %+v; want %+v", got, got.Resolution, want)
 	}
 }
 
+// A planner's row opens its case open at rung 0, due at the row, with no
+// step: the case climbs to its face. The identical re-file's confirmation,
+// which the factory answers in the same filing (settled), opens its case
+// with no wake, so no rung takes it before that answer. A face's row whose
+// case ended opens no case again, and an answer row whose question holds
+// no stored answer resolves nothing.
+func TestAPlannersRowOpensItsCaseOnTheRungs(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	rev, err := s.AddPlanRevision(ctx, caseTask, json.RawMessage(`{"summary": "one"}`), "s1")
+	if err != nil {
+		t.Fatalf("AddPlanRevision: %v", err)
+	}
+	if _, err := s.PutPlanQuestions(ctx, caseTask, rev, []PlanQuestion{{Text: "Which database?"}}); err != nil {
+		t.Fatalf("PutPlanQuestions: %v", err)
+	}
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: caseTask, IssueNumber: 1410, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"question": "Which database?", "revision": rev, "index": 1}}); err != nil {
+		t.Fatal(err)
+	}
+	asked, err := s.TaskEventsOfKind(ctx, caseTask, EventQuestionAsked, 1)
+	if err != nil || len(asked) != 1 {
+		t.Fatalf("the planner's row: %+v, %v", asked, err)
+	}
+	c := onlyOpenCase(t, s)
+	if c.Status != CaseOpen || c.OwnerRung != 0 || c.NextWakeAt == nil || !c.NextWakeAt.Equal(asked[0].At) || len(caseStepsOf(t, s, c.ID)) != 0 ||
+		asked[0].Detail["case_id"] != float64(c.ID) {
+		t.Fatalf("plan case = %+v, steps %+v, row %+v; want it open at rung 0, due at its row, with no step, the row naming it", c, caseStepsOf(t, s, c.ID), asked[0].Detail)
+	}
+	recordCaseEvent(t, s, EventPlanQuestionAnswered, "sebastian", ViaButton, map[string]any{"revision": rev, "index": 1, "answer": "Postgres"})
+	if got := caseByID(t, s, c.ID); got.Status != CaseOpen {
+		t.Fatalf("case after an answer row with no stored answer = %+v; want it open", got)
+	}
+	if err := s.WithdrawCase(ctx, c.ID, "the test ends it"); err != nil {
+		t.Fatal(err)
+	}
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": "Which database?", "revision": rev, "index": 1,
+		"case_id": c.ID, "case_kind": string(CasePlanQuestion), "comment": 501})
+	if cs, err := s.CasesOf(ctx, caseTask); err != nil || len(cs) != 1 {
+		t.Fatalf("cases after the ended case's face = %+v, %v; want the one ended case", cs, err)
+	}
+	if _, _, err := s.PutPlanConfirmation(ctx, caseTask, rev, PlanQuestion{Text: "Confirmation of revision 1"}); err != nil {
+		t.Fatal(err)
+	}
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": "Confirmation of revision 1", "revision": rev, "index": 2,
+		"kind": QuestionConfirmation, "settled": "the same plan as revision 0, confirmed there"})
+	settled := onlyOpenCase(t, s)
+	if settled.Kind != CasePlanConfirmation || settled.Status != CaseOpen || settled.NextWakeAt != nil {
+		t.Fatalf("the settled confirmation's case = %+v; want it open with no wake", settled)
+	}
+}
+
 // One answer of a plan with three open questions resolves its own question's
-// case only; the other two stay at the human, their facts holding the
-// planner's recommended answer and grounds.
+// case only; the other two stay live, their facts holding the planner's
+// recommended answer and grounds.
 func TestAPlanAnswerResolvesOnlyItsOwnQuestionsCase(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
@@ -570,6 +626,9 @@ func TestAPlanAnswerResolvesOnlyItsOwnQuestionsCase(t *testing.T) {
 	for i, q := range qs {
 		recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": q.Text, "choices": q.Choices,
 			"recommended": q.Recommended, "grounds": q.Grounds, "revision": rev, "index": i + 1})
+	}
+	if err := s.AnswerPlanQuestion(ctx, caseTask, rev, 2, "", "none", "sebastian"); err != nil {
+		t.Fatalf("AnswerPlanQuestion: %v", err)
 	}
 	recordCaseEvent(t, s, EventPlanQuestionAnswered, "sebastian", ViaButton, map[string]any{"revision": rev, "index": 2, "answer": "none"})
 	open, err := s.OpenCasesOf(ctx, caseTask)

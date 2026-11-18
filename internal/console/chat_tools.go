@@ -30,6 +30,7 @@ import (
 type recommended struct {
 	Action string         `json:"action"`
 	Args   map[string]any `json:"args,omitempty"`
+	Answer string         `json:"answer,omitempty"`
 }
 
 // toolInput holds every tool's arguments; each tool reads its own.
@@ -739,6 +740,9 @@ func (t *turn) answer(in toolInput) (string, error) {
 		if in.Revision == 0 {
 			return "", refuse(http.StatusBadRequest, "A plan's question is answered with its revision (revision), from the plan tool.")
 		}
+		if err := t.planOnRungs(k, in); err != nil {
+			return "", err
+		}
 		if len(in.Answers) > 0 {
 			return t.c.doAnswerPlanQuestions(ctx, a, in.TaskID, in.Revision, in.Answers)
 		}
@@ -968,6 +972,35 @@ func (t *turn) mergeOnRungs(k factoryd.Task, q factoryd.ApprovalRequest) error {
 	}
 	return refuse(http.StatusConflict, fmt.Sprintf("The merge request of #%d waits on its case %d, open at rung %d: rung 2 decides it or hands it up, and only then is it the human's, in Needs you.",
 		k.IssueNumber, c.ID, c.OwnerRung))
+}
+
+// planOnRungs refuses, outside rung 2's own turn on a case, an answer to
+// a question of plan k whose case climbs its rungs: the question reaches
+// a human only through the case's face, once a rung hands it up. The case
+// is the one of the answer's revision and question.
+func (t *turn) planOnRungs(k factoryd.Task, in toolInput) error {
+	if t.a.caseWake() {
+		return nil
+	}
+	open, err := t.c.cfg.OpenCasesOf(t.r.Context(), k.ID)
+	if err != nil {
+		log.Printf("console: the cases of %s: %v", k.ID, err)
+		return refuse(http.StatusServiceUnavailable, "The plan's cases could not be read, so nothing was answered. Try again.")
+	}
+	asked := []int{in.Question}
+	for _, a := range in.Answers {
+		asked = append(asked, a.Question)
+	}
+	for _, q := range asked {
+		i := slices.IndexFunc(open, func(c factoryd.Case) bool {
+			return planCase(c) && c.Status == factoryd.CaseOpen && caseRevision(c) == in.Revision && factInt(c, "index") == q
+		})
+		if i >= 0 {
+			return refuse(http.StatusConflict, fmt.Sprintf("Question %d of revision %d of plan #%d waits on its case %d, open at rung %d: rung 2 answers it or hands it up, and only then is it the human's, in Needs you.",
+				q, in.Revision, k.IssueNumber, open[i].ID, open[i].OwnerRung))
+		}
+	}
+	return nil
 }
 
 // criteriaRequest is the pending criteria or criteria_rerun approval
@@ -2068,11 +2101,11 @@ var tools = []chatTool{
 				"description": "the case you hold: the analysis hands it up"},
 			"found":          str("what you learned about the ask, the facts with their numbers"),
 			"recommendation": str("the answer you would pick and where you read it"),
-			"recommended": map[string]any{"type": "object", "description": "the action the human is asked to take",
+			"recommended": map[string]any{"type": "object", "description": "what the human is asked to take: an action or a plan answer",
 				"properties": map[string]any{
 					"action": map[string]any{"type": "string", "enum": humanActionNames()},
-					"args":   map[string]any{"type": "object", "description": "the action's arguments, as answer takes them"}},
-				"required": []string{"action"}}},
+					"args":   map[string]any{"type": "object", "description": "the action's arguments, as answer takes them"},
+					"answer": map[string]any{"type": "string", "description": "a plan question's choice, or confirm or revise"}}}},
 		required: []string{"task_id", "found"},
 		about:    "Record what you found on a card's ask, or hand your case up to the human.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {

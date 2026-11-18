@@ -2470,7 +2470,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			v.byID[bt.ID] = bt.Task
 		}
 	}
-	escalations := map[string]factoryd.BoardTask{}
 	var needs []need
 	cs, err := c.caseSetOf(ctx, shown.Repository)
 	if err != nil {
@@ -2510,9 +2509,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			d.Status.Working++
 		case col == colNeedsYou && !v.planned[t.ID]:
 			d.Status.NeedYou++
-		}
-		if t.Status == "waiting-human" && v.planned[t.ID] {
-			escalations[t.ID] = bt
 		}
 		k := c.boardCard(ctx, v, bt)
 		// a card that holds a case at the human is one row of Needs you, its
@@ -2567,6 +2563,10 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			}
 		case holds:
 			needs = append(needs, row)
+		case col == colNeedsYou && v.planned[t.ID] && !planFaced(v, cs, t.ID):
+			// a plan whose questions climb their rungs works, as a merge
+			// card in review does while its case climbs
+			d.Columns[colProgress].Cards = append(d.Columns[colProgress].Cards, k)
 		case col == colNeedsYou:
 			// a plan that waits for its answers needs its approval card
 			if v.planned[t.ID] {
@@ -2591,8 +2591,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		if t, ok := v.byID[a.TaskID]; ok && len(cs.byCard[a.TaskID]) > 0 && !factoryd.Final(t.Status) {
 			continue
 		}
-		// a merge or a plan's criteria request waits for its case to reach
-		// the human, whose face the card carries
+		// a merge's, a plan's or a plan's criteria request waits for its
+		// case to reach the human, whose face the card carries
 		criteria := a.Kind == factoryd.ApprovalCriteria || a.Kind == factoryd.ApprovalCriteriaRerun
 		held, faced := cs.faced(a)
 		if waitsForFace(a) && !faced {
@@ -2605,11 +2605,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		k.Filter, k.Writer = f, d.Writes
 		k.buildDecide()
 		k.Asks = a.Kind == factoryd.ApprovalPlan
-		// an escalation from before this revision's request (a cap a
-		// writer granted) no longer holds
-		if e := escalations[a.TaskID]; a.Kind == factoryd.ApprovalPlan && e.EscalatedAt.After(a.CreatedAt) {
-			k.Escalation = cardReason(e.Escalation)
-		}
 		d.Status.NeedYou++
 		if wide {
 			d.Approvals = append(d.Approvals, k)
@@ -3995,8 +3990,8 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 		}
 		for _, a := range v.pending {
 			if a.TaskID == bt.ID && (a.Kind == factoryd.ApprovalMerge || a.Kind == factoryd.ApprovalPlan) {
-				// a merge request waits for its case's face, as Needs you's does
-				if _, faced := cs.faced(a); a.Kind == factoryd.ApprovalMerge && (cerr != nil || !faced) {
+				// a merge's or a plan's request waits for its case's face, as Needs you's does
+				if _, faced := cs.faced(a); cerr != nil || !faced {
 					continue
 				}
 				m := c.approvalCard(ctx, a, button(r), v.byID, v.csrf, v.approves(a.Project), false)

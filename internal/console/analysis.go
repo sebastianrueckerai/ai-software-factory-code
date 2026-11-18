@@ -1,6 +1,7 @@
 package console
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"log"
@@ -31,7 +32,7 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 	if t.c.cfg.HandUpRung2 != nil {
 		rec := factoryd.RungTwoRecommendation{Grounds: recommendation}
 		if in.Recommended != nil {
-			rec.Action, rec.Args = strings.TrimSpace(in.Recommended.Action), in.Recommended.Args
+			rec.Action, rec.Args = cmp.Or(strings.TrimSpace(in.Recommended.Action), strings.TrimSpace(in.Recommended.Answer)), in.Recommended.Args
 		}
 		handled, err := t.c.cfg.HandUpRung2(t.r.Context(), k.ID, in.CaseID, found, rec, t.readList())
 		var refused factoryd.ErrActRefused
@@ -50,7 +51,7 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 	var settled *factoryd.AskSettledError
 	switch {
 	case errors.As(err, &settled):
-		line := fmt.Sprintf("The %s of #%d is %s", askNoun(settled.Kind), k.IssueNumber, settled.Word)
+		line := fmt.Sprintf("The question of #%d is %s", k.IssueNumber, settled.Word)
 		if settled.By != "" {
 			line += " by " + settled.By
 		}
@@ -62,14 +63,4 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 		return "", refuse(http.StatusBadGateway, fmt.Sprintf("The analysis could not be recorded: %s. Attach the analysis again.", errText(err)))
 	}
 	return fmt.Sprintf("Recorded the analysis inside the ask of #%d; the humans read it with the ask.", k.IssueNumber), nil
-}
-
-// askNoun is an ask kind's noun for a refusal: the approval kinds' own
-// words with request, a question's own word.
-func askNoun(kind string) string {
-	switch kind {
-	case factoryd.ApprovalMerge, factoryd.ApprovalPlan, factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
-		return strings.ReplaceAll(kind, "_", " ") + " request"
-	}
-	return "question"
 }

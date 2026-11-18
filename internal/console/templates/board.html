@@ -329,7 +329,6 @@
 {{end}}
 {{define "plan"}}<h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Plan</a>{{else}}Plan{{end}}{{if .IssueURL}} <a class="ref" href="{{.IssueURL}}" target="_blank" rel="noopener">#{{.Issue}}</a>{{with .PlanName}} · {{.}}{{end}}{{else}}{{with .PlanName}} {{.}}{{end}}{{end}}, revision {{.PlanSpec.Revision}}</h4>
 {{template "brief-block" .}}
-{{with .Escalation}}<p class="reason">{{.}}</p>{{end}}
 
 {{with .Problem}}<p class="problem" role="alert">{{.}}</p>{{end}}
 <p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>

@@ -207,7 +207,7 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		if own && !approvalOf(a, shown) {
 			continue // its own case shows it
 		}
-		if !own && waitsForFace(a) {
+		if _, faced := cs.faced(a); !own && waitsForFace(a) && !faced {
 			continue // its case has not reached the human
 		}
 		ap := c.approvalCard(ctx, a, act, v.byID, v.csrf, v.approves(k.Repository), true)
@@ -352,8 +352,8 @@ func casesInView(r *http.Request) map[string]int64 {
 // approvalOf says whether approval request a is the body of case k: a
 // merge request of the merge case that names it, a resource request of
 // its case of the resource kind — the export's shape, as the store opens
-// no case of its own for one — a plan's of its plan question or
-// confirmation, which the case's own form answers.
+// no case of its own for one — a plan's of a question or the confirmation
+// of its revision, which the case's own form answers.
 func approvalOf(a factoryd.ApprovalRequest, k factoryd.Case) bool {
 	switch k.Kind {
 	case factoryd.CaseMergeApproval:
@@ -365,15 +365,17 @@ func approvalOf(a factoryd.ApprovalRequest, k factoryd.Case) bool {
 		id, _ := json.Marshal(k.Facts["approval"])
 		return slices.Contains([]string{factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun}, a.Kind) && string(id) == strconv.FormatInt(a.ID, 10)
 	case factoryd.CasePlanQuestion, factoryd.CasePlanConfirmation:
-		return a.Kind == factoryd.ApprovalPlan
+		var spec factoryd.PlanSpec
+		return a.Kind == factoryd.ApprovalPlan && json.Unmarshal(a.Spec, &spec) == nil && spec.Revision == caseRevision(k)
 	}
 	return false
 }
 
 // waitsForFace says request a waits for its case's face before any page
-// lists it: a merge's and a plan's criteria request's.
+// lists it: a merge's, a plan's and a plan's criteria request's.
 func waitsForFace(a factoryd.ApprovalRequest) bool {
-	return a.Kind == factoryd.ApprovalMerge || a.Kind == factoryd.ApprovalCriteria || a.Kind == factoryd.ApprovalCriteriaRerun
+	return a.Kind == factoryd.ApprovalMerge || a.Kind == factoryd.ApprovalPlan || a.Kind == factoryd.ApprovalCriteria ||
+		a.Kind == factoryd.ApprovalCriteriaRerun
 }
 
 // climbing is the live case that holds request q while it climbs its
@@ -391,13 +393,22 @@ func (c *Console) climbing(ctx context.Context, q factoryd.ApprovalRequest) (fac
 }
 
 // faced is the case at the human that holds request a, false while none
-// does: a merge or criteria request waits for its case's face.
+// does: a request waitsForFace names waits for its case's face.
 func (cs caseSet) faced(a factoryd.ApprovalRequest) (factoryd.Case, bool) {
 	i := slices.IndexFunc(cs.byCard[a.TaskID], func(k factoryd.Case) bool { return approvalOf(a, k) })
 	if i < 0 {
 		return factoryd.Case{}, false
 	}
 	return cs.byCard[a.TaskID][i], true
+}
+
+// planFaced says a pending plan request of card taskID has its face: a
+// case of its revision at the human.
+func planFaced(v *boardView, cs caseSet, taskID string) bool {
+	return slices.ContainsFunc(v.pending, func(a factoryd.ApprovalRequest) bool {
+		_, faced := cs.faced(a)
+		return a.Kind == factoryd.ApprovalPlan && a.TaskID == taskID && faced
+	})
 }
 
 // caseBriefOf is the brief the case that holds request a wrote, "" while it

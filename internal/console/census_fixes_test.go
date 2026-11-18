@@ -52,8 +52,9 @@ func TestCensusGateArtifactFolds(t *testing.T) {
 	}
 }
 
-// A plan case without revision and index facts still renders one question
-// per face: no face holds every open question at once.
+// A plan case without revision and index facts, keyed on its revision as
+// every plan case is, still renders one question per face: no face holds
+// every open question at once.
 func TestCensusSlotlessPlanCaseRendersOneQuestion(t *testing.T) {
 	r := newRig(t)
 	planRig(r)
@@ -61,7 +62,7 @@ func TestCensusSlotlessPlanCaseRendersOneQuestion(t *testing.T) {
 		{Text: "How long are the results kept?", Choices: []string{"7 days", "30 days"}},
 		{Text: "Which store keeps the snapshots?", Choices: []string{"Postgres", "S3"}},
 	}}
-	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 5, TaskID: "t-plan", Kind: factoryd.CasePlanQuestion,
+	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 5, TaskID: "t-plan", Kind: factoryd.CasePlanQuestion, StateKey: "4c1d2e0f9a8b7c6d@r2",
 		Status: factoryd.CaseAtHuman, Problem: "The plan's question."}}}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&view=wide", nil), ck).Body.String()
