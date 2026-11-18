@@ -241,7 +241,7 @@ func TestDrawWithinByRung(t *testing.T) {
 	f := CaseFacts{PoolLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 60 - 59.7}, BudgetEUR: 5, CeilingEUR: 8}
 	one := policy.Draw{Sessions: 1}
 	if got, want := drawWithin(f, 1, one, policy.Draw{}, 0, false), "the card's draw bound leaves 0 sessions, 0 seconds of agent time and 0.00 EUR: rung 2 or the human may draw more. "+
-		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand_up with it as the recommendation"; got != want {
+		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: `hand_up` with it as the recommendation"; got != want {
 		t.Errorf("rung 1 = %q, want %q", got, want)
 	}
 	if got := drawWithin(f, 2, one, policy.Draw{}, 0, false); got != "" {
@@ -310,14 +310,14 @@ func TestDrawBoundNamesThePartAndTheFit(t *testing.T) {
 				"This draw does not fit in agent time (asked 120 minutes, left 90 minutes). The largest draw that fits is 0 sessions, 90 minutes of agent time and 0.00 EUR: ask for that"},
 		{"an empty pool", empty, 2, policy.Draw{AgentTime: 30 * time.Minute}, 0,
 			"the escalation pool leaves 0 sessions, 0 seconds of agent time and 0.00 EUR this month: only the human draws more. " +
-				"This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: hand_up with it as the recommendation"},
+				"This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: `hand_up` with it as the recommendation"},
 		{"a session without minutes at the agent time cap", sessionsOnly, 2, policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, 200,
-			pool5 + "This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: hand_up with it as the recommendation"},
+			pool5 + "This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: `hand_up` with it as the recommendation"},
 		// a gate stop's extend is probed with a session, which the pool lacks
 		{"lines beside a session at a gate stop", gate, 2, policy.Draw{Sessions: 1}, 200,
-			pool924 + "This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand_up with it as the recommendation"},
+			pool924 + "This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: `hand_up` with it as the recommendation"},
 		{"a session at the session cap", sessionCap, 2, policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, 0,
-			pool924 + "This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand_up with it as the recommendation"},
+			pool924 + "This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: `hand_up` with it as the recommendation"},
 		{"lines beside a session and minutes at a gate stop", gateSessions, 2, policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, 200,
 			pool5 + "This draw does not fit in agent time (asked 30 minutes, left 0 seconds). The largest draw that fits is 1 session, 0 seconds of agent time and 0.00 EUR with 200 lines beside it, as lines ride free: ask for that"},
 		{"lines beside minutes at a gate stop", gateSessions, 2, policy.Draw{AgentTime: 30 * time.Minute}, 200,

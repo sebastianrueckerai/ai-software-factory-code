@@ -168,8 +168,8 @@ func TestACapAskCountsTheFindingsStandingOnTheHead(t *testing.T) {
 // h2 is green and approved, after Forgejo refused to merge main into h2 at
 // the merge queue's turn. Rung 0 routes nothing to the approval: its step
 // finds no resolver, and the case reaches the human with its facts holding
-// the conflict and its problem and ask led by it. On those facts rung 1 is
-// offered extend, and neither route_approval nor reverify.
+// the conflict and its face naming it in what is left. On those facts rung
+// 1 is offered extend, and neither route_approval nor reverify.
 func TestOpenTripAtAMergeConflictRoutesNothingToTheApproval(t *testing.T) {
 	ctx := context.Background()
 	g := newTripRig(t, "success")
@@ -184,10 +184,9 @@ func TestOpenTripAtAMergeConflictRoutesNothingToTheApproval(t *testing.T) {
 		t.Fatalf("outcome = %+v, want the case at the human on comment 501", out)
 	}
 	c := caseByID(t, g.s, out.CaseID)
-	lead := "The pull request no longer merges into main: Forgejo refused to merge main into head h2. " +
-		"Only a session that merges main into the branch clears it, and no gate rerun does."
-	if c.Kind != CaseAgentTimeCap || c.Facts["merge_conflict"] != refusal || !strings.HasPrefix(c.Problem, lead+" ") {
-		t.Fatalf("case %s, conflict %v, problem %q; want the agent-time cap holding the conflict, led by %q", c.Kind, c.Facts["merge_conflict"], c.Problem, lead)
+	const left = "No finding is open, and the checks are green. The pull request no longer merges into main. Only a session that merges main into its branch fixes that."
+	if c.Kind != CaseAgentTimeCap || c.Facts["merge_conflict"] != refusal {
+		t.Fatalf("case %s, conflict %v; want the agent-time cap holding the conflict", c.Kind, c.Facts["merge_conflict"])
 	}
 	if steps := caseStepsOf(t, g.s, c.ID); len(steps) != 2 || steps[0].Rung != 0 || steps[0].Found != "no resolver fits" {
 		t.Fatalf("steps = %+v, want rung 0 finding no resolver, then the human's", steps)
@@ -196,8 +195,8 @@ func TestOpenTripAtAMergeConflictRoutesNothingToTheApproval(t *testing.T) {
 	if len(asks) != 1 {
 		t.Fatalf("asks = %d, want one", len(asks))
 	}
-	if ask, _ := asks[0].Detail["ask"].(string); !strings.HasPrefix(ask, lead+" ") {
-		t.Fatalf("ask = %q, want it led by %q", ask, lead)
+	if story, _ := asks[0].Detail["story"].(map[string]any); story["Left"] != left {
+		t.Fatalf("the face's story = %v, want what is left to say %q", asks[0].Detail["story"], left)
 	}
 	card, _, _ := g.s.Task(ctx, "t1")
 	f, err := g.r.FactsAtCase(ctx, card, c)
@@ -1213,16 +1212,17 @@ func (o *downTimeline) Get(ctx context.Context, key string) ([]byte, error) {
 
 // The human's buttons on a case that reached them while the card's
 // timeline could not be read are no final word: the face stores the
-// offers it could weigh and no refusals, so the offers pass weighs them
-// again, once the timeline reads, and Reverify comes back; a pass while
-// it still fails stores nothing.
+// offers it could weigh and the mark that it is unweighed, so the offers
+// pass weighs them again, once the timeline reads, and Reverify comes
+// back with the mark gone; a pass while it still fails stores nothing.
 func TestAFaceOnAnUnreadTimelineIsWeighedAgain(t *testing.T) {
 	ctx := context.Background()
 	g := newTripRig(t, "success")
 	g.atHead(t, true)
 	objects := &downTimeline{ObjectStore: g.r.PgObjects(), down: true}
 	g.r.PgSetObjects(objects)
-	if _, err := g.r.FaceStop(ctx, "t1", tripCap, nil); err != nil {
+	// a gate stop's face offers Reverify, which the table refuses on an unread timeline
+	if _, err := g.r.FaceStop(ctx, "t1", GateStopped+ActivityModelReview+" after 3 tries: the review timed out", nil); err != nil {
 		t.Fatal(err)
 	}
 	offered := func() ([]string, bool) {
@@ -1235,19 +1235,19 @@ func TestAFaceOnAnUnreadTimelineIsWeighedAgain(t *testing.T) {
 				names = append(names, fmt.Sprint(m["value"]))
 			}
 		}
-		_, refused := detail["refusals"]
-		return names, refused
+		_, unweighed := detail["unweighed"]
+		return names, !unweighed
 	}
-	if names, refused := offered(); refused || slices.Contains(names, ActReverify) {
-		t.Fatalf("the face on an unread timeline offers %v, refusals stored %t; want no reverify and no refusals", names, refused)
+	if names, weighed := offered(); weighed || slices.Contains(names, ActReverify) {
+		t.Fatalf("the face on an unread timeline offers %v, weighed %t; want no reverify and the face unweighed", names, weighed)
 	}
 	g.r.StoreMissedOffers(ctx)
-	if names, refused := offered(); refused || slices.Contains(names, ActReverify) {
-		t.Fatalf("a pass on a still unread timeline stored %v, refusals %t; want nothing stored", names, refused)
+	if names, weighed := offered(); weighed || slices.Contains(names, ActReverify) {
+		t.Fatalf("a pass on a still unread timeline stored %v, weighed %t; want nothing stored", names, weighed)
 	}
 	objects.down = false
 	g.r.StoreMissedOffers(ctx)
-	if names, refused := offered(); !refused || !slices.Contains(names, ActReverify) {
-		t.Fatalf("the pass on a read timeline stored %v, refusals %t; want reverify and the refusals", names, refused)
+	if names, weighed := offered(); !weighed || !slices.Contains(names, ActReverify) {
+		t.Fatalf("the pass on a read timeline stored %v, weighed %t; want reverify on a weighed face", names, weighed)
 	}
 }

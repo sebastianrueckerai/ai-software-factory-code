@@ -137,7 +137,7 @@ func TestRung1RefusedDrawGoesToTheHuman(t *testing.T) {
 	g.afterRung2(t, out.CaseID)
 
 	refusal := fmt.Sprintf("the card's draw bound leaves 0 sessions, %s of agent time and 4.00 EUR: rung 2 or the human may draw more. "+
-		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand_up with it as the recommendation, ", minutesWord(policy.SizeAgentTime("medium", time.Hour)))
+		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: `hand_up` with it as the recommendation, ", minutesWord(policy.SizeAgentTime("medium", time.Hour)))
 	steps := g.steps(t, out.CaseID)
 	if len(steps) != 4 || steps[1].Rung != 1 || steps[1].Outcome != StepHandedUp || !strings.Contains(steps[1].Found, "rung 1's answer extend was refused: "+refusal) ||
 		steps[1].Decision != "successor" || steps[1].Grounds != "one more session would do" || steps[2].Rung != 2 || steps[3].Rung != 3 {

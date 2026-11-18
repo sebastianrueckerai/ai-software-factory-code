@@ -434,10 +434,16 @@ func LeaveCaseToAct(ctx context.Context) context.Context {
 // CaseLeftToAct reports whether ctx came through LeaveCaseToAct.
 func CaseLeftToAct(ctx context.Context) bool { left, _ := ctx.Value(caseLeftKey{}).(bool); return left }
 
+// faceUnweighed marks an ask row's face as written while the card's
+// timeline could not be read: its answers leave out those the timeline
+// decides, so the offers pass writes it again once the timeline reads.
+const faceUnweighed = "unweighed"
+
 // StoreMissedOffers withdraws a card's asks a newer ask on the card
 // replaced (withdrawReplaced), and stores, once, the face of each case at
-// the human whose ask holds none: one that reached the human before the
-// register wrote its faces. It asks on the board, once, the information request a card
+// the human whose ask holds none, one that reached the human before the
+// register wrote its faces, or holds one written on an unread timeline
+// (faceUnweighed), once it reads. It asks on the board, once, the information request a card
 // waits on without its case: one asked before the board asked them, or
 // whose ask failed to write. It also stores again an agent's question whose
 // stored face no longer fits its caps: a cap that binds after the ask,
@@ -481,13 +487,17 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 				continue
 			}
 			ask, found := r.CaseAsk(ctx, c)
-			question := found && ask.Detail["story"] != nil && slices.Contains(questionKinds, c.Kind)
-			if !found || ask.Detail["story"] != nil && !question {
+			unweighed := ask.Detail[faceUnweighed] != nil
+			question := found && ask.Detail["story"] != nil && !unweighed && slices.Contains(questionKinds, c.Kind)
+			if !found || ask.Detail["story"] != nil && !question && !unweighed {
 				continue
 			}
 			f, err := r.FactsAtCase(ctx, t, c)
 			if err != nil {
 				log.Printf("offers pass: case %d: %v", c.ID, err)
+				continue
+			}
+			if unweighed && slices.Contains(f.Partial, partialTimeline) {
 				continue
 			}
 			face, err := r.liveFace(ctx, t, c, f)
@@ -503,7 +513,11 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 					continue
 				}
 			}
-			if err := r.store.SetCaseFace(ctx, c.ID, FaceKeys(face)); err != nil {
+			keys := FaceKeys(face)
+			if slices.Contains(f.Partial, partialTimeline) {
+				keys[faceUnweighed] = true
+			}
+			if err := r.store.SetCaseFace(ctx, c.ID, keys); err != nil {
 				log.Printf("task %s: the face of case %d: %v", t.ID, c.ID, err)
 			}
 		}

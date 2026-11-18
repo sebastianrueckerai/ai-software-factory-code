@@ -141,7 +141,7 @@ func TestHealPassReasksACardWaitingWithNoAsk(t *testing.T) {
 	}
 	reopened := ask
 	posted := g.forge.comments()
-	if len(posted) != 1 || !strings.Contains(posted[0], AsklessReason) {
+	if len(posted) != 1 || !strings.HasPrefix(posted[0], "This card waited for a human with no question open. The factory asks its question on the board again.\n\n") {
 		t.Fatalf("posted %q; want the ask's face once, asking again after the wait", posted)
 	}
 	asks, err := g.s.AskAnchors(ctx, caseTask)
@@ -407,8 +407,8 @@ func TestHealPassLeavesAnAnsweredRevisionToTheStop(t *testing.T) {
 	if live.Kind == factoryd.CasePlanConfirmation || live.Kind == CasePlanQuestion {
 		t.Fatalf("the live case = %+v; want no plan case", live)
 	}
-	if live.Problem != AsklessReason || !holdsAskless(t, g.s, live) {
-		t.Fatalf("the new case = %+v, steps %+v; want the askless reason as its problem and its step", live, caseStepsOf(t, g.s, live.ID))
+	if live.Facts["reason"] != AsklessReason || !holdsAskless(t, g.s, live) {
+		t.Fatalf("the new case = %+v, steps %+v; want the askless reason as its reason and its step", live, caseStepsOf(t, g.s, live.ID))
 	}
 	if cases, err := g.s.CasesOf(ctx, caseTask); err != nil || len(cases) != 2 {
 		t.Fatalf("the card's cases = %+v, %v; want the withdrawn confirmation and one new case", cases, err)

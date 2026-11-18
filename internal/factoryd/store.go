@@ -1650,7 +1650,7 @@ func (s *PGStore) SetAskInfo(ctx context.Context, taskID, info string) error {
 
 // caseFaceSQL stores face keys $2 on the newest ask row of case $1
 // ($3 the ask's kind), its pick dropped for the face's own.
-const caseFaceSQL = `UPDATE events SET detail = (detail - 'preselected' - 'recommended_by' - 'recommendation') || $2::jsonb
+const caseFaceSQL = `UPDATE events SET detail = (detail - 'preselected' - 'recommended_by' - 'recommendation' - 'unweighed') || $2::jsonb
 		WHERE id = (SELECT e.id FROM events e JOIN cases c ON c.id = $1 AND e.task_id = c.task_id AND e.kind = $3
 		    AND e.detail->>'case_id' = c.id::text ORDER BY e.id DESC LIMIT 1)`
 
@@ -2281,7 +2281,7 @@ func (e *DrawBoundError) Error() string {
 		over = append(over, fmt.Sprintf("agent time (asked %s, left %s)", minutesWord(e.Want.AgentTime), minutesWord(e.Left.AgentTime)))
 	}
 	if Cents(e.Want.EUR) > Cents(e.Left.EUR) {
-		over = append(over, fmt.Sprintf("EUR (asked %.2f, left %.2f)", e.Want.EUR, e.Left.EUR))
+		over = append(over, fmt.Sprintf("EUR (asked %s, left %s)", textutil.EUR(e.Want.EUR), textutil.EUR(e.Left.EUR)))
 	}
 	bound += ". This draw does not fit in " + textutil.AndList(over)
 	lines := textutil.Plural(e.Lines, "line", "lines")
@@ -2291,7 +2291,7 @@ func (e *DrawBoundError) Error() string {
 	case e.Fit.IsZero() && !e.Least.IsZero():
 		return fmt.Sprintf("%s, and nothing of it fits, but %s does: ask for that", bound, drawText(e.Least))
 	case e.Fit.IsZero():
-		return bound + ", and nothing of it fits: hand_up with it as the recommendation"
+		return bound + ", and nothing of it fits: `hand_up` with it as the recommendation"
 	case e.Lines > 0:
 		return fmt.Sprintf("%s. The largest draw that fits is %s with %s beside it, as lines ride free: ask for that", bound, drawText(e.Fit), lines)
 	}

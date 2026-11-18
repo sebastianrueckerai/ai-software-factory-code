@@ -1434,6 +1434,10 @@ func tripNext(c Case, reason string) string {
 // restart: its face stands on the board as it was.
 const healedLine = "The factory restarted while this card waited for a human. Its question on the board still stands."
 
+// asklessLine opens the comment of an ask the heal pass puts again on a
+// card that waited with no live ask.
+const asklessLine = "This card waited for a human with no question open. The factory asks its question on the board again."
+
 // IssueAsk opens the comment of ask row face on its card's issue with the
 // face as the board shows it: the ask, the why line and the story, each
 // in its paragraph, a writer's words quoted.
@@ -1507,6 +1511,9 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		}
 	}
 	body := healedLine
+	if reason == AsklessReason {
+		body = asklessLine
+	}
 	stop := reason
 	if askedAgain(reason) {
 		stop, _ = c.Facts["reason"].(string)
@@ -1528,6 +1535,9 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		}
 		fence := func(s string) string { return r.untrusted(t, s) }
 		face = FaceRow(r.fencedChoices(t, c), t, f, note, up, fence, r.scrub)
+		if slices.Contains(f.Partial, partialTimeline) {
+			face[faceUnweighed] = true
+		}
 		question, _ = face["ask"].(string)
 		// the face carries the agent's own words (a why line read from the
 		// stop's reason): the comment is sanitised as every outbound text
