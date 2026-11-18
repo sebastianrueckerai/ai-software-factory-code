@@ -402,8 +402,7 @@ func main() {
 		defer cancel()
 		runner.Namer.NameOpenPlans(sweepCtx)
 	}()
-	// the retry switch ends a provider freeze from the freeze card's button
-	// and from Act's retry of a frozen case; set before the worker runs Act
+	// set before the worker runs Act
 	freezeCards := &factoryd.FreezeCard{Store: store, Forgejo: forgejo, Current: policyLoader.Current, Timeline: runner.Timeline()}
 	retrySwitch := &factoryd.RetrySwitch{Freeze: freezeCards, GatewayURL: gatewayURL, Token: gatewayToken,
 		Signal: func(ctx context.Context, taskID string) error {

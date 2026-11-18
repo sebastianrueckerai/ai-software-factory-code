@@ -42,6 +42,13 @@ type ErrNoFreeze string
 
 func (e ErrNoFreeze) Error() string { return string(e) }
 
+// PartialPressError is a press that cleared the hold and then failed part
+// of what follows: Err joins the closes and the wakes that failed.
+type PartialPressError struct{ Err error }
+
+func (e *PartialPressError) Error() string { return "the hold cleared, but " + e.Err.Error() }
+func (e *PartialPressError) Unwrap() error { return e.Err }
+
 // RetryFreeze is the press on freeze card cardID, by a human or the
 // project agent: it ends the freeze of the class on the card's face, the
 // gateway writing the class_resumed event on the card's row. It reads the
@@ -76,7 +83,8 @@ func (s *RetrySwitch) RetryFreeze(ctx context.Context, cardID, by string) error 
 // repository, so every repository's open freeze card of the class closes,
 // then every running card of cards, the ones the hold froze, is woken.
 // The cards close before any probe can answer, so a probe's dated refusal
-// re-arms the same card. One failed close or wake does not stop the others.
+// re-arms the same card. One failed close or wake does not stop the others,
+// and the failures come back as a PartialPressError.
 func (s *RetrySwitch) retryFreeze(ctx context.Context, class, by string, cards []Task) error {
 	var errs []error
 	repos, err := s.Freeze.openCardRepositories(ctx, class)
@@ -104,7 +112,10 @@ func (s *RetrySwitch) retryFreeze(ctx context.Context, class, by string, cards [
 		woken++
 	}
 	log.Printf("retry switch: %s cleared the %s class's hold, %d freeze cards closed, %d of %d frozen cards woken", by, class, closed, woken, frozen)
-	return errors.Join(errs...)
+	if len(errs) > 0 {
+		return &PartialPressError{Err: errors.Join(errs...)}
+	}
+	return nil
 }
 
 // clearHold posts the class to the gateway's hold-clear door on taskID's

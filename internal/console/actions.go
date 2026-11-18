@@ -638,9 +638,14 @@ func (c *Console) doRetryFreeze(ctx context.Context, a actor, id string) (string
 	}
 	err = c.cfg.RetryFreeze(ctx, t.ID, a.approver())
 	var no factoryd.ErrNoFreeze
+	var part *factoryd.PartialPressError
 	switch {
 	case errors.As(err, &no):
 		return "", refuse(http.StatusConflict, no.Error())
+	case errors.As(err, &part):
+		log.Printf("console: %s presses the retry switch on %s: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusInternalServerError, "The hold cleared, but part of the press failed: "+errText(part.Err)+
+			". A frozen card it did not wake starts at its reset, and a freeze card it did not close closes five minutes after its class resumed.")
 	case err != nil:
 		log.Printf("console: %s presses the retry switch on %s: %v", a.s.user, t.ID, err)
 		return "", refuse(http.StatusInternalServerError, "The freeze could not be ended: "+errText(err)+". Press Retry now again, or wait for the reset on the card.")
@@ -1182,7 +1187,8 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, i
 // routeAnswer routes an answer to its work before Act, on every entry (the
 // board's button, the chat, the api): a running agent card's words steer its
 // session where an answer with an action never does, and a human card's
-// choice goes to its work (doHumanAnswer, typed's action its value). It
+// choice goes to its work (doHumanAnswer, typed's action its value); a
+// freeze card asks nothing, so its answers go to Act. It
 // refuses nothing about the card's state: Act is the one gate. typed is the
 // chat's answer with an action (nil for none). done: routed, with said or err.
 func (c *Console) routeAnswer(ctx context.Context, a actor, id, text, value string, typed *factoryd.Resolution) (t factoryd.Task, said string, done bool, err error) {
@@ -1196,7 +1202,7 @@ func (c *Console) routeAnswer(ctx context.Context, a actor, id, text, value stri
 	case t.Kind == "agent" && t.Status == "running" && text != "" && typed == nil && c.cfg.Steer != nil:
 		said, err = c.doSteer(ctx, a, id, text)
 		return t, said, true, err
-	case t.Kind == "human" && t.Status == "waiting-human" && t.IssueNumber != 0:
+	case t.Kind == "human" && t.Status == "waiting-human" && t.IssueNumber != 0 && t.Source != factoryd.SourceFreezeCard:
 		said, err = c.doHumanAnswer(ctx, a, t, text, value, typed)
 		return t, said, true, err
 	}
@@ -1839,7 +1845,8 @@ func (c *Console) actOnWork(ctx context.Context, a actor, t factoryd.Task, caseI
 // callAct answers card t's case caseID (0 for none) with res through Act, as
 // a's user on a's rung, the rows carrying a's chat detail and token, post
 // the answer's comment (nil for none). Money a human draws is an
-// approver's, as the Fund form's. Act's own errors come back as they are.
+// approver's, as the Fund form's, and so is a retry on either rung, as
+// Retry's. Act's own errors come back as they are.
 func (c *Console) callAct(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post func(context.Context) (int64, error)) (factoryd.ActResult, error) {
 	return c.callActWork(ctx, a, t, caseID, res, post, nil)
 }
@@ -1847,6 +1854,11 @@ func (c *Console) callAct(ctx context.Context, a actor, t factoryd.Task, caseID 
 func (c *Console) callActWork(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post, work func(context.Context) (int64, error)) (factoryd.ActResult, error) {
 	if a.rung() == 3 && (res.Action == factoryd.ActFund || res.Action == factoryd.ActRaiseCeiling || res.Fund != nil && res.Fund.EUR > 0) {
 		if err := c.admit(ctx, accessTable["fund"], a, t.Repository, "task "+t.ID); err != nil {
+			return factoryd.ActResult{}, err
+		}
+	}
+	if res.Action == factoryd.ActRetry {
+		if err := c.admit(ctx, accessTable["retry"], a, t.Repository, "task "+t.ID); err != nil {
 			return factoryd.ActResult{}, err
 		}
 	}

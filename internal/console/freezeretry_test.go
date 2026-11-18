@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -49,8 +50,9 @@ func TestFreezeCardShowsRetryNow(t *testing.T) {
 
 // Retry now, by an approver, presses the retry switch on the freeze card
 // (Config.RetryFreeze). A writer who is no approver gets 403 and nothing is
-// pressed; a refusal answers 409 with its sentence, a failure 500 with the
-// error and what to do.
+// pressed; a refusal answers 409 with its sentence, a failure past the
+// clear 500 saying the hold cleared and what failed, any other failure 500
+// with the error and what to do.
 func TestRetryNowPressesTheRetrySwitch(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
@@ -77,6 +79,11 @@ func TestRetryNowPressesTheRetrySwitch(t *testing.T) {
 	if rec := press(ck, s.csrf); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != ended {
 		t.Errorf("a refused press: %d %q", rec.Code, rec.Body)
 	}
+	r.unfreezeErr = &factoryd.PartialPressError{Err: errors.New("wake t-z: temporal unavailable")}
+	if rec := press(ck, s.csrf); rec.Code != http.StatusInternalServerError || strings.TrimSpace(rec.Body.String()) !=
+		"The hold cleared, but part of the press failed: wake t-z: temporal unavailable. A frozen card it did not wake starts at its reset, and a freeze card it did not close closes five minutes after its class resumed." {
+		t.Errorf("a press that failed past the clear: %d %q", rec.Code, rec.Body)
+	}
 	r.unfreezeErr = errors.New("clear the coder class's hold: status 502: bad gateway")
 	if rec := press(ck, s.csrf); rec.Code != http.StatusInternalServerError || strings.TrimSpace(rec.Body.String()) !=
 		"The freeze could not be ended: clear the coder class's hold: status 502: bad gateway. Press Retry now again, or wait for the reset on the card." {
@@ -84,20 +91,49 @@ func TestRetryNowPressesTheRetrySwitch(t *testing.T) {
 	}
 }
 
-// The chat's retry on a freeze card, which holds no case, reaches Act on
-// no case, where the retry of a frozen case runs the retry switch, and
-// posts nothing on the card's issue.
+// runToolAs runs chat tool name for user, a writer on sf/code, as runTool
+// runs it for sebastian.
+func runToolAs(t *testing.T, r *rig, user, name, decider string, in toolInput) (string, error) {
+	t.Helper()
+	_, s := r.as(t, user)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
+	tool, ok := r.c.chatTool(name)
+	if !ok {
+		t.Fatalf("there is no %s tool", name)
+	}
+	note, _, err := tool.run(&turn{c: r.c, r: req, a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: decider},
+		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}}, in)
+	return note, err
+}
+
+// The chat's retry on a freeze card, which holds no case, goes to Act on no
+// case, where the retry of a frozen case runs the retry switch: the reply
+// is Act's, and the human card's close takes no part, no issue patched and
+// nothing posted. A writer who is no approver presses nothing through the
+// chat, on either rung, as Retry refuses them.
 func TestTheChatsRetryOnAFreezeCardGoesToAct(t *testing.T) {
 	r := newRig(t)
 	r.openCases = map[string][]factoryd.Case{}
 	r.tasks.tasks = []factoryd.BoardTask{freezeCard("t-fz", "sf/code", 31, "waiting-human")}
-	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-fz", Action: factoryd.ActRetry}); err != nil {
-		t.Fatal(err)
+	said, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-fz", Action: factoryd.ActRetry})
+	if err != nil || said != "Case 0 took retry." {
+		t.Fatalf("the retry = %q, %v; want Act's reply", said, err)
 	}
 	got, _ := actedOnce(t, r)
 	equal(t, "the retry", got, factoryd.ActInput{TaskID: "t-fz", By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
 		Res: factoryd.Resolution{Action: factoryd.ActRetry}})
-	if bodies := r.fg.commentBodies("/api/v1/repos/sf/code/issues/31/comments"); len(bodies) != 0 {
-		t.Fatalf("comments %q, want none: the press is Act's", bodies)
+	if bodies := r.fg.commentBodies("/api/v1/repos/sf/code/issues/31/comments"); len(bodies) != 0 || len(r.fg.patched) != 0 ||
+		slices.ContainsFunc(r.fg.calls, func(c string) bool { return strings.HasPrefix(c, "PATCH ") }) {
+		t.Fatalf("comments %q, patched %v; want none: the press is Act's", bodies, r.fg.patched)
+	}
+	for _, decider := range []string{"member", "agent"} {
+		if _, err := runToolAs(t, r, "alice", "answer", decider, toolInput{TaskID: "t-fz", Action: factoryd.ActRetry}); err == nil ||
+			err.Error() != "Only the approvers of project ai-software-factory-code may retry a card." {
+			t.Fatalf("alice's retry as %s = %v, want the approvers' refusal", decider, err)
+		}
+	}
+	if len(r.acted) != 1 {
+		t.Fatalf("Act ran %d times, want only sebastian's retry", len(r.acted))
 	}
 }

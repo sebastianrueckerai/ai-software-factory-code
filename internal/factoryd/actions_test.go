@@ -504,6 +504,23 @@ func TestRetryTakesARetryableFailedDependency(t *testing.T) {
 	if got := applies(t, ActRetry, frozen, Resolution{}); got != "" {
 		t.Errorf("a frozen case's retry = %q, want it offered", got)
 	}
+	// the freeze's end is a human's or the project agent's: rungs 0 and 1
+	// are refused it, and so it is on offer to rungs 2 and 3 alone
+	retry, _ := ActionByName(ActRetry)
+	if got, want := retry.refusal(frozen, 1, Resolution{}), "rung 1 ends no provider freeze, a human's press or the project agent's: hand it up (hand_up) with retry as the recommendation"; got != want {
+		t.Errorf("rung 1's retry of a frozen case = %q, want %q", got, want)
+	}
+	for rung, want := range []bool{false, false, true, true} {
+		if got := slices.ContainsFunc(Offered(frozen, rung), func(a Action) bool { return a.Name == ActRetry }); got != want {
+			t.Errorf("retry on offer to rung %d = %t, want %t", rung, got, want)
+		}
+	}
+	// a failed dependency open to a retry is rung 1's to retry, freeze or none
+	withDep := frozen
+	withDep.Dependencies = append(slices.Clone(frozen.Dependencies), open)
+	if got := retry.refusal(withDep, 1, Resolution{}); got != "" {
+		t.Errorf("rung 1's retry of an open dependency beside a freeze = %q, want none", got)
+	}
 	if got := applies(t, ActRetry, f, Resolution{Args: map[string]any{"task_id": "d1"}}); got != "" {
 		t.Errorf("retry d1, retried already = %q, want it to apply", got)
 	}

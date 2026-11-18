@@ -902,12 +902,9 @@ func (r *Runner) wordsRefusal(ctx context.Context, t Task, c Case) string {
 }
 
 // endFreeze ends the provider freeze that holds the card through the
-// retry switch's press on its freeze card card: a human's answer or the
-// project agent's, never the factory's own rungs.
+// retry switch's press on its freeze card card, a human's answer or the
+// project agent's: refusal keeps the factory's own rungs from it.
 func (r *Runner) endFreeze(ctx context.Context, card string, in ActInput) ([]CaseAction, error) {
-	if in.Rung < 2 {
-		return nil, ErrActRefused(fmt.Sprintf("rung %d ends no provider freeze: the retry switch is a human's press or the project agent's, on the freeze card or a card it holds", in.Rung))
-	}
 	if r.RetryFreeze == nil {
 		return nil, errors.New("no retry switch is wired (Runner.RetryFreeze)")
 	}
@@ -937,10 +934,10 @@ func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInpu
 	case ActSalvage:
 		return r.salvage(ctx, t, f, in)
 	case ActRetry:
-		id, _ := in.Res.Args["task_id"].(string)
-		if id == "" && f.FreezeCard != "" {
+		if endsFreeze(f, in.Res) && in.Rung >= 2 {
 			return r.endFreeze(ctx, f.FreezeCard, in)
 		}
+		id, _ := in.Res.Args["task_id"].(string)
 		if id == "" {
 			i := slices.IndexFunc(f.Dependencies, func(d DepFact) bool { return retryRefusal(d) == "" })
 			if i < 0 {
