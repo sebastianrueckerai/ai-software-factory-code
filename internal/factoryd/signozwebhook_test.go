@@ -1687,7 +1687,7 @@ func faced(t *testing.T, r *alertRig, id string) {
 }
 
 // A cleared alert's held card, untouched as it has no issue, closes with
-// no forge call: factoryd records its close, which a heal confirms.
+// no forge call: factoryd records its close, which the next heal confirms.
 func TestAClearedAlertClosesItsHeldCard(t *testing.T) {
 	ctx := context.Background()
 	r := heldClearedRig(t)
@@ -1704,8 +1704,6 @@ func TestAClearedAlertClosesItsHeldCard(t *testing.T) {
 	if got := factoryCloses(r.store, task.ID); !slices.Equal(got, want) || len(r.fj.issues) != 0 || len(r.fj.comments) != 0 || r.fj.reads != 0 {
 		t.Fatalf("factory closes %q, issues %d, comments %q, reads %d; want %q and no forge call", got, len(r.fj.issues), r.fj.comments, r.fj.reads, want)
 	}
-	i := slices.IndexFunc(r.store.intakeEvents, func(e IntakeEvent) bool { return e.Kind == IntakeFactoryClosed })
-	r.store.intakeEvents[i].CreatedAt = time.Now().Add(-3 * time.Minute)
 	if err := (&Intake{Store: r.store, Forgejo: r.in.Forgejo}).HealFactoryCloses(ctx); err != nil || !r.store.confirmedCloses[[2]any{task.ID, int64(0)}] ||
 		r.store.tasks[task.ID].Status != "closed" || len(r.fj.closed) != 0 {
 		t.Fatalf("heal: %v, confirmed %v, task %s, closed %v", err, r.store.confirmedCloses, r.store.tasks[task.ID].Status, r.fj.closed)

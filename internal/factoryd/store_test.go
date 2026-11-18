@@ -1067,7 +1067,7 @@ func closeKey(e IntakeEvent) [2]any {
 func (s *fakeStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error) {
 	var out []IntakeEvent
 	for _, e := range s.intakeEvents {
-		if e.Kind == IntakeFactoryClosed && !s.confirmedCloses[closeKey(e)] && s.clock().Sub(e.CreatedAt) > olderThan && len(out) < limit {
+		if e.Kind == IntakeFactoryClosed && !s.confirmedCloses[closeKey(e)] && (e.CommentID == 0 || s.clock().Sub(e.CreatedAt) > olderThan) && len(out) < limit {
 			out = append(out, e)
 		}
 	}
@@ -1961,7 +1961,7 @@ func (s *fakeStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep,
 				continue
 			}
 			ended := time.Now()
-			st.Outcome, st.Found, st.EndedAt = StepHandedUp, stepExpired(st.Found, st.StartedAt, *st.DueAt), &ended
+			st.Outcome, st.Found, st.EndedAt = StepHandedUp, stepExpired(st.Found, st.Rung, tookSince(steps, st), st.StartedAt, *st.DueAt), &ended
 			s.caseSteps[id][i] = st
 			out = append(out, st)
 		}
@@ -4552,6 +4552,49 @@ func TestFactoryCloseConfirmation(t *testing.T) {
 	var confirmed int
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM intake_events WHERE confirmed_at IS NOT NULL`).Scan(&confirmed); err != nil || confirmed != 1 {
 		t.Fatalf("confirmed rows = %d, err %v, want 1", confirmed, err)
+	}
+}
+
+// The age bound waits for Forgejo's webhook of a close, which a close of a
+// card with no issue (comment_id 0) never gets: such a row is listed at
+// any age, one of an issue only past the bound. By hand, with the heal
+// pass's two minutes: the issue-less row 10 seconds old is listed, issue
+// #31's row 10 seconds old is not, and issue #32's row 3 minutes old is.
+func TestAFactoryCloseWithNoIssueIsListedAtOnce(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, intake_events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-fc", Status: "in-review", Objective: "o", Repository: "sf/r", Kind: "agent", IssueNumber: 31, Track: "direct"}); err != nil {
+		t.Fatal(err)
+	}
+	ids := map[int64]int64{}
+	for issue, age := range map[int64]string{0: "10 seconds", 31: "10 seconds", 32: "3 minutes"} {
+		id, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-fc", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: issue, Body: "closing"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE intake_events SET created_at = now() - $2::interval WHERE id = $1`, id, age); err != nil {
+			t.Fatal(err)
+		}
+		ids[issue] = id
+	}
+	got, err := s.UnconfirmedFactoryCloses(ctx, 2*time.Minute, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed []int64
+	for _, e := range got {
+		listed = append(listed, e.CommentID)
+	}
+	slices.Sort(listed)
+	if !slices.Equal(listed, []int64{0, 32}) {
+		t.Fatalf("listed the closes of issues %v, want [0 32] (rows %v)", listed, ids)
 	}
 }
 

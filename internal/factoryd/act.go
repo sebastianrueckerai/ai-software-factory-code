@@ -890,16 +890,20 @@ var heldEnds = []string{AnswerClose, AnswerCheckAgain, AnswerHoldWait, AnswerDis
 
 // heldRefusal is why rung 2 may not take in on factoryd's own human card t,
 // which waits out of sight for its face: a choice that ends the card while
-// factoryd finds its condition standing, or with no check of it, and one
-// that leaves the card waiting where no human sees it. "" when rung 2 may.
+// factoryd finds its condition standing, or with no check of it, one that
+// leaves the card waiting where no human sees it, and a hand-over to an
+// agent of a card its filer routed to a human. "" when rung 2 may.
 func (r *Runner) heldRefusal(ctx context.Context, t Task, in ActInput) string {
 	choice := in.Res.Action
 	if t.Status != "waiting-agent" || in.Rung != 2 {
 		return ""
 	}
 	up := "hand it up with attach_analysis and " + choice + " as the recommended action"
-	if choice == AnswerPark || choice == AnswerKeepWaiting {
+	switch choice {
+	case AnswerPark, AnswerKeepWaiting:
 		return fmt.Sprintf("card %s waits out of sight until a human is asked, so %s would leave it there: %s", cardName(t), choice, up)
+	case AnswerGo:
+		return fmt.Sprintf("card %s's filer routed it to a human, so only a human hands it to an agent: %s", cardName(t), up)
 	}
 	if !slices.Contains(heldEnds, choice) {
 		return ""

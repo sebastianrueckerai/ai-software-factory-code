@@ -537,7 +537,7 @@ func (s *acceptanceStore) UnconfirmedFactoryCloses(_ context.Context, olderThan 
 	defer s.mu.Unlock()
 	var out []factoryd.IntakeEvent
 	for _, e := range s.events {
-		if e.Kind == factoryd.IntakeFactoryClosed && !s.confirmedCloses[[2]any{e.TaskID, e.CommentID}] && time.Since(e.CreatedAt) > olderThan && len(out) < limit {
+		if e.Kind == factoryd.IntakeFactoryClosed && !s.confirmedCloses[[2]any{e.TaskID, e.CommentID}] && (e.CommentID == 0 || time.Since(e.CreatedAt) > olderThan) && len(out) < limit {
 			out = append(out, e)
 		}
 	}

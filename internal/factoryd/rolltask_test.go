@@ -1173,7 +1173,7 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 	if len(wf.started) != 0 || len(f.pulls) != 0 {
 		t.Fatalf("a roll ran: starts %v, pull requests %v", wf.started, f.pulls)
 	}
-	if !strings.Contains(logs.String(), "refused, human card "+card.ID+", issue #0: "+ask) {
+	if !strings.Contains(logs.String(), "refused, human card "+card.ID+": "+ask) {
 		t.Fatalf("log %q", logs.String())
 	}
 	if n := slices.Index(f.calls, "GET /v2/token"); n < 0 || slices.Contains(f.calls[n+1:], "GET /v2/token") {

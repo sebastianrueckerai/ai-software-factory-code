@@ -523,10 +523,14 @@ func (s *PGStore) DueCases(ctx context.Context, now time.Time, limit int) ([]Cas
 
 // ExpireSteps hands up every in-progress step whose due_at is before now,
 // its Found naming the bound its rung did not answer within after what it
-// found before, and answers them, oldest first.
+// found before, or what its rung took since, and answers them, oldest
+// first.
 func (s *PGStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, error) {
 	// the constant outcome lets the partial index case_steps_due serve
-	rows, err := s.db.QueryContext(ctx, `SELECT id, started_at, due_at, found FROM case_steps WHERE outcome = '`+StepInProgress+`' AND due_at < $1`, now)
+	rows, err := s.db.QueryContext(ctx, `SELECT s.id, s.rung, s.started_at, s.due_at, s.found,
+		COALESCE((SELECT r.decision FROM case_steps r WHERE r.case_id = s.case_id AND r.rung = s.rung AND r.id > s.id AND r.outcome = '`+StepResolved+`'
+			ORDER BY r.id DESC LIMIT 1), '')
+		FROM case_steps s WHERE s.outcome = '`+StepInProgress+`' AND s.due_at < $1`, now)
 	if err != nil {
 		return nil, err
 	}
@@ -535,12 +539,13 @@ func (s *PGStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, e
 	var found []string
 	for rows.Next() {
 		var id int64
+		var rung int
 		var started, due time.Time
-		var before string
-		if err := rows.Scan(&id, &started, &due, &before); err != nil {
+		var before, took string
+		if err := rows.Scan(&id, &rung, &started, &due, &before, &took); err != nil {
 			return nil, err
 		}
-		ids, found = append(ids, id), append(found, stepExpired(before, started, due))
+		ids, found = append(ids, id), append(found, stepExpired(before, rung, took, started, due))
 	}
 	if err := rows.Err(); err != nil || len(ids) == 0 {
 		return nil, err
@@ -556,15 +561,39 @@ func (s *PGStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, e
 		 SELECT `+caseStepColumns+` FROM ended ORDER BY id`, ids, found, StepHandedUp, StepInProgress)
 }
 
-// stepExpired is the Found of a step its rung did not answer by due, after
+// stepExpired is the Found of a step of rung that ended at due, after
 // found, what the step found before: its bound, due less its start, to the
-// minute as durationText writes it.
-func stepExpired(found string, started, due time.Time) string {
-	expired := expiredMark + durationText(due.Sub(started).Round(time.Minute))
+// minute as durationText writes it, which its rung did not answer within,
+// or after which the card still waits on took, the choice the rung took
+// since (tookSince).
+func stepExpired(found string, rung int, took string, started, due time.Time) string {
+	expired := expiredWords(rung, took, due.Sub(started))
 	if found == "" {
 		return expired
 	}
 	return found + ", then " + expired
+}
+
+// expiredWords say how a step of rung ended at its bound, after bound: its
+// rung did not answer, or it took took, a choice that keeps the card
+// waiting.
+func expiredWords(rung int, took string, bound time.Duration) string {
+	if took != "" {
+		return fmt.Sprintf("rung %d took %s and the card still waits after %s", rung, took, durationText(bound.Round(time.Minute)))
+	}
+	return expiredMark + durationText(bound.Round(time.Minute))
+}
+
+// tookSince is the decision of the newest step of st's rung that resolved
+// after st on its case, among steps: a choice that kept the card waiting,
+// such as rerun_again. "" for none.
+func tookSince(steps []CaseStep, st CaseStep) string {
+	for k := len(steps) - 1; k >= 0; k-- {
+		if s := steps[k]; s.CaseID == st.CaseID && s.Rung == st.Rung && s.ID > st.ID && s.Outcome == StepResolved {
+			return s.Decision
+		}
+	}
+	return ""
 }
 
 // durationText is d, whole minutes, as Go prints a duration less its zero

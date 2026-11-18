@@ -59,9 +59,8 @@ func TestAHeldProductionAskIsDecidedOutOfSight(t *testing.T) {
 
 // The real Deploy now on the held card: main's newest push run is green at
 // 9d9d9d9, so production goes ahead, and the keeper's close of the ask, on
-// a card with no issue, is its record alone. The heal pass, once the record
-// is older than two minutes, ends the card done, with no issue filed or
-// closed.
+// a card with no issue, is its record alone. The next heal pass ends the
+// card done, with no issue filed or closed.
 func TestADeployNowEndsTheHeldCardWithNoIssue(t *testing.T) {
 	h := newHeldRig(t, policy.AutonomyAutonomous)
 	ctx := context.Background()
@@ -73,9 +72,6 @@ func TestADeployNowEndsTheHeldCardWithNoIssue(t *testing.T) {
 	}
 	if card := cardOf(t, h.s, h.cardID); card.Status != "waiting-agent" {
 		t.Fatalf("card %s right after Deploy now, want it waiting-agent until the heal pass reads its close", card.Status)
-	}
-	if _, err := h.s.PgDB().ExecContext(ctx, `UPDATE intake_events SET created_at = now() - interval '3 minutes' WHERE task_id = $1`, h.cardID); err != nil {
-		t.Fatal(err)
 	}
 	in := &Intake{Store: h.s, Forgejo: h.r.PgForgejo(), Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Timeline: h.r.PgTimeline()}
 	if err := in.HealFactoryCloses(ctx); err != nil {
@@ -221,5 +217,131 @@ func TestTheChatsEscalationIsItsRungTwoStep(t *testing.T) {
 	}
 	if calls := starter.recorded(); len(calls) != 0 {
 		t.Fatalf("wakes = %+v, want none", calls)
+	}
+}
+
+// heldRung2Rig is the rung 2 rig at state with factoryd's held card of
+// source on demo-app asking q, and the card's case after the case-wake
+// pass: rung 2 at work on it.
+func heldRung2Rig(t *testing.T, state, id, source string, q HumanQuestion) (rungRig, *chainForgejo, Task, Case) {
+	t.Helper()
+	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+	g.atAutonomy(state)
+	forge := &chainForgejo{}
+	f := forge.srv(t)
+	g.r.PgSetForgejo(f)
+	card, err := factoryd.EscalateToHuman(context.Background(), g.s, f, Repo{Owner: "demo-app", Name: "demo-app"}, q, "factoryd", Task{ID: id, SHA: "abcdef1234", Source: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := onlyLiveCase(t, g.s, card.ID)
+	g.wakePass(t)
+	if card.Status != "waiting-agent" || card.IssueNumber != 0 || len(g.stepsOfRung(t, c.ID, 2)) != 1 {
+		t.Fatalf("card %s #%d, rung 2 steps %+v; want it held with no issue and rung 2 at work", card.Status, card.IssueNumber, g.stepsOfRung(t, c.ID, 2))
+	}
+	return g, forge, card, c
+}
+
+// A routine's card, which its filer routed to a human, is handed to an
+// agent by a human alone: at full auto rung 2's go is refused, naming the
+// card and why, and rung 2 hands the case up with go as its
+// recommendation. The face files the card's issue, #31, and the human's go
+// at rung 3 resolves the case.
+func TestOnlyAHumanHandsAHeldRoutineCardToAnAgent(t *testing.T) {
+	g, _, card, c := heldRung2Rig(t, policy.AutonomyFullAuto, "t-bump", SourceRoutine, HumanQuestion{
+		Ask: "Weekly bump of the pinned outside inputs", Why: "the routine weekly-bump fired and files to a person", Info: "Bump each pinned input.",
+		Choices: []QuestionChoice{{Value: AnswerGo, Label: "Have the factory do it"}, {Value: AnswerClose, Label: "Done"}},
+	})
+	ctx := context.Background()
+	_, err := g.r.Act(ctx, ActInput{TaskID: card.ID, CaseID: c.ID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: AnswerGo, Note: "Have the factory do it"}})
+	want := "card t-bump's filer routed it to a human, so only a human hands it to an agent: hand it up with attach_analysis and go as the recommended action"
+	if err == nil || err.Error() != want {
+		t.Fatalf("rung 2's go = %v,\nwant %q", err, want)
+	}
+	if _, err := g.r.HandUpRung2(ctx, card.ID, c.ID, "the bump is work an agent does", RungTwoRecommendation{Action: AnswerGo, Grounds: "an agent bumps the pins"}, nil); err != nil {
+		t.Fatalf("HandUpRung2: %v", err)
+	}
+	if faced := cardOf(t, g.s, card.ID); faced.Status != "waiting-human" || faced.IssueNumber != 31 {
+		t.Fatalf("card %s #%d, want waiting-human on #31", faced.Status, faced.IssueNumber)
+	}
+	if _, err := g.r.Act(ctx, ActInput{TaskID: card.ID, CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: AnswerGo, Note: "Have the factory do it"}}); err != nil {
+		t.Fatalf("the human's go: %v", err)
+	}
+	if got := caseByID(t, g.s, c.ID); got.Status != CaseResolved || got.Resolution == nil || got.Resolution.Rung != 3 || got.Resolution.Action != AnswerGo || got.Resolution.By != "sebastian" {
+		t.Fatalf("case %s, resolution %+v; want it resolved by sebastian's go on rung 3", got.Status, got.Resolution)
+	}
+}
+
+// Rung 2's rerun_again on a held stall card keeps the card waiting for the
+// re-run's result: rung 2's step stays at work until its bound, 35
+// minutes, and then the case faces the human. The face says that rung 2
+// took rerun_again and the card still waits after 35m, and nowhere that
+// rung 2 did not answer.
+func TestAFaceAfterRung2sRerunSaysTheCardStillWaits(t *testing.T) {
+	g, forge, card, c := heldRung2Rig(t, policy.AutonomyAutonomous, "t-stall", factoryd.SourceChainStall, HumanQuestion{
+		Ask:  "The chain of demo-app/demo-app has been pending at abcdef1 since 2026-11-18 10:00 UTC. Re-run it, check again or dismiss?",
+		Why:  "Pending past the stall bound: run 5 pending.",
+		Info: "No merged card waits on the chain.",
+		Choices: []QuestionChoice{{Value: factoryd.AnswerRerunAgain, Label: "Re-run again"}, {Value: AnswerCheckAgain, Label: "Check again"},
+			{Value: AnswerDismiss, Label: "Dismiss"}},
+	})
+	ctx := context.Background()
+	if _, err := g.r.Act(ctx, ActInput{TaskID: card.ID, CaseID: c.ID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: factoryd.AnswerRerunAgain, Note: "Re-run again"}}); err != nil {
+		t.Fatalf("rung 2's rerun_again: %v", err)
+	}
+	own := g.stepsOfRung(t, c.ID, 2)
+	if len(own) != 2 || own[0].Outcome != StepInProgress || own[0].DueAt == nil || own[1].Outcome != StepResolved || own[1].Decision != factoryd.AnswerRerunAgain {
+		t.Fatalf("rung 2 steps = %+v, want its step at work and its resolved rerun_again", own)
+	}
+	g.r.PgSetNow(func() time.Time { return own[0].DueAt.Add(time.Minute) })
+	expired, err := g.s.ExpireSteps(ctx, g.r.Clock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const still = "rung 2 took rerun_again and the card still waits after 35m"
+	if len(expired) != 1 || expired[0].Found != still {
+		t.Fatalf("expired = %+v, want rung 2's step with %q", expired, still)
+	}
+	if err := g.r.ClimbExpired(ctx, expired); err != nil {
+		t.Fatal(err)
+	}
+	g.settle()
+	if faced := cardOf(t, g.s, card.ID); faced.Status != "waiting-human" || faced.IssueNumber != 31 || len(forge.issues) != 1 {
+		t.Fatalf("card %s #%d, issues %d; want it faced on #31", faced.Status, faced.IssueNumber, len(forge.issues))
+	}
+	asks := taskRows(t, g.s, card.ID, EventQuestionAsked)
+	info, _ := asks[len(asks)-1].Detail["info"].(string)
+	if !strings.Contains(forge.issues[0], still) || !strings.Contains(info, still) || strings.Contains(forge.issues[0], "did not answer") || strings.Contains(info, "did not answer") {
+		t.Fatalf("the issue %q, the face's info %q; want %q and no \"did not answer\"", forge.issues[0], info, still)
+	}
+}
+
+// A held card a closer ended leaves nothing open at the next heal pass. The
+// keeper's pass closes the hold's ask once plan #1580 is no longer open on
+// main; the card has no issue, so the close is factoryd's record alone. The
+// heal pass's close heal ends the card done at once, with no wait for a
+// webhook, and its case reconcile withdraws the case it left open.
+func TestAHeldCardAClosersEndedLeavesNoOpenCase(t *testing.T) {
+	h := newHeldRig(t, policy.AutonomyAutonomous)
+	ctx := context.Background()
+	if _, err := h.s.Record(ctx, Event{Repository: heldRepo, TaskID: "p1580", Kind: EventPlanClosed, Actor: FactoryDecider, Via: ViaFactoryd}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.keeper.Pass(ctx); err != nil {
+		t.Fatalf("the keeper's pass: %v", err)
+	}
+	if card := cardOf(t, h.s, h.cardID); card.Status != "waiting-agent" || len(h.forge.issues) != 0 {
+		t.Fatalf("card %s, issues %q; want it held until the heal pass reads its close", card.Status, h.forge.issues)
+	}
+	in := &Intake{Store: h.s, Forgejo: h.r.PgForgejo(), Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Timeline: h.r.PgTimeline()}
+	if err := in.HealFactoryCloses(ctx); err != nil {
+		t.Fatalf("HealFactoryCloses: %v", err)
+	}
+	if _, err := h.s.ReconcileCases(ctx, heldRepo); err != nil {
+		t.Fatalf("ReconcileCases: %v", err)
+	}
+	open, err := h.s.OpenCasesOf(ctx, h.cardID)
+	if card := cardOf(t, h.s, h.cardID); err != nil || card.Status != "done" || len(open) != 0 || len(h.forge.issues) != 0 {
+		t.Fatalf("card %s, open cases %+v (%v), issues %q; want it done with no open case and no issue", card.Status, open, err, h.forge.issues)
 	}
 }

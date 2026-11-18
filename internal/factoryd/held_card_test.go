@@ -99,7 +99,9 @@ func TestOnlyTheChatAndTheCapsAskAtOnce(t *testing.T) {
 // c2c2c2c2: each fact that stands refuses close, check_again, hold_wait
 // and dismiss with what stands; each that is gone lets them through; a
 // source with no check refuses them; a choice that works (rerun_again)
-// passes; a card at its face and the human's answer meet no such gate.
+// passes; go, a hand-over to an agent of a card its filer routed to a
+// human, is refused; a card at its face and the human's answer meet no
+// such gate.
 func TestAHeldCardsChoiceEndsItOnlyOnceItsConditionIsGone(t *testing.T) {
 	ctx := context.Background()
 	up := func(choice string) string {
@@ -151,6 +153,11 @@ func TestAHeldCardsChoiceEndsItOnlyOnceItsConditionIsGone(t *testing.T) {
 		}, 0, stands + "its alert fires, or is an event no resolve clears" + up(AnswerClose)},
 		{"a routine's card", SourceRoutine, "waiting-agent", 2, AnswerClose, nil, 0, "no code checks card t-h's condition" + up(AnswerClose)},
 		{"a re-run of a stall that stands", SourceChainStall, "waiting-agent", 2, AnswerRerunAgain, func(s *fakeStore) { s.heads = map[string][2]string{"sf/r": {"c2c2c2c2", "stalled"}} }, 0, ""},
+		{"a routine's hand-over", SourceRoutine, "waiting-agent", 2, AnswerGo, nil, 0,
+			"card t-h's filer routed it to a human, so only a human hands it to an agent" + up(AnswerGo)},
+		{"a person's issue's hand-over", "webhook", "waiting-agent", 2, AnswerGo, nil, 0,
+			"card t-h's filer routed it to a human, so only a human hands it to an agent" + up(AnswerGo)},
+		{"the human's hand-over after the face", SourceRoutine, "waiting-human", 3, AnswerGo, nil, 0, ""},
 		{"a card at its face", SourceRoutine, "waiting-human", 2, AnswerClose, nil, 0, ""},
 		{"the human's answer", SourceRoutine, "waiting-agent", 3, AnswerClose, nil, 0, ""},
 	} {

@@ -1405,7 +1405,7 @@ func (r *Roller) refuse(ctx context.Context, run ActionRun, req RollRequest, uns
 	if err != nil {
 		return errors.Join(err, r.Store.ForgetRollRequest(ctx, req.SHA))
 	}
-	log.Printf("roller: %s (run %d): refused, human card %s, issue #%d: %s", run.CommitSHA, run.ID, req.TaskID, t.IssueNumber, title)
+	log.Printf("roller: %s (run %d): refused, human card %s: %s", run.CommitSHA, run.ID, cardName(t), title)
 	r.rollStatus(ctx, req.SHA, "failure", "roll refused: "+strings.Join(rollNames(unsigned), ", ")+" not signed")
 	return nil
 }

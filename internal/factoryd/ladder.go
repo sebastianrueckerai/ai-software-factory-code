@@ -174,8 +174,9 @@ var rung0 = []resolver{
 
 // expireCardSteps ends card taskID's in-progress steps past their due as
 // ExpireSteps ends them, handed up with its words, and names each: the
-// rung that did not answer and its bound. A step its rung ended meanwhile
-// keeps its own end.
+// rung that did not answer and its bound, or the choice it took since,
+// after which the card still waits. A step its rung ended meanwhile keeps
+// its own end.
 func (r *Runner) expireCardSteps(ctx context.Context, taskID string) ([]string, error) {
 	expired := []CaseStep{}
 	cases, err := r.store.OpenCasesOf(ctx, taskID)
@@ -193,16 +194,22 @@ func (r *Runner) expireCardSteps(ctx context.Context, taskID string) ([]string, 
 			if st.Outcome != StepInProgress || st.DueAt == nil || !st.DueAt.Before(now) {
 				continue
 			}
-			err := r.store.EndCaseStep(ctx, CaseStep{ID: st.ID, Outcome: StepHandedUp, Found: stepExpired(st.Found, st.StartedAt, *st.DueAt), Did: st.Did, Decision: st.Decision, Grounds: st.Grounds, CostEUR: st.CostEUR})
+			took := tookSince(steps, st)
+			found := stepExpired(st.Found, st.Rung, took, st.StartedAt, *st.DueAt)
+			err := r.store.EndCaseStep(ctx, CaseStep{ID: st.ID, Outcome: StepHandedUp, Found: found, Did: st.Did, Decision: st.Decision, Grounds: st.Grounds, CostEUR: st.CostEUR})
 			if errors.Is(err, ErrNotFound) {
 				continue
 			}
 			if err != nil {
 				return nil, err
 			}
-			st.Found = stepExpired(st.Found, st.StartedAt, *st.DueAt)
+			st.Found = found
 			expired = append(expired, st)
-			ended = append(ended, fmt.Sprintf("rung %d did not answer within %s", st.Rung, durationText(st.DueAt.Sub(st.StartedAt).Round(time.Minute))))
+			words := fmt.Sprintf("rung %d did not answer within %s", st.Rung, durationText(st.DueAt.Sub(st.StartedAt).Round(time.Minute)))
+			if took != "" {
+				words = expiredWords(st.Rung, took, st.DueAt.Sub(st.StartedAt))
+			}
+			ended = append(ended, words)
 		}
 	}
 	return ended, r.ClimbExpired(ctx, expired)

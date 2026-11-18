@@ -915,7 +915,9 @@ func (in *Intake) ResyncIssues(ctx context.Context) error {
 
 // HealFactoryCloses finishes the closes factoryd recorded and did not
 // confirm (closeIssueAsFactory failed between the record and the close):
-// each unconfirmed record older than two minutes, 50 a pass. A record
+// each unconfirmed record of an issue older than two minutes, the wait for
+// Forgejo's webhook of the close, and each of a card with no issue at the
+// next pass, 50 a pass. A record
 // whose task is gone or has no splittable repository, or whose issue is
 // closed already, is confirmed without a write. A refusal from Forgejo
 // (forgejoTerminal) settles the record, which no retry changes; any other

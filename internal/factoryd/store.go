@@ -458,7 +458,8 @@ type Store interface {
 	// missing row is left as it is.
 	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
 	// UnconfirmedFactoryCloses lists up to limit factory_closed rows not
-	// yet confirmed and created more than olderThan ago, oldest first.
+	// yet confirmed, oldest first: one of an issue created more than
+	// olderThan ago, one of a card with no issue at any age.
 	UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error)
 	// ReleaseHandover deletes the card's hand-over claim, the failed
 	// filing's, so a retry can claim it again.
@@ -1665,14 +1666,16 @@ func (s *PGStore) ConfirmFactoryClose(ctx context.Context, taskID string, issue 
 	return err
 }
 
-// UnconfirmedFactoryCloses lists up to limit card-closed comments
-// unconfirmed for olderThan (oldest first, on the store's clock).
-// HealFactoryCloses, the temporal heal pass that answers them, is its
-// sole caller.
+// UnconfirmedFactoryCloses lists up to limit unconfirmed card-closed
+// rows, oldest first: one of an issue once unconfirmed for olderThan (on
+// the store's clock), the wait for Forgejo's webhook of the close, and one
+// of a card with no issue (comment_id 0), which no webhook confirms, at
+// any age. HealFactoryCloses, the temporal heal pass that answers them, is
+// its sole caller.
 func (s *PGStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+intakeColumns+`
-		 FROM intake_events WHERE kind = $1 AND confirmed_at IS NULL AND created_at < now() - $2 * interval '1 second'
+		 FROM intake_events WHERE kind = $1 AND confirmed_at IS NULL AND (comment_id = 0 OR created_at < now() - $2 * interval '1 second')
 		 ORDER BY id LIMIT $3`, IntakeFactoryClosed, olderThan.Seconds(), limit)
 	return scanIntakeEvents(rows, err)
 }
