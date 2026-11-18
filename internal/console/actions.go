@@ -636,7 +636,7 @@ func (c *Console) doRetryFreeze(ctx context.Context, a actor, id string) (string
 	if err != nil {
 		return "", err
 	}
-	err = c.cfg.RetryFreeze(ctx, t.ID, a.approver())
+	err = c.cfg.RetryFreeze(ctx, t.ID, a.approver(), a.via)
 	var no factoryd.ErrNoFreeze
 	var part *factoryd.PartialPressError
 	switch {

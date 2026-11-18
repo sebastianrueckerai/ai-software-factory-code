@@ -2080,7 +2080,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		if bt.Question != nil {
 			k.Title = cmp.Or(t.HumanSummary, bt.Question.Ask)
 		}
-		if t.Source == factoryd.SourceFreezeCard && t.Status == "waiting-human" && v.approves(t.Repository) {
+		if factoryd.FreezeCardHolds(t) && v.approves(t.Repository) {
 			k.RetryFreeze = &retry{CSRF: v.csrf}
 		}
 		return k

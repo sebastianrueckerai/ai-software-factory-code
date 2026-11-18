@@ -321,6 +321,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 	esc := v.EscalationOf(t.Repository)
 	var reran []string
 	var pushed string
+	var refused lineMark
 	// the readers in order, each after the head the events name
 	readers := []struct {
 		name string
@@ -342,6 +343,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				review, audit := newestOfKind(lines, f.Head, "review"), newestOfKind(lines, f.Head, "audit")
 				f.ReviewFindings, f.AuditFindings, f.AuditConfirmable = review.Findings, audit.Findings, audit.atFile
 				pushed = pushedCommit(tl)
+				refused = newestLine(tl, StepProviderRefused)
 				if f.PROpen {
 					f.MergeConflict = standingConflict(tl, f.Head)
 				}
@@ -350,7 +352,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 		}},
 		{"freeze", func() error {
 			var err error
-			f.FreezeCard, err = r.freezeCardOf(ctx, t)
+			f.FreezeCard, err = r.freezeCardOf(ctx, t, refused)
 			return err
 		}},
 		{"checks", func() error {
@@ -926,18 +928,20 @@ func (r *Runner) runGone(ctx context.Context, t Task) bool {
 	return !alive
 }
 
-// freezeCardOf is the open freeze card of the provider freeze that holds
-// card t: t itself when it is one, else, while t waits on the provider,
-// the card of the class the policy holds t under, its own repository's
-// first; "" when no freeze holds t.
-func (r *Runner) freezeCardOf(ctx context.Context, t Task) (string, error) {
+// freezeCardOf is the freeze card of the provider freeze that holds card
+// t, while its hold stands (FreezeCardHolds): t itself when it is one,
+// else, while t waits on the provider-limit wait — its newest
+// provider_refused line, refused, names a reset still ahead, which the
+// undated ladder's never does — the card of the class the policy holds t
+// under, its own repository's first; "" when no freeze holds t.
+func (r *Runner) freezeCardOf(ctx context.Context, t Task, refused lineMark) (string, error) {
 	if t.Source == SourceFreezeCard {
-		if t.Status != "waiting-human" {
+		if !FreezeCardHolds(t) {
 			return "", nil
 		}
 		return t.ID, nil
 	}
-	if t.Status != "running" || t.Gate != GateProvider {
+	if t.Status != "running" || t.Gate != GateProvider || !limitAhead(refused.Time, refused.backoff(), r.Clock()) {
 		return "", nil
 	}
 	v := r.cfg.Policy()
@@ -946,8 +950,11 @@ func (r *Runner) freezeCardOf(ctx context.Context, t Task) (string, error) {
 		return "", nil
 	}
 	cards, err := openFreezeCards(ctx, r.store, class)
-	if err != nil || len(cards) == 0 {
+	if err != nil {
 		return "", err
+	}
+	if cards = slices.DeleteFunc(cards, func(c Task) bool { return !FreezeCardHolds(c) }); len(cards) == 0 {
+		return "", nil
 	}
 	if i := slices.IndexFunc(cards, func(c Task) bool { return c.Repository == t.Repository }); i >= 0 {
 		return cards[i].ID, nil

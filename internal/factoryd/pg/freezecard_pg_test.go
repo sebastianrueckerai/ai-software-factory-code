@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
@@ -106,5 +107,58 @@ func TestFrozenCardsMatchTheClassPG(t *testing.T) {
 	}
 	if !slices.Equal(ids, []string{"f-other", "f-queued", "f-run", "f-two"}) {
 		t.Fatalf("ListFrozenCards(coder) = %q, want the running and queued coder cards of both repositories", ids)
+	}
+}
+
+// FreezeCards reads the freeze cards by their source and status, every
+// repository's, in id order, and no other card; ForgetFactoryClose deletes
+// the confirmed record of a card's close, so the next close records anew.
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL).
+func TestFreezeCardsReadTheSourcePG(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "pg_freezecards"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	t.Cleanup(func() { s.DB().Close() })
+	for i, tk := range []Task{
+		{ID: "fz-b", Status: "waiting-human", Repository: "sf/other", Source: factoryd.SourceFreezeCard},
+		{ID: "fz-a", Status: "waiting-human", Repository: "sf/acme", Source: factoryd.SourceFreezeCard},
+		{ID: "fz-done", Status: "done", Repository: "sf/acme", Source: factoryd.SourceFreezeCard},
+		{ID: "hu-a", Status: "waiting-human", Repository: "sf/acme", Source: "chat"},
+	} {
+		tk.Kind, tk.Track, tk.IssueNumber = "human", policy.TrackDirect, int64(i+1)
+		if err := s.CreateTask(ctx, tk); err != nil {
+			t.Fatalf("CreateTask %s: %v", tk.ID, err)
+		}
+	}
+	for status, want := range map[string][]string{"waiting-human": {"fz-a", "fz-b"}, "done": {"fz-done"}, "running": nil} {
+		cards, err := s.FreezeCards(ctx, status)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, c := range cards {
+			ids = append(ids, c.ID)
+		}
+		if !slices.Equal(ids, want) {
+			t.Fatalf("FreezeCards(%s) = %q, want %q", status, ids, want)
+		}
+	}
+	record := IntakeEvent{TaskID: "fz-done", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 3, Body: "factoryd: closed"}
+	if id, err := s.InsertIntakeEvent(ctx, record); err != nil || id == 0 {
+		t.Fatalf("the close's record = %d, %v", id, err)
+	}
+	if err := s.ConfirmFactoryClose(ctx, "fz-done", 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ForgetFactoryClose(ctx, "fz-done", 3); err != nil {
+		t.Fatal(err)
+	}
+	if events, err := s.IntakeEvents(ctx, "fz-done"); err != nil || len(events) != 0 {
+		t.Fatalf("after the forget the card's intake = %+v, %v; want none", events, err)
+	}
+	if id, err := s.InsertIntakeEvent(ctx, record); err != nil || id == 0 {
+		t.Fatalf("the next close's record = %d, %v; want a new one", id, err)
 	}
 }

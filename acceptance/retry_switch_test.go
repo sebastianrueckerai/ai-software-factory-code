@@ -35,7 +35,11 @@ import (
 // probe meets a dated refusal naming a new reset: the hold re-arms, the
 // same card reopens and both cards wait to the new reset, with no case
 // and no question. The second press's probe succeeds: both cards reach
-// the provider and the card stays closed on class_resumed.
+// the provider and the card stays closed on class_resumed. Each press
+// closes the card with its own comment naming who pressed, and leaves its
+// freeze_retried row: who, how, the class, the card closed and both cards
+// woken. A freeze three days after the success, past the reset the card
+// held, files a new card.
 // [retry_switch_ends_freeze]
 func TestRetrySwitchEndsFreeze(t *testing.T) {
 	for _, entry := range []struct {
@@ -61,7 +65,7 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 			}).Routes("retry-proof"))
 			t.Cleanup(gw.Close)
 			forge, fj := newAccFreezeForgejo(t)
-			watch := &factoryd.FreezeCard{Store: r.store, Forgejo: forge, Current: func() policy.Version { return v }}
+			watch := &factoryd.FreezeCard{Store: r.store, Forgejo: forge, Current: func() policy.Version { return v }, Timeline: r.runner.Timeline()}
 
 			start := time.Now().UTC().Truncate(time.Second)
 			env, _ := plWaitEnv(t, r.store, r.objects, start)
@@ -187,14 +191,20 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 					t.Errorf("the press woke %q, want both frozen cards", woke)
 				}
 			}
+			// the card's face names the reset it holds and both cards; a
+			// card the press closed names who pressed instead
 			freezeCard := func(what, status string, reset time.Time) factoryd.Task {
 				t.Helper()
 				if err := watch.Check(ctx); err != nil {
 					t.Fatal(err)
 				}
 				fc, ok := plFreezeCard(ctx, t, r.store)
+				names := "2 cards of the class wait"
+				if status == "done" {
+					names = parkMember + " cleared the class's hold."
+				}
 				if face := "The class resets at " + reset.Format(time.RFC3339); !ok || fc.Status != status || !strings.Contains(fc.Objective, face) ||
-					!strings.Contains(fc.Objective, "2 cards of the class wait") || plFreezeCards(t, r.store.DB()) != 1 || len(fj.issues) != 1 {
+					!strings.Contains(fc.Objective, names) || plFreezeCards(t, r.store.DB()) != 1 || len(fj.issues) != 1 {
 					t.Fatalf("%s: the freeze card = %+v (%d issues), want the one card %s naming %s for both cards", what, fc, len(fj.issues), status, reset)
 				}
 				return fc
@@ -274,6 +284,52 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 			if want := []string{"class_frozen " + first.Format(time.RFC3339), "class_resumed " + first.Format(time.RFC3339),
 				"class_frozen " + renewed.Format(time.RFC3339), "class_resumed " + renewed.Format(time.RFC3339)}; !slices.Equal(spine, want) {
 				t.Errorf("the gateway's rows = %q, want %q: each press resumed the hold it cleared, and no question", spine, want)
+			}
+
+			// each press closed the card with its own comment naming who
+			// pressed, and left its row: who, how, the class, the card it
+			// closed and the two cards it woke
+			pressSaid := fmt.Sprintf("#issues/%d factoryd: %s's retry press cleared the %s class's hold: the freeze card closes at once.", fc.IssueNumber, parkMember, policy.ClassCoder)
+			if n := len(slices.DeleteFunc(slices.Clone(fj.comments), func(c string) bool { return c != pressSaid })); n != 2 {
+				t.Errorf("the card's comments %q hold %d press closes, want one per press: %q", fj.comments, n, pressSaid)
+			}
+			via := factoryd.ViaButton
+			if entry.chat {
+				via = factoryd.ViaChat
+			}
+			presses, err := r.store.DB().QueryContext(ctx, `SELECT concat_ws(' ', task_id, actor, via, detail->>'class', detail->>'closed', detail->>'woken', detail->>'frozen')
+				FROM events WHERE kind = $1 ORDER BY id`, factoryd.EventFreezeRetried)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer presses.Close()
+			var pressRows []string
+			for presses.Next() {
+				var row string
+				if err := presses.Scan(&row); err != nil {
+					t.Fatal(err)
+				}
+				pressRows = append(pressRows, row)
+			}
+			if err := presses.Err(); err != nil {
+				t.Fatal(err)
+			}
+			row := strings.Join([]string{fc.ID, parkMember, via, policy.ClassCoder, "1", "2", "2"}, " ")
+			if want := []string{row, row}; !slices.Equal(pressRows, want) {
+				t.Errorf("the presses' rows = %q, want %q", pressRows, want)
+			}
+
+			// a freeze three days after the success lies past the reset the
+			// card held: a new episode, a new card, the pressed one left done
+			comments := len(fj.comments)
+			threeDays := time.Now().UTC().Add(72 * time.Hour)
+			plFreezeEventAt(t, r.store.DB(), parkRepo, threeDays, "class_frozen", policy.ClassCoder, threeDays.Add(5*time.Hour).Format(time.RFC3339), "Usage limit reached for 5 hour.")
+			if err := watch.Check(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if old, _, err := r.store.Task(ctx, fc.ID); err != nil || old.Status != "done" || plFreezeCards(t, r.store.DB()) != 2 || len(fj.issues) != 2 || len(fj.comments) != comments {
+				t.Errorf("the freeze three days on left the pressed card %s (%v), %d cards on %d issues, comments %q; want a new card",
+					old.Status, err, plFreezeCards(t, r.store.DB()), len(fj.issues), fj.comments[comments:])
 			}
 		})
 	}

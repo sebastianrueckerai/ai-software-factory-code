@@ -1595,6 +1595,27 @@ func (s *fakeStore) ListTasksByStatus(ctx context.Context, status string) ([]Tas
 	return tasks, nil
 }
 
+// FreezeCards lists the fake's freeze cards in status, in id order.
+func (s *fakeStore) FreezeCards(ctx context.Context, status string) ([]Task, error) {
+	var out []Task
+	for _, id := range slices.Sorted(maps.Keys(s.tasks)) {
+		if t := s.tasks[id]; t.Source == SourceFreezeCard && t.Status == status {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+// ForgetFactoryClose deletes the fake's record of factoryd's close of
+// task taskID's issue, and its confirmation.
+func (s *fakeStore) ForgetFactoryClose(ctx context.Context, taskID string, issue int64) error {
+	s.intakeEvents = slices.DeleteFunc(s.intakeEvents, func(e IntakeEvent) bool {
+		return e.TaskID == taskID && e.Kind == IntakeFactoryClosed && e.CommentID == issue
+	})
+	delete(s.confirmedCloses, [2]any{taskID, issue})
+	return nil
+}
+
 // TasksByParent is the tasks whose parent is task id, in any status.
 func (s *fakeStore) TasksByParent(ctx context.Context, id string) ([]Task, error) {
 	var out []Task
