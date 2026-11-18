@@ -197,11 +197,12 @@ func TestNamePlanSurvivesAGatewayError(t *testing.T) {
 	}
 }
 
-func TestNormalizePlanName(t *testing.T) {
+func TestPlanName(t *testing.T) {
 	for _, tt := range []struct {
-		in   string
-		want string
-		ok   bool
+		in    string
+		taken []string
+		want  string
+		ok    bool
 	}{{
 		in:   "  fix   prod latency ",
 		want: "fix prod latency",
@@ -218,10 +219,14 @@ func TestNormalizePlanName(t *testing.T) {
 		in:   "abcdefghijklmnopqrstuvwx", // 24 runes
 		want: "abcdefghijklmnopqrstuvwx",
 		ok:   true,
+	}, {
+		in:    " Fix  prod latency",
+		taken: []string{"Other plan", "fix prod LATENCY"},
+		want:  "Fix prod latency",
 	}} {
-		got, ok := normalizePlanName(tt.in)
+		got, ok := PlanName(tt.in, tt.taken)
 		if ok != tt.ok || got != tt.want {
-			t.Fatalf("normalizePlanName(%q) = %q, %v; want %q, %v", tt.in, got, ok, tt.want, tt.ok)
+			t.Fatalf("PlanName(%q, %q) = %q, %v; want %q, %v", tt.in, tt.taken, got, ok, tt.want, tt.ok)
 		}
 	}
 }

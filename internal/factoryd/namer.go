@@ -84,7 +84,7 @@ func (n *Namer) Name(ctx context.Context, t Task, title, outcome, summary string
 		if err != nil {
 			break
 		}
-		if name, ok := normalizePlanName(nameAnswer(answer)); ok && !nameTaken(name, taken) {
+		if name, ok := PlanName(nameAnswer(answer), taken); ok {
 			n.record(ctx, t, name)
 			return name
 		}
@@ -172,9 +172,12 @@ func nameAnswer(content string) string {
 	return a.Name
 }
 
-// nameTaken is whether name, case-insensitively, is one of taken.
-func nameTaken(name string, taken []string) bool {
-	return slices.ContainsFunc(taken, func(o string) bool { return strings.EqualFold(name, o) })
+// PlanName is s as a plan's name and whether it holds: normalized
+// (normalizePlanName), and, case-insensitively, none of taken, the
+// names of the project's other open plans.
+func PlanName(s string, taken []string) (string, bool) {
+	name, ok := normalizePlanName(s)
+	return name, ok && !slices.ContainsFunc(taken, func(o string) bool { return strings.EqualFold(name, o) })
 }
 
 // normalizePlanName is a model answer as a plan name: one line of
