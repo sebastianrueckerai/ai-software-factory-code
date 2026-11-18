@@ -796,3 +796,78 @@ func TestFreezeCardResumeStampsEveryCardFromTheRow(t *testing.T) {
 		}
 	}
 }
+
+// An arm whose reset the card already holds re-arms it whenever the card
+// does not stand open on that freeze. Right after an early press the
+// provider still limits to the same moment: that class_frozen reopens the
+// card the press closed, with the frozen face. Inside a resume's five
+// minutes it cancels the close. On an open, frozen card it is a true
+// duplicate and writes nothing.
+func TestFreezeCardSameResetArm(t *testing.T) {
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	reset := base.Add(5 * time.Hour).Format(time.RFC3339)
+	for name, between := range map[string]func(ctx context.Context, store *freezeStore, w *FreezeCard, now *time.Time) error{
+		"after the press": func(ctx context.Context, store *freezeStore, w *FreezeCard, now *time.Time) error {
+			if err := w.CloseOnRetry(ctx, "sf/acme", "big"); err != nil {
+				return err
+			}
+			store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: "sf/acme", At: *now, Kind: "class_resumed", Class: "big", Reset: reset})
+			return w.Check(ctx)
+		},
+		"inside a resume's close": func(ctx context.Context, store *freezeStore, w *FreezeCard, now *time.Time) error {
+			store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: "sf/acme", At: *now, Kind: "class_resumed", Class: "big", Reset: reset})
+			return w.Check(ctx)
+		},
+		"a duplicate": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := &freezeStore{fakeStore: newFakeStore()}
+			forgejo, fj := newAlertForgejo(t)
+			now := base
+			w := freezeWatcher(store, forgejo, &now)
+			arm := func(id int64) {
+				store.rows = append(store.rows, FreezeEvent{ID: id, Repository: "sf/acme", At: now, Kind: "class_frozen", Class: "big", Reset: reset, Words: "free quota exhausted"})
+				if err := w.Check(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			arm(1)
+			if len(store.tasks) != 1 {
+				t.Fatalf("tasks = %+v, want the one freeze card", store.tasks)
+			}
+			var card Task
+			for _, c := range store.tasks {
+				card = c
+			}
+			now = base.Add(time.Hour)
+			if between != nil {
+				if err := between(ctx, store, w, &now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, _, _ := store.Task(ctx, card.ID)
+			comments := len(fj.comments)
+			now = base.Add(time.Hour + 2*time.Minute)
+			arm(3)
+			got, _, _ := store.Task(ctx, card.ID)
+			if between == nil {
+				if got.Objective != before.Objective || len(fj.comments) != comments || len(fj.issues) != 1 {
+					t.Fatalf("the duplicate wrote: face changed %t, comments %d -> %d, issues %d", got.Objective != before.Objective, comments, len(fj.comments), len(fj.issues))
+				}
+				return
+			}
+			if got.Status != "waiting-human" || !strings.Contains(got.Objective, "in 3h 58m") || strings.Contains(got.Objective, "closes itself at") ||
+				len(fj.comments) != comments+1 || len(fj.issues) != 1 {
+				t.Fatalf("the card stands %s after the same-reset arm over %d issues, comments %d -> %d:\n%s", got.Status, len(fj.issues), comments, len(fj.comments), got.Objective)
+			}
+			now = base.Add(time.Hour + 6*time.Minute)
+			if err := w.Check(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if still, _, _ := store.Task(ctx, card.ID); still.Status != "waiting-human" {
+				t.Fatalf("the card stands %s six minutes on, want it holding the freeze", still.Status)
+			}
+		})
+	}
+}

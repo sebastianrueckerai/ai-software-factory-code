@@ -273,8 +273,11 @@ func (w *FreezeCard) class(repository, class string) *freezeClass {
 	return st
 }
 
-// frozen files the class's card on a first arm and updates it on a re-arm
-// with a later reset; an unchanged arm stays quiet.
+// frozen files the class's card on a first arm and re-arms it on any
+// other: a new reset, a card the press closed, or a resume's pending
+// close, each of which an arm with the reset unchanged also ends. Only a
+// true duplicate, an arm with the reset an open, frozen card already
+// holds, stays quiet.
 func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent) error {
 	if st.taskID == "" {
 		if t, issue, ok, err := w.findCard(ctx, st); err != nil {
@@ -290,7 +293,7 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 			st.closed = true
 		}
 	}
-	if st.reset == ev.Reset && st.taskID != "" {
+	if st.reset == ev.Reset && st.taskID != "" && !st.closed && st.resumedAt.IsZero() {
 		return nil
 	}
 	cards, err := w.classCards(ctx, st.class)
@@ -321,7 +324,7 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 			return err
 		}
 		if _, err := w.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, st.issue,
-			fmt.Sprintf("factoryd: the hold re-armed after the retry with a later reset (%s). %d cards of the class wait.", ev.Reset, count)); err != nil {
+			fmt.Sprintf("factoryd: the hold re-armed after the retry, to the reset %s. %d cards of the class wait.", ev.Reset, count)); err != nil {
 			log.Printf("freeze card: comment the re-arm on issue #%d: %v", st.issue, err)
 		}
 		st.closed = false
@@ -350,7 +353,7 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		return err
 	}
 	if _, err := w.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, st.issue,
-		fmt.Sprintf("factoryd: the hold re-armed with a later reset (%s). %d cards of the class wait.", ev.Reset, count)); err != nil {
+		fmt.Sprintf("factoryd: the hold re-armed, to the reset %s. %d cards of the class wait.", ev.Reset, count)); err != nil {
 		log.Printf("freeze card: comment the re-arm on issue #%d: %v", st.issue, err)
 	}
 	st.reset = ev.Reset
