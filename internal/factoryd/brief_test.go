@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -578,6 +579,41 @@ func TestStoryNamesNoButton(t *testing.T) {
 	}
 	if got := store.caseBrief[5]; got != [2]string{happened, left} {
 		t.Fatalf("the story after the second call = %q", got)
+	}
+}
+
+// A label that is a statement reads as ordinary words where it opens a
+// sentence, and names its button inside one or in quotes; a label that is
+// an order names its button wherever it stands. The vocabulary's
+// statements are the nine listed.
+func TestNamedLabel(t *testing.T) {
+	for line, want := range map[string]string{
+		"It is met by the new test of the export.":                    "",
+		"It is not met on the newest change.":                         "",
+		"The review ran twice. The work is enough for the first one.": "",
+		"Noted in the review, the fault of the importer stays open.":  "",
+		"Colour is missing from the export.":                          "",
+		"The importer drops the accent, and the fix must keep it.":    "",
+		"A human may pick It is met for the first promise.":           "It is met",
+		"The answer “It is not met” ends the card.":                   "It is not met",
+		"The check stopped the card: The work is enough goes on.":     "The work is enough",
+		"Add money lets the card go on.":                              "Add money",
+		"The check-in stopped the card, and Add money lets it go on.": "Add money",
+		"The card stopped. Merge it to go on.":                        "Merge it",
+	} {
+		if got := NamedLabel(line); got != want {
+			t.Errorf("NamedLabel(%q) = %q, want %q", line, got, want)
+		}
+	}
+	var statements []string
+	for _, a := range Vocabulary {
+		if statementLabel.MatchString(a.Label) && !slices.Contains(statements, a.Label) {
+			statements = append(statements, a.Label)
+		}
+	}
+	slices.Sort(statements)
+	if want := []string{"Colour", "I cannot do this", "I did it", "It is fine, go on", "It is met", "It is not met", "Not now", "Noted", "The work is enough"}; !slices.Equal(statements, want) {
+		t.Errorf("the vocabulary's statements = %q, want %q", statements, want)
 	}
 }
 

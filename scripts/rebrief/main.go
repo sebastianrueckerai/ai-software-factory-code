@@ -1155,7 +1155,7 @@ func (p *pass) repairs(ctx context.Context, b board, briefs map[string]factoryd.
 		}
 	}
 	for _, c := range b.cases {
-		label := cmp.Or(factoryd.LabelPattern.FindString(c.Brief), factoryd.LabelPattern.FindString(c.BriefDetail))
+		label := cmp.Or(factoryd.NamedLabel(c.Brief), factoryd.NamedLabel(c.BriefDetail))
 		if label == "" {
 			continue
 		}
