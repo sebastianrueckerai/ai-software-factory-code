@@ -1084,7 +1084,7 @@ func TestCommitAndPushRestoresMainAnAgentResetBehindTheStart(t *testing.T) {
 				func(dir string) { os.WriteFile(filepath.Join(dir, "own.txt"), []byte(tc.own), 0o644) },
 				func(dir string) { os.WriteFile(filepath.Join(dir, "a.txt"), []byte(tc.main), 0o644) })
 			os.WriteFile(filepath.Join(dir, "own.txt"), []byte(tc.own+tc.more), 0o644)
-			e.lineBound = tc.bound
+			e.lineBound = lineBoundOf(tc.bound)
 
 			commit, err := commitAndPush(dir, e, s, m1, func() error { return nil }, fixedToken("t"))
 			if tc.more == "" {
@@ -2064,7 +2064,7 @@ func TestDeliverOnAnInterimHeadLandsOnlyAFinishedSession(t *testing.T) {
 			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
 			run("-C", seed, "push", "-q", fork, "wip:"+branch)
 			e := workerEnv{taskID: "t1", sessionID: "s-2", author: "alice", objective: "o", repoSHA: wip, branch: branch, repoURL: remote, pushURL: fork,
-				startWip: true, lineBound: tc.bound}
+				startWip: true, lineBound: lineBoundOf(tc.bound)}
 			dir := filepath.Join(t.TempDir(), "repo")
 			if err := cloneBase(e, dir); err != nil {
 				t.Fatal(err)

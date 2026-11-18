@@ -2919,9 +2919,15 @@ func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string
 	if t.Status != "running" {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a running session")
 	}
+	var starting *factoryd.SessionStartingError
 	switch err := c.cfg.Steer(ctx, t.ID, a.approver(), text); {
-	case errors.Is(err, factoryd.ErrNoLiveSession), errors.Is(err, harness.ErrNotRunning):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d runs no session right now.", t.IssueNumber))
+	case errors.As(err, &starting):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is in its start check-in since %s, which decides whether the agent starts. Send it once the agent starts, or comment on the card.",
+			t.IssueNumber, starting.Since.UTC().Format("15:04")))
+	case errors.Is(err, factoryd.ErrNoLiveSession):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is between sessions. Comment on the card, and the next session reads it.", t.IssueNumber))
+	case errors.Is(err, harness.ErrNotRunning):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's session just ended. Comment on the card, and the next session reads it.", t.IssueNumber))
 	case errors.Is(err, harness.ErrNotSupported):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("The harness of card #%d takes no messages.", t.IssueNumber))
 	case err != nil:

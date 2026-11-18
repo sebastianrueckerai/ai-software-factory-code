@@ -555,6 +555,10 @@ func (k *fakeKube) PodIP(context.Context, string, string) (string, error) {
 	return "", factoryd.ErrNotFound
 }
 
+func (k *fakeKube) PodEnv(context.Context, string, string, string) (map[string]string, error) {
+	return nil, factoryd.ErrNotFound
+}
+
 func (k *fakeKube) PodInitFinished(context.Context, string, string) (time.Time, bool, error) {
 	return time.Time{}, false, nil
 }
