@@ -17,7 +17,6 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/testsuite"
 )
@@ -40,12 +39,6 @@ const recutOpenPR = `{"number":12,"state":"open","merged":false,"html_url":"u12"
 // and the pull request is still owed, for it is the criteria gate's
 // trigger.
 const recutChangelessPR = `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t-rc","sha":"c7","repo":{"full_name":"factory-agent/demo-app"}},"base":{"ref":"main","sha":"c7"}}`
-
-// recutRigs counts the rigs this process seeded, one database each.
-var recutRigs = struct {
-	mu sync.Mutex
-	n  int
-}{}
 
 // recutPlan is a plan whose criteria are unsettled: a test criterion, a
 // human one and an invariant, over a foundation card and the integration
@@ -128,12 +121,7 @@ func (g *recutForgejo) server(t *testing.T) *httptest.Server {
 func recutRig(t *testing.T, fj *recutForgejo) (*factoryd.Runner, *factoryd.PGStore, *stubObjects) {
 	t.Helper()
 	ctx := context.Background()
-	var n int
-	recutRigs.mu.Lock()
-	n = recutRigs.n
-	recutRigs.n++
-	recutRigs.mu.Unlock()
-	dsn := schematest.DSN(t, fmt.Sprintf("acceptance_recut_%d", n))
+	dsn := accDatabase(t, "acceptance_recut")
 	store, err := factoryd.OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)

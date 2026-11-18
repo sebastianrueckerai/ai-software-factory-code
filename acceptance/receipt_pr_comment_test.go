@@ -19,7 +19,6 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"go.temporal.io/sdk/activity"
 	tlog "go.temporal.io/sdk/log"
@@ -38,7 +37,7 @@ const receiptMarker = "<!-- factoryd receipt t-wip -->"
 // stands).
 func TestReceiptCommentOnTheMergedPullRequest(t *testing.T) {
 	ctx := context.Background()
-	store, err := factoryd.OpenStore(ctx, schematest.DSN(t, "acceptance_receipt_comment"))
+	store, err := factoryd.OpenStore(ctx, accDatabase(t, "acceptance_receipt_comment"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +227,7 @@ func TestReceiptCommentOnTheMergedPullRequest(t *testing.T) {
 // second time — posts nothing: the first write stands.
 func TestReceiptCommentOnTheWebhookMergedPullRequest(t *testing.T) {
 	ctx := context.Background()
-	store, err := factoryd.OpenStore(ctx, schematest.DSN(t, "acceptance_receipt_webhook"))
+	store, err := factoryd.OpenStore(ctx, accDatabase(t, "acceptance_receipt_webhook"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -382,11 +382,13 @@ func (s *accGatewayStore) spent(taskID string) float64 {
 var _ factorygateway.Store = (*accGatewayStore)(nil)
 
 // accGatewayAuth names one task's sandbox on every request: the proof
-// posts as that task's agent.
+// posts as that task's agent. With no task, the bearer token is the
+// calling card's id, so each card of a proof calls as itself.
 type accGatewayAuth struct{ task string }
 
-func (a accGatewayAuth) Authenticate(*http.Request) (factorygateway.Identity, error) {
-	return factorygateway.Identity{TaskID: a.task, SAUID: "sa-" + a.task}, nil
+func (a accGatewayAuth) Authenticate(r *http.Request) (factorygateway.Identity, error) {
+	id := cmp.Or(a.task, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	return factorygateway.Identity{TaskID: id, SAUID: "sa-" + id}, nil
 }
 
 // accGatewayMinter records the keys the gateway mints: a refused call

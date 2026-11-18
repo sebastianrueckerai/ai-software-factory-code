@@ -22,8 +22,10 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/interceptor"
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -66,15 +68,13 @@ type plWaitRun struct {
 	asks   []string // the provider_refused cases' problems: the six-refusal asks
 }
 
-// plWaitCard runs card id's workflow to its end on the store: the sessions
-// answer results in order (the last repeats), the policy in force moves to
-// the moved version at moveAt (zero: never), signals arrive at their
-// workflow times, and preGate replays the run as a history from before the
-// provider-freeze gate.
-func plWaitCard(t *testing.T, store *factoryd.PGStore, id string, preGate bool, moveAt time.Duration,
-	signals map[time.Duration]string, results ...factoryd.SessionResult) plWaitRun {
+// plWaitEnv is a Temporal test environment whose clock starts at start,
+// with the real runner's activities over store, its timelines in objects,
+// and TaskWorkflow registered on it: every activity but the session, which
+// the caller scripts, behind the gate watch that moves a card's gate as
+// factoryd's worker does. move puts plWaitPolicy's moved version in force.
+func plWaitEnv(t *testing.T, store *factoryd.PGStore, objects *stubObjects, start time.Time) (env *testsuite.TestWorkflowEnvironment, move func()) {
 	t.Helper()
-	ctx := context.Background()
 	git := &gitForgejo{base: wipBase}
 	srv := git.server(t)
 	quiet := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +96,6 @@ func plWaitCard(t *testing.T, store *factoryd.PGStore, id string, preGate bool, 
 	var mu sync.Mutex
 	current := plWaitPolicy(false)
 	versions := map[int64]policy.Version{current.ID: current}
-	objects := &stubObjects{data: map[string][]byte{}}
 	forgejo := &factoryd.Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
 	cfg := factoryd.RunnerConfig{
 		AgentNamespacePrefix: "factory-agents-", WorkerImage: "reg/worker@sha256:abc", SandboxBaseImage: "reg/sandbox-base@sha256:bcd", RegistryHost: "store.test",
@@ -117,43 +116,81 @@ func plWaitCard(t *testing.T, store *factoryd.PGStore, id string, preGate bool, 
 			v, ok := versions[id]
 			return v, ok, nil
 		},
-		Leases: &acceptanceLeases{}, Gates: &factoryd.GateWatch{},
+		Leases:      &acceptanceLeases{},
 		LastFailure: func(context.Context, string, string) (string, error) { return "", nil },
 		Workflows:   &acceptanceWorkflows{},
 	}
+	gates := &factoryd.GateWatch{Store: store, Bound: factoryd.PinnedBound(cfg.Policy, cfg.PolicyVersion)}
+	cfg.Gates = gates
 	completion := &factoryd.Completion{Store: store, Forgejo: forgejo, LiteLLM: &factoryd.LiteLLMAdmin{BaseURL: litellm.URL, MasterKey: "mk"}}
 	runner, err := factoryd.NewRunner(cfg, mergeProject{store}, &acceptanceKube{}, forgejo, completion, objects,
 		&factoryd.SupervisorModel{GatewayURL: quiet.URL, Token: "gw-token", Budget: factoryd.TokenBudget{AnswerTokens: 1000, HeadroomTokens: 8000}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	var suite testsuite.WorkflowTestSuite
+	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	env = suite.NewTestWorkflowEnvironment()
+	env.SetStartTime(start)
+	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{gates}})
+	runner.RegisterActivities(skipping{env: env, skip: factoryd.ActivityRunSession})
+	env.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
+	return env, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		current = plWaitPolicy(true)
+		versions[current.ID] = current
+	}
+}
+
+// plWaitHolds are the provider_refused lines of card id's timeline in
+// objects, oldest first: the holds its run waited.
+func plWaitHolds(t *testing.T, objects *stubObjects, id string) []map[string]any {
+	t.Helper()
+	body, err := objects.Get(context.Background(), "sessions/"+id+"/timeline.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var holds []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("timeline line %q: %v", line, err)
+		}
+		if m["step"] == factoryd.StepProviderRefused {
+			holds = append(holds, m)
+		}
+	}
+	return holds
+}
+
+// plWaitCard runs card id's workflow to its end on the store: the sessions
+// answer results in order (the last repeats), the policy in force moves to
+// the moved version at moveAt (zero: never), signals arrive at their
+// workflow times, and preGate replays the run as a history from before the
+// provider-freeze gate.
+func plWaitCard(t *testing.T, store *factoryd.PGStore, id string, preGate bool, moveAt time.Duration,
+	signals map[time.Duration]string, results ...factoryd.SessionResult) plWaitRun {
+	t.Helper()
+	ctx := context.Background()
+	objects := &stubObjects{data: map[string][]byte{}}
+	env, move := plWaitEnv(t, store, objects, plWaitStart)
 	if err := store.CreateTask(ctx, factoryd.Task{ID: id, Status: "queued", Objective: "wait out the provider's limit", Repository: "demo-app/demo-app",
 		Kind: "agent", Source: "api", Track: "direct", BudgetEUR: 5, IssueNumber: 4, SHA: wipBase, RequiredCapabilities: []string{policy.ClassCoder}}); err != nil {
 		t.Fatal(err)
 	}
 
 	var run plWaitRun
-	var suite testsuite.WorkflowTestSuite
-	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
-	env := suite.NewTestWorkflowEnvironment()
-	env.SetStartTime(plWaitStart)
 	session := func(ctx context.Context, in factoryd.SessionInput) (factoryd.SessionResult, error) {
 		run.inputs, run.began = append(run.inputs, in), append(run.began, env.Now().UTC())
 		return results[min(len(run.inputs), len(results))-1], nil
 	}
-	runner.RegisterActivities(skipping{env: env, skip: factoryd.ActivityRunSession})
 	env.RegisterActivityWithOptions(session, activity.RegisterOptions{Name: factoryd.ActivityRunSession})
-	env.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
 	if preGate {
 		env.OnGetVersion("provider-freeze", workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
 	}
 	if moveAt > 0 {
-		env.RegisterDelayedCallback(func() {
-			mu.Lock()
-			current = plWaitPolicy(true)
-			versions[current.ID] = current
-			mu.Unlock()
-		}, moveAt-time.Second)
+		env.RegisterDelayedCallback(move, moveAt-time.Second)
 	}
 	for at, name := range signals {
 		env.RegisterDelayedCallback(func() { env.SignalWorkflow(name, factoryd.TaskSignal{Author: "sebastian"}) }, at)
@@ -168,19 +205,7 @@ func plWaitCard(t *testing.T, store *factoryd.PGStore, id string, preGate bool, 
 	if err := env.GetWorkflowResult(&run.final); err != nil {
 		t.Fatal(err)
 	}
-	body, err := objects.Get(ctx, "sessions/"+id+"/timeline.jsonl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
-		var m map[string]any
-		if err := json.Unmarshal([]byte(line), &m); err != nil {
-			t.Fatalf("timeline line %q: %v", line, err)
-		}
-		if m["step"] == factoryd.StepProviderRefused {
-			run.waits = append(run.waits, m)
-		}
-	}
+	run.waits = plWaitHolds(t, objects, id)
 	cases, err := store.CasesOf(ctx, id)
 	if err != nil {
 		t.Fatal(err)

@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,12 +60,24 @@ func (f *accReceiptForgejo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// accReceiptStore opens the real store on the suite's throwaway Postgres,
-// and a plain database handle on the same DSN, to read the seeded
-// records back as anyone can.
+// accDatabases counts the databases this process made.
+var accDatabases atomic.Int64
+
+// accDatabase is a database of the test's own on the suite's throwaway
+// Postgres, its name prefix and the process's count: created empty and
+// dropped at the test's end, so no parallel test and no rerun under
+// -count meets its rows.
+func accDatabase(t *testing.T, prefix string) string {
+	t.Helper()
+	return schematest.Scratch(t, fmt.Sprintf("%s_%d", prefix, accDatabases.Add(1)))
+}
+
+// accReceiptStore opens the real store on a database of the test's own
+// (accDatabase), and a plain database handle on the same DSN, to read
+// the seeded records back as anyone can.
 func accReceiptStore(t *testing.T, name string) (*factoryd.PGStore, *sql.DB) {
 	t.Helper()
-	dsn := schematest.DSN(t, name)
+	dsn := accDatabase(t, name)
 	s, err := factoryd.OpenStore(context.Background(), dsn)
 	if err != nil {
 		t.Fatal(err)

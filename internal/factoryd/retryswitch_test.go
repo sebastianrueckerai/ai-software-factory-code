@@ -195,8 +195,8 @@ func rowKinds(store *freezeStore) []string {
 
 // TestRetrySwitchEndsFreeze proves the retry switch from both of its entry
 // points, on the real gateway and the real watcher: the freeze card's
-// Retry now, the console route's Config.RetryFreeze, which cmd/factoryd
-// wires to the switch's RetryFreeze, and the chat's retry of a frozen
+// Retry now, the switch's RetryFreeze, which Act runs for an approver's
+// answer on the card's ask, and the chat's retry of a frozen
 // card, Act's ActRetry on t2 by the project agent, which reaches the
 // switch through Runner.RetryFreeze. In each, sf/other's t5 meets zai's
 // dated refusal first, to 09:45; the gateway restarts, which forgets the
