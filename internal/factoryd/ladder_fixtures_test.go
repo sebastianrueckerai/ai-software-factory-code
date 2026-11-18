@@ -113,29 +113,6 @@ func newTripRig(t *testing.T, checks string) tripRig {
 	return tripRig{r: r, s: s, forge: forge, signals: signals}
 }
 
-// atHead puts pull request #9 on t1 with head h2, whose newest review
-// approved it when approved.
-func (g tripRig) atHead(t *testing.T, approved bool) {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET pr_number = 9 WHERE id = 't1'`); err != nil {
-		t.Fatal(err)
-	}
-	verdict := "concerns"
-	if approved {
-		verdict = "approve"
-	}
-	for _, e := range []Event{
-		{Kind: EventGateHead, Detail: map[string]any{"gate": GateMerge, "head": "h2"}},
-		{Kind: EventModelReview, Detail: map[string]any{"commit": "h2", "round": 1, "reviewed": true, "verdict": verdict}},
-	} {
-		e.Repository, e.TaskID, e.IssueNumber, e.Actor, e.Via = "demo-app/demo-app", "t1", 12, FactoryDecider, ViaFactoryd
-		if _, err := g.s.Record(ctx, e); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
 func (g tripRig) trip(t *testing.T, reason string) TripOutcome {
 	t.Helper()
 	out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: reason}, tripAttempt{N: 1})
@@ -144,13 +121,6 @@ func (g tripRig) trip(t *testing.T, reason string) TripOutcome {
 	}
 	return out
 }
-
-// asks are t1's question_asked rows, oldest first.
-func (g tripRig) asks(t *testing.T) []Event { return actRig{s: g.s}.rows(t, EventQuestionAsked) }
-
-const tripCap = CapReached + "\nlast: no session produced a result"
-
-const rungFindingText = "TasksByPR is undefined"
 
 // rungRig is tripRig's card t1 with a check-in model: a medium card of the
 // coder class, whose head h2 on pull request 9 is green and not approved,
@@ -168,59 +138,12 @@ type idChat struct {
 	ids []string
 }
 
-func (c *idChat) Call(ctx context.Context, taskID, alias string, in CheckinRequest) (CheckinResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.ids = append(c.ids, taskID)
-	return c.scriptedChat.Call(ctx, taskID, alias, in)
-}
-
-func newRungRig(t *testing.T, checks string, answers ...CheckinResponse) rungRig {
-	t.Helper()
-	ctx := context.Background()
-	g := rungRig{tripRig: newTripRig(t, checks), chat: &idChat{scriptedChat: scriptedChat{answers: answers}}, id: FindingID(rungFindingText)}
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET required_capabilities = '["coder"]'::jsonb, size = 'medium', budget_eur = 5 WHERE id = 't1'`); err != nil {
-		t.Fatal(err)
-	}
-	g.atHead(t, false)
-	if err := g.r.timeline.Append(ctx, "t1", "model_review", map[string]any{"commit": "h2", "verdict": "concerns", "findings": []string{rungFindingText}}); err != nil {
-		t.Fatal(err)
-	}
-	g.r.Checkin = g.chat
-	g.r.cfg.Prices = aliasPrices{"big": {In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}}
-	return g
-}
-
-// answer is the rung's answer call on rungFindingText, a dropped verdict
-// with its evidence, over's keys over the defaults.
-func (g rungRig) answer(t *testing.T, over map[string]any) CheckinResponse {
-	t.Helper()
-	a := map[string]any{"recommendation": map[string]any{"action": "successor", "grounds": "the finding is dropped"},
-		"verdicts": map[string]any{g.id: map[string]any{"verdict": "dropped", "evidence": "tasks.go:12 at head: TasksByPR is declared"}}}
-	for k, v := range over {
-		a[k] = v
-	}
-	return answerCall(t, a)
-}
-
-// handUp is the answer that hands the case up recommending close.
-func (g rungRig) handUp(t *testing.T) CheckinResponse {
-	return g.answer(t, map[string]any{"decision": "hand_up", "draw": nil,
-		"recommendation": map[string]any{"action": "close", "grounds": "the card's work is done on main"}})
-}
-
 // projectStore answers the project row of demo-app, which no policy stored
 // in the rig's database names.
 type projectStore struct{ *PGStore }
 
-func (projectStore) ProjectByRepository(context.Context, string) (Project, bool, error) {
-	return Project{Name: "demo-app", Repository: "demo-app/demo-app", File: true}, true, nil
-}
-
 // settle waits for the rung 1 goroutines the trips started.
 func (g rungRig) settle() { g.r.rungs.Wait() }
-
-func (g rungRig) rows(t *testing.T, kind string) []Event { return actRig{s: g.s}.rows(t, kind) }
 
 func (g rungRig) steps(t *testing.T, id int64) []CaseStep { return caseStepsOf(t, g.s, id) }
 

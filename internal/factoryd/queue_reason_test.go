@@ -4,24 +4,12 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
 
 // bothStores are the stores whose queue reason and slot count must agree:
-// Postgres, and the fake the admission, board and workflow tests read.
+// the fake the admission, board and workflow tests read; Postgres runs in
+// internal/factoryd/pg.
 var bothStores = map[string]func(*testing.T) Store{
-	"postgres": func(t *testing.T) Store {
-		s, err := OpenStore(context.Background(), schematest.DSN(t, "queue_reason"))
-		if err != nil {
-			t.Fatalf("OpenStore: %v", err)
-		}
-		t.Cleanup(func() { s.db.Close() })
-		if _, err := s.db.ExecContext(context.Background(), `TRUNCATE tasks CASCADE`); err != nil {
-			t.Fatalf("truncate: %v", err)
-		}
-		return s
-	},
 	"fake": func(*testing.T) Store { return newFakeStore() },
 }
 

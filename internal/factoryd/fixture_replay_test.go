@@ -1174,7 +1174,7 @@ var replayCoverage = map[string]string{
 	"S12": "TestSuccessorTakesOverTheDependents",
 	"S13": "TestHealSignalsWaitingCards",
 	"S14": "TestAdmitRecordsTheRefusalAndClearsItOnAdmission",
-	"S15": "TestCountAdmittedFreesTheApprovalAndDependencyWaits",
+	"S15": "internal/factoryd/pg TestCountAdmittedFreesTheApprovalAndDependencyWaits",
 	"S16": "TestBoundedStartTakesNoSlotFromAFixForwardCard",
 	"S17": "internal/factoryd/pg TestAPlanRowWithNoIssueAgesIntoOneQueuedOverBoundCaseThatRung2Closes",
 	"S18": "internal/console TestOverruleTheReviewCarriesDropVerdicts",

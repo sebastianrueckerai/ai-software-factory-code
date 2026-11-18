@@ -270,6 +270,20 @@ var (
 	RoleFeature               = factoryd.RoleFeature
 	RoleIntegration           = factoryd.RoleIntegration
 	CaseConfigRefused         = factoryd.CaseConfigRefused
+	AlertChainUncarried       = factoryd.AlertChainUncarried
+	Cents                     = factoryd.Cents
+	EventChatBudgetSpent      = factoryd.EventChatBudgetSpent
+	FinalStatuses             = factoryd.FinalStatuses
+	GateApproval              = factoryd.GateApproval
+	GateChecks                = factoryd.GateChecks
+	GateMergeQueue            = factoryd.GateMergeQueue
+	GateReview                = factoryd.GateReview
+	HoldsSlot                 = factoryd.HoldsSlot
+	SourceChatBudget          = factoryd.SourceChatBudget
+	SourceMainFix             = factoryd.SourceMainFix
+	SuggestFund               = factoryd.SuggestFund
+	markJudgmentSpent         = factoryd.PgMarkJudgmentSpent
+	markJudgmentUnread        = factoryd.PgMarkJudgmentUnread
 )
 
 type (
@@ -370,4 +384,10 @@ type (
 	PlanCriterion         = factoryd.PlanCriterion
 	PlanCard              = factoryd.PlanCard
 	PlanItem              = factoryd.PlanItem
+	Alert                 = factoryd.Alert
+	ChainPoller           = factoryd.ChainPoller
+	FinishedQuery         = factoryd.FinishedQuery
+	Poker                 = factoryd.Poker
+	RollRequest           = factoryd.RollRequest
+	TokenRef              = factoryd.TokenRef
 )

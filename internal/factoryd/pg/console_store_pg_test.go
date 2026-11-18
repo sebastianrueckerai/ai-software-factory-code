@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -29,8 +29,8 @@ func TestChainCoverageHoldsTheCard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
-	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs CASCADE`); err != nil {
+	defer s.PgDB().Close()
+	if _, err := s.PgDB().ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, tk := range []Task{
@@ -44,7 +44,7 @@ func TestChainCoverageHoldsTheCard(t *testing.T) {
 			t.Fatalf("CreateTask %s: %v", tk.ID, err)
 		}
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '20 minutes' WHERE id = 't-hold';
+	if _, err := s.PgDB().ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '20 minutes' WHERE id = 't-hold';
 		UPDATE tasks SET finished_at = now() - interval '25 minutes' WHERE id = 't-nopr';
 		UPDATE tasks SET finished_at = now() - interval '90 minutes' WHERE id = 't-era';
 		UPDATE tasks SET finished_at = now() - interval '30 minutes' WHERE id = 't-merged'`); err != nil {
@@ -140,8 +140,8 @@ func TestTheBoardSpeaksTheForgesRunNumbers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
-	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs CASCADE`); err != nil {
+	defer s.PgDB().Close()
+	if _, err := s.PgDB().ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, tk := range []Task{
@@ -156,7 +156,7 @@ func TestTheBoardSpeaksTheForgesRunNumbers(t *testing.T) {
 			t.Fatalf("CreateTask %s: %v", tk.ID, err)
 		}
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '20 minutes'`); err != nil {
+	if _, err := s.PgDB().ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '20 minutes'`); err != nil {
 		t.Fatalf("stamp finished_at: %v", err)
 	}
 	// the carry row: the forge's number 2260 on API id 3356
@@ -223,8 +223,8 @@ func TestTheReconcilerEndsACoveredMergedCardOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
-	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs, alerts, events,
+	defer s.PgDB().Close()
+	if _, err := s.PgDB().ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs, alerts, events,
 		chat_messages, chat_conversations, chat_seen, chat_poke_cursor CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
@@ -270,9 +270,9 @@ func TestTheReconcilerEndsACoveredMergedCardOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &ChainPoller{Store: s, End: r.EndCovered}
-	p.once()
+	p.PgOnce()
 	for range 2 {
-		p.reconcile(ctx, "sf/r")
+		p.PgReconcile(ctx, "sf/r")
 	}
 	for id, want := range map[string]string{"t-live": "done", "t-wait": "merged"} {
 		if got, _, err := s.Task(ctx, id); err != nil || got.Status != want {
@@ -280,7 +280,7 @@ func TestTheReconcilerEndsACoveredMergedCardOnce(t *testing.T) {
 		}
 	}
 	var ended []string
-	rows, err := s.db.QueryContext(ctx, `SELECT task_id || ' ' || (detail->>'reason') FROM events WHERE kind = $1 ORDER BY id`, EventTaskEnded)
+	rows, err := s.PgDB().QueryContext(ctx, `SELECT task_id || ' ' || (detail->>'reason') FROM events WHERE kind = $1 ORDER BY id`, EventTaskEnded)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,8 +319,8 @@ func TestStalledHeadSurfacesOnTheCard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
-	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs CASCADE`); err != nil {
+	defer s.PgDB().Close()
+	if _, err := s.PgDB().ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	tk := Task{ID: "t-hold", Status: "merged", PRNumber: 7, BudgetEUR: 1, Repository: "sf/r", Kind: "agent", Track: "direct"}
@@ -342,7 +342,7 @@ func TestStalledHeadSurfacesOnTheCard(t *testing.T) {
 		}
 	}
 	p := &ChainPoller{Store: s, Policy: func() policy.Version { return policy.Version{} }, Own: Repo{Owner: "sf", Name: "r"}}
-	p.stalled(ctx, "sf/r", "e15")
+	p.PgStalled(ctx, "sf/r", "e15")
 	state := func() string {
 		t.Helper()
 		b, ok, err := s.BoardTask(ctx, "t-hold")
@@ -371,8 +371,8 @@ func seedMergedCards(t *testing.T, ctx context.Context) *PGStore {
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
-	t.Cleanup(func() { s.db.Close() })
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs, alerts, events CASCADE`); err != nil {
+	t.Cleanup(func() { s.PgDB().Close() })
+	if _, err := s.PgDB().ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs, alerts, events CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, c := range []struct {
@@ -476,7 +476,7 @@ func TestUncarriedAlertRowsStandOncePerCard(t *testing.T) {
 	}
 	open := func() int {
 		var n int
-		if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM alerts WHERE kind = $1 AND verdict IS NULL`, AlertChainUncarried).Scan(&n); err != nil {
+		if err := s.PgDB().QueryRowContext(ctx, `SELECT count(*) FROM alerts WHERE kind = $1 AND verdict IS NULL`, AlertChainUncarried).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		return n
@@ -551,19 +551,19 @@ func TestRollIssueOfAMergedCard(t *testing.T) {
 	if got := issue("t-b"); got != 0 {
 		t.Fatalf("a request not carrying pr 8 gave t-b RollIssue %d, want 0", got)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE roll_requests SET state = 'failed' WHERE sha = 's2'`); err != nil {
+	if _, err := s.PgDB().ExecContext(ctx, `UPDATE roll_requests SET state = 'failed' WHERE sha = 's2'`); err != nil {
 		t.Fatal(err)
 	}
 	if got := issue("t-a"); got != 1100 {
 		t.Fatalf("a failed request must not count: RollIssue = %d, want 1100", got)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done' WHERE id = 't-a'`); err != nil {
+	if _, err := s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'done' WHERE id = 't-a'`); err != nil {
 		t.Fatal(err)
 	}
 	if got := issue("t-a"); got != 0 {
 		t.Fatalf("a done card under a merged roll: RollIssue = %d, want 0", got)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE roll_requests SET state = 'opened' WHERE sha = 's2'`); err != nil {
+	if _, err := s.PgDB().ExecContext(ctx, `UPDATE roll_requests SET state = 'opened' WHERE sha = 's2'`); err != nil {
 		t.Fatal(err)
 	}
 	if got := issue("t-a"); got != 0 {
@@ -585,7 +585,7 @@ func TestFailedCardsStayInFinished(t *testing.T) {
 	ctx := context.Background()
 	s := seedMergedCards(t, ctx)
 	now := time.Now()
-	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'failed', finished_at = $1 WHERE id = 't-c'`, now); err != nil {
+	if _, err := s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'failed', finished_at = $1 WHERE id = 't-c'`, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RecordChainRun(ctx, "sf/r", 7, "e1", 1, 0, "success"); err != nil {
