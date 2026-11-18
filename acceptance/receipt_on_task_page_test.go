@@ -73,7 +73,7 @@ func TestAcceptanceReceiptOnTaskPage(t *testing.T) {
 		`<dt>Base</dt><dd class="mono">b45e12ab34cd56ef78ab34cd56ef78ab34cd56ef</dd>`,
 		`<dt>Head</dt><dd class="mono">h90de12ab34cd56ef78ab34cd56ef78ab34cd56ef</dd>`,
 		`<dt>Merge commit</dt><dd class="mono">m33aa12ab34cd56ef78ab34cd56ef78ab34cd56ef</dd>`,
-		`<dt>diff_sha256</dt><dd class="mono">d1ff0e12ab34cd56ef78ab34cd56ef78ab34cd56ef78ab34cd56ef78ab34cd56ef78ab</dd>`,
+		`<dt>Diff SHA-256</dt><dd class="mono">d1ff0e12ab34cd56ef78ab34cd56ef78ab34cd56ef78ab34cd56ef78ab34cd56ef78ab</dd>`,
 		`<dt>Policy version</dt><dd class="mono">19</dd>`,
 		`<dt>Cost</dt><dd class="mono">1.25 EUR</dd>`,
 		`<tr><td>check</td><td><code>bash check changed</code></td><td class="mono">0</td><td>pass</td></tr>`,
