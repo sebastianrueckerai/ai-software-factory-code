@@ -402,6 +402,14 @@ func main() {
 		defer cancel()
 		runner.Namer.NameOpenPlans(sweepCtx)
 	}()
+	// the retry switch ends a provider freeze from the freeze card's button
+	// and from Act's retry of a frozen case; set before the worker runs Act
+	freezeCards := &factoryd.FreezeCard{Store: store, Forgejo: forgejo, Current: policyLoader.Current, Timeline: runner.Timeline()}
+	retrySwitch := &factoryd.RetrySwitch{Freeze: freezeCards, GatewayURL: gatewayURL, Token: gatewayToken,
+		Signal: func(ctx context.Context, taskID string) error {
+			return inner.SignalRunning(ctx, taskID, factoryd.SignalProviderRetry)
+		}}
+	runner.RetryFreeze = retrySwitch.RetryFreeze
 	if err := taskWorker.Start(); err != nil {
 		log.Fatalf("temporal worker: %v", err)
 	}
@@ -470,7 +478,6 @@ func main() {
 	monthAlarm := &factoryd.MonthAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Config: configSource, Current: policyLoader.Current,
 		Timeline: runner.Timeline(), Metrics: metrics, Scrub: scrub}
 	go monthAlarm.Loop(ctx, time.Minute)
-	freezeCards := &factoryd.FreezeCard{Store: store, Forgejo: forgejo, Current: policyLoader.Current, Timeline: runner.Timeline()}
 	go freezeCards.Loop(ctx, time.Minute)
 	go chatBudgetCards.Loop(ctx, time.Minute)
 	ciRuns := &factoryd.CIRuns{Forgejo: forgejo, Owner: own.Repo().Owner, Repo: own.Repo().Name, Token: forgejo.Access(own).Actions, Metrics: metrics, Runs: store}
@@ -675,6 +682,7 @@ func main() {
 		RetryCard: func(ctx context.Context, taskID, by string) (int64, error) {
 			return runner.RetryCard(ctx, taskID, by)
 		},
+		RetryFreeze:  retrySwitch.RetryFreeze,
 		RequestImage: runner.RequestImage,
 		GoCard: func(ctx context.Context, taskID, by string) (int64, error) {
 			return runner.Go(ctx, taskID, by)

@@ -478,6 +478,7 @@ func cardReads(cfg *console.Config, rig *AcceptanceRig, tasks console.Tasks) {
 	cfg.DecideCriterion = func(context.Context, string, string, string, string, string) error { return nil }
 	cfg.ConfirmDeliveredCriteria = func(context.Context, string, string, string) (int, error) { return 0, nil }
 	cfg.RetryCard = func(context.Context, string, string) (int64, error) { return 0, nil }
+	cfg.RetryFreeze = func(context.Context, string, string) error { return nil }
 	cfg.GoCard = func(context.Context, string, string) (int64, error) { return 0, nil }
 	cfg.HoldCard = func(context.Context, string, string, string, string) (bool, error) { return false, nil }
 	cfg.ReleaseCardHold = func(context.Context, string) (bool, error) { return false, nil }

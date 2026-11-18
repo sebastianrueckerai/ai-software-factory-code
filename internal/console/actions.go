@@ -626,6 +626,29 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 	return fmt.Sprintf("Retried #%d as #%d; it starts once a work slot is free.", t.IssueNumber, issue), nil
 }
 
+// doRetryFreeze presses the retry switch on freeze card id (factoryd's
+// RetrySwitch.RetryFreeze): the class's hold clears at the gateway, the
+// class's freeze cards close, and its frozen cards call the provider again,
+// their first answer deciding whether the freeze ends or holds again. A
+// card that holds no open freeze is refused with its state.
+func (c *Console) doRetryFreeze(ctx context.Context, a actor, id string) (string, error) {
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	err = c.cfg.RetryFreeze(ctx, t.ID, a.approver())
+	var no factoryd.ErrNoFreeze
+	switch {
+	case errors.As(err, &no):
+		return "", refuse(http.StatusConflict, no.Error())
+	case err != nil:
+		log.Printf("console: %s presses the retry switch on %s: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusInternalServerError, "The freeze could not be ended: "+errText(err)+". Press Retry now again, or wait for the reset on the card.")
+	}
+	log.Printf("console: %s pressed the retry switch on %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
+	return fmt.Sprintf("Ended the freeze of #%d: the hold cleared and its frozen cards call the provider again; a new limit freezes them to its reset.", t.IssueNumber), nil
+}
+
 // filedReplacement is the issue of the replacement a retry among did
 // filed; false when it filed none, as when it named one a retry filed
 // before.
@@ -1748,10 +1771,10 @@ func (c *Console) newestCase(ctx context.Context, t factoryd.Task) (factoryd.Cas
 }
 
 // liveCase is newestCase, a card waiting on a human with none refused
-// (noCase).
+// (noCase), but for a freeze card, which asks nothing and holds none.
 func (c *Console) liveCase(ctx context.Context, t factoryd.Task) (factoryd.Case, error) {
 	k, err := c.newestCase(ctx, t)
-	if err == nil && k.ID == 0 && t.Status == "waiting-human" {
+	if err == nil && k.ID == 0 && t.Status == "waiting-human" && t.Source != factoryd.SourceFreezeCard {
 		err = refuse(http.StatusConflict, noCase)
 	}
 	return k, err

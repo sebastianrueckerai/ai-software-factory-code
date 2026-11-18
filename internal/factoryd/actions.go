@@ -256,10 +256,10 @@ var Actions = []Action{
 	{Name: ActRetry, Rungs: rungs(0, 1, 2, 3), Applies: func(f CaseFacts, r Resolution) string {
 		id, _ := r.Args["task_id"].(string)
 		if id == "" {
-			if slices.ContainsFunc(f.Dependencies, func(d DepFact) bool { return retryRefusal(d) == "" }) {
+			if f.FreezeCard != "" || slices.ContainsFunc(f.Dependencies, func(d DepFact) bool { return retryRefusal(d) == "" }) {
 				return ""
 			}
-			return "no failed dependency is open to a retry"
+			return "no failed dependency is open to a retry, and no provider freeze holds the card"
 		}
 		if _, ok := retriedAs(f, id); ok {
 			return ""

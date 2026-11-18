@@ -496,8 +496,13 @@ func TestRetryTakesARetryableFailedDependency(t *testing.T) {
 	running := DepFact{TaskID: "d3", Issue: 22, Status: "running"}
 	open := DepFact{TaskID: "d4", Issue: 23, Status: "failed", Why: "checks: timeout"}
 	f := CaseFacts{Dependencies: []DepFact{retried, forbidden, running}}
-	if got, want := applies(t, ActRetry, f, Resolution{}), "no failed dependency is open to a retry"; got != want {
+	if got, want := applies(t, ActRetry, f, Resolution{}), "no failed dependency is open to a retry, and no provider freeze holds the card"; got != want {
 		t.Errorf("no retryable dependency = %q, want %q", got, want)
+	}
+	frozen := f
+	frozen.FreezeCard = "t-fz"
+	if got := applies(t, ActRetry, frozen, Resolution{}); got != "" {
+		t.Errorf("a frozen case's retry = %q, want it offered", got)
 	}
 	if got := applies(t, ActRetry, f, Resolution{Args: map[string]any{"task_id": "d1"}}); got != "" {
 		t.Errorf("retry d1, retried already = %q, want it to apply", got)
