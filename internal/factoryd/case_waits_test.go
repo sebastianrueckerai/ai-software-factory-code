@@ -8,11 +8,10 @@ import (
 	"time"
 )
 
-// caseWaitStores are the stores whose case wait rows must agree: Postgres,
-// and the fake the workflow tests read.
+// caseWaitStores are the stores whose case wait rows must agree: the fake the
+// workflow tests read here, and Postgres in internal/factoryd/pg.
 var caseWaitStores = map[string]func(*testing.T) Store{
-	"postgres": func(t *testing.T) Store { return caseStore(t) },
-	"fake":     func(*testing.T) Store { return &fakeStore{} },
+	"fake": func(*testing.T) Store { return &fakeStore{} },
 }
 
 // A live case whose wake passed is due, the oldest wake first, open or at

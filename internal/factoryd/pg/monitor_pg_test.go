@@ -1,10 +1,11 @@
-package factoryd
+package pg
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"io"
 	"log"
 	"maps"
@@ -116,8 +117,8 @@ func (f *monitorForge) serve(t *testing.T) *httptest.Server {
 // t1410 on sf/r, no events and no monitor cursor.
 func monitorStore(t *testing.T) *PGStore {
 	t.Helper()
-	s := cardCaseStore(t, "monitor")
-	if _, err := s.db.ExecContext(context.Background(), `TRUNCATE monitor_cursor`); err != nil {
+	s := cardCaseStore(t, "pg_monitor")
+	if _, err := s.PgDB().ExecContext(context.Background(), `TRUNCATE monitor_cursor`); err != nil {
 		t.Fatal(err)
 	}
 	return s
@@ -134,8 +135,9 @@ func newMonitorRig(t *testing.T) monitorRig {
 	forge := &monitorForge{comments: map[int64][]string{}, closed: map[int64]bool{}}
 	objects := &unreadableObjects{}
 	now := func() time.Time { return monitorAt }
-	r := &Runner{store: s, objects: objects, cfg: cfg, timeline: &Timeline{Objects: objects, Events: s, Store: s},
-		forgejo: &Forgejo{BaseURL: forge.serve(t).URL, BotUser: "factory-agent", BotPassword: "pw"}, now: now}
+	r := factoryd.PgRigRunner(s, objects, cfg, &Timeline{Objects: objects, Events: s, Store: s},
+		&Forgejo{BaseURL: forge.serve(t).URL, BotUser: "factory-agent", BotPassword: "pw"})
+	r.PgSetNow(now)
 	m := &Monitor{Store: s, Runner: r, Policy: func() policy.Tree { return v.Tree }, Now: now}
 	return monitorRig{m: m, s: s, forge: forge, objects: objects, signals: signals}
 }
@@ -149,7 +151,7 @@ func (g monitorRig) card(t *testing.T, id string, issue int64, status string) {
 		IssueNumber: issue, Track: policy.TrackDirect, Size: "large", BudgetEUR: 3}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET created_at = $2 WHERE id = $1`, id, monitorAt.Add(-4*time.Hour)); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET created_at = $2 WHERE id = $1`, id, monitorAt.Add(-4*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -192,7 +194,7 @@ func (g monitorRig) pass(t *testing.T) {
 func (g monitorRig) cursor(t *testing.T) int64 {
 	t.Helper()
 	var id int64
-	if err := g.s.db.QueryRowContext(context.Background(), `SELECT event_id FROM monitor_cursor`).Scan(&id); err != nil {
+	if err := g.s.PgDB().QueryRowContext(context.Background(), `SELECT event_id FROM monitor_cursor`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -441,7 +443,7 @@ func TestMonitorSweepWakesDueCasesAndExpiresSteps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE case_steps SET started_at = $2 WHERE id = $1`, step, monitorAt.Add(-40*time.Minute)); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE case_steps SET started_at = $2 WHERE id = $1`, step, monitorAt.Add(-40*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -740,7 +742,7 @@ func TestMonitorRungZeroEndsAStepPastItsBound(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := g.s.db.ExecContext(ctx, `UPDATE case_steps SET started_at = $2 WHERE id = $1`, step, monitorAt.Add(-40*time.Minute)); err != nil {
+		if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE case_steps SET started_at = $2 WHERE id = $1`, step, monitorAt.Add(-40*time.Minute)); err != nil {
 			t.Fatal(err)
 		}
 		return held, step
@@ -818,37 +820,6 @@ func TestActSignalsNoRunForAMonitorCase(t *testing.T) {
 	}
 	if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "queued" || len(g.forge.closes) != 0 || len(g.signals.got) != 0 {
 		t.Fatalf("t1 %s, closes %v, signals %+v; want it queued still, nothing closed and no signal", task.Status, g.forge.closes, g.signals.got)
-	}
-}
-
-// A running card quiet since its filing at 08:00, with no line and no model
-// call, raises wait_over_bound on run_quiet: one case, faced beside the
-// run, which stays running. The face writes no line on the card's
-// timeline, so the quiet keeps its start, and another event opens nothing.
-func TestMonitorFacesAQuietRunBesideIt(t *testing.T) {
-	g := newMonitorRig(t)
-	g.rungsOff()
-	ctx := context.Background()
-	g.card(t, "t1", 12, "running")
-	g.pass(t)
-	g.filed(t, "t1", 12)
-	g.pass(t)
-	const line = "Monitor flag: wait_over_bound(run_quiet since +0:00)"
-	cases := g.flagCases(t, "t1")
-	c, ok := cases["wait_over_bound|run_quiet|2026-11-04T08:00:00Z"]
-	if len(cases) != 1 || !ok || c.Status != CaseAtHuman || c.Problem != line {
-		t.Fatalf("t1's flag cases = %v, want wait_over_bound on run_quiet since 08:00 at the human", cases)
-	}
-	if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "running" || !slices.Equal(g.forge.comments[12], []string{face("t1", line)}) {
-		t.Fatalf("t1 %s, comments %q; want it running with the case's one face", task.Status, g.forge.comments[12])
-	}
-	if tl, _ := g.objects.Get(ctx, "sessions/t1/timeline.jsonl"); len(tl) != 0 {
-		t.Fatalf("t1's timeline = %q, want no line", tl)
-	}
-	g.event(t, "t1", 12, EventMergeDenied, nil, monitorAt)
-	g.pass(t)
-	if cases := g.flagCases(t, "t1"); len(cases) != 1 || len(g.forge.comments[12]) != 1 {
-		t.Fatalf("t1's flag cases = %v, comments %q; want the one case and its one face", cases, g.forge.comments[12])
 	}
 }
 
@@ -963,6 +934,37 @@ func TestOpenTripWithAKindTakesNoHealedPath(t *testing.T) {
 	}
 }
 
+// A running card quiet since its filing at 08:00, with no line and no model
+// call, raises wait_over_bound on run_quiet: one case, faced beside the
+// run, which stays running. The face writes no line on the card's
+// timeline, so the quiet keeps its start, and another event opens nothing.
+func TestMonitorFacesAQuietRunBesideIt(t *testing.T) {
+	g := newMonitorRig(t)
+	g.rungsOff()
+	ctx := context.Background()
+	g.card(t, "t1", 12, "running")
+	g.pass(t)
+	g.filed(t, "t1", 12)
+	g.pass(t)
+	const line = "Monitor flag: wait_over_bound(run_quiet since +0:00)"
+	cases := g.flagCases(t, "t1")
+	c, ok := cases["wait_over_bound|run_quiet|2026-11-04T08:00:00Z"]
+	if len(cases) != 1 || !ok || c.Status != CaseAtHuman || c.Problem != line {
+		t.Fatalf("t1's flag cases = %v, want wait_over_bound on run_quiet since 08:00 at the human", cases)
+	}
+	if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "running" || !slices.Equal(g.forge.comments[12], []string{face("t1", line)}) {
+		t.Fatalf("t1 %s, comments %q; want it running with the case's one face", task.Status, g.forge.comments[12])
+	}
+	if tl, _ := g.objects.Get(ctx, "sessions/t1/timeline.jsonl"); len(tl) != 0 {
+		t.Fatalf("t1's timeline = %q, want no line", tl)
+	}
+	g.event(t, "t1", 12, EventMergeDenied, nil, monitorAt)
+	g.pass(t)
+	if cases := g.flagCases(t, "t1"); len(cases) != 1 || len(g.forge.comments[12]) != 1 {
+		t.Fatalf("t1's flag cases = %v, comments %q; want the one case and its one face", cases, g.forge.comments[12])
+	}
+}
+
 // The newest ask on a card is the run's: a monitor case beside it, newer
 // and at the human, is answered by its id alone.
 func TestNewestAskCaseLeavesAMonitorCaseOut(t *testing.T) {
@@ -984,11 +986,10 @@ func TestNewestAskCaseLeavesAMonitorCaseOut(t *testing.T) {
 	}
 }
 
-// monitorStores are the stores whose monitor reads must agree: Postgres,
-// and the fake.
+// monitorStores are the stores whose monitor reads must agree; the fake runs
+// in factoryd, so Postgres runs here.
 var monitorStores = map[string]func(*testing.T) Store{
 	"postgres": func(t *testing.T) Store { return monitorStore(t) },
-	"fake":     func(*testing.T) Store { return newFakeStore() },
 }
 
 // The first read plants the cursor at the newest event and answers
@@ -1121,7 +1122,7 @@ func TestACardWaitingOnAPlanAtTheHumanOpensOneCaseNamingThePlansAsk(t *testing.T
 	if err := g.s.AddTaskDeps(ctx, "t1", []string{"p1"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET track = 'plan' WHERE id = 'p1'`); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET track = 'plan' WHERE id = 'p1'`); err != nil {
 		t.Fatal(err)
 	}
 	asked := monitorAt.Add(-51 * time.Hour)
@@ -1129,7 +1130,7 @@ func TestACardWaitingOnAPlanAtTheHumanOpensOneCaseNamingThePlansAsk(t *testing.T
 		Status: CaseAtHuman, Problem: "Confirm the plan?"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE cases SET opened_at = $1 WHERE task_id = 'p1'`, asked); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE cases SET opened_at = $1 WHERE task_id = 'p1'`, asked); err != nil {
 		t.Fatal(err)
 	}
 	since := monitorAt.Add(-50 * time.Hour)

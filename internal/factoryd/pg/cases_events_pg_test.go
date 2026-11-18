@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -7,58 +7,7 @@ import (
 	"slices"
 	"testing"
 	"time"
-
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
-
-const caseTask = "t1410"
-
-// caseEventStore is a store whose one task, caseTask, waits on a human
-// with a budget of 5 EUR, its cases, events, intake rows, approvals and
-// plans empty.
-func caseEventStore(t *testing.T) *PGStore {
-	t.Helper()
-	return cardCaseStore(t, "cases_events")
-}
-
-// cardCaseStore is caseEventStore on database name.
-func cardCaseStore(t *testing.T, name string) *PGStore {
-	t.Helper()
-	ctx := context.Background()
-	s, err := OpenStore(ctx, schematest.DSN(t, name))
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
-	t.Cleanup(func() { s.db.Close() })
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE cases, events, intake_events, tasks, approval_requests, plan_revisions, plan_questions CASCADE`); err != nil {
-		t.Fatalf("truncate: %v", err)
-	}
-	if err := s.CreateTask(ctx, Task{ID: caseTask, Kind: "agent", Status: "waiting-human", Objective: "x", Repository: "sf/r",
-		IssueNumber: 1410, Track: "direct", BudgetEUR: 5}); err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-	return s
-}
-
-func recordCaseEvent(t *testing.T, s *PGStore, kind, actor, via string, detail map[string]any) {
-	t.Helper()
-	if _, err := s.Record(context.Background(), Event{Repository: "sf/r", TaskID: caseTask, IssueNumber: 1410, Kind: kind,
-		Actor: actor, Via: via, Detail: detail}); err != nil {
-		t.Fatalf("Record %s: %v", kind, err)
-	}
-}
-
-const capAsk = "Card 1410 asks: grant one more session?"
-
-// askCap records the session cap's ask as Escalate writes it.
-func askCap(t *testing.T, s *PGStore, comment int64) {
-	t.Helper()
-	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
-		"question": capAsk, "ask": capAsk, "comment": comment, "source": "cap",
-		"reason": CapReached + "\nlast: the review asked for changes",
-		"why":    "the card used its 3 sessions", "info": "a grant buys one session",
-		"choices": []string{"Grant one session", "Leave it waiting"}})
-}
 
 // askAgent records an agent's ask as Escalate writes it.
 func askAgent(t *testing.T, s *PGStore, question string, comment int64) {
@@ -66,33 +15,6 @@ func askAgent(t *testing.T, s *PGStore, question string, comment int64) {
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
 		"question": question, "ask": question, "comment": comment, "source": "agent",
 		"reason": AgentAsks + question, "why": "two files match", "info": plainInfo})
-}
-
-func onlyOpenCase(t *testing.T, s *PGStore) Case {
-	t.Helper()
-	open, err := s.OpenCasesOf(context.Background(), caseTask)
-	if err != nil || len(open) != 1 {
-		t.Fatalf("OpenCasesOf = %+v, %v; want one case", open, err)
-	}
-	return open[0]
-}
-
-func caseByID(t *testing.T, s *PGStore, id int64) Case {
-	t.Helper()
-	c, err := s.CaseByID(context.Background(), id)
-	if err != nil {
-		t.Fatalf("CaseByID %d: %v", id, err)
-	}
-	return c
-}
-
-func caseStepsOf(t *testing.T, s *PGStore, id int64) []CaseStep {
-	t.Helper()
-	steps, err := s.CaseSteps(context.Background(), id)
-	if err != nil {
-		t.Fatalf("CaseSteps %d: %v", id, err)
-	}
-	return steps
 }
 
 func TestAQuestionAskedOpensACaseAtTheHuman(t *testing.T) {
@@ -468,21 +390,6 @@ func TestAWithdrawalWithdrawsTheCase(t *testing.T) {
 // openMerge opens a merge approval request of caseTask for pull request
 // 1479 at head and records its approval_requested row as openMergeRequest
 // does.
-func openMerge(t *testing.T, s *PGStore, head string) int64 {
-	t.Helper()
-	spec, err := json.Marshal(MergeSpec{RiskClass: "standard", HeadSHA: head, RedChecks: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	id, err := s.OpenApproval(context.Background(), ApprovalRequest{Kind: ApprovalMerge, TaskID: caseTask, Project: "sf/r", PRNumber: 1479, Spec: spec})
-	if err != nil {
-		t.Fatalf("OpenApproval: %v", err)
-	}
-	recordCaseEvent(t, s, EventApprovalRequested, FactoryDecider, ViaFactoryd, map[string]any{
-		"approval": id, "kind": ApprovalMerge, "pr": int64(1479), "class": "standard", "factory": false, "red_checks": true})
-	return id
-}
-
 func TestAnApprovalRequestOpensAMergeCaseAndItsDecisionResolvesIt(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
@@ -724,9 +631,9 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 		want           CaseKind
 		facts          map[string]any
 	}{
-		{"cap", run.sessionCapCard(CapReached, "the review asked for changes", []string{"the test is red"}), CaseSessionCap, nil},
-		{"cap", run.sessionCapCard(timeCapReached, "the session ran out of time", nil), CaseAgentTimeCap, nil},
-		{"cap", run.plannerTimeCard(TaskUsage{}), CaseAgentTimeCap, nil},
+		{"cap", run.PgSessionCapCard(CapReached, "the review asked for changes", []string{"the test is red"}), CaseSessionCap, nil},
+		{"cap", run.PgSessionCapCard(timeCapReached, "the session ran out of time", nil), CaseAgentTimeCap, nil},
+		{"cap", run.PgPlannerTimeCard(TaskUsage{}), CaseAgentTimeCap, nil},
 		{"supervisor", "check-in: " + CheckPolicyClass + ": the change touches a migration", CasePolicyClass, map[string]any{"reason_kind": CheckPolicyClass}},
 		{"supervisor", "check-in: " + CheckAccess + ": the card needs a key the factory lacks", CaseCheckinHuman, map[string]any{"reason_kind": CheckAccess}},
 		{"supervisor", "check-in: " + CheckSpend + ": " + spentStop + " (0.40 of 0.40 EUR)", CaseCheckinShare, nil},
@@ -850,7 +757,7 @@ func TestTheDeskFindsEveryAskByItsCaseAndAProposalLandsOnItsOwn(t *testing.T) {
 	if face.Info != "Postgres is shared." || len(face.Choices) != 1 || face.Choices[0].Value != "say:Postgres" || face.Recommendation != "Postgres" || face.Source != "the agent" {
 		t.Errorf("the agent case's face = %+v, want its ask's info, offers and recommendation by the agent", face)
 	}
-	pre := CaseAction{Action: ActExtend, Args: map[string]any{"sessions": 1}}.preselected()
+	pre := CaseAction{Action: ActExtend, Args: map[string]any{"sessions": 1}}.PgPreselected()
 	if err := s.SetQuestionProposal(ctx, caseTask, cap.ID, "extend: one session fixes it", "the factory agent", pre); err != nil {
 		t.Fatal(err)
 	}
@@ -1007,7 +914,7 @@ func TestCreateHumanCardWritesTheCardAndItsAskOrNeither(t *testing.T) {
 func TestAResolveWithNothingDecidedLeavesThePlansCriteriaCase(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
-	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done', track = 'plan', finished_at = now() WHERE id = $1`, caseTask); err != nil {
+	if _, err := s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'done', track = 'plan', finished_at = now() WHERE id = $1`, caseTask); err != nil {
 		t.Fatal(err)
 	}
 	spec, _ := json.Marshal(CriteriaSpec{Task: caseTask})

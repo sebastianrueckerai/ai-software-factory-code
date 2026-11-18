@@ -1,10 +1,10 @@
-package factoryd
+package pg
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"slices"
 	"strings"
 	"testing"
@@ -13,37 +13,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
-
-// rungTwoRig is a rung rig whose console wakes rung 2, on a manual project
-// whose member sebastian the Waker wakes, under judgment.
-func rungTwoRig(t *testing.T, judgment string) (rungRig, *Waker, *fakeWakeStarter) {
-	t.Helper()
-	g := newRungRig(t, "success")
-	for _, table := range []string{"chat_messages", "chat_conversations", "chat_wake_cursor", "chat_wake_state"} {
-		if _, err := g.s.db.ExecContext(context.Background(), `TRUNCATE `+table+` CASCADE`); err != nil {
-			t.Fatalf("truncate %s: %v", table, err)
-		}
-	}
-	v := g.r.cfg.Policy()
-	p := v.Projects["demo-app"]
-	p.Autonomy = policy.AutonomyManual
-	p.Notify = []string{"sebastian"}
-	p.Escalation = &policy.Escalation{Judgment: judgment}
-	v.Projects = map[string]policy.ProjectConfig{"demo-app": p}
-	g.r.cfg.Policy = func() policy.Version { return v }
-	starter := &fakeWakeStarter{}
-	w := &Waker{Store: g.s, Start: starter, Now: g.r.Clock, Current: g.r.cfg.Policy,
-		Statement: g.r.RungTwoStatement, Board: g.r.BoardText}
-	if err := drainPass(t, w); err != nil {
-		t.Fatalf("the seeding pass: %v", err)
-	}
-	return g, w, starter
-}
-
-func (g rungRig) stepsOfRung(t *testing.T, id int64, rung int) []CaseStep {
-	t.Helper()
-	return slices.DeleteFunc(g.steps(t, id), func(s CaseStep) bool { return s.Rung != rung })
-}
 
 // A rung 1 hand-up on a manual project under judgment always goes to rung 2
 // and not to the human. By hand: no issue comment is posted, one
@@ -141,7 +110,7 @@ func TestRung2AnalysisFacesTheHumanWithItsRecommendation(t *testing.T) {
 	}
 	// a pass past the gap between wakes: the face wakes nobody, and an
 	// unrelated ask of the same pass still does
-	g.r.now = func() time.Time { return time.Now().Add(time.Minute) }
+	g.r.PgSetNow(func() time.Time { return time.Now().Add(time.Minute) })
 	before := len(starter.recorded())
 	wakeAsk(t, g.s, "demo-app/demo-app", "t-x", "Is the other card fine?", ViaFactoryd)
 	if err := drainPass(t, w); err != nil {
@@ -200,7 +169,7 @@ func TestRung2DoesNotWakeWhereTheRungsDoNotJudge(t *testing.T) {
 // flag on it posts no comment on the issue until rung 2 handed it up.
 func TestMonitorFlagGoesToRung2WithoutAComment(t *testing.T) {
 	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
-	if _, err := g.s.db.ExecContext(context.Background(), `UPDATE tasks SET required_capabilities = '[]'::jsonb WHERE id = 't1'`); err != nil {
+	if _, err := g.s.PgDB().ExecContext(context.Background(), `UPDATE tasks SET required_capabilities = '[]'::jsonb WHERE id = 't1'`); err != nil {
 		t.Fatal(err)
 	}
 	out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: monitorFlagPrefix + "answer_changed_nothing: the extend bought nothing",
@@ -230,11 +199,11 @@ func TestRung2ExpiryFacesTheHumanOnce(t *testing.T) {
 	out := g.trip(t, tripCap)
 	g.settle()
 	ctx := context.Background()
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE case_steps SET started_at = due_at - interval '35 minutes' WHERE case_id = $1 AND rung = 2`, out.CaseID); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE case_steps SET started_at = due_at - interval '35 minutes' WHERE case_id = $1 AND rung = 2`, out.CaseID); err != nil {
 		t.Fatal(err)
 	}
 	own := g.stepsOfRung(t, out.CaseID, 2)
-	g.r.now = func() time.Time { return own[0].DueAt.Add(time.Minute) }
+	g.r.PgSetNow(func() time.Time { return own[0].DueAt.Add(time.Minute) })
 	for range 2 {
 		expired, err := g.s.ExpireSteps(ctx, g.r.Clock())
 		if err != nil {
@@ -268,15 +237,15 @@ func TestRung2ExpiryFacesTheHumanOnce(t *testing.T) {
 func TestRung2NeedsTheJudgmentBudget(t *testing.T) {
 	for _, left := range []float64{0, 0.01, 0.02} {
 		g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
-		g.r.store = projectStore{g.s}
+		g.r.PgSetStore(projectStore{g.s})
 		cardForge, _ := newAlertForgejo(t)
-		g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: cardForge, Timeline: g.r.timeline}
+		g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: cardForge, Timeline: g.r.PgTimeline()}
 		ctx := context.Background()
-		if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET required_capabilities = '[]'::jsonb WHERE id = 't1'`); err != nil {
+		if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET required_capabilities = '[]'::jsonb WHERE id = 't1'`); err != nil {
 			t.Fatal(err)
 		}
 		chat := g.spendChat(t)
-		if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = budget_eur - $2 WHERE id = $1`, chat.ID, left); err != nil {
+		if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET spent_eur = budget_eur - $2 WHERE id = $1`, chat.ID, left); err != nil {
 			t.Fatal(err)
 		}
 		out := g.trip(t, tripCap)
@@ -288,7 +257,7 @@ func TestRung2NeedsTheJudgmentBudget(t *testing.T) {
 			continue
 		}
 		var cases int
-		if err := g.s.db.QueryRowContext(ctx, `SELECT count(*) FROM cases WHERE kind = 'judgment_budget'`).Scan(&cases); err != nil {
+		if err := g.s.PgDB().QueryRowContext(ctx, `SELECT count(*) FROM cases WHERE kind = 'judgment_budget'`).Scan(&cases); err != nil {
 			t.Fatal(err)
 		}
 		want := fmt.Sprintf("not judged, judgment budget spent: the chat task %s has %.2f of 10.00 EUR left", chat.ID, left)
@@ -344,7 +313,7 @@ func (g rungRig) climbedRow(t *testing.T, id int64) {
 		t.Fatal(err)
 	}
 	if _, err := g.s.Record(context.Background(), Event{Repository: "demo-app/demo-app", TaskID: "t1", IssueNumber: 12, Kind: EventCaseClimbed, Via: ViaFactoryd,
-		Detail: map[string]any{"case_id": id, "rung": 2, "kind": "other", "problem": textutil.Truncate(g.r.scrub(c.Problem), 300)}}); err != nil {
+		Detail: map[string]any{"case_id": id, "rung": 2, "kind": "other", "problem": textutil.Truncate(g.r.PgScrub(c.Problem), 300)}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -366,7 +335,7 @@ func TestWakeTextIsMaskedThroughTheRealReads(t *testing.T) {
 	if err := g.s.CreateTask(ctx, Task{ID: "t3", Kind: "agent", Status: "running", Objective: "z", Repository: "demo-app/demo-app", IssueNumber: 14, Track: policy.TrackPlan, Size: "small", BudgetEUR: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET plan_name = $1 WHERE id = 't3'`, "plan "+secretURL+" "+secretBearer); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET plan_name = $1 WHERE id = 't3'`, "plan "+secretURL+" "+secretBearer); err != nil {
 		t.Fatal(err)
 	}
 	g.climbedRow(t, c.ID)
@@ -389,8 +358,8 @@ func TestWakeTextIsMaskedThroughTheRealReads(t *testing.T) {
 	if _, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: second.ID, Rung: 2, Actor: ChatUser, Outcome: StepInProgress}); err != nil {
 		t.Fatal(err)
 	}
-	g.r.store = brokenReads{g.s}
-	g.r.now = func() time.Time { return time.Now().Add(time.Minute) }
+	g.r.PgSetStore(brokenReads{g.s})
+	g.r.PgSetNow(func() time.Time { return time.Now().Add(time.Minute) })
 	g.climbedRow(t, second.ID)
 	if err := drainPass(t, w); err != nil {
 		t.Fatal(err)
@@ -417,7 +386,7 @@ func TestRung2OffersTheExtendFirstAtAnAgentTimeCap(t *testing.T) {
 	if len(names) == 0 || names[0] != ActExtend || !slices.Contains(names, ActReplan) {
 		t.Fatalf("rung 2 is offered %v, want extend first and replan among them", names)
 	}
-	if why := (&Runner{}).rungStatement(Case{Kind: CaseAgentTimeCap, Problem: "agent time"}, f, "digest", nil, 2); !strings.Contains(why, "\n- extend\n- ") ||
+	if why := (&Runner{}).PgRungStatement(Case{Kind: CaseAgentTimeCap, Problem: "agent time"}, f, "digest", nil, 2); !strings.Contains(why, "\n- extend\n- ") ||
 		strings.Index(why, "- extend") > strings.Index(why, "- reverify") {
 		t.Fatalf("the statement lists %q, want extend ahead of reverify", why)
 	}
@@ -436,10 +405,10 @@ func TestRung2ExtendsAPlannerWithTheCutAsGuidance(t *testing.T) {
 	}
 	extend, _ := ActionByName(ActExtend)
 	res := Resolution{Action: ActExtend, Args: map[string]any{"agent_time_s": 1800}, Note: cut}
-	if why := extend.refusal(f, 2, res); why != "" {
+	if why := extend.PgRefusal(f, 2, res); why != "" {
 		t.Fatalf("rung 2's extend of a planner with the cut is refused: %s", why)
 	}
-	if note := (&Runner{}).sessionNote(f, ActInput{Res: res}); !strings.Contains(note, cut) {
+	if note := (&Runner{}).PgSessionNote(f, ActInput{Res: res}); !strings.Contains(note, cut) {
 		t.Fatalf("the session's note %q lacks the cut", note)
 	}
 }
@@ -453,7 +422,7 @@ func TestRung2DoesNotOfferResumeWhileACapBinds(t *testing.T) {
 	f := CaseFacts{Kind: CaseSessionCap, FloorEUR: 1, LeftEUR: 0.2, SessionCap: 3, Attempts: 1, AgentTimeS: 100, AgentTimeCapS: 1200, SessionLeastS: 300,
 		CapWait: line, PoolLeft: policy.Draw{Sessions: 10, AgentTime: 5 * time.Hour}}
 	resume, _ := ActionByName(ActResume)
-	why := resume.refusal(f, 2, Resolution{Action: ActResume})
+	why := resume.PgRefusal(f, 2, Resolution{Action: ActResume})
 	if why == "" || !strings.Contains(why, "a cap binds before a session can start: "+line) {
 		t.Fatalf("resume refusal = %q, want the day cap's line", why)
 	}
@@ -463,55 +432,14 @@ func TestRung2DoesNotOfferResumeWhileACapBinds(t *testing.T) {
 		}
 	}
 	f.CapWait = ""
-	if why := resume.refusal(f, 2, Resolution{Action: ActResume}); strings.Contains(why, "a cap binds") {
+	if why := resume.PgRefusal(f, 2, Resolution{Action: ActResume}); strings.Contains(why, "a cap binds") {
 		t.Fatalf("resume refusal = %q without a cap wait", why)
 	}
 }
 
-// policyRungsOff is v with every project at manual under escalation.judgment
-// autonomous_and_above: no rung judges, so a stop faces the human at once.
-func policyRungsOff(v policy.Version) policy.Version {
-	projects := maps.Clone(v.Projects)
-	for name, p := range projects {
-		p.Autonomy = policy.AutonomyManual
-		p.Escalation = judgesAtAutonomous
-		projects[name] = p
-	}
-	v.Projects = projects
-	return v
-}
-
-func rungsOff(r *Runner) {
-	v := policyRungsOff(r.cfg.Policy())
-	r.cfg.Policy = func() policy.Version { return v }
-}
-
 func (g monitorRig) rungsOff() {
 	rungsOff(g.m.Runner)
-	g.m.Policy = func() policy.Tree { return g.m.Runner.cfg.Policy().Tree }
-}
-
-// afterRung2 lets rung 2's step on case id run past its bound, as the sweep
-// finds it: the step ends handed up and the case climbs to the human.
-func (g rungRig) afterRung2(t *testing.T, id int64) {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE case_steps SET started_at = due_at - interval '35 minutes' WHERE case_id = $1 AND rung = 2`, id); err != nil {
-		t.Fatal(err)
-	}
-	own := g.stepsOfRung(t, id, 2)
-	if len(own) != 1 || own[0].DueAt == nil {
-		t.Fatalf("rung 2 steps = %+v, want one with a bound", own)
-	}
-	g.r.now = func() time.Time { return own[0].DueAt.Add(time.Minute) }
-	expired, err := g.s.ExpireSteps(ctx, g.r.Clock())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := g.r.ClimbExpired(ctx, expired); err != nil {
-		t.Fatal(err)
-	}
-	g.settle()
+	g.m.Policy = func() policy.Tree { return g.m.Runner.PgCfg().Policy().Tree }
 }
 
 // A wake's case_climbed row whose step ended since wakes nobody, and an
@@ -522,7 +450,7 @@ func TestStaleCaseClimbedWakesNobody(t *testing.T) {
 	out := g.trip(t, tripCap)
 	g.settle()
 	g.afterRung2(t, out.CaseID)
-	g.r.now = func() time.Time { return time.Now().Add(time.Hour) }
+	g.r.PgSetNow(func() time.Time { return time.Now().Add(time.Hour) })
 	if err := drainPass(t, w); err != nil {
 		t.Fatal(err)
 	}
@@ -571,11 +499,11 @@ func TestHandUpRung2RefusesAnotherCardsCase(t *testing.T) {
 
 // An action table whose fitting action is missing lists the table as it is.
 func TestOrderedActionsWithoutTheFittingAction(t *testing.T) {
-	saved := Actions
-	t.Cleanup(func() { Actions = saved })
-	Actions = slices.DeleteFunc(slices.Clone(saved), func(a Action) bool { return a.Name == ActExtend })
-	if got := orderedActions(CaseFacts{Kind: CaseAgentTimeCap}); len(got) != len(Actions) {
-		t.Fatalf("%d actions, want the table's %d", len(got), len(Actions))
+	saved := factoryd.Actions
+	t.Cleanup(func() { factoryd.Actions = saved })
+	factoryd.Actions = slices.DeleteFunc(slices.Clone(saved), func(a Action) bool { return a.Name == ActExtend })
+	if got := orderedActions(CaseFacts{Kind: CaseAgentTimeCap}); len(got) != len(factoryd.Actions) {
+		t.Fatalf("%d actions, want the table's %d", len(got), len(factoryd.Actions))
 	}
 }
 
@@ -589,7 +517,7 @@ func TestRung2ReadsTheSupervisorsCutOnTheCard(t *testing.T) {
 	long := strings.Repeat("é", 450)
 	ctx := context.Background()
 	for _, guidance := range []string{cut + " " + secretURL, long} {
-		if err := g.r.timeline.Append(ctx, "t1", "checkin", map[string]any{"decision": "message", "moment": "stalled", "guidance": guidance}); err != nil {
+		if err := g.r.PgTimeline().Append(ctx, "t1", "checkin", map[string]any{"decision": "message", "moment": "stalled", "guidance": guidance}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -642,7 +570,7 @@ func TestAddRungCostLandsOnTheNewestStepOfTheRung(t *testing.T) {
 func TestRung2ReadsTheCutAChildsReplanCarriedToItsPlan(t *testing.T) {
 	g, w, starter := rungTwoRig(t, policy.JudgmentAlways)
 	ctx := context.Background()
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET track = 'plan', issue_number = 1547 WHERE id = 't1'`); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET track = 'plan', issue_number = 1547 WHERE id = 't1'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.s.CreateTask(ctx, Task{ID: "c1587", Kind: "agent", Status: "running", Objective: "the size bound", Repository: "demo-app/demo-app", IssueNumber: 1587,
@@ -652,7 +580,7 @@ func TestRung2ReadsTheCutAChildsReplanCarriedToItsPlan(t *testing.T) {
 	const cut = "land one card that compiles, then one card per proof"
 	work := replanText(&Trip{Kind: TripSize, Detail: "1774 lines against 1742"},
 		Decision{Action: ActionReplan, Reason: strings.Repeat("r", 354), Guidance: cut + " " + secretURL + " " + strings.Repeat("é", 450)})
-	if _, err := g.r.timeline.AppendUnlessPending(ctx, "t1", stepReplan, CutReplanDetail("c1587", work, 1), replanClosers...); err != nil {
+	if _, err := g.r.PgTimeline().AppendUnlessPending(ctx, "t1", stepReplan, CutReplanDetail("c1587", work, 1), replanClosers...); err != nil {
 		t.Fatal(err)
 	}
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
@@ -709,7 +637,7 @@ func TestWakeNamesOnlyTheClimbedCases(t *testing.T) {
 func TestRung1ThatDidNotJudgeLeavesTheMark(t *testing.T) {
 	for _, found := range []string{"rung 1 could not run: the gateway refused the call for money", "the rung did not answer within 35m"} {
 		g := newRungRig(t, "success")
-		g.r.cfg.Prices = nil
+		g.r.PgSetPrices(nil)
 		ctx := context.Background()
 		g.spendChat(t)
 		c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: "k", Status: CaseOpen, Problem: "stuck"})
@@ -720,7 +648,7 @@ func TestRung1ThatDidNotJudgeLeavesTheMark(t *testing.T) {
 		if _, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepHandedUp, Found: found, EndedAt: &now}); err != nil {
 			t.Fatal(err)
 		}
-		task, _, _ := g.r.task(ctx, "t1")
+		task, _, _ := g.r.PgTask(ctx, "t1")
 		if _, err := g.r.Climb(ctx, task, c, CaseFacts{}, 1, found); err != nil {
 			t.Fatal(err)
 		}
@@ -736,7 +664,7 @@ func TestRung1ThatDidNotJudgeLeavesTheMark(t *testing.T) {
 func TestDigestRenderMasksASupervisorsMessage(t *testing.T) {
 	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
 	ctx := context.Background()
-	if err := g.r.timeline.Append(ctx, "t1", "checkin", map[string]any{"decision": "message", "moment": "stalled", "guidance": "go on " + secretURL + " " + secretBearer}); err != nil {
+	if err := g.r.PgTimeline().Append(ctx, "t1", "checkin", map[string]any{"decision": "message", "moment": "stalled", "guidance": "go on " + secretURL + " " + secretBearer}); err != nil {
 		t.Fatal(err)
 	}
 	d, err := g.r.CardDigest(ctx, "t1")
@@ -756,19 +684,19 @@ func TestDigestRenderMasksASupervisorsMessage(t *testing.T) {
 func TestRung2SpentCheckPricesBig(t *testing.T) {
 	for _, premium := range []bool{false, true} {
 		g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
-		g.r.store = projectStore{g.s}
+		g.r.PgSetStore(projectStore{g.s})
 		ctx := context.Background()
-		if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET required_capabilities = '[]'::jsonb WHERE id = 't1'`); err != nil {
+		if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET required_capabilities = '[]'::jsonb WHERE id = 't1'`); err != nil {
 			t.Fatal(err)
 		}
 		if premium {
-			v := g.r.cfg.Policy()
+			v := g.r.PgCfg().Policy()
 			v.Document.Prices.MaxOutputTokens = map[string]int{policy.Premium: 24576}
-			g.r.cfg.Policy = func() policy.Version { return v }
-			g.r.cfg.Prices = aliasPrices{"big": {In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}, "premium": {In: 1e-5, Out: 1e-4, MaxOutput: 24576}}
+			g.r.PgSetPolicy(func() policy.Version { return v })
+			g.r.PgSetPrices(aliasPrices{"big": {In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}, "premium": {In: 1e-5, Out: 1e-4, MaxOutput: 24576}})
 		}
 		chat := g.spendChat(t)
-		if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = budget_eur - 0.05 WHERE id = $1`, chat.ID); err != nil {
+		if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET spent_eur = budget_eur - 0.05 WHERE id = $1`, chat.ID); err != nil {
 			t.Fatal(err)
 		}
 		out := g.trip(t, tripCap)
@@ -798,7 +726,7 @@ func TestFaceAfterRung2ExpiryKeepsTheMomentsReasonAndRungOnesExpiry(t *testing.T
 	two := h.trip(t, tripCap)
 	h.settle()
 	ctx := context.Background()
-	if _, err := h.s.db.ExecContext(ctx, `UPDATE case_steps SET found = 'the rung did not answer within 35m' WHERE case_id = $1 AND rung = 1`, two.CaseID); err != nil {
+	if _, err := h.s.PgDB().ExecContext(ctx, `UPDATE case_steps SET found = 'the rung did not answer within 35m' WHERE case_id = $1 AND rung = 1`, two.CaseID); err != nil {
 		t.Fatal(err)
 	}
 	h.afterRung2(t, two.CaseID)
