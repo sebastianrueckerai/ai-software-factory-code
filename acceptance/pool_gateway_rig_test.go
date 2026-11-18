@@ -140,6 +140,7 @@ type accGatewayStore struct {
 	holds  map[int64]policy.Hold
 	nextID int64
 	audits []factorygateway.AuditRow
+	events []factorygateway.EventRow
 	reqs   []policy.HoldRequest
 	pol    *policy.Version // nil = none loaded
 }
@@ -254,6 +255,9 @@ func (s *accGatewayStore) InsertAudit(_ context.Context, row factorygateway.Audi
 }
 
 func (s *accGatewayStore) InsertEvent(_ context.Context, row factorygateway.EventRow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, row)
 	return nil
 }
 
@@ -354,6 +358,12 @@ func (s *accGatewayStore) holdRequests() []policy.HoldRequest {
 	return append([]policy.HoldRequest(nil), s.reqs...)
 }
 
+func (s *accGatewayStore) eventRows() []factorygateway.EventRow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]factorygateway.EventRow(nil), s.events...)
+}
+
 func (s *accGatewayStore) openHolds() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -400,11 +410,19 @@ func (m *accGatewayMinter) calls() []string {
 	return append([]string(nil), m.mints...)
 }
 
-// accGatewayPrices prices the one alias the proofs call at the proof's
-// own figure; every other alias the gateway refuses to price.
-type accGatewayPrices struct{ price policy.Price }
+// accGatewayPrices prices the aliases the proofs call: the session
+// alias at the proof's own figure, plus any extra alias a proof names —
+// a provider-limit proof's class big. Every other alias the gateway
+// refuses to price.
+type accGatewayPrices struct {
+	price policy.Price
+	also  map[string]policy.Price
+}
 
 func (p accGatewayPrices) Price(_ context.Context, alias string) (policy.Price, error) {
+	if pr, ok := p.also[alias]; ok {
+		return pr, nil
+	}
 	if alias == "small" {
 		return p.price, nil
 	}
@@ -412,11 +430,24 @@ func (p accGatewayPrices) Price(_ context.Context, alias string) (policy.Price, 
 }
 
 // accStubLiteLLM counts the backend calls the gateway proxied — a proof
-// of refusals answers none.
+// of refusals answers none — and, once a proof has served it an answer,
+// answers that answer: the status, the body and the headers a provider
+// limit proof reads the reset from.
 type accStubLiteLLM struct {
 	*httptest.Server
-	mu   sync.Mutex
-	seen []string
+	mu      sync.Mutex
+	seen    []string
+	status  int
+	body    string
+	headers map[string]string
+}
+
+// serve points the stub at the provider answer the next proxied calls
+// carry.
+func (s *accStubLiteLLM) serve(status int, body string, headers map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status, s.body, s.headers = status, body, headers
 }
 
 func newAccStubLiteLLM(t *testing.T) *accStubLiteLLM {
@@ -425,7 +456,17 @@ func newAccStubLiteLLM(t *testing.T) *accStubLiteLLM {
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.seen = append(s.seen, r.Method+" "+r.URL.Path)
+		status, body, headers := s.status, s.body, s.headers
 		s.mu.Unlock()
+		if body != "" {
+			for k, v := range headers {
+				w.Header().Set(k, v)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			fmt.Fprint(w, body) // #nosec G104 -- nothing of these proofs reads past writing the answer
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, "{}") // #nosec G104 -- nothing of these proofs reads the stub's answer
 	}))
