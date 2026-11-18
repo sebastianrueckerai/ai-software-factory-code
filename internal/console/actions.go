@@ -644,14 +644,20 @@ func (c *Console) doRetryFreeze(ctx context.Context, a actor, id string) (string
 		return "", refuse(http.StatusConflict, no.Error())
 	case errors.As(err, &part):
 		log.Printf("console: %s presses the retry switch on %s: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusInternalServerError, "The hold cleared, but part of the press failed: "+errText(part.Err)+
-			". A frozen card it did not wake starts at its reset, and a freeze card it did not close closes five minutes after its class resumed.")
+		return "", partialPress(part)
 	case err != nil:
 		log.Printf("console: %s presses the retry switch on %s: %v", a.s.user, t.ID, err)
 		return "", refuse(http.StatusInternalServerError, "The freeze could not be ended: "+errText(err)+". Press Retry now again, or wait for the reset on the card.")
 	}
 	log.Printf("console: %s pressed the retry switch on %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	return fmt.Sprintf("Ended the freeze of #%d: the hold cleared and its frozen cards call the provider again; a new limit freezes them to its reset.", t.IssueNumber), nil
+}
+
+// partialPress is the answer, on every entry, to a press that cleared the
+// hold and failed part of what follows: what failed, and what comes of it.
+func partialPress(part *factoryd.PartialPressError) error {
+	return refuse(http.StatusInternalServerError, "The hold cleared, but part of the press failed: "+errText(part.Err)+
+		". A frozen card it did not wake starts at its reset, and a freeze card it did not close closes five minutes after its class resumed.")
 }
 
 // filedReplacement is the issue of the replacement a retry among did
@@ -1888,6 +1894,7 @@ func (c *Console) actErr(ctx context.Context, a actor, t factoryd.Task, res fact
 	var ended factoryd.ErrCaseEnded
 	var noRetry factoryd.ErrNoRetry
 	var capped *factoryd.CardCapError
+	var part *factoryd.PartialPressError
 	var fj *forgejoRefusal
 	switch {
 	case err == nil:
@@ -1904,6 +1911,9 @@ func (c *Console) actErr(ctx context.Context, a actor, t factoryd.Task, res fact
 		return refuse(http.StatusConflict, err.Error())
 	case errors.As(err, &capped):
 		return refuse(http.StatusConflict, capSpent(t.IssueNumber, capped.Budget, res, c.ceilingOf(ctx, t), a.via))
+	case errors.As(err, &part):
+		log.Printf("console: %s answers %s with %s: %v", a.s.user, t.ID, res.Action, err)
+		return partialPress(part)
 	case errors.Is(err, factoryd.ErrNotFound):
 		return refuse(http.StatusNotFound, "There is no card "+t.ID+" in this project.")
 	}

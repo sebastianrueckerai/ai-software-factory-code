@@ -461,4 +461,13 @@ func TestActRetryOnAFrozenCaseRunsTheRetrySwitch(t *testing.T) {
 	if len(pressed) != 2 {
 		t.Fatalf("pressed %q, want no press past the two", pressed)
 	}
+	// a press that cleared the hold and failed part after it reaches the
+	// answer's caller as it is, for the caller's own sentence
+	r.RetryFreeze = func(context.Context, string, string) error {
+		return &PartialPressError{Err: errors.New("wake t-z: temporal unavailable")}
+	}
+	var part *PartialPressError
+	if _, err := r.Act(ctx, ActInput{TaskID: "t-z", By: "sebastian", Rung: 3, Res: Resolution{Action: ActRetry}}); !errors.As(err, &part) {
+		t.Fatalf("a press that failed past the clear = %v, want its PartialPressError", err)
+	}
 }
