@@ -693,7 +693,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		r.commentOnce(ctx, t, repo, pr, r.untrusted(t, criteriaComment(commit, rep.met+met, of, rep.lines)))
 	case len(all) > 0:
 		// nothing ran: an empty plan
-		r.commentOnce(ctx, t, repo, pr, r.untrusted(t, fmt.Sprintf("factoryd criteria gate on %s: no criterion ran.\n\n%s",
+		r.commentOnce(ctx, t, repo, pr, r.untrusted(t, fmt.Sprintf("The criteria gate on %s: no criterion ran.\n\n%s",
 			commit, fenced(strings.Join(all, "\n")))))
 	}
 	r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit,
@@ -773,6 +773,6 @@ func (r *Runner) proofsPending(ctx context.Context, t Task, rows []PlanProof, p 
 // many of the gate's of criteria it met, the judgement's among them, and
 // its lines.
 func criteriaComment(commit string, met, of int, lines []string) string {
-	return fmt.Sprintf("factoryd criteria gate on %s: %d of %d criteria met (human criteria ride the approval).\n\n%s",
+	return fmt.Sprintf("The criteria gate on %s: %d of %d criteria met. A human settles the human criteria at the approval.\n\n%s",
 		commit, met, of, fenced(strings.Join(lines, "\n")))
 }

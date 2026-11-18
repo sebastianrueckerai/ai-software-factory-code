@@ -384,7 +384,7 @@ func TestGateRunsCarriedTest(t *testing.T) {
 			comments := slices.Clone(fj.comments)
 			fj.mu.Unlock()
 			if !slices.ContainsFunc(comments, func(c string) bool {
-				return strings.Contains(c, "factoryd criteria gate on c1: "+met+" of 1 criteria met")
+				return strings.Contains(c, "The criteria gate on c1: "+met+" of 1 criteria met")
 			}) {
 				t.Fatalf("comments = %q; want the "+met+" of 1 line on the pull request", comments)
 			}

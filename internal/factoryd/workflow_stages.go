@@ -73,7 +73,7 @@ const CapReachedLadder = "the session cap is reached: the findings go back to th
 
 // noAgent heads the card of a factory pull request card whose stages found
 // what an agent's card would go back with.
-const noAgent = "factoryd opened this pull request and no agent works on it: the findings meant for an agent go to a human"
+const noAgent = "the factory opened this pull request and no agent works on it, so the findings meant for an agent go to a human"
 
 // TimeCapReached heads the card of a task whose agent time ran out with
 // sessions of its cap still left.

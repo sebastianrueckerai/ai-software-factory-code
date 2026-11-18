@@ -76,12 +76,12 @@ const mustHave = {
     "#7", "#8", "#9", "Speed up the find box", "Fix the login redirect", "Trim the roll notes"],
 
   busy: ["Factory console", "New task", "Settings", "Resources", "Costs", "Policy", "Notifications", "Log out", "sebastian", "Theme",
-    "waiting on you", "3 working", "3 need you", "€61.40", "€120.00", "GitHub", "configuration", "version 4",
+    "waiting on you", "3 working", "3 need you", "61.40 of 120.00 EUR", "GitHub", "configuration", "version 4",
     "Needs you", "Queued", "In progress", "Done",
     "Merge", "high", "Approve", "Close",
     "How far back does the feed page by default?",
     "#598", "#616", "#617", "waits for #603", "#533",
-    "#606", "€1.72", "near its budget", "#611", "#614", "#601",
+    "#606", "1.72 of its 2.00 EUR", "near its budget", "#611", "#614", "#601",
     "#531", "#596", "#600", "#597", "failed", "#590", "closed", "#535", "Retry",
     "project agent", "Start a new thread", "What is #606 stuck on", "Do it", "Skip", "Send",
     "File roadmap 300 as a card", "One card, or one per deliverable", "One card",
@@ -92,11 +92,11 @@ const mustHave = {
     "Order and show", "Order", "Show", "newest first", "oldest first", "next up", "by stage", "by spend", "blocked only", "exceptional only", "failed only",
     "↻ routines", "within", "Weekly bump", "Template pass", "Dependency update", "Audit", "every Monday 06:00", "after 6 more merges",
     "#779"],
-  idle: ["idle", "0 working", "0 need you", "€144.16", "#455", "#178", "Done", "#618", "#597", "failed"],
+  idle: ["idle", "0 working", "0 need you", "144.16 of 120.00 EUR", "#455", "#178", "Done", "#618", "#597", "failed"],
   fire: ["#610", "Fund", "2 waiting on the provider",
     "#620", "#615", "#621", "#604", "#609", "failed", "cx33", "load test of the event stream",
     "#623", "waits for #610", "#602"],
-  quiet: ["4 working", "0 need you", "€4.10", "#624", "#625", "#622", "#621", "#620", "done",
+  quiet: ["4 working", "0 need you", "4.10 of 120.00 EUR", "#624", "#625", "#622", "#621", "#620", "done",
     "chain run 3251", "live through run 3248, 25 min after merge"],
 
   tokens: ["via claude-laptop", "sent by the chat token claude-laptop", "What does #606 still wait on?", "Leave #606 to its session."],
@@ -117,7 +117,7 @@ const mustOpen = {
   },
   fire: {
     [labID(619) + ":overview"]: ["Rent a cx33 server for 5 hours at about 0.07 EUR?", "nothing for over 41 min", "Beyond the project's envelope", "Approve it", "Refuse it"],
-    [labID(620) + ":overview"]: ["€1.95"],
+    [labID(620) + ":overview"]: ["1.95 of 2.00 EUR"],
   },
 };
 

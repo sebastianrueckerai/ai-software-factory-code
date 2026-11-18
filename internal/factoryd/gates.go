@@ -544,6 +544,17 @@ func (r *Runner) headIs(ctx context.Context, repo Repo, pr int64, commit string)
 	return "", nil
 }
 
+// outcomeWords is what a risk class's outcome means for the merge.
+func outcomeWords(outcome string) string {
+	switch outcome {
+	case policy.OutcomeForbidden:
+		return "agents may not make this change"
+	case policy.OutcomeAuto:
+		return "it may merge without a human where the project's merge rule allows it"
+	}
+	return "a human approves its merge"
+}
+
 // GatePolicy classifies the pull request's changed paths (a rename counts
 // both names) and lines under the version the task pinned (pin; 0 is the version in
 // force), records the class on the
@@ -617,16 +628,16 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	if err := r.store.SetTaskRisk(ctx, t.ID, g.Class); err != nil {
 		return PolicyGate{}, err
 	}
-	msg := fmt.Sprintf("factoryd policy gate (policy version %d): risk class **%s**, %s, over %d changed paths, %d changed lines.\n\n", v.ID, g.Class, g.Outcome, g.Changed, g.Lines)
+	msg := fmt.Sprintf("The policy gate, at policy version %d, puts this change of %d paths and %d lines in risk class **%s**: %s.\n\n", v.ID, g.Changed, g.Lines, g.Class, outcomeWords(g.Outcome))
 	switch {
 	case g.Factory && !mechanicalSource(t.Source):
-		msg += "factoryd opened this pull request from GitHub commits: a human approves its change to these paths at every position, which agents may not change:\n" + listPaths(g.Paths)
+		msg += "The factory opened this pull request from GitHub commits: a human approves its change to these paths at every position, which agents may not change:\n" + listPaths(g.Paths)
 	case g.Factory:
-		msg += "factoryd opened this pull request, no agent: it merges on the merge rule alone at full auto, else a human approves its change to these paths, which agents may not change:\n" + listPaths(g.Paths)
+		msg += "The factory opened this pull request, not an agent: it merges on the merge rule alone at full auto, else a human approves its change to these paths, which agents may not change:\n" + listPaths(g.Paths)
 	case g.Outcome == policy.OutcomeForbidden:
 		msg += "Agents may not change these paths:\n" + listPaths(g.Paths)
 	case g.large():
-		msg += fmt.Sprintf("A large change, over the policy's %d lines: a person approves it, or denies it (requesting changes sends it back to the agent).", g.LargeLines)
+		msg += fmt.Sprintf("A large change, over the policy's %d lines: a human merges it with “Merge it”, or returns it to the agent with “Send it back”.", g.LargeLines)
 	case g.Outcome == policy.OutcomeAuto && g.MergeRule == policy.MergeAuto:
 		msg += "The project's merge rule is auto: factory-merge merges when the model review approves and the reproduction failed at the base and passes at the head, " +
 			"or the agent recorded the fault it fixed and the review finds the change a strict improvement; otherwise a human approves the merge."
@@ -803,9 +814,9 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	// sandbox's not-a-repository signature, not the bug
 	rule := ""
 	if notARepository(res) {
-		rule = "\n\nfactoryd: " + notARepositoryRule
+		rule = "\n\nThe factory adds: " + notARepositoryRule
 	}
-	msg := fmt.Sprintf("factoryd reproduction gate %s (exit %d) on %s:\n\n%s%s\n\nOutput tail at the head:\n\n%s",
+	msg := fmt.Sprintf("The reproduction gate's command %s (exit %d) on %s:\n\n%s%s\n\nOutput tail at the head:\n\n%s",
 		verdict, res.Exit, commit, fenced(res.Command), rule, fenced(res.Output))
 	if !inTest {
 		msg += "\n\nOutput tail at the base:\n\n" + fenced(textutil.Tail(at.Output, reproOutputTail))
@@ -2253,7 +2264,7 @@ func (r *Runner) reviewFact(ctx context.Context, t Task, fact ReviewAttemptFact)
 // reviewComment renders rv for the pull request; read says how much of
 // the diff the model read.
 func reviewComment(model, commit string, rv Review, read string) string {
-	head := fmt.Sprintf("factoryd model review (%s) of %s. Evidence for the human who approves the merge, and one of the conditions of the merge rule auto.\n\n",
+	head := fmt.Sprintf("The model review (%s) of %s is evidence for the human who approves the merge, and one of the conditions of the merge rule auto.\n\n",
 		cmp.Or(model, "no review model named by the policy"), commit)
 	if rv.Verdict == "" {
 		return head + rv.Note
@@ -2334,9 +2345,9 @@ func MergeRequest(t Task, in ApprovalInput, failed []FailedTest, failedMore int)
 	reason, whyHuman := namedReview(fmt.Sprintf("pull request #%d at %s is on the card (risk class %s): a human decides the merge", in.PR.Number, in.Commit, g.Class),
 		in.WhyHuman, in.Review)
 	if g.Factory {
-		line := "factoryd opened this pull request, no agent: below full auto a human approves its change to paths forbidden to agents (risk class %s): %s"
+		line := "The factory opened this pull request, not an agent: below full auto a human approves its change to paths forbidden to agents (risk class %s): %s"
 		if !mechanicalSource(t.Source) {
-			line = "factoryd opened this pull request from GitHub commits: a human approves its change to paths forbidden to agents at every position (risk class %s): %s"
+			line = "The factory opened this pull request from GitHub commits: a human approves its change to paths forbidden to agents at every position (risk class %s): %s"
 		}
 		whyHuman = append([]string{fmt.Sprintf(line, g.Class, strings.Join(g.Paths, ", "))}, whyHuman...)
 	}
@@ -2552,7 +2563,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	access := r.forgejo.Access(p)
 	token := access.Merge
 	if !ok || token == "" {
-		return r.refuseMerge(ctx, t, repo, pr, commit, approver, "factoryd holds no merge token for "+t.Repository+
+		return r.refuseMerge(ctx, t, repo, pr, commit, approver, "the factory holds no merge token for "+t.Repository+
 			": its project file names none, or its registration has not run"), nil
 	}
 	// the merge gate's decision and an approval the project agent decided
@@ -2563,7 +2574,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 			return r.refuseMerge(ctx, t, repo, pr, commit, approver, "the project's merge rule is "+cmp.Or(p.MergeRule, policy.MergeHuman)+" now: a human approves"), nil
 		}
 		if access.Gate == "" {
-			return r.refuseMerge(ctx, t, repo, pr, commit, approver, "factoryd holds no gate token for "+t.Repository+
+			return r.refuseMerge(ctx, t, repo, pr, commit, approver, "the factory holds no gate token for "+t.Repository+
 				": its project file names none, or its registration has not run"), nil
 		}
 		body := "The project agent approved " + commit + " on the project's merge rule auto"

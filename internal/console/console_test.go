@@ -3062,7 +3062,7 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 		r.approvals.mu.Lock()
 		defer r.approvals.mu.Unlock()
 		r.approvals.rows[1].Spec = json.RawMessage(fmt.Sprintf(`{"risk_class":"standard","head_sha":"abc123","factory":true,"red_checks":%t,`+
-			`"why_human":["factoryd opened this pull request and no agent works on it: the findings meant for an agent go to a human"]}`, red))
+			`"why_human":["the factory opened this pull request and no agent works on it, so the findings meant for an agent go to a human"]}`, red))
 	}
 	item := func() string {
 		t.Helper()

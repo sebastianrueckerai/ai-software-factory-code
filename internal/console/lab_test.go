@@ -1346,7 +1346,7 @@ func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.
 				"PR #609: checks 3/4, acceptance failed (TestDrawerObjective)"}}},
 		{Role: "assistant", At: ago(14*time.Minute - 9*time.Second), Content: "#606 is in its second session. The first pushed PR #609, then the " +
 			"**acceptance** job failed: the clamp cuts the objective at two lines and `TestDrawerObjective` reads three.\n\n" +
-			"It has spent €1.72 of its €2.00, so this session is its last under the budget."},
+			"It has spent 1.72 of its 2.00 EUR, so this session is its last under the budget."},
 		{Role: "user", Content: "Tell it to keep the drawer unclamped, and hold #617 until #606 is done.", At: ago(12 * time.Minute)},
 		{Role: "assistant", At: ago(12*time.Minute - 6*time.Second), ToolCalls: []factoryd.ChatToolCall{
 			call(proposals[0], "call_2", ago(12*time.Minute-6*time.Second)), call(proposals[1], "call_3", ago(12*time.Minute-6*time.Second))}},

@@ -184,8 +184,9 @@ activities, each with a timeline step and a comment on the pull request:
    and the prompt's hash, and the `judgement` line goes on the timeline.
    A human criterion gets no row from the gate: the human settles it on
    the merge card (`console.md`).
-   The comment on the pull request reads "factoryd criteria gate on
-   <head>: <k> of <n> criteria met (human criteria ride the approval)",
+   The comment on the pull request reads "The criteria gate on <head>:
+   <k> of <n> criteria met. A human settles the human criteria at the
+   approval.",
    each criterion's line under it.
    From change id `blind-proofs` on, the gate's findings go back to the
    agent as the criteria stage's do, and to the card at the session cap.

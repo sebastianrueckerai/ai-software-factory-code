@@ -355,8 +355,8 @@ func TestGatePolicyCountsLines(t *testing.T) {
 	if got, _, _ := store.Task(context.Background(), "t1"); got.RiskClass != policy.ClassLarge {
 		t.Fatalf("risk class = %q", got.RiskClass)
 	}
-	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "53 changed lines") ||
-		!strings.Contains(fj.comments[0], "over the policy's 50 lines: a person approves it, or denies it (requesting changes sends it back to the agent).") {
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "this change of 2 paths and 53 lines in risk class **large**: a human approves its merge.") ||
+		!strings.Contains(fj.comments[0], "over the policy's 50 lines: a human merges it with “Merge it”, or returns it to the agent with “Send it back”.") {
 		t.Fatalf("comments = %q", fj.comments)
 	}
 	if step := timelineStep(t, objects, "t1", "gate_policy"); step["lines"] != float64(53) {
@@ -364,7 +364,7 @@ func TestGatePolicyCountsLines(t *testing.T) {
 	}
 	v.Document.Risk.LargeLines = 0
 	val, err = execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
-	if g := getInto[PolicyGate](t, val, err); g.Class != "normal" || g.Lines != 53 || strings.Contains(fj.comments[1], "over the policy's") || !strings.Contains(fj.comments[1], "53 changed lines") {
+	if g := getInto[PolicyGate](t, val, err); g.Class != "normal" || g.Lines != 53 || strings.Contains(fj.comments[1], "over the policy's") || !strings.Contains(fj.comments[1], "this change of 2 paths and 53 lines in risk class **normal**") {
 		t.Fatalf("large_lines 0: gate = %+v, comment %q, want normal over 53 lines", g, fj.comments[1])
 	}
 }
@@ -522,11 +522,11 @@ func TestGatePolicyForbiddenPathsOfAFactoryPRGoToAHuman(t *testing.T) {
 				t.Fatalf("risk class = %q", got.RiskClass)
 			}
 			c := fj.comments[0]
-			sentence := "factoryd opened this pull request, no agent: it merges on the merge rule alone at full auto, else a human approves its change to these paths, which agents may not change:\n- `.forgejo/workflows/ci.yml`\n"
+			sentence := "The factory opened this pull request, not an agent: it merges on the merge rule alone at full auto, else a human approves its change to these paths, which agents may not change:\n- `.forgejo/workflows/ci.yml`\n"
 			if source == SourceGitHubSync {
-				sentence = "factoryd opened this pull request from GitHub commits: a human approves its change to these paths at every position, which agents may not change:\n- `.forgejo/workflows/ci.yml`\n"
+				sentence = "The factory opened this pull request from GitHub commits: a human approves its change to these paths at every position, which agents may not change:\n- `.forgejo/workflows/ci.yml`\n"
 			}
-			if !strings.Contains(c, "risk class **forbidden**, requires_approval") || strings.Contains(c, "Agents may not change these paths:") || !strings.Contains(c, sentence) {
+			if !strings.Contains(c, "risk class **forbidden**: a human approves its merge") || strings.Contains(c, "Agents may not change these paths:") || !strings.Contains(c, sentence) {
 				t.Fatalf("comment = %q", c)
 			}
 		})
@@ -544,8 +544,8 @@ func TestGatePolicyForbiddenPathsOfAFactoryPRGoToAHuman(t *testing.T) {
 // GitHub sync's card says a human approves at every position.
 func TestApprovalCardNamesAFactoryPRsForbiddenPaths(t *testing.T) {
 	for _, tc := range []struct{ source, first string }{
-		{SourceRevert, "factoryd opened this pull request, no agent: below full auto a human approves its change to paths forbidden to agents (risk class forbidden): .forgejo/workflows/ci.yml, .github/x.yml"},
-		{SourceGitHubSync, "factoryd opened this pull request from GitHub commits: a human approves its change to paths forbidden to agents at every position (risk class forbidden): .forgejo/workflows/ci.yml, .github/x.yml"},
+		{SourceRevert, "The factory opened this pull request, not an agent: below full auto a human approves its change to paths forbidden to agents (risk class forbidden): .forgejo/workflows/ci.yml, .github/x.yml"},
+		{SourceGitHubSync, "The factory opened this pull request from GitHub commits: a human approves its change to paths forbidden to agents at every position (risk class forbidden): .forgejo/workflows/ci.yml, .github/x.yml"},
 	} {
 		task := gateTask
 		task.Source = tc.source
@@ -655,7 +655,7 @@ func TestModelReviewPostsTheVerdict(t *testing.T) {
 			t.Fatalf("review input lacks %q: %s", want, user)
 		}
 	}
-	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "factoryd model review (big) of c1") || !strings.Contains(fj.comments[0], "Verdict: **concerns**") || !strings.Contains(fj.comments[0], "one of the conditions of the merge rule auto") {
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "The model review (big) of c1") || !strings.Contains(fj.comments[0], "Verdict: **concerns**") || !strings.Contains(fj.comments[0], "one of the conditions of the merge rule auto") {
 		t.Fatalf("comments = %q", fj.comments)
 	}
 	if !strings.Contains(timeline(t, objects), `"step":"model_review"`) {
@@ -1314,7 +1314,7 @@ func TestModelReviewWithoutAReviewModel(t *testing.T) {
 	if rv := getInto[Review](t, val, err); !strings.Contains(rv.Note, "the policy names no review model") || len(ll.chats) != 0 {
 		t.Fatalf("review = %+v, calls %d", rv, len(ll.chats))
 	}
-	if len(fj.comments) != 1 || !strings.HasPrefix(fj.comments[0], "factoryd model review (no review model named by the policy) of c1.") {
+	if len(fj.comments) != 1 || !strings.HasPrefix(fj.comments[0], "The model review (no review model named by the policy) of c1 is evidence") {
 		t.Fatalf("comments = %q", fj.comments)
 	}
 }
@@ -2251,7 +2251,7 @@ func TestAutoMergeRefusedWithoutTheGatesApproval(t *testing.T) {
 		reviews    int
 		refusal    string
 	}{
-		"no gate token":   {noGate, 0, 0, "factoryd holds no gate token for sf/repo: its project file names none, or its registration has not run"},
+		"no gate token":   {noGate, 0, 0, "the factory holds no gate token for sf/repo: its project file names none, or its registration has not run"},
 		"review refused":  {autoProject("sf/repo"), http.StatusForbidden, 1, "the merge gate's approval as factory-gate failed: forgejo POST /api/v1/repos/sf/repo/pulls/9/reviews"},
 		"review rejected": {autoProject("sf/repo"), http.StatusUnprocessableEntity, 1, "status 422"},
 		// the rule the gate read is stale by the gate's whole run: the
@@ -2317,7 +2317,7 @@ func TestAWakesApprovalIsRefusedWithoutTheGate(t *testing.T) {
 		refusal string
 	}{
 		"merge rule human": {seedProject("sf/repo"), "the project's merge rule is human now: a human approves"},
-		"no gate token":    {noGate, "factoryd holds no gate token for sf/repo: its project file names none, or its registration has not run"},
+		"no gate token":    {noGate, "the factory holds no gate token for sf/repo: its project file names none, or its registration has not run"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
@@ -2361,7 +2361,7 @@ func TestMergeTokenPerProject(t *testing.T) {
 			}
 			val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 			if tc.auth == "" {
-				if res := getInto[MergeResult](t, val, err); res.Merged || len(fj.merges) != 0 || !strings.Contains(res.Refusal, "factoryd holds no merge token for sf/repo") {
+				if res := getInto[MergeResult](t, val, err); res.Merged || len(fj.merges) != 0 || !strings.Contains(res.Refusal, "the factory holds no merge token for sf/repo") {
 					t.Fatalf("merge %+v, merges %d; want refused before any merge", res, len(fj.merges))
 				}
 				return
