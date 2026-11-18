@@ -235,9 +235,21 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 // planSlotOf is the slot of plan case k of card bt: its face's ask and why
 // are the plan's one line, never the revision's text, and its choices are
 // the question's, the one the face recommends checked.
-// A case that names no revision and no index has no slot.
+// A case whose facts name no revision or index derives both, and the
+// question's choices (planSlotFacts); one that derives neither has no slot.
 func (c *Console) planSlotOf(ctx context.Context, face *factoryd.Face, bt factoryd.BoardTask, k factoryd.Case, cases []factoryd.Case) *planSlot {
 	revision, index := factInt(k, "revision"), factInt(k, "index")
+	choices, _ := k.Facts["choices"].([]any)
+	recommended, _ := k.Facts["recommended"].(string)
+	if revision == 0 || index == 0 {
+		var q factoryd.PlanQuestion
+		if revision, index, q = c.planSlotFacts(ctx, k); choices == nil {
+			for _, ch := range q.Choices {
+				choices = append(choices, ch)
+			}
+			recommended = q.Recommended
+		}
+	}
 	if revision == 0 || index == 0 {
 		return nil
 	}
@@ -245,7 +257,7 @@ func (c *Console) planSlotOf(ctx context.Context, face *factoryd.Face, bt factor
 	plan := fmt.Sprintf("Plan #%d, revision %d", bt.IssueNumber, revision)
 	open := 0
 	for _, o := range cases {
-		if o.Kind == factoryd.CasePlanQuestion && factInt(o, "revision") == revision {
+		if o.Kind == factoryd.CasePlanQuestion && caseRevision(o) == revision {
 			open++
 		}
 	}
@@ -269,8 +281,6 @@ func (c *Console) planSlotOf(ctx context.Context, face *factoryd.Face, bt factor
 	if confirm {
 		return slot
 	}
-	choices, _ := k.Facts["choices"].([]any)
-	recommended, _ := k.Facts["recommended"].(string)
 	lead := ""
 	for _, ch := range choices {
 		if s, _ := ch.(string); s != "" && strings.HasPrefix(face.Recommendation, s+":") {
@@ -286,6 +296,40 @@ func (c *Console) planSlotOf(ctx context.Context, face *factoryd.Face, bt factor
 		}
 	}
 	return slot
+}
+
+// caseRevision is plan case k's revision: its facts', else its state
+// key's head's (planHead), 0 for neither.
+func caseRevision(k factoryd.Case) int {
+	if revision := factInt(k, "revision"); revision > 0 {
+		return revision
+	}
+	_, head, _ := strings.Cut(k.StateKey, "@")
+	revision, _ := strconv.Atoi(strings.TrimPrefix(head, "r"))
+	return max(revision, 0)
+}
+
+// planSlotFacts are the revision, index and question of plan case k whose
+// facts name no revision or index: the revision caseRevision reads, the
+// index its ask's place among that revision's questions, matched on its
+// words; 0, 0 when either fails.
+func (c *Console) planSlotFacts(ctx context.Context, k factoryd.Case) (int, int, factoryd.PlanQuestion) {
+	revision := caseRevision(k)
+	if revision == 0 {
+		return 0, 0, factoryd.PlanQuestion{}
+	}
+	qs, err := c.cfg.Tasks.PlanQuestions(ctx, k.TaskID, revision)
+	if err != nil {
+		log.Printf("console: the questions of %s revision %d: %v", k.TaskID, revision, err)
+		return 0, 0, factoryd.PlanQuestion{}
+	}
+	ask := strings.Join(strings.Fields(k.Problem), " ")
+	for i, q := range qs {
+		if strings.Join(strings.Fields(q.Text), " ") == ask {
+			return revision, i + 1, q
+		}
+	}
+	return 0, 0, factoryd.PlanQuestion{}
 }
 
 // casesInView reads the case each card showed, which a board read names
