@@ -205,11 +205,11 @@ func plFreezeCards(t *testing.T, db *sql.DB) int {
 // arms — naming the words, the countdown and the count, holding no work
 // slot and asking nothing; a re-arm updates the same card, no second one;
 // a self-resume leaves the card five minutes, the held time on its face,
-// and then it closes on its own; a retry press closes it at once. A dated
-// refusal before the reset the pressed card held reopens it, and a second
-// press closes it with its own comment; a freeze three days later, past
-// that reset, files a new card. The five-minute self-resume close is
-// slept for real.
+// and then it closes on its own and wakes the nine frozen cards once; a
+// retry press closes it at once. A dated refusal before the reset the
+// pressed card held reopens it, and a second press closes it with its own
+// comment; a freeze three days later, past that reset, files a new card.
+// The five-minute self-resume close is slept for real.
 // [one_freeze_card_per_class]
 func TestFreezeCardSpeaksForTheClass(t *testing.T) {
 	t.Parallel()
@@ -217,6 +217,8 @@ func TestFreezeCardSpeaksForTheClass(t *testing.T) {
 	s, db := accReceiptStore(t, "freeze_card_class")
 	forge, fj := newAccFreezeForgejo(t)
 	w := plFreezeWatcher(s, forge, 24*time.Hour)
+	var woke []string
+	w.Signal = func(_ context.Context, id string) error { woke = append(woke, id); return nil }
 	plFreezeWorkCards(ctx, t, s, "fz-work")
 
 	// the hold arms on zai's five-hour window: the card files at once,
@@ -282,6 +284,14 @@ func TestFreezeCardSpeaksForTheClass(t *testing.T) {
 	}
 	if got := fj.patches[card.IssueNumber]; got != "closed" {
 		t.Errorf("issue #%d's last patch = %q, want closed", card.IssueNumber, got)
+	}
+	// the resume held five minutes: the class works, and its nine frozen
+	// cards wake once, not at their reset
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Sort(woke); len(woke) != 9 || len(slices.Compact(slices.Clone(woke))) != 9 || woke[0] != "fz-work-0" || woke[8] != "fz-work-8" {
+		t.Errorf("the resume that held woke %q, want the nine frozen cards once each", woke)
 	}
 
 	// a retry press closes the class's open card at once, no five-minute

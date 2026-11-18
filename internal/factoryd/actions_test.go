@@ -496,8 +496,33 @@ func TestRetryTakesARetryableFailedDependency(t *testing.T) {
 	running := DepFact{TaskID: "d3", Issue: 22, Status: "running"}
 	open := DepFact{TaskID: "d4", Issue: 23, Status: "failed", Why: "checks: timeout"}
 	f := CaseFacts{Dependencies: []DepFact{retried, forbidden, running}}
-	if got, want := applies(t, ActRetry, f, Resolution{}), "no failed dependency is open to a retry, and no provider freeze holds the card"; got != want {
+	if got, want := applies(t, ActRetry, f, Resolution{}), "no failed dependency is open to a retry, and no provider freeze holds the card: retry files a failed dependency again or ends a freeze, so pick the action the card's wait needs"; got != want {
 		t.Errorf("no retryable dependency = %q, want %q", got, want)
+	}
+	retry, _ := ActionByName(ActRetry)
+	// a card that waits on the provider with no freeze to end is refused
+	// with its state, which the facts name
+	noFreeze := f
+	noFreeze.Stage, noFreeze.NoFreeze = GateProvider, "the freeze of #11 ended, the card is done"
+	if got := applies(t, ActRetry, noFreeze, Resolution{}); got != noFreeze.NoFreeze {
+		t.Errorf("a provider wait with no freeze = %q, want %q", got, noFreeze.NoFreeze)
+	}
+	// its timeline unread, whether a freeze holds it is unknown: try again,
+	// or a rung below the human hands it up; a dependency open to a retry
+	// needs no timeline
+	unread := f
+	unread.Stage, unread.Partial = GateProvider, []string{partialTimeline}
+	for rung, want := range map[int]string{
+		2: "the card's timeline could not be read, so it is unknown whether a provider freeze holds the card, which retry needs: try again in a minute, or hand it up",
+		3: "the card's timeline could not be read, so it is unknown whether a provider freeze holds the card, which retry needs: try again in a minute",
+	} {
+		if got := retry.refusal(unread, rung, Resolution{}); got != want {
+			t.Errorf("rung %d's retry with the timeline unread = %q, want %q", rung, got, want)
+		}
+	}
+	unread.Dependencies = append(slices.Clone(unread.Dependencies), open)
+	if got := retry.refusal(unread, 3, Resolution{}); got != "" {
+		t.Errorf("the retry of an open dependency with the timeline unread = %q, want none", got)
 	}
 	frozen := f
 	frozen.FreezeCard = "t-fz"
@@ -506,7 +531,6 @@ func TestRetryTakesARetryableFailedDependency(t *testing.T) {
 	}
 	// the freeze's end is a human's or the project agent's: rungs 0 and 1
 	// are refused it, and so it is on offer to rungs 2 and 3 alone
-	retry, _ := ActionByName(ActRetry)
 	if got, want := retry.refusal(frozen, 1, Resolution{}), "rung 1 ends no provider freeze, a human's press or the project agent's: hand it up (hand_up) with retry as the recommendation"; got != want {
 		t.Errorf("rung 1's retry of a frozen case = %q, want %q", got, want)
 	}

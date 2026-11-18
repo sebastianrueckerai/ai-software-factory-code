@@ -256,10 +256,13 @@ var Actions = []Action{
 	{Name: ActRetry, Rungs: rungs(0, 1, 2, 3), Applies: func(f CaseFacts, r Resolution) string {
 		id, _ := r.Args["task_id"].(string)
 		if id == "" {
-			if f.FreezeCard != "" || slices.ContainsFunc(f.Dependencies, func(d DepFact) bool { return retryRefusal(d) == "" }) {
+			switch {
+			case f.FreezeCard != "" || slices.ContainsFunc(f.Dependencies, func(d DepFact) bool { return retryRefusal(d) == "" }):
 				return ""
+			case f.NoFreeze != "":
+				return f.NoFreeze
 			}
-			return "no failed dependency is open to a retry, and no provider freeze holds the card"
+			return "no failed dependency is open to a retry, and no provider freeze holds the card: retry files a failed dependency again or ends a freeze, so pick the action the card's wait needs"
 		}
 		if _, ok := retriedAs(f, id); ok {
 			return ""
@@ -434,11 +437,12 @@ func conflictRefusal(f CaseFacts, action string) string {
 // no longer merges into main only runs into the merge queue's refusal.
 var rerunGates = []string{ActRouteApproval, ActReverify}
 
-// timelineUnread refuses rung the action, one of rerunGates, while the
-// card's timeline, which records a merge conflict, could not be read: try
-// again, or a rung below the human hands it up.
-func timelineUnread(action string, rung int) string {
-	why := "the card's timeline could not be read, so it is unknown whether the pull request still merges into main, which " + action + " needs: try again in a minute"
+// timelineUnread refuses rung the action while the card's timeline, which
+// records what action needs to know, could not be read: whether unknown,
+// a merge conflict for rerunGates, the provider-limit wait for a retry.
+// Try again, or a rung below the human hands it up.
+func timelineUnread(unknown, action string, rung int) string {
+	why := "the card's timeline could not be read, so it is unknown whether " + unknown + ", which " + action + " needs: try again in a minute"
 	if rung < 3 {
 		why += ", or hand it up"
 	}
@@ -698,7 +702,11 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 		}
 	}
 	if slices.Contains(rerunGates, a.Name) && slices.Contains(f.Partial, partialTimeline) {
-		return timelineUnread(a.Name, rung)
+		return timelineUnread("the pull request still merges into main", a.Name, rung)
+	}
+	if id, _ := r.Args["task_id"].(string); a.Name == ActRetry && id == "" && f.Final == "" && f.Stage == GateProvider &&
+		slices.Contains(f.Partial, partialTimeline) && a.Applies(f, r) != "" {
+		return timelineUnread("a provider freeze holds the card", a.Name, rung)
 	}
 	if rung == 2 && slices.Contains(humanWordActions, a.Name) && criteriaCaseRefusal(f, a.Name) == "" {
 		return ErrNotPerson.Error()

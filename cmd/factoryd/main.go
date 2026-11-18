@@ -403,11 +403,11 @@ func main() {
 		runner.Namer.NameOpenPlans(sweepCtx)
 	}()
 	// set before the worker runs Act
-	freezeCards := &factoryd.FreezeCard{Store: store, Forgejo: forgejo, Current: policyLoader.Current, Timeline: runner.Timeline()}
-	retrySwitch := &factoryd.RetrySwitch{Freeze: freezeCards, GatewayURL: gatewayURL, Token: gatewayToken,
+	freezeCards := &factoryd.FreezeCard{Store: store, Forgejo: forgejo, Current: policyLoader.Current, Timeline: runner.Timeline(),
 		Signal: func(ctx context.Context, taskID string) error {
 			return inner.SignalRunning(ctx, taskID, factoryd.SignalProviderRetry)
 		}}
+	retrySwitch := &factoryd.RetrySwitch{Freeze: freezeCards, GatewayURL: gatewayURL, Token: gatewayToken}
 	runner.RetryFreeze = retrySwitch.RetryFreeze
 	if err := taskWorker.Start(); err != nil {
 		log.Fatalf("temporal worker: %v", err)

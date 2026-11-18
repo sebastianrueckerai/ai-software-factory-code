@@ -71,13 +71,13 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 			env, _ := plWaitEnv(t, r.store, r.objects, start)
 			var mu sync.Mutex
 			var woke []string
-			r.runner.RetryFreeze = (&factoryd.RetrySwitch{Freeze: watch, GatewayURL: gw.URL, Token: "factoryd-token",
-				Signal: func(_ context.Context, id string) error {
-					mu.Lock()
-					woke = append(woke, id)
-					mu.Unlock()
-					return env.SignalWorkflowByID(factoryd.WorkflowID(id), factoryd.SignalProviderRetry, factoryd.TaskSignal{Author: "factoryd"})
-				}}).RetryFreeze
+			watch.Signal = func(_ context.Context, id string) error {
+				mu.Lock()
+				woke = append(woke, id)
+				mu.Unlock()
+				return env.SignalWorkflowByID(factoryd.WorkflowID(id), factoryd.SignalProviderRetry, factoryd.TaskSignal{Author: "factoryd"})
+			}
+			r.runner.RetryFreeze = (&factoryd.RetrySwitch{Freeze: watch, GatewayURL: gw.URL, Token: "factoryd-token"}).RetryFreeze
 
 			// the provider's dated refusal, its reset in Singapore wall
 			// time; the gateway holds to it plus its minute's margin
