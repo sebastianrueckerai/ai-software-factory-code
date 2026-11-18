@@ -1562,9 +1562,16 @@ func criteriaScene(now time.Time) labScene {
 			{Key: "foundation", Role: factoryd.RoleFoundation, Title: "Metrics: the panels' read model", Size: "medium"},
 			{Key: "integration", Role: factoryd.RoleIntegration, Title: "Metrics: the panels on the page", Size: "medium", DependsOn: []string{"foundation"}},
 		}})
+	// the gate ran at main's head for the plan as it stands, so the review's
+	// rows judge main
+	marks := []string{found.ID + ":done", integ.ID + ":done"}
+	slices.Sort(marks)
+	ran := labEvent(1344, factoryd.EventCriteriaGateRun, "factoryd", factoryd.ViaFactoryd, now.Add(-5*time.Minute),
+		map[string]any{"task": integ.ID, "pr": 0, "cards": "rev 0 " + strings.Join(marks, " "), "outcome": "ran"})
 	return withRequestCases(labScene{
-		tasks: []factoryd.BoardTask{{Task: plan}, {Task: found}, {Task: integ}},
-		plans: map[string][]factoryd.PlanRevision{plan.ID: {{TaskID: plan.ID, Revision: 0, Plan: planJSON, SHA256: "sha-lab", CreatedAt: now.Add(-30 * time.Hour)}}},
+		tasks:  []factoryd.BoardTask{{Task: plan}, {Task: found}, {Task: integ}},
+		events: []factoryd.Event{ran},
+		plans:  map[string][]factoryd.PlanRevision{plan.ID: {{TaskID: plan.ID, Revision: 0, Plan: planJSON, SHA256: "sha-lab", CreatedAt: now.Add(-30 * time.Hour)}}},
 		criteria: map[string][]factoryd.CriterionVerdict{integ.ID: {
 			{Criterion: "size_bound_escape", Verdict: "partial", Kind: factoryd.CriterionTest, Source: "review",
 				Evidence: "acceptance/divide_size_sessions_test.go adds the named proof using authenticated real-console HTML with both fake figures and actual PGStore. It seeds no missing-bound or unsized cases."},
