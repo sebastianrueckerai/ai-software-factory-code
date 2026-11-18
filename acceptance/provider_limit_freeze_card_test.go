@@ -18,6 +18,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -284,7 +285,7 @@ func TestFreezeCardSpeaksForTheClass(t *testing.T) {
 	if !ok || reopened.Status != "waiting-human" || reopened.ID == card.ID || len(fj.issues) != 2 {
 		t.Fatalf("the new hold's card = %+v on %d issues, want a second waiting card", reopened, len(fj.issues))
 	}
-	if err := w.CloseOnRetry(ctx, plFreezeRepo, "big"); err != nil {
+	if err := w.CloseOnRetry(ctx, plFreezeRepo, "big", "sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	pressed, ok, err := s.Task(ctx, reopened.ID)
@@ -297,9 +298,16 @@ func TestFreezeCardSpeaksForTheClass(t *testing.T) {
 	if got := fj.patches[reopened.IssueNumber]; got != "closed" {
 		t.Errorf("issue #%d's last patch = %q, want closed", reopened.IssueNumber, got)
 	}
-	// a second press is quiet: no open card stands
-	if err := w.CloseOnRetry(ctx, plFreezeRepo, "big"); err != nil {
+	if want := fmt.Sprintf("#issues/%d factoryd: sebastian's retry press cleared the big class's hold: the freeze card closes at once.", reopened.IssueNumber); !slices.Contains(fj.comments, want) {
+		t.Errorf("the issue's comments %q lack the press's close naming who pressed: %q", fj.comments, want)
+	}
+	// a second press is quiet: no open card stands, no second close
+	comments := len(fj.comments)
+	if err := w.CloseOnRetry(ctx, plFreezeRepo, "big", "sebastian"); err != nil {
 		t.Fatalf("the second press: %v", err)
+	}
+	if len(fj.comments) != comments {
+		t.Errorf("the second press commented %q, want nothing", fj.comments[comments:])
 	}
 }
 
