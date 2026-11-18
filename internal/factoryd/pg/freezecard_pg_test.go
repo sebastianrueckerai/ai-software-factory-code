@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -257,7 +258,7 @@ func freezeCardState(t *testing.T, s *PGStore, id string) (Task, []IntakeEvent, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	half, err := s.UnconfirmedFactoryCloses(ctx, 0, 100)
+	half, err := s.UnconfirmedFreezeCloses(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,6 +290,7 @@ func TestFreezeCardEndsAndReopensInOneWritePG(t *testing.T) {
 		{ID: "fz-gone", Status: "waiting-human", Source: factoryd.SourceFreezeCard},
 		{ID: "fz-done", Status: "done", Source: factoryd.SourceFreezeCard},
 		{ID: "hu-a", Status: "waiting-human", Source: "chat"},
+		{ID: "hu-done", Status: "done", Source: "chat"},
 	} {
 		tk.Kind, tk.Track, tk.Repository, tk.IssueNumber, tk.Objective = "human", policy.TrackDirect, "sf/acme", int64(i+1), "the holding face"
 		if err := s.CreateTask(ctx, tk); err != nil {
@@ -313,11 +315,17 @@ func TestFreezeCardEndsAndReopensInOneWritePG(t *testing.T) {
 			t.Fatalf("EndFreezeCard on %s = %v, %v; the card stands %s under %q with %+v; want nothing written", id, moved, err, card.Status, card.Objective, events)
 		}
 	}
-	if err := s.ReopenFreezeCard(ctx, cards["fz-a"], "the face again", "factoryd: re-armed"); !errors.Is(err, factoryd.ErrNotFound) {
+	if _, err := s.ReopenFreezeCard(ctx, cards["fz-a"], "the face again", "factoryd: re-armed"); !errors.Is(err, factoryd.ErrNotFound) {
 		t.Fatalf("ReopenFreezeCard on a waiting card = %v, want ErrNotFound", err)
 	}
 	if card, events, _ := freezeCardState(t, s, "fz-a"); card.Status != "waiting-human" || card.Objective != "the holding face" || len(events) != 0 || len(owed()) != 0 {
 		t.Fatalf("after the refused reopen fz-a stands %s under %q with %+v, owed %+v; want nothing written", card.Status, card.Objective, events, owed())
+	}
+	if _, err := s.ReopenFreezeCard(ctx, cards["hu-done"], "the face again", "factoryd: re-armed"); !errors.Is(err, factoryd.ErrNotFound) {
+		t.Fatalf("ReopenFreezeCard on a done card of another source = %v, want ErrNotFound", err)
+	}
+	if card, events, _ := freezeCardState(t, s, "hu-done"); card.Status != "done" || card.Objective != "the holding face" || len(events) != 0 || len(owed()) != 0 {
+		t.Fatalf("after the refused reopen hu-done stands %s under %q with %+v, owed %+v; want nothing written", card.Status, card.Objective, events, owed())
 	}
 	human := IntakeEvent{TaskID: "fz-human", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 2, Body: "sebastian closed this card."}
 	if id, err := s.InsertIntakeEvent(ctx, human); err != nil || id == 0 {
@@ -350,13 +358,15 @@ func TestFreezeCardEndsAndReopensInOneWritePG(t *testing.T) {
 	if moved, err := s.EndFreezeCard(ctx, cards["fz-a"], "another face", "factoryd: again"); err != nil || moved {
 		t.Fatalf("a second EndFreezeCard = %v, %v; want false", moved, err)
 	}
-	if err := s.ReopenFreezeCard(ctx, cards["fz-a"], "the holding face again", "factoryd: re-armed"); err != nil {
-		t.Fatal(err)
+	// the press's close is not confirmed, so the reopen owes its comment
+	// too, ahead of its own
+	if got, err := s.ReopenFreezeCard(ctx, cards["fz-a"], "the holding face again", "factoryd: re-armed"); err != nil || got != "factoryd: the press\n\x1f\nfactoryd: re-armed" {
+		t.Fatalf("ReopenFreezeCard = %q, %v; want the unconfirmed close's comment, the split and the re-arm's", got, err)
 	}
 	card, events, half = freezeCardState(t, s, "fz-a")
 	if o := owed(); card.Status != "waiting-human" || card.Objective != "the holding face again" || card.FinishedAt != nil || len(half) != 0 ||
 		len(events) != 2 || events[0].Kind != IntakeFactoryClosed || events[0].CommentID != 0 || events[0].Body != "factoryd: the press" ||
-		len(o) != 1 || o[0].TaskID != "fz-a" || o[0].Kind != factoryd.IntakeFactoryReopened || o[0].CommentID != 1 || o[0].Body != "factoryd: re-armed" {
+		len(o) != 1 || o[0].TaskID != "fz-a" || o[0].Kind != factoryd.IntakeFactoryReopened || o[0].CommentID != 1 || o[0].Body != "factoryd: the press\n\x1f\nfactoryd: re-armed" {
 		t.Fatalf("after ReopenFreezeCard the card stands %s under %q with %+v, unconfirmed %+v, owed %+v; want it waiting, the press's record off its issue and confirmed, and the reopen owed", card.Status, card.Objective, events, half, o)
 	}
 	moved, err = s.EndFreezeCard(ctx, cards["fz-a"], "", "factoryd: the freeze ended")
@@ -367,12 +377,23 @@ func TestFreezeCardEndsAndReopensInOneWritePG(t *testing.T) {
 		t.Fatalf("the next EndFreezeCard = %v, %v; the card stands %s under %q with %+v, unconfirmed %+v, owed %+v; want it done, its own close recorded and no reopen owed", moved, err, card.Status, card.Objective, events, half, owed())
 	}
 
-	// a settled reopen is owed no more
-	if err := s.ReopenFreezeCard(ctx, cards["fz-a"], "the holding face a third time", "factoryd: re-armed again"); err != nil {
+	// a confirmed close leaves its comment out of the owed reopen. A reopen
+	// that is still owed when the card closes and opens again is replaced:
+	// one owed reopen stands, the newest
+	if err := s.ConfirmFactoryClose(ctx, "fz-a", 1); err != nil {
 		t.Fatal(err)
 	}
-	if o := owed(); len(o) != 1 || o[0].Body != "factoryd: re-armed again" {
-		t.Fatalf("owed after the second reopen = %+v, want that reopen alone", o)
+	if got, err := s.ReopenFreezeCard(ctx, cards["fz-a"], "the holding face a third time", "factoryd: re-armed again"); err != nil || got != "factoryd: re-armed again" {
+		t.Fatalf("the second ReopenFreezeCard = %q, %v; want the re-arm's comment alone", got, err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = 'fz-a'`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.ReopenFreezeCard(ctx, cards["fz-a"], "the holding face a fourth time", "factoryd: re-armed once more"); err != nil || got != "factoryd: re-armed once more" {
+		t.Fatalf("ReopenFreezeCard over an owed reopen = %q, %v; want the new re-arm's comment", got, err)
+	}
+	if o := owed(); len(o) != 1 || o[0].Body != "factoryd: re-armed once more" {
+		t.Fatalf("owed after a reopen over an owed reopen = %+v, want the newest alone", o)
 	}
 	if err := s.SettleFreezeReopen(ctx, "fz-a", 1); err != nil {
 		t.Fatal(err)
@@ -381,6 +402,119 @@ func TestFreezeCardEndsAndReopensInOneWritePG(t *testing.T) {
 		t.Fatalf("owed after the settle = %+v, want none", o)
 	}
 	if _, _, half := freezeCardState(t, s, "fz-a"); len(half) != 0 {
-		t.Fatalf("after the second reopen the unconfirmed closes = %+v, want none: a record off its issue counts as confirmed", half)
+		t.Fatalf("after the reopens the unconfirmed closes = %+v, want none: a record off its issue counts as confirmed", half)
+	}
+}
+
+// Hand-derived: three cards each carry a close recorded and not confirmed:
+// freeze card fz-new's, just recorded, freeze card fz-old's, recorded
+// three minutes ago, and chat card hu-old's, also three minutes old.
+// UnconfirmedFreezeCloses with a two-minute age lists fz-old's alone, and
+// UnconfirmedFactoryCloses, the heal pass's read, lists hu-old's alone. A
+// freeze card's close that a reopen took off its issue is in neither.
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL).
+func TestUnconfirmedFreezeClosesAreTheWatchersPG(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "pg_freezecloses"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	t.Cleanup(func() { s.DB().Close() })
+	for i, tk := range []Task{
+		{ID: "fz-new", Source: factoryd.SourceFreezeCard}, {ID: "fz-old", Source: factoryd.SourceFreezeCard},
+		{ID: "fz-off", Source: factoryd.SourceFreezeCard}, {ID: "hu-old", Source: "chat"},
+	} {
+		tk.Kind, tk.Track, tk.Repository, tk.IssueNumber, tk.Status = "human", policy.TrackDirect, "sf/acme", int64(i+1), "done"
+		if err := s.CreateTask(ctx, tk); err != nil {
+			t.Fatalf("CreateTask %s: %v", tk.ID, err)
+		}
+		if id, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: tk.ID, Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: int64(i + 1), Body: "closed"}); err != nil || id == 0 {
+			t.Fatalf("the close record of %s = %d, %v", tk.ID, id, err)
+		}
+	}
+	if _, err := s.DB().ExecContext(ctx, `UPDATE intake_events SET created_at = now() - interval '3 minutes' WHERE task_id <> 'fz-new';
+		UPDATE intake_events SET comment_id = 0 WHERE task_id = 'fz-off'`); err != nil {
+		t.Fatal(err)
+	}
+	ids := func(rows []IntakeEvent, err error) []string {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, e := range rows {
+			if slices.Contains([]string{"fz-new", "fz-old", "fz-off", "hu-old"}, e.TaskID) {
+				out = append(out, e.TaskID)
+			}
+		}
+		return out
+	}
+	if got := ids(s.UnconfirmedFreezeCloses(ctx, 2*time.Minute)); !slices.Equal(got, []string{"fz-old"}) {
+		t.Fatalf("UnconfirmedFreezeCloses = %q, want fz-old's close alone", got)
+	}
+	if got := ids(s.UnconfirmedFactoryCloses(ctx, 2*time.Minute, 100)); !slices.Equal(got, []string{"hu-old"}) {
+		t.Fatalf("UnconfirmedFactoryCloses = %q, want hu-old's close alone: a freeze card's close is its watcher's", got)
+	}
+}
+
+// Hand-derived: HeldResumes lists the class_resumed rows that are the
+// newest row of their class at the cursor and whose wake is not recorded.
+// Four rows: big frozen, big resumed, small resumed, small frozen. At the
+// fourth row big's resume is held and small's is not, as small froze
+// again. RecordFreezeWake records big's wake on the events table, and the
+// resume is held no more. Requires a disposable Postgres
+// (FACTORYD_TEST_DATABASE_URL).
+func TestHeldResumesAreWokenOncePG(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "pg_freezewakes"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	t.Cleanup(func() { s.DB().Close() })
+	if _, err := s.DB().ExecContext(ctx, `TRUNCATE events CASCADE; UPDATE freeze_cursor SET cursor = 0 WHERE id = 1`); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	ids := []int64{
+		freezeEventRow(t, s, "sf/acme", "class_frozen", "big", "R1", "words"),
+		freezeEventRow(t, s, "sf/acme", "class_resumed", "big", "R1", "words"),
+		freezeEventRow(t, s, "sf/other", "class_resumed", "small", "R2", "words"),
+		freezeEventRow(t, s, "sf/other", "class_frozen", "small", "R3", "words"),
+	}
+	held := func() []int64 {
+		t.Helper()
+		rows, err := s.HeldResumes(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []int64
+		for _, ev := range rows {
+			if ev.Kind != "class_resumed" {
+				t.Fatalf("a held resume is a %s", ev.Kind)
+			}
+			out = append(out, ev.ID)
+		}
+		return out
+	}
+	for cursor, want := range map[int64][]int64{ids[0]: nil, ids[2]: {ids[1], ids[2]}, ids[3]: {ids[1]}} {
+		if err := s.SetFreezeCursor(ctx, cursor); err != nil {
+			t.Fatal(err)
+		}
+		if got := held(); !slices.Equal(got, want) {
+			t.Fatalf("HeldResumes at cursor %d = %v, want %v", cursor, got, want)
+		}
+	}
+	if err := s.SetFreezeCursor(ctx, ids[3]); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordFreezeWake(ctx, factoryd.FreezeEvent{ID: ids[1], Repository: "sf/acme", Class: "big"}); err != nil {
+		t.Fatal(err)
+	}
+	var woken int
+	if err := s.DB().QueryRowContext(ctx, `SELECT count(*) FROM events WHERE kind = 'class_woken' AND repository = 'sf/acme' AND actor = 'factoryd'
+		AND detail->>'class' = 'big' AND detail->>'resumed' = $1`, strconv.FormatInt(ids[1], 10)).Scan(&woken); err != nil {
+		t.Fatal(err)
+	}
+	if got := held(); woken != 1 || len(got) != 0 {
+		t.Fatalf("after RecordFreezeWake %d class_woken rows name big's resume and the held resumes are %v; want 1 and none", woken, got)
 	}
 }

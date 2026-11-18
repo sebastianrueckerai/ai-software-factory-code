@@ -220,7 +220,8 @@ func NoLongerWaits(numbers []int64) string {
 // (IntakeFactoryClosed), the sentence naming what it dropped added to it, so
 // an empty comment posts that sentence alone, then posts comment unless it
 // is "", closes the issue and confirms the record. A later step that fails
-// returns, the record left unconfirmed for the next call or the heal; only a
+// returns, the record left unconfirmed for the next call, the heal or, for a
+// freeze card, its watcher; only a
 // comment Forgejo refuses (forgejoTerminal) is logged, and the close goes
 // on. A call that finds the record posts the recorded comment, not its own,
 // where the issue lacks it: one close, one comment, also for a card whose

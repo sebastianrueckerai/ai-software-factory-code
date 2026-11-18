@@ -1066,7 +1066,7 @@ func closeKey(e IntakeEvent) [2]any {
 func (s *fakeStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error) {
 	var out []IntakeEvent
 	for _, e := range s.intakeEvents {
-		if e.Kind == IntakeFactoryClosed && !s.confirmedCloses[closeKey(e)] && s.clock().Sub(e.CreatedAt) > olderThan && len(out) < limit {
+		if e.Kind == IntakeFactoryClosed && s.tasks[e.TaskID].Source != SourceFreezeCard && !s.confirmedCloses[closeKey(e)] && s.clock().Sub(e.CreatedAt) > olderThan && len(out) < limit {
 			out = append(out, e)
 		}
 	}
@@ -1680,33 +1680,37 @@ func (s *fakeStore) EndFreezeCard(ctx context.Context, t Task, face, comment str
 
 // ReopenFreezeCard opens the fake's done freeze card t again as the
 // store's transaction does: the row, its face, the close's record off the
-// issue and confirmed, and the owed reopen.
-func (s *fakeStore) ReopenFreezeCard(ctx context.Context, t Task, face, comment string) error {
+// issue and confirmed, and the owed reopen, which carries the comment of a
+// close that was not confirmed.
+func (s *fakeStore) ReopenFreezeCard(ctx context.Context, t Task, face, comment string) (string, error) {
 	c, ok := s.tasks[t.ID]
 	if !ok || c.Status != "done" || c.Source != SourceFreezeCard {
-		return fmt.Errorf("freeze card %s: %w (not done, cannot open again)", t.ID, ErrNotFound)
+		return "", fmt.Errorf("freeze card %s: %w (not done, cannot open again)", t.ID, ErrNotFound)
 	}
 	c.Objective = face
 	s.tasks[t.ID] = c
 	if err := s.TransitionTask(ctx, t.ID, []string{"done"}, "waiting-human"); err != nil {
-		return err
+		return "", err
 	}
 	if s.confirmedCloses == nil {
 		s.confirmedCloses = map[[2]any]bool{}
 	}
 	for i, e := range s.intakeEvents {
 		if e.TaskID == t.ID && e.Kind == IntakeFactoryClosed && e.CommentID == t.IssueNumber {
+			if !s.confirmedCloses[closeKey(e)] && e.Body != "" {
+				comment = e.Body + freezeOwedSplit + comment
+			}
 			delete(s.confirmedCloses, closeKey(e))
 			s.intakeEvents[i].CommentID = 0
 			s.confirmedCloses[closeKey(s.intakeEvents[i])] = true
 		}
 	}
 	if err := s.SettleFreezeReopen(ctx, t.ID, t.IssueNumber); err != nil {
-		return err
+		return "", err
 	}
 	s.intakeEvents = append(s.intakeEvents, IntakeEvent{ID: s.nextIntakeID(), TaskID: t.ID, Kind: IntakeFactoryReopened,
 		Author: FactoryDecider, CommentID: t.IssueNumber, Body: comment, CreatedAt: s.clock()})
-	return nil
+	return comment, nil
 }
 
 // OwedFreezeReopens lists the fake's owed reopens, oldest first.

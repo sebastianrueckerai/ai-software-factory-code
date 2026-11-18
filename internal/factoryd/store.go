@@ -1666,12 +1666,14 @@ func (s *PGStore) ConfirmFactoryClose(ctx context.Context, taskID string, issue 
 // UnconfirmedFactoryCloses lists up to limit card-closed comments
 // unconfirmed for olderThan (oldest first, on the store's clock).
 // HealFactoryCloses, the temporal heal pass that answers them, is its
-// sole caller.
+// sole caller. A freeze card's close is its watcher's
+// (UnconfirmedFreezeCloses).
 func (s *PGStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+intakeColumns+`
 		 FROM intake_events WHERE kind = $1 AND confirmed_at IS NULL AND created_at < now() - $2 * interval '1 second'
-		 ORDER BY id LIMIT $3`, IntakeFactoryClosed, olderThan.Seconds(), limit)
+		   AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = intake_events.task_id AND t.source = $4)
+		 ORDER BY id LIMIT $3`, IntakeFactoryClosed, olderThan.Seconds(), limit, SourceFreezeCard)
 	return scanIntakeEvents(rows, err)
 }
 

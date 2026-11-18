@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -150,13 +151,24 @@ type FreezeCardStore interface {
 	// moves the row to waiting-human, writes face, takes the close's
 	// record off the issue, confirmed, where it stays as the card's
 	// earlier end (countHumanEnd), and records the owed reopen of the
-	// issue with comment as its body (IntakeFactoryReopened). A row that
-	// is not done changes nothing and is an error.
-	ReopenFreezeCard(ctx context.Context, t Task, face, comment string) error
+	// issue with comment as its body (IntakeFactoryReopened), which it
+	// answers. A close Forgejo did not confirm puts its own comment first
+	// in that body (freezeOwedSplit). A row that is not done changes
+	// nothing and is an error.
+	ReopenFreezeCard(ctx context.Context, t Task, face, comment string) (owed string, err error)
 	// OwedFreezeReopens lists the owed reopens, oldest first, and
 	// SettleFreezeReopen deletes the one of task taskID's issue.
 	OwedFreezeReopens(ctx context.Context) ([]IntakeEvent, error)
 	SettleFreezeReopen(ctx context.Context, taskID string, issue int64) error
+	// UnconfirmedFreezeCloses lists the closes of freeze cards that stand
+	// on their issues unconfirmed for olderThan, oldest first: the closes
+	// Forgejo did not take yet.
+	UnconfirmedFreezeCloses(ctx context.Context, olderThan time.Duration) ([]IntakeEvent, error)
+	// HeldResumes lists the class_resumed rows that are the newest row of
+	// their class at the stored cursor and whose wake is not recorded,
+	// oldest first; RecordFreezeWake records the wake of one.
+	HeldResumes(ctx context.Context) ([]FreezeEvent, error)
+	RecordFreezeWake(ctx context.Context, resumed FreezeEvent) error
 	InsertIntakeEvent(context.Context, IntakeEvent) (int64, error)
 	IntakeEvents(context.Context, string) ([]IntakeEvent, error)
 	ConfirmFactoryClose(context.Context, string, int64) error
@@ -183,9 +195,12 @@ var errNoPolicyReader = errors.New("the freeze card watcher has no policy reader
 // A card's close and its reopen are each one store transaction
 // (EndFreezeCard, ReopenFreezeCard), so a failed write changes nothing,
 // and Forgejo follows the store: the close's record and the owed reopen
-// say what Forgejo still has to take, and a pass makes those calls again.
-// Each pass builds its view of the cards from their rows, so a watcher
-// built anew passes as the old one would.
+// say what Forgejo still has to take, and each pass makes those calls
+// again until Forgejo took them (closeOwed, reopenOwed). The wake of a
+// class's frozen cards is due by the gateway's rows and made until it is
+// recorded (wakeHeld). A human's close of a card wins over the watcher's
+// reopen and its close. Each pass builds its view of the cards from their
+// rows, so a watcher built anew passes as the old one would.
 type FreezeCard struct {
 	Store   FreezeCardStore
 	Forgejo *Forgejo
@@ -210,10 +225,11 @@ type FreezeCard struct {
 	// classes is one pass's view of the cards, built from the rows at its
 	// start: nothing in it outlives the pass.
 	classes map[string]*freezeClass
-	// standing is the store's StandingFreezes at the stored cursor, read
-	// again whenever the cursor moves; stood tells that it was read.
-	standing []FreezeEvent
-	stood    bool
+	// standing and held are the store's StandingFreezes and HeldResumes at
+	// the stored cursor, read again whenever the cursor moves; stood tells
+	// that they were read. A recorded wake leaves held.
+	standing, held []FreezeEvent
+	stood          bool
 	// refused is, by repository and class, the standing freeze whose
 	// filing Forgejo refused for good: only a newer arm files again.
 	refused map[string]int64
@@ -221,9 +237,19 @@ type FreezeCard struct {
 
 // IntakeFactoryReopened records that factoryd owes Forgejo the reopen of a
 // freeze card's issue, the issue's number as its comment id and the
-// re-arm's comment as its body (ReopenFreezeCard). The row is deleted once
-// Forgejo took both (SettleFreezeReopen).
+// re-arm's comment as its body (ReopenFreezeCard). When Forgejo did not
+// confirm the close before it, the body holds that close's comment first,
+// then freezeOwedSplit, then the re-arm's. The row is deleted once Forgejo
+// took all of it (SettleFreezeReopen).
 const IntakeFactoryReopened = "factory_reopened"
+
+// freezeOwedSplit parts the two comments of an owed reopen's body.
+const freezeOwedSplit = "\n\x1f\n"
+
+// EventClassWoken is the watcher's record, on the events table, that it
+// woke a class's frozen cards for the class_resumed row its detail names
+// (resumed, the row's id).
+const EventClassWoken = "class_woken"
 
 // freezeClass is a pass's view of one class's card in one repository.
 type freezeClass struct {
@@ -255,11 +281,20 @@ func (w *FreezeCard) Loop(ctx context.Context, every time.Duration) {
 }
 
 // Check is one pass. It builds its view of the cards from their rows,
-// makes the owed reopens again, applies the gateway's freeze events past
-// the cursor, applies the standing freezes again, and runs the classes'
-// clocks: the five-minute resume hold and the provider-limit bound. A
-// watcher built anew passes the same way: what a pass needs is in the
-// rows.
+// makes the owed reopens and the unconfirmed closes again, applies the
+// gateway's freeze events past the cursor, applies the standing freezes
+// again, wakes the frozen cards of each class whose resume held, and runs
+// the classes' clocks: the five-minute resume hold and the provider-limit
+// bound. A watcher built anew passes the same way: what a pass needs is in
+// the rows.
+//
+// The cursor moves past a row whose effect is written, and past an arm
+// that did not finish while its freeze stands at the end of the batch,
+// which each pass applies again (stand). An arm that a failed write or a
+// Forgejo that does not answer stopped, and whose class resumes later in
+// the same batch, stands no more: it ends the batch before its row, so
+// the next pass reads that row again and the rows after it, and the
+// resume does not lose the arm. The rest of the pass still runs.
 func (w *FreezeCard) Check(ctx context.Context) error {
 	if w.Current == nil {
 		return errNoPolicyReader
@@ -279,30 +314,44 @@ func (w *FreezeCard) Check(ctx context.Context) error {
 	if err := w.reopenOwed(ctx); err != nil {
 		return err
 	}
-	events, cursor, err := w.Store.FreezeEvents(ctx)
+	if err := w.closeOwed(ctx); err != nil {
+		return err
+	}
+	events, _, err := w.Store.FreezeEvents(ctx)
 	if err != nil {
 		return err
 	}
-	for _, ev := range events {
-		if err := w.event(ctx, ev); err != nil {
+	var stopped error
+	applied := 0
+	for i, ev := range events {
+		err := w.event(ctx, ev)
+		var kept *armStopped
+		if errors.As(err, &kept) && !slices.ContainsFunc(events[i+1:], func(later FreezeEvent) bool {
+			return later.Kind == "class_resumed" && later.Class == ev.Class
+		}) {
+			log.Printf("freeze card: %v: each pass makes the arm again while the freeze stands", err)
+			err = nil
+		}
+		if stopped = err; stopped != nil {
+			break
+		}
+		applied++
+	}
+	if applied > 0 {
+		if err := w.Store.SetFreezeCursor(ctx, events[applied-1].ID); err != nil {
 			return err
 		}
 	}
-	if len(events) > 0 {
-		if err := w.Store.SetFreezeCursor(ctx, cursor); err != nil {
-			return err
-		}
-	}
-	if !w.stood || len(events) > 0 {
+	if !w.stood || applied > 0 {
 		if w.standing, err = w.Store.StandingFreezes(ctx); err != nil {
+			return err
+		}
+		if w.held, err = w.Store.HeldResumes(ctx); err != nil {
 			return err
 		}
 		w.stood = true
 	}
-	if err := w.stand(ctx); err != nil {
-		return err
-	}
-	return w.tick(ctx)
+	return errors.Join(stopped, w.stand(ctx), w.wakeHeld(ctx), w.tick(ctx))
 }
 
 // stand applies again each standing freeze whose reset is ahead, in every
@@ -316,6 +365,7 @@ func (w *FreezeCard) Check(ctx context.Context) error {
 // refused for good waits for a newer arm.
 func (w *FreezeCard) stand(ctx context.Context) error {
 	answered := map[string]bool{}
+	var errs []error
 	for _, ev := range w.standing {
 		if id, ok := w.refused[ev.Repository+"/"+ev.Class]; !beforeReset(w.now(), ev.Reset) || ok && id == ev.ID {
 			continue
@@ -326,7 +376,8 @@ func (w *FreezeCard) stand(ctx context.Context) error {
 				return err
 			}
 			for _, t := range done {
-				if answered[ev.Class] || !objectiveHasClassLine(t.Objective, ev.Class) {
+				// a press that answered the arm ended its card after it
+				if answered[ev.Class] || !objectiveHasClassLine(t.Objective, ev.Class) || t.FinishedAt == nil || !t.FinishedAt.After(ev.At) {
 					continue
 				}
 				press, _, at, err := w.closedBy(ctx, t)
@@ -339,18 +390,58 @@ func (w *FreezeCard) stand(ctx context.Context) error {
 		if answered[ev.Class] {
 			continue
 		}
-		if err := w.event(ctx, ev); err != nil {
-			return err
+		err := w.event(ctx, ev)
+		var kept *armStopped
+		if errors.As(err, &kept) {
+			log.Printf("freeze card: %v: each pass makes the arm again while the freeze stands", err)
+		} else if err != nil {
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
+}
+
+// wakeHeld wakes the frozen cards of each class whose resume held five
+// minutes with no new class_frozen, in every repository: the probe that
+// met the lapse was served, so the class works, while the cards would
+// sleep to their resets. The wake is due by the gateway's rows alone,
+// whoever closed the class's freeze card and whether one was filed, and
+// it is recorded after it is made: a pass that failed before the record,
+// or a watcher built anew, makes it again. A press's resume wakes too,
+// five minutes after the press woke the cards, which costs a woken card
+// nothing. A wake that fails for one card is logged; that card starts at
+// its reset.
+func (w *FreezeCard) wakeHeld(ctx context.Context) error {
+	var errs []error
+	var waits []FreezeEvent
+	for _, ev := range w.held {
+		if w.now().Before(ev.At.Add(freezeResumeHold)) {
+			waits = append(waits, ev)
+			continue
+		}
+		cards, err := w.classCards(ctx, ev.Class)
+		if err == nil {
+			woken, frozen, failed := w.wake(ctx, cards)
+			log.Printf("freeze card: the %s class's resume held, %d of %d frozen cards woken", ev.Class, woken, frozen)
+			if len(failed) > 0 {
+				log.Printf("freeze card: wake the %s class's frozen cards: %v", ev.Class, errors.Join(failed...))
+			}
+			err = w.Store.RecordFreezeWake(ctx, ev)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("wake the %s class's frozen cards: %w", ev.Class, err))
+			waits = append(waits, ev)
+		}
+	}
+	w.held = waits
+	return errors.Join(errs...)
 }
 
 // reopenOwed makes every owed reopen again: a card that still waits gets
-// its issue opened and its re-arm comment (reopenIssue), a card that no
-// longer waits is settled without a call. A card whose issue is gone for
-// good is given up, and this pass files its replacement while the freeze
-// stands (stand). Any other refusal leaves the reopen owed.
+// its issue opened and its comments (reopenIssue), a card that no longer
+// waits is settled without a call. A card whose issue is gone for good is
+// given up, and this pass files its replacement while the freeze stands
+// (stand). Any other refusal leaves the reopen owed.
 func (w *FreezeCard) reopenOwed(ctx context.Context) error {
 	owed, err := w.Store.OwedFreezeReopens(ctx)
 	if err != nil {
@@ -368,7 +459,7 @@ func (w *FreezeCard) reopenOwed(ctx context.Context) error {
 			continue
 		}
 		t.IssueNumber = e.CommentID
-		err = w.reopenIssue(ctx, t, e.Body, false)
+		err = w.reopenIssue(ctx, t, e.Body)
 		st := w.classes[t.Repository+"/"+freezeCardClass(t.Objective)]
 		switch {
 		case err == nil:
@@ -385,34 +476,75 @@ func (w *FreezeCard) reopenOwed(ctx context.Context) error {
 	return nil
 }
 
-// reopenIssue is the Forgejo side of a reopen the store holds as owed:
-// card t's issue opens again and takes comment, and the owed reopen is
-// settled. The call right after the store's write, first, posts the
-// comment; a later pass posts it where the issue lacks it (CommentOnce),
-// so each step is safe to make again.
-func (w *FreezeCard) reopenIssue(ctx context.Context, t Task, comment string, first bool) error {
+// reopenIssue is the Forgejo side of a reopen the store holds as owed,
+// body: the close before it gets its comment where Forgejo did not
+// confirm that close, card t's issue opens again and takes the re-arm's
+// comment, and the owed reopen is settled. Each comment posts where the
+// issue lacks it, so each step is safe to make again. A human's close
+// wins: when a close record stands on the issue, which since the reopen's
+// own write only a human's close through the console leaves there, the
+// reopen is settled with no call.
+func (w *FreezeCard) reopenIssue(ctx context.Context, t Task, body string) error {
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
 		return err
 	}
+	events, err := w.Store.IntakeEvents(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	if botCloseRecorded(events, t) {
+		return w.Store.SettleFreezeReopen(ctx, t.ID, t.IssueNumber)
+	}
+	comment := body
+	if closed, rearmed, ok := strings.Cut(body, freezeOwedSplit); ok {
+		comment = rearmed
+		said := 0
+		for _, e := range events {
+			if e.Kind == IntakeFactoryClosed && e.Body == closed {
+				said++
+			}
+		}
+		if err := w.Forgejo.CommentTimes(ctx, repo.Owner, repo.Name, t.IssueNumber, closed, said); err != nil {
+			return err
+		}
+	}
 	if err := w.Forgejo.ReopenIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
 		return err
 	}
-	if first {
-		_, err = w.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, comment)
-	} else {
-		err = w.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, comment)
-	}
-	if err != nil {
+	if err := w.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, comment); err != nil {
 		return err
 	}
 	return w.Store.SettleFreezeReopen(ctx, t.ID, t.IssueNumber)
 }
 
+// closeOwed finishes the closes of freeze cards that Forgejo did not take:
+// each close that stands on its issue unconfirmed for two minutes, the
+// watcher's own and a human's through the console alike
+// (healFactoryClose). It runs in the watcher's pass and not in the heal
+// pass, so no reopen of the card runs beside it. Only an issue that is
+// gone for good settles a close; a 401 or a 403 keeps it owed until a
+// human fixes the bot's credential or its rights, and so does a Forgejo
+// that does not answer.
+func (w *FreezeCard) closeOwed(ctx context.Context) error {
+	rows, err := w.Store.UnconfirmedFreezeCloses(ctx, closeHealAge)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if err := healFactoryClose(ctx, w.Store, w.Forgejo, row, forgejoGone); err != nil {
+			log.Printf("freeze card: close issue #%d of task %s: %v: each pass tries it again", row.CommentID, row.TaskID, maskedErr(err))
+		}
+	}
+	return nil
+}
+
 // rehydrate builds the pass's view of the waiting freeze cards from their
 // faces: the class, the reset and the freeze's start (freezeCardStart),
 // the resume hold from the face's stamp ('The card closes itself at
-// <stamp>'), and the ask.
+// <stamp>'), and the ask. A waiting card that carries a close record on
+// its issue for two minutes is no card of the view: a human closed it and
+// no webhook ended the row (closedByHuman).
 func (w *FreezeCard) rehydrate(ctx context.Context) error {
 	open, err := w.Store.FreezeCards(ctx, "waiting-human")
 	if err != nil {
@@ -423,12 +555,49 @@ func (w *FreezeCard) rehydrate(ctx context.Context) error {
 		if class == "" {
 			continue
 		}
+		events, err := w.Store.IntakeEvents(ctx, t.ID)
+		if err != nil {
+			return err
+		}
+		if i := slices.IndexFunc(events, func(e IntakeEvent) bool { return e.Kind == IntakeFactoryClosed && e.CommentID == t.IssueNumber }); i >= 0 &&
+			!w.now().Before(events[i].CreatedAt.Add(closeHealAge)) {
+			if err := w.closedByHuman(ctx, t); err != nil {
+				return err
+			}
+			continue
+		}
 		st := &freezeClass{repo: t.Repository, class: class, taskID: t.ID, issue: t.IssueNumber, frozenAt: freezeCardStart(t), reset: freezeFaceReset(t.Objective)}
 		if at, ok := freezeResumeStamp(t.Objective); ok {
 			st.resumedAt = at.Add(-freezeResumeHold)
 		}
 		st.spoke = strings.Contains(t.Objective, "waits.provider_limit")
 		w.classes[t.Repository+"/"+class] = st
+	}
+	return nil
+}
+
+// closedByHuman ends waiting card t, on whose issue a close record
+// stands. The watcher's own close moves the row in the write that records
+// it, so this record is a human's through the console, and the human's
+// close wins. Its webhook ends the row; when none did for two minutes, as
+// Forgejo sends none for an issue that was closed already, the row ends
+// here as it is. The end is counted, and the issue is closed where a
+// reopen opened it meanwhile.
+// The record's comment and its confirmation stay with the close that made
+// it and with closeOwed.
+func (w *FreezeCard) closedByHuman(ctx context.Context, t Task) error {
+	moved, err := w.Store.EndFreezeCard(ctx, t, "", "")
+	if err != nil || !moved {
+		return err
+	}
+	countHumanEnd(ctx, w.Metrics, w.Store, t, "done")
+	log.Printf("freeze card: a human closed %s's card #%d, the card ends", t.Repository, t.IssueNumber)
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return err
+	}
+	if err := w.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
+		log.Printf("freeze card: close issue #%d of %s, which a human closed: %v", t.IssueNumber, t.Repository, maskedErr(err))
 	}
 	return nil
 }
@@ -504,11 +673,17 @@ func (w *FreezeCard) event(ctx context.Context, ev FreezeEvent) error {
 		if !slices.Contains(repos, ev.Repository) {
 			repos = append(repos, ev.Repository)
 		}
+		var stopped error
 		for _, repo := range repos {
-			if err := w.arm(ctx, w.class(repo, ev.Class), ev); err != nil {
+			err := w.arm(ctx, w.class(repo, ev.Class), ev)
+			var kept *armStopped
+			if errors.As(err, &kept) {
+				stopped = cmp.Or(stopped, err)
+			} else if err != nil {
 				return err
 			}
 		}
+		return stopped
 	case "class_resumed":
 		if err := w.endGivenUp(ctx, ev.Class); err != nil {
 			return err
@@ -532,10 +707,11 @@ func forgejoGone(err error) bool {
 // failure does to it, so that one card does not stop the pass for every
 // class. A card whose issue is gone for good is given up, and the arm in
 // hand files its replacement at once. A filing Forgejo refuses for good
-// waits for the class's next arm. Any other error keeps the card, and
-// each pass applies the freeze again while it stands (stand): a 4xx
-// (keep), a Forgejo that does not answer or a store's failed write. Only
-// the store's failure to give a card up stops the pass.
+// waits for the class's next arm. A 4xx keeps the card (keep), and each
+// pass applies the freeze again while it stands (stand). Any other
+// failure, a Forgejo that does not answer or a store's failed write, is
+// an armStopped: nothing of the arm is written, and the pass decides
+// whether the freeze still stands to make it again (Check).
 func (w *FreezeCard) arm(ctx context.Context, st *freezeClass, ev FreezeEvent) error {
 	err := w.frozen(ctx, st, ev)
 	switch {
@@ -558,9 +734,15 @@ func (w *FreezeCard) arm(ctx context.Context, st *freezeClass, ev FreezeEvent) e
 		w.keep(st, err)
 		return nil
 	}
-	log.Printf("freeze card: %s's %s card%s: %v: each pass tries the arm again", st.repo, st.class, issueRef(st.issue), maskedErr(err))
-	return nil
+	return &armStopped{fmt.Errorf("%s's %s card%s: %w", st.repo, st.class, issueRef(st.issue), err)}
 }
+
+// armStopped is an arm that a store's failed write or a Forgejo that does
+// not answer stopped before anything of it was written.
+type armStopped struct{ err error }
+
+func (e *armStopped) Error() string { return e.err.Error() }
+func (e *armStopped) Unwrap() error { return e.err }
 
 // issueRef is " #n" for an issue, "" for none.
 func issueRef(issue int64) string {
@@ -600,10 +782,11 @@ func (w *FreezeCard) giveUp(ctx context.Context, st *freezeClass, cause error) (
 // end ends waiting freeze card t in the store's one write (EndFreezeCard),
 // under face unless it is "", and reports whether this call moved the
 // row. Then it counts the end, and Forgejo follows: the issue takes
-// comment, closes, and the close's record is confirmed (finishClose). A
-// Forgejo that fails there is logged, and the heal pass, which meets the
-// record, posts its body where the issue lacks this close's comment and
-// closes the issue (HealFactoryCloses). No comment closes no issue: the issue is gone.
+// comment, closes, and the close's record is confirmed
+// (closeIssueAsFactory, which meets the record). A Forgejo that fails
+// there is logged, and a later pass, which meets the record too, posts
+// its body where the issue lacks this close's comment and closes the
+// issue (closeOwed). No comment closes no issue: the issue is gone.
 func (w *FreezeCard) end(ctx context.Context, t Task, face, comment string) (bool, error) {
 	moved, err := w.Store.EndFreezeCard(ctx, t, face, comment)
 	if err != nil || !moved {
@@ -613,8 +796,8 @@ func (w *FreezeCard) end(ctx context.Context, t Task, face, comment string) (boo
 	if comment == "" {
 		return true, nil
 	}
-	if err := finishClose(ctx, w.Store, w.Forgejo, t, comment, 0); err != nil {
-		log.Printf("freeze card: close issue #%d of %s: %v: the heal pass closes it", t.IssueNumber, t.Repository, maskedErr(err))
+	if err := closeIssueAsFactory(ctx, w.Store, w.Forgejo, t, comment); err != nil {
+		log.Printf("freeze card: close issue #%d of %s: %v: a later pass closes it", t.IssueNumber, t.Repository, maskedErr(err))
 	}
 	return true, nil
 }
@@ -739,8 +922,9 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		// next close is its own. The store opens the card in one write and
 		// holds the issue's reopen as owed; then Forgejo follows.
 		t := Task{ID: st.taskID, Repository: st.repo, IssueNumber: st.issue}
-		comment := fmt.Sprintf("factoryd: the hold re-armed after the retry, to the reset %s. %s.", ev.Reset, cardsWait(count))
-		if err := w.Store.ReopenFreezeCard(ctx, t, freezeCardTitle(st.class)+"\n\n"+body, comment); err != nil {
+		comment := fmt.Sprintf("factoryd: the hold re-armed after the retry at %s, to the reset %s. %s.", stamp(ev.At), ev.Reset, cardsWait(count))
+		owed, err := w.Store.ReopenFreezeCard(ctx, t, freezeCardTitle(st.class)+"\n\n"+body, comment)
+		if err != nil {
 			return err
 		}
 		st.closed = false
@@ -748,7 +932,14 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		st.frozenAt = since
 		st.resumedAt, st.spoke = time.Time{}, false
 		log.Printf("freeze card: the hold re-armed after the retry, %s's card #%d holds again", st.class, st.issue)
-		return w.reopenIssue(ctx, t, comment, true)
+		// the card is open in the store: a Forgejo that does not answer
+		// leaves the issue's reopen owed to the next pass (reopenOwed)
+		if err := w.reopenIssue(ctx, t, owed); forgejoGone(err) || errors.Is(err, ErrRefused) {
+			return err
+		} else if err != nil {
+			log.Printf("freeze card: open issue #%d of %s again: %v: each pass tries it again", st.issue, st.repo, maskedErr(err))
+		}
+		return nil
 	}
 	if st.taskID == "" {
 		t, err := w.file(ctx, st, ev, body)
@@ -774,7 +965,8 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		return nil
 	}
 	// a re-arm: the same card, the new reset and count on its face. The
-	// comment posts first, once however often a pass tries, and the face
+	// comment names the arm's time, so no other arm says the same words.
+	// It posts first, once however often a pass tries, and the face
 	// takes the reset only after it, as the ask does (speak): a re-arm
 	// Forgejo did not take is on no face, so the next pass makes it again.
 	repo, err := SplitRepo(st.repo)
@@ -782,7 +974,7 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		return err
 	}
 	if err := w.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, st.issue,
-		fmt.Sprintf("factoryd: the hold re-armed, to the reset %s. %s.", ev.Reset, cardsWait(count))); err != nil {
+		fmt.Sprintf("factoryd: the hold re-armed at %s, to the reset %s. %s.", stamp(ev.At), ev.Reset, cardsWait(count))); err != nil {
 		return fmt.Errorf("comment the re-arm on issue #%d: %w", st.issue, err)
 	}
 	if err := w.Store.SetObjective(ctx, st.taskID, freezeCardTitle(st.class)+"\n\n"+body); err != nil {
@@ -1047,18 +1239,10 @@ func objectiveHasClassLine(objective, class string) bool {
 }
 
 // tick runs the classes' clocks: a card past its resume hold closes
-// itself, and its class's frozen cards wake after a close that moved a
-// row, so no pass and no watcher built anew wakes them twice; a card whose
-// freeze outgrew waits.provider_limit speaks once.
+// itself, and a card whose freeze outgrew waits.provider_limit speaks
+// once.
 func (w *FreezeCard) tick(ctx context.Context) error {
 	now := w.now()
-	var resumed []string
-	defer func() {
-		slices.Sort(resumed)
-		for _, class := range slices.Compact(resumed) {
-			w.wakeResumed(ctx, class)
-		}
-	}()
 	for key, st := range w.classes {
 		if st.taskID == "" || st.closed {
 			continue
@@ -1071,12 +1255,8 @@ func (w *FreezeCard) tick(ctx context.Context) error {
 		}
 		switch {
 		case !st.resumedAt.IsZero() && !now.Before(st.resumedAt.Add(freezeResumeHold)):
-			moved, err := w.close(ctx, st)
-			if err != nil {
+			if err := w.close(ctx, st); err != nil {
 				return err
-			}
-			if moved {
-				resumed = append(resumed, st.class)
 			}
 			delete(w.classes, key)
 		case st.resumedAt.IsZero() && !st.spoke && !st.frozenAt.IsZero():
@@ -1095,7 +1275,11 @@ func (w *FreezeCard) tick(ctx context.Context) error {
 				}
 				next := w.class(st.repo, st.class)
 				next.frozenAt = st.frozenAt
-				if err := w.arm(ctx, next, FreezeEvent{Repository: st.repo, At: now, Kind: "class_frozen", Class: st.class, Reset: st.reset, Words: words}); err != nil {
+				err = w.arm(ctx, next, FreezeEvent{Repository: st.repo, At: now, Kind: "class_frozen", Class: st.class, Reset: st.reset, Words: words})
+				var kept *armStopped
+				if errors.As(err, &kept) {
+					log.Printf("freeze card: %v: each pass makes the arm again while the freeze stands", err)
+				} else if err != nil {
 					return err
 				}
 				continue
@@ -1123,24 +1307,6 @@ func (w *FreezeCard) keep(st *freezeClass, err error) {
 	}
 	log.Printf("freeze card: Forgejo refuses %s's %s card%s (%s): %s, and each pass tries the card again",
 		st.repo, st.class, issueRef(st.issue), textutil.Truncate(maskedErr(err), 300), action)
-}
-
-// wakeResumed wakes the frozen cards of class, in every repository, once
-// its self-resume held five minutes with no new class_frozen: the probe
-// that met the lapse was served, so the class works, while the cards
-// would sleep to their resets. A failed read or wake is logged; those
-// cards start at their resets.
-func (w *FreezeCard) wakeResumed(ctx context.Context, class string) {
-	cards, err := w.classCards(ctx, class)
-	if err != nil {
-		log.Printf("freeze card: the %s class's resume held, its frozen cards: %v", class, err)
-		return
-	}
-	woken, frozen, errs := w.wake(ctx, cards)
-	log.Printf("freeze card: the %s class's resume held, %d of %d frozen cards woken", class, woken, frozen)
-	if len(errs) > 0 {
-		log.Printf("freeze card: wake the %s class's frozen cards: %v", class, errors.Join(errs...))
-	}
 }
 
 // wake signals provider_retry to every running card of cards, the ones a
@@ -1210,19 +1376,18 @@ func (w *FreezeCard) speak(ctx context.Context, st *freezeClass, limit time.Dura
 	return nil
 }
 
-// close ends the card once its resume hold ran out (end), and reports
-// whether it moved the row.
-func (w *FreezeCard) close(ctx context.Context, st *freezeClass) (bool, error) {
+// close ends the card once its resume hold ran out (end).
+func (w *FreezeCard) close(ctx context.Context, st *freezeClass) error {
 	t, ok, err := w.waiting(ctx, st.taskID)
 	if err != nil || !ok {
-		return false, err
+		return err
 	}
 	msg := fmt.Sprintf("The freeze of the %s"+freezeEndedSaid+"%s, and the card closes.", st.class, freezeHeld(st.frozenAt, st.resumedAt))
 	moved, err := w.end(ctx, t, "", "factoryd: "+msg)
 	if moved {
 		log.Printf("freeze card: %s (#%d)", msg, t.IssueNumber)
 	}
-	return moved, err
+	return err
 }
 
 // waiting reads task id's row while it still waits on a human; ok is
@@ -1450,46 +1615,83 @@ func (s *PGStore) EndFreezeCard(ctx context.Context, t Task, face, comment strin
 
 // ReopenFreezeCard opens done freeze card t again in one transaction: the
 // row moves to waiting-human under face, the close's record goes off the
-// issue (comment_id 0) and counts as confirmed, so the heal pass leaves
-// the issue open, and the owed reopen of the issue is recorded with
-// comment as its body. A row that is not done is ErrNotFound, and nothing
-// is written.
-func (s *PGStore) ReopenFreezeCard(ctx context.Context, t Task, face, comment string) error {
+// issue (comment_id 0) and counts as confirmed, so no pass closes the
+// issue again, and the owed reopen of the issue is recorded with comment
+// as its body, after the comment of that close when Forgejo did not
+// confirm it (freezeOwedSplit). A row that is not done is ErrNotFound, and
+// nothing is written.
+func (s *PGStore) ReopenFreezeCard(ctx context.Context, t Task, face, comment string) (string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() { _ = tx.Rollback() }()
 	events, moved, err := changeStatusOn(ctx, tx, transitionSet+`, objective = $4`,
 		transitionWhere+` AND source = $5`, t.ID, "waiting-human", []string{"done"}, face, SourceFreezeCard)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !moved {
-		return fmt.Errorf("freeze card %s: %w (not done, cannot open again)", t.ID, ErrNotFound)
+		return "", fmt.Errorf("freeze card %s: %w (not done, cannot open again)", t.ID, ErrNotFound)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM intake_events WHERE task_id = $1 AND kind = $2`, t.ID, IntakeFactoryReopened); err != nil {
+		return "", err
+	}
+	var owed string
+	if err := tx.QueryRowContext(ctx, `INSERT INTO intake_events (task_id, kind, author, body, comment_id)
+		VALUES ($1, $2, $3, COALESCE((SELECT c.body || $7::text FROM intake_events c
+			WHERE c.task_id = $1 AND c.kind = $6 AND c.comment_id = $5 AND c.confirmed_at IS NULL AND c.body <> ''), '') || $4::text, $5)
+		RETURNING body`,
+		t.ID, IntakeFactoryReopened, FactoryDecider, comment, t.IssueNumber, IntakeFactoryClosed, freezeOwedSplit).Scan(&owed); err != nil {
+		return "", err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE intake_events SET comment_id = 0, confirmed_at = COALESCE(confirmed_at, now())
 		WHERE task_id = $1 AND kind = $2 AND comment_id = $3`, t.ID, IntakeFactoryClosed, t.IssueNumber); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM intake_events WHERE task_id = $1 AND kind = $2`, t.ID, IntakeFactoryReopened); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO intake_events (task_id, kind, author, body, comment_id) VALUES ($1, $2, $3, $4, $5)`,
-		t.ID, IntakeFactoryReopened, FactoryDecider, comment, t.IssueNumber); err != nil {
-		return err
+		return "", err
 	}
 	if err := tx.Commit(); err != nil {
-		return err
+		return "", err
 	}
 	s.recordStatus(ctx, events)
-	return nil
+	return owed, nil
 }
 
 // OwedFreezeReopens lists the reopens factoryd owes Forgejo, oldest first.
 func (s *PGStore) OwedFreezeReopens(ctx context.Context) ([]IntakeEvent, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+intakeColumns+` FROM intake_events WHERE kind = $1 ORDER BY id`, IntakeFactoryReopened)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+intakeColumns+` FROM intake_events WHERE kind = 'factory_reopened' ORDER BY id`)
 	return scanIntakeEvents(rows, err)
+}
+
+// UnconfirmedFreezeCloses lists the closes of freeze cards that stand on
+// their issues unconfirmed for olderThan (on the store's clock), oldest
+// first.
+func (s *PGStore) UnconfirmedFreezeCloses(ctx context.Context, olderThan time.Duration) ([]IntakeEvent, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+intakeColumns+` FROM intake_events
+		WHERE kind = $1 AND comment_id <> 0 AND confirmed_at IS NULL AND created_at < now() - $2 * interval '1 second'
+		  AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = intake_events.task_id AND t.source = $3)
+		ORDER BY id`, IntakeFactoryClosed, olderThan.Seconds(), SourceFreezeCard)
+	return scanIntakeEvents(rows, err)
+}
+
+// HeldResumes lists the class_resumed rows that are the newest row of
+// their class at the stored cursor and that no class_woken row names,
+// oldest first.
+func (s *PGStore) HeldResumes(ctx context.Context) ([]FreezeEvent, error) {
+	return s.freezeEvents(ctx, `SELECT `+freezeEventColumns+` FROM (
+		SELECT DISTINCT ON (detail->>'class') * FROM events
+		WHERE id <= (SELECT cursor FROM freeze_cursor WHERE id = 1) AND kind IN ('class_frozen', 'class_resumed')
+		ORDER BY detail->>'class', id DESC) newest
+		WHERE kind = 'class_resumed' AND NOT EXISTS (SELECT 1 FROM events w
+			WHERE w.id > newest.id AND w.kind = $1 AND w.detail->>'resumed' = newest.id::text) ORDER BY id`, EventClassWoken)
+}
+
+// RecordFreezeWake records, on the events table, that the frozen cards of
+// resumed's class were woken for that class_resumed row.
+func (s *PGStore) RecordFreezeWake(ctx context.Context, resumed FreezeEvent) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO events (repository, kind, actor, via, detail)
+		VALUES ($1, $2, $3, $4, jsonb_build_object('class', $5::text, 'resumed', $6::text))`,
+		resumed.Repository, EventClassWoken, FactoryDecider, ViaFactoryd, resumed.Class, strconv.FormatInt(resumed.ID, 10))
+	return err
 }
 
 // SettleFreezeReopen deletes the owed reopen of task taskID's issue, which
