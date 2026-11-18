@@ -799,7 +799,13 @@ func (r *Runner) replanPlan(ctx context.Context, planID string, ask ReplanAsk) (
 	}
 	if pending {
 		if ask.Card != "" && !slices.Contains(step.Stops, ask.Card) {
-			// the pending replan carries none of this card's words
+			// the pending replan carries none of this card's words; a reopen
+			// that stalled is healed first, so the revision the line names comes
+			if p.Status == "done" || p.Status == "failed" {
+				if _, err := r.completeReplan(ctx, p, step); err != nil {
+					return "", err
+				}
+			}
 			return "", beingReplanned(p)
 		}
 		return r.completeReplan(ctx, p, step)

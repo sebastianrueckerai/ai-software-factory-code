@@ -247,6 +247,9 @@ func TestHandBackReturnsTheCardToItsPlanner(t *testing.T) {
 	if want := "Plan #10 is being replanned: wait for its revision."; !errors.As(err, &refused) || err.Error() != want || store.cases[1].Status != CaseAtHuman || store.tasks["h2"].Status != "waiting-human" {
 		t.Errorf("a hand-back during the pending replan = %v, case %s, card %s; want %q and nothing moved", err, store.cases[1].Status, store.tasks["h2"].Status, want)
 	}
+	if p := store.tasks["p"]; p.Status != "queued" {
+		t.Errorf("the plan is %s after the refused hand-back, want the stalled reopen healed to queued, so its revision comes", p.Status)
+	}
 
 	r, store, _ = replanRig(t, "done", 2)
 	if err := store.CreateTask(ctx, Task{ID: "h", Kind: "human", Status: "waiting-human", Source: SourceWebhook, Repository: "sf/repo", IssueNumber: 15}); err != nil {
@@ -301,8 +304,16 @@ func TestIDidItWaitsForTheCardBeforeIt(t *testing.T) {
 	g := humanCardRig(t)
 	var refused ErrActRefused
 	_, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: 3, Res: Resolution{Action: AnswerDone}})
-	if want := "card #14 waits for #13 (queued), so its work cannot be done yet: answer Not now (park) until it is done, or End the card (close) with your note"; !errors.As(err, &refused) || err.Error() != want {
+	const end = "End the card (close) with your note, which lets the plan go on without this card's work"
+	if want := "card #14 waits for #13 (queued), so its work cannot be done yet: answer Not now (park) until it is done, or " + end; !errors.As(err, &refused) || err.Error() != want {
 		t.Fatalf("I did it while #13 waits = %v, want %q", err, want)
+	}
+	d := g.store.tasks["d1"]
+	d.Status = "closed"
+	g.store.tasks["d1"] = d
+	_, err = g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: 3, Res: Resolution{Action: AnswerDone}})
+	if want := "card #14 waits for #13, which was closed and will never be done: " + end; !errors.As(err, &refused) || err.Error() != want {
+		t.Fatalf("I did it while #13 is closed = %v, want %q", err, want)
 	}
 	if g.store.cases[0].Status != CaseAtHuman || len(g.store.resolved) != 0 {
 		t.Fatalf("case %s, resolved %v; want nothing moved", g.store.cases[0].Status, g.store.resolved)
@@ -317,7 +328,7 @@ func TestIDidItWaitsForTheCardBeforeIt(t *testing.T) {
 	if g.store.cases[0].Status != CaseResolved {
 		t.Fatalf("case %s after End the card, want resolved", g.store.cases[0].Status)
 	}
-	d := g.store.tasks["d1"]
+	d = g.store.tasks["d1"]
 	d.Status = "done"
 	g.store.tasks["d1"] = d
 	g.store.cases[0].Status = CaseAtHuman

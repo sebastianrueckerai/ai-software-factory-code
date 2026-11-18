@@ -348,7 +348,13 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 				return err
 			}
 		}
-		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"resolved_at": at})
+		if err := in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"resolved_at": at}); err != nil {
+			return err
+		}
+		if filed && t.Kind == "human" && !Final(t.Status) && row.Detail["event"] != true {
+			return in.resolvedOnCard(ctx, t, at)
+		}
+		return nil
 	}
 	at := stamp(a.StartsAt)
 	if !seen {
@@ -1143,6 +1149,30 @@ func namespaceOf(labels map[string]string) string {
 }
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
+
+// resolvedOnCard writes the resolve at of its alert on human card t's live
+// ask: the case's facts take resolved_at, and its face is stored again on
+// them, so the card says when its alert resolved.
+func (in *AlertIntake) resolvedOnCard(ctx context.Context, t Task, at string) error {
+	c, err := in.Store.NewestAskCase(ctx, t.ID)
+	if err != nil || c.ID == 0 {
+		return err
+	}
+	switch err := in.Store.SetCaseFacts(ctx, c.ID, map[string]any{"resolved_at": at}); {
+	case errors.Is(err, ErrNotFound):
+		return nil // the case ended since the read
+	case err != nil:
+		return err
+	}
+	facts := maps.Clone(c.Facts)
+	if facts == nil {
+		facts = map[string]any{}
+	}
+	facts["resolved_at"], c.Facts = at, facts
+	ask, _ := caseAskIn(ctx, in.Store, c)
+	face := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: t, Recommend: RecommendationOf(ask.Detail)})
+	return in.Store.SetCaseFace(ctx, c.ID, FaceKeys(face))
+}
 
 // oneLine is s on one line, whitespace collapsed; sanitize.Outbound, applied
 // to the whole issue or comment before it posts, neutralises any mention.

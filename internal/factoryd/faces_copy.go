@@ -300,6 +300,9 @@ var effectFills = map[string]func(Facts) string{
 		switch {
 		case f.Kind == CaseMonitorFlag && f.Final != "":
 			return "Closes the card's issue."
+		case ChoiceCase(f.Case, f.Card.Kind) && f.Plan != "":
+			// a human card ends done, so the plan's cards after it start
+			return "Ends the card and closes its issue. The plan goes on without its work."
 		case f.Card.ID != "" && f.Card.IssueNumber == 0:
 			return "Ends the card. Nothing more runs."
 		}
@@ -1515,10 +1518,18 @@ var humanFace = FaceSpec{
 		return cmp.Or(depWait(f), whyOf(factString(f.Case, "why")), whyOf(f.Card.Why), "Only a human can do this work.")
 	},
 	Story: func(f Facts) Story {
-		return Story{Planned: line(title(f)), Happened: line(factString(f.Case, "happened"))}
+		happened := factString(f.Case, "happened")
+		if at, err := time.Parse(time.RFC3339, factString(f.Case, "resolved_at")); err == nil {
+			happened = "It resolved at " + timeWords(at) + "."
+		}
+		return Story{Planned: line(title(f)), Happened: line(happened)}
 	},
 	Answers: humanAnswers,
 	Suggest: func(f Facts) (string, string, string) {
+		if factString(f.Case, "resolved_at") != "" {
+			// an alert that resolved leaves nothing on the card to wait for
+			return choicePrefix + AnswerNoted, "the factory", "The alert no longer fires."
+		}
 		return "", factString(f.Case, "recommended_by"), factString(f.Case, "recommendation")
 	},
 }

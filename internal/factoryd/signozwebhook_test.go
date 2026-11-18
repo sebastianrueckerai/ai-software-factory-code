@@ -1764,6 +1764,41 @@ func TestAClearedAlertSkipsAFinalCard(t *testing.T) {
 	}
 }
 
+// A resolve of the alert of a human card that stays open writes
+// resolved_at on the card's live case and stores the face those facts
+// give: the story says when the alert resolved, and Noted leads as the
+// factory's pick. A card whose case ended takes nothing.
+func TestAResolvedAlertsCardSaysItResolved(t *testing.T) {
+	r := newAlertRig(t)
+	demo := r.in.Projects.(*memProjects).m["demo-app"]
+	demo.Agents = "none"
+	r.in.Projects.(*memProjects).m["demo-app"] = demo
+	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
+	task := r.store.tasks[r.store.alertRows()[0].TaskID]
+	i := slices.IndexFunc(r.store.events, func(e Event) bool { return e.TaskID == task.ID && e.Kind == EventQuestionAsked })
+	r.store.events[i].Detail["case_id"] = 3
+	c, err := CaseFromAsk(task, r.store.events[i], "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.ID = 3
+	r.store.cases = append(r.store.cases, c)
+	if story := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: task}).Story; !strings.HasPrefix(story.Happened, "It has fired since ") {
+		t.Fatalf("the firing card's story = %q, want it firing", story.Happened)
+	}
+	r.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp1", "demo-staging", firedAt, resolvedAt))
+	k := slices.IndexFunc(r.store.cases, func(k Case) bool { return k.ID == 3 })
+	if got := r.store.cases[k].Facts["resolved_at"]; got != resolvedAt {
+		t.Fatalf("the case's resolved_at = %v, want %s", got, resolvedAt)
+	}
+	face := r.store.faces[3]
+	story, _ := face["story"].(Story)
+	pick, _ := face["preselected"].(map[string]any)
+	if story.Happened != "It resolved at 28 September at 20:40 UTC." || pick["action"] != "choice:"+AnswerNoted || face["recommended_by"] != "the factory" {
+		t.Fatalf("the stored face = %+v, want the resolve's time and Noted as the factory's pick", face)
+	}
+}
+
 func TestAClearedAlertLeavesARowWithoutResolvedAt(t *testing.T) {
 	r := newAlertRig(t)
 	demo := r.in.Projects.(*memProjects).m["demo-app"]

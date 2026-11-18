@@ -20,7 +20,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
@@ -455,10 +454,10 @@ var reproChainOperators = []string{"&&", "||", ";"}
 // ReproQuestion is the person's card of issue title whose reproduction
 // command breaks the sandbox rule for reason: no agent card is filed on
 // it, and its poster files it again with a command that keeps the rule.
-// Its why names the issue, unless that passes a why's length.
+// Its why names the issue, unless a face could then not show it.
 func ReproQuestion(title, poster, reason string) HumanQuestion {
 	why := fmt.Sprintf("The reproduction command %s wrote for \u201c%s\u201d breaks the sandbox rule, so no agent works on the issue", poster, oneLine(title))
-	if utf8.RuneCountInString(why) > whyMax {
+	if whyOf(why) == "" {
 		why = "The reproduction command " + poster + " wrote breaks the sandbox rule, so no agent works on the issue"
 	}
 	return HumanQuestion{
@@ -1423,8 +1422,8 @@ func FileAgentTask(ctx context.Context, store interface {
 // It runs no session, and its budget is its model gates': budget's task
 // default, at most p's card maximum and the task maximum (CardBudget).
 // On a project without agents no workflow runs: the card is a human card
-// through fileHumanTask, linked to the pull request, whose question asks
-// a person to merge it in Forgejo.
+// through fileHumanTask, linked to the pull request, whose question asks a
+// human to merge it or close it, on the card or in Forgejo.
 func FileFactoryPRTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
 	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)

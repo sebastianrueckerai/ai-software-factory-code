@@ -2257,9 +2257,11 @@ func TestReproQuestionText(t *testing.T) {
 	if q := ReproQuestion("A card", "sebastian", ValidateReproCommand("git worktree add /tmp/w HEAD")); q.Happened != "The command creates a git worktree: "+sandboxCheckoutRule+"." {
 		t.Errorf("worktree Happened = %q, want the sandbox rule named", q.Happened)
 	}
-	long := strings.Repeat("The gateway drops the request id ", 3)
-	if q := ReproQuestion(long, "sebastian", ValidateReproCommand("cd /tmp/x && make repro")); q.Why != "The reproduction command sebastian wrote breaks the sandbox rule, so no agent works on the issue" {
-		t.Errorf("a long title's why = %q, want the why without it", q.Why)
+	for _, title := range []string{strings.Repeat("The gateway drops the request id ", 3), "Gateway \u2014 the retry loses the request id",
+		"Gateway; the retry loses the request id", "The retry fails. It loses the request id"} {
+		if q := ReproQuestion(title, "sebastian", ValidateReproCommand("cd /tmp/x && make repro")); q.Why != "The reproduction command sebastian wrote breaks the sandbox rule, so no agent works on the issue" {
+			t.Errorf("the why of title %q = %q, want the why without it, which a face shows", title, q.Why)
+		}
 	}
 }
 

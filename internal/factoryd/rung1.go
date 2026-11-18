@@ -160,12 +160,19 @@ func planAsk(c Case) bool {
 // caseAsk is the newest question_asked of case c, read through the events
 // the face reads its ask from; false when it has none.
 func (r *Runner) CaseAsk(ctx context.Context, c Case) (CaseAsk, bool) {
-	events, err := r.store.TaskEventsOfKind(ctx, c.TaskID, EventQuestionAsked, 50)
+	return caseAskIn(ctx, r.store, c)
+}
+
+// caseAskIn is case c's ask row among the asks events holds.
+func caseAskIn(ctx context.Context, events interface {
+	TaskEventsOfKind(ctx context.Context, id, kind string, limit int) ([]Event, error)
+}, c Case) (CaseAsk, bool) {
+	rows, err := events.TaskEventsOfKind(ctx, c.TaskID, EventQuestionAsked, 50)
 	if err != nil {
 		log.Printf("case %d: its ask: %v", c.ID, err)
 		return CaseAsk{}, false
 	}
-	for _, e := range events {
+	for _, e := range rows {
 		if id, _ := toInt(e.Detail["case_id"]); int64(id) == c.ID {
 			return CaseAsk{At: e.At, Detail: e.Detail}, true
 		}

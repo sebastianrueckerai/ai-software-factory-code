@@ -976,20 +976,35 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) (
 	if err != nil || len(deps) == 0 {
 		return "", err
 	}
-	waits := make([]string, 0, len(deps))
+	end := "End the card (close) with your note"
+	if InPlan(t) {
+		end += ", which lets the plan go on without this card's work"
+	}
+	var waits, closed []string
 	for _, d := range deps {
 		ref := d.TaskID
 		if d.Issue != 0 {
 			ref = fmt.Sprintf("#%d", d.Issue)
 		}
+		if d.Status == "closed" {
+			closed = append(closed, ref)
+			continue
+		}
 		waits = append(waits, fmt.Sprintf("%s (%s)", ref, d.Status))
+	}
+	if len(closed) > 0 {
+		were := "was"
+		if len(closed) > 1 {
+			were = "were"
+		}
+		return fmt.Sprintf("card %s waits for %s, which %s closed and will never be done: %s", cardName(t), textutil.AndList(closed), were, end), nil
 	}
 	until := "it is"
 	if len(deps) > 1 {
 		until = "they are"
 	}
-	return fmt.Sprintf("card %s waits for %s, so its work cannot be done yet: answer Not now (park) until %s done, or End the card (close) with your note",
-		cardName(t), textutil.AndList(waits), until), nil
+	return fmt.Sprintf("card %s waits for %s, so its work cannot be done yet: answer Not now (park) until %s done, or %s",
+		cardName(t), textutil.AndList(waits), until, end), nil
 }
 
 // choiceRefusal says card t takes one of offers, with a note beside it.

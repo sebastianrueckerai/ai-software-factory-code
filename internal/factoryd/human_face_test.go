@@ -112,6 +112,10 @@ func TestHumanCardsAskOneThing(t *testing.T) {
 	if len(back.Fields) != 1 || !back.Fields[0].Required || back.Fields[0].Hint != "One line for the planner: what keeps you from doing it" {
 		t.Errorf("I cannot do this opens %+v, want one required note with its hint", back.Fields)
 	}
+	if i := slices.IndexFunc(face.More, func(a factoryd.Answer) bool { return a.Label == "End the card" }); i < 0 ||
+		face.More[i].Effect != "Ends the card and closes its issue. The plan goes on without its work." {
+		t.Errorf("#2101's End the card = %+v, want it to say the plan goes on without its work", face.More)
+	}
 	pr := fixture(t, facefixtures.GroupCard, "factory pull request on a project without agents").face
 	if merge, reject := pr.Answers[0].Effect, pr.Answers[1].Effect; merge != "Merges the pull request as you. The card ends." || reject != "Closes the pull request. The card ends." {
 		t.Errorf("the factory pull request's effects %q, %q; want each to say the card ends", merge, reject)
