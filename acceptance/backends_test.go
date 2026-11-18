@@ -981,7 +981,7 @@ func (s *acceptanceStore) MergeAlertDetail(_ context.Context, id int64, detail m
 	return nil
 }
 
-func (s *acceptanceStore) SetAskFace(_ context.Context, t factoryd.Task, _ int64, _ map[string]any) error {
+func (s *acceptanceStore) SetAskFace(_ context.Context, t factoryd.Task, _ int64, _, _ map[string]any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cur, ok := s.tasks[t.ID]

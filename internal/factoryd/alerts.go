@@ -303,11 +303,16 @@ func (s *PGStore) CloseClearedCard(ctx context.Context, alertID int64, taskID st
 	return nil
 }
 
-// SetAskFace writes card t's objective and why line and merges facts into
-// its live case caseID, in one transaction; oneRow answers ErrNotFound for
-// an unknown card or a case that ended.
-func (s *PGStore) SetAskFace(ctx context.Context, t Task, caseID int64, facts map[string]any) error {
+// SetAskFace writes card t's objective and why line, merges facts into
+// its live case caseID and stores face on the case's ask row, in one
+// transaction; oneRow answers ErrNotFound for an unknown card or a case
+// that ended.
+func (s *PGStore) SetAskFace(ctx context.Context, t Task, caseID int64, facts, face map[string]any) error {
 	b, err := json.Marshal(facts)
+	if err != nil {
+		return err
+	}
+	k, err := json.Marshal(face)
 	if err != nil {
 		return err
 	}
@@ -322,6 +327,9 @@ func (s *PGStore) SetAskFace(ctx context.Context, t Task, caseID int64, facts ma
 	}
 	res, err = tx.ExecContext(ctx, `UPDATE cases SET facts = facts || $3::jsonb WHERE id = $1 AND task_id = $2 AND `+caseLive, caseID, t.ID, string(b))
 	if err := oneRow(res, err, fmt.Sprintf("live case %d of task %s", caseID, t.ID)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, caseFaceSQL, caseID, k, EventQuestionAsked); err != nil {
 		return err
 	}
 	return tx.Commit()

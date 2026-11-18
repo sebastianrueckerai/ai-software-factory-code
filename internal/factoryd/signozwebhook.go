@@ -163,9 +163,10 @@ type AlertBook interface {
 	MergeAlertDetail(ctx context.Context, id int64, detail map[string]any) error
 	NewestAlertRows(ctx context.Context, kind, namespace string) ([]Alert, error)
 	CloseClearedCard(ctx context.Context, alertID int64, taskID string) error
-	// SetAskFace writes card t's objective and why line and merges facts
-	// into its live case caseID, in one transaction.
-	SetAskFace(ctx context.Context, t Task, caseID int64, facts map[string]any) error
+	// SetAskFace writes card t's objective and why line, merges facts into
+	// its live case caseID and stores face on its ask row, in one
+	// transaction.
+	SetAskFace(ctx context.Context, t Task, caseID int64, facts, face map[string]any) error
 }
 
 // AlertIntake serves POST /webhooks/signoz, SigNoz's webhook channel
@@ -1178,9 +1179,9 @@ func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 // alertOnCard writes how its alert stands on human card t of project p
 // and its live ask (AlertOnCard): q's words, cleaned as the filing cleans
 // them, with facts beside them, a resolve's resolved_at, go on the card
-// and the case in one write, and the ask's face is stored again on them,
-// so the card says whether its alert still fires. A card with no live ask
-// keeps its face.
+// and the case, and the ask's face stored again on them goes on its row,
+// in one write, so the card says whether its alert still fires. A card
+// with no live ask keeps its face.
 func (in *AlertIntake) alertOnCard(ctx context.Context, t Task, p Project, q HumanQuestion, facts map[string]any) error {
 	c, err := in.Store.NewestAskCase(ctx, t.ID)
 	if err != nil || c.ID == 0 {
@@ -1189,13 +1190,10 @@ func (in *AlertIntake) alertOnCard(ctx context.Context, t Task, p Project, q Hum
 	q.Ask, q.Why = sanitize.Outbound(q.Ask, in.hostsFor(p)), sanitize.Outbound(q.Why, in.hostsFor(p))
 	ask, _ := caseAskIn(ctx, in.Store, c)
 	card, set, face := AlertOnCard(t, c, q, facts, ask.Detail)
-	switch err := in.Store.SetAskFace(ctx, card, c.ID, set); {
-	case errors.Is(err, ErrNotFound):
-		return nil // the case ended since the read
-	case err != nil:
+	if err := in.Store.SetAskFace(ctx, card, c.ID, set, face); !errors.Is(err, ErrNotFound) {
 		return err
 	}
-	return in.Store.SetCaseFace(ctx, c.ID, face)
+	return nil // the case ended since the read
 }
 
 // AlertOnCard is human card t with live ask c once q says how its alert

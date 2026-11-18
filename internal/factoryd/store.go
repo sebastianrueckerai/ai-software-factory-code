@@ -1614,14 +1614,18 @@ func (s *PGStore) SetAskInfo(ctx context.Context, taskID, info string) error {
 	return tx.Commit()
 }
 
+// caseFaceSQL stores face keys $2 on the newest ask row of case $1
+// ($3 the ask's kind), its pick dropped for the face's own.
+const caseFaceSQL = `UPDATE events SET detail = (detail - 'preselected' - 'recommended_by' - 'recommendation') || $2::jsonb
+		WHERE id = (SELECT e.id FROM events e JOIN cases c ON c.id = $1 AND e.task_id = c.task_id AND e.kind = $3
+		    AND e.detail->>'case_id' = c.id::text ORDER BY e.id DESC LIMIT 1)`
+
 func (s *PGStore) SetCaseFace(ctx context.Context, caseID int64, keys map[string]any) error {
 	k, err := json.Marshal(keys)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE events SET detail = (detail - 'preselected' - 'recommended_by' - 'recommendation') || $2::jsonb
-		WHERE id = (SELECT e.id FROM events e JOIN cases c ON c.id = $1 AND e.task_id = c.task_id AND e.kind = $3
-		    AND e.detail->>'case_id' = c.id::text ORDER BY e.id DESC LIMIT 1)`, caseID, k, EventQuestionAsked)
+	_, err = s.db.ExecContext(ctx, caseFaceSQL, caseID, k, EventQuestionAsked)
 	return err
 }
 

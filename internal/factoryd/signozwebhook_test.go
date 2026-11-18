@@ -1756,6 +1756,48 @@ func TestAnAlertsHumanCardSaysWhatHappened(t *testing.T) {
 	head(firing.Ask, firing.Why)
 }
 
+// A resolve whose write fails at its last step, the ask row's, leaves the
+// card, its case and its row as they were, so the opened card's head and
+// the small card never part: the delivery stops before the resolve's
+// comment and its row, and the next one writes all three together, with
+// the resolve's one comment.
+func TestAnAlertsCardAndItsAskRowChangeTogether(t *testing.T) {
+	r := newAlertRig(t)
+	demo := r.in.Projects.(*memProjects).m["demo-app"]
+	demo.Agents = "none"
+	r.in.Projects.(*memProjects).m["demo-app"] = demo
+	r.in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: r.store, Store: r.store}
+	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
+	task := r.store.tasks[r.store.alertRows()[0].TaskID]
+	said := func() []string {
+		t.Helper()
+		card := r.store.tasks[task.ID]
+		c, err := r.store.NewestAskCase(context.Background(), task.ID)
+		if err != nil || c.ID == 0 {
+			t.Fatalf("the card's live ask: %+v, %v", c, err)
+		}
+		var row map[string]any
+		for _, e := range r.store.events {
+			if e.TaskID == task.ID && e.Kind == EventQuestionAsked {
+				row = e.Detail
+			}
+		}
+		caseAsk, _ := c.Facts["ask"].(string)
+		rowAsk, _ := row["ask"].(string)
+		return []string{CardTitle(card), caseAsk, rowAsk}
+	}
+	const fires, cleared = "SigNoz fires the alert “5xx rate above 5 %” on demo-staging", "SigNoz cleared the alert “5xx rate above 5 %” on demo-staging"
+	r.store.askRowFails = 1
+	r.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp1", "demo-staging", firedAt, resolvedAt))
+	if got := said(); !slices.Equal(got, []string{fires, fires, fires}) || len(r.fj.comments) != 0 {
+		t.Fatalf("after the failed write: title, case and row say %q, comments %q; want all three firing and no comment", got, r.fj.comments)
+	}
+	r.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp1", "demo-staging", firedAt, resolvedAt))
+	if got := said(); !slices.Equal(got, []string{cleared, cleared, cleared}) || len(r.fj.comments) != 1 {
+		t.Fatalf("after the next delivery: title, case and row say %q, comments %q; want all three cleared and the resolve's one comment", got, r.fj.comments)
+	}
+}
+
 func TestAClearedAlertLeavesAnAgentCard(t *testing.T) {
 	r := newAlertRig(t)
 	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))

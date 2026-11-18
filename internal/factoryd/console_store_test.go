@@ -741,8 +741,9 @@ func TestCloseClearedCardIsOneStep(t *testing.T) {
 	}
 }
 
-// SetAskFace writes the card's title and why line and its live case's
-// facts together, or neither: a case that ended leaves the card as it was.
+// SetAskFace writes the card's title and why line, its live case's facts
+// and the face on the case's ask row together, or none of them: a case
+// that ended leaves the card, the case and the row as they were.
 func TestSetAskFaceIsOneStep(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
@@ -762,28 +763,33 @@ func TestSetAskFaceIsOneStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	read := func() (objective, why, said string) {
-		t.Helper()
-		if err := s.db.QueryRowContext(ctx, `SELECT t.objective, t.why, coalesce(c.facts->>'ask', '') FROM tasks t, cases c WHERE t.id = 't-h' AND c.id = $1`, ask.ID).
-			Scan(&objective, &why, &said); err != nil {
-			t.Fatal(err)
-		}
-		return objective, why, said
-	}
-	card := Task{ID: "t-h", Objective: "SigNoz cleared the alert\n\nthe body", Why: "It may still be there."}
-	if err := s.SetAskFace(ctx, card, ask.ID, map[string]any{"ask": "SigNoz cleared the alert"}); err != nil {
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-h", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"ask": "SigNoz fires the alert", "case_id": ask.ID, "recommended_by": "the factory"}}); err != nil {
 		t.Fatal(err)
 	}
-	if o, w, a := read(); o != card.Objective || w != card.Why || a != "SigNoz cleared the alert" {
-		t.Fatalf("after the write: objective %q, why %q, ask %q", o, w, a)
+	read := func() (objective, why, said, row, pick string) {
+		t.Helper()
+		if err := s.db.QueryRowContext(ctx, `SELECT t.objective, t.why, coalesce(c.facts->>'ask', ''), e.detail->>'ask', coalesce(e.detail->>'recommended_by', '')
+			FROM tasks t, cases c, events e WHERE t.id = 't-h' AND c.id = $1 AND e.task_id = 't-h' AND e.kind = $2`, ask.ID, EventQuestionAsked).
+			Scan(&objective, &why, &said, &row, &pick); err != nil {
+			t.Fatal(err)
+		}
+		return objective, why, said, row, pick
+	}
+	card := Task{ID: "t-h", Objective: "SigNoz cleared the alert\n\nthe body", Why: "It may still be there."}
+	if err := s.SetAskFace(ctx, card, ask.ID, map[string]any{"ask": "SigNoz cleared the alert"}, map[string]any{"ask": "SigNoz cleared the alert"}); err != nil {
+		t.Fatal(err)
+	}
+	if o, w, a, r, p := read(); o != card.Objective || w != card.Why || a != "SigNoz cleared the alert" || r != "SigNoz cleared the alert" || p != "" {
+		t.Fatalf("after the write: objective %q, why %q, ask %q, the row's ask %q and pick %q", o, w, a, r, p)
 	}
 	if err := s.WithdrawCase(ctx, ask.ID, "answered"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetAskFace(ctx, Task{ID: "t-h", Objective: "SigNoz fires again", Why: "It fires again."}, ask.ID, map[string]any{"ask": "again"}); !errors.Is(err, ErrNotFound) {
+	if err := s.SetAskFace(ctx, Task{ID: "t-h", Objective: "SigNoz fires again", Why: "It fires again."}, ask.ID, map[string]any{"ask": "again"}, map[string]any{"ask": "again"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("an ended case: err = %v, want ErrNotFound", err)
 	}
-	if o, w, a := read(); o != card.Objective || w != card.Why || a != "SigNoz cleared the alert" {
-		t.Fatalf("an ended case changed the card: objective %q, why %q, ask %q", o, w, a)
+	if o, w, a, r, _ := read(); o != card.Objective || w != card.Why || a != "SigNoz cleared the alert" || r != "SigNoz cleared the alert" {
+		t.Fatalf("an ended case changed the card: objective %q, why %q, ask %q, the row's ask %q", o, w, a, r)
 	}
 }

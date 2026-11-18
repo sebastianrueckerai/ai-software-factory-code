@@ -124,6 +124,9 @@ type fakeStore struct {
 	createFails int
 	// caseFactsFails fails that many SetCaseFacts calls
 	caseFactsFails int
+	// askRowFails fails that many SetAskFace calls at their last write,
+	// the ask row's, so the transaction writes nothing
+	askRowFails int
 	// sizeFails fails that many SetTaskSizeBudget calls
 	sizeFails int
 	// createCalls counts every CreateTask call, failed or not
@@ -2726,21 +2729,25 @@ func (s *fakeStore) ResolveAlert(ctx context.Context, id int64, kind, verdict, b
 	return fmt.Errorf("open gate_bound alert: %w", ErrNotFound)
 }
 
-func (s *fakeStore) SetAskFace(ctx context.Context, t Task, caseID int64, facts map[string]any) error {
+func (s *fakeStore) SetAskFace(ctx context.Context, t Task, caseID int64, facts, face map[string]any) error {
 	cur, ok := s.tasks[t.ID]
 	if !ok || !slices.ContainsFunc(s.cases, func(c Case) bool {
 		return c.ID == caseID && c.TaskID == t.ID && (c.Status == CaseOpen || c.Status == CaseAtHuman)
 	}) {
 		return fmt.Errorf("task %s or case %d: %w", t.ID, caseID, ErrNotFound)
 	}
-	// the case first: a failed write leaves the card as it was, as the
-	// store's one transaction does
+	// a failed write leaves the card, the case and the row as they were,
+	// as the store's one transaction does
+	if s.askRowFails > 0 {
+		s.askRowFails--
+		return errors.New("the ask row: the store did not answer")
+	}
 	if err := s.SetCaseFacts(ctx, caseID, facts); err != nil {
 		return err
 	}
 	cur.Objective, cur.Why = t.Objective, t.Why
 	s.tasks[t.ID] = cur
-	return nil
+	return s.SetCaseFace(ctx, caseID, face)
 }
 
 func (s *fakeStore) CloseClearedCard(ctx context.Context, alertID int64, taskID string) error {
