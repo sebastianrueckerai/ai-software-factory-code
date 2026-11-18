@@ -998,9 +998,9 @@ func (s *fakeStore) SetQuestionInfo(ctx context.Context, taskID string, commentI
 	return nil
 }
 
-func (s *fakeStore) SetAskInfo(ctx context.Context, taskID, info string) error {
+func (s *fakeStore) SetAskInfo(ctx context.Context, taskID, source, info string) error {
 	for i := len(s.events) - 1; i >= 0; i-- {
-		if e := s.events[i]; e.TaskID == taskID && e.Kind == EventQuestionAsked && e.Detail["source"] == SourceProductionHeld {
+		if e := s.events[i]; e.TaskID == taskID && e.Kind == EventQuestionAsked && e.Detail["source"] == source {
 			detail := maps.Clone(e.Detail)
 			detail["info"] = info
 			s.events[i].Detail = detail

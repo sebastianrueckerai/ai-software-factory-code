@@ -1630,10 +1630,10 @@ func (s *PGStore) SetQuestionInfo(ctx context.Context, taskID string, commentID 
 	return err
 }
 
-// SetAskInfo rewrites the info of held-production card taskID's newest ask:
-// its question and its own question_asked row, which the drawer reads, and
+// SetAskInfo rewrites the info of card taskID's newest ask from source:
+// its own question_asked row, which the opened card reads, and
 // not a proposal's row beside it. An info that is the stored one writes nothing.
-func (s *PGStore) SetAskInfo(ctx context.Context, taskID, info string) error {
+func (s *PGStore) SetAskInfo(ctx context.Context, taskID, source, info string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1642,7 +1642,7 @@ func (s *PGStore) SetAskInfo(ctx context.Context, taskID, info string) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(detail, '{info}', to_jsonb($2::text))
 		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $3 AND detail->>'source' = $4 ORDER BY id DESC LIMIT 1)
 			AND detail->>'info' IS DISTINCT FROM $2::text`,
-		taskID, info, EventQuestionAsked, SourceProductionHeld); err != nil {
+		taskID, info, EventQuestionAsked, source); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -71,7 +71,7 @@ type ReleaseStore interface {
 	ClearToldHeld(ctx context.Context, repository, commit string) error
 	FixesMergedSince(ctx context.Context, repository string, since time.Time) ([]Task, error)
 	NewestAskCase(ctx context.Context, taskID string) (Case, error)
-	SetAskInfo(ctx context.Context, taskID, info string) error
+	SetAskInfo(ctx context.Context, taskID, source, info string) error
 	SetCaseFacts(ctx context.Context, id int64, facts map[string]any) error
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
 	Task(ctx context.Context, id string) (Task, bool, error)
@@ -276,7 +276,7 @@ func (k *ReleaseKeeper) refreshFacts(ctx context.Context, card Task, groups []Gr
 	if err != nil {
 		return err
 	}
-	return k.Store.SetAskInfo(ctx, card.ID, holdInfo(plans))
+	return k.Store.SetAskInfo(ctx, card.ID, SourceProductionHeld, holdInfo(plans))
 }
 
 // question is the hold's ask on project name (HoldQuestion), over the

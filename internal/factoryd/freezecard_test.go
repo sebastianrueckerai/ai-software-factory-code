@@ -955,18 +955,33 @@ func freezeAsks(t *testing.T, store *freezeStore) map[string]int {
 	return asks
 }
 
-// A freeze card an older factoryd filed asked nothing, and the board
-// answers a card only through its case. The watcher that adopts it asks
-// once, from the card's own face; the next watcher, after a restart, finds
-// the case and asks no second time.
+// mainsFreezeFace is the face of a freeze card as the factoryd before the
+// card asked wrote it, words the provider's, count the cards it counted.
+func mainsFreezeFace(words string, count string) string {
+	return "The provider limit freezes the big class\n\n" +
+		"Class: big\n\n" +
+		"The provider limit freezes the class: every call of the class is answered with the named refusal until the reset.\n\n" +
+		"The provider said:\n\n```\n" + words + "\n```\n\n" +
+		"The class resets at 2026-11-21T17:00:00Z (in 6h 00m). " + count + " cards of the class wait.\n\n" +
+		"This card holds no work slot and asks nothing. It updates on a re-arm, and closes itself five minutes after the class resumes."
+}
+
+// A freeze card an older factoryd filed says in its title and its face that
+// it asks nothing, and the board answers a card only through its case. The
+// watcher that adopts it writes the face as it writes every freeze card's,
+// with the class, the reset and the provider's words of the old face and
+// the count of now, and asks once with that face; the next watcher, after a
+// restart, finds the case and asks no second time.
 func TestFreezeCardAdoptedWithNoCaseAsks(t *testing.T) {
 	ctx := context.Background()
 	store := &freezeStore{fakeStore: newFakeStore()}
-	forgejo, _ := newAlertForgejo(t)
+	forgejo, fj := newAlertForgejo(t)
 	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
-	body := "Class: big\n\nThe class resets at 2026-11-21T17:00:00Z (in 5h 00m). 3 cards of the class wait."
 	store.tasks["t-old-freeze"] = Task{ID: "t-old-freeze", Repository: "sf/acme", IssueNumber: 41, Kind: "human", Status: "waiting-human",
-		Source: SourceFreezeCard, Objective: freezeCardTitle("big") + "\n\n" + body, CreatedAt: now.Add(-time.Hour)}
+		Source: SourceFreezeCard, Objective: mainsFreezeFace("quota exhausted", "3"), CreatedAt: now.Add(-time.Hour)}
+	for _, id := range []string{"w1", "w2"} {
+		store.tasks[id] = Task{ID: id, Kind: "agent", Status: "running", Repository: "sf/acme", RequiredCapabilities: []string{"big"}}
+	}
 	for range 2 {
 		if err := freezeWatcher(store, forgejo, &now).Check(ctx); err != nil {
 			t.Fatal(err)
@@ -982,8 +997,140 @@ func TestFreezeCardAdoptedWithNoCaseAsks(t *testing.T) {
 			asked = append(asked, e)
 		}
 	}
-	want := FreezeQuestion(FreezeEvent{Class: "big"}, 0, now)
-	if len(asked) != 1 || asked[0].Detail["ask"] != want.Ask || asked[0].Detail["info"] != body {
-		t.Fatalf("the asks: %+v; want one asking %q with the face %q", asked, want.Ask, body)
+	const face = "Class: big\n\n" +
+		"The provider limit freezes the class: every call of the class is answered with the named refusal until the reset.\n\n" +
+		"The provider said:\n\n```\nquota exhausted\n```\n\n" +
+		"The class resets at 2026-11-21T17:00:00Z (in 5h 00m). 2 cards of the class wait.\n\n" +
+		"This card holds no work slot. It updates when the provider names a new reset, and closes itself five minutes after the class resumes."
+	if len(asked) != 1 || asked[0].Detail["info"] != face ||
+		asked[0].Detail["ask"] != "Model calls of the big class wait for the provider's limit to reset" {
+		t.Fatalf("the asks: %+v; want one with the face\n%s", asked, face)
+	}
+	if got := store.tasks["t-old-freeze"].Objective; got != "Model calls of the big class wait for the provider's limit to reset\n\n"+face {
+		t.Errorf("the adopted card's face:\n%s", got)
+	}
+	if len(fj.comments) != 0 {
+		t.Errorf("the adoption commented: %q", fj.comments)
+	}
+}
+
+// An older factoryd's card that spoke its one-time sentence keeps one such
+// sentence on the face the adoption writes, and speaks no second time.
+func TestFreezeCardAdoptedAfterItSpokeStaysQuiet(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	now := time.Date(2026, 11, 22, 13, 0, 0, 0, time.UTC)
+	store.tasks["t-old-freeze"] = Task{ID: "t-old-freeze", Repository: "sf/acme", IssueNumber: 41, Kind: "human", Status: "waiting-human",
+		Source: SourceFreezeCard, CreatedAt: now.Add(-25 * time.Hour),
+		Objective: strings.Replace(mainsFreezeFace("quota exhausted", "3"), "2026-11-21T17:00:00Z", "2026-11-22T17:00:00Z", 1) +
+			"\n\nThe freeze of the big class has held past waits.provider_limit (24h0m0s). " +
+			"Add a fallback for the class, switch the class's model in policy, or keep waiting. The work cards ask nothing."}
+	for range 2 {
+		if err := freezeWatcher(store, forgejo, &now).Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := store.tasks["t-old-freeze"].Objective
+	if !strings.HasSuffix(got, "\n\nThe provider's limit has held the big class for more than 1440 minutes. "+
+		"Add a fallback for the class, switch the class's model in policy, or keep waiting. The work cards ask nothing.") ||
+		strings.Count(got, "Add a fallback") != 1 || strings.Contains(got, "waits.provider_limit") {
+		t.Errorf("the adopted card's face:\n%s", got)
+	}
+	if len(fj.comments) != 0 {
+		t.Errorf("the adopted card spoke again: %q", fj.comments)
+	}
+}
+
+// A watcher that starts after the card spoke reads that off the face: each
+// restart leaves the one comment and the one paragraph.
+func TestFreezeCardRestartAfterItSpokeStaysQuiet(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	repo := Repo{Owner: "sf", Name: "acme"}
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	store.rows = append(store.rows, FreezeEvent{ID: 1, Repository: repo.String(), At: base, Kind: "class_frozen",
+		Class: "big", Reset: base.Add(30 * time.Hour).Format(time.RFC3339), Words: "big frozen"})
+	if err := freezeWatcher(store, forgejo, &now).Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	card, _, _ := store.Task(ctx, cardOfClass(store, repo, "big"))
+	card.CreatedAt = base
+	store.tasks[card.ID] = card
+	now = base.Add(25 * time.Hour)
+	for range 3 {
+		if err := freezeWatcher(store, forgejo, &now).Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const said = "The provider's limit has held the big class for more than 1440 minutes."
+	comments := 0
+	for _, c := range fj.comments {
+		comments += strings.Count(c, said)
+	}
+	spoken, _, _ := store.Task(ctx, card.ID)
+	if comments != 1 || strings.Count(spoken.Objective, said) != 1 {
+		t.Fatalf("after two restarts: %d comments, want 1, and the face:\n%s", comments, spoken.Objective)
+	}
+}
+
+// What the freeze card's ask knows is the card's face at each rewrite: the
+// re-arm's reset, the one-time sentence and the resume. The re-arm's
+// comment names the reset as the face does.
+func TestFreezeCardAskKnowsTheFaceAsItStands(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	repo := Repo{Owner: "sf", Name: "acme"}
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	w := freezeWatcher(store, forgejo, &now)
+	info := func() string {
+		t.Helper()
+		var got string
+		for _, e := range store.events {
+			if e.Kind == EventQuestionAsked {
+				got, _ = e.Detail["info"].(string)
+			}
+		}
+		return got
+	}
+	store.rows = append(store.rows, FreezeEvent{ID: 1, Repository: repo.String(), At: base, Kind: "class_frozen",
+		Class: "big", Reset: "2026-11-21T17:00:00Z", Words: "big frozen"})
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := info(); !strings.Contains(got, "The class resets at 2026-11-21T17:00:00Z (in 5h 00m).") {
+		t.Fatalf("the filed ask knows:\n%s", got)
+	}
+	store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: repo.String(), At: base, Kind: "class_frozen",
+		Class: "big", Reset: "2026-11-23T05:00:00+08:00", Words: "big frozen"})
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := info(); !strings.Contains(got, "The class resets at 2026-11-22T21:00:00Z (in 33h 00m).") || strings.Contains(got, "17:00") {
+		t.Fatalf("after the re-arm the ask knows:\n%s", got)
+	}
+	if len(fj.comments) != 1 || fj.comments[0] != "#1 The provider's limit holds the class longer, until 2026-11-22T21:00:00Z. 0 cards of the class wait." {
+		t.Fatalf("the re-arm's comment: %q", fj.comments)
+	}
+	now = base.Add(25 * time.Hour)
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	card, _, _ := store.Task(ctx, cardOfClass(store, repo, "big"))
+	if got := info(); !strings.HasSuffix(got, "The provider's limit has held the big class for more than 1440 minutes. "+
+		"Add a fallback for the class, switch the class's model in policy, or keep waiting. The work cards ask nothing.") ||
+		card.Objective != "Model calls of the big class wait for the provider's limit to reset\n\n"+got {
+		t.Fatalf("after the card spoke the ask knows:\n%s\nand the face:\n%s", got, card.Objective)
+	}
+	store.rows = append(store.rows, FreezeEvent{ID: 3, Repository: repo.String(), At: now, Kind: "class_resumed", Class: "big"})
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := info(); got != "Class: big\n\nThe class resumed on its own at 2026-11-22T13:00:00Z: the freeze held 25h 00m. The card closes itself at 2026-11-22T13:05:00Z." {
+		t.Fatalf("after the resume the ask knows:\n%s", got)
 	}
 }

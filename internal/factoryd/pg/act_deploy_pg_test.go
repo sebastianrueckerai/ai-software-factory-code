@@ -488,11 +488,11 @@ func TestSetAskInfoLeavesAProposalAndWritesNothingTwice(t *testing.T) {
 		}
 		return out
 	}
-	if err := h.s.SetAskInfo(ctx, h.cardID, "new info"); err != nil {
+	if err := h.s.SetAskInfo(ctx, h.cardID, SourceProductionHeld, "new info"); err != nil {
 		t.Fatal(err)
 	}
 	after := xmins()
-	if err := h.s.SetAskInfo(ctx, h.cardID, "new info"); err != nil {
+	if err := h.s.SetAskInfo(ctx, h.cardID, SourceProductionHeld, "new info"); err != nil {
 		t.Fatal(err)
 	}
 	if again := xmins(); again != after {
