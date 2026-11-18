@@ -243,7 +243,8 @@ func (c *Console) planSlotOf(ctx context.Context, face *factoryd.Face, bt factor
 	recommended, _ := k.Facts["recommended"].(string)
 	if revision == 0 || index == 0 {
 		var q factoryd.PlanQuestion
-		if revision, index, q = c.planSlotFacts(ctx, k); choices == nil {
+		revision, index, q = c.planSlotFacts(ctx, k)
+		if choices == nil {
 			for _, ch := range q.Choices {
 				choices = append(choices, ch)
 			}
