@@ -393,7 +393,7 @@ func TestFreezeCardAsksAtProviderLimit(t *testing.T) {
 	if err := w.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if asks := len(fj.comments); asks != 1 || !strings.Contains(fj.comments[0], "has held past waits.provider_limit (1m0s)") {
+	if asks := len(fj.comments); asks != 1 || !strings.Contains(fj.comments[0], "past waits.provider_limit (1m0s)") {
 		t.Fatalf("comments %q, want the one provider-limit ask", fj.comments)
 	}
 	for _, want := range []string{"Add a fallback", "switch the class's model", "keep waiting", "The work cards ask nothing"} {
@@ -405,7 +405,7 @@ func TestFreezeCardAsksAtProviderLimit(t *testing.T) {
 		t.Errorf("the ask %q is not on the card's issue #%d: the work cards ask nothing", fj.comments[0], card.IssueNumber)
 	}
 	asked, _ := plFreezeCard(ctx, t, s)
-	if !strings.Contains(asked.Objective, "has held past waits.provider_limit") {
+	if !strings.Contains(asked.Objective, "past waits.provider_limit") {
 		t.Errorf("the card's face lacks the ask:\n%s", asked.Objective)
 	}
 

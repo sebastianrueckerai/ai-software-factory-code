@@ -1619,7 +1619,7 @@ func (s *fakeStore) FreezeCards(ctx context.Context, status string) ([]Task, err
 }
 
 // ForgetFactoryClose takes the fake's record of factoryd's close of task
-// taskID's issue off the issue, as the store's does, and drops its
+// taskID's issue off the issue, as the store's does: the record keeps its
 // confirmation.
 func (s *fakeStore) ForgetFactoryClose(ctx context.Context, taskID string, issue int64) error {
 	for i, e := range s.intakeEvents {
@@ -1627,7 +1627,10 @@ func (s *fakeStore) ForgetFactoryClose(ctx context.Context, taskID string, issue
 			s.intakeEvents[i].CommentID = 0
 		}
 	}
-	delete(s.confirmedCloses, [2]any{taskID, issue})
+	if s.confirmedCloses[[2]any{taskID, issue}] {
+		delete(s.confirmedCloses, [2]any{taskID, issue})
+		s.confirmedCloses[[2]any{taskID, int64(0)}] = true
+	}
 	return nil
 }
 

@@ -183,6 +183,10 @@ func TestFreezeCardsReadTheSourcePG(t *testing.T) {
 	if events, err := s.IntakeEvents(ctx, "fz-done"); err != nil || len(events) != 1 || events[0].Kind != IntakeFactoryClosed || events[0].CommentID != 0 {
 		t.Fatalf("after the forget the card's intake = %+v, %v; want the close's record off the issue", events, err)
 	}
+	half, err := s.UnconfirmedFactoryCloses(ctx, 0, 100)
+	if err != nil || slices.ContainsFunc(half, func(e IntakeEvent) bool { return e.TaskID == "fz-done" }) {
+		t.Fatalf("after the forget the unconfirmed closes = %+v, %v; want the forgotten record still confirmed", half, err)
+	}
 	if id, err := s.InsertIntakeEvent(ctx, record); err != nil || id == 0 {
 		t.Fatalf("the next close's record = %d, %v; want a new one", id, err)
 	}
