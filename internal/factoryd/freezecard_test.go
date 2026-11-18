@@ -954,3 +954,36 @@ func freezeAsks(t *testing.T, store *freezeStore) map[string]int {
 	}
 	return asks
 }
+
+// A freeze card an older factoryd filed asked nothing, and the board
+// answers a card only through its case. The watcher that adopts it asks
+// once, from the card's own face; the next watcher, after a restart, finds
+// the case and asks no second time.
+func TestFreezeCardAdoptedWithNoCaseAsks(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, _ := newAlertForgejo(t)
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	body := "Class: big\n\nThe class resets at 2026-11-21T17:00:00Z (in 5h 00m). 3 cards of the class wait."
+	store.tasks["t-old-freeze"] = Task{ID: "t-old-freeze", Repository: "sf/acme", IssueNumber: 41, Kind: "human", Status: "waiting-human",
+		Source: SourceFreezeCard, Objective: freezeCardTitle("big") + "\n\n" + body, CreatedAt: now.Add(-time.Hour)}
+	for range 2 {
+		if err := freezeWatcher(store, forgejo, &now).Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	open, _ := store.OpenCasesOf(ctx, "t-old-freeze")
+	if len(open) != 1 {
+		t.Fatalf("the adopted card holds %d live cases, want 1: %+v", len(open), open)
+	}
+	var asked []Event
+	for _, e := range store.events {
+		if e.TaskID == "t-old-freeze" && e.Kind == EventQuestionAsked {
+			asked = append(asked, e)
+		}
+	}
+	want := FreezeQuestion(FreezeEvent{Class: "big"}, 0, now)
+	if len(asked) != 1 || asked[0].Detail["ask"] != want.Ask || asked[0].Detail["info"] != body {
+		t.Fatalf("the asks: %+v; want one asking %q with the face %q", asked, want.Ask, body)
+	}
+}

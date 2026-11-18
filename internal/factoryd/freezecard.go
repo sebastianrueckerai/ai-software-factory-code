@@ -67,6 +67,7 @@ type FreezeCardStore interface {
 	// hold class, in every repository.
 	ListFrozenCards(ctx context.Context, class string) ([]Task, error)
 	Record(ctx context.Context, e Event) (int64, error)
+	OpenCasesOf(ctx context.Context, taskID string) ([]Case, error)
 	SetObjective(ctx context.Context, id, objective string) error
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
@@ -207,8 +208,24 @@ func (w *FreezeCard) rehydrate(ctx context.Context) error {
 		}
 		st.spoke = strings.Contains(t.Objective, "waits.provider_limit")
 		w.classes[key] = st
+		if err := w.askIfAskless(ctx, t, class); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// askIfAskless records the ask of adopted freeze card t from its face when
+// no live case holds it: an older factoryd filed the card with no ask, and
+// the board answers a card only through its case.
+func (w *FreezeCard) askIfAskless(ctx context.Context, t Task, class string) error {
+	open, err := w.Store.OpenCasesOf(ctx, t.ID)
+	if err != nil || len(open) > 0 {
+		return err
+	}
+	q := freezeQuestion(class, strings.TrimPrefix(t.Objective, freezeCardTitle(class)+"\n\n"))
+	_, err = w.Store.Record(ctx, freezeAsk(q).Event(t))
+	return err
 }
 
 // freezeCardClass reads the class line of a freeze card's face: the whole
@@ -666,9 +683,14 @@ func freezeCardBody(ev FreezeEvent, count int, now time.Time) string {
 // (freezeCardBody), the retry that ends the freeze now and a notice's
 // answers, since the factory ends the freeze by itself at the reset.
 func FreezeQuestion(ev FreezeEvent, count int, now time.Time) HumanQuestion {
-	b := SourceBriefs[SourceFreezeCard](BriefFacts{Name: ev.Class})
-	return HumanQuestion{Ask: b.Title, Why: b.Why, Info: freezeCardBody(ev, count, now), Choices: choices(ActRetry+"/"+variantThaw, ActClose+"/"+variantNoted, KeyPark),
-		Happened: "The model provider refused a call of the " + ev.Class + " class and named when its limit resets.",
+	return freezeQuestion(ev.Class, freezeCardBody(ev, count, now))
+}
+
+// freezeQuestion is the freeze card of class as it asks, body its face.
+func freezeQuestion(class, body string) HumanQuestion {
+	b := SourceBriefs[SourceFreezeCard](BriefFacts{Name: class})
+	return HumanQuestion{Ask: b.Title, Why: b.Why, Info: body, Choices: choices(ActRetry+"/"+variantThaw, ActClose+"/"+variantNoted, KeyPark),
+		Happened: "The model provider refused a call of the " + class + " class and named when its limit resets.",
 		Waits:    "The cards of the class wait until the limit resets."}
 }
 
