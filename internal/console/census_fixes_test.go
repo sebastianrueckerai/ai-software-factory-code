@@ -31,22 +31,23 @@ func TestCensusAnsweredCaseFaceHasNoProcessedLine(t *testing.T) {
 }
 
 // The gate artifact folds: the criterion row holds no bare pre, its
-// details' summary names the artifact and its size.
+// details' summary names the artifact and its size in KiB.
 func TestCensusGateArtifactFolds(t *testing.T) {
 	r := newRig(t)
 	humanRig(r)
 	ck, _ := r.loggedIn(t)
 	column := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
-	if !strings.Contains(column, `<details class="artifact"><summary>pages_ok.txt, 27 bytes</summary>`) {
-		t.Errorf("the artifact's fold or its summary is missing:\n%s", column)
+	const fold = `<details class="fold"><summary>pages_ok.txt at 8e3a1b0, 1 KiB</summary>`
+	if !strings.Contains(column, fold) {
+		t.Fatalf("the artifact's fold or its summary is missing:\n%s", column)
 	}
-	artifact := column[strings.Index(column, `<details class="artifact"`):]
+	artifact := column[strings.Index(column, fold):]
 	artifact = artifact[:strings.Index(artifact, "</details>")]
 	if !strings.Contains(artifact, `<pre class="artifact" tabindex="0">sizes: 3 rows`) {
 		t.Errorf("the fold holds no artifact:\n%s", artifact)
 	}
 	i := strings.Index(column, `<pre class="artifact"`)
-	if i > 0 && !strings.Contains(column[:i], `<details class="artifact">`) {
+	if i > 0 && !strings.Contains(column[:i], fold) {
 		t.Errorf("a bare artifact pre rides the face before the fold:\n%s", column[max(0, i-300):i+100])
 	}
 }
@@ -72,8 +73,8 @@ func TestCensusSlotlessPlanCaseRendersOneQuestion(t *testing.T) {
 	}
 }
 
-// The extend form rides no asking face: the card's fold alone names it,
-// and the drawer holds it.
+// The extend form rides no asking face: the drawer's extend fold alone
+// holds it.
 func TestCensusAskingFaceHoldsNoExtendInputs(t *testing.T) {
 	r := newRig(t)
 	r.openCases = map[string][]factoryd.Case{}
@@ -81,21 +82,13 @@ func TestCensusAskingFaceHoldsNoExtendInputs(t *testing.T) {
 		factoryd.Task{ID: "t-q", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 15, Objective: "add the feed"})
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	esc := escalationOf(t, body, "t-q")
-	if !strings.Contains(esc, `<details class="fold extend-fold"><summary>Extend the card</summary>`) {
-		t.Errorf("the asking face holds no extend fold:\n%s", esc)
-	}
-	if i := strings.Index(esc, `<details class="fold extend-fold"`); i >= 0 {
-		if fold := esc[i:min(len(esc), i+400)]; !strings.Contains(fold, `action="/tasks/t-q/extend"`) {
-			t.Errorf("the extend fold holds no extend form:\n%s", fold)
-		}
-		if strings.Contains(esc[:i], `action="/tasks/t-q/extend"`) {
-			t.Errorf("an extend form rides the asking face before the fold:\n%s", esc[:i])
-		}
+	if esc := escalationOf(t, body, "t-q"); strings.Contains(esc, "/extend") || strings.Contains(esc, `id="extend-`) {
+		t.Errorf("the asking face holds the extend form:\n%s", esc)
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-q/drawer", nil), ck).Body.String()
-	if !strings.Contains(drawer, `action="/tasks/t-q/extend"`) {
-		t.Errorf("the drawer holds no extend form:\n%s", drawer)
+	i := strings.Index(drawer, `<details class="sec" data-sec="extend">`)
+	if i < 0 || strings.Count(drawer, `action="/tasks/t-q/extend"`) != 1 || !strings.Contains(drawer[i:], `action="/tasks/t-q/extend"`) {
+		t.Errorf("the drawer's extend fold does not hold the one extend form:\n%s", drawer)
 	}
 }
 
