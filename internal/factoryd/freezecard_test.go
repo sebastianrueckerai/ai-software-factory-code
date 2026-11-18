@@ -3297,3 +3297,32 @@ func TestFreezeCardFaultsOfTwoRepositoriesFilings(t *testing.T) {
 		t.Fatalf("the cards reach %q, want %q", got, want)
 	}
 }
+
+// Hand-derived from a card one human presses twice: #1 is pressed closed
+// at 13:50, a dated refusal of its reset opens it again at 13:55, and the
+// same human presses again at 14:00, so the second close's comment has
+// the words of the first. Without a fault #1 ends done under the press
+// face with three comments: the first press's, the re-arm's and the
+// second press's. Every close posts its own comment, whichever write or
+// call of the second press failed once, with a restart too.
+func TestFreezeCardFaultsOfASecondPressByTheSameHuman(t *testing.T) {
+	lost := freezeFaultException{"the press's write failed and a pass read the class_resumed before the second press: the card closes itself five minutes after the resume",
+		"#1 waiting resumed R1 | open #1 | 2 comments, 1 ends, 0 wakes"}
+	h := freezeFaults(t, func(h *freezeTable) {
+		h.row("class_frozen", 5)
+		h.pass()
+		h.at(110 * time.Minute)
+		h.press()
+		h.pass()
+		h.at(115 * time.Minute)
+		h.row("class_frozen", 5)
+		h.pass()
+		h.at(2 * time.Hour)
+	}, func(h *freezeTable) {
+		h.press()
+		h.pass()
+	}, map[string]freezeFaultException{"EndFreezeCard/pressed again after a pass": lost, "EndFreezeCard/restart/pressed again after a pass": lost})
+	if got, want := h.reached(), "#1 done pressed R1 | open  | 3 comments, 1 ends, 0 wakes"; got != want {
+		t.Fatalf("the cards reach %q, want %q", got, want)
+	}
+}

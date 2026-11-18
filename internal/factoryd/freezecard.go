@@ -602,8 +602,8 @@ func (w *FreezeCard) giveUp(ctx context.Context, st *freezeClass, cause error) (
 // row. Then it counts the end, and Forgejo follows: the issue takes
 // comment, closes, and the close's record is confirmed (finishClose). A
 // Forgejo that fails there is logged, and the heal pass, which meets the
-// record, posts its body where the issue lacks it and closes the issue
-// (HealFactoryCloses). No comment closes no issue: the issue is gone.
+// record, posts its body where the issue lacks this close's comment and
+// closes the issue (HealFactoryCloses). No comment closes no issue: the issue is gone.
 func (w *FreezeCard) end(ctx context.Context, t Task, face, comment string) (bool, error) {
 	moved, err := w.Store.EndFreezeCard(ctx, t, face, comment)
 	if err != nil || !moved {
@@ -613,7 +613,7 @@ func (w *FreezeCard) end(ctx context.Context, t Task, face, comment string) (boo
 	if comment == "" {
 		return true, nil
 	}
-	if err := finishClose(ctx, w.Store, w.Forgejo, t, comment, true); err != nil {
+	if err := finishClose(ctx, w.Store, w.Forgejo, t, comment, 0); err != nil {
 		log.Printf("freeze card: close issue #%d of %s: %v: the heal pass closes it", t.IssueNumber, t.Repository, maskedErr(err))
 	}
 	return true, nil

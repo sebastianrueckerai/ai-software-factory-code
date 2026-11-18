@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -156,11 +157,7 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 		case r.Method == http.MethodGet && fmtScan(r.URL.Path, repo+"/issues/%d/dependencies", &n):
 			io.WriteString(w, `[]`)
 		case r.Method == http.MethodGet && fmtScan(r.URL.Path, repo+"/issues/%d", &n):
-			state := "open"
-			if slices.Contains(fj.closed, n) {
-				state = "closed"
-			}
-			fmt.Fprintf(w, `{"state":%q}`, state)
+			fmt.Fprintf(w, `{"state":%q}`, cmp.Or(fj.states[n], "open"))
 		case r.Method == http.MethodPatch && fmtScan(r.URL.Path, repo+"/issues/%d", &n):
 			if fj.refuse[n] != 0 {
 				http.Error(w, "refused", fj.refuse[n])
