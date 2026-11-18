@@ -726,7 +726,7 @@ next revision (`plan_revisions`, timeline `plan_revision`), and
 criteria, once). A revision with no question files its cards in the same
 step and no click (roadmap 225): `fileRevision` judges it again (a
 finding files nothing, comments `Revision <n> files no cards.` with the
-findings the planner was told, as a quote, once
+findings the planner was told, as a list, once
 and goes to the planner), then files each card in topological order,
 once however often it runs: a task row queued on the direct track at
 main's head (source `plan`, the plan's process, `plan_key`, the plan

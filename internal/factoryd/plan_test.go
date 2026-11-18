@@ -2242,7 +2242,7 @@ func TestFileRevisionRefusesACycle(t *testing.T) {
 		}
 	}
 	if fj.next != 1 || len(store.tasks) != 1 || len(fj.comments) != 1 || len(wf.started) != 0 ||
-		fj.comments[0].body != "Revision 1 files no cards. The planner was told:\n\n> - "+cycle {
+		fj.comments[0].body != "Revision 1 files no cards. The planner was told:\n\n- "+cycle {
 		t.Fatalf("issues up to #%d, rows %d, started %v, comments %v", fj.next, len(store.tasks), wf.started, fj.comments)
 	}
 	if got, _, _ := store.Task(context.Background(), "t-plan"); len(store.approvals) != 0 || got.Status != "running" {
@@ -4557,7 +4557,7 @@ func TestFileRevisionRefusesAPlanWithoutDeployOwner(t *testing.T) {
 		t.Fatalf("ref %+v", ref)
 	}
 	if fj.next != 1 || len(store.tasks) != 1 || len(fj.comments) != 1 || len(store.approvals) != 0 ||
-		fj.comments[0].body != "Revision 1 files no cards. The planner was told:\n\n> - "+noDeployOwner {
+		fj.comments[0].body != "Revision 1 files no cards. The planner was told:\n\n- "+noDeployOwner {
 		t.Fatalf("issues up to #%d, rows %d, comments %v, approvals %+v", fj.next, len(store.tasks), fj.comments, store.approvals)
 	}
 	if steps := planSteps(t, objects, "t-plan"); !slices.Equal(steps, []string{"plan_refused [" + noDeployOwner + "]"}) {
@@ -4611,7 +4611,7 @@ func TestPlanWithoutDeployOwnerThePlannerRevises(t *testing.T) {
 	if len(h.plans) != 2 || h.plans[0] != nil || !slices.Equal(h.plans[1], []string{noDeployOwner}) || !slices.Equal(h.requests, []int{1, 2}) {
 		t.Fatalf("plans %q requests %v", h.plans, h.requests)
 	}
-	if fj.next != 5 || len(cardsByKey(t, store)) != 4 || !strings.HasPrefix(fj.comments[0].body, "Revision 1 files no cards. The planner was told:\n\n> - "+noDeployOwner) {
+	if fj.next != 5 || len(cardsByKey(t, store)) != 4 || !strings.HasPrefix(fj.comments[0].body, "Revision 1 files no cards. The planner was told:\n\n- "+noDeployOwner) {
 		t.Fatalf("issues up to #%d, cards %v, comments %v", fj.next, cardsByKey(t, store), fj.comments)
 	}
 }
@@ -5220,7 +5220,7 @@ func dropRigCiting(t *testing.T, cites bool, takeOff ...string) (*Runner, *fakeS
 // finding.
 func TestFilingRefusesTakeOffOfWhatTheRevisionRelies(t *testing.T) {
 	_, _, _, _, res := dropRigCiting(t, true, "links-api")
-	want := []string{"`take_off_main` names links-api, which met links_crud that this revision's criteria still cite: its work leaves main, so the criteria lose their proof. Keep links-api's key and leave it out of `take_off_main`, or file links_crud again, each under a new id with replaces"}
+	want := []string{"the revision takes links-api off main, and links-api met links_crud that this revision's criteria still cite: its work leaves main, so the criteria lose their proof. Keep links-api's key and leave it out of the cards to take off main, or file links_crud again, each under a new id with replaces"}
 	if res.Revision != 0 || !slices.Equal(res.Findings, want) {
 		t.Fatalf("the filing: %+v, want it refused with %q", res, want)
 	}
@@ -5255,6 +5255,29 @@ func TestStoredTakeOffWithoutReasonsStillFiles(t *testing.T) {
 	rev.Plan, _ = json.Marshal(p)
 	store.plans["t-plan"][1] = rev
 	fileRevision2(t, r)
+}
+
+// The comment of a refused filing holds a finding the code wrote as the
+// factory's own text: no quote, and no key of the planner's answer.
+func TestARefusedFilingsCommentReadsAsTheFactorysText(t *testing.T) {
+	r, store, fj, _ := takeOffAPI(t)
+	var p Plan
+	rev := store.plans["t-plan"][1]
+	if err := json.Unmarshal(rev.Plan, &p); err != nil {
+		t.Fatal(err)
+	}
+	p.TakeOffMain = []string{"nope"}
+	rev.Plan, _ = json.Marshal(p)
+	store.plans["t-plan"][1] = rev
+	finding := "the revision takes nope off main, and nope is no card of this plan's record. Name the key of a merged card"
+	val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 2, int64(7))
+	if ref := getInto[PlanRef](t, val, err); !slices.Equal(ref.Refused, []string{finding}) {
+		t.Fatalf("the filing of revision 2: %+v, want it refused with %q", ref, finding)
+	}
+	want := "Revision 2 files no cards. The planner was told:\n\n- " + finding
+	if n := len(fj.comments); n == 0 || fj.comments[n-1].body != want {
+		t.Fatalf("comments %+v, want the last to read %q", fj.comments, want)
+	}
 }
 
 // takeOffAPI is dropRig with links-api named in take_off_main, revision 2

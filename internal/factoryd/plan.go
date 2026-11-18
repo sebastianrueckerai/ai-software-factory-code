@@ -3956,7 +3956,7 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 		findings = append(findings, replanFindings(st, p)...)
 	}
 	if len(findings) > 0 {
-		note := fmt.Sprintf("revision %d files no cards. The planner was told:\n\n%s", revision, Quoted("- "+strings.Join(findings, "\n- ")))
+		note := fmt.Sprintf("revision %d files no cards. The planner was told:\n\n%s", revision, "- "+strings.Join(findings, "\n- "))
 		r.commentOnce(ctx, t, repo, t.IssueNumber, capitalize(r.untrusted(t, note)))
 		r.record(ctx, t.ID, "plan_refused", map[string]any{"revision": revision, "findings": findings})
 		return ChildrenResult{Refused: findings}, nil
