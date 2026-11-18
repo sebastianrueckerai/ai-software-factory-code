@@ -20,6 +20,10 @@ const (
 	capReached = factoryd.PgCapReached
 	leftQueue  = factoryd.PgLeftQueue
 
+	timeCapReached       = factoryd.PgTimeCapReached
+	timeCapReachedLadder = factoryd.PgTimeCapReachedLadder
+	GateStopped          = factoryd.GateStopped
+
 	// Const aliases the moved files reach in their own const expressions:
 	// a var alias is no constant, so these carry the const-ness over.
 	CheckPolicyClass = factoryd.CheckPolicyClass
@@ -166,6 +170,50 @@ var (
 	ViaConsole             = factoryd.ViaConsole
 	ViaFactoryd            = factoryd.ViaFactoryd
 	ViaWebhook             = factoryd.ViaWebhook
+	ActivityWaitChecks     = factoryd.ActivityWaitChecks
+	ActRerunChecks         = factoryd.ActRerunChecks
+	ActReverify            = factoryd.ActReverify
+	ActWaitChecks          = factoryd.ActWaitChecks
+	BudgetRefused          = factoryd.BudgetRefused
+	CardCeiling            = factoryd.CardCeiling
+	CaseAgentTimeCap       = factoryd.CaseAgentTimeCap
+	CaseBudgetFloor        = factoryd.CaseBudgetFloor
+	CaseCheckinFailed      = factoryd.CaseCheckinFailed
+	CaseEvidence           = factoryd.CaseEvidence
+	CaseFace               = factoryd.CaseFace
+	CasePlanConfirmation   = factoryd.CasePlanConfirmation
+	CaseSignalLogEvery     = factoryd.CaseSignalLogEvery
+	CaseSignalTries        = factoryd.CaseSignalTries
+	CaseSignalWait         = factoryd.CaseSignalWait
+	ChatTaskID             = factoryd.ChatTaskID
+	CheckConfirmed         = factoryd.CheckConfirmed
+	CheckDropped           = factoryd.CheckDropped
+	CheckGoalConflict      = factoryd.CheckGoalConflict
+	CheckinDecider         = factoryd.CheckinDecider
+	CheckinMarkOf          = factoryd.CheckinMarkOf
+	ChecksLog              = factoryd.ChecksLog
+	ChecksLogCut           = factoryd.ChecksLogCut
+	CheckSpend             = factoryd.CheckSpend
+	EventQuestionWithdrawn = factoryd.EventQuestionWithdrawn
+	FacedTries             = factoryd.FacedTries
+	FactCheckinMark        = factoryd.FactCheckinMark
+	FindingsLead           = factoryd.FindingsLead
+	ForcedToolChoice       = factoryd.ForcedToolChoice
+	HandedUpBy             = factoryd.HandedUpBy
+	HumanCardKind          = factoryd.HumanCardKind
+	KillCut                = factoryd.KillCut
+	MaxAnswer              = factoryd.MaxAnswer
+	MessageEscalation      = factoryd.MessageEscalation
+	Offered                = factoryd.Offered
+	ProofOriginHoldout     = factoryd.ProofOriginHoldout
+	ProofProposed          = factoryd.ProofProposed
+	SettleOf               = factoryd.SettleOf
+	SignalCaseFaced        = factoryd.SignalCaseFaced
+	SourceSizing           = factoryd.SourceSizing
+	resendCaseSignals      = factoryd.PgResendCaseSignals
+	sessionRoom            = factoryd.PgSessionRoom
+	minutesWord            = factoryd.PgMinutesWord
+	toolNames              = factoryd.PgToolNames
 )
 
 type (
@@ -235,4 +283,24 @@ type (
 	TripOutcome           = factoryd.TripOutcome
 	Waker                 = factoryd.Waker
 	Workflows             = factoryd.Workflows
+	CaseAsk               = factoryd.CaseAsk
+	CaseState             = factoryd.CaseState
+	CaseTools             = factoryd.CaseTools
+	ChatMessage           = factoryd.ChatMessage
+	CheckinStopMark       = factoryd.CheckinStopMark
+	CheckVerdict          = factoryd.CheckVerdict
+	FailedTest            = factoryd.FailedTest
+	GateResults           = factoryd.GateResults
+	HandUp                = factoryd.HandUp
+	LiveSession           = factoryd.LiveSession
+	Monitor               = factoryd.Monitor
+	ObjectStore           = factoryd.ObjectStore
+	PendingSignal         = factoryd.PendingSignal
+	PlanProof             = factoryd.PlanProof
+	PlanQuestion          = factoryd.PlanQuestion
+	PullRequest           = factoryd.PullRequest
+	Repo                  = factoryd.Repo
+	Review                = factoryd.Review
+	RungOutcome           = factoryd.RungOutcome
+	namedRef              = factoryd.PgNamedRef
 )

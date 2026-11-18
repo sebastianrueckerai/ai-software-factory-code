@@ -1693,3 +1693,25 @@ func TestTheDigestNamesTheProjectAgentsRowsAsTheChats(t *testing.T) {
 		}
 	}
 }
+
+// A check-in whose every call was refused raises checkin_refused once no
+// check-in ran after it, keyed by the check-in's place in the card's life.
+func TestDigestFlagsARefusedCheckin(t *testing.T) {
+	g := newDigestRig(nil)
+	g.line(t, 12, "checkin", map[string]any{"moment": "gate", "decision": "handover", "reason": CheckinRefusedReason + "provider refused"})
+	d, err := g.r.CardDigest(context.Background(), "t1410")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(d.Flags, func(f DigestFlag) bool { return f.Name == "checkin_refused" }) {
+		t.Fatalf("flags = %+v, want checkin_refused", d.Flags)
+	}
+	g.line(t, 13, "checkin", map[string]any{"moment": "gate", "decision": "handover", "reason": "the findings stand", "handover": "do x"})
+	d, err = g.r.CardDigest(context.Background(), "t1410")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(d.Flags, func(f DigestFlag) bool { return f.Name == "checkin_refused" }) {
+		t.Fatalf("flags = %+v, want none once a check-in ran after the refused one", d.Flags)
+	}
+}
