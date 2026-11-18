@@ -229,6 +229,19 @@ func TestACorrectedNameStandsOnASecondRun(t *testing.T) {
 	}
 }
 
+// A hand-edited name that holds nothing, such as "ab", is refused with why,
+// even on a plan with no name yet, and nothing is written.
+func TestAnInvalidNameIsRefusedOnAnUnnamedPlan(t *testing.T) {
+	s := newStore()
+	s.tasks["t-a"] = factoryd.Task{ID: "t-a", IssueNumber: 30, Status: "queued", Repository: "sf/app", Kind: "agent", Track: policy.TrackPlan}
+	p := newPass(s, &fakeForge{issues: map[int64][2]string{}}, nil)
+	err := p.apply(context.Background(), table{Names: []nameRow{{Plan: "t-a", Card: "sf/app#30", Name: "ab"}}})
+	line := `- sf/app#30: the name "ab" does not hold: a plan's name has 3 to 24 characters on one line, and no other open plan of the project has it`
+	if err == nil || len(s.writes) > 0 || !strings.Contains(p.out.(*bytes.Buffer).String(), line) {
+		t.Errorf("the run = %v, writes %q, output:\n%s\nwant the row refused with %q", err, s.writes, p.out, line)
+	}
+}
+
 // A dry run into a table file that exists makes no model call, and a dry
 // run that fails leaves no table file.
 func TestADryRunIntoAnExistingTableCallsNoModel(t *testing.T) {

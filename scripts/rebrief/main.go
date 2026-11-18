@@ -900,7 +900,7 @@ func (p *pass) writeName(ctx context.Context, row nameRow) (string, error) {
 		return row.Card, err
 	case !ok:
 		return row.Card, errors.New("the plan is gone")
-	case t.PlanName == normalName(row.Name):
+	case normalName(row.Name) != "" && t.PlanName == normalName(row.Name):
 		return "", nil
 	case t.PlanName != row.Old:
 		return row.Card, fmt.Errorf("the plan was named %q since the dry run", t.PlanName)
