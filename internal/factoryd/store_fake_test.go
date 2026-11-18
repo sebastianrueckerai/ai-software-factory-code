@@ -16,7 +16,7 @@ import (
 // counts only the queued cards not yet admitted: t-q and the fix-forward
 // card t-fix, whose queued and running rows hold no slot, two at every step.
 func TestCountAdmittedFreesTheApprovalAndDependencyWaits(t *testing.T) {
-	for name, open := range bothStores {
+	for name, open := range fakeStores {
 		t.Run(name, func(t *testing.T) {
 			ctx, s := context.Background(), open(t)
 			cards := []struct{ id, status, source string }{
@@ -119,7 +119,7 @@ func TestCountAdmittedFreesTheApprovalAndDependencyWaits(t *testing.T) {
 // the read prefers the live card, and once both are final the newest
 // answers.
 func TestTaskByIssuePrefersTheLiveCard(t *testing.T) {
-	for name, open := range bothStores {
+	for name, open := range fakeStores {
 		t.Run(name, func(t *testing.T) {
 			ctx, s := context.Background(), open(t)
 			at := time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)
@@ -154,7 +154,7 @@ func TestTaskByIssuePrefersTheLiveCard(t *testing.T) {
 // keeps the time its wait began through every refresh, and lists oldest
 // resumption first. MarkStarted ends the wait.
 func TestResumeWaitHoldsNoSlotAndListsOldestFirst(t *testing.T) {
-	for name, open := range bothStores {
+	for name, open := range fakeStores {
 		t.Run(name, func(t *testing.T) {
 			ctx, s := context.Background(), open(t)
 			for i, c := range []struct{ id, status string }{{"t-run", "running"}, {"t-a", "waiting-human"}, {"t-b", "waiting-deps"}, {"t-new", "queued"}} {
