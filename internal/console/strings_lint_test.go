@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -350,10 +351,13 @@ var (
 	writtenCalls = []string{"CreateIssueComment", "CommentOnce", "comment", "commentOnce", "closeIssueAsFactory", "closeAsk", "Error"}
 	// agentDoors are the calls of doorCalls an agent alone meets
 	agentDoors = []string{"refuseAgent", "agentRefused"}
+	// factorydPath is the import path of package factoryd
+	factorydPath = reflect.TypeFor[factoryd.Task]().PkgPath()
 	// exactCalls are the functions that mark their text as exact or as a
 	// writer's words, in a code fence or as a quote of markup, which the
-	// guide's checks pass as written
-	exactCalls = []string{"fenced", "Quoted"}
+	// guide's checks pass as written: each by its package's path and its
+	// name, so a function of the same name elsewhere marks nothing
+	exactCalls = []string{factorydPath + ".fenced", factorydPath + ".Quoted"}
 	// agentTypes are the types of the chat's tools: code that takes one
 	// answers the chat's agent
 	agentTypes = []string{"turn", "toolInput"}
@@ -477,13 +481,13 @@ type doorSource struct {
 
 // readDoorSource checks files, one package's code, against the packages
 // imp finds, and reads its assignments.
-func readDoorSource(fs *token.FileSet, files []*ast.File, imp types.Importer) *doorSource {
+func readDoorSource(fs *token.FileSet, pkgPath string, files []*ast.File, imp types.Importer) *doorSource {
 	p := &doorSource{info: &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{},
 		Uses: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{}},
 		sets: map[types.Object][]scoped{}, decls: map[types.Object]*ast.FuncDecl{}}
 	// a package that fails a check still gives the types of what passed
 	conf := types.Config{Importer: imp, Error: func(error) {}}
-	_, _ = conf.Check("doors", fs, files, p.info)
+	_, _ = conf.Check(pkgPath, fs, files, p.info)
 	set := func(l ast.Expr, v ast.Expr, i int) {
 		if obj := p.object(l); obj != nil {
 			p.sets[obj] = append(p.sets[obj], scoped{e: v, i: i})
@@ -646,7 +650,8 @@ func (p *doorSource) texts(s scoped, seen map[ast.Expr]bool) []string {
 			args[i] = scoped{a, 0, s.env}
 		}
 		callee := p.object(x.Fun)
-		if callee != nil && slices.Contains(exactCalls, callee.Name()) {
+		if callee != nil && callee.Pkg() != nil && callee.Parent() == callee.Pkg().Scope() &&
+			slices.Contains(exactCalls, callee.Pkg().Path()+"."+callee.Name()) {
 			break
 		}
 		own := false
@@ -714,8 +719,8 @@ type doorText struct {
 // their text among their arguments, in files, one package's code: each
 // with the literal texts its argument can write (doorSource.texts),
 // sorted, each once.
-func doorTexts(fs *token.FileSet, files []*ast.File, imp types.Importer, calls map[string]int) []doorText {
-	source := readDoorSource(fs, files, imp)
+func doorTexts(fs *token.FileSet, pkgPath string, files []*ast.File, imp types.Importer, calls map[string]int) []doorText {
+	source := readDoorSource(fs, pkgPath, files, imp)
 	var out []doorText
 	for _, file := range files {
 		// agent counts the functions around the node that answer an agent
@@ -768,7 +773,7 @@ func doorTexts(fs *token.FileSet, files []*ast.File, imp types.Importer, calls m
 // function passes on. A value that fills a text reads "X" in it, and the
 // text behind the value is found too: a part of a concatenation and a
 // value of a format. One word is no text, and neither is what stands in a
-// code fence (exactCalls).
+// code fence of package factoryd (exactCalls).
 func TestDoorTextsFollowAFieldAndAFunction(t *testing.T) {
 	const src = `package doors
 
@@ -827,9 +832,12 @@ func press(no refusal, name string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got [][]string
-	for _, d := range doorTexts(fs, []*ast.File{file}, nil, map[string]int{"refuse": 1}) {
-		got = append(got, d.texts)
+	texts := func(pkgPath string) [][]string {
+		var got [][]string
+		for _, d := range doorTexts(fs, pkgPath, []*ast.File{file}, nil, map[string]int{"refuse": 1}) {
+			got = append(got, d.texts)
+		}
+		return got
 	}
 	want := [][]string{
 		{"The ask is answered already.", "The card merged."},
@@ -842,8 +850,14 @@ func press(no refusal, name string) {
 		{"Card X waits, and X.", "its checks are red"},
 		{"The run's log:\n\nX"},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("the doors' texts are\n%q\nwant\n%q", got, want)
+	if got := texts(factorydPath); !reflect.DeepEqual(got, want) {
+		t.Errorf("as package factoryd, the doors' texts are\n%q\nwant\n%q", got, want)
+	}
+	// a fenced of another package is a function like any other: its
+	// argument is read, and the fence around one value is no text
+	want[len(want)-1] = []string{"The run's log:\n\nX", "exit 1; the run ended"}
+	if got := texts("doors"); !reflect.DeepEqual(got, want) {
+		t.Errorf("as another package, the doors' texts are\n%q\nwant\n%q", got, want)
 	}
 }
 
@@ -871,7 +885,7 @@ func TestEveryRefusalAndCommentPassesTheGuide(t *testing.T) {
 			}
 			files = append(files, file)
 		}
-		for _, d := range doorTexts(fs, files, imp, calls) {
+		for _, d := range doorTexts(fs, path.Dir(factorydPath)+"/"+pkg, files, imp, calls) {
 			for _, text := range d.texts {
 				if faults := doorFaults(pkg, d.fn, d.agent, text); len(faults) > 0 {
 					t.Errorf("%s: %q\n\t%s", d.at, text, strings.Join(faults, " "))
