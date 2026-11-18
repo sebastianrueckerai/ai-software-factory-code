@@ -21,11 +21,13 @@ type Digester interface {
 
 // refusedSentence is a session tool's sentence for its call the gateway
 // refused: what was refused, the decision and its reason, and for a
-// provider limit the reset its class is frozen until.
+// provider limit the reset its class is frozen until and what ends the
+// freeze sooner.
 func refusedSentence(what string, refused *policy.Refusal) string {
 	s := fmt.Sprintf("%s was refused (%s): %s", what, refused.Decision, refused.Reason)
 	if !refused.Until.IsZero() {
-		s += "; the class is frozen until " + stamp(refused.Until)
+		s += "; the class is frozen until " + stamp(refused.Until) + ", when the work resumes by itself, " +
+			"or sooner if an approver presses Retry now on the class's freeze card or retries a frozen case in the chat"
 	}
 	return s
 }
