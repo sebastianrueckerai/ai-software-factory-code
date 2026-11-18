@@ -2404,6 +2404,70 @@ func TestCheckpointMeasuresTheCardAsItsPushDoes(t *testing.T) {
 	}
 }
 
+// seedCheckpoint is a session's clone of a base commit that holds files,
+// and its checkpointer made at the start.
+func seedCheckpoint(t *testing.T, files map[string]string) (string, *checkpointer) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	seed, dir := t.TempDir(), filepath.Join(t.TempDir(), "repo")
+	gitRun(t, "init", "-q", "-b", "main", seed)
+	for name, body := range files {
+		os.MkdirAll(filepath.Dir(filepath.Join(seed, name)), 0o755)
+		os.WriteFile(filepath.Join(seed, name), []byte(body), 0o644)
+	}
+	gitRun(t, "-C", seed, "add", "-A")
+	gitRun(t, "-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "base")
+	gitRun(t, "clone", "-q", seed, dir)
+	e := workerEnv{taskID: "t1", branch: "factory/t1"}
+	base, mainHead, err := prepareRepo(dir, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ck, err := newCheckpointer(dir, e, base, mainHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir, ck
+}
+
+// A move counts by its changed lines, as the push rule bills it: the base's
+// 100-line a/x.go moved to b/x.go with one line changed is 1 file, 1
+// insertion and 1 deletion, where read without rename detection it is 2
+// files and 100 lines each way; a pure move is 1 file and no line. The
+// names list both paths of the move.
+func TestCheckpointCountsAMoveByItsChangedLines(t *testing.T) {
+	var body strings.Builder
+	for i := range 100 {
+		fmt.Fprintf(&body, "line %d\n", i+1)
+	}
+	for _, tc := range []struct {
+		name  string
+		moved string
+		want  diffStat
+	}{
+		{"one changed line", strings.Replace(body.String(), "line 50\n", "line fifty\n", 1), diffStat{Files: 1, Insertions: 1, Deletions: 1}},
+		{"pure move", body.String(), diffStat{Files: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, ck := seedCheckpoint(t, map[string]string{"a/x.go": body.String()})
+			os.Remove(filepath.Join(dir, "a", "x.go"))
+			os.MkdirAll(filepath.Join(dir, "b"), 0o755)
+			os.WriteFile(filepath.Join(dir, "b", "x.go"), []byte(tc.moved), 0o644)
+
+			stat, card, _, files, err := ck.diff(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stat != tc.want || card != tc.want {
+				t.Fatalf("diff = %+v, card_diff = %+v; want both %+v", stat, card, tc.want)
+			}
+			if !slices.Equal(files, []string{"a/x.go", "b/x.go"}) {
+				t.Fatalf("files = %q, want both paths of the move", files)
+			}
+		})
+	}
+}
+
 // The session's own tokens never leave the worker: an event that holds the
 // read token, one that holds the push token after factoryd sent it, and
 // the result go out with [redacted]. Only the values go: a content hash
@@ -2438,8 +2502,9 @@ func TestSessionLinesMaskTheSessionsOwnTokens(t *testing.T) {
 }
 
 // A checkpoint names every changed file, though its patch is cut at
-// maxPatch: twelve files of 100 lines make a patch of about 30 KiB, and a
-// name with a space and an accent comes raw, not C-quoted.
+// maxPatch: thirteen files of 100 lines make a patch of about 32 KiB, and a
+// name with a space and an accent comes raw, not C-quoted, as does one that
+// begins with a space.
 func TestCheckpointNamesTheChangedFilesPastThePatchCut(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	run := func(args ...string) {
@@ -2464,7 +2529,7 @@ func TestCheckpointNamesTheChangedFilesPastThePatchCut(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := []byte(strings.Repeat("a line of the new file\n", 100))
-	want := []string{"f00.go", "f01.go", "f02.go", "f03.go", "f04.go", "f05.go", "f06.go", "f07.go", "f08.go", "f09.go", "f10.go", "über wir.go"}
+	want := []string{" lead.go", "f00.go", "f01.go", "f02.go", "f03.go", "f04.go", "f05.go", "f06.go", "f07.go", "f08.go", "f09.go", "f10.go", "über wir.go"}
 	for _, name := range want {
 		os.WriteFile(filepath.Join(dir, name), body, 0o644)
 	}
@@ -2477,7 +2542,7 @@ func TestCheckpointNamesTheChangedFilesPastThePatchCut(t *testing.T) {
 	}
 	// git lists in byte order: the accent sorts after the ASCII names
 	if !slices.Equal(files, want) {
-		t.Fatalf("files = %q, want all twelve names", files)
+		t.Fatalf("files = %q, want all thirteen names", files)
 	}
 }
 
@@ -2522,5 +2587,43 @@ func TestCheckpointBoundsItsNames(t *testing.T) {
 		if len(f) > maxCheckpointName+len("…") {
 			t.Fatalf("a name of %d bytes, want it cut at %d", len(f), maxCheckpointName)
 		}
+	}
+}
+
+// A patch past the worker's git output cap still makes its checkpoint, the
+// patch read only to maxPatch and marked cut: a new file of 20,000 lines of
+// 64 bytes, 1.22 MiB, whose patch is 1.3 MB.
+func TestCheckpointSurvivesAPatchPastTheCap(t *testing.T) {
+	dir, ck := seedCheckpoint(t, nil)
+	os.WriteFile(filepath.Join(dir, "big.txt"), []byte(strings.Repeat(strings.Repeat("x", 63)+"\n", 20000)), 0o644)
+	events := make(chan harness.Event, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ck.loop(ctx, 20*time.Millisecond, func(ev harness.Event) { events <- ev }, t.Logf)
+	}()
+	stop := func() { cancel(); <-done }
+	var ev harness.Event
+	select {
+	case ev = <-events:
+	case <-time.After(10 * time.Second):
+		stop()
+		t.Fatal("no checkpoint for a patch past the cap")
+	}
+	stop()
+	if len(events) != 0 {
+		t.Fatalf("%d more checkpoints without a further change", len(events))
+	}
+	want := map[string]any{"files": 1, "insertions": 20000, "deletions": 0}
+	if !reflect.DeepEqual(ev.Detail["diff"], want) || !reflect.DeepEqual(ev.Detail["card_diff"], want) {
+		t.Fatalf("diff = %v, card_diff = %v; want both %v", ev.Detail["diff"], ev.Detail["card_diff"], want)
+	}
+	if files, _ := ev.Detail["files"].([]string); !slices.Equal(files, []string{"big.txt"}) {
+		t.Fatalf("files = %v, want big.txt", ev.Detail["files"])
+	}
+	const cut = "\n… (diff truncated)"
+	if patch, _ := ev.Detail["patch"].(string); !strings.HasSuffix(patch, cut) || len(patch) > maxPatch+len(cut) {
+		t.Fatalf("patch of %d bytes ends %q, want it cut at %d bytes", len(patch), patch[max(0, len(patch)-30):], maxPatch)
 	}
 }

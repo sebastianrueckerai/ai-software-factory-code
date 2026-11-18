@@ -943,24 +943,33 @@ func gitEnv(extra []string) []string {
 // a caller reads. A failure carries both streams, the token scrubbed,
 // because worker stderr reaches the factoryd log.
 func (e workerEnv) runGitCtx(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+	out, cut, err := e.runGitCapped(ctx, dir, env, maxGitOutput, args...)
+	if err != nil {
+		return "", err
+	}
+	if cut {
+		return "", fmt.Errorf("git %s: output past %d bytes", strings.Join(args, " "), maxGitOutput)
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// runGitCapped answers git's raw stdout up to max bytes, and whether git
+// printed more, for a caller that can use the first max bytes.
+func (e workerEnv) runGitCapped(ctx context.Context, dir string, env []string, max int, args ...string) (out string, cut bool, err error) {
 	cmd := exec.CommandContext(ctx, gitBin, append(append([]string(nil), safeGit...), args...)...) // #nosec G204 -- exec.CommandContext, no shell; args are fixed git subcommands plus this worker's own task-scoped values
 	if dir != "" {
 		cmd.Dir = dir
 	}
 	cmd.Env = append(gitEnv(e.gitTrace), env...)
-	out, errOut := &capBuffer{max: maxGitOutput}, &capBuffer{max: maxGitOutput}
-	cmd.Stdout, cmd.Stderr = out, errOut
+	stdout, stderr := &capBuffer{max: max}, &capBuffer{max: max}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	// a program git started can outlive it holding the pipes
 	cmd.WaitDelay = 5 * time.Second
-	err := cmd.Run()
-	if err != nil {
+	if err := cmd.Run(); err != nil {
 		scrub := redact.New(e.repoToken, e.pushToken).String
-		return "", fmt.Errorf("git %s: %w: %s", scrub(strings.Join(args, " ")), err, scrub(strings.TrimSpace(out.String()+"\n"+errOut.String())))
+		return "", false, fmt.Errorf("git %s: %w: %s", scrub(strings.Join(args, " ")), err, scrub(strings.TrimSpace(stdout.String()+"\n"+stderr.String())))
 	}
-	if out.cut {
-		return "", fmt.Errorf("git %s: output past %d bytes", strings.Join(args, " "), maxGitOutput)
-	}
-	return strings.TrimSpace(out.String()), nil
+	return stdout.String(), stdout.cut, nil
 }
 
 // capBuffer keeps the first max bytes written to it and says whether it cut.
@@ -1436,8 +1445,9 @@ type diffStat struct{ Files, Insertions, Deletions int }
 type checkpointer struct {
 	e                             workerEnv
 	work, store, base, main, fork string
-	// stage runs the checkpoint's git commands. It defaults to the worker's
-	// own runGitCtx; only a test replaces it, to make one staging step fail.
+	// stage runs the checkpoint's git commands but the capped reads of the
+	// patch and the names. It defaults to the worker's own runGitCtx; only a
+	// test replaces it, to make one staging step fail.
 	stage func(ctx context.Context, dir string, env []string, args ...string) (string, error)
 }
 
@@ -1504,7 +1514,7 @@ func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch 
 	// work tree as it was at the moment of staging, a valid snapshot, and
 	// the diff against the base below stays correct.
 	_, _ = run(ctx, tmp, env, "add", "-A")
-	diff := []string{"diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color"}
+	diff := []string{"diff", "--cached", "--no-ext-diff", "--no-textconv", "-M", "--no-color"}
 	short, err := run(ctx, tmp, env, append(diff, "--shortstat", c.base)...)
 	if err != nil {
 		return diffStat{}, diffStat{}, "", nil, err
@@ -1514,28 +1524,32 @@ func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch 
 		return diffStat{}, diffStat{}, "", nil, err
 	}
 	from, to := c.cardTrees(ctx, run, tmp, tree)
-	cardShort, err := run(ctx, tmp, nil, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", "--shortstat", from, to)
+	cardShort, err := run(ctx, tmp, nil, "diff", "--no-ext-diff", "--no-textconv", "-M", "--no-color", "--shortstat", from, to)
 	if err != nil {
 		return diffStat{}, diffStat{}, "", nil, err
 	}
-	patch, err = run(ctx, tmp, env, append(diff, c.base)...)
+	patch, cut, err := c.e.runGitCapped(ctx, tmp, env, maxPatch, append(diff, c.base)...)
 	if err != nil {
 		return diffStat{}, diffStat{}, "", nil, err
 	}
-	names, err := run(ctx, tmp, env, append(diff, "--name-only", "-z", c.base)...)
+	if cut {
+		patch += "\n… (diff truncated)"
+	}
+	// --no-renames after -M lists both paths of a move
+	names, cut, err := c.e.runGitCapped(ctx, tmp, env, maxGitOutput, append(diff, "--name-only", "-z", "--no-renames", c.base)...)
 	if err != nil {
 		return diffStat{}, diffStat{}, "", nil, err
 	}
 	files = strings.Split(strings.TrimSuffix(names, "\x00"), "\x00")
-	if files[0] == "" {
+	if cut {
+		files = files[:len(files)-1]
+	}
+	if len(files) > 0 && files[0] == "" {
 		files = nil
 	}
 	files = files[:min(len(files), maxCheckpointFiles)]
 	for i, f := range files {
 		files[i] = textutil.Truncate(f, maxCheckpointName)
-	}
-	if len(patch) > maxPatch {
-		patch = patch[:maxPatch] + "\n… (diff truncated)"
 	}
 	return parseShortstat(short), parseShortstat(cardShort), patch, files, nil
 }
