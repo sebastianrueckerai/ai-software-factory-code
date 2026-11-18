@@ -2702,6 +2702,156 @@ func TestPlanLoopAnswerWithAChangeRequestGoesBackToThePlanner(t *testing.T) {
 	}
 }
 
+// waitingRevision is the plan harness on a run healed while revision 3
+// waits on its answers (comment 702), its usage u: RequestPlan(3) answers
+// the revision answered, or filed when confirmed, and the next planner
+// session files revision 4. grants are RecordGrant's calls as "by draw
+// key". The issue closes at 3h.
+func waitingRevision(t *testing.T, u TaskUsage, confirmed bool) (*planHarness, *[]string) {
+	h := newPlanHarness(t, PlanResult{Revision: 4, SHA256: "sha-4"})
+	h.state = RunState{Status: "waiting-human", Usage: u}
+	h.open = []int{0}
+	h.requestPlan = func(_ string, revision int) (PlanRef, error) {
+		ref := PlanRef{Revision: revision, SHA256: "sha-" + strconv.Itoa(revision)}
+		switch {
+		case revision == 0:
+			return PlanRef{Revision: 3, SHA256: "sha-3", Comment: 702}, nil
+		case revision == 3 && !confirmed:
+			ref.Answered = true
+		default:
+			ref.Filed = []int64{2, 3, 4}
+		}
+		return ref, nil
+	}
+	var grants []string
+	h.env.OnActivity(ActivityRecordGrant, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, by string, d policy.Draw, key string) error {
+			grants = append(grants, fmt.Sprintf("%s %+v %s", by, d, key))
+			return nil
+		})
+	h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	return h, &grants
+}
+
+// A person's change request on a revision whose planner used its session
+// cap is the human's answer: it buys the planner session it asks for as
+// the person's grant, and no cap ask opens.
+func TestPlanAnswerByAHumanAtTheCapGrantsASession(t *testing.T) {
+	h, grants := waitingRevision(t, TaskUsage{Attempts: 3}, false)
+	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "sebastian", Revision: 3, Index: 1})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 4 filed 3 cards" {
+		t.Fatalf("finals %v; want revision 4 filed", h.finals)
+	}
+	if len(h.plans) != 1 || len(h.escalated) != 0 || h.usage[len(h.usage)-1].ExtraAttempts != 1 {
+		t.Fatalf("plans %q, escalated %q, usage %+v; want one planner session, no ask, one session granted", h.plans, h.escalated, h.usage)
+	}
+	if want := []string{fmt.Sprintf("sebastian %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(*grants, want) {
+		t.Fatalf("grants %q, want %q", *grants, want)
+	}
+}
+
+// The project agent's change request on such a revision is no person's:
+// it buys nothing, the session cap asks a human and no planner session
+// runs.
+func TestPlanAnswerByTheAgentAtTheCapAsks(t *testing.T) {
+	h, grants := waitingRevision(t, TaskUsage{Attempts: 3}, false)
+	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: ChatUser, Revision: 3, Index: 1})
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("finals %v; want closed", h.finals)
+	}
+	if want := []string{capReachedLadder + "\nlast: no session answered a plan"}; len(h.plans) != 0 || !slices.Equal(h.escalated, want) || len(*grants) != 0 {
+		t.Fatalf("plans %q, escalated %q, grants %q; want no session, the cap ask %q, no grant", h.plans, h.escalated, *grants, want)
+	}
+}
+
+// A person's comment while the revision waits asks for changes as an
+// answer does: at the session cap it buys the session that takes it.
+func TestPlanCommentByAHumanAtTheCapGrantsASession(t *testing.T) {
+	h, grants := waitingRevision(t, TaskUsage{Attempts: 3}, false)
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "split the API", Comment: 710})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 4 filed 3 cards" {
+		t.Fatalf("finals %v; want revision 4 filed", h.finals)
+	}
+	if want := [][]string{{"writer alice asked for changes to the plan: split the API"}}; !reflect.DeepEqual(h.plans, want) || len(h.escalated) != 0 {
+		t.Fatalf("plans %q, escalated %q; want %q and no ask", h.plans, h.escalated, want)
+	}
+	if want := []string{fmt.Sprintf("alice %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(*grants, want) {
+		t.Fatalf("grants %q, want %q", *grants, want)
+	}
+}
+
+// A person's Confirm at the session cap files the revision's cards: no
+// planner session, so no grant.
+func TestPlanConfirmAtTheCapFilesWithNoSession(t *testing.T) {
+	h, grants := waitingRevision(t, TaskUsage{Attempts: 3}, true)
+	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "sebastian", Revision: 3, Index: 1})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 3 filed 3 cards" {
+		t.Fatalf("finals %v; want revision 3 filed", h.finals)
+	}
+	if len(h.plans) != 0 || len(h.escalated) != 0 || len(*grants) != 0 ||
+		slices.ContainsFunc(h.usage, func(u TaskUsage) bool { return u.ExtraAttempts != 0 || u.ExtraTime != 0 }) {
+		t.Fatalf("plans %q, escalated %q, grants %q, usage %+v; want no session, no ask, nothing granted", h.plans, h.escalated, *grants, h.usage)
+	}
+}
+
+// A person's answer to a revision whose planner has sessions left but no
+// agent time, its automatic session used, buys the agent time a session
+// needs: the answer's slice, a quarter of the 20 minutes.
+func TestPlanAnswerByAHumanOutOfTimeGrantsTime(t *testing.T) {
+	h, grants := waitingRevision(t, TaskUsage{Attempts: 1, AgentTime: 25 * time.Minute, RetryTime: 5 * time.Minute}, false)
+	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "sebastian", Revision: 3, Index: 1})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 4 filed 3 cards" {
+		t.Fatalf("finals %v; want revision 4 filed", h.finals)
+	}
+	if len(h.plans) != 1 || len(h.escalated) != 0 {
+		t.Fatalf("plans %q, escalated %q; want one planner session, no ask", h.plans, h.escalated)
+	}
+	if want := []string{fmt.Sprintf("sebastian %+v %s", policy.Draw{AgentTime: 5 * time.Minute}, "card_extended default-test-run-id 0 5m0s")}; !slices.Equal(*grants, want) {
+		t.Fatalf("grants %q, want %q", *grants, want)
+	}
+}
+
+// A plan run at its session cap whose revision wait sebastian's answer
+// ended, recorded on a dev server before the plan-answer-grant change: the
+// answer bought nothing and the loop asked the cap. It carries no
+// plan-answer-grant marker, so GetVersion answers DefaultVersion there and
+// the replay schedules the same activities: the cap ask and no grant.
+func TestWorkflowReplaysAPlanAnswerAtTheCapRecordedBeforePlanAnswerGrant(t *testing.T) {
+	base := loadHistory(t, "testdata/devserver-plan-answer-at-cap.json")
+	var recorded []string
+	answered := false
+	for _, e := range base.Events {
+		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"plan-answer-grant"` {
+			t.Fatal("the recording holds the plan-answer-grant marker: it is no run from before")
+		}
+		if name := e.GetActivityTaskScheduledEventAttributes().GetActivityType().GetName(); name != "" {
+			recorded = append(recorded, name)
+		}
+		if s := e.GetWorkflowExecutionSignaledEventAttributes(); s.GetSignalName() == SignalPlanAnswered {
+			var sig TaskSignal
+			if err := json.Unmarshal(s.GetInput().GetPayloads()[0].GetData(), &sig); err != nil {
+				t.Fatal(err)
+			}
+			answered = sig.Author == "sebastian" && sig.Revision == 3
+		}
+	}
+	if !answered {
+		t.Fatal("the recording holds no answer of sebastian's to revision 3")
+	}
+	want := []string{ActivityTaskConfig, ActivityEnsureIssue, ActivityReconcile, ActivityReadUsage, ActivityAdmitResume, ActivitySetState,
+		ActivityReplanStopped, ActivityRunPlan, ActivityRecordUsage, ActivityReplanStopped, ActivityRequestPlan, ActivityReadUsage,
+		ActivityRecordStep, ActivityOpenPlanQuestions, ActivityRequestPlan, ActivityReadUsage, ActivityOpenTrip,
+		ActivityRecordStep, ActivityEndCase, ActivityFinish}
+	if !slices.Equal(recorded, want) {
+		t.Fatalf("the recording schedules %q; want one planner session, the revision's wait, sebastian's answer and the cap ask", recorded)
+	}
+	var got []string
+	replaySplice(t, base.Events, &activitiesSeen{got: &got})
+	if !slices.Equal(got, recorded) {
+		t.Fatalf("the replay scheduled %q, the recording %q", strings.Join(got, " "), strings.Join(recorded, " "))
+	}
+}
+
 // A healed run whose newest revision asks no question files its cards and
 // ends done at once; one whose questions all carry their answers (the last
 // answer landed while no workflow ran) goes back to the planner, whose

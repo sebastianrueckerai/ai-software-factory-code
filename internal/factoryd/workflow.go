@@ -934,6 +934,14 @@ const (
 	// at main. A run from before merges on the press and goes on to its
 	// next session.
 	versionSuccessorIsItsKeysCard workflow.Version = 1
+	// versionPlanAnswerGrant (change id "plan-answer-grant", read after a
+	// plan loop's wait on a revision's answers that a person ended, at the
+	// session cap or out of agent time): the person's answer buys the
+	// planner session it asks for as their grant (recordGrant), one more
+	// session at the session cap, else the agent time. A wait an ask opened
+	// grants nothing. A run from before asks the cap, the answer waiting for
+	// a draw.
+	versionPlanAnswerGrant workflow.Version = 1
 )
 
 // keysCard tells whether the run's card is its key's card in its plan: a

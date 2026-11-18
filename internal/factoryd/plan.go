@@ -2060,7 +2060,7 @@ func (t *taskRun) replanCut(res SessionResult) (final, refused string, done bool
 // its answers; the last answer or a writer's comment sends the planner
 // back with the last plan, a closed issue ends the task closed. Every
 // session counts against the session cap, where the card waits for a
-// human and a writer's comment buys one more.
+// human; a person's answer to a revision buys the session it asks for.
 func (t *taskRun) planLoop() (string, error) {
 	// the plan loop reads no opening floor: its trips carry no model
 	t.floorModel = nil
@@ -2121,13 +2121,24 @@ func (t *taskRun) planLoop() (string, error) {
 	floor := t.escalation
 	stopsAwaited := false
 	// named are the findings the last ask named; waited: the pass before
-	// was a wait, whose answer the next pass weighs
+	// was a wait, whose answer the next pass weighs; asked: an ask opened
+	// that wait, a cap's or a stop's; by: the person who ended it
 	var named []string
-	waited := false
+	waited, asked, by := false, false, ""
 	for {
 		// the draw is the row's, read before every cap check, an
 		// extend made while a session ran included
 		t.readRaise(&u)
+		if waited && !asked && by != "" && t.planAsksAgain(u) &&
+			workflow.GetVersion(t.ctx, "plan-answer-grant", workflow.DefaultVersion, versionPlanAnswerGrant) >= versionPlanAnswerGrant {
+			before := u
+			if u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() {
+				t.grant(&u)
+			} else {
+				t.grantTime(&u)
+			}
+			t.recordGrant(by, policy.Draw{Sessions: u.ExtraAttempts - before.ExtraAttempts, AgentTime: u.ExtraTime - before.ExtraTime}, u)
+		}
 		if waited && t.planAsksAgain(u) {
 			// the answer bought nothing: its words wait for the session
 			// a draw starts, and the ask again names what the planner left
@@ -2144,7 +2155,7 @@ func (t *taskRun) planLoop() (string, error) {
 			if err := t.ask(ask, EscalationQuestion(ask), nil); err != nil {
 				return t.finish("failed", escalateFailed+errMessage(err))
 			}
-			ask, wait = "", true
+			ask, wait, asked = "", true, true
 		}
 		healed = false
 		if wait {
@@ -2152,9 +2163,10 @@ func (t *taskRun) planLoop() (string, error) {
 			var final, why string
 			var next []string
 			answered := false
+			by = ""
 			// rung 0 took the stop: no one was asked
 			if t.resolution == nil {
-				final, why, next, answered = t.awaitPlan(&ref, floor, onCap)
+				final, why, next, answered, by = t.awaitPlan(&ref, floor, onCap)
 				if t.resolution == nil {
 					t.leavePlanWait(final, why, answered, onCap)
 				}
@@ -2194,11 +2206,11 @@ func (t *taskRun) planLoop() (string, error) {
 					}
 					findings = append(findings, next...)
 				} else {
-					wait = true
+					wait, asked = true, false
 				}
 			}
 			// the draw is the row's: an extend raised it and the loop's top
-			// reads the caps again, so a plain answer asks again
+			// reads the caps again, so a plain answer to an ask asks again
 			waited = !wait
 			onCap = nil
 			continue
@@ -2323,7 +2335,7 @@ func (t *taskRun) planLoop() (string, error) {
 			reason, findings = "the plan's revision filed no cards", next
 			continue
 		}
-		t.escalation, findings, wait = ref.Comment, nil, true
+		t.escalation, findings, wait, asked = ref.Comment, nil, true, false
 		t.approvalRequested = workflow.Now(t.ctx)
 		reason = fmt.Sprintf("plan revision %d waits for its answers", ref.Revision)
 	}
@@ -2455,8 +2467,9 @@ func planRequested(ref *PlanRef) (final, why string, findings []string, stop boo
 // planComments takes the writers' comments signalled so far: each newer
 // than floor, the comment the session answered, asks for changes, except
 // the note of the replan that reopened the plan, posted as its person's.
-// heard are the comments that ask.
-func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
+// heard are the comments that ask, by the newest person among their
+// writers, "" for none.
+func (t *taskRun) planComments(floor int64) (out []string, heard []int64, by string) {
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
 		detail := map[string]any{"signal": SignalHumanComment, "author": sig.Author, "comment": sig.Comment}
@@ -2471,12 +2484,15 @@ func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
 			out = append(out, "writer "+sig.Author+" asked for changes to the plan: "+sig.Body)
 			heard = append(heard, sig.Comment)
 			t.planTaken = append(t.planTaken, sig.Comment)
+			if isPerson(sig.Author) {
+				by = sig.Author
+			}
 		}
 		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
 			workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
 		}
 	}
-	return out, heard
+	return out, heard, by
 }
 
 // leavePlanWait ends the case of the plan wait that ended with no answer of
@@ -2503,7 +2519,7 @@ func (t *taskRun) leavePlanWait(final, why string, answered bool, onCap *capWait
 // opens: a writer's change request in parts reaches the
 // next planner session whole. final is the task's end meanwhile.
 func (t *taskRun) planCommentsWhole(floor int64) (final, why string, out []string) {
-	out, heard := t.planComments(floor)
+	out, heard, _ := t.planComments(floor)
 	if len(heard) == 0 {
 		return "", "", out
 	}
@@ -2512,7 +2528,7 @@ func (t *taskRun) planCommentsWhole(floor int64) (final, why string, out []strin
 		if final, why, ended = t.planEnded(); ended {
 			return nil, true
 		}
-		more, heard := t.planComments(floor)
+		more, heard, _ := t.planComments(floor)
 		out = append(out, more...)
 		return heard, false
 	}, heard)
@@ -2561,7 +2577,9 @@ func (t *taskRun) planEnded() (final, why string, ok bool) {
 // planner, as does the end of onCap, a wait on a cap, on its own.
 // The resolution of the case the plan waits on ends the
 // wait at once (versionCases), taken as t.resolution, its note a finding.
-func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, why string, findings []string, answered bool) {
+// by is the newest person among the writers of the answers to revision ref
+// and of the comments that asked, "" for none.
+func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, why string, findings []string, answered bool, by string) {
 	onCap.start(t)
 	defer onCap.stop()
 	wake := []string{SignalIssueClosed, SignalHumanComment}
@@ -2575,14 +2593,14 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, w
 		}
 		notes, ok := t.planResolution()
 		findings, resolved = append(findings, notes...), resolved || ok
-		ok, err := t.planAnswered(ref)
+		ok, answerer, err := t.planAnswered(ref)
 		if err != nil {
 			final, why = "failed", "count the plan's open questions: "+errMessage(err)
 			return nil, true
 		}
 		answered = answered || ok
-		out, heard := t.planComments(floor)
-		findings = append(findings, out...)
+		out, heard, writer := t.planComments(floor)
+		findings, by = append(findings, out...), cmp.Or(writer, answerer, by)
 		return heard, false
 	}
 	for {
@@ -2595,20 +2613,21 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, w
 		heard, stop := pass()
 		if stop || !resolved && len(heard) > 0 && t.awaitBurst(wake, pass, heard) {
 			if final != "" {
-				return final, why, nil, false
+				return final, why, nil, false, ""
 			}
-			return "", "", findings, answered
+			return "", "", findings, answered, by
 		}
 		if answered || len(findings) > 0 || resolved || onCap.over() {
-			return "", "", findings, answered
+			return "", "", findings, answered, by
 		}
 	}
 }
 
-// planAnswered takes the members' answers signalled so far: whether one
+// planAnswered takes the answers signalled so far: whether one
 // answered a question of revision ref and none of its questions is open
-// any more. An answer to another revision is recorded and ignored.
-func (t *taskRun) planAnswered(ref *PlanRef) (bool, error) {
+// any more, and by the newest person among those who answered it, "" for
+// none. An answer to another revision is recorded and ignored.
+func (t *taskRun) planAnswered(ref *PlanRef) (ok bool, by string, err error) {
 	current := false
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalPlanAnswered).ReceiveAsync(&sig) {
@@ -2622,16 +2641,19 @@ func (t *taskRun) planAnswered(ref *PlanRef) (bool, error) {
 			t.approvalRequested = time.Time{}
 		}
 		current = current || sig.Revision == ref.Revision
+		if sig.Revision == ref.Revision && isPerson(sig.Author) {
+			by = sig.Author
+		}
 		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
 			workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
 		}
 	}
 	if !current {
-		return false, nil
+		return false, "", nil
 	}
 	var open int
-	err := workflow.ExecuteActivity(t.short, ActivityOpenPlanQuestions, t.taskID, ref.Revision).Get(t.ctx, &open)
-	return err == nil && open == 0, err
+	err = workflow.ExecuteActivity(t.short, ActivityOpenPlanQuestions, t.taskID, ref.Revision).Get(t.ctx, &open)
+	return err == nil && open == 0, by, err
 }
 
 // OpenPlanQuestions is how many of plan revision's questions have no
