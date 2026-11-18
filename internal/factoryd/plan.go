@@ -2714,11 +2714,12 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	}
 	var answers []string
 	if last != nil {
-		step, _, err := pendingIn(tl, taskID)
+		step, pending, err := pendingIn(tl, taskID)
 		if err != nil {
 			return PlanResult{}, err
 		}
-		cards, err := r.store.PlanCards(ctx, taskID)
+		// the record the filing settles its keys by
+		cards, err := r.oldCardsOf(ctx, t, step, pending)
 		if err != nil {
 			return PlanResult{}, err
 		}
@@ -3161,15 +3162,16 @@ func replacesNothing(p Plan, id string) bool {
 }
 
 // restartChildren runs the restart rules a new revision carries (piece
-// 10): the checks re-ran with the filing, every card that never started
-// takes the new revision's brief, image, rung and size, with the line on
-// the old card's work it starts from kept, one the new plan drops ends
-// closed with its issue unless it merged (Finish leaves a merged card to
-// its chain, which ends it done), a started open card the new plan drops
-// (dropped) stops as for a replan, its work kept on its branch, a started
-// card it keeps runs on, and a final card never reopens.
+// 10) on each key's card (PlanWaits): the checks re-ran with the filing,
+// every card that never started takes the new revision's brief, image,
+// rung and size, with the line on the old card's work it starts from
+// kept, one the new plan drops ends closed with its issue unless it merged
+// (Finish leaves a merged card to its chain, which ends it done), a
+// started open card the new plan drops (dropped) stops as for a replan,
+// its work kept on its branch, a started card it keeps runs on, and a
+// final card never reopens.
 func (r *Runner) restartChildren(ctx context.Context, t Task, repo Repo, revision int, p Plan) {
-	cards, err := r.store.PlanCards(ctx, t.ID)
+	cards, err := PlanWaits(ctx, r.store, t.ID)
 	if err != nil {
 		log.Printf("plan %s revision %d: restart its cards: %v", t.ID, revision, err)
 		return
@@ -3771,7 +3773,7 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 	if len(p.TakeOffMain) == 0 {
 		return nil
 	}
-	cards, err := planWaits(ctx, r.store, t.ID)
+	cards, err := PlanWaits(ctx, r.store, t.ID)
 	if err != nil {
 		return err
 	}

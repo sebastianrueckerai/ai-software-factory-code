@@ -676,14 +676,14 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	return nil
 }
 
-// takeOffOf are the cards plan p of task id takes off main, each as the
-// confirm button's line reads it (#its issue, else its key), and the
-// reason each gave.
+// takeOffOf are the cards plan p of task id takes off main, each key's
+// card (factoryd.PlanWaits) as the confirm button's line reads it (#its
+// issue, else its key), and the reason each gave.
 func (c *Console) takeOffOf(ctx context.Context, id string, p factoryd.Plan) (refs, whys []string, err error) {
 	if len(p.TakeOffMain) == 0 {
 		return nil, nil, nil
 	}
-	cards, err := c.cfg.Tasks.PlanCards(ctx, id)
+	cards, err := factoryd.PlanWaits(ctx, c.cfg.Tasks, id)
 	if err != nil {
 		return nil, nil, fmt.Errorf("the cards of plan %s: %w", id, err)
 	}

@@ -169,6 +169,54 @@ func TestFilePlanFilesARoundOnTopOfTheSettled(t *testing.T) {
 	}
 }
 
+// A key of round 1 whose card failed into a successor that merged is
+// settled as a merged card is, the same in the planner's last plan and in
+// the round's filing: the last plan leaves all three cards of round 1 out,
+// and the filing puts their entries first.
+func TestARoundSettlesAKeyItsSuccessorMerged(t *testing.T) {
+	rig := func(t *testing.T) (*Runner, *fakeStore, *fakeKube, Plan) {
+		t.Helper()
+		r, store, kube, one := roundTwoRig(t, nil)
+		k := store.tasks["t-foundation"]
+		k.Status, k.MergeCommit = "failed", ""
+		store.tasks["t-foundation"] = k
+		if err := store.CreateSuccessor(context.Background(), "t-foundation", Task{ID: SuccessorID("t-foundation"), Kind: "agent", Track: policy.TrackDirect,
+			Source: SourceSuccessor, Parent: "t-plan", PlanKey: "foundation", PlanRevision: 1, IssueNumber: 13, Status: "done", MergeCommit: "m13",
+			Repository: "linkshort/linkshort", SHA: "abc123"}); err != nil {
+			t.Fatal(err)
+		}
+		return r, store, kube, one
+	}
+	t.Run("the planner's last plan", func(t *testing.T) {
+		r, _, kube, _ := rig(t)
+		done := make(chan error)
+		go func() {
+			_, err := execActivity(t, r, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+			done <- err
+		}()
+		awaitPod(t, kube, done)
+		kube.scriptPods(0, resultLine(true, "no plan"))
+		if err := <-done; err != nil {
+			t.Fatalf("RunPlan: %v", err)
+		}
+		var got []string
+		const head = "your last plan, revision 1, without the 3 merged cards of its earlier rounds, which the plan keeps as they are:"
+		if err := json.Unmarshal([]byte(podEnv(kube.podAt(0))["FINDINGS"]), &got); err != nil || len(got) == 0 || !strings.HasPrefix(got[0], head) {
+			t.Fatalf("FINDINGS %q (%v), want the last plan to begin %q", got, err, head)
+		}
+	})
+	t.Run("the round's filing", func(t *testing.T) {
+		r, store, _, one := rig(t)
+		res, err := r.FilePlan(context.Background(), "t-plan", planJSON(t, roundTwoAnswer()))
+		if err != nil || res.Revision != 2 || len(res.Findings) != 0 {
+			t.Fatalf("filed = %+v, %v; want revision 2", res, err)
+		}
+		if p := storedPlan(t, store, 2); len(p.Cards) != 5 || !reflect.DeepEqual(p.Cards[:3], one.Cards) {
+			t.Fatalf("revision 2's cards %+v, want revision 1's three entries first", p.Cards)
+		}
+	})
+}
+
 // A settled card that started from an old card keeps its from: the
 // revision before held it for the same key, so the round files.
 func TestFilePlanFilesARoundOverASettledFrom(t *testing.T) {

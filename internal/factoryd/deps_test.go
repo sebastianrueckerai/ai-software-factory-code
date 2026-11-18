@@ -826,7 +826,7 @@ func TestRetryCardOfAPlanCardsSuccessor(t *testing.T) {
 	if !slices.Equal(store.deps["t-b"], []string{n.ID}) {
 		t.Fatalf("B waits on %v, want the replacement %s", store.deps["t-b"], n.ID)
 	}
-	waits, err := planWaits(ctx, store, "t-plan")
+	waits, err := PlanWaits(ctx, store, "t-plan")
 	if i := slices.IndexFunc(waits, func(c Task) bool { return c.PlanKey == "links-api" }); err != nil || i < 0 || waits[i].ID != n.ID {
 		t.Fatalf("the plan's waits %+v, %v; want key links-api read as the replacement %s", waits, err, n.ID)
 	}

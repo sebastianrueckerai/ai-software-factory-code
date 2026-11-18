@@ -460,7 +460,7 @@ func (r *Runner) endGroupRevert(ctx context.Context, t Task, pause QueuePause, f
 	}
 	carry := pending && replan.OffMain && p.Status != "closed" && p.Status != "closing"
 	if carry {
-		cards, err := planWaits(ctx, r.store, p.ID)
+		cards, err := PlanWaits(ctx, r.store, p.ID)
 		if err != nil {
 			return err
 		}

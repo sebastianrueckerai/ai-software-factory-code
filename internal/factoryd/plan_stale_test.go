@@ -532,6 +532,51 @@ func TestRestartChildrenStopsADroppedStartedCard(t *testing.T) {
 	}
 }
 
+// A revision that drops a key whose card failed into a running successor,
+// which no replan step stopped, stops the successor for the replan: its
+// dependents wait on the plan, it ends closed with the reason and its
+// issue closes, and the failed card stays as it ended.
+func TestRestartChildrenStopsADroppedKeysSuccessor(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, _ := fileRig(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if ref := requestPlan(t, r); len(ref.Refused) != 0 || len(ref.Filed) != 4 {
+		t.Fatalf("the children: %+v", ref)
+	}
+	cards := cardsByKey(t, store)
+	failed := cards["links-api"]
+	failed.Status, failed.PlanRevision = "failed", 1
+	store.tasks[failed.ID] = failed
+	succ := SuccessorID(failed.ID)
+	fj.issues[90] = &planIssue{title: "Links API, carried on", poster: "factory-agent", state: "open"}
+	if err := store.CreateSuccessor(ctx, failed.ID, Task{ID: succ, Kind: "agent", Track: policy.TrackDirect, Source: SourceSuccessor, Parent: "t-plan",
+		PlanKey: "links-api", PlanRevision: 1, IssueNumber: 90, Status: "running", Repository: "linkshort/linkshort"}); err != nil {
+		t.Fatal(err)
+	}
+	next := testPlan()
+	next.Cards = append(next.Cards[:1], next.Cards[2:]...)
+	next.Cards[1].DependsOn = nil
+	_, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.restartChildren(ctx, store.tasks["t-plan"], repo, 2, next)
+
+	if k := store.tasks[succ]; k.Status != "closed" || finalReason(t, r, succ) != "the plan's revision 2 drops it" {
+		t.Fatalf("the successor %s (%q), want closed as the plan's revision 2 drops it", k.Status, finalReason(t, r, succ))
+	}
+	if is := fj.issues[90]; is.state != "closed" {
+		t.Fatalf("the successor's issue is %q, want closed", is.state)
+	}
+	if got := store.deps[cards["redirects"].ID]; !slices.Equal(got, []string{cards["foundation"].ID, "t-plan"}) {
+		t.Fatalf("redirects waits on %v, want the foundation and the plan", got)
+	}
+	if k := store.tasks[failed.ID]; k.Status != "failed" {
+		t.Fatalf("the failed card %s, want it failed as it ended", k.Status)
+	}
+}
+
 // A card that never started takes the new revision's rung and size with
 // its brief, which states them; a started one keeps its own, and a
 // revision that changes them is refused.

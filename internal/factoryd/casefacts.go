@@ -132,7 +132,8 @@ type CaseFacts struct {
 	PlannerRetry bool   `json:"planner_retry,omitempty"`
 	Plan         string `json:"plan,omitempty"` // the plan's task id, for a plan or a plan's card
 	// PlanIssue, PlanName and PlanStatus name the plan of a plan's card and
-	// Siblings are its other cards, by issue; all empty for a direct card.
+	// Siblings are its other keys' cards (PlanWaits), by issue; all empty
+	// for a direct card.
 	PlanIssue    int64         `json:"plan_issue,omitempty"`
 	PlanName     string        `json:"plan_name,omitempty"`
 	PlanStatus   string        `json:"plan_status,omitempty"`
@@ -507,7 +508,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			if f.Plan == "" {
 				return nil
 			}
-			cards, err := planWaits(ctx, r.store, f.Plan)
+			cards, err := PlanWaits(ctx, r.store, f.Plan)
 			if err != nil {
 				return err
 			}
@@ -527,7 +528,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			if err != nil {
 				return err
 			}
-			cards, err := r.store.PlanCards(ctx, f.Plan)
+			cards, err := PlanWaits(ctx, r.store, f.Plan)
 			if err != nil {
 				return err
 			}

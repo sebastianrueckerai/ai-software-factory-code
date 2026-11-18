@@ -2089,7 +2089,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		}
 	}
 	if t.Track == policy.TrackPlan && t.Status == "done" {
-		cards, cardsErr := c.cfg.Tasks.PlanCards(ctx, t.ID)
+		cards, cardsErr := factoryd.PlanWaits(ctx, c.cfg.Tasks, t.ID)
 		if cardsErr != nil {
 			log.Printf("console: the cards of plan %s: %v", t.ID, cardsErr)
 			v.problems = append(v.problems, "the cards of plan "+t.ID+" could not be read")
@@ -3976,7 +3976,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 			} else {
 				d.PlanSummary, d.PlanRows, d.TakeOffMain = p.Summary, factoryd.PlanRows(p), p.TakeOffLines()
 				if p.Round > 1 || len(p.Outline) > 0 {
-					if cards, err := c.cfg.Tasks.PlanCards(ctx, bt.ID); err != nil {
+					if cards, err := factoryd.PlanWaits(ctx, c.cfg.Tasks, bt.ID); err != nil {
 						problem("plan's cards", "Reload the board.", err)
 					} else {
 						d.PlanRounds = slices.DeleteFunc(factoryd.RoundItems(p, cards), func(i factoryd.RoundItem) bool { return i.Still })

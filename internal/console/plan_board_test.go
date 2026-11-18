@@ -361,6 +361,77 @@ func TestDonePlanShowsItsRound(t *testing.T) {
 	}
 }
 
+// A done plan's children, its rollup and its drawer's list read each key's
+// card: a card that failed into a running successor shows as the
+// successor.
+func TestDonePlanListsEachKeysCard(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	r.tasks.tasks = append(planTasks(), factoryd.BoardTask{Task: factoryd.Task{ID: factoryd.SuccessorID("t-c2"), Kind: "agent", Status: "running",
+		Track: "direct", Process: "spec", Objective: "card 2, carried on", Repository: "linkshort/linkshort", IssueNumber: 7,
+		Source: factoryd.SourceSuccessor, Parent: "t-plan", PlanKey: "k2"}})
+	r.tasks.tasks[1].Status = "failed"
+	ck, _ := r.loggedIn(t)
+	done := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Done")
+	if want := "<span class=\"chip rollup\">1\u00a0running · 1\u00a0done · 1\u00a0waiting · 1\u00a0queued</span>"; !strings.Contains(done, want) {
+		t.Errorf("the plan in Done lacks %q:\n%s", want, done)
+	}
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort", nil), ck).Body.String()
+	if want := `<li><a href="https://git.example/linkshort/linkshort/issues/7" target="_blank" rel="noopener">#7</a> running</li>`; !strings.Contains(drawer, want) {
+		t.Errorf("the plan's drawer lacks %q:\n%s", want, drawer)
+	}
+	if strings.Contains(drawer, `>#2</a>`) {
+		t.Errorf("the plan's drawer lists the failed #2:\n%s", drawer)
+	}
+}
+
+// The drawer's rounds count each key's card: a card of round 1 that failed
+// into a successor that is done counts done.
+func TestDonePlanDrawerRoundsCountEachKeysCard(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	r.tasks.tasks = append(planTasks(),
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-c9", Kind: "agent", Status: "failed", Track: "direct", Process: "spec", Objective: "card 9",
+			Repository: "linkshort/linkshort", IssueNumber: 9, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k9"}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: factoryd.SuccessorID("t-c9"), Kind: "agent", Status: "done", Track: "direct", Process: "spec",
+			Objective: "card 9, carried on", Repository: "linkshort/linkshort", IssueNumber: 10, Source: factoryd.SourceSuccessor, Parent: "t-plan", PlanKey: "k9"}})
+	plan, _ := json.Marshal(factoryd.Plan{Round: 2, Outline: []string{"the console"}, Cards: []factoryd.PlanCard{
+		{Key: "k9", Role: factoryd.RoleFoundation, Title: "card 9", Size: "small", Round: 1},
+		{Key: "k2", Role: factoryd.RoleFeature, Title: "card 2", Size: "small", Round: 2},
+		{Key: "k3", Role: factoryd.RoleFeature, Title: "card 3", Size: "small", Round: 2},
+		{Key: "k4", Role: factoryd.RoleFeature, Title: "card 4", Size: "small", Round: 2},
+		{Key: "k5", Role: factoryd.RoleFeature, Title: "card 5", Size: "small", Round: 2},
+	}})
+	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan, SHA256: "sha-1"}}}
+	ck, _ := r.loggedIn(t)
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort", nil), ck).Body.String()
+	if want := `<ol aria-label="The plan's rounds"><li>round 1: 1 card, 1 done.</li><li aria-current="step">round 2: 4 cards, 1 done. This round.</li></ol>`; !strings.Contains(drawer, want) {
+		t.Errorf("the plan's drawer lacks %q:\n%s", want, drawer)
+	}
+}
+
+// The confirm button's take-off line names each key's card: the successor
+// that merged for a card that failed into it, the card the revert takes.
+func TestTakeOffMainNamesEachKeysCard(t *testing.T) {
+	r := newRig(t)
+	planRig(r)
+	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": {{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}}
+	plan, _ := json.Marshal(factoryd.Plan{Summary: "Foundation first.", TakeOffMain: []string{"k2"},
+		Cards: []factoryd.PlanCard{{Key: "foundation", Role: "foundation", Title: "Foundation", Size: "medium"}}})
+	r.tasks.plans["t-plan"][1].Plan = plan
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-c2", Kind: "agent", Status: "failed", Track: "direct", Process: "spec", Objective: "card 2",
+			Repository: "linkshort/linkshort", IssueNumber: 2, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k2"}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: factoryd.SuccessorID("t-c2"), Kind: "agent", Status: "merged", MergeCommit: "m7", Track: "direct",
+			Process: "spec", Objective: "card 2, carried on", Repository: "linkshort/linkshort", IssueNumber: 7, Source: factoryd.SourceSuccessor,
+			Parent: "t-plan", PlanKey: "k2"}})
+	ck, _ := r.loggedIn(t)
+	want := "<button type=\"submit\" name=\"decision\" value=\"confirm\" class=\"primary\" formnovalidate>Confirm reverts #7 from main</button>"
+	if card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you"); !strings.Contains(card, want) {
+		t.Errorf("the plan card lacks %q:\n%s", want, card)
+	}
+}
+
 // A done plan whose revision cannot be read keeps its rollup, and the
 // board says so once.
 func TestDonePlanWithAnUnreadableRevisionKeepsItsRollup(t *testing.T) {

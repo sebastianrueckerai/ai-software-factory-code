@@ -270,7 +270,8 @@ func prState(steps []map[string]any) string {
 }
 
 // planText is the plan tool's answer: the newest revision of card in's
-// plan, or of the plan it is a card of, with the cards filed.
+// plan, or of the plan it is a card of, with each filed key's card
+// (factoryd.PlanWaits).
 func (t *turn) planText(in toolInput) (string, error) {
 	ctx := t.r.Context()
 	k, err := t.card(in)
@@ -295,7 +296,7 @@ func (t *turn) planText(in toolInput) (string, error) {
 	if !ok {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan #%d has no revision yet.", plan.IssueNumber))
 	}
-	cards, err := t.c.cfg.Tasks.PlanCards(ctx, plan.ID)
+	cards, err := factoryd.PlanWaits(ctx, t.c.cfg.Tasks, plan.ID)
 	if err != nil {
 		return "", err
 	}

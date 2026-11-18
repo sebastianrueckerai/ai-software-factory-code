@@ -184,6 +184,44 @@ func TestChatPlanReadNamesTheRound(t *testing.T) {
 		[]string{"revision 1, sha256 5e1f\nsummary: An API, then its web UI.\nrounds:\n- round 2: 2 cards, 0 done. This round.\n- still to plan: the console\n" + readsPlanRows})
 }
 
+// The plan read reads each key's card: a card that failed into a
+// successor that is done counts done in its round, and the key's row and
+// the card list name the successor.
+func TestChatPlanReadReadsEachKeysCard(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.tasks.mu.Lock()
+	var p factoryd.Plan
+	if err := json.Unmarshal(r.tasks.plans["t-p"][0].Plan, &p); err != nil {
+		t.Fatal(err)
+	}
+	p.Round, p.Outline = 2, []string{"the console"}
+	for i := range p.Cards {
+		p.Cards[i].Round = 2
+	}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.tasks.plans["t-p"][0].Plan = raw
+	for i := range r.tasks.tasks {
+		if k := &r.tasks.tasks[i]; k.ID == "t-c1" {
+			k.Status, k.Gate = "failed", ""
+		}
+	}
+	succ := factoryd.SuccessorID("t-c1")
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: succ, Kind: "agent", Repository: "sf/code", Status: "done",
+		Track: policy.TrackDirect, Process: "maintenance", IssueNumber: 25, Source: factoryd.SourceSuccessor, Parent: "t-p", PlanKey: "api",
+		BudgetEUR: 2, SpentEUR: 0.75, Objective: "Build the API, carried on."}})
+	r.tasks.mu.Unlock()
+	equal(t, "the plan read", reads(t, r, g, "plan", `{"task_id":"t-p"}`),
+		[]string{"revision 1, sha256 5e1f\nsummary: An API, then its web UI.\nrounds:\n- round 2: 2 cards, 1 done. This round.\n- still to plan: the console\n" +
+			`api foundation "API layer" small depends on none issue #25` + "\n" +
+			`web feature "Web UI" medium depends on api issue #22` + "\n" +
+			`accept integration "Acceptance tests" small depends on api, web not filed` + "\n" +
+			`#25 ` + succ + ` "api" done (is done), €0.75 of €2.00` + "\n" +
+			`#22 t-c2 "web" waiting-deps (waits for the cards it depends on), €0.00 of €2.00`})
+}
+
 // readsPlanRows are plan t-p's rows and its filed cards as the plan read
 // lists them.
 const readsPlanRows = `api foundation "API layer" small depends on none issue #21` + "\n" +
