@@ -87,7 +87,7 @@ func (r *Runner) killedChecks(ctx context.Context, t Task, repo Repo, cs Combine
 		jobs, err := r.runJobs(ctx, token, repo, n)
 		if err != nil {
 			if marker := killMarkerOf(logOf, s.TargetURL); marker != "" {
-				notes = append(notes, fmt.Sprintf("check %q was killed (%s) and no re-run was offered: run %d is not readable (%s)",
+				notes = append(notes, fmt.Sprintf("check %q was killed (%s) and no re-run was offered: CI run %d is not readable (%s)",
 					s.Context, marker, n, r.Scrub.String(err.Error())))
 			}
 			continue
@@ -174,9 +174,9 @@ func (r *Runner) killedJob(ctx context.Context, token string, repo Repo, run int
 	ours := slices.ContainsFunc(*reran, func(n rerunNote) bool { return n.id == j.ID })
 	switch {
 	case j.Attempt > 1 && ours && marker != "":
-		return false, fmt.Sprintf("job %q of run %d was killed again (%s) at attempt %d, its one re-run: no second re-run follows", j.Name, run, marker, j.Attempt)
+		return false, fmt.Sprintf("job %q of CI run %d was killed again (%s) at attempt %d, its one re-run: no second re-run follows", j.Name, run, marker, j.Attempt)
 	case j.Attempt > 1 && ours:
-		return false, fmt.Sprintf("job %q of run %d failed again at attempt %d, its re-run: a test failure, not a kill", j.Name, run, j.Attempt)
+		return false, fmt.Sprintf("job %q of CI run %d failed again at attempt %d, its re-run: a test failure, not a kill", j.Name, run, j.Attempt)
 	case j.Attempt > 1 || marker == "":
 		return false, ""
 	case ours:
@@ -185,9 +185,9 @@ func (r *Runner) killedJob(ctx context.Context, token string, repo Repo, run int
 	err = r.forgejo.RerunActionJob(ctx, token, repo.Owner, repo.Name, j.ID)
 	switch {
 	case errors.Is(err, ErrNoRerun):
-		return false, fmt.Sprintf("job %q of run %d was killed (%s) and no re-run was offered: forgejo has no rerun API, or the project's Actions token lacks the right", j.Name, run, marker)
+		return false, fmt.Sprintf("job %q of CI run %d was killed (%s) and no re-run was offered: forgejo has no rerun API, or the project's Actions token lacks the right", j.Name, run, marker)
 	case err != nil:
-		return false, fmt.Sprintf("job %q of run %d was killed (%s) and its re-run failed (%s)", j.Name, run, marker, oneLine(r.Scrub.String(err.Error())))
+		return false, fmt.Sprintf("job %q of CI run %d was killed (%s) and its re-run failed (%s)", j.Name, run, marker, oneLine(r.Scrub.String(err.Error())))
 	}
 	log.Printf("checks gate: job %s of run %d was killed (%s): re-run once", j.Name, run, marker)
 	*reran = append(*reran, rerunNote{Job: j.Name, Run: run, Attempt: j.Attempt + 1, id: j.ID})

@@ -4362,10 +4362,10 @@ func TestWaitChecksRedAfterTheOneRerun(t *testing.T) {
 		log  string
 		want string
 	}{
-		"killed again": {"go vet ./...\nsignal: killed\n", `job "test" of run 7 was killed again (signal: killed) at attempt 2, its one re-run: no second re-run follows`},
-		"oom":          {"OOMKilled\n", `job "test" of run 7 was killed again (OOMKilled) at attempt 2, its one re-run: no second re-run follows`},
-		"exit 137":     {"exit code 137\n", `job "test" of run 7 was killed again (exit code 137) at attempt 2, its one re-run: no second re-run follows`},
-		"real failure": {"--- FAIL: TestX\nFAIL\n", `job "test" of run 7 failed again at attempt 2, its re-run: a test failure, not a kill`},
+		"killed again": {"go vet ./...\nsignal: killed\n", `job "test" of CI run 7 was killed again (signal: killed) at attempt 2, its one re-run: no second re-run follows`},
+		"oom":          {"OOMKilled\n", `job "test" of CI run 7 was killed again (OOMKilled) at attempt 2, its one re-run: no second re-run follows`},
+		"exit 137":     {"exit code 137\n", `job "test" of CI run 7 was killed again (exit code 137) at attempt 2, its one re-run: no second re-run follows`},
+		"real failure": {"--- FAIL: TestX\nFAIL\n", `job "test" of CI run 7 failed again at attempt 2, its re-run: a test failure, not a kill`},
 	} {
 		r, fj, _ := killedRig(t, []string{killedFail},
 			[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}},
@@ -4406,7 +4406,7 @@ func TestWaitChecksRerunsAJobWhoseRunnerDied(t *testing.T) {
 		[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 2}})
 	fj.jobLogs["11/1"], fj.jobLogs["11/2"] = cut, cut
 	res := waitChecksOf(t, r)
-	again := `job "test" of run 7 was killed again (` + runnerDiedMarker + `) at attempt 2, its one re-run: no second re-run follows`
+	again := `job "test" of CI run 7 was killed again (` + runnerDiedMarker + `) at attempt 2, its one re-run: no second re-run follows`
 	if res.State != ChecksFailure || len(res.Findings) != 2 || res.Findings[1] != again || !reflect.DeepEqual(fj.reruns, []int64{11}) {
 		t.Fatalf("result = %+v, reruns = %v, want failure ending in %q after exactly one re-run", res, fj.reruns, again)
 	}
@@ -4478,13 +4478,13 @@ func TestWaitChecksKilledWithoutARerunOffer(t *testing.T) {
 		want  string
 	}{
 		"rerun 404": {func(f *prForgejo) { f.rerunCode = http.StatusNotFound },
-			`job "test" of run 7 was killed (signal: killed) and no re-run was offered: forgejo has no rerun API, or the project's Actions token lacks the right`},
+			`job "test" of CI run 7 was killed (signal: killed) and no re-run was offered: forgejo has no rerun API, or the project's Actions token lacks the right`},
 		"rerun 403": {func(f *prForgejo) { f.rerunCode = http.StatusForbidden },
-			`job "test" of run 7 was killed (signal: killed) and no re-run was offered: forgejo has no rerun API, or the project's Actions token lacks the right`},
+			`job "test" of CI run 7 was killed (signal: killed) and no re-run was offered: forgejo has no rerun API, or the project's Actions token lacks the right`},
 		"run unlisted": {func(f *prForgejo) {
 			f.runs = nil
 			f.sessionLog = "go vet ./...\nsignal: killed\n"
-		}, `check "pr / test (pull_request)" was killed (signal: killed) and no re-run was offered: run 7 is not readable (forgejo lists no run 7)`},
+		}, `check "pr / test (pull_request)" was killed (signal: killed) and no re-run was offered: CI run 7 is not readable (forgejo lists no run 7)`},
 	} {
 		r, fj, _ := killedRig(t, []string{killedFail}, []ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}})
 		tc.setup(fj)
