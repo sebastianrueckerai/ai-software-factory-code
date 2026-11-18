@@ -1106,23 +1106,21 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 	}
 }
 
-// The gate and confirm_audit read one finding the same way, by its whole
-// text as written: a confirmation recorded for a path in other letters,
-// which a file system holds as another file, covers the head's finding at
-// neither, so the gate still raises it and the press records it.
-func TestActConfirmAuditReadsAFindingAsTheGateDoes(t *testing.T) {
+// The card's box, confirm_audit and the gate read one finding the same
+// way, by its id (FindingID): two findings of the head's audit that differ
+// only in letter case have one id and one box, and one press confirms
+// both. It records one confirmation, under the text the card shows, and
+// the gate covers each of the two.
+func TestActConfirmAuditCoversFindingsOfOneID(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
 	g.timeline(t)
 	g.r.timeline = g.tl
-	const rig, other = "secrets at acceptance/rig_test.go", "secrets at Acceptance/Rig_test.go"
-	finding := AuditFinding{Item: "secrets", File: "acceptance/rig_test.go", Line: 118, Why: "a rig literal"}
+	lower := AuditFinding{Item: "secrets", File: "acceptance/rig_test.go", Line: 118, Why: "a rig literal"}
+	upper := AuditFinding{Item: "secrets", File: "Acceptance/Rig_test.go", Line: 12, Why: "a rig literal"}
 	ctx := context.Background()
 	g.tl.now = func() time.Time { return factsAt(9, 50) }
-	if err := g.tl.Append(ctx, "t1", "audit", map[string]any{"commit": "h2", "verdict": "findings", "findings": []AuditFinding{finding}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := g.tl.Append(ctx, "t1", stepAuditConfirmed, map[string]any{"finding": other, "by": "sebastian", "why": "another file"}); err != nil {
+	if err := g.tl.Append(ctx, "t1", "audit", map[string]any{"commit": "h2", "verdict": "findings", "findings": []AuditFinding{lower, upper}}); err != nil {
 		t.Fatal(err)
 	}
 	t1 := g.store.tasks["t1"]
@@ -1130,25 +1128,26 @@ func TestActConfirmAuditReadsAFindingAsTheGateDoes(t *testing.T) {
 	g.store.tasks["t1"] = t1
 	g.store.cases = append(g.store.cases, Case{ID: 9, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
 		Facts: map[string]any{"head": "h2", "gate": "GateCriteria"}})
-	covered := func() (bool, int) {
+	covered := func() (bool, bool, []string) {
 		confirmed, err := g.r.auditConfirmations(ctx, "t1")
 		if err != nil {
 			t.Fatal(err)
 		}
-		return auditConfirmedOf(finding, confirmed), len(confirmed)
+		return auditConfirmedOf(lower, confirmed), auditConfirmedOf(upper, confirmed), slices.Sorted(maps.Keys(confirmed))
 	}
-	if FindingID(rig) != FindingID(other) {
-		t.Fatalf("the two texts have the ids %s and %s, want one id", FindingID(rig), FindingID(other))
+	id := FindingID(lower.Text())
+	if id != FindingID(upper.Text()) || lower.Text() == upper.Text() {
+		t.Fatalf("the texts %q and %q have the ids %s and %s, want two texts of one id", lower.Text(), upper.Text(), id, FindingID(upper.Text()))
 	}
-	if ok, n := covered(); ok || n != 1 {
-		t.Fatalf("before the press the gate covers the finding: %t, of %d confirmations; want false of 1", ok, n)
+	if a, b, texts := covered(); a || b || len(texts) != 0 {
+		t.Fatalf("before the press the gate covers %t and %t by %v, want neither", a, b, texts)
 	}
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
-		Res: Resolution{Action: ActConfirmAudit, Note: "the rig's fakes, not secrets", Args: map[string]any{"findings": FindingID(rig)}}}); err != nil {
+		Res: Resolution{Action: ActConfirmAudit, Note: "the rig's fakes, not secrets", Args: map[string]any{"findings": id}}}); err != nil {
 		t.Fatal(err)
 	}
-	if ok, n := covered(); !ok || n != 2 {
-		t.Fatalf("after the press the gate covers the finding: %t, of %d confirmations; want true of 2", ok, n)
+	if a, b, texts := covered(); !a || !b || !slices.Equal(texts, []string{"secrets at acceptance/rig_test.go"}) {
+		t.Fatalf("after the press the gate covers %t and %t by %v, want both by the one text the card shows", a, b, texts)
 	}
 }
 

@@ -934,8 +934,9 @@ func answersACase(a Action) bool {
 
 // confirmAudit records the audit findings a person's confirm_audit marks
 // fixtures (audit-confirm): each finding at a file they named by its id,
-// as its whole text on facts f, in an audit_finding_confirmed step with who, why
-// and when. Every GateAudit of the task reads the steps off the timeline
+// as its text on facts f, in an audit_finding_confirmed step with who, why
+// and when. The id is the finding's identity for the box, this record and
+// the gate (auditConfirmedOf). Every GateAudit of the task reads the steps off the timeline
 // and settles its verdict past the findings they name, on this attempt and
 // a fresh one alike, until the head's audit clears on its own. A
 // confirmation stands once: one already recorded is not recorded again.
@@ -944,16 +945,19 @@ func (r *Runner) confirmAudit(ctx context.Context, t Task, in ActInput, f CaseFa
 	if err != nil {
 		return err
 	}
+	done := map[string]bool{}
+	for text := range seen {
+		done[FindingID(text)] = true
+	}
 	for _, id := range confirmAuditFindings(in.Res.Args) {
-		text := f.FindingTexts[id]
-		if _, done := seen[text]; done {
+		if done[id] {
 			continue
 		}
-		detail := map[string]any{"finding": text, "by": in.By, "why": strings.TrimSpace(in.Res.Note)}
+		detail := map[string]any{"finding": f.FindingTexts[id], "by": in.By, "why": strings.TrimSpace(in.Res.Note)}
 		if err := r.timeline.Append(ctx, t.ID, stepAuditConfirmed, detail); err != nil {
 			return err
 		}
-		seen[text] = Adjudication{}
+		done[id] = true
 	}
 	return nil
 }

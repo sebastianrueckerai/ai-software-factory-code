@@ -163,11 +163,20 @@ func parseAudit(content string) ([]AuditFinding, string) {
 }
 
 // auditConfirmedOf reports whether a confirmation covers finding f: one
-// recorded under f's text. A finding at no file, the no-verdict one or a
-// count of findings past the card's list, is never covered.
+// recorded under a text of f's id (FindingID), the identity the card's box
+// names it by. A finding at no file, the no-verdict one or a count of
+// findings past the card's list, is never covered.
 func auditConfirmedOf(f AuditFinding, confirmed map[string]Adjudication) bool {
-	_, ok := confirmed[f.Text()]
-	return ok && f.File != ""
+	if f.File == "" {
+		return false
+	}
+	id := FindingID(f.Text())
+	for text := range confirmed {
+		if FindingID(text) == id {
+			return true
+		}
+	}
+	return false
 }
 
 // auditConfirmations reads the audit findings a person confirmed on the
