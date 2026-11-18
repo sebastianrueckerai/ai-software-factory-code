@@ -925,8 +925,12 @@ func TestHumanCardAndPlanQuestionAsksReachTheFace(t *testing.T) {
 		t.Fatal(err)
 	}
 	planTask, _, _ := g.r.task(ctx, "t1")
-	if err := g.r.AskQuestions(ctx, planTask, rev, []PlanQuestion{{Text: "Which database?", Choices: []string{"Postgres", "SQLite"}, Recommended: "Postgres", Grounds: "it is shared"}}); err != nil {
+	changes := []string{"The service keeps its rows in the shared Postgres.", "The service keeps its rows in one SQLite file."}
+	if err := g.r.AskQuestions(ctx, planTask, rev, []PlanQuestion{{Text: "Which database?", Choices: []string{"Postgres", "SQLite"}, Changes: changes, Recommended: "Postgres", Grounds: "it is shared"}}); err != nil {
 		t.Fatal(err)
+	}
+	if stored, err := g.s.PlanQuestions(ctx, "t1", rev); err != nil || len(stored) != 1 || !slices.Equal(stored[0].Changes, changes) {
+		t.Errorf("the stored question = %+v, %v; want its changes %q", stored, err, changes)
 	}
 	d, _ = g.s.CaseDesk(ctx, "demo-app/demo-app")
 	var plan Case
@@ -940,7 +944,8 @@ func TestHumanCardAndPlanQuestionAsksReachTheFace(t *testing.T) {
 	}
 	pf := CaseFace(plan, planTask, d.Asks[plan.ID])
 	if len(pf.Offers) != 3 || pf.Offers[0].Value != "plan:Postgres" || pf.Offers[1].Value != "plan:SQLite" ||
-		pf.Preselected != "plan:Postgres" || pf.Recommendation != "it is shared" || pf.Source != "the planner" {
+		pf.Preselected != "plan:Postgres" || pf.Recommendation != "it is shared" || pf.Source != "the planner" ||
+		pf.Offers[0].Effect != changes[0] || pf.Offers[1].Effect != changes[1] {
 		t.Errorf("the plan question's face = %+v", pf)
 	}
 }

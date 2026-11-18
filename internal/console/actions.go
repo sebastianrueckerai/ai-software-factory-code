@@ -2592,7 +2592,7 @@ func (c *Console) doEdit(ctx context.Context, a actor, id string, edit factoryd.
 	}
 	if err := c.cfg.Tasks.SetBrief(ctx, t.ID, b.Why, b.Summary, unchecked); err != nil {
 		log.Printf("console: %s edited %s, its why line and summary: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusInternalServerError, "The card's why line and summary could not be stored. Edit them again.")
+		return "", refuse(http.StatusInternalServerError, "The issue is edited, but the card's why line and summary could not be stored. Edit them again.")
 	}
 	log.Printf("console: %s edited %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardEdited, detail)

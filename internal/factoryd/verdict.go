@@ -959,7 +959,7 @@ func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, repo Repo, p Pl
 		for _, b := range behaviours {
 			lines = append(lines, "- "+b)
 		}
-		r.commentOnce(ctx, t, repo, t.IssueNumber, "The feature's behaviours\n\n"+strings.Join(lines, "\n"))
+		r.commentOnce(ctx, t, repo, t.IssueNumber, r.untrusted(t, "The feature's behaviours\n\n"+strings.Join(lines, "\n")))
 		if _, err := r.store.PutPlanCatches(ctx, t.Parent, revision, CatchBehaviour, FinderReview, behaviours); err != nil {
 			log.Printf("task %s: record the behaviours: %v", t.ID, err)
 		}
@@ -1473,7 +1473,7 @@ func (r *Runner) holdPlan(ctx context.Context, t Task, repo Repo, open []PlanCri
 		return
 	}
 	if t.IssueNumber != 0 {
-		r.commentOnce(ctx, t, repo, t.IssueNumber, HeldPlanComment(c, t))
+		r.commentOnce(ctx, t, repo, t.IssueNumber, r.untrusted(t, HeldPlanComment(c, t)))
 	}
 	// its ask row brings it to the inbox and the agent's wake, as every
 	// case at the human

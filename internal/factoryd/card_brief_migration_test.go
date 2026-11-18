@@ -13,7 +13,7 @@ import (
 
 // Requires a disposable Postgres. The card_brief migration moves a
 // human's summary into the summary, so no text a human wrote is lost,
-// drops its column, and gives every row an empty why line and a checked
+// keeps its column for the factoryd of the release before, and gives every row an empty why line and a checked
 // brief. A second run changes nothing.
 func TestCardBriefMigrationKeepsTheHumansSummary(t *testing.T) {
 	ctx := context.Background()
@@ -83,8 +83,8 @@ func TestCardBriefMigrationKeepsTheHumansSummary(t *testing.T) {
 		}
 		var kept bool
 		if err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns
-			WHERE table_schema = current_schema() AND table_name = 'tasks' AND column_name = 'human_summary')`).Scan(&kept); err != nil || kept {
-			t.Fatalf("run %d: human_summary still a column (%v)", run, err)
+			WHERE table_schema = current_schema() AND table_name = 'tasks' AND column_name = 'human_summary')`).Scan(&kept); err != nil || !kept {
+			t.Fatalf("run %d: human_summary is gone (%v), want it kept for the factoryd of the release before", run, err)
 		}
 		exec(`DELETE FROM schema_migrations WHERE name >= '` + name + `' AND name LIKE 'factoryd/%'`)
 	}

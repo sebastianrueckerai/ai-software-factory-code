@@ -198,7 +198,7 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 	case err != nil:
 		return "", refuse(http.StatusInternalServerError, "cannot read the card")
 	case !ok:
-		return "", refuse(http.StatusNotFound, "There is no card "+id+" in this project.")
+		return "", refuse(http.StatusNotFound, "This card is gone from the project.")
 	}
 	events, err := c.cfg.Events.TaskEvents(ctx, id, startEvents)
 	if err != nil {

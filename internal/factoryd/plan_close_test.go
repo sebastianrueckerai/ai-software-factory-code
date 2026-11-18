@@ -641,3 +641,29 @@ func TestTheFactorysCloseEndsTheHeldAsk(t *testing.T) {
 		})
 	}
 }
+
+// A held plan's comment names its open promises, which the planner wrote,
+// and posts them through the outbound sanitiser: no mention and no link
+// to an outside host reaches the issue as the factory's words.
+func TestAHeldPlansCommentSanitisesThePromises(t *testing.T) {
+	ctx := context.Background()
+	r, s, _, fj := planWithoutCriteria(t, "done")
+	p := Plan{Summary: "the plan", Cards: []PlanCard{{Key: "card-1", Role: RoleIntegration, Title: "Integration", Directories: []string{"a"}}},
+		Criteria: []PlanCriterion{{ID: "k1", Kind: CriterionInvariant, Suite: "./...", Promise: "@mallory says the export works, see https://evil.test/x"}}}
+	newRevision(t, s, "t-plan", p)
+	plan := s.tasks["t-plan"]
+	plan.Track = policy.TrackPlan
+	s.tasks["t-plan"] = plan
+	mergeCard(s, "card-1")
+	setStatus(s, "t-plan", "closed")
+	r.planCloseCheck(ctx, "t-plan")
+	var held string
+	for _, c := range fj.comments {
+		if strings.Contains(c.body, "mallory") {
+			held = c.body
+		}
+	}
+	if held == "" || strings.Contains(held, "@mallory") || strings.Contains(held, "https://evil.test") {
+		t.Fatalf("the held plan's comment = %q, want the promise with its mention and outside link made harmless", held)
+	}
+}

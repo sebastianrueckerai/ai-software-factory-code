@@ -259,7 +259,7 @@ func (c *Console) scopeOf(sc scope, r *http.Request) (string, string, error) {
 			log.Printf("console: task %s: %v", r.PathValue("id"), err)
 			return "", "", refuse(http.StatusInternalServerError, "cannot read the task")
 		case !ok:
-			return "", "", refuse(http.StatusNotFound, "There is no card "+r.PathValue("id")+" in this project.")
+			return "", "", refuse(http.StatusNotFound, "This project holds no such card.")
 		}
 		return t.Repository, "task " + t.ID, nil
 	}
@@ -288,7 +288,7 @@ func (c *Console) route(pattern string, handler http.Handler) http.Handler {
 		if err != nil && rule.hide {
 			var no *refusal
 			if errors.As(err, &no) && no.status == http.StatusForbidden {
-				err = refuse(http.StatusNotFound, "There is no card "+r.PathValue("id")+" in this project.")
+				err = refuse(http.StatusNotFound, "This project holds no such card.")
 			}
 		}
 		if err != nil {

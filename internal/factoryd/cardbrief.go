@@ -648,6 +648,8 @@ const (
 // "Summary: " and one line, either or both in that order, then the rule.
 // A body of any other shape is all full text.
 func ParseIssueText(text string) (why, summary, body string) {
+	// Forgejo's web editor saves \r\n line ends
+	text = strings.ReplaceAll(text, "\r\n", "\n")
 	head, body, ok := strings.Cut(text, mirrorRule)
 	if !ok {
 		return "", "", text

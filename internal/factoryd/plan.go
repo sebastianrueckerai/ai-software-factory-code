@@ -3603,6 +3603,9 @@ func (r *Runner) AskQuestions(ctx context.Context, t Task, revision int, qs []Pl
 		for j, c := range q.Choices {
 			asked[i].Choices[j] = clean(c)
 		}
+		for _, line := range q.Changes {
+			asked[i].Changes = append(asked[i].Changes, clean(line))
+		}
 	}
 	if inserted, err := r.store.PutPlanQuestions(ctx, t.ID, revision, asked); err != nil || !inserted {
 		return err

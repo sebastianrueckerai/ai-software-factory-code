@@ -535,7 +535,7 @@ func inboxName(e Event, t Task) string {
 }
 
 // nameTitleMax bounds the title a line names a card by, in runes.
-const nameTitleMax = 60
+const nameTitleMax = 70
 
 // CardName is how a line names card t: its issue, which links it, and its
 // title cut at a word to nameTitleMax runes; the title alone, quoted, for
@@ -551,7 +551,7 @@ func CardName(t Task, issue int64) string {
 		if i := strings.LastIndex(cut, " "); i > 0 {
 			cut = cut[:i]
 		}
-		title = strings.TrimRight(cut, " ,;:") + "…"
+		title = strings.TrimRight(cut, " ,;:.") + "…"
 	}
 	switch {
 	case issue != 0 && title != "":

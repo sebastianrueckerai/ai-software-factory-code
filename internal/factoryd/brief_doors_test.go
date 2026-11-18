@@ -455,6 +455,11 @@ func TestIssueTextRoundTrips(t *testing.T) {
 			t.Errorf("the mirror of %+v = %q, want %q", c.b, got, c.want)
 		}
 	}
+	// a mirror a human saved in Forgejo's web editor holds \r\n line ends
+	if why, summary, body := ParseIssueText("Why: So it loads.\r\n\r\nSummary: It caches.\r\n\r\n---\r\n\r\nThe text.\r\nIts second line."); why != "So it loads." ||
+		summary != "It caches." || body != "The text.\nIts second line." {
+		t.Errorf("the web editor's mirror reads as %q, %q, %q", why, summary, body)
+	}
 	// a human's own text of another shape stays the human's text
 	for _, text := range []string{
 		"Summary: the board drops its cache\n\nSize: large\n\nSteps: reload twice\n\n---\n\nEnvironment: Firefox",

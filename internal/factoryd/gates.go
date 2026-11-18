@@ -1297,7 +1297,11 @@ func (r *Runner) untrusted(t Task, s string) string {
 // linkHosts are the hosts a link in text factoryd posts on t's repository
 // may point at (outboundHosts).
 func (r *Runner) linkHosts(t Task) []string {
-	return outboundHosts(r.cfg.Policy().Tree, r.forgejo.PublicURL, t.Repository)
+	public := ""
+	if r.forgejo != nil {
+		public = r.forgejo.PublicURL
+	}
+	return outboundHosts(r.cfg.Policy().Tree, public, t.Repository)
 }
 
 // outboundHosts are the hosts a link in text factoryd posts on repository

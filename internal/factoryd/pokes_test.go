@@ -90,10 +90,10 @@ func TestPokeOf(t *testing.T) {
 		{"a failure that fits names its reason's first line", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed",
 			"reason": "checks: the checks failed on c1.\noutput tail:\nFAIL TestStore"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: named + " failed: the checks failed on c1.", Choices: []string{"Try the failed card again", "Not now"}}, true},
-		// a title past 60 characters is cut at a word: "Board export: keep the nightly snapshots in Postgres and" is 56
+		// a title past 70 characters is cut at a word: "Board export: keep the nightly snapshots in Postgres and SQLite" is 63
 		{"a long title is cut at a word", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}},
 			Task{ID: "t-1", Kind: "agent", IssueNumber: 603, Objective: "Board export: keep the nightly snapshots in Postgres and SQLite beside the export", SpentEUR: 0.214},
-			ChatMessage{Kind: MessagePoke, Content: "#603 (Board export: keep the nightly snapshots in Postgres and…) is done and live. It cost 0.21 EUR."}, true},
+			ChatMessage{Kind: MessagePoke, Content: "#603 (Board export: keep the nightly snapshots in Postgres and SQLite…) is done and live. It cost 0.21 EUR."}, true},
 		{"a card done", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: named + " is done and live. It cost 0.21 EUR."}, true},
 		{"a plan's card done", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}}, child, ChatMessage{}, false},
