@@ -204,18 +204,18 @@ func goOnWith(k Task) string {
 // or Refused, which names the plan's state and the fitting action.
 type ReplanChildResult struct{ Reason, Refused string }
 
-// ReplanChild sends the work of plan child childID, cut at its session,
-// back to its plan's planner: the plan's cards that wait on the child wait
-// on the plan, and the plan replans, or its running replan takes the
-// child in. A plan that can take no replan refuses, and nothing is
-// recorded or moved. Safe to repeat: the join of a queued plan reopens it
-// again, so a reopen that failed before its run started is healed.
+// ReplanChild sends the work of plan card childID (Task.PlanCard), cut at
+// its session, back to its plan's planner: the plan's cards that wait on
+// the child wait on the plan, and the plan replans, or its running replan
+// takes the child in. A plan that can take no replan refuses, and nothing
+// is recorded or moved. Safe to repeat: the join of a queued plan reopens
+// it again, so a reopen that failed before its run started is healed.
 func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanChildResult, error) {
 	k, _, err := r.task(ctx, childID)
 	if err != nil {
 		return ReplanChildResult{}, err
 	}
-	if k.Source != SourcePlan || k.Parent == "" {
+	if !k.PlanCard() {
 		return ReplanChildResult{}, terminalError("task %s belongs to no plan", childID)
 	}
 	p, _, err := r.task(ctx, k.Parent)
@@ -488,9 +488,9 @@ type ReplanWait struct {
 }
 
 // ReplanStopped tells whether the cards plan planID's pending replan stops,
-// and its started cards its newest revision drops (dropped), have ended,
-// so its planner may run on what they left and a revision may file on
-// their last pushes.
+// and its started cards its newest revision drops (dropped), each card cut
+// into a successor read as that successor, have ended, so its planner may
+// run on what they left and a revision may file on their last pushes.
 func (r *Runner) ReplanStopped(ctx context.Context, planID string) (ReplanWait, error) {
 	p, _, err := r.task(ctx, planID)
 	if err != nil {
@@ -518,7 +518,7 @@ func (r *Runner) ReplanStopped(ctx context.Context, planID string) (ReplanWait, 
 		return ReplanWait{}, err
 	}
 	if newest != nil {
-		cards, err := r.store.PlanCards(ctx, p.ID)
+		cards, err := planWaits(ctx, r.store, p.ID)
 		if err != nil {
 			return ReplanWait{}, err
 		}
@@ -717,18 +717,19 @@ func ReplanComment(s string) string {
 }
 
 // MayReplan tells whether a person may send card t back to the planner: an
-// agent card in the work bound that is a plan, a plan's child, or a direct
-// card that did not merge, where its project's process has a plan track
-// (planTrack).
+// agent card in the work bound that is a plan, a plan's child or its
+// successor, or a direct card that did not merge, where its project's
+// process has a plan track (planTrack).
 func MayReplan(t Task, planTrack bool) bool {
-	return t.Kind == "agent" && !t.Unbound() && (InPlan(t) || planTrack && t.MergeCommit == "" && t.Status != "done" && t.Status != "merged")
+	return t.Kind == "agent" && !t.Unbound() && (InPlan(t) || t.PlanCard() || planTrack && t.MergeCommit == "" && t.Status != "done" && t.Status != "merged")
 }
 
 // Replan sends card taskID's work back to the planner at a person's ask,
-// to plan again on top of what was built: a plan, or a plan's child,
-// replans its plan, and the plan's started open cards stop; a direct card
-// goes to the planner as itself; with OffMain a plan's merged cards come
-// off main first. The answer is the note for the person. A card or plan
+// to plan again on top of what was built: a plan, or a plan's card or its
+// successor, replans its plan, and the plan's started open cards stop, a
+// card cut into a successor as that successor; a direct card goes to the
+// planner as itself; with OffMain a plan's merged cards come off main
+// first. The answer is the note for the person. A card or plan
 // that takes no replan answers ErrNoReplan and changes nothing, except
 // that a plan with a replan pending has its reopen healed, or the revert
 // its off-main replan waits for started.
@@ -743,11 +744,11 @@ func (r *Runner) Replan(ctx context.Context, taskID string, ask ReplanAsk) (stri
 		return "", ErrNoReplan(personCardRefusal(t))
 	case t.Unbound():
 		return "", ErrNoReplan(unboundRefusal(t))
+	case t.PlanCard():
+		ask.Card = t.ID
+		return r.replanPlan(ctx, t.Parent, ask)
 	case InPlan(t):
-		if g := GroupOf(t); g != t.ID {
-			ask.Card = t.ID
-		}
-		return r.replanPlan(ctx, GroupOf(t), ask)
+		return r.replanPlan(ctx, t.ID, ask)
 	}
 	return r.replanDirect(ctx, t, ask)
 }
@@ -808,7 +809,11 @@ func (r *Runner) replanPlan(ctx context.Context, planID string, ask ReplanAsk) (
 	}
 	step = ReplanStep{Origin: ReplanPerson, By: ask.By, Comment: ask.Comment, OffMain: ask.OffMain, Revision: revision}
 	var spared []Task
-	for _, k := range cards {
+	for _, c := range cards {
+		k, _, err := throughSuccessors(ctx, r.store, c)
+		if err != nil {
+			return "", err
+		}
 		if k.PlanRevision <= 0 || !stoppable(k) {
 			continue
 		}
@@ -1089,6 +1094,9 @@ func (r *Runner) replanDirect(ctx context.Context, t Task, ask ReplanAsk) (strin
 // oldCards are plan p's record of cards a revision keeps, changes or
 // drops: its cards, and p itself while its pending replan is its own (a
 // direct card's replan or cut), whose work the findings name by issue.
+// Each successor the pending replan cuts or stops comes last, after the
+// failed card it carried on under the same key, so a from of that key goes
+// on from the successor's branch.
 func (r *Runner) oldCards(ctx context.Context, p Task) ([]Task, error) {
 	step, pending, err := r.pendingReplan(ctx, p)
 	if err != nil {
@@ -1103,8 +1111,23 @@ func (r *Runner) oldCardsOf(ctx context.Context, p Task, step ReplanStep, pendin
 	if err != nil {
 		return nil, err
 	}
-	if pending && step.Card == p.ID {
-		cards = append(cards, p)
+	switch {
+	case !pending:
+		return cards, nil
+	case step.Card == p.ID:
+		return append(cards, p), nil
+	}
+	for _, id := range slices.Concat([]string{step.Card}, step.Stops) {
+		if id == "" || slices.ContainsFunc(cards, func(k Task) bool { return k.ID == id }) {
+			continue
+		}
+		k, ok, err := r.store.Task(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if ok && k.Source == SourceSuccessor {
+			cards = append(cards, k)
+		}
 	}
 	return cards, nil
 }
@@ -1343,7 +1366,9 @@ func replanFindings(st replanState, next Plan) []string {
 		}
 	}
 	for _, k := range st.old {
-		if k.PlanKey == "" {
+		// a key is judged once, by its last card: a successor after the
+		// failed card it carried on
+		if k.PlanKey == "" || old[k.PlanKey].ID != k.ID {
 			continue
 		}
 		c, keeps := kept[k.PlanKey]
@@ -1434,21 +1459,26 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 		into    int64
 	}
 	var fates []fate
-	count, held, named := map[string]int{}, map[string]bool{}, map[string]bool{}
+	count, held, named, counted := map[string]int{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, k := range cards {
 		stopped := k.ID == step.Card || slices.Contains(step.Stops, k.ID)
 		if k.CreatedAt.After(step.Time) || k.Status == "closed" && k.FinishedAt != nil && k.FinishedAt.Before(step.Time) && !stopped {
 			continue
 		}
-		f := fate{k: k, verdict: "dropped"}
-		switch ref := fromRef(k); {
+		f, ref := fate{k: k, verdict: "dropped"}, fromRef(k)
+		switch {
 		case k.PlanKey != "" && keys[k.PlanKey]:
 			f.verdict = "kept"
 		case into[ref] != "":
 			f.verdict, f.into, named[ref] = "changed", issues[into[ref]], true
 		}
 		held[k.PlanKey] = k.PlanKey != ""
-		count[f.verdict]++
+		// a failed card and the successor that carried it on share one key,
+		// which counts once
+		if !counted[ref] {
+			count[f.verdict]++
+			counted[ref] = true
+		}
 		fates = append(fates, f)
 	}
 	added := 0

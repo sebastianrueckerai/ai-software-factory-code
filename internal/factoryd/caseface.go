@@ -143,7 +143,8 @@ func (d DepFact) waitSentence() string {
 
 func questionFactsOf(f CaseFacts) QuestionFacts {
 	return QuestionFacts{PlanTrack: f.Planner, SessionCap: f.SessionCap, Attempts: f.Attempts, BudgetEUR: f.BudgetEUR,
-		SpentEUR: f.SpentEUR, LeftEUR: f.LeftEUR, ReserveEUR: f.ReserveEUR, FloorEUR: f.FloorEUR, PR: f.PR}
+		SpentEUR: f.SpentEUR, LeftEUR: f.LeftEUR, ReserveEUR: f.ReserveEUR, FloorEUR: f.FloorEUR, PR: f.PR,
+		BranchRead: f.BranchRead, BranchHead: f.BranchHead}
 }
 
 // firstSentences is the first n sentences of s on one line: a sentence ends

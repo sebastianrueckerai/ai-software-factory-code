@@ -190,7 +190,8 @@ func TestActReplansAndARefusedReplanLeavesTheCaseOpen(t *testing.T) {
 	if want := ErrNoReplan("Card #7 waits for a person to judge its screening: let it run or close its issue, then replan it."); err != want {
 		t.Fatalf("Act = %v, want %q", err, want)
 	}
-	if store.cases[0].Status != CaseAtHuman || len(store.resolved) != 0 || posted != 0 || len(fj.calls) != calls {
+	wrote := slices.ContainsFunc(fj.calls[calls:], func(c string) bool { return !strings.HasPrefix(c, "GET ") })
+	if store.cases[0].Status != CaseAtHuman || len(store.resolved) != 0 || posted != 0 || wrote {
 		t.Fatalf("case %s, resolved %v, posted %d, forgejo %q; want the case open and nothing posted", store.cases[0].Status, store.resolved, posted, fj.calls[calls:])
 	}
 }

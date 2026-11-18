@@ -2016,10 +2016,12 @@ func (t *taskRun) switchFromWait(sw PlanSwitch, step ReplanStep, back string) (f
 // (OutcomeReplan) to the planner: a direct card, cut by the check-in or
 // stopped by a person, turns plan-track and the plan loop runs on, a
 // person's replan that came with a cut joining it; a
-// plan's child goes back to its plan and ends closed. done with the run's
-// end, else refused says why not, for a person.
+// plan's child, or a plan card's successor (versionSuccessorReplansItsPlan),
+// goes back to its plan and ends closed. done with the run's end, else
+// refused says why not, for a person.
 func (t *taskRun) replanCut(res SessionResult) (final, refused string, done bool, err error) {
-	if t.source == SourcePlan {
+	if t.source == SourcePlan || t.planCard &&
+		workflow.GetVersion(t.ctx, "successor-replans-its-plan", workflow.DefaultVersion, versionSuccessorReplansItsPlan) >= versionSuccessorReplansItsPlan {
 		var rc ReplanChildResult
 		if err := workflow.ExecuteActivity(t.short, ActivityReplanChild, t.taskID, res.Replan).Get(t.ctx, &rc); err != nil {
 			final, err := t.finish("failed", "replan child: "+errMessage(err))

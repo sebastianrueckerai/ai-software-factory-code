@@ -460,12 +460,13 @@ func (r *Runner) endGroupRevert(ctx context.Context, t Task, pause QueuePause, f
 	}
 	carry := pending && replan.OffMain && p.Status != "closed" && p.Status != "closing"
 	if carry {
-		cards, err := r.store.PlanCards(ctx, p.ID)
+		cards, err := planWaits(ctx, r.store, p.ID)
 		if err != nil {
 			return err
 		}
 		// no revision files while the replan waits for the revert, so a card
-		// of a newer one started after an earlier run of this end
+		// of a newer one started after an earlier run of this end; a card cut
+		// into a successor stops as the successor
 		for _, k := range cards {
 			if k.PlanRevision > 0 && k.PlanRevision <= replan.Revision && stoppable(k) && !slices.Contains(replan.Stops, k.ID) {
 				replan.Stops = append(replan.Stops, k.ID)

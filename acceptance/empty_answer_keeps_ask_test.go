@@ -54,8 +54,9 @@ const (
 
 // parkForgejo is the Forgejo the rig stands on: the member's OAuth login,
 // the project's assignees and collaborators (the trust gate's read), the
-// card's issue open with no comments, and every comment the factory
-// posts on it recorded. The writers of the repository are the member.
+// card's issue open with no comments, every comment the factory posts on
+// it recorded, and no branch of the card on the bot's fork. The writers of
+// the repository are the member.
 type parkForgejo struct {
 	mu       sync.Mutex
 	login    string // who answers the OAuth flow's /api/v1/user
@@ -106,6 +107,8 @@ func (f *parkForgejo) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasPrefix(p, "/api/v1/repos/"+parkRepo+"/issues/"):
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"state":"open"}`)
+	case r.Method == http.MethodGet && strings.HasPrefix(p, "/api/v1/repos/"+parkBot+"/"+parkProject+"/branches/"):
+		http.NotFound(w, r)
 	default:
 		f.mu.Lock()
 		f.unwanted = append(f.unwanted, r.Method+" "+p)
