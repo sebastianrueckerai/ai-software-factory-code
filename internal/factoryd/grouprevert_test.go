@@ -961,3 +961,20 @@ func TestRevertGroupRunsOneAtATimePerProject(t *testing.T) {
 		t.Errorf("reverts %q, pull requests %q, issues %q, started %q; want one of each", g.calls, g.fj.pulls, g.fj.issues, g.wf.started)
 	}
 }
+
+// The plan's name is text an agent wrote: the revert's title carries it
+// cleaned, on the pull request and on the agent card.
+func TestRevertTitleCarriesThePlansNameCleaned(t *testing.T) {
+	g := newGroupRevertRig(t)
+	g.plan.PlanName = "link API @mallory https://evil.example/x"
+	const title = "Revert plan link API ＠mallory hxxps://evil[.]example/x from main"
+	if _, err := g.revert(t); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.fj.pulls) != 1 || !strings.Contains(g.fj.pulls[0], " "+title+"\n\n") {
+		t.Errorf("pull requests = %q, want the one titled %q", g.fj.pulls, title)
+	}
+	if got := GroupRevertBrief(g.plan, g.cards, "").Title; got != title {
+		t.Errorf("the agent card's title = %q, want %q", got, title)
+	}
+}

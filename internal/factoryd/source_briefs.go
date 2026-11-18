@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 )
 
 // BriefFacts are the plain names a Go-filed card's brief is written from:
@@ -65,7 +66,8 @@ var SourceBriefs = map[string]func(BriefFacts) BriefText{
 				"and its merge ends the queue's pause."}
 	},
 	SourceGroupRevert: func(f BriefFacts) BriefText {
-		return BriefText{Title: "Revert plan " + f.Name + " from main",
+		// the plan's name is text an agent wrote, and the title reaches Forgejo
+		return BriefText{Title: "Revert plan " + sanitize.Outbound(f.Name, nil) + " from main",
 			Why: "The plan's merges left main broken, so its cards come off main together.",
 			Summary: "It reverts the plan's merge commits from main, newest first, and changes nothing else. " +
 				"The project's checks run on the revert before it merges."}
