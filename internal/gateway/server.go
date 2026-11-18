@@ -315,8 +315,8 @@ func (s *Server) currentPolicy(ctx context.Context) (*policy.Version, error) {
 }
 
 // Routes is the gateway's full HTTP surface: the model route, the MCP
-// tools, the retry switch's hold-clear door and the pinned healthz shape
-// from internal/health.
+// tools, the hold-clear door and the pinned healthz shape from
+// internal/health.
 func (s *Server) Routes(version string) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/chat/completions", http.HandlerFunc(s.handleChat))
@@ -545,38 +545,38 @@ func (s *Server) handleWindow(w http.ResponseWriter, r *http.Request) {
 	}{price.Window})
 }
 
-// handleHoldClear is the retry switch's door: the caller the gateway
-// identifies ends a class's provider-limit hold at once (ClearClassHold),
-// so every card the press wakes probes the provider on its next session.
-// The class named in the body is the cleared class answered; a class with
-// no armed hold is a success, the press is idempotent. No call is made
-// and nothing is booked.
+// handleHoldClear is the retry switch's door: factoryd, by the
+// gateway-factoryd token on the pressing card's task, ends the class's
+// provider-limit hold at once (ClearClassHold) and is answered the
+// cleared class; a class with no armed hold is a success. No sandbox opens
+// it, no call is made and nothing is booked.
 func (s *Server) handleHoldClear(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	id, _, err := s.identify(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+	taskID := r.Header.Get(HeaderFactoryTask)
+	if !s.factorydBearer(r) {
+		s.refuse(w, nil, taskID, auditFactoryd, "refused_auth",
+			"the hold-clear door takes the factoryd shared token, not a sandbox token", "", http.StatusUnauthorized, "authentication_error")
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxDoorBody))
-	if err != nil {
-		http.Error(w, "request body too large or unreadable", http.StatusRequestEntityTooLarge)
+	if taskID == "" {
+		s.refuse(w, nil, "", auditFactoryd, "refused_auth",
+			"a factoryd call names its task in "+HeaderFactoryTask, "", http.StatusBadRequest, "invalid_request_error")
 		return
 	}
 	var req struct {
 		Class string `json:"class"`
 	}
-	if err := json.Unmarshal(body, &req); err != nil || req.Class == "" {
-		http.Error(w, `the body names the class to clear as {"class": ...}`, http.StatusBadRequest)
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxDoorBody)).Decode(&req); err != nil || req.Class == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", `the body names the class to clear: {"class": string}`)
 		return
 	}
-	task, ok, err := s.opts.Store.Task(ctx, id.TaskID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	task, ok, err := s.opts.Store.Task(ctx, taskID)
+	switch {
+	case err != nil:
+		s.refuse(w, nil, taskID, auditFactoryd, "error_store", err.Error(), "", http.StatusInternalServerError, "server_error")
 		return
-	}
-	if !ok {
-		http.Error(w, "no task row for "+id.TaskID, http.StatusNotFound)
+	case !ok:
+		s.refuse(w, nil, taskID, auditFactoryd, "refused_task_unknown", "no task row for "+taskID, "", http.StatusNotFound, "invalid_request_error")
 		return
 	}
 	s.ClearClassHold(ctx, task, req.Class)

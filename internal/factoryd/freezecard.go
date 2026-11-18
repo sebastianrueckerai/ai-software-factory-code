@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -92,6 +93,9 @@ type FreezeCard struct {
 	// Timeline records the card's card_created; nil records none.
 	Timeline *Timeline
 
+	// mu serializes Check, on the watcher's loop, and CloseOnRetry, on a
+	// press's goroutine.
+	mu      sync.Mutex
 	now     func() time.Time
 	cursor  int64
 	classes map[string]*freezeClass
@@ -130,6 +134,8 @@ func (w *FreezeCard) Loop(ctx context.Context, every time.Duration) {
 // classes' clocks: the five-minute resume hold and the provider-limit
 // bound.
 func (w *FreezeCard) Check(ctx context.Context) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.classes == nil {
 		w.classes = map[string]*freezeClass{}
 	}
@@ -355,6 +361,8 @@ func (w *FreezeCard) resumed(ctx context.Context, st *freezeClass, ev FreezeEven
 // restart that loses the memory adopts the done card again
 // (findClosedCard), so the re-arm survives it.
 func (w *FreezeCard) CloseOnRetry(ctx context.Context, repository, class string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	t, ok, err := w.Store.CloseFreezeCard(ctx, repository, class)
 	if err != nil || !ok {
 		return err
@@ -623,12 +631,12 @@ func (s *PGStore) SetFreezeCursor(ctx context.Context, cursor int64) error {
 }
 
 // FrozenCards counts the class's waiting cards for the face: the cards of
-// the repository whose model alias is the class and that hold a work slot
-// or wait for one, the cards the freeze covers.
+// the repository whose classes hold the class and that hold a work slot or
+// wait for one, the cards the freeze covers.
 func (s *PGStore) FrozenCards(ctx context.Context, repository, class string) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM tasks
-		WHERE repository = $1 AND model_alias = $2 AND status IN ('running', 'waiting', 'queued')`, repository, class).Scan(&n)
+		WHERE repository = $1 AND required_capabilities @> jsonb_build_array($2::text) AND status IN ('running', 'queued')`, repository, class).Scan(&n)
 	return n, err
 }
 

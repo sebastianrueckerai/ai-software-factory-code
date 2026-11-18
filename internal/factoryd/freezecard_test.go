@@ -40,7 +40,7 @@ func (s *freezeStore) SetFreezeCursor(ctx context.Context, cursor int64) error {
 func (s *freezeStore) FrozenCards(ctx context.Context, repository, class string) (int, error) {
 	n := 0
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.ModelAlias == class && slices.Contains([]string{"running", "waiting", "queued"}, t.Status) {
+		if t.Repository == repository && slices.Contains(t.RequiredCapabilities, class) && slices.Contains([]string{"running", "queued"}, t.Status) {
 			n++
 		}
 	}
@@ -74,7 +74,7 @@ func TestFreezeCardOnePerClass(t *testing.T) {
 	// nine cards of the big class, all waiting on the freeze
 	for i := 0; i < 9; i++ {
 		if err := store.CreateTask(ctx, Task{ID: string(rune('a' + i)), Kind: "agent", Track: policy.TrackDirect, Status: "running",
-			Repository: repo.String(), ModelAlias: "big"}); err != nil {
+			Repository: repo.String(), RequiredCapabilities: []string{"big"}}); err != nil {
 			t.Fatal(err)
 		}
 	}
