@@ -122,6 +122,8 @@ type fakeStore struct {
 	overHolds map[string]OverHoldCall
 	// createFails fails that many CreateTask calls
 	createFails int
+	// caseFactsFails fails that many SetCaseFacts calls
+	caseFactsFails int
 	// sizeFails fails that many SetTaskSizeBudget calls
 	sizeFails int
 	// createCalls counts every CreateTask call, failed or not
@@ -1753,6 +1755,10 @@ func (s *fakeStore) SetCaseFact(ctx context.Context, id int64, key, value string
 }
 
 func (s *fakeStore) SetCaseFacts(ctx context.Context, id int64, facts map[string]any) error {
+	if s.caseFactsFails > 0 {
+		s.caseFactsFails--
+		return errors.New("the store is away")
+	}
 	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id && (c.Status == CaseOpen || c.Status == CaseAtHuman) })
 	if i < 0 {
 		return fmt.Errorf("live case %d: %w", id, ErrNotFound)

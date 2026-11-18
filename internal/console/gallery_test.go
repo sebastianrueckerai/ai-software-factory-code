@@ -370,6 +370,7 @@ type galleryFace struct {
 func galleryFaces(t *testing.T, e galleryEntry) (galleryFace, error) {
 	f := galleryFace{ID: "g-" + gallerySlug(e.Group+"-"+e.Kind), Group: e.Group, Kind: e.Kind}
 	r := newRig(t)
+	r.fg.setPullHead(labPull, labPullHead)
 	ck, _ := r.loggedIn(t)
 	target := e.Seat(r)
 	get := func(path string) (string, error) {

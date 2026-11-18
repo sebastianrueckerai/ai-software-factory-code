@@ -1675,7 +1675,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		if value == factoryd.ActApproveMerge {
 			// the head check runs once Act took the press, so the chat hears Act's rule first
 			work = func(ctx context.Context) (int64, error) { return 0, c.mergeRead(ctx, a, repo, t.PRNumber, head) }
-			note = fmt.Sprintf("Merged %s of pull request #%d. The card ends with it.", shortHead(head), t.PRNumber)
+			note = fmt.Sprintf("Merged %s of pull request #%d. The card ends with it.", factoryd.ShortSHA(head), t.PRNumber)
 			break
 		}
 		if text == label || strings.TrimSpace(text) == "" {
@@ -1733,13 +1733,10 @@ func (c *Console) mergeRead(ctx context.Context, a actor, repo factoryd.Repo, nu
 		return nil
 	}
 	if now, rerr := c.pullHead(ctx, a.s, repo, number); rerr == nil && now != head {
-		return refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d moved to %s after you read it: read it again, then press Merge it.", number, shortHead(now)))
+		return refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d moved to %s after you read it: read it again, then press Merge it.", number, factoryd.ShortSHA(now)))
 	}
 	return &forgejoRefusal{what: fmt.Sprintf("merge pull request #%d", number), err: err}
 }
-
-// shortHead is commit sha as a line names it, its first seven characters.
-func shortHead(sha string) string { return sha[:min(7, len(sha))] }
 
 // isReplanChoice says choice value names a replan.
 func isReplanChoice(value string) bool {

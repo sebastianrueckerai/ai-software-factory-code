@@ -33,6 +33,10 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
+// labPull is the factory pull request of the lab's and the gallery's
+// cards, and labPullHead its head, which the card's Merge it names.
+const labPull, labPullHead = "/api/v1/repos/sf/code/pulls/14", "5b2e7d1c4a9f8e3b6d0c2a1f4e7b9d8c3a5f6e21"
+
 // TestLab serves the console on a real port over the rig's fakes, seeded
 // as one of labScenes, for scripts/console-lab. GET /lab/scenario/{name}
 // seeds another scenario in place and names the running card the drawer
@@ -52,6 +56,8 @@ func TestLab(t *testing.T) {
 
 	r := newRig(t)
 	r.c.cfg.Timelines = lockedObjects{r.objects}
+	// the factory pull request's card reads the head its Merge it pins
+	r.fg.setPullHead(labPull, labPullHead)
 	forgejo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		labObjects.RLock()
 		files, ok := labFiles[req.URL.Path]

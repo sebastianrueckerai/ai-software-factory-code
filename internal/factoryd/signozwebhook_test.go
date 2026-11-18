@@ -1767,7 +1767,9 @@ func TestAClearedAlertSkipsAFinalCard(t *testing.T) {
 // A resolve of the alert of a human card that stays open writes
 // resolved_at on the card's live case and stores the face those facts
 // give: the story says when the alert resolved, and Noted leads as the
-// factory's pick. A new firing puts the card back to firing.
+// factory's pick. A new firing puts the card back to firing. A delivery
+// whose write to the card fails leaves the row as it was, so the next
+// delivery of the same alert writes the card, and its comment posts once.
 func TestAResolvedAlertsCardSaysItResolved(t *testing.T) {
 	r := newAlertRig(t)
 	demo := r.in.Projects.(*memProjects).m["demo-app"]
@@ -1786,7 +1788,12 @@ func TestAResolvedAlertsCardSaysItResolved(t *testing.T) {
 	if story := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: task}).Story; !strings.HasPrefix(story.Happened, "It has fired since ") {
 		t.Fatalf("the firing card's story = %q, want it firing", story.Happened)
 	}
+	r.store.caseFactsFails = 1
 	r.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp1", "demo-staging", firedAt, resolvedAt))
+	r.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp1", "demo-staging", firedAt, resolvedAt))
+	if want := []string{"#1 factoryd: resolved at " + resolvedAt}; !slices.Equal(r.fj.comments, want) {
+		t.Fatalf("comments %q, want the resolve's once", r.fj.comments)
+	}
 	k := slices.IndexFunc(r.store.cases, func(k Case) bool { return k.ID == 3 })
 	if got := r.store.cases[k].Facts["resolved_at"]; got != resolvedAt {
 		t.Fatalf("the case's resolved_at = %v, want %s", got, resolvedAt)
@@ -1797,7 +1804,12 @@ func TestAResolvedAlertsCardSaysItResolved(t *testing.T) {
 	if story.Happened != "It resolved at 28 September at 20:40 UTC." || pick["action"] != "choice:"+AnswerNoted || face["recommended_by"] != "the factory" {
 		t.Fatalf("the stored face = %+v, want the resolve's time and Noted as the factory's pick", face)
 	}
+	r.store.caseFactsFails = 1
 	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", "2026-09-28T21:00:00Z", neverEnds))
+	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", "2026-09-28T21:00:00Z", neverEnds))
+	if len(r.fj.comments) != 2 || !strings.HasPrefix(r.fj.comments[1], "#1 factoryd: the alert fired again at 2026-09-28T21:00:00Z.") {
+		t.Fatalf("comments %q, want the new firing's once after the resolve's", r.fj.comments)
+	}
 	face = r.store.faces[3]
 	story, _ = face["story"].(Story)
 	if r.store.cases[k].Facts["resolved_at"] != "" || story.Happened != "It has fired since 28 September at 21:00 UTC, at 14.29." || face["preselected"] != nil {

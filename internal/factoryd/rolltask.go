@@ -1621,7 +1621,7 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 	if cut.SHA == "" {
 		return "", r.endMoved(ctx, repo, t, reqs)
 	}
-	why := fmt.Sprintf("main's files changed since this commit, so the roll is cut at %s, before it: the next run that holds main's files rolls its change", short(cut.SHA))
+	why := fmt.Sprintf("main's files changed since this commit, so the roll is cut at %s, before it: the next run that holds main's files rolls its change", ShortSHA(cut.SHA))
 	// pending: a success would end the cards of the older commits the open
 	// roll carries, its run being newer than theirs
 	if err := r.takeBack(ctx, repo, t, dropped, "pending", why); err != nil {
@@ -1714,7 +1714,7 @@ func movedWhy(ctx context.Context, f *Forgejo, repo Repo, files []string) string
 			parts = append(parts, name)
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s (%s %s)", name, short(sha), subject))
+		parts = append(parts, fmt.Sprintf("%s (%s %s)", name, ShortSHA(sha), subject))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -1791,7 +1791,7 @@ func (r *Runner) endMoved(ctx context.Context, repo Repo, t Task, reqs []RollReq
 	if err != nil {
 		return err
 	}
-	why := fmt.Sprintf("main changed %s since %s: the next run that holds it rolls", movedWhy(ctx, r.forgejo, repo, moved), short(t.SHA))
+	why := fmt.Sprintf("main changed %s since %s: the next run that holds it rolls", movedWhy(ctx, r.forgejo, repo, moved), ShortSHA(t.SHA))
 	if err := r.takeBack(ctx, repo, t, reqs, "success", why); err != nil {
 		return err
 	}
@@ -1803,7 +1803,7 @@ func (r *Runner) endMoved(ctx context.Context, repo Repo, t Task, reqs []RollReq
 // and marks the requests the cut carries with the roll, so they settle live
 // when the task ends done (versionRollNothing), and answers nothing to roll.
 func (r *Runner) nothingToRoll(ctx context.Context, repo Repo, t Task, cut RollRequest, carried []RollRequest, head string) error {
-	why := fmt.Sprintf("nothing to roll: the images of %s are main's pins, every one", short(cut.SHA))
+	why := fmt.Sprintf("nothing to roll: the images of %s are main's pins, every one", ShortSHA(cut.SHA))
 	if t.PRNumber != 0 {
 		if st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber); err != nil {
 			return err
@@ -1823,7 +1823,8 @@ func (r *Runner) nothingToRoll(ctx context.Context, repo Repo, t Task, cut RollR
 	return nothingToRollError("%s", why)
 }
 
-func short(sha string) string {
+// ShortSHA is commit sha as a line names it, its first seven characters.
+func ShortSHA(sha string) string {
 	return sha[:min(len(sha), 7)]
 }
 

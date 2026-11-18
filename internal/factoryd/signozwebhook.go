@@ -343,18 +343,19 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 			// it ended before a window let it file: the rollout's own
 			return in.Store.ResolveAlert(ctx, row.ID, AlertSigNoz, VerdictNoise, "factoryd", map[string]any{"resolved_at": at})
 		}
+		// the card first: a failure here leaves the row unresolved, so the
+		// next delivery or the sweep walks the whole resolve again
+		if filed && t.Kind == "human" && !Final(t.Status) && row.Detail["event"] != true {
+			if err := in.alertOnCard(ctx, t, map[string]any{"resolved_at": at}); err != nil {
+				return err
+			}
+		}
 		if filed && ok && !(a.swept && Final(t.Status)) && row.Detail["event"] != true {
 			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: resolved at "+at); err != nil {
 				return err
 			}
 		}
-		if err := in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"resolved_at": at}); err != nil {
-			return err
-		}
-		if filed && t.Kind == "human" && !Final(t.Status) && row.Detail["event"] != true {
-			return in.alertOnCard(ctx, t, map[string]any{"resolved_at": at})
-		}
-		return nil
+		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"resolved_at": at})
 	}
 	at := stamp(a.StartsAt)
 	if !seen {
@@ -399,17 +400,17 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 		return nil
 	}
 	if !Final(t.Status) {
+		// the card first, as a resolve's: the row's start moves last
+		if row.Detail["resolved_at"] != nil && t.Kind == "human" {
+			if err := in.alertOnCard(ctx, t, map[string]any{"resolved_at": "", "happened": firedLine(a)}); err != nil {
+				return err
+			}
+		}
 		msg := "factoryd: the alert fired again at " + at + ".\n\n" + fenced(sanitize.Outbound("value="+oneLine(a.Annotations["value"]), in.hostsFor(p)))
 		if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
 			return err
 		}
-		if err := in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"starts_at": at}); err != nil {
-			return err
-		}
-		if row.Detail["resolved_at"] != nil && t.Kind == "human" {
-			return in.alertOnCard(ctx, t, map[string]any{"resolved_at": "", "happened": firedLine(a)})
-		}
-		return nil
+		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"starts_at": at})
 	}
 	// the fingerprint's task already closed: a roll can retrigger this same
 	// fingerprint (item 127, fix round 2), so it is judged again rather than

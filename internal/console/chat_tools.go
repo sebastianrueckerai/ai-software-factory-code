@@ -575,7 +575,7 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 			json.Unmarshal(in.Args, &args) // #nosec G104 -- args that do not decode refuse at the run
 			args["head"] = head
 			in.Args, _ = json.Marshal(args)
-			parts = append(parts, fmt.Sprintf("merges %s of pull request #%d", shortHead(head), k.PRNumber))
+			parts = append(parts, fmt.Sprintf("merges %s of pull request #%d", factoryd.ShortSHA(head), k.PRNumber))
 		}
 		if len(in.Answers) > 0 {
 			lines := make([]string, 0, len(in.Answers))
