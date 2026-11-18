@@ -4,14 +4,18 @@
 // a case for each waiting card without one, today's question on each
 // human card, and today's face and story on each open case.
 //
-// With -dry it calls the small model, prints the table and writes it to
-// the table file, and writes nothing else. Without -dry it writes what the
-// table file holds, after the owner struck or corrected its rows, and
-// calls no model. A second run changes nothing.
+// With -dry it calls the small model on each project's judgment budget,
+// prints the table and writes it to a new table file, and writes nothing
+// else. Without -dry it writes what the table file holds, after the owner
+// struck or corrected its rows, and calls no model. A second run changes
+// nothing. Both reach Forgejo with FORGEJO_TOKEN alone, a token of the
+// project repositories: read:issue and read:repository for -dry,
+// write:issue and read:repository without it. Run both from the code
+// repository's root at the commit the live factoryd runs.
 //
-//	FACTORYD_DATABASE_URL=<replica> GATEWAY_TOKEN=... FORGEJO_URL=... FORGEJO_BOT_PASSWORD=... \
+//	FACTORYD_DATABASE_URL=<replica> GATEWAY_TOKEN=... FORGEJO_URL=... FORGEJO_TOKEN=<read token> \
 //	  go run ./scripts/rebrief -dry -gateway http://factory-gateway:8080 -table rebrief-table.json
-//	FACTORYD_DATABASE_URL=<primary> FORGEJO_URL=... FORGEJO_BOT_PASSWORD=... \
+//	FACTORYD_DATABASE_URL=<primary> FORGEJO_URL=... FORGEJO_TOKEN=<write:issue token> \
 //	  go run ./scripts/rebrief -table rebrief-table.json
 package main
 
@@ -25,10 +29,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"reflect"
 	"slices"
 	"strconv"
@@ -38,13 +45,14 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 func main() {
 	dry := flag.Bool("dry", false, "draft the table: call the small model, print the table, write it to -table, change nothing")
-	tablePath := flag.String("table", "rebrief-table.json", "the table file: -dry writes it, a run without -dry writes what it holds")
+	tablePath := flag.String("table", "rebrief-table.json", "the table file: -dry writes it new, a run without -dry writes what it holds")
 	gateway := flag.String("gateway", "", "the model gateway's address, for -dry")
 	flag.Parse()
 	log.SetFlags(0)
@@ -53,11 +61,13 @@ func main() {
 	}
 }
 
+// migrations is where this checkout's migrations lie, from the code
+// repository's root.
+const migrations = "internal/schema/migrations"
+
 func run(ctx context.Context, dry bool, tablePath, gateway string, out io.Writer) error {
-	dsn := os.Getenv("FACTORYD_DATABASE_URL")
-	forgejo := &factoryd.Forgejo{BaseURL: strings.TrimRight(os.Getenv("FORGEJO_URL"), "/"),
-		BotUser: cmp.Or(os.Getenv("FORGEJO_BOT_USER"), "factory-agent"), BotPassword: os.Getenv("FORGEJO_BOT_PASSWORD")}
-	need := map[string]bool{"FACTORYD_DATABASE_URL": dsn != "", "FORGEJO_URL": forgejo.BaseURL != "", "FORGEJO_BOT_PASSWORD": forgejo.BotPassword != ""}
+	dsn, base, token := os.Getenv("FACTORYD_DATABASE_URL"), os.Getenv("FORGEJO_URL"), os.Getenv("FORGEJO_TOKEN")
+	need := map[string]bool{"FACTORYD_DATABASE_URL": dsn != "", "FORGEJO_URL": base != "", "FORGEJO_TOKEN": token != ""}
 	if dry {
 		need["GATEWAY_TOKEN"], need["-gateway"] = os.Getenv("GATEWAY_TOKEN") != "", gateway != ""
 	}
@@ -71,7 +81,8 @@ func run(ctx context.Context, dry bool, tablePath, gateway string, out io.Writer
 		slices.Sort(unset)
 		return fmt.Errorf("%s unset", strings.Join(unset, ", "))
 	}
-	p := &pass{forge: issues{f: forgejo}, out: out}
+	forgejo, forge := forgejoOf(base, cmp.Or(os.Getenv("FORGEJO_USER"), "factory-agent"), token)
+	p := &pass{forge: forge, out: out, now: time.Now}
 	var pg *factoryd.PGStore
 	var err error
 	if dry {
@@ -80,14 +91,22 @@ func run(ctx context.Context, dry bool, tablePath, gateway string, out io.Writer
 		}
 		p.store = pgStore{PGStore: pg}
 	} else {
-		if pg, err = factoryd.OpenStore(ctx, dsn); err != nil {
-			return fmt.Errorf("open the store: %w", err)
-		}
 		db, err := sql.Open("pgx", dsn)
 		if err != nil {
 			return fmt.Errorf("open the store: %w", err)
 		}
 		defer db.Close()
+		applied, err := appliedMigrations(ctx, db)
+		if err != nil {
+			return err
+		}
+		// OpenStore applies the checkout's migrations, as factoryd's boot does
+		if left, err := unapplied(applied, os.DirFS(migrations)); err != nil || len(left) > 0 {
+			return cmp.Or(err, fmt.Errorf("the database lacks the migrations %s of this checkout: run the pass from the commit the live factoryd runs", strings.Join(left, ", ")))
+		}
+		if pg, err = factoryd.OpenStore(ctx, dsn); err != nil {
+			return fmt.Errorf("open the store: %w", err)
+		}
 		p.store = pgStore{PGStore: pg, db: db}
 	}
 	defer pg.Close()
@@ -120,15 +139,79 @@ func run(ctx context.Context, dry bool, tablePath, gateway string, out io.Writer
 	if err != nil {
 		return err
 	}
-	raw, err := json.MarshalIndent(t, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(tablePath, raw, 0o600); err != nil {
+	if err := writeTable(tablePath, t); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "\n%d model calls on the small model. The table is in %s: strike or correct its rows, then run without -dry.\n", calls.n.Load(), tablePath)
 	return nil
+}
+
+// forgejoOf is Forgejo at base as user with token, for every call of
+// the pass: the door's references and the issues it reads and edits.
+func forgejoOf(base, user, token string) (*factoryd.Forgejo, issues) {
+	base = strings.TrimRight(base, "/")
+	return (&factoryd.Forgejo{BaseURL: base}).As(user, token), issues{base: base, token: token}
+}
+
+// writeTable writes table t to a new file at path: a table the owner may
+// have corrected already is never written over.
+func writeTable(path string, t table) error {
+	raw, err := json.MarshalIndent(t, "", "  ")
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- the table file the owner names
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(raw); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// appliedMigrations are the migrations the database records as applied.
+func appliedMigrations(ctx context.Context, db *sql.DB) (map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT name FROM schema_migrations`)
+	if err != nil {
+		return nil, fmt.Errorf("the applied migrations: %w", err)
+	}
+	defer rows.Close()
+	applied := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		applied[name] = true
+	}
+	return applied, rows.Err()
+}
+
+// unapplied are the migrations of root, each as its set's directory and
+// its file, that applied lacks.
+func unapplied(applied map[string]bool, root fs.FS) ([]string, error) {
+	sets, err := fs.ReadDir(root, ".")
+	if err != nil {
+		return nil, fmt.Errorf("run the pass from the code repository's root: %w", err)
+	}
+	var out []string
+	for _, set := range sets {
+		if !set.IsDir() {
+			continue
+		}
+		files, err := fs.ReadDir(root, set.Name())
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range files {
+			if name := path.Join(set.Name(), f.Name()); !applied[name] {
+				out = append(out, name)
+			}
+		}
+	}
+	return out, nil
 }
 
 // counter counts the model calls the dry run makes, the namer's among them.
@@ -150,7 +233,7 @@ type store interface {
 	SetObjective(ctx context.Context, id, objective string) error
 	SetBrief(ctx context.Context, id, why, summary string, unchecked bool) error
 	Record(ctx context.Context, e factoryd.Event) (int64, error)
-	SetCaseFacts(ctx context.Context, id int64, facts map[string]any) error
+	SetAskFace(ctx context.Context, t factoryd.Task, caseID int64, facts, face map[string]any) error
 	SetCaseFace(ctx context.Context, caseID int64, keys map[string]any) error
 	SetCaseBrief(ctx context.Context, id int64, happened, left string) error
 	SetPlanRevision(ctx context.Context, plan string, revision int, raw json.RawMessage) error
@@ -180,8 +263,8 @@ type forge interface {
 	EditIssue(ctx context.Context, repository string, number int64, title, body string) error
 }
 
-// issues is forge over Forgejo's API as the bot.
-type issues struct{ f *factoryd.Forgejo }
+// issues is forge over Forgejo's API with the pass's token.
+type issues struct{ base, token string }
 
 func (i issues) Issue(ctx context.Context, repository string, number int64) (string, string, error) {
 	var out struct{ Title, Body string }
@@ -206,12 +289,12 @@ func (i issues) call(ctx context.Context, method, repository string, number int6
 		}
 		body = bytes.NewReader(raw)
 	}
-	target := fmt.Sprintf("%s/api/v1/repos/%s/%s/issues/%d", i.f.BaseURL, url.PathEscape(repo.Owner), url.PathEscape(repo.Name), number)
+	target := fmt.Sprintf("%s/api/v1/repos/%s/%s/issues/%d", i.base, url.PathEscape(repo.Owner), url.PathEscape(repo.Name), number)
 	req, err := http.NewRequestWithContext(ctx, method, target, body) // #nosec G704 -- the host is FORGEJO_URL, the path an /api/v1 literal
 	if err != nil {
 		return err
 	}
-	req.SetBasicAuth(i.f.BotUser, i.f.BotPassword)
+	req.Header.Set("Authorization", "token "+i.token)
 	req.Header.Set("Content-Type", "application/json")
 	res, err := (&http.Client{Timeout: 15 * time.Second}).Do(req) // #nosec G704 -- the request built above
 	if err != nil {
@@ -232,8 +315,8 @@ func (i issues) call(ctx context.Context, method, repository string, number int6
 }
 
 // pass is one run: the store, the forge, the door's reference resolver,
-// the policy in force, the small model (nil without -dry) and where it
-// prints.
+// the policy in force, the small model (nil without -dry), where it
+// prints and its clock.
 type pass struct {
 	store  store
 	forge  forge
@@ -241,6 +324,60 @@ type pass struct {
 	policy policy.Version
 	model  *factoryd.SupervisorModel
 	out    io.Writer
+	now    func() time.Time
+}
+
+// bill is the task a model call for a card of repository books on: the
+// project's judgment budget this month, the chat task the case writer
+// books on, so a card out of money still gets its brief and no card pays
+// for it. The dry run reads it and makes none.
+func (p *pass) bill(ctx context.Context, repository string) (factoryd.Task, error) {
+	name, _, ok := p.policy.Tree.ProjectOf(repository)
+	if !ok {
+		return factoryd.Task{}, fmt.Errorf("the repository %s names no project", repository)
+	}
+	id := factoryd.ChatTaskID(name, p.now())
+	t, ok, err := p.store.Task(ctx, id)
+	switch {
+	case err != nil:
+		return factoryd.Task{}, err
+	case !ok:
+		return factoryd.Task{}, fmt.Errorf("project %s has no judgment budget this month yet, as no chat task %s exists", name, id)
+	case t.Left() <= 0:
+		return factoryd.Task{}, fmt.Errorf("project %s spent its judgment budget this month (%s)", name, id)
+	}
+	return t, nil
+}
+
+// scrub is v with every secret the scrubber knows masked, each string in
+// it: what goes to the model, and what the model writes.
+func scrub(v any) any {
+	switch x := v.(type) {
+	case string:
+		return redact.New().String(x)
+	case []any:
+		for i := range x {
+			x[i] = scrub(x[i])
+		}
+	case map[string]any:
+		for k, e := range x {
+			x[k] = scrub(e)
+		}
+	}
+	return v
+}
+
+// scrubbed is v as JSON with each string in it scrubbed.
+func scrubbed(v any) (json.RawMessage, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var tree any
+	if err := json.Unmarshal(raw, &tree); err != nil {
+		return nil, err
+	}
+	return json.Marshal(scrub(tree))
 }
 
 // table is what a dry run drafts and the owner reviews: the cards' new
@@ -361,8 +498,9 @@ func (p *pass) draft(ctx context.Context) (table, error) {
 	if err != nil {
 		return t, err
 	}
+	ns := &names{NameStore: p.store, drafted: map[string]factoryd.Task{}}
 	for _, pl := range plans {
-		row, note, err := p.name(ctx, pl, briefs[pl.ID])
+		row, note, err := p.name(ctx, pl, briefs[pl.ID], ns)
 		switch {
 		case err != nil:
 			kept = append(kept, fmt.Sprintf("%s: %v", ref(pl), err))
@@ -506,9 +644,14 @@ func briefPrompt(job factoryd.BriefJob) string {
 }
 
 // rebrief is card t's new brief: the small model writes it from the
-// card's stored text and its plan, and the door judges each try.
+// card's stored text and its plan, both scrubbed, on the project's
+// judgment budget, and the door judges each try.
 func (p *pass) rebrief(ctx context.Context, t factoryd.Task) (cardRow, error) {
 	job := factoryd.BriefJobOf(t)
+	bill, err := p.bill(ctx, t.Repository)
+	if err != nil {
+		return cardRow{}, err
+	}
 	cb, err := factoryd.ReadCardBrief(ctx, p.store, t.ID)
 	if err != nil {
 		return cardRow{}, err
@@ -537,7 +680,11 @@ func (p *pass) rebrief(ctx context.Context, t factoryd.Task) (cardRow, error) {
 	}
 	alias := p.policy.Document.FactoryModel(t.RequiredCapabilities, policy.PurposeTitle)
 	for try := 1; try <= factoryd.BriefTries; try++ {
-		content, _, err := p.model.Chat(ctx, t.ID, alias, policy.PurposeTitle, p.policy.Document.Limits.SupervisorTimeout, briefPrompt(job), in)
+		msg, err := scrubbed(in)
+		if err != nil {
+			return cardRow{}, err
+		}
+		content, _, err := p.model.Chat(ctx, bill.ID, alias, policy.PurposeTitle, p.policy.Document.Limits.SupervisorTimeout, briefPrompt(job), msg)
 		if err != nil {
 			return cardRow{}, fmt.Errorf("the model call failed: %w", err)
 		}
@@ -563,14 +710,15 @@ func (p *pass) rebrief(ctx context.Context, t factoryd.Task) (cardRow, error) {
 	return cardRow{}, fmt.Errorf("no answer held after %d tries: %s", factoryd.BriefTries, strings.Join(in.LastRefusal, " "))
 }
 
-// parseBrief is a brief call's answer: one JSON object, in a code fence
-// or not, with a title.
+// parseBrief is a brief call's answer, scrubbed: one JSON object, in a
+// code fence or not, with a title.
 func parseBrief(content string) (factoryd.BriefText, bool) {
 	var a struct{ Title, Why, Summary string }
 	if json.Unmarshal([]byte(unfenced(content)), &a) != nil || strings.TrimSpace(a.Title) == "" {
 		return factoryd.BriefText{}, false
 	}
-	return factoryd.BriefText{Title: strings.TrimSpace(a.Title), Why: strings.TrimSpace(a.Why), Summary: strings.TrimSpace(a.Summary)}, true
+	field := func(s string) string { return redact.New().String(strings.TrimSpace(s)) }
+	return factoryd.BriefText{Title: field(a.Title), Why: field(a.Why), Summary: field(a.Summary)}, true
 }
 
 func unfenced(content string) string {
@@ -596,8 +744,9 @@ func (p *pass) writeCard(ctx context.Context, row cardRow) (string, error) {
 	if stored(t) == b {
 		return "", nil
 	}
-	if factoryd.CardTitle(t) != row.OldTitle {
-		return row.Card, fmt.Errorf("its title changed since the dry run, to %q", factoryd.CardTitle(t))
+	// a run that stopped after the title goes on from there
+	if title := factoryd.CardTitle(t); title != row.OldTitle && title != b.Title {
+		return row.Card, fmt.Errorf("its title changed since the dry run, to %q", title)
 	}
 	if reason, err := p.keeps(ctx, t, false); err != nil || reason != "" {
 		return row.Card, cmp.Or(err, errors.New(reason))
@@ -612,20 +761,26 @@ func (p *pass) writeCard(ctx context.Context, row cardRow) (string, error) {
 	}
 	_, body, _ := strings.Cut(t.Objective, "\n\n")
 	if t.IssueNumber != 0 {
-		title, text, err := p.forge.Issue(ctx, t.Repository, t.IssueNumber)
+		title, raw, err := p.forge.Issue(ctx, t.Repository, t.IssueNumber)
 		if err != nil {
 			return row.Card, fmt.Errorf("read the issue: %w", err)
 		}
-		_, _, text = factoryd.ParseIssueText(text)
+		// the intake takes no title edit, so only the issue holds a human's
+		if title != row.OldTitle && title != b.Title {
+			return row.Card, fmt.Errorf("its issue was retitled %q since the card was filed", title)
+		}
+		_, _, text := factoryd.ParseIssueText(raw)
 		mirror := factoryd.IssueText(factoryd.BriefText{Why: b.Why, Summary: b.Summary, Body: text})
-		if title != b.Title || text != mirror {
+		if title != b.Title || raw != mirror {
 			if err := p.forge.EditIssue(ctx, t.Repository, t.IssueNumber, b.Title, mirror); err != nil {
 				return row.Card, fmt.Errorf("edit the issue: %w", err)
 			}
 		}
 	}
-	if err := p.store.SetObjective(ctx, t.ID, factoryd.IssueObjective(b.Title, body)); err != nil {
-		return row.Card, err
+	if factoryd.CardTitle(t) != b.Title {
+		if err := p.store.SetObjective(ctx, t.ID, factoryd.IssueObjective(b.Title, body)); err != nil {
+			return row.Card, err
+		}
 	}
 	if err := p.store.SetBrief(ctx, t.ID, b.Why, b.Summary, unchecked); err != nil {
 		return row.Card, err
@@ -682,22 +837,35 @@ func (p *pass) plans(ctx context.Context, b board) ([]factoryd.Task, error) {
 // namer wrote before its title form, and its old fallback.
 func slug(name string) bool { return name != "" && name == strings.ToLower(name) }
 
-// names is the namer's store in a dry run: its name is the table's, and
-// nothing is written.
+// names is the namer's store in a dry run: the names it drafts are the
+// table's and stand as taken for the plans after them, and nothing is
+// written.
 type names struct {
 	factoryd.NameStore
-	name string
+	drafted map[string]factoryd.Task
 }
 
-func (n *names) SetPlanName(_ context.Context, _, name string) error {
-	n.name = name
+func (n *names) OpenPlanNames(ctx context.Context, repository, exclude string) ([]string, error) {
+	taken, err := n.NameStore.OpenPlanNames(ctx, repository, exclude)
+	for id, t := range n.drafted {
+		if id != exclude && t.Repository == repository {
+			taken = append(taken, t.PlanName)
+		}
+	}
+	return taken, err
+}
+
+func (n *names) SetPlanName(_ context.Context, id, name string) error {
+	t := n.drafted[id]
+	t.PlanName = name
+	n.drafted[id] = t
 	return nil
 }
 
 // name is plan pl's new name when its chip shows a slug: the plan namer's,
 // on its title, which the pass may have written new, its outcome and its
-// summary.
-func (p *pass) name(ctx context.Context, pl factoryd.Task, brief factoryd.BriefText) (nameRow, string, error) {
+// summary, among the names ns drafted already.
+func (p *pass) name(ctx context.Context, pl factoryd.Task, brief factoryd.BriefText, ns *names) (nameRow, string, error) {
 	if !slug(pl.PlanName) {
 		return nameRow{}, "", nil
 	}
@@ -710,26 +878,37 @@ func (p *pass) name(ctx context.Context, pl factoryd.Task, brief factoryd.BriefT
 	if json.Unmarshal(rev.Plan, &plan) == nil && plan.Spec != nil {
 		outcome = plan.Spec.Outcome
 	}
-	ns := &names{NameStore: p.store}
 	n := &factoryd.Namer{Store: ns, Model: p.model, Current: func() policy.Version { return p.policy }}
-	if n.Name(ctx, pl, cmp.Or(brief.Title, factoryd.CardTitle(pl)), outcome, plan.Summary) == "" {
+	ns.drafted[pl.ID] = factoryd.Task{Repository: pl.Repository}
+	name := n.Name(ctx, pl, cmp.Or(brief.Title, factoryd.CardTitle(pl)), outcome, plan.Summary)
+	if name == "" {
+		delete(ns.drafted, pl.ID)
 		return nameRow{}, fmt.Sprintf("%s keeps the name %q: no name the namer wrote held.", ref(pl), pl.PlanName), nil
 	}
-	return nameRow{Plan: pl.ID, Card: ref(pl), Old: pl.PlanName, Name: ns.name}, "", nil
+	return nameRow{Plan: pl.ID, Card: ref(pl), Old: pl.PlanName, Name: name}, "", nil
 }
 
+// writeName names row's plan as the row says, once the name holds as the
+// namer's does: 3 to 24 characters on one line, no other open plan's.
 func (p *pass) writeName(ctx context.Context, row nameRow) (string, error) {
 	t, ok, err := p.store.Task(ctx, row.Plan)
-	name := strings.TrimSpace(row.Name)
 	switch {
 	case err != nil:
 		return row.Card, err
 	case !ok:
 		return row.Card, errors.New("the plan is gone")
-	case t.PlanName == name:
+	case t.PlanName == strings.TrimSpace(row.Name):
 		return "", nil
 	case t.PlanName != row.Old:
 		return row.Card, fmt.Errorf("the plan was named %q since the dry run", t.PlanName)
+	}
+	taken, err := p.store.OpenPlanNames(ctx, t.Repository, t.ID)
+	if err != nil {
+		return row.Card, err
+	}
+	name, holds := factoryd.PlanName(row.Name, taken)
+	if !holds {
+		return row.Card, fmt.Errorf("the name %q does not hold: a plan's name has 3 to 24 characters on one line, and no other open plan of the project has it", row.Name)
 	}
 	return fmt.Sprintf("%s is named %q.", row.Card, name), p.store.SetPlanName(ctx, row.Plan, name)
 }
@@ -751,8 +930,10 @@ var promisePrompt = "You write the promise of each criterion of one build plan: 
 	writingguide.For(writingguide.JobLine)
 
 // promise is the promises of plan pl's criteria that hold none, at its
-// newest revision and the one a human confirmed: the small model writes
-// them from the claims, and the plan's door judges each try.
+// newest revision and the one a human confirmed, so both read alike: a
+// promise one of them holds goes to the other as it stands, and the small
+// model writes the rest from the claims, on the project's judgment budget,
+// the plan's door judging each try.
 func (p *pass) promise(ctx context.Context, pl factoryd.Task) ([]promiseRow, []string, error) {
 	newest, ok, err := p.store.PlanRevision(ctx, pl.ID, 0)
 	if err != nil || !ok {
@@ -764,38 +945,56 @@ func (p *pass) promise(ctx context.Context, pl factoryd.Task) ([]promiseRow, []s
 	} else if ok && n != newest.Revision {
 		revisions = append(revisions, n)
 	}
-	in := promiseInput{}
-	lacks := map[string][]int{}
+	var outcome string
+	var missing []factoryd.PlanCriterion
+	lacks, held := map[string][]int{}, map[string]string{}
 	for _, n := range revisions {
 		rev, plan, err := p.revision(ctx, pl.ID, n)
 		if err != nil {
 			return nil, nil, err
 		}
 		if n == newest.Revision && plan.Spec != nil {
-			in.Outcome = plan.Spec.Outcome
+			outcome = plan.Spec.Outcome
 		}
 		for _, c := range plan.Criteria {
-			if strings.TrimSpace(c.Promise) != "" {
+			if promise := strings.TrimSpace(c.Promise); promise != "" {
+				held[c.ID] = cmp.Or(held[c.ID], promise)
 				continue
 			}
 			if lacks[c.ID] == nil {
-				in.Criteria = append(in.Criteria, c)
+				missing = append(missing, c)
 			}
 			lacks[c.ID] = append(lacks[c.ID], rev.Revision)
 		}
 	}
+	var rows []promiseRow
+	in := promiseInput{Outcome: outcome}
+	for _, c := range missing {
+		if promise, ok := held[c.ID]; ok {
+			rows = append(rows, promiseRow{Plan: pl.ID, Card: ref(pl), Revisions: lacks[c.ID], Criterion: c.ID, Claim: factoryd.PromiseOf(c), Promise: promise})
+			continue
+		}
+		in.Criteria = append(in.Criteria, c)
+	}
 	if len(in.Criteria) == 0 {
-		return nil, nil, nil
+		return rows, nil, nil
+	}
+	bill, err := p.bill(ctx, pl.Repository)
+	if err != nil {
+		return rows, nil, err
 	}
 	claims := map[string]string{}
 	for _, c := range in.Criteria {
 		claims[c.ID] = factoryd.PromiseOf(c)
 	}
 	alias := p.policy.Document.FactoryModel(pl.RequiredCapabilities, policy.PurposeTitle)
-	var rows []promiseRow
 	refused := map[string]string{}
 	for try := 1; try <= factoryd.BriefTries && len(in.Criteria) > 0; try++ {
-		content, _, err := p.model.Chat(ctx, pl.ID, alias, policy.PurposeTitle, p.policy.Document.Limits.SupervisorTimeout, promisePrompt, in)
+		msg, err := scrubbed(in)
+		if err != nil {
+			return rows, nil, err
+		}
+		content, _, err := p.model.Chat(ctx, bill.ID, alias, policy.PurposeTitle, p.policy.Document.Limits.SupervisorTimeout, promisePrompt, msg)
 		if err != nil {
 			return rows, nil, fmt.Errorf("the model call failed: %w", err)
 		}
@@ -804,7 +1003,7 @@ func (p *pass) promise(ctx context.Context, pl factoryd.Task) ([]promiseRow, []s
 		var left []factoryd.PlanCriterion
 		in.LastRefusal = nil
 		for _, c := range in.Criteria {
-			c.Promise = strings.TrimSpace(a.Promises[c.ID])
+			c.Promise = redact.New().String(strings.TrimSpace(a.Promises[c.ID]))
 			if found := factoryd.PromiseBounds([]factoryd.PlanCriterion{c}); len(found) > 0 {
 				c.Promise, refused[c.ID] = "", strings.Join(found, " ")
 				left, in.LastRefusal = append(left, c), append(in.LastRefusal, found...)
@@ -893,7 +1092,12 @@ func (p *pass) repairs(ctx context.Context, b board, briefs map[string]factoryd.
 		live[c.TaskID] = true
 	}
 	for _, t := range b.cards {
-		if live[t.ID] || t.Status != "waiting-human" && t.Status != "waiting-poster" {
+		switch {
+		case live[t.ID] || t.Status != "waiting-human" && t.Status != "waiting-poster":
+			continue
+		case t.Status == "waiting-poster":
+			// its ask is its information request, which factoryd's minute pass asks
+			notes = append(notes, fmt.Sprintf("%s waits on its author with no case: factoryd's minute pass asks its information request on the board, if it has one; else answer it on its issue, or end it.", ref(t)))
 			continue
 		}
 		asked, err := p.store.TaskEventsOfKind(ctx, t.ID, factoryd.EventQuestionAsked, 1)
@@ -947,28 +1151,38 @@ func (p *pass) repairs(ctx context.Context, b board, briefs map[string]factoryd.
 }
 
 // askAgain is the ask of waiting card t again from its newest ask's
-// detail: a human card's as today's question, any other's as it was asked,
-// without the case it named and the face stored on it.
+// detail, without the case it named and the face stored on it: a human
+// card's as today's question beside the row's other facts and its pick,
+// any other's as it was asked.
 func (p *pass) askAgain(ctx context.Context, t factoryd.Task, detail map[string]any, brief factoryd.BriefText) (factoryd.Event, error) {
-	if t.Kind == "human" {
-		_, _, q := factoryd.BoardAsk(factoryd.Case{}, detail)
-		if ask, ok, err := p.today(ctx, t, q, detail, brief); err != nil || ok {
-			return ask.Event(t), err
-		}
-	}
-	again := map[string]any{}
+	rest := map[string]any{}
 	for k, v := range detail {
 		if k != "case_id" && k != "story" && k != "findings" {
-			again[k] = v
+			rest[k] = v
+		}
+	}
+	if t.Kind == "human" {
+		_, _, q := factoryd.BoardAsk(factoryd.Case{}, detail)
+		ask, ok, err := p.today(ctx, t, q, rest, brief)
+		if err != nil {
+			return factoryd.Event{}, err
+		}
+		if ok {
+			ask.Facts = mergeFacts(rest, ask.Facts)
+			e := ask.Event(t)
+			maps.Copy(e.Detail, pick(detail, storedAnswers(q, detail)))
+			return e, nil
 		}
 	}
 	return factoryd.Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Kind: factoryd.EventQuestionAsked,
-		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: again}, nil
+		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: rest}, nil
 }
 
 // askToday is the repair of human card t's live case c whose question is
-// not today's: the case's facts and its ask row take today's question,
-// and a face its ask row stored is stored again on them.
+// not today's, or whose ask row offers other answers than today's: the
+// case's facts and its ask row take today's question in one write, the
+// row keeps its pick, and a face the row stored is stored again on them
+// as an alert's card stores it (AlertOnCard).
 func (p *pass) askToday(ctx context.Context, t factoryd.Task, c factoryd.Case, ask factoryd.CaseAsk, brief factoryd.BriefText) (repair, bool, error) {
 	if t.Kind != "human" || !factoryd.ChoiceCase(c, t.Kind) {
 		return repair{}, false, nil
@@ -979,36 +1193,26 @@ func (p *pass) askToday(ctx context.Context, t factoryd.Task, c factoryd.Case, a
 		return repair{}, false, err
 	}
 	keys := today.Event(t).Detail
-	if same(keys, c.Facts) {
+	picked := pick(ask.Detail, storedAnswers(q, ask.Detail))
+	if same(keys, c.Facts) && reflect.DeepEqual(factoryd.AskOffers(ask.Detail), factoryd.AskOffers(keys)) &&
+		reflect.DeepEqual(normal(picked), normal(pick(ask.Detail, nil))) {
 		return repair{}, false, nil
 	}
-	id, faced := c.ID, ask.Detail["story"] != nil
-	merged := c
-	merged.Facts = map[string]any{}
-	for k, v := range c.Facts {
-		merged.Facts[k] = v
+	// the pick lives on the ask row, where rung 2 proposes it
+	set, face := keys, mergeFacts(keys, picked)
+	if _, faced := ask.Detail["story"]; faced {
+		_, set, face = factoryd.AlertOnCard(t, c, today.Q, keys, mergeFacts(ask.Detail, picked))
 	}
-	for k, v := range keys {
-		merged.Facts[k] = v
-	}
+	id := c.ID
 	return repair{line: fmt.Sprintf("%s, case %d: it asks %q with today's answers: %s.", ref(t), c.ID, today.Q.Ask, strings.Join(today.Q.Labels(), ", ")),
-		do: func(ctx context.Context) error {
-			if err := p.store.SetCaseFacts(ctx, id, keys); err != nil {
-				return err
-			}
-			face := keys
-			if faced {
-				face = factoryd.FaceKeys(factoryd.FaceOf(merged, factoryd.Facts{CaseFacts: factoryd.FactsOf(merged), Card: t, Recommend: factoryd.RecommendationOf(keys)}))
-			}
-			return p.store.SetCaseFace(ctx, id, face)
-		}}, true, nil
+		do: func(ctx context.Context) error { return p.store.SetAskFace(ctx, t, id, set, face) }}, true, nil
 }
 
 // today is human card t's question as today's register asks it: a plan's
 // card asks as its plan files one (PlanHumanAsk), any other card its
 // stored question q with each answer by today's value of its vocabulary
-// row, and the title and why line the pass wrote it. ok is false for a
-// card with neither.
+// row, and the title and why line the pass wrote it. The pick stays the
+// ask row's (pick). ok is false for a card with neither.
 func (p *pass) today(ctx context.Context, t factoryd.Task, q *factoryd.HumanQuestion, detail map[string]any, brief factoryd.BriefText) (factoryd.HumanAsk, bool, error) {
 	if t.Source == factoryd.SourcePlan && t.Parent != "" {
 		plan, ok, err := p.store.Task(ctx, t.Parent)
@@ -1023,12 +1227,10 @@ func (p *pass) today(ctx context.Context, t factoryd.Task, q *factoryd.HumanQues
 		return factoryd.HumanAsk{}, false, nil
 	}
 	nq := *q
+	nq.Recommendation, nq.Source, nq.Recommended = "", "", ""
 	nq.Choices = make([]factoryd.QuestionChoice, len(q.Choices))
-	_, preselected, _ := strings.Cut(factoryd.RecommendationOf(detail).Action, ":")
 	for i, c := range q.Choices {
-		if nq.Choices[i] = todays(c); preselected != "" && preselected == c.Value {
-			nq.Recommended = nq.Choices[i].Value
-		}
+		nq.Choices[i] = todays(c)
 	}
 	if brief.Title != "" {
 		nq.Ask, nq.Why = brief.Title, brief.Why
@@ -1037,6 +1239,51 @@ func (p *pass) today(ctx context.Context, t factoryd.Task, q *factoryd.HumanQues
 	asker, _ := detail["source"].(string)
 	decider, _ := detail["decider_line"].(string)
 	return factoryd.HumanAsk{Q: nq, By: by, Asker: asker, Via: factoryd.ViaFactoryd, Decider: decider}, true, nil
+}
+
+// storedAnswers are the answers a human card's ask stored, its question's and its
+// ask row's.
+func storedAnswers(q *factoryd.HumanQuestion, row map[string]any) []factoryd.QuestionChoice {
+	out := factoryd.AskOffers(row)
+	if q != nil {
+		out = append(out, q.Choices...)
+	}
+	return out
+}
+
+// pick is the recommendation a human card's ask row holds, rung 2's
+// proposal or the question's own, the keys the door writes it under: its
+// preselected answer takes today's value of the stored answer it names.
+func pick(row map[string]any, old []factoryd.QuestionChoice) map[string]any {
+	out := map[string]any{}
+	for _, k := range []string{"recommendation", "recommended_by"} {
+		if v, ok := row[k]; ok {
+			out[k] = v
+		}
+	}
+	pre, ok := row["preselected"].(map[string]any)
+	if !ok {
+		return out
+	}
+	pre = maps.Clone(pre)
+	action, _ := pre["action"].(string)
+	for _, c := range old {
+		switch now := todays(c); action {
+		case c.Value:
+			pre["action"] = now.Value
+		case factoryd.Answer{Value: c.Value}.Key():
+			pre["action"] = factoryd.Answer{Value: now.Value}.Key()
+		}
+	}
+	out["preselected"] = pre
+	return out
+}
+
+// mergeFacts is a with b over it.
+func mergeFacts(a, b map[string]any) map[string]any {
+	out := maps.Clone(a)
+	maps.Copy(out, b)
+	return out
 }
 
 // todays is stored choice c as today's register stores it: a choice that
