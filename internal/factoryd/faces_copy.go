@@ -2033,9 +2033,9 @@ var criteriaFace = FaceSpec{
 	},
 }
 
-// heldPlanFace is the ask of a plan whose card a human closed while its
-// promises were open: close it and drop them, or keep it open, holding
-// production deploys. A close that drops none, as the tests on main met
+// heldPlanFace is the ask of a plan a human closed, by its card or by its
+// issue, while its promises were open: close it and drop them, or keep it
+// open, holding production deploys. A close that drops none, as the tests on main met
 // them all, takes no reason.
 var heldPlanFace = FaceSpec{
 	Ask: func(f Facts) string {
@@ -2052,7 +2052,7 @@ var heldPlanFace = FaceSpec{
 			promises[i] = endSentence(p)
 		}
 		s := Story{Planned: cmp.Or(line("The plan promised: "+strings.Join(promises, " ")), "The plan's open promises stand in its full brief."),
-			Happened: "A human closed the plan's card while these promises were open."}
+			Happened: "A human closed the plan while these promises were open."}
 		switch met, open := len(factStrings(f.Case, "met_on_main")), len(factStrings(f.Case, "open")); {
 		case met > 0 && met == open:
 			s.Left = "The last run of the plan's tests on main met all of them, so closing drops none."

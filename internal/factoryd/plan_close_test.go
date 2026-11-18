@@ -21,7 +21,7 @@ import (
 // threeOpenHeld is what the issue of criteriaPlan's plan hears while it is
 // held with its three promises open and none met on main.
 const threeOpenHeld = "Close this plan and drop its 3 open promises? Until it closes, the plan holds production deploys.\n\n" +
-	"A human closed the plan's card while these promises were open:\n- A link is stored.\n- The feature reads well.\n- The tests in ./... stay green.\n\n" +
+	"A human closed the plan while these promises were open:\n- A link is stored.\n- The feature reads well.\n- The tests in ./... stay green.\n\n" +
 	"The answers on the board:\n" +
 	"- Drop them and close: Drops the open promises with your reason and closes the plan, so production deploys go on.\n" +
 	"- Keep the plan open: The plan stays open and holds production deploys until an approver closes it."
@@ -99,7 +99,7 @@ func TestRoundCheckHoldsAPlanWhoseOpenCriteriaAWriterClosed(t *testing.T) {
 	}{
 		{name: "a writer's close, criteria open", closer: "sebastian", after: "done", reopened: 1, comments: []string{
 			"Close this plan and drop its 3 open promises? Until it closes, the plan holds production deploys.\n\n" +
-				"A human closed the plan's card while these promises were open:\n- A link made through the API is kept.\n- A short link sends its visitor on.\n- The existing tests stay green.\n\n" +
+				"A human closed the plan while these promises were open:\n- A link made through the API is kept.\n- A short link sends its visitor on.\n- The existing tests stay green.\n\n" +
 				"The answers on the board:\n" +
 				"- Drop them and close: Drops the open promises with your reason and closes the plan, so production deploys go on.\n" +
 				"- Keep the plan open: The plan stays open and holds production deploys until an approver closes it."}},
@@ -151,7 +151,7 @@ func TestHoldCommentSaysWhatTheCloseWaives(t *testing.T) {
 	}{
 		{"the gate met two of three", false,
 			"Close this plan and drop its 3 open promises? Until it closes, the plan holds production deploys.\n\n" +
-				"A human closed the plan's card while these promises were open:\n- A link is stored.\n- The feature reads well.\n- The tests in ./... stay green.\n\n" +
+				"A human closed the plan while these promises were open:\n- A link is stored.\n- The feature reads well.\n- The tests in ./... stay green.\n\n" +
 				"The last run of the plan's tests on main met 2 of them, so closing drops only the other 1.\n\n" +
 				"The answers on the board:\n" +
 				"- Drop them and close: Drops the open promises with your reason and closes the plan, so production deploys go on.\n" +
@@ -159,7 +159,7 @@ func TestHoldCommentSaysWhatTheCloseWaives(t *testing.T) {
 			ErrNotApprover, "sebastian", "moved on", true, 1},
 		{"the gate met every open one", true,
 			"Close this plan now? Until it closes, the plan holds production deploys.\n\n" +
-				"A human closed the plan's card while these promises were open:\n- A link is stored.\n- The tests in ./... stay green.\n\n" +
+				"A human closed the plan while these promises were open:\n- A link is stored.\n- The tests in ./... stay green.\n\n" +
 				"The last run of the plan's tests on main met all of them, so closing drops none.\n\n" +
 				"The answers on the board:\n" +
 				"- Close the plan now: Closes the plan now, so production deploys go on.\n" +
@@ -335,7 +335,7 @@ func TestCloseHeldPlanInTheLastRoundWithoutAnIntegrationCard(t *testing.T) {
 func TestClosedPlanWithOpenCriteriaKeepsItsHold(t *testing.T) {
 	ctx := context.Background()
 	words := "Close this plan and drop its 10 open promises? Until it closes, the plan holds production deploys.\n\n" +
-		"A human closed the plan's card while these promises were open:\n" + strings.Repeat("- The tests in ./... stay green.\n", 10) + "\n" +
+		"A human closed the plan while these promises were open:\n" + strings.Repeat("- The tests in ./... stay green.\n", 10) + "\n" +
 		"The answers on the board:\n" +
 		"- Drop them and close: Drops the open promises with your reason and closes the plan, so production deploys go on.\n" +
 		"- Keep the plan open: The plan stays open and holds production deploys until an approver closes it."

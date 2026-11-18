@@ -315,7 +315,7 @@ func TestAHeldPlanAsksToCloseOrStayOpen(t *testing.T) {
 	card := drawer(t, r, ck, fx.Task.ID, "overview")
 	ask, answers, words := askParts(t, card)
 	if ask != "Close plan “divide and conquer” and drop its 2 open promises?" || !slices.Equal(answers, []string{"Drop them and close", "Keep the plan open"}) ||
-		!strings.Contains(words, "Until it closes, the plan holds production deploys. The plan promised: The new panels keep the page's window and its old figures. A retried session spends money once. A human closed the plan's card while these promises were open.") {
+		!strings.Contains(words, "Until it closes, the plan holds production deploys. The plan promised: The new panels keep the page's window and its old figures. A retried session spends money once. A human closed the plan while these promises were open.") {
 		t.Fatalf("the held plan asks %q with %q: %s", ask, answers, words)
 	}
 	// its answers are its whole say on the plan's close and its hold: no
