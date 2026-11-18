@@ -91,7 +91,7 @@ var overBoundMeasure = regexp.MustCompile(`is (\d+) lines over the card's (\d+)-
 // ChangedLines is the insertions plus deletions between two commits,
 // trees or both; a diff git cannot run is an error, never zero lines.
 func ChangedLines(g PushGit, send, a, b string) (int, error) {
-	short, err := g.Git(send, "diff", "--shortstat", a, b)
+	short, err := g.Git(send, "diff", "-M", "--shortstat", a, b)
 	if err != nil {
 		return 0, err
 	}

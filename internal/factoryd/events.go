@@ -264,7 +264,7 @@ func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo,
 			return
 		}
 	}
-	cards, err := planWaits(ctx, store, t.Parent)
+	cards, err := PlanWaits(ctx, store, t.Parent)
 	if err != nil {
 		log.Printf("task %s: the cards of plan %s: %v", t.ID, t.Parent, err)
 		return

@@ -1880,11 +1880,12 @@ func (c *Console) readFinishedColumn(w http.ResponseWriter, r *http.Request, f b
 	for _, bt := range page {
 		v.byID[bt.ID] = bt.Task
 	}
-	// a failed plan card's Retry follows its replacement, an open card the
-	// page does not read; boardCard reads it from the board's tasks
+	// a failed plan card's Retry, its successor's too, follows its
+	// replacement, an open card the page does not read; boardCard reads it
+	// from the board's tasks
 	for _, bt := range page {
 		t := bt.Task
-		if t.Status == "failed" && t.Source == factoryd.SourcePlan && t.Parent != "" && t.PlanKey == "" {
+		if t.Status == "failed" && (t.Source == factoryd.SourcePlan || t.Source == factoryd.SourceSuccessor) && t.Parent != "" && t.PlanKey == "" {
 			if rt, ok, err := c.cfg.Tasks.Task(ctx, factoryd.RetryID(t.ID)); err == nil && ok &&
 				rt.Kind != factoryd.KindChat && !factoryd.Final(rt.Status) {
 				v.byID[rt.ID] = rt
@@ -2080,7 +2081,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		}
 		return k
 	}
-	if t.Source == factoryd.SourcePlan && t.Parent != "" {
+	if t.PlanCard() {
 		var planRepo string
 		k.PlanIssue, k.PlanName, planRepo = c.planIssue(ctx, v.byID, t.Parent)
 		if k.PlanIssue > 0 {
@@ -2088,7 +2089,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		}
 	}
 	if t.Track == policy.TrackPlan && t.Status == "done" {
-		cards, cardsErr := c.cfg.Tasks.PlanCards(ctx, t.ID)
+		cards, cardsErr := factoryd.PlanWaits(ctx, c.cfg.Tasks, t.ID)
 		if cardsErr != nil {
 			log.Printf("console: the cards of plan %s: %v", t.ID, cardsErr)
 			v.problems = append(v.problems, "the cards of plan "+t.ID+" could not be read")
@@ -2129,7 +2130,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	// a card cut into a successor is that card's to answer: RetryCard refuses it
 	replacement, retried := v.byID[factoryd.RetryID(t.ID)]
 	_, cut := v.byID[factoryd.SuccessorID(t.ID)]
-	if t.Status == "failed" && t.Source == factoryd.SourcePlan && t.Parent != "" && (t.PlanKey != "" || retried && replacement.IssueNumber == 0) &&
+	if t.Status == "failed" && (t.PlanCard() && t.PlanKey != "" || retried && replacement.PlanCard() && replacement.IssueNumber == 0) &&
 		!cut && v.approves(t.Repository) {
 		k.Retry = &retry{CSRF: v.csrf}
 	}
@@ -3975,7 +3976,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 			} else {
 				d.PlanSummary, d.PlanRows, d.TakeOffMain = p.Summary, factoryd.PlanRows(p), p.TakeOffLines()
 				if p.Round > 1 || len(p.Outline) > 0 {
-					if cards, err := c.cfg.Tasks.PlanCards(ctx, bt.ID); err != nil {
+					if cards, err := factoryd.PlanWaits(ctx, c.cfg.Tasks, bt.ID); err != nil {
 						problem("plan's cards", "Reload the board.", err)
 					} else {
 						d.PlanRounds = slices.DeleteFunc(factoryd.RoundItems(p, cards), func(i factoryd.RoundItem) bool { return i.Still })
@@ -4137,7 +4138,7 @@ func (c *Console) relatedCards(ctx context.Context, bt factoryd.BoardTask, k car
 			ids, whys = append(ids, dep.TaskID), append(whys, "blocked by")
 		}
 	}
-	if t.Source == factoryd.SourcePlan && t.Parent != "" {
+	if t.PlanCard() {
 		ids, whys = append(ids, t.Parent), append(whys, "part of plan")
 	}
 	var out []related

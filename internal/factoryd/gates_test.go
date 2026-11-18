@@ -1963,6 +1963,39 @@ func TestUnjudgedSplitsTheGatesFromTheHumans(t *testing.T) {
 	}
 }
 
+// The successor that carries the integration card's key reads the rows
+// on the plan-filed integration card, where every gate run and every
+// approver writes them: its merge holds while a criterion has none there,
+// and releases once they settle.
+func TestUnjudgedOfASuccessorReadsTheIntegrationCardsRows(t *testing.T) {
+	ctx := context.Background()
+	task := gateTask
+	task.Source, task.Parent, task.PlanKey = SourceSuccessor, "t-plan", "integration"
+	r, store, _ := newGateRunner(t, task, &gateForgejo{mergeStatus: []int{http.StatusOK}})
+	p := criteriaPlan()
+	b, _ := json.Marshal(p)
+	if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+	store.tasks["t-int"] = Task{ID: "t-int", Repository: "sf/repo", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Status: "failed"}
+	if err := store.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceGate, FactoryDecider, []CriterionVerdict{{Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}}); err != nil {
+		t.Fatal(err)
+	}
+	val, err := execActivity(t, r, ActivityUnjudged, "t1")
+	if got, want := getInto[Unjudged](t, val, err), (Unjudged{Gate: []string{"c1"}, Human: []string{"c2"}}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the successor's unjudged = %+v, want %+v", got, want)
+	}
+	if err := store.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceApprover, "sebastian", []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c2", Verdict: "met", Kind: CriterionHuman}}); err != nil {
+		t.Fatal(err)
+	}
+	val, err = execActivity(t, r, ActivityUnjudged, "t1")
+	if got := getInto[Unjudged](t, val, err); !reflect.DeepEqual(got, Unjudged{}) {
+		t.Fatalf("the successor's unjudged once the rows settle = %+v, want none", got)
+	}
+}
+
 // The held merge names who settles each criterion without a row: the
 // human on this card first, then the criteria gate, which the next
 // approval runs again. It reads no review note and files no ask of its
@@ -3922,6 +3955,27 @@ func TestIntegrationReviewNamesTheGatesCriteria(t *testing.T) {
 				t.Fatalf("gate criteria = %+v, want %+v", rv.GateCriteria, want)
 			}
 		})
+	}
+}
+
+// The review of the successor that carries the integration card's key
+// answers the plan's criteria as the card's does: it names the criteria it
+// leaves to the gate.
+func TestASuccessorOfTheIntegrationCardsReviewNamesTheGatesCriteria(t *testing.T) {
+	r, _, _ := fundedReview(t, 0.01, 1e-9, 1e-5, nil)
+	store := r.store.(*fakeStore)
+	b, _ := json.Marshal(criteriaPlan())
+	if _, err := store.AddPlanRevision(context.Background(), "t-plan", b, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+	card := store.tasks["t1"]
+	card.Source, card.Parent, card.PlanKey, card.IssueNumber = SourceSuccessor, "t-plan", "integration", 9
+	store.tasks["t1"] = card
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	rv := getInto[Review](t, val, err)
+	if want := (&GateLeft{IDs: []string{"c1", "c3"}, Integration: true}); !reflect.DeepEqual(rv.GateCriteria, want) {
+		t.Fatalf("gate criteria = %+v, want %+v", rv.GateCriteria, want)
 	}
 }
 

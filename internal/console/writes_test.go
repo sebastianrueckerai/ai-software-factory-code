@@ -348,6 +348,23 @@ func TestChatSetDependencyInsideAPlan(t *testing.T) {
 		`applied {"result":"` + gone + `","tool":"set_dependency","undo":"TOKEN"}`, `done {}`})
 }
 
+// set_dependency between a plan's card and the successor that carries
+// another key of that plan joins two cards of one plan.
+func TestChatSetDependencyOnAPlanCardsSuccessor(t *testing.T) {
+	r, g := newWritesRig(t)
+	withPlan(r)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-ks", Kind: "agent", Status: "queued", Track: policy.TrackDirect,
+		Process: "spec", Repository: "sf/code", IssueNumber: 35, Objective: "Add the first link, carried on.", Source: factoryd.SourceSuccessor,
+		Parent: "t-pl", PlanKey: "first"}})
+	r.tasks.mu.Unlock()
+	args := `{"task_id":"t-k2","depends_on":"t-ks"}`
+	_, done, _ := proposeAndDo(t, r, g, "set_dependency", args)
+	set := "#32 depends on #35 now."
+	equal(t, "Do it", done, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_dependency","result":"` + set + `"}`,
+		`applied {"result":"` + set + `","tool":"set_dependency","undo":"TOKEN"}`, `done {}`})
+}
+
 // new_card takes a track with its one-line reason, and a size: the
 // proposal names them, and Do it files the issue with its track's label
 // and its body ending in the size line; the card_filed row records the

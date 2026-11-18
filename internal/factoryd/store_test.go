@@ -258,7 +258,7 @@ func (s *fakeStore) CreateSuccessor(ctx context.Context, id string, t Task) erro
 func (s *fakeStore) MoveDependents(ctx context.Context, from, to string) ([]string, error) {
 	var moved []string
 	for id, deps := range s.deps {
-		if t := s.tasks[id]; t.Source == SourcePlan && t.Parent == to && slices.Contains(deps, from) {
+		if t := s.tasks[id]; t.PlanCard() && t.Parent == to && slices.Contains(deps, from) {
 			s.deps[id] = append(slices.DeleteFunc(deps, func(d string) bool { return d == from || d == to }), to)
 			moved = append(moved, id)
 		}
@@ -598,9 +598,13 @@ func (s *fakeStore) cardMerged(c Task) bool {
 	return c.MergeCommit != "" || slices.ContainsFunc(s.events, func(e Event) bool { return e.TaskID == c.ID && e.Kind == "pull_request_merged" })
 }
 
+// holdsKey is planCardRow with its key: a plan's card (Task.PlanCard)
+// that holds its key.
+func holdsKey(c Task) bool { return c.PlanCard() && c.PlanKey != "" }
+
 func (s *fakeStore) PlanMerged(ctx context.Context, plan string) (bool, error) {
 	for _, c := range s.tasks {
-		if c.Parent == plan && c.Source == SourcePlan && c.PlanKey != "" && s.cardMerged(c) {
+		if c.Parent == plan && holdsKey(c) && s.cardMerged(c) {
 			return true, nil
 		}
 	}
@@ -610,8 +614,9 @@ func (s *fakeStore) PlanMerged(ctx context.Context, plan string) (bool, error) {
 func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
 	groups := map[string]*Group{}
 	merged := map[string]bool{}
+	newest := map[[2]string]Task{}
 	for _, c := range s.tasks {
-		if _, closed := s.closed[c.Parent]; c.Source != SourcePlan || c.Parent == "" || c.PlanKey == "" || closed {
+		if _, closed := s.closed[c.Parent]; !holdsKey(c) || closed {
 			continue
 		}
 		g := groups[c.Parent]
@@ -620,7 +625,10 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 			g = &Group{Plan: p.ID, Issue: p.IssueNumber, Repository: p.Repository, Children: map[string]int{}}
 			groups[c.Parent] = g
 		}
-		g.Children[c.Status]++
+		key := [2]string{c.Parent, c.PlanKey}
+		if n, ok := newest[key]; !ok || cmp.Or(c.CreatedAt.Compare(n.CreatedAt), strings.Compare(c.ID, n.ID)) > 0 {
+			newest[key] = c
+		}
 		if !s.cardMerged(c) {
 			continue
 		}
@@ -628,6 +636,9 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 		if c.FinishedAt != nil && (g.FirstMerge.IsZero() || c.FinishedAt.Before(g.FirstMerge)) {
 			g.FirstMerge = *c.FinishedAt
 		}
+	}
+	for _, c := range newest {
+		groups[c.Parent].Children[c.Status]++
 	}
 	out := map[string][]Group{}
 	for plan, g := range groups {
@@ -692,7 +703,11 @@ func (s *fakeStore) PlansAwaitingCriteria(ctx context.Context) ([]string, error)
 			continue
 		}
 		cards, _ := s.PlanCards(ctx, id)
-		if _, filed := integrationCardOf(cards, p); !filed || slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) && c.Status != "merged" }) {
+		open := false
+		for _, c := range s.tasks {
+			open = open || c.Parent == id && holdsKey(c) && !Final(c.Status) && c.Status != "merged"
+		}
+		if _, filed := integrationCardOf(cards, p); !filed || open {
 			continue
 		}
 		out = append(out, id)
@@ -705,7 +720,7 @@ func (s *fakeStore) QueuedPlans(ctx context.Context, repository string) ([]int64
 	var out []int64
 	for _, c := range s.tasks {
 		queued := c.Gate == GateMergeQueue || c.Gate == GateApproval || slices.ContainsFunc(s.queue, func(e queueEntry) bool { return e.task == c.ID })
-		if issue := s.tasks[c.Parent].IssueNumber; c.Repository == repository && c.Source == SourcePlan && c.Parent != "" && c.PlanKey != "" &&
+		if issue := s.tasks[c.Parent].IssueNumber; c.Repository == repository && holdsKey(c) &&
 			c.Status == "in-review" && queued && !slices.Contains(out, issue) {
 			out = append(out, issue)
 		}

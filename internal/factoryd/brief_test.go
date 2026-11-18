@@ -531,6 +531,26 @@ func TestBriefOfCriteriaNeverJudged(t *testing.T) {
 	}
 }
 
+// The merge brief of the successor that carries the integration card's
+// key shows the plan's criteria with their standing rows on the
+// plan-filed integration card, as the card's own brief does.
+func TestMergeFactsOfASuccessorOfTheIntegrationCard(t *testing.T) {
+	plan, _ := json.Marshal(Plan{Criteria: []PlanCriterion{
+		{ID: "c1", Kind: "test", Claim: "a link is stored", Inputs: "POST /api/links", Expected: "201"},
+		{ID: "c2", Kind: "human", Claim: "the feature reads well"},
+	}, Cards: []PlanCard{{Key: "integration", Role: RoleIntegration}}})
+	store := &fakeBriefStore{revisions: map[string]PlanRevision{"t-plan": {TaskID: "t-plan", Revision: 3, Plan: plan}},
+		tasks:    map[string]Task{"t-int": {ID: "t-int", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Status: "failed"}},
+		verdicts: map[string][]CriterionVerdict{"t-int": {{Criterion: "c1", Kind: "test", Verdict: "met", Evidence: "TestLink passed"}}}}
+	succ := Task{ID: "t-succ", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "integration"}
+	got, err := (&BriefWriter{Store: store}).mergeFacts(context.Background(), succ)
+	want := []criterionFact{{ID: "c1", Kind: "test", Text: "a link is stored", Verdict: "met", Evidence: "TestLink passed"},
+		{ID: "c2", Kind: "human", Text: "the feature reads well", Verdict: "open"}}
+	if err != nil || fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("the successor's merge facts = %v (%v), want %v", got, err, want)
+	}
+}
+
 // The writer reads a criteria request's plan and verdict rows itself and
 // the model's brief lands on the row, with the criteria as the model
 // reads them (fault 7).

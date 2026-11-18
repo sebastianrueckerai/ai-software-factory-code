@@ -926,7 +926,32 @@ const (
 	// as the plan card it carries on would, and ends closed. A run from
 	// before turns the successor plan-track.
 	versionSuccessorReplansItsPlan workflow.Version = 1
+	// versionSuccessorIsItsKeysCard (change id
+	// "successor-is-its-keys-card", read by a plan card's successor at its
+	// merge press and at a session that pushed nothing): the successor is
+	// its key's card, so its press runs the criteria gate again as the
+	// card's does, and a session of it that pushed nothing runs its proofs
+	// at main. A run from before merges on the press and goes on to its
+	// next session.
+	versionSuccessorIsItsKeysCard workflow.Version = 1
+	// versionPlanAnswerGrant (change id "plan-answer-grant", read after a
+	// plan loop's wait on a revision's answers that a person ended, at the
+	// session cap or out of agent time): the person's answer buys the
+	// planner session it asks for as their grant (recordGrant), one more
+	// session at the session cap, else the agent time. A wait an ask opened
+	// grants nothing. A run from before asks the cap, the answer waiting for
+	// a draw.
+	versionPlanAnswerGrant workflow.Version = 1
 )
+
+// keysCard tells whether the run's card is its key's card in its plan: a
+// card the plan filed, or its successor (versionSuccessorIsItsKeysCard).
+// It goes last in a branch's condition, so a history that never reaches
+// the branch records no marker.
+func (t *taskRun) keysCard() bool {
+	return t.source == SourcePlan || t.planCard &&
+		workflow.GetVersion(t.ctx, "successor-is-its-keys-card", workflow.DefaultVersion, versionSuccessorIsItsKeysCard) >= versionSuccessorIsItsKeysCard
+}
 
 // budgetRefused opens the card of a task whose remaining budget cannot
 // fund a call: an answer would start an attempt whose first
@@ -1980,7 +2005,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				handoverNote = res.CheckIn.Handover
 			}
 		}
-		if t.source == SourcePlan && res.Outcome == OutcomeNoPush {
+		if res.Outcome == OutcomeNoPush && t.keysCard() {
 			var atMain ProofsAtMain
 			if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reproOptions()), ActivityProofsAtMain, t.taskID).Get(t.ctx, &atMain); err != nil {
 				workflow.GetLogger(t.ctx).Warn("proofs at main", "task", t.taskID, "error", err)
@@ -3045,7 +3070,7 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 		}
 		cancelRetry = nil
 		retry = nil
-		if signalled && t.source == SourcePlan {
+		if signalled && t.keysCard() {
 			var stand *CriteriaStand
 			v, stop, held, stand := t.regate(commit, g, approver)
 			if stand != nil {
@@ -4881,6 +4906,10 @@ const escalateFailed = "escalate: "
 
 // HealedReason is what a healed run waiting for a human asks again.
 const HealedReason = "factoryd restarted while the task waited for a human; the question above still stands."
+
+// AsklessReason is what the heal pass asks again of a card that waits for
+// a human with no live ask.
+const AsklessReason = "the task waited for a human with no question open; the question above still stands."
 
 // MaxAnswer bounds an answer's body, in bytes, in the list every later
 // session gets as the ANSWERS or POSTER_INFO env var (envFit and

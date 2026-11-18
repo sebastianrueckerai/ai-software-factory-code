@@ -32,10 +32,12 @@ type limitWatch struct {
 	done    map[string]bool
 	// failed holds the kinds whose send failed at least once
 	failed map[string]bool
+	// bound is the line bound the session's worker holds
+	bound int
 }
 
-func newLimitWatch(l policy.Limits, planner bool, started time.Time, span time.Duration) *limitWatch {
-	w := &limitWatch{share: l.WarnShare(), reserve: l.GateReserve(), wrapUp: codingWrapUp, started: started, span: span, done: map[string]bool{}, failed: map[string]bool{}}
+func newLimitWatch(l policy.Limits, planner bool, started time.Time, span time.Duration, bound int) *limitWatch {
+	w := &limitWatch{share: l.WarnShare(), reserve: l.GateReserve(), wrapUp: codingWrapUp, started: started, span: span, done: map[string]bool{}, failed: map[string]bool{}, bound: bound}
 	if planner {
 		w.share, w.wrapUp = l.PlanWarnShare(), planWrapUp
 	}

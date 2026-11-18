@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -115,7 +119,7 @@ func TestPushFitsTheCardLineBound(t *testing.T) {
 			tc.parents = strings.ReplaceAll(tc.parents, "p1", p1)
 			tc.parents = strings.ReplaceAll(tc.parents, "m1", m1)
 			e := workerEnv{taskID: "t1", sessionID: "s-2", author: "alice", objective: "o",
-				repoSHA: p1, branch: branch, repoURL: remote, pushURL: fork, lineBound: tc.bound}
+				repoSHA: p1, branch: branch, repoURL: remote, pushURL: fork, lineBound: lineBoundOf(tc.bound)}
 			dir := filepath.Join(t.TempDir(), "repo")
 			if err := cloneBase(e, dir); err != nil {
 				t.Fatal(err)
@@ -199,7 +203,7 @@ func TestTheSyncMergeBillsMainToMain(t *testing.T) {
 	m1 := run("-C", seed, "rev-parse", "HEAD")
 
 	e := workerEnv{taskID: "t1", sessionID: "s-2", author: "alice", objective: "o",
-		repoSHA: p1, branch: branch, repoURL: remote, pushURL: fork, lineBound: 10}
+		repoSHA: p1, branch: branch, repoURL: remote, pushURL: fork, lineBound: lineBoundOf(10)}
 	dir := filepath.Join(t.TempDir(), "repo")
 	if err := cloneBase(e, dir); err != nil {
 		t.Fatal(err)
@@ -247,7 +251,7 @@ func TestFirstPushOnMainsHeadFitsTheBound(t *testing.T) {
 	m0 := run("-C", seed, "rev-parse", "HEAD")
 
 	e := workerEnv{taskID: "t1", sessionID: "s-1", author: "alice", objective: "o", repoSHA: m0,
-		branch: "factory/t-first", repoURL: remote, pushURL: fork, lineBound: 100}
+		branch: "factory/t-first", repoURL: remote, pushURL: fork, lineBound: lineBoundOf(100)}
 	dir := filepath.Join(t.TempDir(), "repo")
 	if err := cloneBase(e, dir); err != nil {
 		t.Fatal(err)
@@ -267,6 +271,79 @@ func TestFirstPushOnMainsHeadFitsTheBound(t *testing.T) {
 	}
 	if got := run("-C", fork, "diff", "--name-only", m0, commit); got != "own.txt" {
 		t.Fatalf("change against main = %q, want own.txt", got)
+	}
+}
+
+// A raise reaches the running session's end push: a worker started with
+// LINE_BOUND 600 takes POST /bound {"lines":1200}, and its push of 796
+// added lines on main's head lands. The same push without the raise is
+// refused, 796 - 600 = 196 lines over the bound.
+func TestRaisedBoundReachesTheEndPush(t *testing.T) {
+	run := func(args ...string) string {
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	fork := filepath.Join(t.TempDir(), "fork.git")
+	seed := t.TempDir()
+	run("init", "-q", "-b", "main", seed)
+	os.WriteFile(filepath.Join(seed, "keep.txt"), []byte("keep\n"), 0o644)
+	run("-C", seed, "add", "-A")
+	run("-C", seed, "-c", "user.name=Human", "-c", "user.email=h@h", "commit", "-q", "-m", "m0")
+	run("clone", "-q", "--bare", seed, remote)
+	run("clone", "-q", "--bare", remote, fork)
+	m0 := run("-C", seed, "rev-parse", "HEAD")
+	rows := make([]string, 796)
+	for i := range rows {
+		rows[i] = "moved-line"
+	}
+
+	for _, raised := range []bool{false, true} {
+		branch := "factory/t-raised-" + strconv.FormatBool(raised)
+		setRequiredEnv(t)
+		t.Setenv("LINE_BOUND", "600")
+		e, err := loadEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.repoSHA, e.branch, e.repoURL, e.pushURL = m0, branch, remote, fork
+		if raised {
+			h := messageHandler(e.messageHash, newPushGate(), func(context.Context, string, string) error { return nil },
+				newCheckinServe(t.TempDir(), nolog), nil, e.lineBound)
+			req := httptest.NewRequest(http.MethodPost, "/bound", strings.NewReader(`{"lines":1200}`))
+			req.Header.Set("Authorization", "Bearer session-secret")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("POST /bound = %d %s", rec.Code, rec.Body)
+			}
+		}
+		dir := filepath.Join(t.TempDir(), "repo")
+		if err := cloneBase(e, dir); err != nil {
+			t.Fatal(err)
+		}
+		base, mainHead, err := prepareRepo(dir, e)
+		if err != nil || base != m0 || mainHead != m0 {
+			t.Fatalf("base %s main %s (%v), want both %s", base, mainHead, err, m0)
+		}
+		os.WriteFile(filepath.Join(dir, "moved.txt"), []byte(strings.Join(rows, "\n")+"\n"), 0o644)
+
+		commit, err := commitAndPush(dir, e, base, mainHead, func() error { return nil }, fixedToken("t"))
+		if !raised {
+			if !errors.Is(err, errPushOverBound) || !strings.Contains(err.Error(), "is 196 lines over the card's 600-line bound") {
+				t.Fatalf("without the raise: commitAndPush = %q, %v; want the refusal 196 lines over the 600", commit, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("with the raise: %v", err)
+		}
+		if head := run("-C", fork, "rev-parse", "refs/heads/"+branch); head != commit {
+			t.Fatalf("fork branch = %s, want the pushed %s", head, commit)
+		}
 	}
 }
 

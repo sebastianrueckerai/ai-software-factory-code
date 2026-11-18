@@ -1596,6 +1596,10 @@ func storePlanAnswers(ctx context.Context, store Store, taskID string, revision 
 	return nil
 }
 
+// errNoPlanWaiting is pendingPlan's refusal of a task with no pending
+// request of kind plan, as against a store that could not be read.
+var errNoPlanWaiting = errors.New("has no plan waiting for answers")
+
 // pendingPlan is the task's pending approval request of kind plan.
 func pendingPlan(ctx context.Context, store Store, taskID string) (ApprovalRequest, error) {
 	pending, err := store.ApprovalRequests(ctx, "pending")
@@ -1607,7 +1611,7 @@ func pendingPlan(ctx context.Context, store Store, taskID string) (ApprovalReque
 			return a, nil
 		}
 	}
-	return ApprovalRequest{}, fmt.Errorf("task %s has no plan waiting for answers", taskID)
+	return ApprovalRequest{}, fmt.Errorf("task %s %w", taskID, errNoPlanWaiting)
 }
 
 func (s *PGStore) AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error) {
@@ -2056,7 +2060,7 @@ func (t *taskRun) replanCut(res SessionResult) (final, refused string, done bool
 // its answers; the last answer or a writer's comment sends the planner
 // back with the last plan, a closed issue ends the task closed. Every
 // session counts against the session cap, where the card waits for a
-// human and a writer's comment buys one more.
+// human; a person's answer to a revision buys the session it asks for.
 func (t *taskRun) planLoop() (string, error) {
 	// the plan loop reads no opening floor: its trips carry no model
 	t.floorModel = nil
@@ -2117,13 +2121,24 @@ func (t *taskRun) planLoop() (string, error) {
 	floor := t.escalation
 	stopsAwaited := false
 	// named are the findings the last ask named; waited: the pass before
-	// was a wait, whose answer the next pass weighs
+	// was a wait, whose answer the next pass weighs; asked: an ask opened
+	// that wait, a cap's or a stop's; by: the person who ended it
 	var named []string
-	waited := false
+	waited, asked, by := false, false, ""
 	for {
 		// the draw is the row's, read before every cap check, an
 		// extend made while a session ran included
 		t.readRaise(&u)
+		if waited && !asked && by != "" && t.planAsksAgain(u) &&
+			workflow.GetVersion(t.ctx, "plan-answer-grant", workflow.DefaultVersion, versionPlanAnswerGrant) >= versionPlanAnswerGrant {
+			before := u
+			if u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() {
+				t.grant(&u)
+			} else {
+				t.grantTime(&u)
+			}
+			t.recordGrant(by, policy.Draw{Sessions: u.ExtraAttempts - before.ExtraAttempts, AgentTime: u.ExtraTime - before.ExtraTime}, u)
+		}
 		if waited && t.planAsksAgain(u) {
 			// the answer bought nothing: its words wait for the session
 			// a draw starts, and the ask again names what the planner left
@@ -2140,7 +2155,7 @@ func (t *taskRun) planLoop() (string, error) {
 			if err := t.ask(ask, EscalationQuestion(ask), nil); err != nil {
 				return t.finish("failed", escalateFailed+errMessage(err))
 			}
-			ask, wait = "", true
+			ask, wait, asked = "", true, true
 		}
 		healed = false
 		if wait {
@@ -2148,9 +2163,10 @@ func (t *taskRun) planLoop() (string, error) {
 			var final, why string
 			var next []string
 			answered := false
+			by = ""
 			// rung 0 took the stop: no one was asked
 			if t.resolution == nil {
-				final, why, next, answered = t.awaitPlan(&ref, floor, onCap)
+				final, why, next, answered, by = t.awaitPlan(&ref, floor, onCap)
 				if t.resolution == nil {
 					t.leavePlanWait(final, why, answered, onCap)
 				}
@@ -2190,11 +2206,11 @@ func (t *taskRun) planLoop() (string, error) {
 					}
 					findings = append(findings, next...)
 				} else {
-					wait = true
+					wait, asked = true, false
 				}
 			}
 			// the draw is the row's: an extend raised it and the loop's top
-			// reads the caps again, so a plain answer asks again
+			// reads the caps again, so a plain answer to an ask asks again
 			waited = !wait
 			onCap = nil
 			continue
@@ -2319,7 +2335,7 @@ func (t *taskRun) planLoop() (string, error) {
 			reason, findings = "the plan's revision filed no cards", next
 			continue
 		}
-		t.escalation, findings, wait = ref.Comment, nil, true
+		t.escalation, findings, wait, asked = ref.Comment, nil, true, false
 		t.approvalRequested = workflow.Now(t.ctx)
 		reason = fmt.Sprintf("plan revision %d waits for its answers", ref.Revision)
 	}
@@ -2451,8 +2467,9 @@ func planRequested(ref *PlanRef) (final, why string, findings []string, stop boo
 // planComments takes the writers' comments signalled so far: each newer
 // than floor, the comment the session answered, asks for changes, except
 // the note of the replan that reopened the plan, posted as its person's.
-// heard are the comments that ask.
-func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
+// heard are the comments that ask, by the newest person among their
+// writers, "" for none.
+func (t *taskRun) planComments(floor int64) (out []string, heard []int64, by string) {
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
 		detail := map[string]any{"signal": SignalHumanComment, "author": sig.Author, "comment": sig.Comment}
@@ -2467,12 +2484,15 @@ func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
 			out = append(out, "writer "+sig.Author+" asked for changes to the plan: "+sig.Body)
 			heard = append(heard, sig.Comment)
 			t.planTaken = append(t.planTaken, sig.Comment)
+			if isPerson(sig.Author) {
+				by = sig.Author
+			}
 		}
 		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
 			workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
 		}
 	}
-	return out, heard
+	return out, heard, by
 }
 
 // leavePlanWait ends the case of the plan wait that ended with no answer of
@@ -2499,7 +2519,7 @@ func (t *taskRun) leavePlanWait(final, why string, answered bool, onCap *capWait
 // opens: a writer's change request in parts reaches the
 // next planner session whole. final is the task's end meanwhile.
 func (t *taskRun) planCommentsWhole(floor int64) (final, why string, out []string) {
-	out, heard := t.planComments(floor)
+	out, heard, _ := t.planComments(floor)
 	if len(heard) == 0 {
 		return "", "", out
 	}
@@ -2508,7 +2528,7 @@ func (t *taskRun) planCommentsWhole(floor int64) (final, why string, out []strin
 		if final, why, ended = t.planEnded(); ended {
 			return nil, true
 		}
-		more, heard := t.planComments(floor)
+		more, heard, _ := t.planComments(floor)
 		out = append(out, more...)
 		return heard, false
 	}, heard)
@@ -2557,7 +2577,9 @@ func (t *taskRun) planEnded() (final, why string, ok bool) {
 // planner, as does the end of onCap, a wait on a cap, on its own.
 // The resolution of the case the plan waits on ends the
 // wait at once (versionCases), taken as t.resolution, its note a finding.
-func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, why string, findings []string, answered bool) {
+// by is the newest person among the writers of the answers to revision ref
+// and of the comments that asked, "" for none.
+func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, why string, findings []string, answered bool, by string) {
 	onCap.start(t)
 	defer onCap.stop()
 	wake := []string{SignalIssueClosed, SignalHumanComment}
@@ -2571,14 +2593,14 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, w
 		}
 		notes, ok := t.planResolution()
 		findings, resolved = append(findings, notes...), resolved || ok
-		ok, err := t.planAnswered(ref)
+		ok, answerer, err := t.planAnswered(ref)
 		if err != nil {
 			final, why = "failed", "count the plan's open questions: "+errMessage(err)
 			return nil, true
 		}
 		answered = answered || ok
-		out, heard := t.planComments(floor)
-		findings = append(findings, out...)
+		out, heard, writer := t.planComments(floor)
+		findings, by = append(findings, out...), cmp.Or(writer, answerer, by)
 		return heard, false
 	}
 	for {
@@ -2591,20 +2613,21 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, w
 		heard, stop := pass()
 		if stop || !resolved && len(heard) > 0 && t.awaitBurst(wake, pass, heard) {
 			if final != "" {
-				return final, why, nil, false
+				return final, why, nil, false, ""
 			}
-			return "", "", findings, answered
+			return "", "", findings, answered, by
 		}
 		if answered || len(findings) > 0 || resolved || onCap.over() {
-			return "", "", findings, answered
+			return "", "", findings, answered, by
 		}
 	}
 }
 
-// planAnswered takes the members' answers signalled so far: whether one
+// planAnswered takes the answers signalled so far: whether one
 // answered a question of revision ref and none of its questions is open
-// any more. An answer to another revision is recorded and ignored.
-func (t *taskRun) planAnswered(ref *PlanRef) (bool, error) {
+// any more, and by the newest person among those who answered it, "" for
+// none. An answer to another revision is recorded and ignored.
+func (t *taskRun) planAnswered(ref *PlanRef) (ok bool, by string, err error) {
 	current := false
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalPlanAnswered).ReceiveAsync(&sig) {
@@ -2618,16 +2641,19 @@ func (t *taskRun) planAnswered(ref *PlanRef) (bool, error) {
 			t.approvalRequested = time.Time{}
 		}
 		current = current || sig.Revision == ref.Revision
+		if sig.Revision == ref.Revision && isPerson(sig.Author) {
+			by = sig.Author
+		}
 		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
 			workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
 		}
 	}
 	if !current {
-		return false, nil
+		return false, "", nil
 	}
 	var open int
-	err := workflow.ExecuteActivity(t.short, ActivityOpenPlanQuestions, t.taskID, ref.Revision).Get(t.ctx, &open)
-	return err == nil && open == 0, err
+	err = workflow.ExecuteActivity(t.short, ActivityOpenPlanQuestions, t.taskID, ref.Revision).Get(t.ctx, &open)
+	return err == nil && open == 0, by, err
 }
 
 // OpenPlanQuestions is how many of plan revision's questions have no
@@ -2710,11 +2736,12 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	}
 	var answers []string
 	if last != nil {
-		step, _, err := pendingIn(tl, taskID)
+		step, pending, err := pendingIn(tl, taskID)
 		if err != nil {
 			return PlanResult{}, err
 		}
-		cards, err := r.store.PlanCards(ctx, taskID)
+		// the record the filing settles its keys by
+		cards, err := r.oldCardsOf(ctx, t, step, pending)
 		if err != nil {
 			return PlanResult{}, err
 		}
@@ -3157,15 +3184,16 @@ func replacesNothing(p Plan, id string) bool {
 }
 
 // restartChildren runs the restart rules a new revision carries (piece
-// 10): the checks re-ran with the filing, every card that never started
-// takes the new revision's brief, image, rung and size, with the line on
-// the old card's work it starts from kept, one the new plan drops ends
-// closed with its issue unless it merged (Finish leaves a merged card to
-// its chain, which ends it done), a started open card the new plan drops
-// (dropped) stops as for a replan, its work kept on its branch, a started
-// card it keeps runs on, and a final card never reopens.
+// 10) on each key's card (PlanWaits): the checks re-ran with the filing,
+// every card that never started takes the new revision's brief, image,
+// rung and size, with the line on the old card's work it starts from
+// kept, one the new plan drops ends closed with its issue unless it merged
+// (Finish leaves a merged card to its chain, which ends it done), a
+// started open card the new plan drops (dropped) stops as for a replan,
+// its work kept on its branch, a started card it keeps runs on, and a
+// final card never reopens.
 func (r *Runner) restartChildren(ctx context.Context, t Task, repo Repo, revision int, p Plan) {
-	cards, err := r.store.PlanCards(ctx, t.ID)
+	cards, err := PlanWaits(ctx, r.store, t.ID)
 	if err != nil {
 		log.Printf("plan %s revision %d: restart its cards: %v", t.ID, revision, err)
 		return
@@ -3435,20 +3463,33 @@ func (r *Runner) AskQuestions(ctx context.Context, t Task, revision int, qs []Pl
 		}
 	}
 	for i, q := range asked {
-		row := map[string]any{"question": q.Text, "choices": q.Choices, "recommended": q.Recommended, "grounds": q.Grounds, "revision": revision, "index": i + 1}
-		offers := make([]QuestionChoice, len(q.Choices))
-		for j, c := range q.Choices {
-			offers[j] = QuestionChoice{Value: c, Label: c}
-		}
-		if len(offers) > 0 {
-			row["offers"] = offers
-		}
-		if q.Recommended != "" && q.Grounds != "" {
-			row["recommendation"], row["recommended_by"] = q.Recommended+": "+q.Grounds, "the planner"
-		}
-		r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, row)
+		r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, planAskRow(revision, i+1, q))
 	}
 	return nil
+}
+
+// planAskRow is the question_asked row of question idx (from 1) of plan
+// revision revision, whose case keys on its words and the revision: a
+// confirmation's kind, else a question's choices as offers and the
+// planner's recommendation.
+func planAskRow(revision, idx int, q PlanQuestion) map[string]any {
+	row := map[string]any{"question": q.Text, "revision": revision, "index": idx}
+	if q.Kind == QuestionConfirmation {
+		row["kind"] = QuestionConfirmation
+		return row
+	}
+	row["choices"], row["recommended"], row["grounds"] = q.Choices, q.Recommended, q.Grounds
+	offers := make([]QuestionChoice, len(q.Choices))
+	for j, c := range q.Choices {
+		offers[j] = QuestionChoice{Value: c, Label: c}
+	}
+	if len(offers) > 0 {
+		row["offers"] = offers
+	}
+	if q.Recommended != "" && q.Grounds != "" {
+		row["recommendation"], row["recommended_by"] = q.Recommended+": "+q.Grounds, "the planner"
+	}
+	return row
 }
 
 // askConfirmation appends the confirmation question to revision's stored
@@ -3473,14 +3514,14 @@ func (r *Runner) AskConfirmation(ctx context.Context, t Task, revision int, p Pl
 	case !ask && same == 0:
 		return nil
 	}
-	q := PlanQuestion{Text: r.untrusted(t, confirmationQuestion(revision, p))}
+	q := PlanQuestion{Text: r.untrusted(t, confirmationQuestion(revision, p)), Kind: QuestionConfirmation}
 	idx, inserted, err := r.store.PutPlanConfirmation(ctx, t.ID, revision, q)
 	if err != nil {
 		return err
 	}
 	answer := fmt.Sprintf("the same plan as revision %d, confirmed there", same)
 	if inserted {
-		asked := map[string]any{"question": q.Text, "revision": revision, "index": idx, "kind": "confirmation"}
+		asked := planAskRow(revision, idx, q)
 		if same > 0 {
 			asked["settled"] = answer
 		}
@@ -3754,7 +3795,7 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 	if len(p.TakeOffMain) == 0 {
 		return nil
 	}
-	cards, err := r.store.PlanCards(ctx, t.ID)
+	cards, err := PlanWaits(ctx, r.store, t.ID)
 	if err != nil {
 		return err
 	}
@@ -4149,11 +4190,12 @@ func (r *Runner) filedPlan(ctx context.Context, parent, child string) (Plan, err
 	return p, nil
 }
 
-// planOf is plan card t's plan, its section "The spec and the plan" (its
-// plan's issue text and the plan's summary), its role and its plan row's
-// directories; the zero plan, "" and none for a task no plan filed.
+// planOf is plan card t's plan (Task.PlanCard), its section "The spec and
+// the plan" (its plan's issue text and the plan's summary), its role and
+// its plan row's directories; the zero plan, "" and none for a task no
+// plan filed.
 func (r *Runner) planOf(ctx context.Context, t Task) (p Plan, spec, role string, dirs []string, err error) {
-	if t.Source != SourcePlan || t.Parent == "" {
+	if !t.PlanCard() {
 		return Plan{}, "", "", nil, nil
 	}
 	plan, _, err := r.task(ctx, t.Parent)

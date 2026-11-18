@@ -383,6 +383,43 @@ func TestSyncOnMainRestoresMainsContentAFalseSyncDiscarded(t *testing.T) {
 	}
 }
 
+// moveFixture is the 100-line a/x.go the move tests start from, and what a
+// move to b/x.go writes there: the file with one line changed.
+func moveFixture() (base, moved func(dir string)) {
+	var body strings.Builder
+	for i := range 100 {
+		fmt.Fprintf(&body, "line %d\n", i+1)
+	}
+	write := func(dir, name, text string) {
+		os.MkdirAll(filepath.Join(dir, filepath.Dir(name)), 0o755)
+		os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644)
+	}
+	return func(dir string) { write(dir, "a/x.go", body.String()) },
+		func(dir string) {
+			os.Remove(filepath.Join(dir, "a", "x.go"))
+			write(dir, "b/x.go", strings.Replace(body.String(), "line 50\n", "line fifty\n", 1))
+		}
+}
+
+// The push rule bills a move by its changed lines as the worker's
+// checkpoint counts it, whatever the repository's diff.renames says: the
+// move with one line changed is 2 lines, not the 200 of a deleted and an
+// added file.
+func TestChangedLinesCountsAMoveAsTheCheckpointDoes(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	wipRun(t, "init", "-q", "-b", "main", dir)
+	wipRun(t, "-C", dir, "config", "diff.renames", "false")
+	base, moved := moveFixture()
+	base(dir)
+	from := wipCommit(t, dir, "base")
+	moved(dir)
+	to := wipCommit(t, dir, "move")
+	if n, err := ChangedLines(wipGit{}, dir, from, to); err != nil || n != 2 {
+		t.Fatalf("ChangedLines = %d (%v), want the move's 2 changed lines", n, err)
+	}
+}
+
 // wipServe is the pod's half of the interim push for the tests: it
 // answers POST /wip as the worker does — one WIP commit of the worker's
 // own shape on the session's start, built in the seed repo by the next
@@ -2261,6 +2298,20 @@ func TestInterimPushNamesThePartsOfTheCardsWholeDiff(t *testing.T) {
 	want := wipParts{list: []wipPart{{"a.txt", 200}, {"b.txt", 30}}}
 	if out.head == "" || !reflect.DeepEqual(out.parts, want) {
 		t.Fatalf("outcome = %+v, want a landed head and the parts %+v", out, want)
+	}
+}
+
+// A move is one part at its new path, by its changed lines: a/x.go moved
+// to b/x.go with one line changed is b/x.go's 1 added and 1 deleted line.
+func TestInterimPushListsAMoveAsOnePart(t *testing.T) {
+	base, moved := moveFixture()
+	runner, _, serve := wipRig(t, base, moved)
+	runner.kube.(*fakeKube).pods["ns/pod"] = &fakePod{ns: "ns", name: "pod", phase: "Running"}
+	spec := sessionSpec{id: "s-1", startRef: serve.base, repo: Repo{Owner: "sf", Name: "repo"}, messageToken: "tok"}
+	out := runner.interimPush(context.Background(), supervisedTask("t2"), spec, "ns", "pod", nil)
+	want := wipParts{list: []wipPart{{"b/x.go", 2}}}
+	if out.head == "" || !reflect.DeepEqual(out.parts, want) {
+		t.Fatalf("outcome = %+v, want a landed head and the one part %+v", out, want)
 	}
 }
 

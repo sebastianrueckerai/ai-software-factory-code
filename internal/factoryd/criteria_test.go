@@ -471,9 +471,27 @@ func TestProofResultReadsTheRunOrSaysWhyThereIsNone(t *testing.T) {
 	}
 	o := proofResult(harness.ProofRun{Exit: 1, Report: broken, Output: summary}, true, "", "TestB")
 	run := criterionRun{id: "b_guard", kind: CriterionTest, suite: "./b", name: "TestB"}
-	if got, want := criterionLine(run, o), "criterion b_guard: no test TestB in ./b: Failed FAIL x/b [build failed] "+
+	if got, want := criterionLine(run, gateResult{outcome: o}), "criterion b_guard: no test TestB in ./b: Failed FAIL x/b [build failed] "+
 		"b/b_test.go:5:32: undefined: Door b/b_test.go:6:2: undefined: Lock"; got != want {
 		t.Errorf("the card's line = %q, want %q", got, want)
+	}
+}
+
+// A run whose test moved names the directory it ran in beside the
+// criterion's; a test two directories declare and the criterion's does
+// not is missing, with the directories named.
+func TestCriterionLineNamesWhereAMovedTestRan(t *testing.T) {
+	run := criterionRun{id: "x", kind: CriterionTest, suite: "./a", name: "TestX"}
+	for _, c := range []struct {
+		res  gateResult
+		want string
+	}{
+		{gateResult{outcome: proofOutcome{proofPassed, ""}, suite: "./b"}, "criterion x: TestX in ./b passed (the criterion names ./a)"},
+		{gateResult{outcome: proofOutcome{proofMissing, ""}, declared: []string{"./b", "./c"}}, "criterion x: no test TestX in ./a (declared in ./b, ./c)"},
+	} {
+		if got := criterionLine(run, c.res); got != c.want {
+			t.Errorf("criterionLine(%+v) = %q, want %q", c.res, got, c.want)
+		}
 	}
 }
 
@@ -577,6 +595,52 @@ func TestGateCriteriaRunsOnADeltaCard(t *testing.T) {
 	}
 	if proofs, _ := timelineStep(t, objects, "t1", "gate_criteria")["proofs"].([]any); len(proofs) != 1 {
 		t.Fatalf("the delta card's line proofs = %v, want size_bound's", proofs)
+	}
+}
+
+// The successor that carries the integration card's key runs the gate on
+// its own head as the card would; the rows land on the plan-filed
+// integration card, where the plan's rows stand. Its sessions get the
+// gate's opened proofs.
+func TestGateCriteriaRunsOnASuccessorOfTheIntegrationCard(t *testing.T) {
+	ctx := context.Background()
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	task := seedCriteriaPlan(t)
+	task.Source = SourceSuccessor
+	r, _, store := newTestRunner(t, task, kube, objects)
+	proofsWorker(t, r)
+	seedPlan(t, store, map[string]string{"integ": RoleIntegration, "sizes": RoleFeature},
+		`{"id":"size_bound","kind":"test","claim":"c","inputs":"i","expected":"e"}`)
+	store.tasks["t-int"] = Task{ID: "t-int", Status: "failed", Repository: "sf/repo", Parent: "plan1", Source: SourcePlan, PlanKey: "integ",
+		Kind: "agent", Track: "direct"}
+	if _, err := store.PutPlanProofs(ctx, "plan1", 1, blindRows()[:2]); err != nil {
+		t.Fatal(err)
+	}
+	p, err := r.filedPlan(ctx, "plan1", "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened, err := r.openedProofs(ctx, store.tasks["t1"], p); err != nil || len(opened) != 1 || opened[0].ID != "group_open" {
+		t.Fatalf("the successor's opened proofs = %+v, %v; want group_open", opened, err)
+	}
+	store.proofs["plan1"] = store.proofs["plan1"][:1]
+	done := make(chan struct{})
+	var res CriteriaResult
+	go func() {
+		defer close(done)
+		res, err = runCriteria(t, r)
+	}()
+	scriptReproPods(kube, proofLines(harness.ProofRun{ID: "size_bound", Report: junitGz(t, wrap(`<testcase name="TestSizeBound"></testcase>`))}))
+	<-done
+	if err != nil || res.Skipped != "" || len(kube.podOrder) != 1 {
+		t.Fatalf("result = %+v, %v, pods %d; want the gate run in one pod", res, err, len(kube.podOrder))
+	}
+	if rows, _ := store.CriteriaVerdicts(ctx, "t-int"); len(rows) != 1 || rows[0].Criterion != "size_bound" || rows[0].Verdict != "met" {
+		t.Fatalf("rows on the integration card = %+v, want size_bound met", rows)
+	}
+	if rows, _ := store.CriteriaVerdicts(ctx, "t1"); len(rows) != 0 {
+		t.Fatalf("rows on the successor = %+v, want none", rows)
 	}
 }
 
@@ -775,6 +839,18 @@ func TestGateCriteriaRunsACarriedTestFromTheTree(t *testing.T) {
 			verdict:  "unmet",
 			evidence: absent,
 			findings: []string{absent},
+		},
+		"moved and green": {
+			run:      harness.ProofRun{ID: "door_open", Started: true, Suite: "./internal/doors/pg", Report: junitGz(t, wrap(`<testcase name="TestDoorOpen"></testcase>`))},
+			verdict:  "met",
+			evidence: "criterion door_open: TestDoorOpen in ./internal/doors/pg passed (the criterion names ./internal/doors)",
+		},
+		"declared in two directories": {
+			run: harness.ProofRun{ID: "door_open", Started: true, Exit: 1, Declared: []string{"./internal/doors/pg", "./internal/locks"},
+				Report: junitGz(t, wrap(`<testcase name="TestOther"></testcase>`))},
+			verdict:  "unmet",
+			evidence: absent + " (declared in ./internal/doors/pg, ./internal/locks)",
+			findings: []string{absent + " (declared in ./internal/doors/pg, ./internal/locks)"},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -250,6 +250,26 @@ func TestCloseHeldPlanWaitsForRunningCards(t *testing.T) {
 	})
 }
 
+// A Close while a key's work runs on in the successor of its failed card
+// records no plan_closed: the close check records it once the successor
+// ends.
+func TestCloseHeldPlanWaitsForARunningSuccessor(t *testing.T) {
+	ctx := context.Background()
+	r, s, _ := plannedCards(t, []string{"later"}, "done", "failed")
+	succ := SuccessorID("card-2")
+	s.tasks[succ] = Task{ID: succ, Repository: "linkshort/linkshort", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "card-2", Status: "running"}
+	n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "", false)
+	if err != nil || n != 0 || closeRows(s) != 0 {
+		t.Fatalf("CloseHeldPlan = %d, %v, plan_closed rows %d; want 0, no error, 0", n, err, closeRows(s))
+	}
+	setStatus(s, "t-plan", "closed")
+	setStatus(s, succ, "done")
+	r.planCloseCheck(ctx, "t-plan")
+	if closeRows(s) != 1 {
+		t.Errorf("plan_closed rows %d after the successor ended, want 1", closeRows(s))
+	}
+}
+
 // In its last round a plan with criteria and no integration card keeps its
 // rows on the plan card, and every criterion without one is open: a
 // non-approver's Close is refused, and so is the project agent's, which

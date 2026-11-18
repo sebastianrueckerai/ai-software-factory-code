@@ -53,6 +53,28 @@ func TestSiblingsFactsLeaveTheCardOut(t *testing.T) {
 	}
 }
 
+// The siblings a case reads are each key's card: a key whose card failed
+// into a running successor lists the successor, and a case on the
+// successor lists neither it nor the card it carried on.
+func TestSiblingsFactsReadEachKeysCard(t *testing.T) {
+	ctx := context.Background()
+	g := siblingRig()
+	succ := SuccessorID("ta")
+	g.store.tasks[succ] = Task{ID: succ, Kind: "agent", Repository: "sf/app", IssueNumber: 1413, Source: SourceSuccessor, Parent: "t1344", PlanKey: "metrics-c", Status: "running"}
+	for _, c := range []struct {
+		id   string
+		want []SiblingFact
+	}{
+		{"t1410", []SiblingFact{{Issue: 1411, Key: "metrics-b", Status: "done"}, {Issue: 1413, Key: "metrics-c", Status: "running"}}},
+		{succ, []SiblingFact{{Issue: 1410, Key: "metrics-a", Status: "running"}, {Issue: 1411, Key: "metrics-b", Status: "done"}}},
+	} {
+		f, err := g.r.tripFacts(ctx, g.store.tasks[c.id], "", "")
+		if err != nil || !slices.Equal(f.Siblings, c.want) {
+			t.Errorf("the siblings of %s = %+v, %v; want %+v", c.id, f.Siblings, err, c.want)
+		}
+	}
+}
+
 func TestRung1StatementReadsCard(t *testing.T) {
 	g := siblingRig()
 	ctx := context.Background()

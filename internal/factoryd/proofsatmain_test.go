@@ -176,6 +176,23 @@ func TestProofsAtMainClosesOnAFullPass(t *testing.T) {
 	g.untouched(t)
 }
 
+// The successor that carries a plan card's key cites what its key cites:
+// with its key's work on main it closes on its proofs there, as the card
+// would.
+func TestProofsAtMainOfAPlanCardsSuccessor(t *testing.T) {
+	g := newProofsAtMainRig(t, "doors", proofsAtMainPlan(), proofsAtMainRows())
+	succ := g.store.tasks["t1"]
+	succ.Source = SourceSuccessor
+	g.store.tasks["t1"] = succ
+	res, err := g.run(t, proofLines(passedRun(t, "door", "TestDoor")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (ProofsAtMain{Head: "29b0d33aa", Met: true, Reason: "proofs met at 29b0d33: door"}); !reflect.DeepEqual(res, want) {
+		t.Fatalf("result = %+v, want %+v", res, want)
+	}
+}
+
 // A card whose branch holds work main lacks has not found its work on
 // main, however its proofs fare there: no pod runs and no line is
 // written.

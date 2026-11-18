@@ -114,6 +114,30 @@ func TestCheckinPRFactsReadTheForge(t *testing.T) {
 	}
 }
 
+// The successor that carries the integration card's key is that key's
+// card: its open pull request is the gate's trigger, so a machine replan
+// spares it, and the check-in's ask holds its facts.
+func TestASuccessorOfTheIntegrationCardIsTheGatesTrigger(t *testing.T) {
+	const openPR = `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t-int","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
+	s, card, p := gatePlanCard(t, "")
+	cut := s.tasks["t-int"]
+	cut.Status = "failed"
+	s.tasks["t-int"] = cut
+	succ := card
+	succ.ID, succ.Source = SuccessorID("t-int"), SourceSuccessor
+	s.tasks[succ.ID] = succ
+	forge := &prForgejo{pulls: map[int64]string{12: openPR},
+		statusesBySHA: map[string][]string{"c7": {statusBody("success", [4]string{"success", "pr / test", "", ""})}}}
+	r := &Runner{store: s, forgejo: &Forgejo{BaseURL: forge.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
+	if got, err := r.gateTrigger(context.Background(), succ, p); err != nil || !got {
+		t.Fatalf("gateTrigger of the successor = %v, %v; want true", got, err)
+	}
+	f, err := r.checkinPRFacts(context.Background(), succ)
+	if err != nil || f == nil || f.Number != 12 || f.Checks != ChecksSuccess || !f.GateTrigger {
+		t.Fatalf("the successor's facts = %+v, %v; want PR 12 green and the gate's trigger", f, err)
+	}
+}
+
 // gateTriggerAsk builds the session-moment ask on the seeded card: the PR
 // facts come from checkinPRFacts over the fake forge with checks green,
 // the read the merge press does — never a hand-built CheckInPRFacts.

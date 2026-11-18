@@ -1525,6 +1525,25 @@ func TestRestartPlanOverOpenCriteriaIsTheHumansAlone(t *testing.T) {
 	}
 }
 
+// The case facts of the successor that carries a plan card's key name its
+// plan, so a replan while it runs goes to that plan, and the integration
+// key's successor answers the plan's criteria on its merge approval.
+func TestCaseFactsOfAPlanCardsSuccessorNameItsPlan(t *testing.T) {
+	ctx := context.Background()
+	r, s, _ := tenCriteriaPlan(t, "failed")
+	succ := SuccessorID("card-1")
+	s.tasks[succ] = Task{ID: succ, Kind: "agent", Repository: "linkshort/linkshort", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "card-1",
+		Status: "running", Track: policy.TrackDirect}
+	f, err := r.tripFacts(ctx, s.tasks[succ], "", "")
+	if err != nil || f.Plan != "t-plan" || !f.Criteria {
+		t.Fatalf("the successor's facts: plan %q, criteria %v, %v; want t-plan and true", f.Plan, f.Criteria, err)
+	}
+	a, _ := ActionByName(ActReplan)
+	if why := a.refusal(f, 2, Resolution{Action: ActReplan}); why != "" {
+		t.Fatalf("replan of the running successor = %q, want it offered", why)
+	}
+}
+
 // The case facts of a plan and of its card count the plan's open criteria
 // by its Close's rule. On the plan's wait on its failed card, Act refuses
 // rung 2's restart_plan over them with the table's reason; once every

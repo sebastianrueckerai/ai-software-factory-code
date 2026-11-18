@@ -24,6 +24,8 @@ func TestGroupOf(t *testing.T) {
 		{"a direct card", Task{ID: "d1", Source: "webhook"}, "d1"},
 		{"a plan card", Task{ID: "p1", Source: "webhook", Track: "plan"}, "p1"},
 		{"a delegated card", Task{ID: "g1", Source: SourceDelegate, Parent: "d1"}, "g1"},
+		{"a plan card's successor", Task{ID: "s1", Source: SourceSuccessor, Parent: "p1", PlanKey: "links"}, "p1"},
+		{"a direct card's successor", Task{ID: "s2", Source: SourceSuccessor}, "s2"},
 	} {
 		if got := GroupOf(tc.card); got != tc.want {
 			t.Errorf("%s: GroupOf = %q, want %q", tc.name, got, tc.want)
@@ -31,8 +33,9 @@ func TestGroupOf(t *testing.T) {
 	}
 }
 
-// A plan card and a plan's child are in a plan; a direct card, a
-// delegated one and a person's card are not.
+// A plan card, a plan's child and the successor that carries its key are
+// in a plan; a direct card, its successor, a delegated one and a person's
+// card are not.
 func TestInPlan(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -44,6 +47,8 @@ func TestInPlan(t *testing.T) {
 		{"a direct card", Task{ID: "d1", Source: "webhook", Track: "direct"}, false},
 		{"a delegated card", Task{ID: "g1", Source: SourceDelegate, Parent: "d1", Track: "direct"}, false},
 		{"a person's card", Task{ID: "h1", Kind: "human", Source: "webhook"}, false},
+		{"a plan card's successor", Task{ID: "s1", Source: SourceSuccessor, Parent: "p1", PlanKey: "links", Track: "direct"}, true},
+		{"a direct card's successor", Task{ID: "s2", Source: SourceSuccessor, Track: "direct"}, false},
 	} {
 		if got := InPlan(tc.card); got != tc.want {
 			t.Errorf("%s: InPlan = %t, want %t", tc.name, got, tc.want)
@@ -57,7 +62,10 @@ func TestInPlan(t *testing.T) {
 // (a merge commit and no event, so its child's finish) in sf/r, p4
 // (merged by a person: an event and no merge commit) in sf/q. p2 has no
 // merged child, p3 is closed, d1 is a direct card, and p7's only merged
-// child c9 was taken off main again.
+// child c9 was taken off main again. p8's key one was cut: its card c10
+// failed, and its successor b10, filed after it, merged and opened the
+// group; each key counts once, as its newest card, so p8 holds one merged
+// child and one queued.
 func TestOpenGroups(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_groups"))
@@ -83,8 +91,14 @@ func TestOpenGroups(t *testing.T) {
 			('p6', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 6, '', '2026-09-29T00:00:00Z'),
 			('c8', 1, 0, 'merged', 'sf/r', 'agent', 'plan', 'p6', 'direct', 'one', 61, 'pqr', '2026-09-30T18:05:00Z'),
 			('p7', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 7, '', '2026-09-30T00:00:00Z'),
-			('c9', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'p7', 'direct', 'one', 71, 'stu', '2026-10-01T05:00:00Z')`,
+			('c9', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'p7', 'direct', 'one', 71, 'stu', '2026-10-01T05:00:00Z'),
+			('p8', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 8, '', '2026-09-30T00:00:00Z'),
+			('c10', 1, 0, 'failed', 'sf/r', 'agent', 'plan', 'p8', 'direct', 'one', 81, '', '2026-10-01T08:00:00Z'),
+			('b10', 1, 0, 'merged', 'sf/r', 'agent', 'successor', 'p8', 'direct', 'one', 82, 'vwx', '2026-10-01T11:05:00Z'),
+			('c11', 1, 0, 'queued', 'sf/r', 'agent', 'plan', 'p8', 'direct', 'two', 83, '', NULL)`,
 		`UPDATE tasks SET reverted_at = '2026-10-04T09:00:00Z' WHERE id = 'c9'`,
+		`UPDATE tasks SET created_at = '2026-10-01T00:00:00Z' WHERE id = 'c10'`,
+		`UPDATE tasks SET created_at = '2026-10-01T08:00:00Z' WHERE id = 'b10'`,
 		`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via) VALUES
 			('2026-10-01T10:00:00Z', 'sf/r', 'c1', 11, 'pull_request_merged', 'factory-merge', 'factoryd'),
 			('2026-10-01T09:00:00Z', 'sf/r', 'c3', 13, 'pull_request_merged', 'factory-merge', 'factoryd'),
@@ -93,7 +107,8 @@ func TestOpenGroups(t *testing.T) {
 			('2026-10-03T12:00:00Z', 'sf/q', 'c6', 41, 'pull_request_merged', 'sebastian', 'webhook'),
 			('2026-10-01T06:00:00Z', 'sf/r', 'd1', 9, 'pull_request_merged', 'factory-merge', 'factoryd'),
 			('2026-09-30T18:00:00Z', 'sf/r', 'c8', 61, 'pull_request_merged', 'factory-merge', 'factoryd'),
-			('2026-10-01T04:55:00Z', 'sf/r', 'c9', 71, 'pull_request_merged', 'factory-merge', 'factoryd')`,
+			('2026-10-01T04:55:00Z', 'sf/r', 'c9', 71, 'pull_request_merged', 'factory-merge', 'factoryd'),
+			('2026-10-01T11:00:00Z', 'sf/r', 'b10', 82, 'pull_request_merged', 'factory-merge', 'factoryd')`,
 	} {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
 			t.Fatalf("%s: %v", q, err)
@@ -114,6 +129,8 @@ func TestOpenGroups(t *testing.T) {
 				Children: map[string]int{"merged": 1}},
 			{Plan: "p1", Issue: 1, Repository: "sf/r", FirstMerge: time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC),
 				Children: map[string]int{"done": 1, "queued": 1, "merged": 1}},
+			{Plan: "p8", Issue: 8, Repository: "sf/r", FirstMerge: time.Date(2026, 10, 1, 11, 0, 0, 0, time.UTC),
+				Children: map[string]int{"merged": 1, "queued": 1}},
 			{Plan: "p5", Issue: 5, Repository: "sf/r", FirstMerge: time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC),
 				Children: map[string]int{"done": 1}},
 		},
@@ -128,6 +145,11 @@ func TestOpenGroups(t *testing.T) {
 	for plan, want := range map[string]time.Time{"p3": time.Date(2026, 10, 2, 8, 0, 0, 0, time.UTC), "p1": {}} {
 		if at, closed, err := s.PlanClosed(ctx, plan); err != nil || closed != !want.IsZero() || !at.Equal(want) {
 			t.Errorf("PlanClosed(%s) = %v, %v, %v; want %v, %v", plan, at, closed, err, want, !want.IsZero())
+		}
+	}
+	for plan, want := range map[string]bool{"p8": true, "p2": false, "p7": false} {
+		if merged, err := s.PlanMerged(ctx, plan); err != nil || merged != want {
+			t.Errorf("PlanMerged(%s) = %v, %v; want %v", plan, merged, err, want)
 		}
 	}
 }
@@ -186,6 +208,8 @@ func TestPlansBetweenRounds(t *testing.T) {
 // integration card still runs, a10 filed no integration card, a11's card
 // under the integration card's key is another revision's feature card,
 // and a13, closed, had its run on the integration card's pull request.
+// a14's and a15's integration cards were cut: a14's successor still runs,
+// a15's merged.
 func TestPlansAwaitingCriteria(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_awaiting_criteria"))
@@ -203,6 +227,12 @@ func TestPlansAwaitingCriteria(t *testing.T) {
 		('a11', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 11, `+fin+`, NULL, NULL),
 		('a12', 1, 0, 'closed', 'sf/r', 'agent', 'webhook', 'plan', 12, `+fin+`, NULL, NULL),
 		('a13', 1, 0, 'closed', 'sf/r', 'agent', 'webhook', 'plan', 13, `+fin+`, NULL, NULL),
+		('a14', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 14, `+fin+`, NULL, NULL),
+		('a15', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 15, `+fin+`, NULL, NULL),
+		('a14-int', 1, 0, 'failed', 'sf/r', 'agent', 'plan', 'direct', 35, `+fin+`, 'a14', 'integ'),
+		('a14-s', 1, 0, 'running', 'sf/r', 'agent', 'successor', 'direct', 36, NULL, 'a14', 'integ'),
+		('a15-int', 1, 0, 'failed', 'sf/r', 'agent', 'plan', 'direct', 37, `+fin+`, 'a15', 'integ'),
+		('a15-s', 1, 0, 'merged', 'sf/r', 'agent', 'successor', 'direct', 38, `+fin+`, 'a15', 'integ'),
 		('a12-int', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 'direct', 33, `+fin+`, 'a12', 'integ'),
 		('a13-int', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'direct', 34, `+fin+`, 'a13', 'integ'),
 		('a1-int', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 'direct', 21, `+fin+`, 'a1', 'integ'),
@@ -225,7 +255,7 @@ func TestPlansAwaitingCriteria(t *testing.T) {
 		{"a1", criteria}, {"a2", `{"round": 1, "outline": null, "criteria": [{"id": "c1", "kind": "test"}], ` + cards + `}`}, {"a3", criteria},
 		{"a4", `{"round": 1, "outline": ["the rest"], "criteria": [{"id": "c1", "kind": "test"}], ` + cards + `}`}, {"a5", criteria},
 		{"a6", `{"round": 1, "criteria": [], ` + cards + `}`}, {"a7", criteria}, {"a7", `{"round": 1, ` + cards + `}`}, {"a8", criteria}, {"a9", criteria},
-		{"a10", criteria}, {"a12", criteria}, {"a13", criteria},
+		{"a10", criteria}, {"a12", criteria}, {"a13", criteria}, {"a14", criteria}, {"a15", criteria},
 		{"a11", `{"round": 1, "criteria": [{"id": "c1", "kind": "test"}], "cards": [{"key": "integ2", "role": "integration"}, {"key": "feat", "role": "feature"}]}`},
 	} {
 		if _, err := s.AddPlanRevision(ctx, r.id, json.RawMessage(r.plan), r.id+r.plan); err != nil {
@@ -241,8 +271,8 @@ func TestPlansAwaitingCriteria(t *testing.T) {
 		('2026-10-02T08:00:00Z', 'sf/r', 'a13', 13, 'criteria_gate_run', 'factoryd', 'factoryd', '{"task": "a13-int", "pr": 9, "outcome": "ran"}')`); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.PlansAwaitingCriteria(ctx); err != nil || !slices.Equal(got, []string{"a1", "a12", "a2"}) {
-		t.Fatalf("PlansAwaitingCriteria = %v, %v; want [a1 a12 a2]", got, err)
+	if got, err := s.PlansAwaitingCriteria(ctx); err != nil || !slices.Equal(got, []string{"a1", "a12", "a15", "a2"}) {
+		t.Fatalf("PlansAwaitingCriteria = %v, %v; want [a1 a12 a15 a2]", got, err)
 	}
 }
 
@@ -427,7 +457,9 @@ func TestPlanClosedBackfill(t *testing.T) {
 // another group). p3's c3 is in review out of the queue, p4's c4 is in
 // sf/q's queue, p5's c5 failed in gate merge-queue, and d1, a direct card,
 // is in the queue but no plan's. p7's c7 waits for its approval out of the
-// queue, which its turn re-enters before the merge: it counts too.
+// queue, which its turn re-enters before the merge: it counts too. p8's
+// c8 was cut, and its successor s8, which carries its key, waits in gate
+// merge-queue.
 func TestQueuedPlans(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_queuedplans"))
@@ -450,6 +482,9 @@ func TestQueuedPlans(t *testing.T) {
 			('c6', 1, 0, 'merged', 'sf/r', 'agent', 'plan', 'p6', 'direct', 'one', 61, 'merge-queue', '2026-10-01T00:00:00Z'),
 			('p7', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 7, '', '2026-10-01T00:00:00Z'),
 			('c7', 1, 0, 'in-review', 'sf/r', 'agent', 'plan', 'p7', 'direct', 'one', 71, 'approval', NULL),
+			('p8', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 8, '', '2026-10-01T00:00:00Z'),
+			('c8', 1, 0, 'failed', 'sf/r', 'agent', 'plan', 'p8', 'direct', 'one', 81, '', '2026-10-01T00:00:00Z'),
+			('s8', 1, 0, 'in-review', 'sf/r', 'agent', 'successor', 'p8', 'direct', 'one', 82, 'merge-queue', NULL),
 			('d1', 1, 0, 'in-review', 'sf/r', 'agent', 'webhook', NULL, 'direct', NULL, 9, '', NULL)`); err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +493,7 @@ func TestQueuedPlans(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got, err := s.QueuedPlans(ctx, "sf/r"); err != nil || !slices.Equal(got, []int64{1, 2, 7}) {
-		t.Fatalf("QueuedPlans(sf/r) = %v, %v; want plans #1, #2 and #7", got, err)
+	if got, err := s.QueuedPlans(ctx, "sf/r"); err != nil || !slices.Equal(got, []int64{1, 2, 7, 8}) {
+		t.Fatalf("QueuedPlans(sf/r) = %v, %v; want plans #1, #2, #7 and #8", got, err)
 	}
 }

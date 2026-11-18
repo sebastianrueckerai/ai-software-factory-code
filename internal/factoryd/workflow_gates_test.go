@@ -1561,6 +1561,40 @@ func TestWorkflowPressRunsTheGateAgainForItsCriteria(t *testing.T) {
 	}
 }
 
+// The successor that carries the integration card's key is that key's
+// card: its press runs the gate again as the card's does. A run from
+// before the change merges on the press with no gate.
+func TestWorkflowSuccessorsPressRunsTheGateAgain(t *testing.T) {
+	for name, tc := range map[string]struct {
+		before bool
+		steps  string
+	}{
+		"current": {false, "policy, repro c1, review c1, criteria c1, approval c1, criteria c1, merge"},
+		"before":  {true, "policy, repro c1, review c1, criteria c1, approval c1, merge"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g, holds := regateHarness(t, []Unjudged{{Gate: []string{"size_bound"}}, {}})
+			g.state.Source, g.state.PlanCard = SourceSuccessor, true
+			if tc.before {
+				g.env.OnGetVersion("successor-is-its-keys-card", workflow.DefaultVersion, versionSuccessorIsItsKeysCard).Return(workflow.DefaultVersion)
+			}
+			g.criteria = []CriteriaResult{{Stand: &CriteriaStand{IDs: []string{"size_bound"}, Open: []string{"size_bound"}}}, {Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
+			g.onSessions(pushed("s1", "c1"))
+			g.onChecks(ChecksResult{State: ChecksSuccess})
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if got := strings.Join(g.steps, ", "); got != tc.steps {
+				t.Fatalf("steps = %v, want %s", got, tc.steps)
+			}
+			if !slices.Equal(g.merges, []string{"9 c1 sebastian"}) || len(*holds) != 0 {
+				t.Fatalf("merges %v, holds %v: want the merge and no hold", g.merges, *holds)
+			}
+		})
+	}
+}
+
 // The gate run again on a press sends its findings back to the agent,
 // with no merge; at the cap they ride a new merge ask, which the card
 // waits on.

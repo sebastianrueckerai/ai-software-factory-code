@@ -297,10 +297,11 @@ func planOfStore(ctx context.Context, store Store, parent, child string) (Plan, 
 }
 
 // DecideCriterion records a person's decision on one criterion of plan
-// task id that does not stand met already: waived, with their one-line
-// reason, for any criterion; met, for a human criterion, whose proof is
-// this recording. The row lands on the plan's integration card, where the
-// gate's rows stand. Anyone but a person is refused (ErrNotPerson).
+// task id that does not stand met already on the rows that settle it
+// (planGate): waived, with their one-line reason, for any criterion; met,
+// for a human criterion, whose proof is this recording. The row lands on
+// the plan's integration card, where the gate's rows stand. Anyone but a
+// person is refused (ErrNotPerson).
 func DecideCriterion(ctx context.Context, store Store, id, cid, verdict, by, reason string) error {
 	if verdict != "waived" && verdict != "met" {
 		return fmt.Errorf("no such verdict %q", verdict)
@@ -340,7 +341,11 @@ func DecideCriterion(ctx context.Context, store Store, id, cid, verdict, by, rea
 	if err != nil {
 		return fmt.Errorf("verdicts of %s: %w", integration.ID, err)
 	}
-	if effectiveVerdict(rows, c) == "met" {
+	g, err := planGateOf(ctx, store, id, integration)
+	if err != nil {
+		return err
+	}
+	if effectiveVerdict(g.settling(rows), c) == "met" {
 		return ErrCriterionMet
 	}
 	return store.PutCriteriaVerdicts(ctx, integration.ID, CriteriaSourceApprover, by,
@@ -509,7 +514,7 @@ func metOnMain(ctx context.Context, store PlanVerdictReader, id, home string) ([
 	if met == "" || j < 0 {
 		return nil, nil
 	}
-	cards, err := planWaits(ctx, store, id)
+	cards, err := PlanWaits(ctx, store, id)
 	if err != nil {
 		return nil, err
 	}
@@ -610,8 +615,9 @@ func (r *Runner) CheckClosePlan(ctx context.Context, id, by, note string, approv
 
 // CloseHeldPlan is a person's close of plan id at rest: it waives every
 // open criterion with note as the reason (an approver's act, a person's
-// alone, and a note is required), ends the plan's criteria asks and, once every card of the
-// plan is final (a plan that filed none records none), records plan_closed,
+// alone, and a note is required), ends the plan's criteria asks and, once
+// every key's card (PlanWaits) is final (a plan that filed none records
+// none), records plan_closed,
 // in one transaction, so the close check never finds waivers without the
 // close. While a card still runs the sweep records plan_closed when the
 // last one ends. A failed plan whose plan_closed row stands (factoryd
@@ -639,7 +645,7 @@ func (r *Runner) CloseHeldPlan(ctx context.Context, id, by, note string, approve
 		if err != nil {
 			return PlanClose{}, err
 		}
-		cards, err := r.store.PlanCards(ctx, id)
+		cards, err := PlanWaits(ctx, r.store, id)
 		if err != nil {
 			return PlanClose{}, err
 		}
@@ -732,7 +738,7 @@ func PlanDelivered(ctx context.Context, store interface {
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
 	Task(ctx context.Context, id string) (Task, bool, error)
 }, id string) (delivered bool, open Task, err error) {
-	cards, err := planWaits(ctx, store, id)
+	cards, err := PlanWaits(ctx, store, id)
 	if err != nil {
 		return false, Task{}, fmt.Errorf("the cards of %s: %w", id, err)
 	}
@@ -751,8 +757,9 @@ func firstUndelivered(cards []Task) (Task, bool) {
 }
 
 // throughSuccessors is card c read through the successors it was cut
-// into: while a card of the chain is neither done nor merged and has a
-// successor, the successor stands for it. A chain that loops into itself
+// into and the replacements its retries filed: while a card of the chain
+// is neither done nor merged and has a successor, else a replacement
+// (RetryID), that card stands for it. A chain that loops into itself
 // reads as no end: ok false.
 func throughSuccessors(ctx context.Context, store interface {
 	Task(ctx context.Context, id string) (Task, bool, error)
@@ -768,6 +775,11 @@ func throughSuccessors(ctx context.Context, store interface {
 			return Task{}, false, fmt.Errorf("the successor of %s: %w", c.ID, err)
 		}
 		if !found {
+			if next, found, err = store.Task(ctx, RetryID(c.ID)); err != nil {
+				return Task{}, false, fmt.Errorf("the replacement of %s: %w", c.ID, err)
+			}
+		}
+		if !found {
 			break
 		}
 		c = next
@@ -775,11 +787,11 @@ func throughSuccessors(ctx context.Context, store interface {
 	return c, true, nil
 }
 
-// planWaits are plan's cards as its close, its next round, its "all cards
-// done" and the release hold wait on them: each one cut into a successor
-// stands as its chain's end (throughSuccessors) under its own key, so the
-// plan waits on the work, not on the card that handed it on.
-func planWaits(ctx context.Context, store interface {
+// PlanWaits are plan's cards, each key read as its live card: each one cut
+// into a successor, or retried, stands as its chain's end
+// (throughSuccessors) under its own key, so whatever waits on, counts or
+// shows the plan's cards sees the work, not the card that handed it on.
+func PlanWaits(ctx context.Context, store interface {
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
 	Task(ctx context.Context, id string) (Task, bool, error)
 }, plan string) ([]Task, error) {
@@ -927,7 +939,7 @@ type planGate struct {
 // planGateOf reads how plan's criteria gate stands on integration card
 // integration.
 func planGateOf(ctx context.Context, store planGateReader, plan string, integration Task) (planGate, error) {
-	cards, err := planWaits(ctx, store, plan)
+	cards, err := PlanWaits(ctx, store, plan)
 	if err != nil {
 		return planGate{}, err
 	}
@@ -941,7 +953,7 @@ func planGateOf(ctx context.Context, store planGateReader, plan string, integrat
 	}
 	g := planGate{cards: cards, mark: cardsMark(rev.Revision, cards)}
 	g.runs = slices.DeleteFunc(runs, func(e Event) bool { m, _ := e.Detail["cards"].(string); return m != g.mark })
-	if last, ok := newestCriteriaCard(cards, integration); ok && last.Source == SourcePlan && landed(last) {
+	if last, ok := newestCriteriaCard(cards, integration); ok && last.PlanCard() && landed(last) {
 		same, err := judgedWhatMerged(ctx, store, last)
 		if err != nil {
 			return planGate{}, err
@@ -1206,15 +1218,36 @@ func neverJudged(p Plan, rows []CriterionVerdict) []PlanCriterion {
 	return never
 }
 
+// verdictHome is the card whose verdict rows card t reads: for the
+// integration key's card of plan p (Task.PlanCard), the plan-filed
+// integration card (IntegrationCard), where every gate run and every
+// approver writes them; t itself for any other card.
+func verdictHome(ctx context.Context, store interface {
+	PlanCards(ctx context.Context, plan string) ([]Task, error)
+}, t Task, p Plan) (string, error) {
+	if !t.PlanCard() || roleOf(p, t.PlanKey) != RoleIntegration {
+		return t.ID, nil
+	}
+	integration, err := IntegrationCard(ctx, store, t.Parent, p)
+	if err != nil {
+		return "", err
+	}
+	return integration.ID, nil
+}
+
 // unjudgedCriteria are the criteria of task t's plan revision that no
-// verdict row holds when t is the plan's integration card, where the rows
-// stand; none for any other card.
+// verdict row holds where they stand (verdictHome) when t is the
+// integration key's card; none for any other card.
 func (r *Runner) unjudgedCriteria(ctx context.Context, t Task) ([]PlanCriterion, error) {
 	cc := r.criteriaContext(ctx, t)
 	if cc == nil || roleOf(cc.plan, t.PlanKey) != RoleIntegration {
 		return nil, nil
 	}
-	rows, err := r.store.CriteriaVerdicts(ctx, t.ID)
+	home, err := verdictHome(ctx, r.store, t, cc.plan)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.store.CriteriaVerdicts(ctx, home)
 	if err != nil {
 		return nil, err
 	}
@@ -1659,7 +1692,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		if r.planClosed(ctx, parent) {
 			return
 		}
-		cards, err := planWaits(ctx, r.store, parent)
+		cards, err := PlanWaits(ctx, r.store, parent)
 		if err != nil {
 			log.Printf("plan %s: the close check: %v", parent, err)
 			return
@@ -1693,7 +1726,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		return
 	}
 	if len(p.Outline) > 0 || len(p.Criteria) == 0 {
-		cards, err := planWaits(ctx, r.store, parent)
+		cards, err := PlanWaits(ctx, r.store, parent)
 		if err != nil {
 			log.Printf("plan %s: the close check: %v", parent, err)
 			return
@@ -2510,7 +2543,7 @@ type criteriaContext struct {
 // plan child of a plan without criteria, or a card whose review sees only
 // its own part of the feature.
 func (r *Runner) criteriaContext(ctx context.Context, t Task) *criteriaContext {
-	if t.Source != SourcePlan || t.Parent == "" {
+	if !t.PlanCard() {
 		return nil
 	}
 	p, revision, err := planOfStore(ctx, r.store, t.Parent, t.ID)
@@ -2535,14 +2568,15 @@ type featureCard struct {
 }
 
 // featureCards are the plan's filed cards in the plan's order, then the
-// cards a delta round filed, each with its pull request's files; the
-// reviewed card is not in it. A card with no pull request is skipped. A
+// cards a delta round filed, each read through its successors
+// (PlanWaits), with its pull request's files; the reviewed card is not
+// in it. A card with no pull request is skipped. A
 // card whose pull request cannot be read fails the read: the criteria
 // verdicts judge the whole feature or do not stand. held is the reviewed
 // card's own diff: the cards and it read together at most maxDiffRead,
 // past which the read is ErrDiffTooLong.
 func (r *Runner) featureCards(ctx context.Context, task Task, repo Repo, p Plan, held int) ([]featureCard, error) {
-	cards, err := r.store.PlanCards(ctx, task.Parent)
+	cards, err := PlanWaits(ctx, r.store, task.Parent)
 	if err != nil {
 		return nil, err
 	}
