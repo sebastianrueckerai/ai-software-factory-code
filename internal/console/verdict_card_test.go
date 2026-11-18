@@ -399,7 +399,7 @@ func TestCriteriaRerunConfirmsOverAClosedCard(t *testing.T) {
 	r.c.cfg.ConfirmDeliveredCriteria = func(_ context.Context, id, by, line string) (int, error) {
 		calls = append(calls, fmt.Sprintf("confirm %s by %s: %q", id, by, line))
 		if line == "" {
-			return 0, fmt.Errorf("t-cut-card is closed: %w", factoryd.ErrNoEvidence)
+			return 0, fmt.Errorf("#41 is closed: %w", factoryd.ErrNoEvidence)
 		}
 		return 3, nil
 	}
@@ -413,8 +413,8 @@ func TestCriteriaRerunConfirmsOverAClosedCard(t *testing.T) {
 		t.Errorf("the answer's form lacks its required evidence line:\n%s", card)
 	}
 	rec := r.do(post("/approvals/30/confirm", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
-	if want := "Cannot confirm the delivered cards: t-cut-card is closed: a confirmation over closed cards needs your evidence. " +
-		"Type the line that shows main meets the criteria, then confirm again."; rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), want) {
+	if want := "Cannot confirm the delivered cards: #41 is closed: a confirmation over closed cards needs your evidence. " +
+		"Type the line that shows main meets the promises, then confirm again."; rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), want) {
 		t.Fatalf("an empty confirm = %d %q, want 400 with %q", rec.Code, rec.Body.String(), want)
 	}
 	const line = "main at 6e3b46e: the tests pass and ci / test is green"

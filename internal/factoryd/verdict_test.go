@@ -1909,13 +1909,14 @@ func TestConfirmDeliveredCriteriaOverAClosedIntegrationCard(t *testing.T) {
 		newRevision(t, s, "t-plan", p)
 		s.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/code", IssueNumber: 7, Source: SourceChat, Status: "done"}
 		s.tasks["card-foundation"] = Task{ID: "card-foundation", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "foundation", Status: "done"}
-		s.tasks["t-int"] = Task{ID: "t-int", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Status: status}
+		s.tasks["t-int"] = Task{ID: "t-int", Repository: "sf/code", IssueNumber: 9, Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Status: status}
 		return s
 	}
 	const line = "main at 6e3b46e: the three tests pass and ci / test is green"
 	s := seed("closed")
-	if _, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", "sebastian", " "); !errors.Is(err, ErrNoEvidence) || !strings.Contains(err.Error(), "t-int is closed") {
-		t.Fatalf("an empty line beside a closed card = %v, want ErrNoEvidence naming t-int", err)
+	if _, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", "sebastian", " "); !errors.Is(err, ErrNoEvidence) ||
+		err.Error() != "#9 is closed: a confirmation over closed cards needs your evidence" {
+		t.Fatalf("an empty line beside a closed card = %v, want ErrNoEvidence naming #9", err)
 	}
 	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(rows) != 0 {
 		t.Fatalf("the refused confirmation wrote rows: %v", rows)

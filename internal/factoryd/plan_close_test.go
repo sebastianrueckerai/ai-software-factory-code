@@ -18,6 +18,14 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
+// threeOpenHeld is what the issue of criteriaPlan's plan hears while it is
+// held with its three promises open and none met on main.
+const threeOpenHeld = "Close this plan and drop its 3 open promises? Until it closes, the plan holds production deploys.\n\n" +
+	"A human closed the plan's card while these promises were open:\n- A link is stored.\n- The feature reads well.\n- The tests in ./... stay green.\n\n" +
+	"The answers on the board:\n" +
+	"- Drop them and close: Drops the open promises with your reason and closes the plan, so production deploys go on.\n" +
+	"- Keep the plan open: The plan stays open and holds production deploys until an approver closes it."
+
 // lastRoundCriteriaPlan is a done plan in its last round with the criteria
 // of criteriaPlan and its integration card merged, on store s as task id.
 func lastRoundCriteriaPlan(t *testing.T, s *fakeStore, id, repo string, issue int64) {
@@ -68,7 +76,7 @@ func TestDonePlanForgejoCloseKeepsTheHold(t *testing.T) {
 			t.Fatalf("%s: status %d", tc.name, rr.Code)
 		}
 		reopened := slices.Contains(*requests, "close /api/v1/repos/sf/ai-software-factory-code/issues/4")
-		commented := slices.Contains(*requests, "comment /api/v1/repos/sf/ai-software-factory-code/issues/4/comments: "+holdComment(3, 3))
+		commented := slices.Contains(*requests, "comment /api/v1/repos/sf/ai-software-factory-code/issues/4/comments: "+threeOpenHeld)
 		if got := store.tasks["t-plan"].Status; got != tc.after || reopened != tc.reopen || commented != tc.reopen {
 			t.Errorf("webhook, %s: status %q, reopened %t, commented %t; want %q, %t, %t", tc.name, got, reopened, commented, tc.after, tc.reopen, tc.reopen)
 		}
@@ -90,7 +98,11 @@ func TestRoundCheckHoldsAPlanWhoseOpenCriteriaAWriterClosed(t *testing.T) {
 		comments     []string
 	}{
 		{name: "a writer's close, criteria open", closer: "sebastian", after: "done", reopened: 1, comments: []string{
-			"This plan still holds production with 3 open criteria. Closing its issue waives nothing: an approver's Close with a note on the console waives them and ends the plan."}},
+			"Close this plan and drop its 3 open promises? Until it closes, the plan holds production deploys.\n\n" +
+				"A human closed the plan's card while these promises were open:\n- A link made through the API is kept.\n- A short link sends its visitor on.\n- The existing tests stay green.\n\n" +
+				"The answers on the board:\n" +
+				"- Drop them and close: Drops the open promises with your reason and closes the plan, so production deploys go on.\n" +
+				"- Keep the plan open: The plan stays open and holds production deploys until an approver closes it."}},
 		{name: "a writer's close, criteria waived", closer: "sebastian", waived: true, after: "closed"},
 		{name: "the bot's recorded close, criteria waived", closer: "factory-agent", botRecorded: true, waived: true, after: "done"},
 		{name: "an open issue", after: "done"},
@@ -132,19 +144,26 @@ func TestHoldCommentSaysWhatTheCloseWaives(t *testing.T) {
 		name     string
 		c2Met    bool
 		comment  string
-		left     string
 		writer   error
 		by, note string
 		approver bool
 		waived   int
 	}{
 		{"the gate met two of three", false,
-			"This plan still holds production with 3 open criteria. Closing its issue waives nothing: the criteria gate's last run on main met 2 of them, so an approver's Close with a note on the console waives only 1 and ends the plan.",
-			"The last run of the plan's tests on main met 2 of them, so closing drops only the other 1.",
+			"Close this plan and drop its 3 open promises? Until it closes, the plan holds production deploys.\n\n" +
+				"A human closed the plan's card while these promises were open:\n- A link is stored.\n- The feature reads well.\n- The tests in ./... stay green.\n\n" +
+				"The last run of the plan's tests on main met 2 of them, so closing drops only the other 1.\n\n" +
+				"The answers on the board:\n" +
+				"- Drop them and close: Drops the open promises with your reason and closes the plan, so production deploys go on.\n" +
+				"- Keep the plan open: The plan stays open and holds production deploys until an approver closes it.",
 			ErrNotApprover, "sebastian", "moved on", true, 1},
 		{"the gate met every open one", true,
-			"This plan still holds production with 2 open criteria. Closing its issue waives nothing: the criteria gate's last run on main met them, so a Close on the console waives none, needs no note and ends the plan.",
-			"The last run of the plan's tests on main met all of them, so closing drops none.",
+			"Close this plan now? Until it closes, the plan holds production deploys.\n\n" +
+				"A human closed the plan's card while these promises were open:\n- A link is stored.\n- The tests in ./... stay green.\n\n" +
+				"The last run of the plan's tests on main met all of them, so closing drops none.\n\n" +
+				"The answers on the board:\n" +
+				"- Close the plan now: Closes the plan now, so production deploys go on.\n" +
+				"- Keep the plan open: The plan stays open and holds production deploys until an approver closes it.",
 			nil, "mallory", "", false, 0},
 	} {
 		for _, path := range []string{"issue close", "close check"} {
@@ -177,7 +196,7 @@ func TestHoldCommentSaysWhatTheCloseWaives(t *testing.T) {
 				fj.comments = nil
 				reopened := []int64{7}
 				if path == "issue close" {
-					if err := endDonePlan(ctx, s, r.forgejo, s.tasks["t-plan"]); err != nil {
+					if err := r.planHolder().endDonePlan(ctx, s.tasks["t-plan"]); err != nil {
 						t.Fatal(err)
 					}
 				} else {
@@ -185,13 +204,8 @@ func TestHoldCommentSaysWhatTheCloseWaives(t *testing.T) {
 					r.planCloseCheck(ctx, "t-plan")
 					reopened = nil
 				}
-				said := len(fj.comments) == 1 && fj.comments[0] == c.comment
-				if path != "issue close" {
-					// the close check asks on the board, and the issue hears the ask with what a close drops
-					said = len(fj.comments) == 1 && strings.Contains(fj.comments[0], "\n\n"+c.left+"\n\n")
-				}
-				if !said || !slices.Equal(fj.reopened, reopened) || closeRows(s) != 0 {
-					t.Fatalf("comments %q, reopened %v, plan_closed rows %d; want %q or the ask with %q, %v, none", fj.comments, fj.reopened, closeRows(s), c.comment, c.left, reopened)
+				if !slices.Equal(fj.comments, []string{c.comment}) || !slices.Equal(fj.reopened, reopened) || closeRows(s) != 0 {
+					t.Fatalf("comments %q, reopened %v, plan_closed rows %d; want %q, %v, none", fj.comments, fj.reopened, closeRows(s), c.comment, reopened)
 				}
 				if err := r.CheckClosePlan(ctx, "t-plan", "mallory", "", false); !errors.Is(err, c.writer) || (err == nil) != (c.writer == nil) {
 					t.Fatalf("a writer's Close without a note: %v, want %v", err, c.writer)
@@ -437,9 +451,11 @@ func TestPlanIssueActsOnlyAfterTheComment(t *testing.T) {
 	ctx := context.Background()
 	stub := &issueStub{commentsStatus: http.StatusInternalServerError}
 	f := stub.forgejo(t)
-	plan := Task{ID: "t-plan", Repository: "sf/code", IssueNumber: 4, Status: "done", Track: policy.TrackPlan}
-	if err := holdDonePlan(ctx, f, plan, 3, 3); err == nil || len(stub.writes) != 0 {
-		t.Fatalf("holdDonePlan with a failing comment: %v, writes %q; want an error and no write", err, stub.writes)
+	held := newFakeStore()
+	lastRoundCriteriaPlan(t, held, "t-plan", "sf/code", 4)
+	holder := planHolder{store: held, forgejo: f, untrusted: func(_ Task, s string) string { return s }}
+	if err := holder.endDonePlan(ctx, held.tasks["t-plan"]); err == nil || len(stub.writes) != 0 {
+		t.Fatalf("the hold of a done plan's issue with a failing comment: %v, writes %q; want an error and no write", err, stub.writes)
 	}
 	r, s, _ := tenCriteriaPlan(t, "done")
 	if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil {

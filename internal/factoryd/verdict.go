@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
@@ -875,10 +876,10 @@ func ConfirmDeliveredCriteria(ctx context.Context, store Store, id, by, line str
 		case offender.Status == "in-review", offender.Status == "waiting-human":
 			act = "answer it, then confirm again"
 		}
-		return 0, fmt.Errorf("%s is %s: %w: %s", offender.ID, offender.Status, ErrChildOpen, act)
+		return 0, fmt.Errorf("%s is %s: %w: %s", cardName(offender), offender.Status, ErrChildOpen, act)
 	}
 	if i := slices.IndexFunc(g.cards, func(c Task) bool { return c.Status == "closed" }); i >= 0 && line == "" {
-		return 0, fmt.Errorf("%s is closed: %w", g.cards[i].ID, ErrNoEvidence)
+		return 0, fmt.Errorf("%s is closed: %w", cardName(g.cards[i]), ErrNoEvidence)
 	}
 	out := make([]CriterionVerdict, len(open))
 	for i, c := range open {
@@ -1899,6 +1900,22 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 // was withdrawn, and its issue hears the same words once; the live ask of
 // an older set gives way to it.
 func (r *Runner) holdPlan(ctx context.Context, t Task, repo Repo, open, waives []PlanCriterion) {
+	c, opened, err := holdPlanAsk(ctx, r.store, r.timeline, r.Scrub, func(s string) string { return r.untrusted(t, s) }, t, open, waives)
+	if err != nil {
+		log.Printf("plan %s: the hold's ask: %v", t.ID, err)
+		return
+	}
+	if opened && t.IssueNumber != 0 {
+		r.commentOnce(ctx, t, repo, t.IssueNumber, r.untrusted(t, HeldPlanComment(c, t)))
+	}
+}
+
+// holdPlanAsk is the ask of plan t held with its open promises, and
+// whether this call opened it: the case of that set of open promises and
+// of those met on main, which stands unless it was withdrawn. A new set
+// withdraws the live ask of an older one, and its ask row brings it to the
+// inbox and the agent's wake, as every case at the human.
+func holdPlanAsk(ctx context.Context, store Store, tl *Timeline, scrub *redact.Scrubber, untrusted func(string) string, t Task, open, waives []PlanCriterion) (Case, bool, error) {
 	ids, promises := make([]string, 0, len(open)), make([]string, 0, len(open))
 	var met []string
 	for _, c := range open {
@@ -1911,38 +1928,34 @@ func (r *Runner) holdPlan(ctx context.Context, t Task, repo Repo, open, waives [
 	if len(met) > 0 {
 		key += ";met:" + strings.Join(met, ",")
 	}
-	cases, err := r.store.CasesOf(ctx, t.ID)
+	cases, err := store.CasesOf(ctx, t.ID)
 	if err != nil {
-		log.Printf("plan %s: the hold's ask: %v", t.ID, err)
-		return
+		return Case{}, false, err
 	}
-	if slices.ContainsFunc(cases, func(c Case) bool { return c.Kind == CasePlanHeld && c.StateKey == key && c.Status != CaseWithdrawn }) {
-		return
+	if i := slices.IndexFunc(cases, func(c Case) bool { return c.Kind == CasePlanHeld && c.StateKey == key && c.Status != CaseWithdrawn }); i >= 0 {
+		return cases[i], false, nil
 	}
 	for _, c := range cases {
 		if c.Kind == CasePlanHeld && (c.Status == CaseOpen || c.Status == CaseAtHuman) {
-			if err := r.store.WithdrawCase(ctx, c.ID, "the plan's open promises changed"); err != nil {
-				log.Printf("plan %s: the hold's older ask: %v", t.ID, err)
-				return
+			if err := store.WithdrawCase(ctx, c.ID, "the plan's open promises changed"); err != nil {
+				return Case{}, false, err
 			}
 		}
 	}
-	c, opened, err := r.store.OpenCase(ctx, Case{TaskID: t.ID, Repository: t.Repository, Kind: CasePlanHeld, StateKey: key, Status: CaseAtHuman,
+	c, opened, err := store.OpenCase(ctx, Case{TaskID: t.ID, Repository: t.Repository, Kind: CasePlanHeld, StateKey: key, Status: CaseAtHuman,
 		Problem: "the plan holds production with open promises", Facts: map[string]any{"open": ids, "promises": promises, "met_on_main": met}})
 	if err != nil || !opened {
-		if err != nil {
-			log.Printf("plan %s: the hold's ask: %v", t.ID, err)
+		return c, false, err
+	}
+	face := FaceRow(c, t, FactsOf(c), "", nil, untrusted, func(s string) string {
+		if scrub == nil {
+			return redact.New().String(s)
 		}
-		return
-	}
-	if t.IssueNumber != 0 {
-		r.commentOnce(ctx, t, repo, t.IssueNumber, r.untrusted(t, HeldPlanComment(c, t)))
-	}
-	// its ask row brings it to the inbox and the agent's wake, as every
-	// case at the human
-	face := FaceRow(c, t, FactsOf(c), "", nil, func(s string) string { return r.untrusted(t, s) }, r.scrub)
+		return scrub.String(s)
+	})
 	ask, _ := face["ask"].(string)
-	r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, AskRow(c, t, c.Problem, ask, 0, face, nil, nil, r.Scrub.String))
+	tl.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, AskRow(c, t, c.Problem, ask, 0, face, nil, nil, scrub.String))
+	return c, true, nil
 }
 
 // The outcomes of a done plan's criteria gate run (EventCriteriaGateRun):

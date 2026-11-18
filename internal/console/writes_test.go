@@ -1441,7 +1441,9 @@ func TestCloseADonePlan(t *testing.T) {
 		}
 	}
 	equal(t, "the action that fits a done plan", fitting(factoryd.Task{Status: "done", Track: policy.TrackPlan}, capFacts{}),
-		"Close with a note ends a plan that still holds production; a new card continues the work")
+		"`close` with a note ends a plan that still holds production; a new card continues the work")
+	equal(t, "the same as a human reads it", factoryd.ForHuman(fitting(factoryd.Task{Status: "done", Track: policy.TrackPlan}, capFacts{})),
+		"“End the card” with a note ends a plan that still holds production; a new card continues the work")
 	if strings.Contains(body, `role="alert"`) && strings.Contains(body, "the criteria of") {
 		t.Errorf("the board shows a problem for a plan's criteria")
 	}

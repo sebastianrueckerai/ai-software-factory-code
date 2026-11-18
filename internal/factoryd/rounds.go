@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // filingRound is the planning round the next revision of a plan files:
@@ -270,7 +271,7 @@ func (r *Runner) nextRound(ctx context.Context, parent string) error {
 		if _, pending, err := r.pendingReplan(ctx, t); err != nil || pending {
 			return err
 		}
-		return endDonePlan(ctx, r.store, r.forgejo, t)
+		return r.planHolder().endDonePlan(ctx, t)
 	}
 	cards, err := PlanWaits(ctx, r.store, parent)
 	if err != nil || !roundComplete(p, cards) {
@@ -285,7 +286,7 @@ func (r *Runner) nextRound(ctx context.Context, parent string) error {
 		return err
 	}
 	if counts {
-		return endDonePlan(ctx, r.store, r.forgejo, t)
+		return r.planHolder().endDonePlan(ctx, t)
 	}
 	if !pending {
 		wrote, err := r.timeline.AppendUnlessPending(ctx, t.ID, stepReplan,
@@ -352,66 +353,63 @@ func ClosablePlan(t Task) bool {
 	return t.Track == policy.TrackPlan && (t.Status == "done" || t.Status == "failed" || t.Status == "closed")
 }
 
+// planHolder is what the hold of a done plan's issue writes with: the
+// store and the timeline of the ask, the forge of its comment, and the
+// cleaning of text posted on the plan's repository.
+type planHolder struct {
+	store     Store
+	forgejo   *Forgejo
+	timeline  *Timeline
+	scrub     *redact.Scrubber
+	untrusted func(Task, string) string
+}
+
 // endDonePlan takes a close that counts of done plan t's issue: the card
-// ends closed once its plan_closed row stands (a console Close wrote it
-// with the waivers) or no criterion is open. A plan that still holds
-// production with open criteria stays done, its issue opens again and says
-// once what a Close on the console waives (holdComment): a writer's close
-// of the issue waives nothing.
-func endDonePlan(ctx context.Context, store Store, f *Forgejo, t Task) error {
-	_, closed, err := store.PlanClosed(ctx, t.ID)
+// ends closed once its plan_closed row stands (a close on the board wrote
+// it) or no promise is open. A plan that still holds production with open
+// promises stays done: it asks on the board what the close check of a
+// closed plan asks (holdPlanAsk), its issue hears that ask once
+// (HeldPlanComment) and opens again, since a close of the issue drops
+// nothing. A comment that failed is tried again with the next close.
+func (h planHolder) endDonePlan(ctx context.Context, t Task) error {
+	_, closed, err := h.store.PlanClosed(ctx, t.ID)
 	if err != nil {
 		return err
 	}
 	if !closed {
-		p, _, err := planOfStore(ctx, store, t.ID, "")
+		p, _, err := planOfStore(ctx, h.store, t.ID, "")
 		if err != nil {
 			return err
 		}
-		open, _, err := planOpen(ctx, store, t.ID, p)
+		open, _, err := planOpen(ctx, h.store, t.ID, p)
 		if err != nil {
 			return err
 		}
 		if len(open) > 0 {
-			waives, _, err := closeOpen(ctx, store, t.ID, p)
+			waives, _, err := closeOpen(ctx, h.store, t.ID, p)
 			if err != nil {
 				return err
 			}
-			return holdDonePlan(ctx, f, t, len(open), len(waives))
+			repo, err := SplitRepo(t.Repository)
+			if err != nil {
+				return err
+			}
+			c, _, err := holdPlanAsk(ctx, h.store, h.timeline, h.scrub, func(s string) string { return h.untrusted(t, s) }, t, open, waives)
+			if err != nil {
+				return err
+			}
+			if err := h.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, h.untrusted(t, HeldPlanComment(c, t))); err != nil {
+				return err
+			}
+			return h.forgejo.ReopenIssue(ctx, repo.Owner, repo.Name, t.IssueNumber)
 		}
 	}
-	return store.TransitionTask(ctx, t.ID, []string{"done"}, "closed")
+	return h.store.TransitionTask(ctx, t.ID, []string{"done"}, "closed")
 }
 
-// holdDonePlan says once that plan t's held open criteria keep it holding
-// production, of which a Close waives waives, then opens its issue again:
-// a comment that failed is tried again with the reopen.
-func holdDonePlan(ctx context.Context, f *Forgejo, t Task, held, waives int) error {
-	repo, err := SplitRepo(t.Repository)
-	if err != nil {
-		return err
-	}
-	if err := f.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, holdComment(held, waives)); err != nil {
-		return err
-	}
-	return f.ReopenIssue(ctx, repo.Owner, repo.Name, t.IssueNumber)
-}
-
-// holdComment is what a plan's issue hears when the plan still holds
-// production with held open criteria (planOpen), of which a Close on the
-// console waives waives (closeOpen): the others the criteria gate's last
-// run on main met. A Close that waives none needs no approver and no note
-// (planCloseOpen).
-func holdComment(held, waives int) string {
-	lead := fmt.Sprintf("This plan still holds production with %s. Closing its issue waives nothing: ", OpenCriteriaPhrase(held))
-	switch {
-	case waives == 0:
-		return lead + "the criteria gate's last run on main met them, so a Close on the console waives none, needs no note and ends the plan."
-	case waives < held:
-		return lead + fmt.Sprintf("the criteria gate's last run on main met %d of them, so an approver's Close with a note on the console waives only %d and ends the plan.",
-			held-waives, waives)
-	}
-	return lead + "an approver's Close with a note on the console waives them and ends the plan."
+// planHolder is the runner's hold of a done plan's issue.
+func (r *Runner) planHolder() planHolder {
+	return planHolder{store: r.store, forgejo: r.forgejo, timeline: r.timeline, scrub: r.Scrub, untrusted: r.untrusted}
 }
 
 // OpenCriteriaPhrase counts n open criteria in words: "1 open criterion",

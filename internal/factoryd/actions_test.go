@@ -1390,6 +1390,18 @@ func TestSettlingCriteriaByWordIsTheHumans(t *testing.T) {
 			t.Errorf("%s: the human's refusal = %q, want none", c.name, got)
 		}
 	}
+	// over a closed card rung 2 hears at once that the answer is the human's,
+	// with a note or with none; the human hears that the note is missing
+	closed := CaseFacts{Kind: CasePlanCriteria, ClosedCard: true}
+	confirm, _ := ActionByName(ActConfirmCriteria)
+	for _, note := range []string{"", "main holds every page"} {
+		if got := confirm.refusal(closed, 2, Resolution{Action: ActConfirmCriteria, Note: note}); got != want {
+			t.Errorf("rung 2's confirmation over a closed card with the note %q = %q, want %q", note, got, want)
+		}
+	}
+	if got := confirm.refusal(closed, 3, Resolution{Action: ActConfirmCriteria}); got != "a card of the plan ended closed, so the work is enough only with your evidence: the note" {
+		t.Errorf("the human's confirmation with no note over a closed card = %q", got)
+	}
 	grant, _ := ActionByName(ActGrantCriteria)
 	if got := grant.refusal(criteria, 2, Resolution{Action: ActGrantCriteria}); got != "" {
 		t.Errorf("rung 2's grant = %q, want it taken", got)

@@ -23,6 +23,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -1499,7 +1500,13 @@ func (in *Intake) endByClose(ctx context.Context, t Task, closer string) error {
 		if later, err := leavesRounds(ctx, in.Store, t.ID); closer == in.BotUser && (err != nil || !later) {
 			return err
 		}
-		return endDonePlan(ctx, in.Store, in.Forgejo, t)
+		return planHolder{store: in.Store, forgejo: in.Forgejo, timeline: in.Timeline, scrub: in.Scrub, untrusted: func(t Task, s string) string {
+			var tree policy.Tree
+			if in.Policy != nil {
+				tree = in.Policy()
+			}
+			return sanitize.Outbound(s, OutboundHosts(tree, in.Forgejo.PublicURL, t.Repository))
+		}}.endDonePlan(ctx, t)
 	}
 	_, err := in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
 	return err

@@ -203,7 +203,7 @@ func fitting(t factoryd.Task, f capFacts) string {
 		return "steer sends its session a message; its pull request comes when the session ends"
 	case "queued", "waiting-deps":
 		if t.Held() {
-			return "it is on hold, and the human's `release_hold` lets it start"
+			return "it is on hold until a human releases it with `release_hold`"
 		}
 		return "nothing to do until it starts"
 	case "waiting-image":
@@ -223,7 +223,7 @@ func fitting(t factoryd.Task, f capFacts) string {
 		return "close ends it (close)"
 	case "done", "closed":
 		if t.Track == policy.TrackPlan && t.Status == "done" {
-			return "Close with a note ends a plan that still holds production; a new card continues the work"
+			return "`close` with a note ends a plan that still holds production; a new card continues the work"
 		}
 		return "a new card continues the work"
 	}
@@ -1283,6 +1283,16 @@ var approverRules = map[string]accessRule{
 	factoryd.AnswerDropAndEnd:   {need: approver, scope: scCard, what: "close a plan with open promises"},
 }
 
+// retryRule is the access rule of a retry of card t: a freeze card's retry
+// ends its class's freeze.
+func retryRule(t factoryd.Task) accessRule {
+	rule := accessTable["retry"]
+	if t.Source == factoryd.SourceFreezeCard {
+		rule.what = "end a provider freeze"
+	}
+	return rule
+}
+
 // doCardAnswer presses card id's own action key, one its Other actions
 // list (factoryd.MoreOf) where no case holds the card: its door, after the
 // action's access rule, with the press's fields read by field. Not now
@@ -1918,13 +1928,16 @@ func (c *Console) callActWork(ctx context.Context, a actor, t factoryd.Task, cas
 	if !ok && res.Fund != nil && res.Fund.EUR > 0 {
 		rule, ok = accessTable["fund"], true
 	}
+	if res.Action == factoryd.ActRetry {
+		rule = retryRule(t)
+	}
 	if ok && a.rung() == 3 {
 		if err := c.admit(ctx, rule, a, t.Repository, issueRef(t.ID, t.IssueNumber)); err != nil {
 			return factoryd.ActResult{}, err
 		}
 	}
 	if res.Action == factoryd.ActRetry {
-		if err := c.admit(ctx, accessTable["retry"], a, t.Repository, "task "+t.ID); err != nil {
+		if err := c.admit(ctx, rule, a, t.Repository, "task "+t.ID); err != nil {
 			return factoryd.ActResult{}, err
 		}
 	}
@@ -3597,7 +3610,7 @@ func (c *Console) confirmCriteria(ctx context.Context, a actor, q factoryd.Appro
 	case errors.Is(err, factoryd.ErrChildOpen):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Cannot confirm the delivered cards: %v.", err))
 	case errors.Is(err, factoryd.ErrNoEvidence):
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Cannot confirm the delivered cards: %v. Type the line that shows main meets the criteria, then confirm again.", err))
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Cannot confirm the delivered cards: %v. Type the line that shows main meets the promises, then confirm again.", err))
 	case errors.Is(err, factoryd.ErrNotPerson):
 		return "", refuse(http.StatusConflict, err.Error())
 	case errors.Is(err, factoryd.ErrNotFound):

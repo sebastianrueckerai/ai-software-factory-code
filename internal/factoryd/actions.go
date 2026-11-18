@@ -423,8 +423,8 @@ var Actions = []Action{
 	}},
 	{Name: ActAnswerCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
 		switch verdict := argString(r.Args, "verdict"); {
-		case criteriaCaseRefusal(f, ActAnswerCriteria, r.Note) != "":
-			return criteriaCaseRefusal(f, ActAnswerCriteria, r.Note)
+		case criteriaCaseRefusal(f, ActAnswerCriteria) != "":
+			return criteriaCaseRefusal(f, ActAnswerCriteria)
 		case verdict != "met" && verdict != "not_met" && verdict != "waive":
 			return "an answer to a promise takes one verdict: `answer_criteria` with `met`, `answer_criteria` with `not_met` or `answer_criteria` with `waive`"
 		case argString(r.Args, "criterion") == "":
@@ -435,10 +435,10 @@ var Actions = []Action{
 		return ""
 	}},
 	{Name: ActGrantCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
-		return criteriaCaseRefusal(f, ActGrantCriteria, r.Note)
+		return criteriaCaseRefusal(f, ActGrantCriteria)
 	}},
 	{Name: ActConfirmCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
-		return criteriaCaseRefusal(f, ActConfirmCriteria, r.Note)
+		return cmp.Or(criteriaCaseRefusal(f, ActConfirmCriteria), noEvidenceRefusal(f, r.Note))
 	}},
 	{Name: ActRunCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
 		switch {
@@ -593,7 +593,7 @@ var probes = map[string]Resolution{
 // plan_criteria case, which alone holds one; one more card builds only
 // what is open, and the work is enough only once the plan's cards are
 // delivered.
-func criteriaCaseRefusal(f CaseFacts, action, note string) string {
+func criteriaCaseRefusal(f CaseFacts, action string) string {
 	switch {
 	case action == ActAnswerCriteria && f.Kind != CasePlanCriteria && !(f.Kind == CaseMergeApproval && f.Criteria):
 		return "`answer_criteria` judges a plan's criteria, and this ask holds none"
@@ -603,7 +603,14 @@ func criteriaCaseRefusal(f CaseFacts, action, note string) string {
 		return "every promise is met or dropped, so no card is left to build"
 	case action == ActConfirmCriteria && f.Undelivered:
 		return "a card of the plan is not delivered yet, so the work is not done"
-	case action == ActConfirmCriteria && f.ClosedCard && strings.TrimSpace(note) == "":
+	}
+	return ""
+}
+
+// noEvidenceRefusal refuses a confirmation with no note over a plan a
+// card of which ended closed.
+func noEvidenceRefusal(f CaseFacts, note string) string {
+	if f.ClosedCard && strings.TrimSpace(note) == "" {
 		return "a card of the plan ended closed, so the work is enough only with your evidence: the note"
 	}
 	return ""
@@ -793,7 +800,7 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	if slices.Contains(rerunGates, a.Name) && slices.Contains(f.Partial, partialTimeline) {
 		return timelineUnread(a.Name, rung)
 	}
-	if rung == 2 && slices.Contains(humanWordActions, a.Name) && criteriaCaseRefusal(f, a.Name, r.Note) == "" {
+	if rung == 2 && slices.Contains(humanWordActions, a.Name) && criteriaCaseRefusal(f, a.Name) == "" {
 		return ErrNotPerson.Error()
 	}
 	if why := a.Applies(f, r); why != "" {

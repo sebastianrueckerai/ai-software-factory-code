@@ -66,7 +66,7 @@ func TestRetryNowPressesTheRetrySwitch(t *testing.T) {
 		req.Header.Set("HX-Request", "true")
 		return r.do(req, ck)
 	}
-	if rec := press(ak, as.csrf); rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != "Only the approvers of project ai-software-factory-code may retry a card." ||
+	if rec := press(ak, as.csrf); rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != "Only the approvers of project ai-software-factory-code may end a provider freeze." ||
 		len(r.acted) != 0 {
 		t.Fatalf("alice presses: %d %q, Act took %+v", rec.Code, rec.Body, r.acted)
 	}
@@ -142,7 +142,7 @@ func TestTheChatsRetryOnAFreezeCardGoesToAct(t *testing.T) {
 	r.actErr = nil
 	for _, decider := range []string{"member", "agent"} {
 		if _, err := runToolAs(t, r, "alice", "answer", decider, toolInput{TaskID: "t-fz", Action: factoryd.ActRetry}); err == nil ||
-			err.Error() != "Only the approvers of project ai-software-factory-code may retry a card." {
+			err.Error() != "Only the approvers of project ai-software-factory-code may end a provider freeze." {
 			t.Fatalf("alice's retry as %s = %v, want the approvers' refusal", decider, err)
 		}
 	}
