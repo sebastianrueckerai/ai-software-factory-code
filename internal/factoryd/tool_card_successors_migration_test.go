@@ -30,7 +30,7 @@ func TestToolCardSuccessorsMigrationCarriesTheImage(t *testing.T) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	const name = "factoryd/20261121120000_tool_card_successors.sql"
+	const name = "factoryd/20261121120500_tool_card_successors.sql"
 	entries, err := os.ReadDir("../schema/migrations/factoryd")
 	if err != nil {
 		t.Fatal(err)

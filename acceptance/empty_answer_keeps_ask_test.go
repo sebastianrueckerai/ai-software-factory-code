@@ -178,8 +178,10 @@ func newParkRig(t *testing.T) *parkRig {
 	// ran, so its projects row holds the tokens and the trust gate reads
 	// its assignees and collaborators, not the org teams of a seed
 	v := acceptancePolicyVersion()
+	// the member approves the project: an extend is an approver's answer on
+	// every door, the chat's among them
 	v.Tree.Projects[parkProject] = policy.ProjectConfig{Repository: parkRepo, Process: "maintenance",
-		Objects: policy.ObjectsFactory, Agents: policy.AgentsCoder}
+		Objects: policy.ObjectsFactory, Agents: policy.AgentsCoder, Approvers: []string{parkMember}}
 	if _, _, err := store.RecordPolicy(ctx, v.Commit, v.Tree); err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +438,7 @@ func (r *parkRig) login(t *testing.T) (*http.Cookie, string) {
 	if rec.Code != http.StatusSeeOther || session == nil {
 		t.Fatalf("the OAuth callback = %d, session cookie set: %v", rec.Code, session != nil)
 	}
-	req = httptest.NewRequest(http.MethodGet, "/board", nil)
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
 	req.AddCookie(session)
 	rec = httptest.NewRecorder()
 	r.console.ServeHTTP(rec, req)
@@ -535,7 +537,7 @@ func TestTheWebhooksEmptyAnswerKeepsTheCapAskLive(t *testing.T) {
 	if page.Code != http.StatusOK {
 		t.Fatalf("the case fragment = %d: %s", page.Code, page.Body.String())
 	}
-	if !strings.Contains(page.Body.String(), "agent time is used up") {
+	if !strings.Contains(page.Body.String(), "The card used its agent time") {
 		t.Fatalf("the case fragment lacks the ask's sentence:\n%s", page.Body.String())
 	}
 }
