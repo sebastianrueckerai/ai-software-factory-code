@@ -1466,8 +1466,8 @@ var planConfirmFace = FaceSpec{
 	},
 }
 
-// planConfirmWhy is why a plan's confirmation asks, on its face and on
-// its row, which the inbox's message says.
+// planConfirmWhy is why a plan's confirmation asks: on its row, which the
+// inbox's message says, and on its face while no extra promise waits.
 const planConfirmWhy = "The plan's cards and promises are fixed only once a human confirms them."
 
 // firstAsk is the first of asks that reads as an ask.

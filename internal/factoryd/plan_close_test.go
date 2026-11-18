@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -592,8 +593,9 @@ func TestAHeldPlanAsksAgainAfterAWithdrawalAndOnANewSet(t *testing.T) {
 
 // A held plan whose last open promise gets its verdict without the Close,
 // by Drop this promise or by a gate run's rows, closes by the factory's
-// own close check, and that close ends the held ask: none stands at the
-// human on a closed plan, and its inbox row settles.
+// own close check, and that close ends the held ask: the factory
+// withdraws it, as every promise is settled, and none stands at the
+// human on the closed plan.
 func TestTheFactorysCloseEndsTheHeldAsk(t *testing.T) {
 	ctx := context.Background()
 	for _, path := range []string{"drop", "gate rows"} {
@@ -601,6 +603,11 @@ func TestTheFactorysCloseEndsTheHeldAsk(t *testing.T) {
 			r, s, _ := tenCriteriaPlan(t, "done")
 			setStatus(s, "t-plan", "closed")
 			r.planCloseCheck(ctx, "t-plan")
+			i := slices.IndexFunc(s.cases, func(c Case) bool { return c.Kind == CasePlanHeld })
+			if i < 0 || s.cases[i].Status != CaseAtHuman || slices.ContainsFunc(s.cases[i+1:], func(c Case) bool { return c.Kind == CasePlanHeld }) {
+				t.Fatalf("the held plan's cases = %+v, want one held ask at the human", s.cases)
+			}
+			heldID := s.cases[i].ID
 			var settle []CriterionVerdict
 			for i := 1; i <= 10; i++ {
 				id := fmt.Sprintf("k%d", i)
@@ -625,6 +632,11 @@ func TestTheFactorysCloseEndsTheHeldAsk(t *testing.T) {
 				if c.Kind == CasePlanHeld && (c.Status == CaseOpen || c.Status == CaseAtHuman) {
 					t.Fatalf("the held ask %d stands %s on the closed plan", c.ID, c.Status)
 				}
+			}
+			ended := s.cases[slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == heldID })]
+			if want := (CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: "every promise of the plan is settled, and the plan closed"}); ended.Status != CaseWithdrawn ||
+				ended.Resolution == nil || !reflect.DeepEqual(*ended.Resolution, want) {
+				t.Fatalf("the held ask ended %s by %+v, want withdrawn by %+v", ended.Status, ended.Resolution, want)
 			}
 		})
 	}

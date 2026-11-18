@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -450,51 +451,69 @@ func TestAttachAnalysisReachesAMergeRow(t *testing.T) {
 	}
 }
 
-// A plan's request stands beside its revision's open question and its
-// confirmation, asked after it: the request is the revision's
-// bookkeeping, and the question stands before the confirmation on the
-// card, so the analysis attaches to the question's case and shows there.
+// A plan's request stands beside its revision's two open questions and,
+// asked after them, its confirmation when the plan has one: the request
+// is the revision's bookkeeping, and the card opens on the first
+// question, so the analysis attaches to that question's case and shows
+// there, on no other page.
 func TestAttachAnalysisOnAPlanTakesItsOpenQuestion(t *testing.T) {
-	s := newAskStore(t)
-	ctx := t.Context()
-	card := Task{ID: "t-plan", Kind: "agent", Status: "waiting-human", Repository: "sf/wake", IssueNumber: 42, Objective: "Members page", Track: "plan"}
-	if err := s.CreateTask(ctx, card); err != nil {
-		t.Fatal(err)
-	}
-	q := PlanQuestion{Text: "How far back does the feed page by default?", Choices: []string{"One day", "One week"},
-		Changes: []string{"The feed shows the last day.", "The feed shows the last week."}}
-	if _, err := s.Record(ctx, Event{Repository: "sf/wake", TaskID: card.ID, IssueNumber: 42, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail: PlanQuestionRow(q, 1, 0)}); err != nil {
-		t.Fatal(err)
-	}
-	confirm := PlanQuestion{Kind: QuestionConfirmation, Text: ConfirmationQuestion(1, Plan{Criteria: []PlanCriterion{{ID: "feed_reads_fast", Kind: CriterionTest}}})}
-	if _, err := s.Record(ctx, Event{Repository: "sf/wake", TaskID: card.ID, IssueNumber: 42, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail: ConfirmationRow(confirm, 1, 1)}); err != nil {
-		t.Fatal(err)
-	}
-	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: card.ID, Project: "sf/wake", Spec: []byte(`{"revision":1}`),
-		Reason: PlanApprovalReason(1, 42, 4, 1)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Record(ctx, Event{Repository: "sf/wake", TaskID: card.ID, IssueNumber: 42, Kind: EventApprovalRequested, Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail: map[string]any{"approval": id, "kind": ApprovalPlan, "revision": 1, "cards": 4}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.AttachAnalysis(ctx, card.ID, "A week of rows fits one page on a busy day.", "", sebastiansAnalysis); err != nil {
-		t.Fatalf("AttachAnalysis: %v", err)
-	}
-	cases, err := s.OpenCasesOf(ctx, card.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cases) != 2 || cases[0].Kind != CasePlanQuestion || cases[1].Kind != CasePlanConfirmation {
-		t.Fatalf("the card's live cases = %+v, want its plan question and its confirmation", cases)
-	}
-	if got := deskAnalysis(t, s, "sf/wake", cases[0].ID); got != "The project agent found: A week of rows fits one page on a busy day." {
-		t.Fatalf("the question's case shows %q", got)
-	}
-	if got := deskAnalysis(t, s, "sf/wake", cases[1].ID); got != "" {
-		t.Fatalf("the confirmation's case shows %q, want no analysis", got)
+	for _, confirmed := range []bool{true, false} {
+		t.Run(fmt.Sprintf("confirmation %v", confirmed), func(t *testing.T) {
+			s := newAskStore(t)
+			ctx := t.Context()
+			// a card of its own: the store keeps the cases of the run before
+			card := Task{ID: fmt.Sprintf("t-plan-%v", confirmed), Kind: "agent", Status: "waiting-human", Repository: "sf/wake", IssueNumber: 42, Objective: "Members page", Track: "plan"}
+			if err := s.CreateTask(ctx, card); err != nil {
+				t.Fatal(err)
+			}
+			ask := func(detail map[string]any) {
+				t.Helper()
+				if _, err := s.Record(ctx, Event{Repository: "sf/wake", TaskID: card.ID, IssueNumber: 42, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+					Detail: detail}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ask(PlanQuestionRow(PlanQuestion{Text: "How far back does the feed page by default?", Choices: []string{"One day", "One week"},
+				Changes: []string{"The feed shows the last day.", "The feed shows the last week."}}, 1, 1))
+			ask(PlanQuestionRow(PlanQuestion{Text: "Who may read the feed?", Choices: []string{"Every human", "The project's humans"},
+				Changes: []string{"The feed is open.", "The feed asks for a login."}}, 1, 2))
+			want := []CaseKind{CasePlanQuestion, CasePlanQuestion}
+			if confirmed {
+				ask(ConfirmationRow(PlanQuestion{Kind: QuestionConfirmation,
+					Text: ConfirmationQuestion(1, Plan{Criteria: []PlanCriterion{{ID: "feed_reads_fast", Kind: CriterionTest}}})}, 1, 3))
+				want = append(want, CasePlanConfirmation)
+			}
+			id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: card.ID, Project: "sf/wake", Spec: []byte(`{"revision":1}`),
+				Reason: PlanApprovalReason(1, 42, 4, len(want))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Record(ctx, Event{Repository: "sf/wake", TaskID: card.ID, IssueNumber: 42, Kind: EventApprovalRequested, Actor: FactoryDecider, Via: ViaFactoryd,
+				Detail: map[string]any{"approval": id, "kind": ApprovalPlan, "revision": 1, "cards": 4}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.AttachAnalysis(ctx, card.ID, "A week of rows fits one page on a busy day.", "", sebastiansAnalysis); err != nil {
+				t.Fatalf("AttachAnalysis: %v", err)
+			}
+			cases, err := s.OpenCasesOf(ctx, card.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var kinds []CaseKind
+			for _, c := range cases {
+				kinds = append(kinds, c.Kind)
+			}
+			if !slices.Equal(kinds, want) || cases[0].Problem != "How far back does the feed page by default?" {
+				t.Fatalf("the card's live cases = %+v, want %v, the first question first", cases, want)
+			}
+			if got := deskAnalysis(t, s, "sf/wake", cases[0].ID); got != "The project agent found: A week of rows fits one page on a busy day." {
+				t.Fatalf("the first question's case shows %q", got)
+			}
+			for _, c := range cases[1:] {
+				if got := deskAnalysis(t, s, "sf/wake", c.ID); got != "" {
+					t.Errorf("case %d (%s) shows %q, want no analysis", c.ID, c.Kind, got)
+				}
+			}
+		})
 	}
 }
