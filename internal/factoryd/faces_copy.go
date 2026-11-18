@@ -41,8 +41,7 @@ const (
 	AnswerClosePlan   = "close_plan"
 )
 
-// KeyPark is the key of the Not now that writes nothing: a human card's
-// wait, and the page of a request no case holds.
+// KeyPark is the key of the Not now with no note field.
 const KeyPark = ActNote + "/" + variantPark
 
 // The variants of the vocabulary: the form of an action for one class of

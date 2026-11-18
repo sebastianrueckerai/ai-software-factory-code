@@ -1274,7 +1274,8 @@ var approverRules = map[string]accessRule{
 
 // doCardAnswer presses card id's own action key, one its Other actions
 // list (factoryd.MoreOf) where no case holds the card: its door, after the
-// action's access rule, with the press's fields read by field.
+// action's access rule, with the press's fields read by field. Not now
+// (factoryd.KeyPark) on a request no case holds leaves the card as it is.
 func (c *Console) doCardAnswer(ctx context.Context, a actor, id, key string, field func(string) string) (string, error) {
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {

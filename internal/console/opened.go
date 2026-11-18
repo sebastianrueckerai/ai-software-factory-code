@@ -809,7 +809,7 @@ func requestForm(v *boardView, k card, ap approvalCard, a factoryd.Answer) (*pre
 	case a.Action == factoryd.AnswerRevisePlan:
 		p.Post = "/tasks/" + k.ID + "/plan/changes"
 		return p, named("text")
-	case a.Action == factoryd.AnswerDropAndEnd || a.Action == factoryd.AnswerClosePlan:
+	case a.Action == factoryd.AnswerClosePlan:
 		return planClosePress(p, k)
 	case a.Key() == factoryd.KeyPark:
 		// Not now on a request no case holds: the card keeps waiting

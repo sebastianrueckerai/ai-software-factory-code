@@ -901,6 +901,10 @@ func TestARequestsPageTakesCloseAndNotNow(t *testing.T) {
 	if p, _ := requestForm(v, k, ap, plain); p != nil {
 		t.Errorf("a Not now that keeps a note posts %+v on a request, and no case holds the note", p)
 	}
+	dropAndEnd, _ := factoryd.AnswerOf(factoryd.AnswerDropAndEnd)
+	if p, _ := requestForm(v, k, ap, dropAndEnd); p != nil {
+		t.Errorf("Drop them and close posts %+v on a request, and no request offers it past the approver's check", p)
+	}
 	if !mayAnswer(v, k, factoryd.AnswerClosePlan) || mayAnswer(v, k, factoryd.AnswerDropAndEnd) {
 		t.Error("a writer who approves nothing: Close the plan now is not theirs, or Drop them and close is")
 	}
