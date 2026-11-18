@@ -658,6 +658,22 @@ func TestExportFixtureRefusalNamesTheClassPositionAndAction(t *testing.T) {
 	}
 }
 
+// The fixture of the successor that carries a plan card's key names its
+// plan, and its brief is the planner's.
+func TestExportFixtureOfAPlanCardsSuccessorNamesItsPlan(t *testing.T) {
+	ctx := context.Background()
+	g := newFixtureSeed(t, "t-sc", 1430)
+	g.extra(t, Task{ID: "t-plan", IssueNumber: 1400, Track: "plan", Source: "webhook"})
+	if _, err := g.store.db.ExecContext(ctx, `UPDATE tasks SET plan_name = 'divide panels' WHERE id = 't-plan';
+		UPDATE tasks SET source = 'successor', parent_task = 't-plan', plan_key = 'panels' WHERE id = 't-sc'`); err != nil {
+		t.Fatal(err)
+	}
+	fx, _ := g.export(t, 1430)
+	if p := fx.Card.Plan; p == nil || p.Issue != 1400 || p.Name != "divide panels" || fx.Card.Objective != "[written by a model, 39 bytes]" {
+		t.Fatalf("the successor's plan %+v, brief %q; want plan #1400 divide panels and the planner's brief", p, fx.Card.Objective)
+	}
+}
+
 // The brief's label names who wrote it.
 func TestExportFixtureLabelsABriefByItsAuthor(t *testing.T) {
 	for source, want := range map[string]string{

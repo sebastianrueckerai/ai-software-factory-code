@@ -94,6 +94,9 @@ type Kube interface {
 	PodStatus(ctx context.Context, namespace, name string) (phase string, exitCode int32, err error)
 	// PodIP is the running pod's address; ErrNotFound before it has one.
 	PodIP(ctx context.Context, namespace, name string) (string, error)
+	// PodEnv is the env values the pod's container was created with;
+	// ErrNotFound when the pod has no such container.
+	PodEnv(ctx context.Context, namespace, name, container string) (map[string]string, error)
 	// PodInitFinished is when the pod's first init container exited 0
 	// with the termination message "ready"; false otherwise.
 	PodInitFinished(ctx context.Context, namespace, name string) (time.Time, bool, error)
@@ -547,6 +550,33 @@ func (k *InClusterKube) PodIP(ctx context.Context, namespace, name string) (stri
 		return "", fmt.Errorf("pod %s/%s has no address yet: %w", namespace, name, ErrNotFound)
 	}
 	return pod.Status.PodIP, nil
+}
+
+func (k *InClusterKube) PodEnv(ctx context.Context, namespace, name, container string) (map[string]string, error) {
+	var pod struct {
+		Spec struct {
+			Containers []struct {
+				Name string `json:"name"`
+				Env  []struct {
+					Name  string `json:"name"`
+					Value string `json:"value"`
+				} `json:"env"`
+			} `json:"containers"`
+		} `json:"spec"`
+	}
+	if err := k.getJSON(ctx, "/api/v1/namespaces/"+namespace+"/pods/"+name, &pod); err != nil {
+		return nil, err
+	}
+	for _, c := range pod.Spec.Containers {
+		if c.Name == container {
+			env := map[string]string{}
+			for _, e := range c.Env {
+				env[e.Name] = e.Value
+			}
+			return env, nil
+		}
+	}
+	return nil, fmt.Errorf("pod %s/%s has no container %s: %w", namespace, name, container, ErrNotFound)
 }
 
 // PodInitFinished is when the pod's first init container exited 0 with

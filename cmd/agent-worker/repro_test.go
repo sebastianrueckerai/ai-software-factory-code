@@ -737,6 +737,108 @@ func TestProofsRunCheckTestPerEntry(t *testing.T) {
 	}
 }
 
+// A test its suite's directory declares no more runs in the one directory
+// that declares it, which the run names, a subtest by its whole name; two
+// that declare it keep the suite and are named. A test in place, an entry
+// with a file and a suite of more than one directory run as named. The
+// search reads what go reads: no testdata, vendor, dot or underscore
+// directory, no link and no file past maxTestFile.
+func TestProofsRunAMovedTestWhereItWent(t *testing.T) {
+	declares := func(pkg string) string {
+		return "package " + pkg + "\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) {}\n"
+	}
+	tree := func(t *testing.T, repo string, files map[string]string) {
+		t.Helper()
+		for name, content := range files {
+			if err := writeRegular(repo, name, content); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	movedToB := map[string]string{"a/a.go": "package a\n", "b/b_test.go": declares("b")}
+	for name, tc := range map[string]struct {
+		setup    func(t *testing.T, repo string)
+		proof    harness.Proof
+		first    string
+		suite    string
+		declared []string
+	}{
+		"moved to one directory": {
+			setup: func(t *testing.T, repo string) { tree(t, repo, movedToB) },
+			proof: harness.Proof{ID: "x", Suite: "./a", Name: "TestX"},
+			first: "argc=3 test ./b TestX", suite: "./b",
+		},
+		"its package gone": {
+			setup: func(t *testing.T, repo string) { tree(t, repo, map[string]string{"b/b_test.go": declares("b")}) },
+			proof: harness.Proof{ID: "x", Suite: "./a", Name: "TestX"},
+			first: "argc=3 test ./b TestX", suite: "./b",
+		},
+		"a subtest": {
+			setup: func(t *testing.T, repo string) { tree(t, repo, movedToB) },
+			proof: harness.Proof{ID: "x", Suite: "./a", Name: "TestX/sub"},
+			first: "argc=3 test ./b TestX/sub", suite: "./b",
+		},
+		"declared in two directories": {
+			setup: func(t *testing.T, repo string) {
+				tree(t, repo, map[string]string{"a/a.go": "package a\n", "b/b_test.go": declares("b"), "c/c_test.go": declares("c")})
+			},
+			proof: harness.Proof{ID: "x", Suite: "./a", Name: "TestX"},
+			first: "argc=3 test ./a TestX", declared: []string{"./b", "./c"},
+		},
+		"in place": {
+			setup: func(t *testing.T, repo string) {
+				tree(t, repo, map[string]string{"a/a_test.go": declares("a"), "b/b_test.go": declares("b"), "c/c_test.go": declares("c")})
+			},
+			proof: harness.Proof{ID: "x", Suite: "./a", Name: "TestX"},
+			first: "argc=3 test ./a TestX",
+		},
+		"an entry with a file": {
+			setup: func(t *testing.T, repo string) { tree(t, repo, movedToB) },
+			proof: harness.Proof{ID: "x", Suite: "./a", Name: "TestX", File: &harness.ProofFile{Path: "a/x_test.go", Content: "package a\n"}},
+			first: "argc=3 test ./a TestX",
+		},
+		"every package": {
+			setup: func(t *testing.T, repo string) { tree(t, repo, movedToB) },
+			proof: harness.Proof{ID: "x", Suite: "./...", Name: "TestX"},
+			first: "argc=3 test ./... TestX",
+		},
+		"past what go reads": {
+			setup: func(t *testing.T, repo string) {
+				tree(t, repo, movedToB)
+				tree(t, repo, map[string]string{
+					"testdata/t_test.go": declares("t"), "vendor/v/v_test.go": declares("v"), ".hidden/h_test.go": declares("h"), "_old/o_test.go": declares("o"),
+					"d/d_test.go": declares("d") + strings.Repeat("\n", maxTestFile),
+					"e/e_test.go": "package e\n\n// func TestX(t *testing.T) went to b\nfunc TestXY(t *testing.T) {}\n",
+				})
+				outside := t.TempDir()
+				if err := os.WriteFile(filepath.Join(outside, "l_test.go"), []byte(declares("l")), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, filepath.Join(repo, "l")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(filepath.Join(repo, "g"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(outside, "l_test.go"), filepath.Join(repo, "g", "g_test.go")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			proof: harness.Proof{ID: "x", Suite: "./a", Name: "TestX"},
+			first: "argc=3 test ./b TestX", suite: "./b",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ws, repo := proofsWorkspace(t, proofsCheck)
+			tc.setup(t, repo)
+			r := proofRuns(t, ws, tc.proof)[0]
+			if first := strings.SplitN(r.Output, "\n", 2)[0]; r.Exit != 0 || !r.Started || first != tc.first || r.Suite != tc.suite || !slices.Equal(r.Declared, tc.declared) {
+				t.Errorf("run = %+v, want exit 0, the first line %q, the suite %q and declared %q", r, tc.first, tc.suite, tc.declared)
+			}
+		})
+	}
+}
+
 // An entry's file is in the tree while its check runs, and only then: the
 // tree's own file at its path is back after, so a later entry, a suite
 // above all, runs on the tree as pushed.

@@ -805,6 +805,26 @@ func TestProverPassOpensTheProverOnceTheFoundationIsDone(t *testing.T) {
 	}
 }
 
+// The prover waits on the foundation key's card: a foundation card that
+// failed into a successor that is done has the prover due, and the
+// criteria gate counts the plan's proofs as still to come.
+func TestTheProverWaitsOnTheFoundationKeysCard(t *testing.T) {
+	ctx := context.Background()
+	r, _, store := newProverRunner(t, planTask(), newFakeKube(), &fakeObjectStore{})
+	seedProver(t, store, proverPlan())
+	seedProverCards(t, store, "failed", "foundation", "sizes", "integration")
+	if err := store.CreateSuccessor(ctx, "t-foundation", Task{ID: SuccessorID("t-foundation"), Status: "done", Repository: "sf/r", Kind: "agent",
+		Source: SourceSuccessor, Parent: "t-plan", PlanKey: "foundation", Track: policy.TrackDirect}); err != nil {
+		t.Fatal(err)
+	}
+	if due, err := r.proverDue(ctx, planTask()); err != nil || !due {
+		t.Fatalf("proverDue = %v, %v; want the prover due once the foundation's successor is done", due, err)
+	}
+	if pending, err := r.proofsPending(ctx, proverTask(), nil, proverPlan()); err != nil || !pending {
+		t.Fatalf("proofsPending = %v, %v; want the proofs still to come", pending, err)
+	}
+}
+
 func TestProverPassOpensAtConfirmationWithoutAFoundation(t *testing.T) {
 	ctx := context.Background()
 	r, _, store := newProverRunner(t, planTask(), newFakeKube(), &fakeObjectStore{})

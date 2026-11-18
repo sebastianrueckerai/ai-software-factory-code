@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -74,6 +75,61 @@ func TestStaleCardMergeApprovalRefuses(t *testing.T) {
 	}
 	if len(merged) != 1 {
 		t.Fatalf("merges = %q, want the one before", merged)
+	}
+}
+
+// The successor that carries a plan card's key is that card: the newest
+// revision that drops its key refuses its merge; and while the plan's
+// human criterion has no row on the plan-filed integration card, its
+// approve is refused, then goes through once the row stands.
+func TestASuccessorsMergeApprovalReadsItsKey(t *testing.T) {
+	r := newRig(t)
+	criteria := []factoryd.PlanCriterion{{ID: "pages_ok", Kind: factoryd.CriterionHuman, Claim: "The pages read well"}}
+	both, _ := json.Marshal(factoryd.Plan{Summary: "The shortener", Criteria: criteria, Cards: []factoryd.PlanCard{
+		{Key: "foundation", Role: "foundation", Title: "Foundation"},
+		{Key: "integration", Role: factoryd.RoleIntegration, Title: "Integration"},
+	}})
+	foundation, _ := json.Marshal(factoryd.Plan{Summary: "The shortener, foundation only", Cards: []factoryd.PlanCard{
+		{Key: "foundation", Role: "foundation", Title: "Foundation"},
+	}})
+	r.tasks.tasks = []factoryd.BoardTask{
+		{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "done", Process: "spec", Objective: "Shortener",
+			Repository: "sf/code", IssueNumber: 3}},
+		{Task: factoryd.Task{ID: "t-int", Kind: "agent", Status: "failed", Repository: "sf/code", IssueNumber: 8,
+			Parent: "t-plan", Source: factoryd.SourcePlan, PlanKey: "integration", PlanRevision: 1}},
+		{Task: factoryd.Task{ID: "t-is", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 9,
+			Parent: "t-plan", Source: factoryd.SourceSuccessor, PlanKey: "integration", PlanRevision: 1, PRNumber: 9}},
+	}
+	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {
+		{TaskID: "t-plan", Revision: 1, Plan: both, SHA256: "sha-1"},
+		{TaskID: "t-plan", Revision: 2, Plan: foundation, SHA256: "sha-2"},
+	}}
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 31, Kind: factoryd.ApprovalMerge, TaskID: "t-is",
+		Project: "sf/code", PRNumber: 9, Status: "pending", Spec: json.RawMessage(`{"head_sha":"b7e04c19d2a3"}`)})
+	var merged []string
+	r.c.cfg.ApproveMerge = func(_ context.Context, id string, pr int64, by string) error {
+		merged = append(merged, fmt.Sprintf("%s pr %d by %s", id, pr, by))
+		return nil
+	}
+	ck, s := r.loggedIn(t)
+	approve := func() *httptest.ResponseRecorder {
+		return r.do(post("/approvals/31/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	}
+	want := "The plan's revision 2 drops the card integration, so it cannot merge: deny the merge (deny_merge)."
+	if rec := approve(); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("a dropped successor's approve = %d %q", rec.Code, rec.Body.String())
+	}
+	r.tasks.plans["t-plan"] = r.tasks.plans["t-plan"][:1]
+	want = "Criterion pages_ok has no verdict yet: settle its row on the card first."
+	if rec := approve(); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("the successor's approve over an open human criterion = %d %q", rec.Code, rec.Body.String())
+	}
+	r.tasks.mu.Lock()
+	r.tasks.criteria = map[string][]factoryd.CriterionVerdict{"t-int": {{Criterion: "pages_ok", Kind: factoryd.CriterionHuman, Verdict: "met",
+		Source: factoryd.CriteriaSourceApprover}}}
+	r.tasks.mu.Unlock()
+	if rec := approve(); rec.Code != http.StatusSeeOther || fmt.Sprint(merged) != "[t-is pr 9 by sebastian]" {
+		t.Fatalf("the successor's approve once the row stands = %d %q, merges %q", rec.Code, rec.Body.String(), merged)
 	}
 }
 

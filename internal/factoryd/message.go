@@ -186,17 +186,22 @@ func (r *Runner) nudge(ctx context.Context, t Task, s sessionSpec, sup *Supervis
 // MessageSession hands text from user, a writer of the task's project, to
 // the task's running session the way the supervisor's message goes (6.6):
 // the worker's POST /message, recorded as a message step from user. A task
-// with no session running in this factoryd answers ErrNoLiveSession, the
+// whose session is in its start check-in answers a SessionStartingError,
+// one with no session running in this factoryd ErrNoLiveSession, the
 // worker's answers are messageWorker's.
 func (r *Runner) MessageSession(ctx context.Context, taskID, user, text string) error {
 	r.liveMu.Lock()
 	ls, ok := r.live[taskID]
+	since, starting := r.starting[taskID]
 	basics := ok && !ls.basics
 	if basics {
 		ls.basics = true
 	}
 	r.liveMu.Unlock()
-	if !ok {
+	switch {
+	case !ok && starting:
+		return &SessionStartingError{Since: since}
+	case !ok:
 		return ErrNoLiveSession
 	}
 	w := ls.worker

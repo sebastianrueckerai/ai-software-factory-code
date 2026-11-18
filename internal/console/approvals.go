@@ -425,11 +425,11 @@ func approvalDecide(k *approvalCard) *decide {
 	return d
 }
 
-// openedOf are the opened proofs of plan card t's plan when t is its
-// integration card or a delta card, each read at head in project as a's
-// human; nil for any other card.
+// openedOf are the opened proofs of plan card t's plan (Task.PlanCard)
+// when t is its integration card or a delta card, each read at head in
+// project as a's human; nil for any other card.
 func (c *Console) openedOf(ctx context.Context, a actor, t factoryd.Task, project, head string) ([]openedView, error) {
-	if t.Source != factoryd.SourcePlan || t.Parent == "" || head == "" {
+	if !t.PlanCard() || head == "" {
 		return nil, nil
 	}
 	_, p, ok, err := c.planTable(ctx, t.Parent, 0)
@@ -562,12 +562,12 @@ func (c *Console) planRows(ctx context.Context, t factoryd.Task) (rows []criteri
 	return rows, open, true, nil
 }
 
-// planVerdicts are plan card t's plan's criteria with their standing rows
-// on its integration card home, and open, the human criteria with no
-// verdict, which hold the card's Approve; ok false when t is not the
-// integration card or a delta card of a plan with criteria.
+// planVerdicts are plan card t's plan's criteria (Task.PlanCard) with
+// their standing rows on its integration card home, and open, the human
+// criteria with no verdict, which hold the card's Approve; ok false when
+// t is not the integration card or a delta card of a plan with criteria.
 func (c *Console) planVerdicts(ctx context.Context, t factoryd.Task) (rows []criterionRow, open []string, home string, ok bool, err error) {
-	if t.Source != factoryd.SourcePlan || t.Parent == "" {
+	if !t.PlanCard() {
 		return nil, nil, "", false, nil
 	}
 	_, p, ok, err := c.planTable(ctx, t.Parent, 0)
@@ -676,14 +676,14 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	return nil
 }
 
-// takeOffOf are the cards plan p of task id takes off main, each as the
-// confirm button's line reads it (#its issue, else its key), and the
-// reason each gave.
+// takeOffOf are the cards plan p of task id takes off main, each key's
+// card (factoryd.PlanWaits) as the confirm button's line reads it (#its
+// issue, else its key), and the reason each gave.
 func (c *Console) takeOffOf(ctx context.Context, id string, p factoryd.Plan) (refs, whys []string, err error) {
 	if len(p.TakeOffMain) == 0 {
 		return nil, nil, nil
 	}
-	cards, err := c.cfg.Tasks.PlanCards(ctx, id)
+	cards, err := factoryd.PlanWaits(ctx, c.cfg.Tasks, id)
 	if err != nil {
 		return nil, nil, fmt.Errorf("the cards of plan %s: %w", id, err)
 	}

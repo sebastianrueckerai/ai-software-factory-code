@@ -101,8 +101,8 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 				return false, err
 			}
 			step := CaseStep{CaseID: int64(id), Rung: 3, Actor: FactoryDecider, CommentID: int64(comment)}
-			if e.Detail["reason"] == HealedReason {
-				step.Found = "asked again after a restart"
+			if reason, _ := e.Detail["reason"].(string); askedAgain(reason) {
+				step.Found = askedAgainFound(reason)
 			}
 			_, err = appendCaseStep(ctx, tx, step)
 			return false, err
@@ -132,11 +132,12 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	}
 	comment, _ := toInt(e.Detail["comment"])
 	step := CaseStep{Rung: 3, Actor: FactoryDecider, CommentID: int64(comment)}
-	healed := e.Detail["reason"] == HealedReason
+	reason, _ := e.Detail["reason"].(string)
+	healed := askedAgain(reason)
 	if healed {
-		// a restart asks the question again in other words: its step goes
-		// to the card's live ask, whatever that ask's key
-		step.Found = "asked again after a restart"
+		// a question asked again in other words: its step goes to the
+		// card's live ask, whatever that ask's key
+		step.Found = askedAgainFound(reason)
 		live, err := newestAskCase(ctx, tx, t.ID)
 		if err != nil {
 			return false, err

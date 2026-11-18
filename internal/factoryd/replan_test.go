@@ -195,6 +195,36 @@ func TestReplanChildOfASuccessorCutsItsPlan(t *testing.T) {
 	}
 }
 
+// A key whose card failed into a successor that the pending replan neither
+// cuts nor stops, the cut being another card's, is judged by the
+// successor: a revision may keep the key while the successor runs, and
+// take it off main once it merged.
+func TestReplanFindingsJudgeAKeyByItsSuccessor(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, succ := successorRig(t, "done")
+	if err := r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanCut, "card": "s", "work": "w", "stops": []string{"s"}, "revision": 2}); err != nil {
+		t.Fatal(err)
+	}
+	findings := func(next Plan) []string {
+		t.Helper()
+		st, err := r.replanState(ctx, store.tasks["p"], timelineOf(t, r, "p"), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return replanFindings(st, next)
+	}
+	ui2 := fromCard("ui2", "ui")
+	if got := findings(Plan{Cards: []PlanCard{replanCard("api", RoleFeature, "the api"), ui2}}); len(got) != 0 {
+		t.Fatalf("findings of a revision that keeps the running successor's key: %q, want none", got)
+	}
+	k := store.tasks[succ]
+	k.Status, k.MergeCommit = "merged", "m16"
+	store.tasks[succ] = k
+	if got := findings(Plan{Cards: []PlanCard{ui2}, TakeOffMain: []string{"api"}}); len(got) != 0 {
+		t.Fatalf("findings of a revision that takes the merged successor off main: %q, want none", got)
+	}
+}
+
 // A cut reopens a done or failed plan, and a queued one's run, before the
 // child's dependents wait on it, as a person's Replan does: a wait moved
 // onto a plan still done would read as met.
@@ -1835,6 +1865,10 @@ func TestRecordReplanCountsAKeyOnce(t *testing.T) {
 			t.Fatalf("%s's replanned steps %+v, want %+v", id, got, want)
 		}
 	}
+	// the cut successor's group is its plan's, which the plan's close closes
+	if rows := rowsOfKind(store, EventCut); len(rows) != 1 || rows[0].TaskID != succ || rows[0].Detail["group"] != "t-plan" {
+		t.Fatalf("cut rows %+v, want the successor's in group t-plan", rows)
+	}
 }
 
 // A former direct card that the sizing switched to the plan track, with
@@ -2275,6 +2309,51 @@ func TestReplanOffMainOutlivesItsRequest(t *testing.T) {
 	if pause, ok := g.store.pauses["sf/repo"]; !ok || g.store.tasks[pause.RevertTask].IssueNumber != 21 {
 		t.Fatalf("pause %+v (%t), want it on the revert's card #21", pause, ok)
 	}
+}
+
+// A key whose merge its successor made is on main as that successor: an
+// off-main replan takes it off main, and so does a revision whose
+// take_off_main names the key.
+func TestReplanOffMainRevertsAKeyMergedByItsSuccessor(t *testing.T) {
+	ctx := context.Background()
+	rig := func(t *testing.T) (*groupRevertRig, string) {
+		g := offMainRig(t)
+		c1 := g.store.tasks["c1"]
+		c1.RevertedAt = finishedAgo(time.Hour)
+		g.store.tasks["c1"] = c1
+		c2 := g.store.tasks["c2"]
+		c2.Status, c2.MergeCommit = "failed", ""
+		g.store.tasks["c2"] = c2
+		succ := SuccessorID("c2")
+		if err := g.store.CreateTask(ctx, Task{ID: succ, Kind: "agent", Track: policy.TrackDirect, Source: SourceSuccessor, Parent: "p", Repository: "sf/repo",
+			PlanKey: "int", IssueNumber: 17, Status: "done", MergeCommit: "m3", PlanRevision: 1}); err != nil {
+			t.Fatal(err)
+		}
+		return g, succ
+	}
+	check := func(t *testing.T, g *groupRevertRig, succ string) {
+		t.Helper()
+		if pause := g.store.pauses["sf/repo"]; !slices.Equal(pause.Reverts, []string{succ}) {
+			t.Fatalf("pause %+v, want the revert of the successor %s", pause, succ)
+		}
+		if len(g.calls) != 1 || !strings.HasPrefix(g.calls[0], `sf/repo ["m3"]`) {
+			t.Fatalf("groupRevertBranch calls = %q, want one reverting m3", g.calls)
+		}
+	}
+	t.Run("an off-main replan", func(t *testing.T) {
+		g, succ := rig(t)
+		if _, err := g.r.Replan(ctx, "p", ReplanAsk{By: "sebastian", Comment: "the api is wrong", OffMain: true}); err != nil {
+			t.Fatal(err)
+		}
+		check(t, g, succ)
+	})
+	t.Run("a revision that takes the key off main", func(t *testing.T) {
+		g, succ := rig(t)
+		if err := g.r.revertTakenOff(ctx, g.store.tasks["p"], Repo{Owner: "sf", Name: "repo"}, 2, Plan{TakeOffMain: []string{"int"}}); err != nil {
+			t.Fatal(err)
+		}
+		check(t, g, succ)
+	})
 }
 
 // An off-main Replan of a plan with no merged card on main, or under a
@@ -2744,6 +2823,33 @@ func TestRecordReplanTakesOffMain(t *testing.T) {
 	}
 }
 
+// A key whose card failed into a successor that merged comes off main as
+// the successor, the card its revert takes: the replan's note names it
+// alone.
+func TestRecordReplanTakesOffMainAKeysCard(t *testing.T) {
+	ctx := context.Background()
+	at := time.Now().Add(-time.Hour).UTC()
+	r, store, fj, step := recordRig(t, at, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "the api is wrong.", "revision": 1},
+		Task{ID: "t-api", PlanKey: "api", IssueNumber: 21, Status: "failed", PlanRevision: 1})
+	if err := store.CreateTask(ctx, Task{ID: SuccessorID("t-api"), Kind: "agent", Track: policy.TrackDirect, Source: SourceSuccessor, Parent: "t-plan",
+		Repository: "linkshort/linkshort", PlanKey: "api", IssueNumber: 24, Status: "done", MergeCommit: "m-api", PlanRevision: 1,
+		CreatedAt: at.Add(-30 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	p, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := Plan{Summary: "s", TakeOffMain: []string{"api"}, Cards: []PlanCard{{Key: "api2", Role: RoleFeature, Title: "api2", Brief: "api2", Size: "small"}}}
+	if err := r.recordReplan(ctx, p, repo, 2, next, step, map[string]int64{"api2": 22}); err != nil {
+		t.Fatal(err)
+	}
+	want := "factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1. It takes #24 (api) off main.\nAsked by ana: the api is wrong."
+	if got := commentsOn(fj, 1); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the plan's comments %q, want %q", got, want)
+	}
+}
+
 // A replan's record names a card taken off main by the merge it had, and
 // the fork's salvage branch of the plan goes to the clone as salvage.
 func TestReplanRecordOfCardsTakenOffMain(t *testing.T) {
@@ -2764,6 +2870,34 @@ func TestReplanRecordOfCardsTakenOffMain(t *testing.T) {
 	}
 	if text := rec.files[0].Text; !strings.HasPrefix(text, "# #30 Links API\n\ntaken off main (it was merged as 0123abcd); spent 1.20 of 3.00 EUR in 2 sessions\n\n") {
 		t.Fatalf("card-30.md starts %.120q", text)
+	}
+}
+
+// The record of the successor that carries the integration card's key
+// holds the plan's criteria verdicts, read on the plan-filed integration
+// card where they stand.
+func TestReplanRecordOfAnIntegrationSuccessorReadsThePlansRows(t *testing.T) {
+	ctx := context.Background()
+	succ := SuccessorID("t-cli")
+	step := map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "the ui is too wide", "stops": []string{"t-ui", succ}, "revision": 1}
+	r, store, _, _, _ := oldCardsRig(t, step)
+	if err := store.CreateTask(ctx, Task{ID: succ, Kind: "agent", Track: policy.TrackDirect, Source: SourceSuccessor, Parent: "t-plan",
+		Repository: "linkshort/linkshort", PlanKey: "cli", IssueNumber: 34, Status: "closed", PlanRevision: 1, BudgetEUR: 2,
+		Objective: "Command line\n\nCarried on."}); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok, err := r.replanRecord(ctx, store.tasks["t-plan"], planTimeline(t, r))
+	if err != nil || !ok {
+		t.Fatalf("replanRecord: %t, %v", ok, err)
+	}
+	text := ""
+	for _, f := range rec.files {
+		if f.Name == "card-34.md" {
+			text = f.Text
+		}
+	}
+	if !strings.Contains(text, "## Criteria verdicts\n- links_crud: unmet: POST /api/links answers 500\n") {
+		t.Fatalf("the successor's record lacks the plan's criteria verdicts: %+v", rec.files)
 	}
 }
 
