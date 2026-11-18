@@ -1048,6 +1048,12 @@ func (s *fakeStore) ConfirmFactoryClose(ctx context.Context, taskID string, issu
 		s.confirmedCloses = map[[2]any]bool{}
 	}
 	s.confirmedCloses[[2]any{taskID, issue}] = true
+	// as the store's UPDATE does: every record of the issue, a forgotten one too
+	for _, e := range s.intakeEvents {
+		if e.TaskID == taskID && e.Kind == IntakeFactoryClosed && e.CommentID == issue {
+			s.confirmedCloses[closeKey(e)] = true
+		}
+	}
 	if t, ok := s.tasks[taskID]; ok && s.webhookOnClose && t.Kind == "human" && t.Status == "waiting-human" {
 		return s.TransitionTask(ctx, taskID, []string{"waiting-human"}, "done")
 	}

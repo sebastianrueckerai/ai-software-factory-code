@@ -944,9 +944,11 @@ func (in *Intake) healFactoryClose(ctx context.Context, row IntakeEvent) error {
 	if !ok {
 		return in.Store.ConfirmFactoryClose(ctx, row.TaskID, row.CommentID)
 	}
-	if row.CommentID == 0 {
+	if row.CommentID == 0 && t.Source != SourceFreezeCard {
 		// the close of a card that had no issue: a human card ends on it,
-		// and one whose face filed its issue since has that issue closed
+		// and one whose face filed its issue since has that issue closed. A
+		// freeze card's record off its issue is its earlier end
+		// (ForgetFactoryClose), which the issue's path below settles
 		switch {
 		case t.Kind == "human" && t.IssueNumber != 0:
 			err = closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, row.Body)
