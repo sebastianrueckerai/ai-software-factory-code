@@ -25,7 +25,7 @@ import (
 // (FACTORYD_TEST_DATABASE_URL).
 func TestChainCoverageHoldsTheCard(t *testing.T) {
 	ctx := context.Background()
-	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	s, err := OpenStore(ctx, schematest.DSN(t, "pg_console_store"))
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestChainCoverageHoldsTheCard(t *testing.T) {
 // link". Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL).
 func TestTheBoardSpeaksTheForgesRunNumbers(t *testing.T) {
 	ctx := context.Background()
-	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	s, err := OpenStore(ctx, schematest.DSN(t, "pg_console_store"))
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestTheBoardSpeaksTheForgesRunNumbers(t *testing.T) {
 // disposable Postgres (FACTORYD_TEST_DATABASE_URL).
 func TestTheReconcilerEndsACoveredMergedCardOnce(t *testing.T) {
 	ctx := context.Background()
-	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	s, err := OpenStore(ctx, schematest.DSN(t, "pg_console_store"))
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestTheReconcilerEndsACoveredMergedCardOnce(t *testing.T) {
 // Postgres (FACTORYD_TEST_DATABASE_URL).
 func TestStalledHeadSurfacesOnTheCard(t *testing.T) {
 	ctx := context.Background()
-	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	s, err := OpenStore(ctx, schematest.DSN(t, "pg_console_store"))
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestStalledHeadSurfacesOnTheCard(t *testing.T) {
 // reads are tested over.
 func seedMergedCards(t *testing.T, ctx context.Context) *PGStore {
 	t.Helper()
-	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	s, err := OpenStore(ctx, schematest.DSN(t, "pg_console_store"))
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}

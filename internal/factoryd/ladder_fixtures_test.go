@@ -138,9 +138,20 @@ type idChat struct {
 	ids []string
 }
 
+func (c *idChat) Call(ctx context.Context, taskID, alias string, in CheckinRequest) (CheckinResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ids = append(c.ids, taskID)
+	return c.scriptedChat.Call(ctx, taskID, alias, in)
+}
+
 // projectStore answers the project row of demo-app, which no policy stored
 // in the rig's database names.
 type projectStore struct{ *PGStore }
+
+func (projectStore) ProjectByRepository(context.Context, string) (Project, bool, error) {
+	return Project{Name: "demo-app", Repository: "demo-app/demo-app", File: true}, true, nil
+}
 
 // settle waits for the rung 1 goroutines the trips started.
 func (g rungRig) settle() { g.r.rungs.Wait() }
