@@ -730,12 +730,12 @@ func briefCaseWriter(store *fakeBriefStore, gw *httptest.Server) *BriefWriter {
 // the background and 600 for the recommendation, marked.
 func TestBriefWriterBriefsACaseOnTheJudgmentBudget(t *testing.T) {
 	var body []byte
-	var task, purpose string
+	var task, purpose, card string
 	answer, _ := json.Marshal(map[string]any{"background": strings.Repeat("a", 4100), "recommendation": strings.Repeat("b", 700)})
 	reply, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(answer)}}}})
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ = io.ReadAll(r.Body)
-		task, purpose = r.Header.Get(gateway.HeaderFactoryTask), r.Header.Get(gateway.HeaderFactoryPurpose)
+		task, purpose, card = r.Header.Get(gateway.HeaderFactoryTask), r.Header.Get(gateway.HeaderFactoryPurpose), r.Header.Get(gateway.HeaderFactoryCard)
 		_, _ = w.Write(reply)
 	}))
 	defer gw.Close()
@@ -746,8 +746,8 @@ func TestBriefWriterBriefsACaseOnTheJudgmentBudget(t *testing.T) {
 	if err := briefCaseWriter(store, gw).Pass(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if task != "t-chat-proj-2026-11" || purpose != policy.PurposeBrief {
-		t.Fatalf("the call's task %q purpose %q, want the chat task t-chat-proj-2026-11 and brief", task, purpose)
+	if task != "t-chat-proj-2026-11" || purpose != policy.PurposeBrief || card != policy.ClassCoder {
+		t.Fatalf("the call's task %q purpose %q card %q, want the chat task t-chat-proj-2026-11, brief and the card's class coder", task, purpose, card)
 	}
 	for _, want := range []string{"the check-in found a green build", "rung two found the last review approved", "one more session ends it",
 		"#12 · budget 3.00 spent 0.40 holds 0.00 EUR · in-review, approval", "offered_actions"} {

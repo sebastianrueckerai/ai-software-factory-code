@@ -375,6 +375,7 @@ func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose strin
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(gateway.HeaderFactoryTask, taskID)
 	req.Header.Set(gateway.HeaderFactoryPurpose, purpose)
+	setCard(ctx, req)
 	client := m.HTTP
 	if client == nil {
 		client = http.DefaultClient
@@ -414,4 +415,22 @@ func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose strin
 		return "", "", fmt.Errorf("unreadable completion: %s", textutil.Truncate(string(body), 300))
 	}
 	return out.Choices[0].Message.Content, res.Header.Get(gateway.HeaderDeployment), nil
+}
+
+// cardClassesKey carries the classes of the card a call on the project's
+// chat task runs for.
+type cardClassesKey struct{}
+
+// forCard marks ctx's gateway calls as made for card t: a brief or a
+// check-in on the project's chat task names t's classes, so the gateway's
+// provider-limit hold holds it under t's class.
+func forCard(ctx context.Context, t Task) context.Context {
+	return context.WithValue(ctx, cardClassesKey{}, t.RequiredCapabilities)
+}
+
+// setCard names the card ctx carries on req, when it carries one.
+func setCard(ctx context.Context, req *http.Request) {
+	if classes, _ := ctx.Value(cardClassesKey{}).([]string); len(classes) > 0 {
+		req.Header.Set(gateway.HeaderFactoryCard, strings.Join(classes, ","))
+	}
 }

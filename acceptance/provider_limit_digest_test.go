@@ -10,7 +10,7 @@ package acceptance
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -89,51 +89,63 @@ func plFlagCases(t *testing.T, r *parkRig, id string) []string {
 	return keys
 }
 
-// TestDigestQuietInsideFreeze: a card ten hours into its building stage, a
-// session the provider refused 3 h 12 m in with a named reset 7 h out, a
-// grant before that session and a check-in the frozen class refused
-// inside the interval. Inside the freeze provider_limit owns the wait, so
-// neither run_quiet's bound nor the check-in's or the grant's flags fire:
-// the digest holds no flag and the monitor's sweep opens no case. The
+// TestDigestQuietInsideFreeze: a card in its building stage whose session
+// the provider refused 3 h 12 m in with a named reset 7 h out, a grant
+// before that session and a check-in the frozen class refused inside the
+// interval. Read at moments across the freeze — a card each, its stage
+// begun that long before now — provider_limit owns the wait, so neither
+// the quiet bound nor the check-in's or the grant's flags fire: no digest
+// holds a flag and the monitor's sweep opens no case. Ten hours in, the
 // face splits the clocks — "3 h 12 min, frozen 6 h 48 min", Total the same
 // — and its chip shows the words and the reset; the life records the
 // frozen interval. [digest_quiet_in_freeze]
 func TestDigestQuietInsideFreeze(t *testing.T) {
 	r := newParkRig(t)
 	ctx := context.Background()
-	start := time.Now().Add(-10 * time.Hour)
-	at := func(m int) time.Time { return start.Add(time.Duration(m) * time.Minute) }
-	reset := at(192).Add(7 * time.Hour)
-	plRunningCard(t, r, "t-frozen", 31, start)
-	if _, err := r.store.Record(ctx, factoryd.Event{At: at(150), Repository: parkRepo, TaskID: "t-frozen", IssueNumber: 31,
-		Kind: factoryd.EventSessionGranted, Actor: parkMember, Via: factoryd.ViaConsole, Detail: map[string]any{"sessions": 1}}); err != nil {
-		t.Fatal(err)
-	}
-	plTimeline(t, r, "t-frozen",
-		plStep("session_start", at(180), map[string]any{"session": "s-1", "model": "factory/small", "attempt": 1}),
-		plStep("session_end", at(192), map[string]any{"session": "s-1", "model": "factory/small", "attempt": 1,
-			"outcome": string(factoryd.OutcomeProviderRefused), "summary": "the provider refused", "started": at(180).UTC().Format(time.RFC3339)}),
-		plStep(factoryd.StepProviderRefused, at(192), map[string]any{"status": 429, "reason": "provider limit for class coder",
-			"backoff_s": 25200, "words": plFrozenWords}),
-		plStep("checkin", at(300), map[string]any{"moment": factoryd.CheckInGate, "decision": factoryd.CheckHandover,
-			"reason": factoryd.CheckinRefusedReason + "class frozen"}))
-
-	d, err := r.runner.CardDigest(ctx, "t-frozen")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(d.Flags) != 0 {
-		t.Fatalf("Flags = %v, want none inside the freeze", d.Flags)
+	moments := []int{193, 300, 420, 599, 600} // minutes into the stage; the reset is at 612
+	var tenHours time.Time
+	for i, m := range moments {
+		id := fmt.Sprintf("t-frozen-%d", m)
+		start := time.Now().Add(-time.Duration(m) * time.Minute)
+		at := func(m int) time.Time { return start.Add(time.Duration(m) * time.Minute) }
+		plRunningCard(t, r, id, int64(31+i), start)
+		if _, err := r.store.Record(ctx, factoryd.Event{At: at(150), Repository: parkRepo, TaskID: id, IssueNumber: int64(31 + i),
+			Kind: factoryd.EventSessionGranted, Actor: parkMember, Via: factoryd.ViaConsole, Detail: map[string]any{"sessions": 1}}); err != nil {
+			t.Fatal(err)
+		}
+		lines := []map[string]any{
+			plStep("session_start", at(180), map[string]any{"session": "s-1", "model": "factory/small", "attempt": 1}),
+			plStep("session_end", at(192), map[string]any{"session": "s-1", "model": "factory/small", "attempt": 1,
+				"outcome": string(factoryd.OutcomeProviderRefused), "summary": "the provider refused", "started": at(180).UTC().Format(time.RFC3339)}),
+			plStep(factoryd.StepProviderRefused, at(192), map[string]any{"status": 429, "reason": "provider limit for class coder",
+				"backoff_s": 25200, "words": plFrozenWords}),
+		}
+		if m >= 300 {
+			lines = append(lines, plStep("checkin", at(300), map[string]any{"moment": factoryd.CheckInGate, "decision": factoryd.CheckHandover,
+				"reason": factoryd.CheckinRefusedReason + "class frozen"}))
+		}
+		plTimeline(t, r, id, lines...)
+		d, err := r.runner.CardDigest(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(d.Flags) != 0 {
+			t.Fatalf("at +%d: Flags = %v, want none inside the freeze", m, d.Flags)
+		}
+		tenHours = start
 	}
 	m := &factoryd.Monitor{Store: r.store, Runner: r.runner, Policy: func() policy.Tree { return r.version.Tree }, Now: time.Now}
 	if err := m.Sweep(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if keys := plFlagCases(t, r, "t-frozen"); len(keys) != 0 {
-		t.Fatalf("the sweep opened flag cases %q, want none inside the freeze", keys)
+	for _, at := range moments {
+		if keys := plFlagCases(t, r, fmt.Sprintf("t-frozen-%d", at)); len(keys) != 0 {
+			t.Fatalf("at +%d: the sweep opened flag cases %q, want none inside the freeze", at, keys)
+		}
 	}
 
 	ck := r.session(t)
+	reset := tenHours.Add(192*time.Minute + 7*time.Hour)
 	chip := "frozen until " + reset.UTC().Format("15:04 UTC") + ": " + plFrozenWords
 	board := r.get(t, "/board", ck).Body.String()
 	for _, want := range []string{`<span class="elapsed">3 h 12 min, frozen 6 h 48 min</span>`, chip} {
@@ -141,7 +153,7 @@ func TestDigestQuietInsideFreeze(t *testing.T) {
 			t.Errorf("the board lacks %s", want)
 		}
 	}
-	drawer := r.get(t, "/cards/t-frozen/drawer?tab=overview", ck).Body.String()
+	drawer := r.get(t, "/cards/t-frozen-600/drawer?tab=overview", ck).Body.String()
 	for _, want := range []string{
 		`<dd>building, 3 h 12 min, frozen 6 h 48 min, 3 h 12 min, frozen 6 h 48 min in all</dd>`,
 		"frozen on the provider limit until " + reset.UTC().Format("15:04 UTC") + ": " + plFrozenWords,
@@ -179,9 +191,10 @@ func plFrozenVersion(r *parkRig) policy.Tree {
 // exactly one brief_failed row carrying the reset and sets the case's wake
 // to the reset plus its two-minute margin. The monitor's sweep at that
 // wake wakes the case; the writer's next call is answered by the hold
-// itself, no provider call, and records no second row. A check-in call on
-// the class inside the same hold is refused with the reset, and the
-// not-run record such a refusal leaves raises no flag. [brief_wakes_at_reset]
+// itself, no provider call, and records no second row; a sweep a second
+// before the wake leaves the case asleep. A check-in for the card inside
+// the same hold is refused with the reset, and the not-run record such a
+// refusal leaves raises no flag. [brief_wakes_at_reset]
 func TestBriefWakeAtReset(t *testing.T) {
 	r := newParkRig(t)
 	ctx := context.Background()
@@ -260,11 +273,18 @@ func TestBriefWakeAtReset(t *testing.T) {
 		t.Fatalf("BrieflessCases inside the freeze = %v, %v; want none: the pass waits at the case's wake", cases, err)
 	}
 
-	// the sweep at the wake wakes the case, and the writer takes it again
-	m := &factoryd.Monitor{Store: r.store, Runner: r.runner, Policy: func() policy.Tree { return v.Tree }, Now: func() time.Time { return wake }}
-	if err := m.Sweep(ctx); err != nil {
-		t.Fatal(err)
+	// a sweep a second before the wake leaves the case asleep; the sweep at
+	// the wake wakes it, and the writer takes it again
+	sweep := func(at time.Time) {
+		t.Helper()
+		m := &factoryd.Monitor{Store: r.store, Runner: r.runner, Policy: func() policy.Tree { return v.Tree }, Now: func() time.Time { return at }}
+		if err := m.Sweep(ctx); err != nil {
+			t.Fatal(err)
+		}
 	}
+	sweep(wake.Add(-time.Second))
+	wokeAt("a second before the wake")
+	sweep(wake)
 	if woken, err := r.store.CaseByID(ctx, c.ID); err != nil || woken.NextWakeAt != nil || woken.Status != factoryd.CaseAtHuman {
 		t.Fatalf("the sweep left the frozen case = %+v, %v; want it woken at the human with no wake", woken, err)
 	}
@@ -284,16 +304,27 @@ func TestBriefWakeAtReset(t *testing.T) {
 	}
 	wokeAt("the retried brief")
 
-	// a check-in on the class inside the hold: the gateway refuses it with
-	// the reset, and its not-run record raises no flag
+	// a check-in for the card inside the hold, in the check-in client's
+	// shape: the gateway refuses it with the reset, and its not-run record
+	// raises no flag
 	chat, err := r.runner.JudgmentTask(ctx, factoryd.Task{Repository: parkRepo})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = model.Chat(ctx, chat.ID, "small", policy.PurposeCheckin, time.Minute, "the check-in", map[string]string{})
-	var refusal *policy.Refusal
-	if !errors.As(err, &refusal) || refusal.Decision != factorygateway.RefusedProviderLimit || !refusal.Until.Equal(reset) {
-		t.Fatalf("the check-in call = %v, want the named refusal until %s", err, reset)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"small","messages":[{"role":"user","content":"the check-in"}]}`))
+	for k, v := range map[string]string{"Authorization": "Bearer factoryd-token", "Content-Type": "application/json",
+		factorygateway.HeaderFactoryTask: chat.ID, factorygateway.HeaderFactoryPurpose: policy.PurposeCheckin, factorygateway.HeaderFactoryCard: policy.ClassCoder} {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	gw.Config.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get(factorygateway.HeaderDecision) != factorygateway.RefusedProviderLimit ||
+		!strings.Contains(rec.Body.String(), `"reset":"`+reset.Format(time.RFC3339)+`"`) {
+		t.Fatalf("the check-in call = %d %q: %s, want the named refusal until %s", rec.Code, rec.Header().Get(factorygateway.HeaderDecision), rec.Body.String(), reset)
+	}
+	if calls := stub.calls(); len(calls) != 1 {
+		t.Fatalf("provider calls %v, want the one still: the hold answered the check-in", calls)
 	}
 	plTimeline(t, r, "t-brief", frozen, plStep("checkin", time.Now(), map[string]any{"moment": factoryd.CheckInGate,
 		"decision": factoryd.CheckHandover, "reason": factoryd.CheckinFrozenReason + reset.Format("15:04") + " UTC"}))

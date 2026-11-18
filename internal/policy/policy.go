@@ -1638,13 +1638,38 @@ func (d Document) PurposeModels(classes []string, purpose string) []string {
 	if purpose == PurposeOperator && slices.Contains(classes, ClassChat) {
 		return d.ChatOf(ProjectConfig{}).Models()
 	}
-	if (purpose == PurposeCheckin || purpose == PurposeBrief) && slices.Contains(classes, ClassChat) {
+	if forCard(classes, purpose) {
 		return d.classModels(purpose)
 	}
 	if m := d.FactoryModel(classes, purpose); m != "" {
 		return []string{m}
 	}
 	return nil
+}
+
+// forCard reports whether a call of purpose on a task of classes runs on
+// the project's chat task for a card: the rungs' check-in calls and the
+// brief writer's, on the alias of the card's class.
+func forCard(classes []string, purpose string) bool {
+	return (purpose == PurposeCheckin || purpose == PurposeBrief) && slices.Contains(classes, ClassChat)
+}
+
+// HeldClass is the class a call is held under when its provider names a
+// reset, and that provider's entry: for a call forCard, the first of the
+// card's classes whose alias of the purpose is the call's model, a class
+// the project's chat task holds none of; for any other call, the task's
+// own (ProviderLimitOf).
+func (d *Document) HeldClass(classes []string, purpose, model string, card []string) (string, *ProviderLimit) {
+	if !forCard(classes, purpose) {
+		return d.ProviderLimitOf(classes)
+	}
+	var runs []string
+	for _, name := range card {
+		if model != "" && d.FactoryModel([]string{name}, purpose) == model {
+			runs = append(runs, name)
+		}
+	}
+	return d.ProviderLimitOf(runs)
 }
 
 // classModels are the aliases of purpose of every class, sorted, once each:
