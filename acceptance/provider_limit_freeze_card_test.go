@@ -7,7 +7,8 @@ package acceptance
 // hold files one card the moment it arms, whatever the reset's distance;
 // a re-arm updates the same card; a self-resume closes it five minutes
 // later on its own; a retry press closes it at once. The card holds no
-// work slot and asks nothing.
+// work slot and asks nothing until its freeze outgrows
+// waits.provider_limit; then it alone asks, once.
 
 import (
 	"context"
@@ -32,7 +33,7 @@ import (
 const plFreezeWords = "free quota exhausted, resets 2027-01-05 05:00:00"
 
 // plFreezeRepo is the repository the proofs' freeze covers.
-var plFreezeRepo = "sf/code"
+const plFreezeRepo = "sf/code"
 
 // accFreezeForgejo is the fake Forgejo of the freeze-card proofs: issues
 // created, commented, labelled, opened and closed, every call counted —
@@ -67,7 +68,7 @@ func newAccFreezeForgejo(t *testing.T) (*factoryd.Forgejo, *accFreezeForgejo) {
 		rest := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, base), "/")
 		var n int64
 		switch {
-		case r.Method == http.MethodGet && (rest == "issues" || strings.HasPrefix(rest, "issues?")):
+		case r.Method == http.MethodGet && rest == "issues":
 			// the search of open issues: none stranded
 			io.WriteString(w, `[]`)
 		case r.Method == http.MethodPost && rest == "issues":
@@ -125,35 +126,6 @@ func newAccFreezeForgejo(t *testing.T) (*factoryd.Forgejo, *accFreezeForgejo) {
 	return &factoryd.Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}, fj
 }
 
-// plFreezeStore opens the real store on the suite's throwaway Postgres
-// and a plain handle on the same database, for the events rows the proofs
-// seed as the gateway's writer would. The store the watcher reads is the
-// handle's wrapper below.
-func plFreezeStore(t *testing.T) (*factoryd.PGStore, *sql.DB) {
-	t.Helper()
-	return accReceiptStore(t, "freeze_card")
-}
-
-// accFreezeStore is the real store with one method mended: the watcher's
-// own SetFreezeCursor (freezecard.go) passes two arguments to an UPDATE
-// whose text names only $2, so Postgres answers 42P18 and no Check that
-// read a new event ever reaches its clocks — a watcher defect this card
-// leaves to the freeze-card-fix pass, named in its note. The wrapper
-// keeps the method's contract, persisting the cursor the watcher hands
-// it, so the watcher's own logic — what to persist, when, and reading
-// forward only after a restart — is what the proof drives.
-type accFreezeStore struct {
-	*factoryd.PGStore
-	db *sql.DB
-}
-
-// SetFreezeCursor persists the watcher's cursor: the id of the last
-// events row it read.
-func (s accFreezeStore) SetFreezeCursor(ctx context.Context, cursor int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE freeze_cursor SET cursor = $1 WHERE id = 1`, cursor)
-	return err
-}
-
 // plFreezeEvent inserts one gateway event row on the shared events
 // table, the record the watcher reads.
 func plFreezeEvent(t *testing.T, db *sql.DB, kind, class, reset, words string) {
@@ -169,44 +141,58 @@ func plFreezeEvent(t *testing.T, db *sql.DB, kind, class, reset, words string) {
 }
 
 // plFreezeWatcher wires the real watcher over the real store and the fake
-// Forgejo, its provider limit 24 hours so the five-minute close is the
-// only clock the proof waits out.
-func plFreezeWatcher(s *factoryd.PGStore, db *sql.DB, forge *factoryd.Forgejo) *factoryd.FreezeCard {
-	return plFreezeWatcherLimit(s, db, forge, 24*time.Hour)
-}
-
-// plFreezeWatcherLimit is plFreezeWatcher with the provider-limit bound
-// named: the wait past which the class's card speaks once.
-func plFreezeWatcherLimit(s *factoryd.PGStore, db *sql.DB, forge *factoryd.Forgejo, limit time.Duration) *factoryd.FreezeCard {
+// Forgejo, under a policy version whose waits.provider_limit is limit:
+// the wait past which the class's card speaks once.
+func plFreezeWatcher(s *factoryd.PGStore, forge *factoryd.Forgejo, limit time.Duration) *factoryd.FreezeCard {
 	version := policy.Version{ID: 1, Commit: "fz-1", Tree: policy.Tree{Document: policy.Document{
 		Waits: policy.Waits{ProviderLimit: limit}}}}
-	return &factoryd.FreezeCard{Store: accFreezeStore{PGStore: s, db: db}, Forgejo: forge,
-		Current: func() policy.Version { return version }}
+	return &factoryd.FreezeCard{Store: s, Forgejo: forge, Current: func() policy.Version { return version }}
 }
 
-// plFreezeCard reads the class's freeze card off the store; ok is false
-// while none stands.
-func plFreezeCard(ctx context.Context, t *testing.T, s *factoryd.PGStore) (factoryd.Task, bool) {
+// plFreezeWorkCards files the nine running cards of the class big the
+// freeze covers, through the production writers: the card row, then the
+// alias the rung ladder writes.
+func plFreezeWorkCards(ctx context.Context, t *testing.T, s *factoryd.PGStore, prefix string) {
 	t.Helper()
-	open, err := s.ListTasksByStatus(ctx, "waiting-human")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range open {
-		if c.Source == factoryd.SourceFreezeCard {
-			return c, true
+	for i := 0; i < 9; i++ {
+		id := fmt.Sprintf("%s-%d", prefix, i)
+		card := factoryd.Task{ID: id, Kind: "agent", Track: policy.TrackDirect,
+			Status: "running", Repository: plFreezeRepo, Objective: "the freeze's work"}
+		if err := s.CreateTask(ctx, card); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetTaskModelAlias(ctx, id, "big"); err != nil {
+			t.Fatal(err)
 		}
 	}
-	done, err := s.ListTasksByStatus(ctx, "done")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range done {
-		if c.Source == factoryd.SourceFreezeCard {
-			return c, true
+}
+
+// plFreezeCard reads the class's freeze card off the store, the waiting
+// one first; ok is false while none stands.
+func plFreezeCard(ctx context.Context, t *testing.T, s *factoryd.PGStore) (factoryd.Task, bool) {
+	t.Helper()
+	for _, status := range []string{"waiting-human", "done"} {
+		cards, err := s.ListTasksByStatus(ctx, status)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range cards {
+			if c.Source == factoryd.SourceFreezeCard {
+				return c, true
+			}
 		}
 	}
 	return factoryd.Task{}, false
+}
+
+// plFreezeCards counts the store's freeze-card rows.
+func plFreezeCards(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM tasks WHERE source = $1`, factoryd.SourceFreezeCard).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 // TestFreezeCardSpeaksForTheClass: one hold files one card the moment it
@@ -214,32 +200,21 @@ func plFreezeCard(ctx context.Context, t *testing.T, s *factoryd.PGStore) (facto
 // slot and asking nothing; a re-arm updates the same card, no second one;
 // a self-resume leaves the card five minutes, the held time on its face,
 // and then it closes on its own; a retry press closes it at once. The
-// five-minute self-resume close is slept for real, inside the shell's
-// 600000 ms cap. [one_freeze_card_per_class]
+// five-minute self-resume close is slept for real.
+// [one_freeze_card_per_class]
 func TestFreezeCardSpeaksForTheClass(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	s, db := plFreezeStore(t)
+	s, db := accReceiptStore(t, "freeze_card_class")
 	forge, fj := newAccFreezeForgejo(t)
-	w := plFreezeWatcher(s, db, forge)
+	w := plFreezeWatcher(s, forge, 24*time.Hour)
+	plFreezeWorkCards(ctx, t, s, "fz-work")
 
-	// nine cards of the class wait on the freeze: the card rows through
-	// the production writer, their model aliases through the session
-	// writer's own update (CreateTask writes none, a session makes the
-	// task's alias its own)
-	for i := 0; i < 9; i++ {
-		id := fmt.Sprintf("fz-work-%d", i)
-		card := factoryd.Task{ID: id, Kind: "agent", Track: policy.TrackDirect,
-			Status: "running", Repository: plFreezeRepo, Objective: "the freeze's work"}
-		if err := s.CreateTask(ctx, card); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.ExecContext(ctx, `UPDATE tasks SET model_alias = $2 WHERE id = $1`, id, "big"); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// the hold arms: the card files at once, whatever the reset's distance
-	plFreezeEvent(t, db, "class_frozen", "big", "2027-01-04T21:01:00Z", plFreezeWords)
+	// the hold arms on zai's five-hour window: the card files at once,
+	// its countdown read off the watcher's clock half a minute short of
+	// five hours later
+	reset := time.Now().UTC().Add(5*time.Hour + 30*time.Second).Truncate(time.Second)
+	plFreezeEvent(t, db, "class_frozen", "big", reset.Format(time.RFC3339), plFreezeWords)
 	if err := w.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -247,10 +222,11 @@ func TestFreezeCardSpeaksForTheClass(t *testing.T) {
 	if !ok || card.Status != "waiting-human" || card.Kind != "human" || card.AdmittedAt != nil {
 		t.Fatalf("the freeze card = %+v, want a waiting human card that holds no slot", card)
 	}
-	if len(fj.issues) != 1 {
-		t.Fatalf("%d issues filed, want the one card", len(fj.issues))
+	if n := plFreezeCards(t, db); n != 1 || len(fj.issues) != 1 {
+		t.Fatalf("%d freeze cards on %d issues, want the one card", n, len(fj.issues))
 	}
-	for _, want := range []string{"Class: big", plFreezeWords, "The class resets at 2027-01-04T21:01:00Z", "9 cards of the class wait"} {
+	for _, want := range []string{"Class: big", plFreezeWords,
+		"The class resets at " + reset.Format(time.RFC3339) + " (in 5h 00m)", "9 cards of the class wait"} {
 		if !strings.Contains(fj.issues[0], want) {
 			t.Errorf("the card's face lacks %q:\n%s", want, fj.issues[0])
 		}
@@ -261,50 +237,54 @@ func TestFreezeCardSpeaksForTheClass(t *testing.T) {
 	}
 
 	// a re-arm with a later reset updates the same card, no second card
-	plFreezeEvent(t, db, "class_frozen", "big", "2027-01-05T01:01:00Z", plFreezeWords)
+	later := reset.Add(4 * time.Hour)
+	plFreezeEvent(t, db, "class_frozen", "big", later.Format(time.RFC3339), plFreezeWords)
 	if err := w.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(fj.issues) != 1 {
-		t.Fatalf("the re-arm filed a second card: %d issues", len(fj.issues))
+	if n := plFreezeCards(t, db); n != 1 || len(fj.issues) != 1 {
+		t.Fatalf("the re-arm left %d freeze cards on %d issues, want the one card", n, len(fj.issues))
 	}
 	updated, _ := plFreezeCard(ctx, t, s)
-	if !strings.Contains(updated.Objective, "The class resets at 2027-01-05T01:01:00Z") {
-		t.Errorf("the re-arm left the face stale:\n%s", updated.Objective)
+	if want := "The class resets at " + later.Format(time.RFC3339) + " (in 9h 00m)"; !strings.Contains(updated.Objective, want) {
+		t.Errorf("the re-arm left the face stale, want %q:\n%s", want, updated.Objective)
 	}
 
 	// a self-resume: the held time on the face, then five minutes, then
 	// the card closes on its own
-	plFreezeEvent(t, db, "class_resumed", "big", "2027-01-05T01:01:00Z", "")
+	plFreezeEvent(t, db, "class_resumed", "big", later.Format(time.RFC3339), "")
 	if err := w.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
 	resumed, _ := plFreezeCard(ctx, t, s)
-	if resumed.Status != "waiting-human" || !strings.Contains(resumed.Objective, "the freeze held") {
+	if resumed.Status != "waiting-human" || !strings.Contains(resumed.Objective, "the freeze held 0h 00m") {
 		t.Fatalf("after the resume the card stands %s:\n%s", resumed.Status, resumed.Objective)
 	}
-	time.Sleep(5*time.Minute + 10*time.Second) // the self-resume close, slept for real
+	time.Sleep(5*time.Minute + 10*time.Second)
 	if err := w.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
-	closed, _ := plFreezeCard(ctx, t, s)
-	if closed.ID != card.ID || closed.Status != "done" {
-		t.Fatalf("after the hold the card = %+v, want %s done", closed, card.ID)
+	closed, _, err := s.Task(ctx, card.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closed.Status != "done" {
+		t.Fatalf("after the resume hold the card = %+v, want %s done", closed, card.ID)
 	}
 	if got := fj.patches[card.IssueNumber]; got != "closed" {
 		t.Errorf("issue #%d's last patch = %q, want closed", card.IssueNumber, got)
 	}
 
 	// a retry press closes the class's open card at once, no five-minute
-	// grace: a new hold files the card again (the self-closed episode
+	// grace: a new hold files a card of its own (the self-closed episode
 	// ended), the press closes it with no wait
-	plFreezeEvent(t, db, "class_frozen", "big", "2027-01-06T01:01:00Z", plFreezeWords)
+	plFreezeEvent(t, db, "class_frozen", "big", later.Add(24*time.Hour).Format(time.RFC3339), plFreezeWords)
 	if err := w.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
 	reopened, ok := plFreezeCard(ctx, t, s)
-	if !ok || reopened.Status != "waiting-human" {
-		t.Fatalf("the new hold's card = %+v, want a waiting card", reopened)
+	if !ok || reopened.Status != "waiting-human" || reopened.ID == card.ID || len(fj.issues) != 2 {
+		t.Fatalf("the new hold's card = %+v on %d issues, want a second waiting card", reopened, len(fj.issues))
 	}
 	if err := w.CloseOnRetry(ctx, plFreezeRepo, "big"); err != nil {
 		t.Fatal(err)
@@ -328,31 +308,20 @@ func TestFreezeCardSpeaksForTheClass(t *testing.T) {
 // TestFreezeCardAsksAtProviderLimit: a freeze held past
 // waits.provider_limit speaks once — the card alone asks add a fallback,
 // switch the model, keep waiting — and the work cards ask nothing; a
-// second pass stays quiet, the spoke latch. The proof's watcher names one
-// minute as the bound, so the ask costs a minute of wall clock.
+// second pass stays quiet. The proof's policy names provider_limit at
+// its floor of one minute, so the ask costs a minute of wall clock.
 // [one_freeze_card_per_class]
 func TestFreezeCardAsksAtProviderLimit(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	s, db := plFreezeStore(t)
+	s, db := accReceiptStore(t, "freeze_card_ask")
 	forge, fj := newAccFreezeForgejo(t)
-	w := plFreezeWatcherLimit(s, db, forge, time.Minute)
-
-	// nine cards of the class wait on the freeze, armed as the class
-	// proof arms them
-	for i := 0; i < 9; i++ {
-		id := fmt.Sprintf("fz-ask-%d", i)
-		card := factoryd.Task{ID: id, Kind: "agent", Track: policy.TrackDirect,
-			Status: "running", Repository: plFreezeRepo, Objective: "the freeze's work"}
-		if err := s.CreateTask(ctx, card); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.ExecContext(ctx, `UPDATE tasks SET model_alias = $2 WHERE id = $1`, id, "big"); err != nil {
-			t.Fatal(err)
-		}
-	}
+	w := plFreezeWatcher(s, forge, time.Minute)
+	plFreezeWorkCards(ctx, t, s, "fz-ask")
 
 	// the hold arms: the card files at once and asks nothing
-	plFreezeEvent(t, db, "class_frozen", "big", "2027-01-04T21:01:00Z", plFreezeWords)
+	reset := time.Now().UTC().Add(30 * time.Hour).Truncate(time.Second)
+	plFreezeEvent(t, db, "class_frozen", "big", reset.Format(time.RFC3339), plFreezeWords)
 	if err := w.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -366,12 +335,17 @@ func TestFreezeCardAsksAtProviderLimit(t *testing.T) {
 
 	// past the bound the card speaks once for the class: the ask on its
 	// issue and on its face
-	time.Sleep(70 * time.Second) // past the one-minute provider-limit bound
+	time.Sleep(70 * time.Second)
 	if err := w.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if asks := len(fj.comments); asks != 1 || !strings.Contains(fj.comments[0], "has held past waits.provider_limit") {
+	if asks := len(fj.comments); asks != 1 || !strings.Contains(fj.comments[0], "has held past waits.provider_limit (1m0s)") {
 		t.Fatalf("comments %q, want the one provider-limit ask", fj.comments)
+	}
+	for _, want := range []string{"Add a fallback", "switch the class's model", "keep waiting", "The work cards ask nothing"} {
+		if !strings.Contains(fj.comments[0], want) {
+			t.Errorf("the ask lacks %q: %s", want, fj.comments[0])
+		}
 	}
 	if !strings.HasPrefix(fj.comments[0], fmt.Sprintf("#issues/%d ", card.IssueNumber)) {
 		t.Errorf("the ask %q is not on the card's issue #%d: the work cards ask nothing", fj.comments[0], card.IssueNumber)
@@ -381,7 +355,7 @@ func TestFreezeCardAsksAtProviderLimit(t *testing.T) {
 		t.Errorf("the card's face lacks the ask:\n%s", asked.Objective)
 	}
 
-	// the spoke latch: a second pass asks nothing again
+	// a second pass asks nothing again
 	if err := w.Check(ctx); err != nil {
 		t.Fatal(err)
 	}

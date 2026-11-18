@@ -2,17 +2,19 @@ package acceptance
 
 // The gateway side of the pool's acceptance proofs (the pool-gateway
 // rig): a real gateway.NewServer stood on in-memory fakes — the Store
-// contract the gateway defines (Task, InsertAudit, CurrentPolicy,
-// TakeHold, ReleaseHold) as a ledger whose TakeHold fits calls with
-// policy.Fit exactly as the production store does, an Authenticator that
-// names the calling task, a KeyMinter that records, a Pricer of the one
-// alias the proofs call — and a stub LiteLLM that counts the backend
-// calls none of these proofs may reach. The policy version in force is
-// built from the code project's file text, so the proof's ceilings are
-// the file's, its pool with them.
+// contract the gateway defines (Task, InsertAudit, InsertEvent,
+// CurrentPolicy, TakeHold, ReleaseHold) as a ledger whose TakeHold fits
+// calls with policy.Fit exactly as the production store does, an
+// Authenticator that names the calling task, a KeyMinter that records, a
+// Pricer of the one alias the proofs call — and a stub LiteLLM that
+// counts the backend calls, which the refusal proofs may not reach and
+// a provider-limit proof serves the provider's answer from. The policy
+// version in force is built from the code project's file text, so the
+// proof's ceilings are the file's, its pool with them.
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"math"
@@ -343,9 +345,10 @@ func (s *accGatewayStore) ReleaseHold(_ context.Context, h policy.Hold, cost *fl
 	return b, nil
 }
 
-// auditRows, holdRequests, openHolds and spent answer the proof's reads:
-// the audit rows in order, the hold requests the handler fitted, the
-// holds still live, a task's spent figure.
+// auditRows, holdRequests, eventRows, openHolds and spent answer the
+// proof's reads: the audit rows in order, the hold requests the handler
+// fitted, the event rows in order, the holds still live, a task's spent
+// figure.
 func (s *accGatewayStore) auditRows() []factorygateway.AuditRow {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -410,19 +413,11 @@ func (m *accGatewayMinter) calls() []string {
 	return append([]string(nil), m.mints...)
 }
 
-// accGatewayPrices prices the aliases the proofs call: the session
-// alias at the proof's own figure, plus any extra alias a proof names —
-// a provider-limit proof's class big. Every other alias the gateway
-// refuses to price.
-type accGatewayPrices struct {
-	price policy.Price
-	also  map[string]policy.Price
-}
+// accGatewayPrices prices the one alias the proofs call at the proof's
+// own figure; every other alias the gateway refuses to price.
+type accGatewayPrices struct{ price policy.Price }
 
 func (p accGatewayPrices) Price(_ context.Context, alias string) (policy.Price, error) {
-	if pr, ok := p.also[alias]; ok {
-		return pr, nil
-	}
 	if alias == "small" {
 		return p.price, nil
 	}
@@ -456,19 +451,14 @@ func newAccStubLiteLLM(t *testing.T) *accStubLiteLLM {
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.seen = append(s.seen, r.Method+" "+r.URL.Path)
-		status, body, headers := s.status, s.body, s.headers
+		status, body, headers := cmp.Or(s.status, http.StatusOK), cmp.Or(s.body, "{}"), s.headers
 		s.mu.Unlock()
-		if body != "" {
-			for k, v := range headers {
-				w.Header().Set(k, v)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(status)
-			fmt.Fprint(w, body) // #nosec G104 -- nothing of these proofs reads past writing the answer
-			return
+		for k, v := range headers {
+			w.Header().Set(k, v)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, "{}") // #nosec G104 -- nothing of these proofs reads the stub's answer
+		w.WriteHeader(status)
+		fmt.Fprint(w, body) // #nosec G104 -- nothing of these proofs reads past writing the answer
 	}))
 	t.Cleanup(s.Close)
 	return s

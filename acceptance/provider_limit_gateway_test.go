@@ -3,14 +3,14 @@ package acceptance
 // The provider limit's acceptance proofs at the compiled gateway: a real
 // gateway.NewServer stood on the pool-gateway rig with a policy version
 // that names provider_limits, and a stub upstream that serves the
-// provider's answers. The proofs walk the plan's first five gateway
-// criteria: today's zai body freezes the class with the time zone read
-// right; only a dated error freezes, the undated ladder keeps today's
-// error_upstream path; a provider's own pattern set replaces the default
-// alone; the hold answers every work call locally before the reset, no
-// wire call, and a call after the lapse probes once and re-arms; the
-// class_frozen and class_resumed events land with the class, the reset
-// and the words.
+// provider's answers. The proofs walk the plan's four gateway criteria:
+// today's zai body freezes the class with the time zone read right; only
+// a dated error freezes, the undated ladder keeps today's error_upstream
+// path; a provider's own pattern set replaces the default alone; the
+// hold answers every work call locally before the reset, no wire call,
+// and a call after the lapse probes once and re-arms, the class_frozen
+// and class_resumed events landing with the class, the reset and the
+// words.
 
 import (
 	"encoding/json"
@@ -65,7 +65,7 @@ func plPolicy() policy.Version {
 				"utcprov":    {},
 				"customprov": {Patterns: []string{`(?i)window opens[:\s]+(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})`}},
 			},
-			Prices: policy.ToolPrices{MaxOutputTokens: map[string]int{"small": 32768, "big": 32768}},
+			Prices: policy.ToolPrices{MaxOutputTokens: map[string]int{"small": 32768}},
 		},
 	}}
 }
@@ -90,7 +90,7 @@ func plServer(t *testing.T, task factorygateway.Task, pv policy.Version, stub *a
 		Auth:       accGatewayAuth{task: task.ID},
 		Store:      store,
 		Minter:     minter,
-		Prices:     accGatewayPrices{price: gwPrice(gwBodyBytes(t)), also: map[string]policy.Price{"big": gwPrice(gwBodyBytes(t))}},
+		Prices:     accGatewayPrices{price: gwPrice(gwBodyBytes(t))},
 		LiteLLMURL: stub.URL,
 	}).Routes("pl-proof")
 	return h, store, minter
@@ -154,26 +154,25 @@ func TestGatewayZaiBodyFreeze(t *testing.T) {
 	stub.serve(http.StatusTooManyRequests, plZaiBody, nil)
 	plFrozen(t, "the zai body", plPost(t, h), store, "zai-class", "2026-11-14T17:05:50Z", words)
 
-	// the no-entry zone: the entry stands but names no tz, so the naive
-	// stamp reads UTC. That is the whole of "no provider entry": policy
-	// refuses a class whose provider is absent from provider_limits
-	// outright, so no version the gateway ever holds reads entry-less
-	// and the no-entry case can only be an entry naming no zone
+	// the no-entry case: the provider's entry names no tz, so the naive
+	// stamp reads UTC
 	h, store, _ = plServer(t, plTask("utc-class"), pv, stub)
 	stub.serve(http.StatusTooManyRequests, plZaiBody, nil)
 	plFrozen(t, "the naive stamp without a zone", plPost(t, h), store, "utc-class", "2026-11-15T01:05:50Z", words)
 
-	// the provider absent from provider_limits never stands: the version
-	// itself fails validation, and the gateway answers no call under it —
-	// pinned here so the entry-less read stays out of the question
+	// a provider with no provider_limits entry at all never reaches a
+	// call: policy refuses the version, and the gateway serves nothing
+	// under it
 	bad := plPolicy()
 	bad.Tree.Document.Classes["absent-class"] = policy.Class{Models: []string{"small"}, Provider: "absentprov"}
 	h, _, _ = plServer(t, plTask("absent-class"), bad, stub)
-	stub.serve(http.StatusTooManyRequests, plZaiBody, nil)
 	rec := plPost(t, h)
 	refusal, _ := io.ReadAll(rec.Body)
 	if rec.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(refusal), "names no provider_limits entry") {
 		t.Fatalf("the absent provider's version = %d %s, want the policy's refusal", rec.StatusCode, refusal)
+	}
+	if calls := stub.calls(); len(calls) != 2 {
+		t.Fatalf("upstream calls %v, want the two before: none under the refused version", calls)
 	}
 
 	// the offset header: the stamp carries its offset and reads as is,
@@ -277,9 +276,12 @@ func TestProviderLimitPatternSets(t *testing.T) {
 // probes the upstream exactly once and re-arms the hold at the new reset,
 // and the class_frozen and class_resumed events land with the class, the
 // reset and the words. The proof's policy names provider_recheck at its
-// floor of one minute, so the lapse costs a minute of wall clock.
+// floor of one minute, so the lapse costs a minute of wall clock; the
+// provider's resets lie decades ahead, so the recheck, not the reset,
+// ends every hold the proof arms.
 // [class_hold_local_refusal]
 func TestGatewayHoldLocalRefusal(t *testing.T) {
+	t.Parallel()
 	pv := plPolicy()
 	pv.Tree.Document.Waits = policy.Waits{ProviderRecheck: time.Minute}
 	stub := newAccStubLiteLLM(t)
@@ -288,17 +290,17 @@ func TestGatewayHoldLocalRefusal(t *testing.T) {
 
 	// the arming call: the provider's dated refusal freezes the class at
 	// the Singapore read plus its minute's margin
-	first := `{"error":{"message":"Usage limit reached. Your limit will reset at 2027-01-05 05:00:00","type":"rate_limit_error","param":null,"code":"429"}}`
+	first := `{"error":{"message":"Usage limit reached. Your limit will reset at 2099-01-05 05:00:00","type":"rate_limit_error","param":null,"code":"429"}}`
 	words := plWords(t, first)
 	stub.serve(http.StatusTooManyRequests, first, nil)
-	plFrozen(t, "the arming call", plPost(t, h), store, "zai-class", "2027-01-04T21:01:00Z", words)
+	plFrozen(t, "the arming call", plPost(t, h), store, "zai-class", "2099-01-04T21:01:00Z", words)
 	if calls := stub.calls(); len(calls) != 1 {
 		t.Fatalf("upstream calls after the arm %v, want the one", calls)
 	}
 
 	// a second work call inside the freeze is answered locally: the same
 	// until, no upstream request on the wire
-	plFrozen(t, "the held call", plPost(t, h), store, "zai-class", "2027-01-04T21:01:00Z", words)
+	plFrozen(t, "the held call", plPost(t, h), store, "zai-class", "2099-01-04T21:01:00Z", words)
 	if calls := stub.calls(); len(calls) != 1 {
 		t.Fatalf("upstream calls after the held call %v, want one: the freeze answers locally", calls)
 	}
@@ -309,16 +311,16 @@ func TestGatewayHoldLocalRefusal(t *testing.T) {
 
 	// a call after the lapse probes the upstream exactly once; the stub
 	// serves a new dated refusal and the hold re-arms at the new reset
-	renewed := `{"error":{"message":"Usage limit reached. Your limit will reset at 2027-01-05 09:00:00","type":"rate_limit_error","param":null,"code":"429"}}`
+	renewed := `{"error":{"message":"Usage limit reached. Your limit will reset at 2099-01-05 09:00:00","type":"rate_limit_error","param":null,"code":"429"}}`
 	time.Sleep(65 * time.Second) // past the one-minute recheck lapse
 	stub.serve(http.StatusTooManyRequests, renewed, nil)
-	plFrozen(t, "the post-lapse call", plPost(t, h), store, "zai-class", "2027-01-05T01:01:00Z", plWords(t, renewed))
+	plFrozen(t, "the post-lapse call", plPost(t, h), store, "zai-class", "2099-01-05T01:01:00Z", plWords(t, renewed))
 	if calls := stub.calls(); len(calls) != 2 {
 		t.Fatalf("upstream calls after the post-lapse call %v, want two: one probe", calls)
 	}
 
 	// and the freeze is back: a further call is answered locally again
-	plFrozen(t, "the re-frozen call", plPost(t, h), store, "zai-class", "2027-01-05T01:01:00Z", plWords(t, renewed))
+	plFrozen(t, "the re-frozen call", plPost(t, h), store, "zai-class", "2099-01-05T01:01:00Z", plWords(t, renewed))
 	if calls := stub.calls(); len(calls) != 2 {
 		t.Fatalf("upstream calls after the re-frozen call %v, want two", calls)
 	}
@@ -327,7 +329,7 @@ func TestGatewayHoldLocalRefusal(t *testing.T) {
 	// the arm, resumed on the lapse, frozen again on the re-arm
 	events := store.eventRows()
 	kinds := []string{"class_frozen", "class_resumed", "class_frozen"}
-	resets := []string{"2027-01-04T21:01:00Z", "2027-01-04T21:01:00Z", "2027-01-05T01:01:00Z"}
+	resets := []string{"2099-01-04T21:01:00Z", "2099-01-04T21:01:00Z", "2099-01-05T01:01:00Z"}
 	if len(events) != len(kinds) {
 		t.Fatalf("events %+v, want %d rows", events, len(kinds))
 	}
