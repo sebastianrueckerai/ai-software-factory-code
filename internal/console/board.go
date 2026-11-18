@@ -544,6 +544,7 @@ type card struct {
 	PlanKey                   string // a plan's card: its key in the plan, on the face's plan chip
 	Plan                      []card // a done plan's cards, which its drawer lists
 	Retry                     *retry // a failed plan card's Retry, for an approver
+	RetryFreeze               *retry // an open freeze card's Retry now, for an approver
 	Activity                  string // the task's newest event as one line, or the escalation's question
 	WaitingForActivity        bool   // the activity line stands for the wait's reason
 	// HoldLine is a human's hold on the card as the board words it, ""
@@ -2078,6 +2079,9 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		k.Question = bt.Question
 		if bt.Question != nil {
 			k.Title = cmp.Or(t.HumanSummary, bt.Question.Ask)
+		}
+		if t.Source == factoryd.SourceFreezeCard && t.Status == "waiting-human" && v.approves(t.Repository) {
+			k.RetryFreeze = &retry{CSRF: v.csrf}
 		}
 		return k
 	}

@@ -73,6 +73,8 @@ type FreezeCardStore interface {
 	InsertIntakeEvent(context.Context, IntakeEvent) (int64, error)
 	IntakeEvents(context.Context, string) ([]IntakeEvent, error)
 	ConfirmFactoryClose(context.Context, string, int64) error
+	// Task reads the card a retry press names.
+	Task(ctx context.Context, id string) (Task, bool, error)
 	// CloseFreezeCard closes the class's open freeze card's row at once,
 	// no five-minute grace, and answers the row it closed; ok is false —
 	// and nothing changes — when no open card stands.
@@ -396,46 +398,61 @@ func (w *FreezeCard) resumed(ctx context.Context, st *freezeClass, ev FreezeEven
 }
 
 // CloseOnRetry closes the class's open freeze card at once, no
-// five-minute grace: the retry press — the chat action and the card
-// button — calls it after it clears the hold. It matches the class's own
+// five-minute grace, its issue naming by, who pressed: the retry press —
+// the chat action and the card button — calls it after it clears the
+// hold. It matches the class's own
 // card only, by the whole-line Class marker, and is idempotent when no
 // open card stands. The class's memory keeps the closed card, so a first
 // dated refusal after the press re-arms the hold and updates the same
 // card, while a first success keeps it closed on class_resumed; a
 // restart that loses the memory adopts the done card again
 // (findClosedCard), so the re-arm survives it.
-func (w *FreezeCard) CloseOnRetry(ctx context.Context, repository, class string) error {
+func (w *FreezeCard) CloseOnRetry(ctx context.Context, repository, class, by string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	t, ok, err := w.Store.CloseFreezeCard(ctx, repository, class)
 	if err != nil || !ok {
 		return err
 	}
-	msg := fmt.Sprintf("The retry press cleared the %s class's hold: the freeze card closes at once.", class)
+	msg := fmt.Sprintf("%s's retry press cleared the %s class's hold: the freeze card closes at once.", by, class)
 	if err := closeIssueAsFactory(ctx, w.Store, w.Forgejo, t, "factoryd: "+msg); err != nil {
 		return err
 	}
 	if st := w.classes[repository+"/"+class]; st != nil {
 		st.closed = true
 	}
-	log.Printf("freeze card: the retry press closed %s's card #%d at once", class, t.IssueNumber)
+	log.Printf("freeze card: %s's retry press closed %s's card #%d at once", by, class, t.IssueNumber)
 	return nil
 }
 
 // openCardRepositories lists the repositories that hold an open freeze
 // card of class, each once.
 func (w *FreezeCard) openCardRepositories(ctx context.Context, class string) ([]string, error) {
-	open, err := w.Store.ListTasksByStatus(ctx, "waiting-human")
+	open, err := openFreezeCards(ctx, w.Store, class)
 	if err != nil {
 		return nil, err
 	}
 	var repos []string
 	for _, t := range open {
-		if t.Source == SourceFreezeCard && objectiveHasClassLine(t.Objective, class) && !slices.Contains(repos, t.Repository) {
+		if !slices.Contains(repos, t.Repository) {
 			repos = append(repos, t.Repository)
 		}
 	}
 	return repos, nil
+}
+
+// openFreezeCards lists the open freeze cards of class, every
+// repository's.
+func openFreezeCards(ctx context.Context, s interface {
+	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
+}, class string) ([]Task, error) {
+	open, err := s.ListTasksByStatus(ctx, "waiting-human")
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(open, func(t Task) bool {
+		return t.Source != SourceFreezeCard || !objectiveHasClassLine(t.Objective, class)
+	}), nil
 }
 
 // classCards lists the cards the class's hold freezes, in every

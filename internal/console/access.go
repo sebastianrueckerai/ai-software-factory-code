@@ -124,6 +124,7 @@ var accessTable = map[string]accessRule{
 	"POST /tasks/{id}/plan/holdout":             rCard,
 	"POST /tasks/{id}/plan/changes":             rCard,
 	"POST /tasks/{id}/retry":                    {need: approver, scope: scCard, what: "retry a card"},
+	"POST /tasks/{id}/retry-freeze":             {need: approver, scope: scCard, what: "end a provider freeze"},
 	"POST /tasks/{id}/close":                    rCard,
 	"POST /tasks/{id}/steer":                    rCard,
 	"POST /tasks/{id}/replan":                   {need: approver, scope: scCard, what: "replan a card"},

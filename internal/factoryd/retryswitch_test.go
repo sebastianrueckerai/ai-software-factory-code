@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -160,8 +162,15 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 			}}
 	}
 
+	// a press on a card that holds no open freeze names its state and the
+	// action that fits, and moves nothing
+	var no ErrNoFreeze
+	if err := press(nil, "gateway-token").RetryFreeze(ctx, "t1", "sebastian"); !errors.As(err, &no) ||
+		err.Error() != "t1 is no freeze card: the retry switch ends a provider freeze from the class's open freeze card, and Retry files a failed card again" {
+		t.Fatalf("the press on a work card = %v, want the no-freeze refusal", err)
+	}
 	// a press without the factoryd token: the hold stays, nothing moves
-	if err := press(nil, "sandbox-token").RetryFreeze(ctx, "t1", "big"); err == nil || !strings.Contains(err.Error(), "status 401") {
+	if err := press(nil, "sandbox-token").RetryFreeze(ctx, cards[acme].ID, "sebastian"); err == nil || !strings.Contains(err.Error(), "status 401") {
 		t.Fatalf("the refused press = %v, want the door's 401", err)
 	}
 	if len(signalled) != 0 || cardStatus(acme) != "waiting-human" || cardStatus(other) != "waiting-human" || g.armed["big"] == "" || len(store.rows) != 2 {
@@ -175,7 +184,7 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 	p := press(h, "gateway-token")
 	h.env.RegisterDelayedCallback(func() {
-		if err := p.RetryFreeze(ctx, "t1", "big"); err != nil {
+		if err := p.RetryFreeze(ctx, cards[acme].ID, "sebastian"); err != nil {
 			t.Errorf("RetryFreeze: %v", err)
 		}
 	}, 20*time.Minute)
@@ -226,7 +235,7 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 	signalled = nil
 	p = press(h2, "gateway-token")
 	h2.env.RegisterDelayedCallback(func() {
-		if err := p.RetryFreeze(ctx, "t1", "big"); err != nil {
+		if err := p.RetryFreeze(ctx, cards[acme].ID, "sebastian"); err != nil {
 			t.Errorf("RetryFreeze: %v", err)
 		}
 	}, 20*time.Minute)
@@ -269,13 +278,30 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 		t.Fatalf("cleared = %q, want the class at each press", g.cleared)
 	}
 
-	// no hold armed and no frozen card: a quiet success
+	// the done card of sf/other: its freeze ended, which the press names
+	if err := p.RetryFreeze(ctx, cards[other].ID, "sebastian"); !errors.As(err, &no) ||
+		err.Error() != fmt.Sprintf("the freeze of #%d ended, the card is done: no hold waits on a retry, and the class's next freeze opens its card again", cards[other].IssueNumber) {
+		t.Fatalf("the press on a done freeze card = %v, want the ended-freeze refusal", err)
+	}
+
+	// the premium class's open card with no hold armed and no frozen card:
+	// a quiet success that closes the card alone
+	premium := Task{ID: "fc-premium", Kind: "human", Status: "waiting-human", Source: SourceFreezeCard, Repository: acme, IssueNumber: 90,
+		Objective: freezeCardTitle("premium") + "\n\n" + freezeClassMarker("premium")}
+	if err := store.CreateTask(ctx, premium); err != nil {
+		t.Fatal(err)
+	}
 	signalled = nil
-	if err := p.RetryFreeze(ctx, "t1", "premium"); err != nil {
+	if err := p.RetryFreeze(ctx, premium.ID, "sebastian"); err != nil {
 		t.Fatalf("the empty press: %v", err)
 	}
-	if len(store.rows) != 6 || len(signalled) != 0 || cardStatus(acme) != "waiting-human" {
-		t.Fatalf("the empty press moved something: rows %q, woke %q, card %s", rowKinds(store), signalled, cardStatus(acme))
+	if got, _, _ := store.Task(ctx, premium.ID); len(store.rows) != 6 || len(signalled) != 0 || cardStatus(acme) != "waiting-human" || got.Status != "done" {
+		t.Fatalf("the empty press: rows %q, woke %q, sf/acme's card %s, premium's %s; want only premium's card closed", rowKinds(store), signalled, cardStatus(acme), got.Status)
+	}
+	if !slices.ContainsFunc(fj.comments, func(c string) bool {
+		return strings.Contains(c, "sebastian's retry press cleared the premium class's hold")
+	}) {
+		t.Fatalf("comments %q, want the close naming who pressed", fj.comments)
 	}
 }
 
@@ -350,13 +376,98 @@ func TestFreezeCardRefusesAWatcherWithoutItsPolicyReader(t *testing.T) {
 	if err := w.Check(ctx); !errors.Is(err, errNoPolicyReader) || len(fj.issues) != 0 {
 		t.Fatalf("Check = %v over %d issues, want the missing policy reader named and no card", err, len(fj.issues))
 	}
+	card := Task{ID: "fc", Kind: "human", Status: "waiting-human", Source: SourceFreezeCard, Repository: "sf/acme",
+		Objective: freezeCardTitle("big") + "\n\n" + freezeClassMarker("big")}
+	if err := store.CreateTask(ctx, card); err != nil {
+		t.Fatal(err)
+	}
 	var signalled []string
 	p := &RetrySwitch{Freeze: w, GatewayURL: "http://gateway", Token: "gateway-token", HTTP: &http.Client{Transport: handlerTransport{g}},
 		Signal: func(_ context.Context, id string) error { signalled = append(signalled, id); return nil }}
-	if err := p.RetryFreeze(ctx, "t1", "big"); !errors.Is(err, errNoPolicyReader) {
+	if err := p.RetryFreeze(ctx, card.ID, "sebastian"); !errors.Is(err, errNoPolicyReader) {
 		t.Fatalf("RetryFreeze = %v, want the missing policy reader named", err)
 	}
 	if g.armed["big"] == "" || len(g.cleared) != 0 || len(signalled) != 0 || len(store.rows) != 1 {
 		t.Fatalf("the refused press moved something: armed %q, cleared %q, woke %q, rows %q", g.armed, g.cleared, signalled, rowKinds(store))
+	}
+}
+
+// The retry rig's coder class names the zai provider, and its open freeze
+// card t-fz (#8) holds t-z (#7), which waits on the provider. A retry with
+// no task_id on t-z, a human's on rung 3, and one on t-fz itself, the
+// project agent's on rung 2, each press the retry switch on t-fz and
+// refuse nothing; the factory's own rung 0 presses nothing. A thawed card
+// takes the per-card path: t-b's retry files its failed dependency again,
+// while t-y, waiting on the provider under a class that names none, and
+// t-x, a coder card in its session, are refused with their state.
+func TestActRetryOnAFrozenCaseRunsTheRetrySwitch(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _, _ := newRetryRig(t)
+	v := r.cfg.Policy()
+	doc := v.Document
+	doc.Classes = maps.Clone(doc.Classes)
+	coder := doc.Classes["coder"]
+	coder.Provider = "zai"
+	doc.Classes["coder"], doc.Classes["plain"] = coder, policy.Class{}
+	doc.ProviderLimits = map[string]policy.ProviderLimit{"zai": {TZ: "Asia/Singapore"}}
+	v.Tree.Document = doc
+	r.cfg.Policy = func() policy.Version { return v }
+	for _, c := range []Task{
+		{ID: "t-z", Kind: "agent", Status: "running", Gate: GateProvider, RequiredCapabilities: []string{"coder"}, IssueNumber: 7},
+		{ID: "t-y", Kind: "agent", Status: "running", Gate: GateProvider, RequiredCapabilities: []string{"plain"}},
+		{ID: "t-x", Kind: "agent", Status: "running", Gate: GateSession, RequiredCapabilities: []string{"coder"}},
+		{ID: "t-fz", Kind: "human", Status: "waiting-human", Source: SourceFreezeCard, IssueNumber: 8,
+			Objective: freezeCardTitle("coder") + "\n\n" + freezeClassMarker("coder")},
+	} {
+		c.Track, c.Repository = policy.TrackDirect, "linkshort/linkshort"
+		if err := store.CreateTask(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var pressed []string
+	r.RetryFreeze = func(_ context.Context, cardID, by string) error {
+		pressed = append(pressed, cardID+" by "+by)
+		return nil
+	}
+	want := []CaseAction{{Action: ActRetry, Args: map[string]any{"freeze_card": "t-fz"},
+		Result: "Ended the provider freeze: its hold cleared, its freeze card closed, and its frozen cards call the provider again."}}
+	for _, in := range []ActInput{
+		{TaskID: "t-z", By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActRetry}},
+		{TaskID: "t-fz", By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActRetry}},
+	} {
+		got, err := r.Act(ctx, in)
+		if err != nil || !reflect.DeepEqual(got.Did, want) {
+			t.Fatalf("%s's retry on %s = %+v, %v; want the press on t-fz", in.By, in.TaskID, got.Did, err)
+		}
+	}
+	if !slices.Equal(pressed, []string{"t-fz by sebastian", "t-fz by " + ChatUser}) {
+		t.Fatalf("pressed %q, want t-fz by the human, then by the project agent", pressed)
+	}
+	var refused ErrActRefused
+	if _, err := r.Act(ctx, ActInput{TaskID: "t-z", By: FactoryDecider, Rung: 0, Res: Resolution{Action: ActRetry}}); !errors.As(err, &refused) ||
+		!strings.HasPrefix(err.Error(), "rung 0 ends no provider freeze, a human's press or the project agent's: hand it up (hand_up) with retry as the recommendation") {
+		t.Fatalf("rung 0's retry = %v, want the refusal naming who presses", err)
+	}
+	for _, id := range []string{"t-y", "t-x"} {
+		if _, err := r.Act(ctx, ActInput{TaskID: id, By: "sebastian", Rung: 3, Res: Resolution{Action: ActRetry}}); !errors.As(err, &refused) ||
+			!strings.Contains(err.Error(), "no failed dependency is open to a retry, and no provider freeze holds the card") {
+			t.Fatalf("the retry on %s = %v, want the refusal naming the state", id, err)
+		}
+	}
+	got, err := r.Act(ctx, ActInput{TaskID: "t-b", By: "sebastian", Rung: 3, Res: Resolution{Action: ActRetry}})
+	if err != nil || len(got.Did) != 1 || got.Did[0].Args["task_id"] != "t-a" || got.Did[0].Args["replacement"] != int64(9) {
+		t.Fatalf("t-b's retry = %+v, %v; want #9 filed in place of t-a", got.Did, err)
+	}
+	if len(pressed) != 2 {
+		t.Fatalf("pressed %q, want no press past the two", pressed)
+	}
+	// a press that cleared the hold and failed part after it reaches the
+	// answer's caller as it is, for the caller's own sentence
+	r.RetryFreeze = func(context.Context, string, string) error {
+		return &PartialPressError{Err: errors.New("wake t-z: temporal unavailable")}
+	}
+	var part *PartialPressError
+	if _, err := r.Act(ctx, ActInput{TaskID: "t-z", By: "sebastian", Rung: 3, Res: Resolution{Action: ActRetry}}); !errors.As(err, &part) {
+		t.Fatalf("a press that failed past the clear = %v, want its PartialPressError", err)
 	}
 }
