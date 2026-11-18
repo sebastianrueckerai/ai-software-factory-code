@@ -892,6 +892,9 @@ func TestACapsWhyNamesTheFileOfItsLimit(t *testing.T) {
 		"project": {factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseProjectCap, CapWait: "the month cap budget.month_eur in projects/demo-app.yaml is spent"}},
 			"An approver changes the project's monthly limit in the project's file projects/demo-app.yaml" + goes},
 		"project, no file named": {factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseProjectCap}}, "An approver changes the project's monthly limit in the project's file" + goes},
+		// the console links a path by the pattern the why reads it with
+		"project, a name no project file has": {factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseProjectCap, CapWait: "the month cap budget.month_eur in projects/my_app.v2.yaml is spent"}},
+			"An approver changes the project's monthly limit in the project's file" + goes},
 	} {
 		c.f.Case = factoryd.Case{Kind: c.f.Kind}
 		got := factoryd.FaceOf(c.f.Case, c.f).Why

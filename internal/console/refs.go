@@ -129,7 +129,7 @@ func (v *boardView) refsOf(ctx context.Context, c *Console, repo string) renderR
 // 3c9a1e0", "the factory's file policy.yaml", "the project's file
 // projects/demo.yaml". A hash holds a digit, which keeps a word of the
 // letters a to f a word: "commit defaced".
-var forgeRef = regexp.MustCompile(`\bCI run (\d+)\b|\b[Cc]ommit ([0-9a-f]{7,40})\b|\bthe (?:factory|project)'s file (policy\.yaml|projects/[a-z0-9-]+\.yaml)`)
+var forgeRef = regexp.MustCompile(`\bCI run (\d+)\b|\b[Cc]ommit ([0-9a-f]{7,40})\b|\bthe (?:factory|project)'s file (policy\.yaml|` + factoryd.ProjectFilePattern + `)`)
 
 // issueLinks is text, which holds no code and no link, with each #N
 // linked and named, each CI run and commit named in words linked to its

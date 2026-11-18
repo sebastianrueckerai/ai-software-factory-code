@@ -99,8 +99,13 @@ func CapTurn(decision string, at time.Time) time.Time {
 	return monthTurn(at)
 }
 
+// ProjectFilePattern matches the path of a project's file in the factory's
+// configuration, as a cap's words name it and the console links it: a
+// project's name holds lower-case letters, digits and hyphens.
+const ProjectFilePattern = `projects/[a-z0-9-]+\.yaml`
+
 // projectFile matches the project file a state names.
-var projectFile = regexp.MustCompile(`projects/[^\s/]+\.yaml`)
+var projectFile = regexp.MustCompile(ProjectFilePattern)
 
 // capWaitReason is the reason of a card by (capGateway, capFloor) refused
 // at the cap decision, which resets at until: its first line is the card's
