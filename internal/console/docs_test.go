@@ -359,7 +359,7 @@ func TestDocsConcurrentWritesBothLand(t *testing.T) {
 
 	_, err = r.c.doWriteDoc(ctx, a, "sf/docs", "sf/code", "docs/plans/cache.md", docEdit{Old: "one week", New: "four weeks", Base: base})
 	if err == nil || err.Error() != "docs/plans/cache.md: it changed since it was read and the passage old is no longer there once. Its base_sha256 is now "+
-		factoryd.ContentHash(three)+"; its current content:\n\n"+three {
+		factoryd.ContentHash(three)+". Its current content:\n\n"+three {
 		t.Fatalf("a stale write whose passage is gone = %v", err)
 	}
 }

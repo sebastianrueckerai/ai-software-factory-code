@@ -23,7 +23,7 @@ func PlanAnswerRefusal(rung int, autonomy string, confirming, takesOffMain bool)
 	case rung == 3:
 		return ""
 	case rung != 2:
-		return fmt.Sprintf("Rung %d decides no plan answer: it is rung 2's at full auto, or the human's, made on the plan's card.", rung)
+		return capitalize(who(rung)) + " decides no plan answer: it is the factory agent's at full auto, or the human's, made on the plan's card."
 	case autonomy == "":
 		return "The project's autonomy level could not be read, so a plan's answer stays the human's, made on the plan's card with its choices, Confirm the plan or Ask for changes." + planAgentStep
 	case autonomy != policy.AutonomyFullAuto && confirming:

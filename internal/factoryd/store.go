@@ -2291,7 +2291,7 @@ func (e *DrawBoundError) Error() string {
 	case e.Fit.IsZero() && !e.Least.IsZero():
 		return fmt.Sprintf("%s, and nothing of it fits, but %s does: ask for that", bound, drawText(e.Least))
 	case e.Fit.IsZero():
-		return bound + ", and nothing of it fits: `hand_up` with it as the recommendation"
+		return bound + ", and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"
 	case e.Lines > 0:
 		return fmt.Sprintf("%s. The largest draw that fits is %s with %s beside it, as lines ride free: ask for that", bound, drawText(e.Fit), lines)
 	}

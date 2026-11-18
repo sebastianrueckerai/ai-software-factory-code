@@ -705,7 +705,7 @@ func TestTheFreezeCardsRetryNowRunsTheRetrySwitch(t *testing.T) {
 	var refused ErrActRefused
 	checkin := retry
 	checkin.Rung = 1
-	if _, err := g.r.Act(ctx, checkin); !errors.As(err, &refused) || err.Error() != "the check-in may not answer a human card: rung 2 and the human may" || len(pressed) != 0 {
+	if _, err := g.r.Act(ctx, checkin); !errors.As(err, &refused) || err.Error() != "the check-in may not answer a human card: the factory agent and the human may" || len(pressed) != 0 {
 		t.Fatalf("rung 1's retry = %v, pressed %q; want the human card's refusal and no press", err, pressed)
 	}
 	refusal = ErrNoFreeze("the freeze of #8 ended, the card is done: no hold waits on a retry, and the class's next freeze opens its card again")

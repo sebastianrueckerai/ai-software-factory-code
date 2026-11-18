@@ -1020,7 +1020,7 @@ func TestRacingFilingsKeepTheWinnersBranch(t *testing.T) {
 		won, lost = 1, 0
 	}
 	if codes[won] != http.StatusSeeOther || codes[lost] != http.StatusBadGateway ||
-		!strings.Contains(bodies[lost], "Forgejo refused to commit the project's file: branch already exists; another filing of linkshort holds the name. Choose another name, or open that filing's project when it lands.") {
+		!strings.Contains(bodies[lost], "Forgejo refused to commit the project's file: branch already exists. Another filing of linkshort holds the name. Choose another name, or open that filing's project when it lands.") {
 		t.Errorf("racing filings answered %d %q and %d %q; want one 303 and one 502 leaving the branch", codes[0], bodies[0], codes[1], bodies[1])
 	}
 	infra.mu.Lock()

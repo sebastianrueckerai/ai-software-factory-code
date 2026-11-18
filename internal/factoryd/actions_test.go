@@ -241,7 +241,7 @@ func TestDrawWithinByRung(t *testing.T) {
 	f := CaseFacts{PoolLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 60 - 59.7}, BudgetEUR: 5, CeilingEUR: 8}
 	one := policy.Draw{Sessions: 1}
 	if got, want := drawWithin(f, 1, one, policy.Draw{}, 0, false), "the card's draw bound leaves 0 sessions, 0 seconds of agent time and 0.00 EUR: rung 2 or the human may draw more. "+
-		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: `hand_up` with it as the recommendation"; got != want {
+		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"; got != want {
 		t.Errorf("rung 1 = %q, want %q", got, want)
 	}
 	if got := drawWithin(f, 2, one, policy.Draw{}, 0, false); got != "" {
@@ -310,14 +310,14 @@ func TestDrawBoundNamesThePartAndTheFit(t *testing.T) {
 				"This draw does not fit in agent time (asked 2 hours, left 90 minutes). The largest draw that fits is 0 sessions, 90 minutes of agent time and 0.00 EUR: ask for that"},
 		{"an empty pool", empty, 2, policy.Draw{AgentTime: 30 * time.Minute}, 0,
 			"the escalation pool leaves 0 sessions, 0 seconds of agent time and 0.00 EUR this month: only the human draws more. " +
-				"This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: `hand_up` with it as the recommendation"},
+				"This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"},
 		{"a session without minutes at the agent time cap", sessionsOnly, 2, policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, 200,
-			pool5 + "This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: `hand_up` with it as the recommendation"},
+			pool5 + "This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"},
 		// a gate stop's extend is probed with a session, which the pool lacks
 		{"lines beside a session at a gate stop", gate, 2, policy.Draw{Sessions: 1}, 200,
-			pool924 + "This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: `hand_up` with it as the recommendation"},
+			pool924 + "This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"},
 		{"a session at the session cap", sessionCap, 2, policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, 0,
-			pool924 + "This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: `hand_up` with it as the recommendation"},
+			pool924 + "This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"},
 		{"lines beside a session and minutes at a gate stop", gateSessions, 2, policy.Draw{Sessions: 1, AgentTime: 30 * time.Minute}, 200,
 			pool5 + "This draw does not fit in agent time (asked 30 minutes, left 0 seconds). The largest draw that fits is 1 session, 0 seconds of agent time and 0.00 EUR with 200 lines beside it, as lines ride free: ask for that"},
 		{"lines beside minutes at a gate stop", gateSessions, 2, policy.Draw{AgentTime: 30 * time.Minute}, 200,
@@ -344,8 +344,8 @@ func TestDrawBoundNamesThePartAndTheFit(t *testing.T) {
 func TestExtendAtATimeCapNamesTheMinutesThatFit(t *testing.T) {
 	f := CaseFacts{Kind: CaseAgentTimeCap, CardDrawLeft: policy.Draw{Sessions: 3, AgentTime: 90 * time.Minute, EUR: 6},
 		PoolLeft: policy.Draw{AgentTime: 924*time.Minute + 6*time.Second}}
-	want := "this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none. " +
-		"The card's draw leaves 90 minutes and the pool 924 minutes of agent time, so rung 1 may ask for up to 90 minutes, rung 2 for up to 600 minutes and the human for up to 600 minutes"
+	want := "this card stopped for agent time: an extend of its agent time starts the next session, and sessions or lines alone buy none. " +
+		"The card's draw leaves 90 minutes and the pool 924 minutes of agent time, so the check-in may ask for up to 90 minutes, the factory agent for up to 600 minutes and the human for up to 600 minutes"
 	if got := applies(t, ActExtend, f, Resolution{Args: map[string]any{"sessions": 1}}); got != want {
 		t.Errorf("an extend of a session at the agent time cap:\n got %q\nwant %q", got, want)
 	}
@@ -722,8 +722,8 @@ func TestExtendAnswersACapAlone(t *testing.T) {
 // takes.
 func TestExtendAtATimeCapTakesAgentTime(t *testing.T) {
 	timeCap := CaseFacts{Kind: CaseAgentTimeCap, SessionCap: 5, AgentTimeCapS: 1200, AgentTimeS: 1200}
-	const noMinutes = "this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none. " +
-		"The card's draw leaves 0 minutes and the pool 0 minutes of agent time, so rung 1 may ask for none, rung 2 for none and the human for up to 600 minutes"
+	const noMinutes = "this card stopped for agent time: an extend of its agent time starts the next session, and sessions or lines alone buy none. " +
+		"The card's draw leaves 0 minutes and the pool 0 minutes of agent time, so the check-in may ask for none, the factory agent for none and the human for up to 600 minutes"
 	for _, tc := range []struct {
 		name string
 		r    Resolution
@@ -1038,7 +1038,7 @@ func TestRouteApprovalRefusesAChecksWaitStop(t *testing.T) {
 	green := CaseFacts{Kind: CaseGateStop, Gate: ActivityWaitChecks, PROpen: true, Checks: "green", ReviewApproved: true}
 	merge := green
 	merge.Gate = ActivityMerge
-	if got, want := applies(t, ActRouteApproval, green, Resolution{}), "a checks wait's stop goes on with `wait_checks`, not `route_approval`"; got != want {
+	if got, want := applies(t, ActRouteApproval, green, Resolution{}), "a checks wait's stop goes on with `wait_checks` alone"; got != want {
 		t.Errorf("checks wait: route_approval applies = %q, want %q", got, want)
 	}
 	if got := applies(t, ActRouteApproval, merge, Resolution{}); got != "" {

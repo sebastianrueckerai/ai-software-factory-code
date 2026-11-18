@@ -181,7 +181,7 @@ var Actions = []Action{
 		case f.MergeConflict != "":
 			return conflictRefusal(f, ActRouteApproval)
 		case f.Kind == CaseGateStop && f.Gate == ActivityWaitChecks:
-			return "a checks wait's stop goes on with `wait_checks`, not `route_approval`"
+			return "a checks wait's stop goes on with `wait_checks` alone"
 		case !f.PROpen:
 			return "no pull request is open"
 		case f.Checks != "green":
@@ -277,8 +277,8 @@ var Actions = []Action{
 				}
 				return "up to " + textutil.Plural(minutes, "minute", "minutes")
 			}
-			return fmt.Sprintf("this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none. "+
-				"The card's draw leaves %s and the pool %s of agent time, so rung 1 may ask for %s, rung 2 for %s and the human for %s",
+			return fmt.Sprintf("this card stopped for agent time: an extend of its agent time starts the next session, and sessions or lines alone buy none. "+
+				"The card's draw leaves %s and the pool %s of agent time, so the check-in may ask for %s, the factory agent for %s and the human for %s",
 				textutil.Plural(card, "minute", "minutes"), textutil.Plural(pool, "minute", "minutes"),
 				upTo(min(card, pool, MaxExtendMinutes)), upTo(min(pool, MaxExtendMinutes)), upTo(MaxExtendMinutes))
 		case !d.IsZero() && boughtNothing(f):
@@ -377,7 +377,7 @@ var Actions = []Action{
 		case strings.TrimSpace(r.Note) == "":
 			return "a denial carries its reason: the note"
 		case a != "" && a != "request_changes" && a != "reject":
-			return "`deny_merge` takes the action `request_changes` or `reject`"
+			return "`deny_merge` takes its action (`request_changes` or `reject`)"
 		}
 		return ""
 	}},
@@ -430,7 +430,7 @@ var Actions = []Action{
 		case argString(r.Args, "criterion") == "":
 			return "`answer_criteria` names the criterion"
 		case verdict != "met" && strings.TrimSpace(r.Note) == "":
-			return "`not_met` and waive carry their reason: the note"
+			return "a promise judged not met or waived carries its reason (`not_met` or `waive`): the note"
 		}
 		return ""
 	}},

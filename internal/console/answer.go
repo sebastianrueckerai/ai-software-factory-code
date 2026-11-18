@@ -240,7 +240,7 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 
 // inboxAskRefusal answers an ask without choices in the inbox, where no
 // human types an answer.
-const inboxAskRefusal = "The inbox takes buttons only: give choices, or record what you found with attach_analysis."
+const inboxAskRefusal = "The inbox takes buttons only: give choices, or record what you found with `attach_analysis`."
 
 // askMember is the ask tool: the question kept in this thread as an ask
 // row, its choices offered as presses. The row rides the answer's own
@@ -258,7 +258,7 @@ func (t *turn) askMember(in toolInput) (string, error) {
 			return "", refuse(http.StatusInternalServerError, "cannot read the conversation")
 		}
 		if th.Inbox {
-			return "", refuse(http.StatusBadRequest, inboxAskRefusal)
+			return "", refuseAgent(http.StatusBadRequest, inboxAskRefusal)
 		}
 	}
 	question := strings.TrimSpace(in.Ask)

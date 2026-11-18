@@ -1,18 +1,25 @@
 package console
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"go/ast"
+	"go/constant"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -423,48 +430,116 @@ func literalText(e ast.Expr) (string, bool) {
 	return "", false
 }
 
-// Every refusal a door gives and every comment the factory posts passes
-// the guide's checks and the face's in the words the code holds, as its
-// assignedTexts is the literal texts that the innermost function on stack
-// sets the variable name to: a door call that passes a variable writes one
-// of them.
-func assignedTexts(stack []ast.Node, name string) []string {
-	var body ast.Node
-	for i := len(stack) - 1; i >= 0 && body == nil; i-- {
-		switch f := stack[i].(type) {
-		case *ast.FuncDecl:
-			body = f.Body
-		case *ast.FuncLit:
-			body = f.Body
+// scoped is an expression as a door's text reaches it: i is the result it
+// stands for where it is a call of several, and env binds the parameters
+// of the function it stands in to the arguments of the call that led
+// there.
+type scoped struct {
+	e   ast.Expr
+	i   int
+	env map[types.Object]scoped
+}
+
+// doorSource is the typed code of one package, read for the texts behind
+// a door's argument: sets holds what each variable and each struct field
+// is set to, decls the package's functions.
+type doorSource struct {
+	info  *types.Info
+	sets  map[types.Object][]scoped
+	decls map[types.Object]*ast.FuncDecl
+}
+
+// readDoorSource checks files, one package's code, against the packages
+// imp finds, and reads its assignments.
+func readDoorSource(fs *token.FileSet, files []*ast.File, imp types.Importer) *doorSource {
+	p := &doorSource{info: &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{},
+		Uses: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{}},
+		sets: map[types.Object][]scoped{}, decls: map[types.Object]*ast.FuncDecl{}}
+	// a package that fails a check still gives the types of what passed
+	conf := types.Config{Importer: imp, Error: func(error) {}}
+	_, _ = conf.Check("doors", fs, files, p.info)
+	set := func(l ast.Expr, v ast.Expr, i int) {
+		if obj := p.object(l); obj != nil {
+			p.sets[obj] = append(p.sets[obj], scoped{e: v, i: i})
 		}
 	}
-	if body == nil {
-		return nil
-	}
-	var out []string
-	add := func(id *ast.Ident, e ast.Expr) {
-		if id.Name != name {
-			return
-		}
-		if text, ok := literalText(e); ok {
-			out = append(out, text)
+	each := func(lhs, rhs []ast.Expr) {
+		for i, l := range lhs {
+			switch {
+			case len(lhs) == len(rhs):
+				set(l, rhs[i], 0)
+			case len(rhs) == 1:
+				set(l, rhs[0], i)
+			}
 		}
 	}
-	ast.Inspect(body, func(n ast.Node) bool {
-		switch s := n.(type) {
-		case *ast.AssignStmt:
-			if (s.Tok == token.ASSIGN || s.Tok == token.DEFINE) && len(s.Lhs) == len(s.Rhs) {
-				for i, l := range s.Lhs {
-					if id, ok := l.(*ast.Ident); ok {
-						add(id, s.Rhs[i])
+	for _, file := range files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.FuncDecl:
+				p.decls[p.info.Defs[x.Name]] = x
+			case *ast.AssignStmt:
+				each(x.Lhs, x.Rhs)
+			case *ast.ValueSpec:
+				var names []ast.Expr
+				for _, id := range x.Names {
+					names = append(names, id)
+				}
+				each(names, x.Values)
+			case *ast.CompositeLit:
+				var st *types.Struct
+				if typ := p.info.TypeOf(x); typ != nil {
+					st, _ = typ.Underlying().(*types.Struct)
+				}
+				for i, elt := range x.Elts {
+					if kv, ok := elt.(*ast.KeyValueExpr); ok {
+						set(kv.Key, kv.Value, 0)
+					} else if st != nil && i < st.NumFields() {
+						p.sets[st.Field(i)] = append(p.sets[st.Field(i)], scoped{e: elt})
 					}
 				}
 			}
-		case *ast.ValueSpec:
-			for i, id := range s.Names {
-				if i < len(s.Values) {
-					add(id, s.Values[i])
-				}
+			return true
+		})
+	}
+	return p
+}
+
+// object is the variable, field or function e names, nil for none.
+func (p *doorSource) object(e ast.Expr) types.Object {
+	switch x := ast.Unparen(e).(type) {
+	case *ast.Ident:
+		return cmp.Or(p.info.Uses[x], p.info.Defs[x])
+	case *ast.SelectorExpr:
+		return p.info.Uses[x.Sel]
+	}
+	return nil
+}
+
+// returned is what the function of type ft and body returns as result i,
+// called with args.
+func (p *doorSource) returned(ft *ast.FuncType, body *ast.BlockStmt, args []scoped, i int) []scoped {
+	env := map[types.Object]scoped{}
+	k := 0
+	for _, field := range ft.Params.List {
+		for _, name := range field.Names {
+			if k < len(args) {
+				env[p.info.Defs[name]] = args[k]
+			}
+			k++
+		}
+	}
+	var out []scoped
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.ReturnStmt:
+			switch {
+			case len(x.Results) == 1:
+				out = append(out, scoped{x.Results[0], i, env})
+			case i < len(x.Results):
+				out = append(out, scoped{x.Results[i], 0, env})
 			}
 		}
 		return true
@@ -472,71 +547,265 @@ func assignedTexts(stack []ast.Node, name string) []string {
 	return out
 }
 
-// reader reads it (doorFaults): each call of doorCalls, its literal text
-// with each value as "X".
+// texts is the literal texts expression s can write, each value in them as
+// "X": its own literal or constant; of a variable or a struct field, what
+// the package sets it to; of a parameter, the argument of the call that
+// led to it; of a call of the package's own function, what that returns;
+// of any other call, a conversion, an index or a list, what its parts
+// write. One word is a value, a key or a name, and no text. seen holds the
+// expressions read.
+func (p *doorSource) texts(s scoped, seen map[ast.Expr]bool) []string {
+	e := ast.Unparen(s.e)
+	if seen[e] {
+		return nil
+	}
+	seen[e] = true
+	var out []string
+	from := func(next ...scoped) {
+		for _, n := range next {
+			out = append(out, p.texts(n, seen)...)
+		}
+	}
+	parts := func(es []ast.Expr) {
+		for _, a := range es {
+			from(scoped{a, 0, s.env})
+		}
+	}
+	text, lit := literalText(e)
+	if tv := p.info.Types[e]; !lit && tv.Value != nil && tv.Value.Kind() == constant.String {
+		text, lit = constant.StringVal(tv.Value), true
+	}
+	if lit && strings.ContainsFunc(text, unicode.IsLetter) && strings.Contains(strings.TrimSpace(text), " ") {
+		out = append(out, text)
+	}
+	switch x := e.(type) {
+	case *ast.Ident, *ast.SelectorExpr:
+		obj := p.object(x)
+		if bound, ok := s.env[obj]; ok {
+			from(bound)
+		}
+		for _, v := range p.sets[obj] {
+			from(scoped{v.e, v.i, s.env})
+		}
+	case *ast.IndexExpr:
+		parts([]ast.Expr{x.X})
+	case *ast.CompositeLit:
+		for _, elt := range x.Elts {
+			if kv, ok := elt.(*ast.KeyValueExpr); ok {
+				elt = kv.Value
+			}
+			parts([]ast.Expr{elt})
+		}
+	case *ast.CallExpr:
+		args := make([]scoped, len(x.Args))
+		for i, a := range x.Args {
+			args[i] = scoped{a, 0, s.env}
+		}
+		callee := p.object(x.Fun)
+		own := false
+		if decl := p.decls[callee]; decl != nil && decl.Body != nil {
+			own = true
+			from(p.returned(decl.Type, decl.Body, args, s.i)...)
+		}
+		for _, v := range p.sets[callee] {
+			if fl, ok := v.e.(*ast.FuncLit); ok {
+				own = true
+				from(p.returned(fl.Type, fl.Body, args, s.i)...)
+			}
+		}
+		if fl, ok := ast.Unparen(x.Fun).(*ast.FuncLit); ok {
+			own = true
+			from(p.returned(fl.Type, fl.Body, args, s.i)...)
+		}
+		if !own && !lit {
+			parts(x.Args)
+		}
+	}
+	return out
+}
+
+// exported finds the compiled form of each package the door packages
+// import, as the go command built it.
+func exported(t *testing.T, fs *token.FileSet, pkgs []string) types.Importer {
+	t.Helper()
+	args := []string{"list", "-export", "-deps", "-f", "{{if .Export}}{{.ImportPath}}={{.Export}}{{end}}"}
+	for _, pkg := range pkgs {
+		args = append(args, "../"+pkg)
+	}
+	list := exec.Command("go", args...)
+	var failure strings.Builder
+	list.Stderr = &failure
+	out, err := list.Output()
+	if err != nil {
+		t.Fatalf("go list: %v: %s", err, failure.String())
+	}
+	files := map[string]string{}
+	for _, line := range strings.Fields(string(out)) {
+		path, file, _ := strings.Cut(line, "=")
+		files[path] = file
+	}
+	return importer.ForCompiler(fs, "gc", func(path string) (io.ReadCloser, error) {
+		file, ok := files[path]
+		if !ok {
+			return nil, fmt.Errorf("no compiled package %s", path)
+		}
+		return os.Open(file)
+	})
+}
+
+// doorText is one call of a door: where it stands, the door, whether an
+// agent alone meets it there, and the texts its argument can write.
+type doorText struct {
+	at    token.Position
+	fn    string
+	agent bool
+	texts []string
+}
+
+// doorTexts are the calls of the doors calls names, with the index of
+// their text among their arguments, in files, one package's code: each
+// with the literal texts its argument can write (doorSource.texts),
+// sorted, each once.
+func doorTexts(fs *token.FileSet, files []*ast.File, imp types.Importer, calls map[string]int) []doorText {
+	source := readDoorSource(fs, files, imp)
+	var out []doorText
+	for _, file := range files {
+		// agent counts the functions around the node that answer an agent
+		var stack []ast.Node
+		agent := 0
+		ast.Inspect(file, func(n ast.Node) bool {
+			if n == nil {
+				top := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				if fd, ok := top.(*ast.FuncDecl); ok && takesAgentType(fd.Recv, fd.Type) {
+					agent--
+				} else if fl, ok := top.(*ast.FuncLit); ok && takesAgentType(nil, fl.Type) {
+					agent--
+				}
+				return true
+			}
+			stack = append(stack, n)
+			if fd, ok := n.(*ast.FuncDecl); ok && takesAgentType(fd.Recv, fd.Type) {
+				agent++
+			} else if fl, ok := n.(*ast.FuncLit); ok && takesAgentType(nil, fl.Type) {
+				agent++
+			}
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			fn := ""
+			switch f := call.Fun.(type) {
+			case *ast.Ident:
+				fn = f.Name
+			case *ast.SelectorExpr:
+				fn = f.Sel.Name
+			}
+			i, ok := calls[fn]
+			if !ok || i >= len(call.Args) {
+				return true
+			}
+			texts := source.texts(scoped{e: call.Args[i]}, map[ast.Expr]bool{})
+			slices.Sort(texts)
+			out = append(out, doorText{fs.Position(call.Pos()), fn, agent > 0, slices.Compact(texts)})
+			return true
+		})
+	}
+	return out
+}
+
+// A door's text is found where the door's argument is a variable the
+// function adds to, a package's constant, a struct field, in a keyed and
+// in a plain literal, a function's result, one of two, and a parameter a
+// function passes on. A value that fills a text reads "X", and one word
+// is no text.
+func TestDoorTextsFollowAFieldAndAFunction(t *testing.T) {
+	const src = `package doors
+
+type refusal struct {
+	status int
+	msg    string
+}
+
+func refuse(status int, msg string) error { return nil }
+
+const held = "The card is on hold: release it first."
+
+var table = []refusal{{msg: "The ask is answered already."}, {409, "The card merged."}}
+
+func wait(name string) (int, string) {
+	if name == "" {
+		return 409, "Wait for the card to merge."
+	}
+	return 409, "Wait for card " + name + " to merge."
+}
+
+func fenced(s string) string { return s }
+
+func press(no refusal, name string) {
+	_ = refuse(no.status, no.msg)
+	_, why := wait(name)
+	_ = refuse(409, why)
+	_ = refuse(409, held)
+	_ = refuse(409, fenced("Close the plan first."))
+	line := "red"
+	line += "The plan is closed already."
+	_ = refuse(409, line)
+	_ = refuse(409, name)
+}
+`
+	fs := token.NewFileSet()
+	file, err := parser.ParseFile(fs, "doors.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got [][]string
+	for _, d := range doorTexts(fs, []*ast.File{file}, nil, map[string]int{"refuse": 1}) {
+		got = append(got, d.texts)
+	}
+	want := [][]string{
+		{"The ask is answered already.", "The card merged."},
+		{"Wait for card X to merge.", "Wait for the card to merge."},
+		{"The card is on hold: release it first."},
+		{"Close the plan first."},
+		{"The plan is closed already."},
+		nil,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("the doors' texts are\n%q\nwant\n%q", got, want)
+	}
+}
+
+// Every refusal a door gives and every comment the factory posts passes
+// the guide's checks and the face's in the words the code holds, as its
+// reader reads it (doorFaults): each call of doorCalls, the literal texts
+// its argument can write (doorTexts), through a variable, a struct field
+// or a function of its package, with each value as "X".
 func TestEveryRefusalAndCommentPassesTheGuide(t *testing.T) {
+	fs := token.NewFileSet()
+	imp := exported(t, fs, slices.Sorted(maps.Keys(doorCalls)))
 	for pkg, calls := range doorCalls {
 		names, err := filepath.Glob(filepath.Join("..", pkg, "*.go"))
 		if err != nil {
 			t.Fatal(err)
 		}
+		var files []*ast.File
 		for _, name := range names {
 			if strings.HasSuffix(name, "_test.go") {
 				continue
 			}
-			fs := token.NewFileSet()
 			file, err := parser.ParseFile(fs, name, nil, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
-			// agent counts the functions around the node that answer an agent
-			var stack []ast.Node
-			agent := 0
-			ast.Inspect(file, func(n ast.Node) bool {
-				if n == nil {
-					top := stack[len(stack)-1]
-					stack = stack[:len(stack)-1]
-					if fd, ok := top.(*ast.FuncDecl); ok && takesAgentType(fd.Recv, fd.Type) {
-						agent--
-					} else if fl, ok := top.(*ast.FuncLit); ok && takesAgentType(nil, fl.Type) {
-						agent--
-					}
-					return true
+			files = append(files, file)
+		}
+		for _, d := range doorTexts(fs, files, imp, calls) {
+			for _, text := range d.texts {
+				if faults := doorFaults(pkg, d.fn, d.agent, text); len(faults) > 0 {
+					t.Errorf("%s: %q\n\t%s", d.at, text, strings.Join(faults, " "))
 				}
-				stack = append(stack, n)
-				if fd, ok := n.(*ast.FuncDecl); ok && takesAgentType(fd.Recv, fd.Type) {
-					agent++
-				} else if fl, ok := n.(*ast.FuncLit); ok && takesAgentType(nil, fl.Type) {
-					agent++
-				}
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				fn := ""
-				switch f := call.Fun.(type) {
-				case *ast.Ident:
-					fn = f.Name
-				case *ast.SelectorExpr:
-					fn = f.Sel.Name
-				}
-				i, ok := calls[fn]
-				if !ok || i >= len(call.Args) {
-					return true
-				}
-				var texts []string
-				if text, ok := literalText(call.Args[i]); ok {
-					texts = append(texts, text)
-				} else if id, ok := call.Args[i].(*ast.Ident); ok {
-					texts = assignedTexts(stack, id.Name)
-				}
-				for _, text := range texts {
-					if faults := doorFaults(pkg, fn, agent > 0, text); len(faults) > 0 {
-						t.Errorf("%s: %q\n\t%s", fs.Position(call.Pos()), text, strings.Join(faults, " "))
-					}
-				}
-				return true
-			})
+			}
 		}
 	}
 }

@@ -54,7 +54,7 @@ func autonomyRefusal(state string, queueCap int) string {
 	case !slices.Contains(policy.AutonomyStates, state):
 		return "autonomy must be manual, assisted, autonomous or full auto"
 	case queueCap < 0:
-		return "queue_cap must not be negative"
+		return "the queue cap must not be negative"
 	}
 	return ""
 }
@@ -715,7 +715,7 @@ func (c *Console) doWriteDoc(ctx context.Context, a actor, docRepo, project, pat
 // edit's passage is gone: the state, the file's current hash and content,
 // which the writer re-applies its edit on top of.
 func docCurrent(path, current, why string) string {
-	return fmt.Sprintf("%s: %s. Its base_sha256 is now %s; its current content:\n\n%s", path, why,
+	return fmt.Sprintf("%s: %s. Its base_sha256 is now %s. Its current content:\n\n%s", path, why,
 		factoryd.ContentHash(current), textutil.Truncate(current, docShown))
 }
 

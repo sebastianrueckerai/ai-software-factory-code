@@ -1010,7 +1010,7 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) (string, error) {
 	switch {
 	case in.Rung != 2 && in.Rung != 3:
-		return fmt.Sprintf("%s may not answer a human card: rung 2 and the human may", who(in.Rung)), nil
+		return fmt.Sprintf("%s may not answer a human card: the factory agent and the human may", who(in.Rung)), nil
 	case in.Res.Fund != nil:
 		return fmt.Sprintf("card %s is a human card, so its answer draws nothing: answer it without the fund", cardName(t)), nil
 	case len(in.Res.Args) > 0:

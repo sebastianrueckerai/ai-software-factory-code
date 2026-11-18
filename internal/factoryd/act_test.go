@@ -466,7 +466,7 @@ func TestActHumanCardRefusals(t *testing.T) {
 	g.store.tasks["h1"] = Task{ID: "h1", Kind: "human", Repository: "demo-app/demo-app", IssueNumber: 14, Status: "waiting-human"}
 	g.store.cases = []Case{{ID: 9, TaskID: "h1", Kind: CaseHumanCard, Status: CaseAtHuman}}
 	for rung, want := range map[int]string{
-		1: "the check-in may not answer a human card: rung 2 and the human may",
+		1: "the check-in may not answer a human card: the factory agent and the human may",
 		3: "card #14 asks no question with choices: answer it with a note",
 	} {
 		_, err := g.r.Act(context.Background(), ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: rung, Res: Resolution{Action: AnswerDismiss}})
@@ -566,8 +566,8 @@ func TestActRefusesASessionsOnlyExtendAtTheTimeCap(t *testing.T) {
 		Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Fund: &policy.Draw{EUR: 1}}}
 	var refused ErrActRefused
 	if _, err := g.r.Act(context.Background(), in); !errors.As(err, &refused) ||
-		!strings.HasPrefix(err.Error(), "this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none. "+
-			"The card's draw leaves 90 minutes and the pool 1800 minutes of agent time, so rung 1 may ask for up to 90 minutes, rung 2 for up to 600 minutes and the human for up to 600 minutes, ") {
+		!strings.HasPrefix(err.Error(), "this card stopped for agent time: an extend of its agent time starts the next session, and sessions or lines alone buy none. "+
+			"The card's draw leaves 90 minutes and the pool 1800 minutes of agent time, so the check-in may ask for up to 90 minutes, the factory agent for up to 600 minutes and the human for up to 600 minutes, ") {
 		t.Fatalf("a sessions-only extend at the time cap = %v, want the stop's own refusal", err)
 	}
 	if len(g.store.events) != events || g.store.tasks["t1"].Usage != usage || len(g.store.resolved) != 0 ||

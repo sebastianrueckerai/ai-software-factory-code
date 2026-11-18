@@ -384,11 +384,11 @@ func roadmapRefusal(holder factoryd.Task, item int) string {
 	head := fmt.Sprintf("Card %s (#%d, %s) already builds roadmap item %d.", holder.ID, holder.IssueNumber, holder.Status, item)
 	switch factoryd.RoadmapHold(holder.Status) {
 	case "open":
-		return head + fmt.Sprintf(" Wait for it to end, or close it and file again with refile_of %d.", holder.IssueNumber)
+		return head + fmt.Sprintf(" Wait for it to end, or close it and file again with `refile_of` %d.", holder.IssueNumber)
 	case "ended":
-		return strings.Replace(head, "already builds", "still holds", 1) + fmt.Sprintf(" File again with refile_of %d.", holder.IssueNumber)
+		return strings.Replace(head, "already builds", "still holds", 1) + fmt.Sprintf(" File again with `refile_of` %d.", holder.IssueNumber)
 	}
-	return strings.Replace(head, "builds", "built", 1) + " Cite a new roadmap item, or file without roadmap_item and refile_of."
+	return strings.Replace(head, "builds", "built", 1) + " Cite a new roadmap item, or file without `roadmap_item` and `refile_of`."
 }
 
 // doFileCard files an issue on project's repository as its decider
@@ -500,7 +500,7 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project string, b fac
 			return factoryd.Repo{}, 0, refuse(http.StatusInternalServerError, "The roadmap items of "+ps[i].Name+" could not be read. Try again.")
 		}
 		if held {
-			return factoryd.Repo{}, 0, refuse(http.StatusConflict, roadmapRefusal(holder, roadmapItem))
+			return factoryd.Repo{}, 0, refuseAgent(http.StatusConflict, roadmapRefusal(holder, roadmapItem))
 		}
 	}
 	var check func(policy.Tree) string
@@ -1822,7 +1822,7 @@ const answerInChatNote = "The words are in the project chat; the agent answers t
 
 // noCase refuses an answer on a card that waits on a human with no live
 // case: a run from before the cases' heal.
-const noCase = "this card waits with no open case: the heal pass opens one within a minute"
+const noCase = "this card waits with no open ask: the factory opens one within a minute"
 
 // caseWake says a's turn is the Waker's wake on a case, rung 2's own turn:
 // not the human's thread, which a refill's resume and a retry also run as a
@@ -3245,7 +3245,7 @@ func (c *Console) approveMerge(ctx context.Context, a actor, q factoryd.Approval
 	}
 	agent := a.approver() == factoryd.ChatUser
 	if agent && t.Source == factoryd.SourceGitHubSync {
-		return "", refuse(http.StatusForbidden, factoryMergeRefusal)
+		return "", refuseAgent(http.StatusForbidden, factoryMergeRefusal)
 	}
 	var spec factoryd.MergeSpec
 	if err := json.Unmarshal(q.Spec, &spec); err != nil || spec.HeadSHA == "" {
@@ -3348,7 +3348,7 @@ func unreviewedRefusal(err error, t factoryd.Task, spec factoryd.MergeSpec) (err
 
 // factoryMergeRefusal answers the agent's approval of a GitHub sync's
 // pull request.
-const factoryMergeRefusal = "A human approves a factory pull request that carries GitHub commits: record what you found with attach_analysis."
+const factoryMergeRefusal = "A human approves a factory pull request that carries GitHub commits: record what you found with `attach_analysis`."
 
 // revisionDrops tells whether plan card t's newest plan revision drops
 // its key, and that revision's number.

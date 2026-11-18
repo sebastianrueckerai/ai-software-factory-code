@@ -665,7 +665,7 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 		msg += fmt.Sprintf("A large change, over the policy's %d lines: a human merges it with “Merge it”, or returns it to the agent with “Send it back”.", g.LargeLines)
 	case g.Outcome == policy.OutcomeAuto && g.MergeRule == policy.MergeAuto:
 		msg += "The project's merge rule is auto: factory-merge merges when the model review approves and the reproduction failed at the base and passes at the head, " +
-			"or the agent recorded the fault it fixed and the review finds the change a strict improvement; otherwise a human approves the merge."
+			"or the agent recorded the fault it fixed and the review finds the change a strict improvement. Otherwise a human approves the merge."
 	default:
 		msg += "A human approves the merge."
 	}

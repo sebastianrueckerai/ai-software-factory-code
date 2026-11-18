@@ -237,7 +237,7 @@ func TestActRefusesARungsDrawPastThePool(t *testing.T) {
 	_, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: ChatUser, Rung: 2, Res: oneSession})
 	var refused ErrActRefused
 	const pool = "the escalation pool leaves 0 sessions, 0 seconds of agent time and 0.00 EUR this month: only the human draws more. " +
-		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: `hand_up` with it as the recommendation"
+		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"
 	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), pool+", and the factory agent may take ") {
 		t.Fatalf("rung 2's extend = %v, want the pool's refusal", err)
 	}
@@ -694,7 +694,7 @@ func TestResolveCaseNamesNoFitWithoutTheNeed(t *testing.T) {
 		Need:  policy.Draw{AgentTime: time.Minute},
 		Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: ChatUser, Via: ViaChat, Detail: map[string]any{"pool": true, "rung": 2}}}
 	const want = "the escalation pool leaves 20 sessions, 0 seconds of agent time and 60.00 EUR this month: only the human draws more. " +
-		"This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: `hand_up` with it as the recommendation"
+		"This draw does not fit in agent time (asked 30 minutes, left 0 seconds), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"
 	err := g.s.ResolveCase(ctx, g.c.ID, CaseResolution{By: ChatUser, Rung: 2, Action: ActExtend}, &draw, &CaseStep{Rung: 2, Actor: ChatUser}, nil)
 	var spent *DrawBoundError
 	if !errors.As(err, &spent) || err.Error() != want {
@@ -720,7 +720,7 @@ func TestResolveCaseWeighsTheCardsDrawBoundUnderTheLock(t *testing.T) {
 	var bound *DrawBoundError
 	err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, nil, nil)
 	if !errors.As(err, &bound) || !bound.Card || err.Error() != "the card's draw bound leaves 0 sessions, 90 minutes of agent time and 6.00 EUR: rung 2 or the human may draw more. "+
-		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: `hand_up` with it as the recommendation" {
+		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation" {
 		t.Fatalf("ResolveCase past the card's bound = %v, want the card's DrawBoundError", err)
 	}
 	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseAtHuman || g.card(t).Usage.RaisedSessions != 0 {

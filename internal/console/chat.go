@@ -1476,7 +1476,7 @@ func (t *turn) queuedRows() bool {
 
 // inboxMergeRefusal answers a merge decision in the inbox on a merge rule
 // other than auto, where a human decides every merge.
-const inboxMergeRefusal = "A human approves merges on merge rule human: record what you found with attach_analysis."
+const inboxMergeRefusal = "A human approves merges on merge rule human: record what you found with `attach_analysis`."
 
 // inboxMerge refuses tool name when it decides a merge in the inbox on a
 // merge rule other than auto; a thread of the human's own proposes it.
@@ -1490,7 +1490,7 @@ func (t *turn) inboxMerge(name string) error {
 		return refuse(http.StatusInternalServerError, "cannot read the conversation")
 	}
 	if th.Inbox {
-		return refuse(http.StatusForbidden, inboxMergeRefusal)
+		return refuseAgent(http.StatusForbidden, inboxMergeRefusal)
 	}
 	return nil
 }

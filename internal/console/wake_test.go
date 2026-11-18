@@ -111,7 +111,7 @@ func TestInboxAskNeedsChoices(t *testing.T) {
 		t.Fatal(err)
 	}
 	const bare = `{"ask":"Which store keeps the snapshots?"}`
-	const refused = "Refused: The inbox takes buttons only: give choices, or record what you found with attach_analysis."
+	const refused = "Refused: The inbox takes buttons only: give choices, or record what you found with `attach_analysis`."
 	rowsIn := func(conv int64) []factoryd.ChatMessage {
 		t.Helper()
 		rows, err := chat.ChatMessages(ctx, "sf/code", "sebastian", conv, 50)
@@ -500,7 +500,7 @@ func mergeWake(t *testing.T, rule string, inbox bool, setup func(*rig), replies 
 // before, and at merge rule auto the inbox's wake decides the merge as the
 // factory's own.
 func TestWakeApproveMergeRefusedOnMergeRuleHuman(t *testing.T) {
-	const refused = "Refused: A human approves merges on merge rule human: record what you found with attach_analysis."
+	const refused = "Refused: A human approves merges on merge rule human: record what you found with `attach_analysis`."
 	merges := []string{call(1, "approve_merge", `{"task_id":"t-m"}`, "deny_merge", `{"task_id":"t-m","action":"reject","note":"The column breaks the index."}`)}
 	pending := func(t *testing.T, r *rig, chat *fakeChat, want int) {
 		t.Helper()

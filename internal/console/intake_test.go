@@ -179,7 +179,7 @@ func TestNewCardRefusesATakenRoadmapItem(t *testing.T) {
 	g.replies = [][]string{{call(1, "new_card", `{"title":"Build roadmap 276","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The plan's item.\n\nAcceptance:\n- The pull files it","track":"direct","track_reason":"the pull","roadmap_item":276}`)}, {say("It is taken.")}}
 	code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file roadmap item 276"}})
 	equal(t, "code", code, 200)
-	if !strings.Contains(events[0], `"result":"Refused: Card t-holder (#12, running) already builds roadmap item 276. Wait for it to end, or close it and file again with refile_of 12."`) {
+	if !strings.Contains(events[0], "\"result\":\"Refused: Card t-holder (#12, running) already builds roadmap item 276. Wait for it to end, or close it and file again with `refile_of` 12.\"") {
 		t.Errorf("the taken item's new_card = %v", events)
 	}
 	if len(r.fg.issues) != 0 {
@@ -204,11 +204,11 @@ func TestNewCardRefusesATakenRoadmapItem(t *testing.T) {
 // over, whole, by state.
 func TestRoadmapRefusalByHolderState(t *testing.T) {
 	for _, c := range []struct{ status, want string }{
-		{"running", "Card t-h (#1547, running) already builds roadmap item 66. Wait for it to end, or close it and file again with refile_of 1547."},
-		{"closed", "Card t-h (#1547, closed) still holds roadmap item 66. File again with refile_of 1547."},
-		{"failed", "Card t-h (#1547, failed) still holds roadmap item 66. File again with refile_of 1547."},
-		{"done", "Card t-h (#1547, done) already built roadmap item 66. Cite a new roadmap item, or file without roadmap_item and refile_of."},
-		{"merged", "Card t-h (#1547, merged) already built roadmap item 66. Cite a new roadmap item, or file without roadmap_item and refile_of."},
+		{"running", "Card t-h (#1547, running) already builds roadmap item 66. Wait for it to end, or close it and file again with `refile_of` 1547."},
+		{"closed", "Card t-h (#1547, closed) still holds roadmap item 66. File again with `refile_of` 1547."},
+		{"failed", "Card t-h (#1547, failed) still holds roadmap item 66. File again with `refile_of` 1547."},
+		{"done", "Card t-h (#1547, done) already built roadmap item 66. Cite a new roadmap item, or file without `roadmap_item` and `refile_of`."},
+		{"merged", "Card t-h (#1547, merged) already built roadmap item 66. Cite a new roadmap item, or file without `roadmap_item` and `refile_of`."},
 	} {
 		got := roadmapRefusal(factoryd.Task{ID: "t-h", Status: c.status, IssueNumber: 1547}, 66)
 		equal(t, c.status, got, c.want)
@@ -252,12 +252,12 @@ func TestNewCardRefileCheckReadsWhatTheIntakeReads(t *testing.T) {
 	}
 	const head = `{"title":"Refile 66","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"the pull","roadmap_item":66,`
 	wrong := file(head + `"body":"Again.\n\nAcceptance:\n- It files","refile_of":1546}`)
-	if !strings.Contains(wrong[0], `Refused: Card t-h (#1547, closed) still holds roadmap item 66. File again with refile_of 1547.`) || len(r.fg.issues) != 0 {
+	if !strings.Contains(wrong[0], "Refused: Card t-h (#1547, closed) still holds roadmap item 66. File again with `refile_of` 1547.") || len(r.fg.issues) != 0 {
 		t.Fatalf("a wrong refile_of = %v, issues %v", wrong, r.fg.issues)
 	}
 	// the last line is the one the intake reads: the field's, after a body line of another issue
 	own := file(head + `"body":"Again.\n\nRefile of #1547\n\nAcceptance:\n- It files","refile_of":1546}`)
-	if !strings.Contains(own[0], `Refused: Card t-h (#1547, closed) still holds roadmap item 66. File again with refile_of 1547.`) || len(r.fg.issues) != 0 {
+	if !strings.Contains(own[0], "Refused: Card t-h (#1547, closed) still holds roadmap item 66. File again with `refile_of` 1547.") || len(r.fg.issues) != 0 {
 		t.Fatalf("a body line of the right issue before a wrong field = %v, issues %v", own, r.fg.issues)
 	}
 	file(head + `"body":"Again.\n\nRefile of #1546\n\nAcceptance:\n- It files","refile_of":1547}`)

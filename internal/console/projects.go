@@ -447,23 +447,23 @@ func (c *Console) failFiling(w http.ResponseWriter, r *http.Request, p newProjec
 			log.Printf("console: the GitHub import of %s: delete: %v", p.Name, err)
 		}
 	}
-	msg := why + ": " + forgejoCause(failure)
+	msg := why + ": " + forgejoCause(failure) + "."
 	switch {
 	case gone:
 	case u.pr > 0:
-		msg += fmt.Sprintf("; %s#%d may stay open: close it", c.cfg.InfraRepo, u.pr)
+		msg += fmt.Sprintf(" %s#%d may stay open: close it.", c.cfg.InfraRepo, u.pr)
 	default:
-		msg += "; a pull request from " + branch + " may be open: close it"
+		msg += " A pull request from " + branch + " may be open: close it."
 	}
 	switch {
 	case deleted:
-		msg += "; the filing was undone. Try again in a moment."
+		msg += " The filing was undone. Try again in a moment."
 	case err == nil && u.held:
-		msg += "; another filing of " + p.Name + " holds the name. Choose another name, or open that filing's project when it lands."
+		msg += " Another filing of " + p.Name + " holds the name. Choose another name, or open that filing's project when it lands."
 	case err == nil || u.commit == "":
-		msg += ". Branch " + branch + " may be left. If no other filing of " + p.Name + " is in progress, delete it on Forgejo, then file the project again."
+		msg += " Branch " + branch + " may be left. If no other filing of " + p.Name + " is in progress, delete it on Forgejo, then file the project again."
 	default:
-		msg += "; delete branch " + branch + " to file the name again."
+		msg += " Delete branch " + branch + " to file the name again."
 	}
 	http.Error(w, msg, code)
 }

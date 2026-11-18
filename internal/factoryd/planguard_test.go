@@ -37,9 +37,9 @@ func TestPlanAnswerRefusal(t *testing.T) {
 		{"the agent's confirmation at assisted", 2, policy.AutonomyAssisted, true, false, "x", belowFullAutoWord, humanConfirmButton},
 		{"the agent's question at autonomous", 2, policy.AutonomyAutonomous, false, false, "x", belowFullAutoWord, "on the plan's card"},
 		{"the agent's answer with no level read", 2, "", false, false, "x", "autonomy level could not be read", "on the plan's card"},
-		{"rung 1's confirmation at full auto", 1, policy.AutonomyFullAuto, true, false, "x", "Rung 1 decides no plan answer", "on the plan's card"},
-		{"rung 1's question at full auto", 1, policy.AutonomyFullAuto, false, false, "x", "Rung 1 decides no plan answer", "on the plan's card"},
-		{"rung 0's question at full auto", 0, policy.AutonomyFullAuto, false, false, "x", "Rung 0 decides no plan answer", "on the plan's card"},
+		{"rung 1's confirmation at full auto", 1, policy.AutonomyFullAuto, true, false, "x", "The check-in decides no plan answer", "on the plan's card"},
+		{"rung 1's question at full auto", 1, policy.AutonomyFullAuto, false, false, "x", "The check-in decides no plan answer", "on the plan's card"},
+		{"rung 0's question at full auto", 0, policy.AutonomyFullAuto, false, false, "x", "The factory decides no plan answer", "on the plan's card"},
 	} {
 		got := PlanAnswerRefusal(c.rung, c.autonomy, c.confirming, c.off)
 		if got != "" && strings.Contains(got, "attach_analysis") != (c.rung == 2) {
@@ -135,8 +135,8 @@ func TestActAsksThePlanAnswerGuard(t *testing.T) {
 		{"confirmation at assisted", policy.AutonomyAssisted, CasePlanConfirmation, 2, nil, false, humanConfirmButton},
 		{"question at full auto", policy.AutonomyFullAuto, CasePlanQuestion, 2, nil, false, ""},
 		{"question at autonomous", policy.AutonomyAutonomous, CasePlanQuestion, 2, nil, false, belowFullAutoWord},
-		{"rung 1's confirmation at full auto", policy.AutonomyFullAuto, CasePlanConfirmation, 1, nil, false, "Rung 1 decides no plan answer"},
-		{"rung 1's question at full auto", policy.AutonomyFullAuto, CasePlanQuestion, 1, nil, false, "Rung 1 decides no plan answer"},
+		{"rung 1's confirmation at full auto", policy.AutonomyFullAuto, CasePlanConfirmation, 1, nil, false, "The check-in decides no plan answer"},
+		{"rung 1's question at full auto", policy.AutonomyFullAuto, CasePlanQuestion, 1, nil, false, "The check-in decides no plan answer"},
 	} {
 		g, k := planAskRig(t, c.autonomy, c.takeOff)
 		g.store.cases[len(g.store.cases)-1].Kind = c.kind
