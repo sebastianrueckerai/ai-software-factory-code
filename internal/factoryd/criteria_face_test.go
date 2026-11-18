@@ -367,7 +367,7 @@ func TestTheNeverJudgedPagesFollowEachPromise(t *testing.T) {
 		{"a run on its way", door, &RunFact{Outcome: gateStarted, By: "sebastian", At: at},
 			Story{Planned: "The plan promised: A door opens for its key.", Happened: "The tests run now, as sebastian asked at 2026-11-17 14:02 UTC.",
 				Left: "Each result lands on its promise."},
-			[]string{"Drop this promise"}},
+			[]string{"Drop this promise", "Not now"}},
 		{"the run stopped", door, &RunFact{Outcome: gateCut, By: "sebastian", Why: "its sandbox did not run", At: at},
 			Story{Planned: "The plan promised: A door opens for its key.",
 				Happened: "The tests sebastian asked for at 2026-11-17 14:02 UTC stopped before they finished: its sandbox did not run.", Left: "No test checked it."},

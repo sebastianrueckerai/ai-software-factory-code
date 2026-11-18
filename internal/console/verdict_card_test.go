@@ -370,9 +370,10 @@ func TestTheBoardKeepsTypedTextAndNamesItsClose(t *testing.T) {
 }
 
 // The grant answers an open criterion: with every criterion met or
-// waived, the card offers no Build the missing part, says the request
-// closes, and a posted grant decides nothing (fault 9's approved grant
-// with no criterion left open).
+// waived, the card offers no Build the missing part, asks to close the
+// plan now or wait for its close, and a posted grant decides nothing
+// (fault 9's approved grant with no criterion left open). Close the plan
+// now closes it with no note.
 func TestTheGrantNeedsAnOpenCriterion(t *testing.T) {
 	r := newRig(t)
 	verdictRig(r)
@@ -391,8 +392,22 @@ func TestTheGrantNeedsAnOpenCriterion(t *testing.T) {
 	if strings.Contains(card, `action="/approvals/30/approve"`) {
 		t.Errorf("the grant is offered with no criterion open:\n%s", card)
 	}
-	if !strings.Contains(card, `<p class="o-note">Every promise is met or dropped, so the plan closes within minutes.</p>`) {
-		t.Errorf("the card does not say its close:\n%s", card)
+	for _, want := range []string{`<p class="o-question">Every promise of plan “Shortener” is met or dropped. Close it now?</p>`,
+		`<button type="submit" class="pick">Close the plan now</button> <span class="effect">Closes the plan now, so production deploys go on.</span>`,
+		`<span class="effect">The plan closes by itself within minutes.</span>`, `<input type="hidden" name="action" value="close">`} {
+		if !strings.Contains(card, want) {
+			t.Errorf("the card does not ask to close the plan now (%s):\n%s", want, card)
+		}
+	}
+	var closes []string
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, bool, error) {
+		closes = append(closes, id+" by "+by+": "+note)
+		return 0, factoryd.PlanCloseWords(by, note, false), false, nil
+	}
+	if rec := r.do(post("/tasks/t-plan/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.ActClose}}), ck); rec.Code >= 400 ||
+		len(closes) != 1 || closes[0] != "t-plan by sebastian: " {
+		t.Errorf("Close the plan now = %d %q, closes %q; want the plan closed once with no note", rec.Code, rec.Body.String(), closes)
 	}
 	rec := r.do(post("/approvals/30/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Cannot grant one more card: every criterion is met or waived already") {

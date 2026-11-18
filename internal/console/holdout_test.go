@@ -140,6 +140,11 @@ func TestEachExtraPromiseAsksOnItsOwnPage(t *testing.T) {
 	if strings.Contains(askBlockOf(t, confirm), `data-answer="confirm"`) || strings.Contains(askBlockOf(t, confirm), "Confirm the plan") {
 		t.Errorf("the confirmation offers Confirm while extra promises wait:\n%s", askBlockOf(t, confirm))
 	}
+	// Not now keeps the plan as it is: a note on its confirmation's case
+	if p := answerForm(t, confirm, factoryd.ActNote); p.Label != "Not now" || p.Action != "/tasks/t-plan/resolve" || p.Values.Get("action") != factoryd.ActNote ||
+		p.Values.Get("case_id") == "" || !strings.Contains(confirm, `<span class="effect">The plan&#39;s cards wait until its 2 extra promises are kept or dropped.</span>`) {
+		t.Errorf("the confirmation's Not now posts %s %v, label %q; want a note on its case and the effect that names what waits:\n%s", p.Action, p.Values, p.Label, askBlockOf(t, confirm))
+	}
 	for i, page := range pages {
 		for _, leak := range []string{"TestSecret", "The old round", `id="holdouts-`, `action="/tasks/t-plan/plan/holdout"><input type="hidden" name="csrf"`} {
 			if strings.Contains(page, leak) && !(leak == `action="/tasks/t-plan/plan/holdout"><input type="hidden" name="csrf"` && i < 2) {

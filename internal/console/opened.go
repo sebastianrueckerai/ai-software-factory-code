@@ -310,7 +310,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		}
 		if row.Approval != nil {
 			// a request's page holds only the answers its request takes
-			o.More = slices.DeleteFunc(o.More, func(m answerView) bool { return row.Approval.refuses(m) || m.Press == nil && m.Thread == "" })
+			o.More = slices.DeleteFunc(o.More, func(m answerView) bool { return m.Press == nil && m.Thread == "" })
 		}
 		o.Brief.Evidence = c.evidenceOf(ctx, v, k, row.Face)
 		if k.Reason != "" {
@@ -667,7 +667,7 @@ func casePress(v *boardView, k card, row caseRow, a factoryd.Answer, key string)
 		return p, named("note")
 	}
 	switch {
-	case row.Plan != nil:
+	case row.Plan != nil && a.Action != factoryd.ActNote:
 		p.Post, p.Max = "/tasks/"+k.ID+"/plan/answer", maxPlanAnswer
 		p.Values = []hidden{{"revision", strconv.Itoa(row.Plan.Revision)}, {"index", strconv.Itoa(row.Plan.Index)}}
 		switch {
@@ -741,11 +741,9 @@ func (c *Console) pinMerge(ctx context.Context, a actor, t factoryd.Task, answer
 	answers[i].Press.Values = append(answers[i].Press.Values, hidden{"head", head})
 }
 
-// requestAsk fits the ask of request ap to its rows as they read now. A
-// merge waits on its head's checks and on each human promise's verdict,
-// which the pages before it take. A criteria request offers Build the
-// missing part only while a promise is open and The work is enough only
-// once the plan's cards are delivered, and says when nothing is left.
+// requestAsk fits the ask of merge request ap to its rows as they read
+// now: Merge it waits on its head's checks and on each human promise's
+// verdict, which the pages before it take.
 func requestAsk(ask *askBlock, ap approvalCard) {
 	if ap.Kind == factoryd.ApprovalMerge && (len(ap.Unsettled) > 0 || ap.HeadUnread) {
 		for i := range ask.Answers {
@@ -761,21 +759,6 @@ func requestAsk(ask *askBlock, ap approvalCard) {
 			}
 		}
 	}
-	if ap.Kind != factoryd.ApprovalCriteria && ap.Kind != factoryd.ApprovalCriteriaRerun {
-		return
-	}
-	ask.Answers = slices.DeleteFunc(ask.Answers, ap.refuses)
-	if !ap.Grantable() {
-		ask.Answers, ask.Note = nil, "Every promise is met or dropped, so the plan closes within minutes."
-	}
-}
-
-// refuses says criteria request ap does not take answer a as its rows read
-// now: Build the missing part with no promise open, The work is enough
-// before the plan's cards are delivered.
-func (ap approvalCard) refuses(a answerView) bool {
-	criteria := ap.Kind == factoryd.ApprovalCriteria || ap.Kind == factoryd.ApprovalCriteriaRerun
-	return criteria && (a.Action == factoryd.ActGrantCriteria && !ap.Grantable() || a.Action == factoryd.ActConfirmCriteria && !ap.Delivered)
 }
 
 // requestPress is the press of answer a by key on approval request ap of

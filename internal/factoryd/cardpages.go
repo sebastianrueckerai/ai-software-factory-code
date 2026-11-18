@@ -68,12 +68,6 @@ type Request struct {
 	HoldoutRows              []HoldoutRow
 }
 
-// Grantable says a criteria request has a promise open, which one more
-// card could meet, or rows that could not be read.
-func (r Request) Grantable() bool {
-	return len(r.Promises) == 0 || slices.ContainsFunc(r.Promises, func(p PromiseRow) bool { return !p.Settled() })
-}
-
 // RequestReads are the store's reads a request's rows come from.
 type RequestReads interface {
 	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
@@ -320,7 +314,8 @@ func (r Request) questionCase() (Case, bool) {
 
 // onPromises is criteria case c as request r's rows read now: the promises
 // still open, those of them nothing judged yet and the plan's count, so its
-// ask counts them and Drop this promise picks among them. Rows it could
+// ask counts them and Drop this promise picks among them, whether every
+// one is settled and whether the plan's cards are delivered. Rows it could
 // not read leave the request's own count.
 func (r Request) onPromises(c Case) Case {
 	asked := slices.DeleteFunc(slices.Clone(r.Promises), PromiseRow.GateLine)
@@ -336,7 +331,9 @@ func (r Request) onPromises(c Case) Case {
 			}
 		}
 	}
-	return OnOpen(c, open, unchecked, len(r.Promises))
+	c = OnOpen(c, open, unchecked, len(r.Promises))
+	c.Facts = withFacts(c.Facts, map[string]any{"settled": len(open) == 0, "undelivered": !r.Delivered})
+	return c
 }
 
 // parts are the parts of case c's ask that request r's rows hold, each a

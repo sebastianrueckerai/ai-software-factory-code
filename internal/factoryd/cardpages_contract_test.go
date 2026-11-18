@@ -1,0 +1,189 @@
+package factoryd_test
+
+import (
+	"encoding/json"
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+)
+
+// requestStates are the states of the rows of fixture fx's request that a
+// face reads, each named: a merge with and without a human promise
+// waiting for its verdict and with its red checks healed; a plan with its
+// confirmation alone, with an extra promise waiting, with an open question
+// and answered; a criteria request with its promises unjudged, one not
+// met, a human's waiting, all settled, before and after delivery; and a
+// rerun request in each state of the run of its tests.
+func requestStates(fx facefixtures.Fixture) map[string]factoryd.Request {
+	a := *fx.Approval
+	base := factoryd.Request{ApprovalRequest: a}
+	out := map[string]factoryd.Request{"as filed": base}
+	var plan factoryd.Plan
+	if fx.Plan != nil {
+		plan = *fx.Plan
+	}
+	rows := func(verdict func(c factoryd.PlanCriterion) string) []factoryd.PromiseRow {
+		var out []factoryd.PromiseRow
+		for _, c := range plan.Criteria {
+			out = append(out, factoryd.PromiseRow{PlanCriterion: c, Verdict: verdict(c)})
+		}
+		return out
+	}
+	switch a.Kind {
+	case factoryd.ApprovalMerge:
+		if err := json.Unmarshal(a.Spec, &base.Merge); err != nil {
+			panic(err)
+		}
+		human := factoryd.PlanCriterion{ID: "panels_read_on_a_phone", Kind: factoryd.CriterionHuman, Claim: "the panels read well on a phone",
+			Promise: "The panels read well on a phone.", Evidence: "Open /metrics at 390 px wide"}
+		waiting := base
+		waiting.Promises, waiting.Unsettled, waiting.Integration = []factoryd.PromiseRow{{PlanCriterion: human}}, []string{human.ID}, "t-integration"
+		healed := base
+		healed.Healed = base.Merge.RedChecks
+		out["as filed"], out["a human promise waits"], out["healed"] = base, waiting, healed
+	case factoryd.ApprovalPlan:
+		base.Plan, base.PlanSpec = plan, factoryd.PlanSpec{Revision: 1}
+		confirm := factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: factoryd.ConfirmationQuestion(1, plan)}
+		question := factoryd.PlanQuestion{Text: "How far back does the feed page by default?", Choices: []string{"One day", "The 500 newest rows"}}
+		alone := base
+		alone.PlanQuestions = []factoryd.PlanQuestion{confirm}
+		extra := alone
+		extra.HoldoutRows = []factoryd.HoldoutRow{{PlanProof: factoryd.PlanProof{Idx: 1, Round: 1, Origin: factoryd.ProofOriginHoldout,
+			Claim: "The feed shows a deleted card's events.", State: factoryd.ProofProposed}, Index: 1, Decides: true}}
+		asking := base
+		asking.PlanQuestions = []factoryd.PlanQuestion{question, confirm}
+		out["the confirmation alone"], out["an extra promise waits"], out["an open question"] = alone, extra, asking
+	case factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
+		var spec factoryd.CriteriaSpec
+		if err := json.Unmarshal(a.Spec, &spec); err != nil {
+			panic(err)
+		}
+		base.CriteriaSpec, base.Plan = spec, plan
+		state := func(delivered bool, verdict func(c factoryd.PlanCriterion) string, run *factoryd.RunFact) factoryd.Request {
+			r := base
+			r.Delivered, r.Promises, r.Run = delivered, rows(verdict), run
+			return r
+		}
+		none := func(factoryd.PlanCriterion) string { return "" }
+		for _, delivered := range []bool{false, true} {
+			at := fmt.Sprintf(" (delivered %v)", delivered)
+			out["unjudged"+at] = state(delivered, none, nil)
+			out["one not met"+at] = state(delivered, func(c factoryd.PlanCriterion) string {
+				if c.ID == plan.Criteria[0].ID {
+					return "not_met"
+				}
+				return "met"
+			}, nil)
+			out["all settled"+at] = state(delivered, func(factoryd.PlanCriterion) string { return "waived" }, nil)
+			if a.Kind == factoryd.ApprovalCriteriaRerun {
+				for _, outcome := range []string{"asked", "started", "ran", "cut", "no_room"} {
+					out["a run "+outcome+at] = state(delivered, none, &factoryd.RunFact{Outcome: outcome, By: "sebastian", At: time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)})
+				}
+			}
+		}
+	}
+	return out
+}
+
+// caseOf is fixture fx's case, the zero case for none.
+func caseOf(fx facefixtures.Fixture) factoryd.Case {
+	if fx.Case == nil {
+		return factoryd.Case{}
+	}
+	return *fx.Case
+}
+
+// Every page a card can show offers 2 to 4 answers: the pages of every
+// fixture's case, and of every fixture's request in each state of its
+// rows, on the card's case and with no case to hold it.
+func TestEveryPageOffersTwoToFourAnswers(t *testing.T) {
+	for _, fx := range facefixtures.All() {
+		if fx.Case == nil && fx.Approval == nil {
+			continue
+		}
+		card := factoryd.BoardTask{Task: fx.Task}
+		states := map[string]factoryd.Request{"no request": {}}
+		_, promise := factoryd.PromiseOn(caseOf(fx))
+		_, holdout := factoryd.HoldoutOn(caseOf(fx))
+		switch {
+		case fx.Approval != nil && (promise || holdout):
+			// a page the fixture made already: its request's rows as the
+			// page holds them
+			states = map[string]factoryd.Request{"as paged": {ApprovalRequest: *fx.Approval}}
+		case fx.Approval != nil:
+			states = requestStates(fx)
+		}
+		for state, r := range states {
+			var pending []factoryd.ApprovalRequest
+			if fx.Approval != nil {
+				pending = []factoryd.ApprovalRequest{*fx.Approval}
+			}
+			read := func(factoryd.ApprovalRequest) factoryd.Request { return r }
+			var held [][]factoryd.Case
+			if fx.Case != nil {
+				held = append(held, []factoryd.Case{*fx.Case})
+			}
+			if fx.Approval != nil {
+				held = append(held, nil)
+			}
+			for _, cases := range held {
+				asks := map[int64]factoryd.CaseAsk{}
+				if fx.Ask != nil && fx.Case != nil {
+					asks[fx.Case.ID] = *fx.Ask
+				}
+				for _, p := range factoryd.CardPages(card, cases, asks, pending, read) {
+					if n := len(p.Face.Offers); n < 2 || n > 4 {
+						var labels []string
+						for _, o := range p.Face.Offers {
+							labels = append(labels, o.Label)
+						}
+						t.Errorf("%s/%s, %s, %d cases, page %s (%s): %q offers %d answers %q, want 2 to 4",
+							fx.Group, fx.Kind, state, len(cases), p.Key(), p.Case.Kind, p.Face.Ask, n, labels)
+					}
+				}
+			}
+		}
+	}
+}
+
+// A criteria request offers what its rows take: with every promise met or
+// dropped, the plan's close now or the wait for the factory's close, and
+// no card to build; The work is enough only once the plan's cards are
+// delivered.
+func TestACriteriaRequestOffersWhatItsRowsTake(t *testing.T) {
+	i := slices.IndexFunc(facefixtures.All(), func(fx facefixtures.Fixture) bool {
+		return fx.Group == facefixtures.GroupApproval && fx.Kind == factoryd.ApprovalCriteria
+	})
+	fx := facefixtures.All()[i]
+	states := requestStates(fx)
+	pages := func(state string) []factoryd.CardPage {
+		return factoryd.CardPages(factoryd.BoardTask{Task: fx.Task}, []factoryd.Case{*fx.Case}, nil, []factoryd.ApprovalRequest{*fx.Approval},
+			func(factoryd.ApprovalRequest) factoryd.Request { return states[state] })
+	}
+	offered := func(p factoryd.CardPage) (answers, more []string) {
+		face := factoryd.FaceOf(p.Case, factoryd.Facts{CaseFacts: factoryd.FactsOf(p.Case), Card: fx.Task, Case: p.Case})
+		for _, o := range p.Face.Offers {
+			answers = append(answers, o.Label+": "+o.Effect)
+		}
+		return answers, labels(face.More)
+	}
+	settled := pages("all settled (delivered true)")
+	answers, more := offered(settled[0])
+	if want := []string{"Close the plan now: Closes the plan now, so production deploys go on.", "Not now: The plan closes by itself within minutes."}; len(settled) != 1 || !slices.Equal(answers, want) ||
+		slices.Contains(more, "Build the missing part") || settled[0].Face.Ask != "Every promise of plan “divide and conquer” is met or dropped. Close it now?" {
+		t.Errorf("all settled: %d pages, ask %q, answers %q, more %q; want one page that asks to close now, %q, and no card to build", len(settled), settled[0].Face.Ask, answers, more, want)
+	}
+	for _, state := range []string{"unjudged (delivered false)", "unjudged (delivered true)"} {
+		for _, p := range pages(state) {
+			answers, more := offered(p)
+			if enough := slices.Contains(more, "The work is enough") || slices.ContainsFunc(answers, func(a string) bool { return strings.HasPrefix(a, "The work is enough:") }); enough != strings.HasSuffix(state, "(delivered true)") {
+				t.Errorf("%s, page %s: The work is enough offered %v, answers %q, more %q", state, p.Key(), enough, answers, more)
+			}
+		}
+	}
+}

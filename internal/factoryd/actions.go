@@ -527,11 +527,17 @@ var probes = map[string]Resolution{
 	ActConfirmAudit:     {Note: "probe"},
 }
 
-// criteriaRequestRefusal is why action decides no criteria request on f: only
-// a plan_criteria case holds one.
+// criteriaRequestRefusal is why action decides no criteria request on f:
+// only a plan_criteria case holds one, one more card builds only what is
+// open, and the work is enough only once the plan's cards are delivered.
 func criteriaRequestRefusal(f CaseFacts, action string) string {
-	if f.Kind != CasePlanCriteria {
+	switch {
+	case f.Kind != CasePlanCriteria:
 		return "`" + action + "` answers a plan's criteria request, and this ask is none"
+	case action == ActGrantCriteria && f.Settled:
+		return "every promise is met or dropped, so no card is left to build"
+	case action == ActConfirmCriteria && f.Undelivered:
+		return "a card of the plan is not delivered yet, so the work is not done"
 	}
 	return ""
 }

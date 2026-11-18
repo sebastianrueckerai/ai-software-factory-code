@@ -120,7 +120,12 @@ type CaseFacts struct {
 	// Runnable are the promises of a criteria request no verdict judged
 	// that a run of the factory checks: a test, an invariant or a
 	// judgement whose proof it holds
-	Runnable     []string  `json:"runnable,omitempty"`
+	Runnable []string `json:"runnable,omitempty"`
+	// Settled: every promise a criteria request asks about stands met or
+	// dropped as its rows read now; Undelivered: a card of its plan is not
+	// delivered yet. A request's page carries both (CardPages).
+	Settled      bool      `json:"settled,omitempty"`
+	Undelivered  bool      `json:"undelivered,omitempty"`
 	Pushed       bool      `json:"pushed,omitempty"` // a session pushed a branch head
 	Dependencies []DepFact `json:"dependencies,omitempty"`
 	// Waiters counts the cards that wait for this one and have not ended

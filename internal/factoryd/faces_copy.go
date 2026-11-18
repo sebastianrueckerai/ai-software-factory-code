@@ -60,6 +60,7 @@ const (
 	variantAlone    = "alone"
 	variantFile     = "file"
 	variantOpen     = "open"
+	variantSettled  = "settled"
 )
 
 // The keys of a routine's answers in their other states: the undo of a
@@ -203,6 +204,7 @@ var Vocabulary = []Answer{
 	{Action: ActSettle, Variant: variantKeepOpen, Label: "Keep the plan open", Effect: "The plan stays open and holds production deploys until an approver closes it."},
 	{Action: AnswerDropAndEnd, Label: "Drop them and close", Effect: "Drops the open promises with your reason and closes the plan, so production deploys go on.",
 		Fields: []Field{requiredNote("Your reason", "Why the plan no longer needs them")}},
+	{Action: AnswerDropAndEnd, Variant: variantSettled, Label: "Close the plan now", Effect: "Closes the plan now, so production deploys go on."},
 }
 
 func criterionField() Field {
@@ -401,6 +403,17 @@ func waitEffect(f Facts) string {
 	}
 	if f.Kind == CaseMonitorFlag {
 		return "The notice stays on the card. Nothing else changes."
+	}
+	if p, _ := planOn(f); f.Case.Kind == CasePlanConfirmation && p.HoldoutsOpen > 0 {
+		return fmt.Sprintf("The plan's cards wait until its %s %s kept or dropped.", plural(p.HoldoutsOpen, "extra promise"), isAre(p.HoldoutsOpen))
+	}
+	if p, ok := promiseOn(f); ok {
+		if state, _ := promiseState(f, p); state == stateRunning {
+			return "The tests go on, and each result lands on its promise."
+		}
+	}
+	if f.Settled {
+		return "The plan closes by itself within minutes."
 	}
 	if asked, err := time.Parse(time.RFC3339, factString(f.Case, "asked_at")); err == nil && f.Case.Kind == CaseAgentRequestInfo {
 		return "The card keeps waiting for the author's answer until " + timeWords(asked.Add(infoWait)) +
@@ -1487,7 +1500,7 @@ var planConfirmFace = FaceSpec{
 			return []string{AnswerKeepHoldout, AnswerDropHoldout}
 		}
 		if p, _ := planOn(f); p.HoldoutsOpen > 0 {
-			return []string{AnswerRevisePlan}
+			return []string{AnswerRevisePlan, ActNote}
 		}
 		return []string{AnswerConfirmPlan, AnswerRevisePlan}
 	},
@@ -1864,6 +1877,9 @@ var criteriaFace = FaceSpec{
 			// a gap's promises with no result are not met either
 			unchecked = 0
 		}
+		if f.Settled {
+			return firstAsk(fmt.Sprintf("Every promise of %s is met or dropped. Close it now?", askedPlan(f)), "Every promise of this plan is met or dropped. Close it now?")
+		}
 		plan := capitalize(askedPlan(f))
 		either := func(format string, args ...any) string {
 			return firstAsk(fmt.Sprintf(format, append([]any{plan}, args...)...), fmt.Sprintf(format, append([]any{"This plan"}, args...)...))
@@ -1878,7 +1894,12 @@ var criteriaFace = FaceSpec{
 		}
 		return either("%s finished, but %d of %d promises %s not met. Settle each one.", open, of, isAre(open))
 	},
-	Why: func(f Facts) string { return untilSettled(len(promisesOpen(f))) },
+	Why: func(f Facts) string {
+		if f.Settled {
+			return "Until it closes, the plan holds production deploys."
+		}
+		return untilSettled(len(promisesOpen(f)))
+	},
 	Story: func(f Facts) Story {
 		p, ok := promiseOn(f)
 		if !ok {
@@ -1915,17 +1936,19 @@ var criteriaFace = FaceSpec{
 	Answers: func(f Facts) []string {
 		p, ok := promiseOn(f)
 		waive, human := ActAnswerCriteria+"/waive", []string{ActAnswerCriteria, ActAnswerCriteria + "/not_met"}
-		if !ok {
-			if f.ApprovalKind == ApprovalCriteriaRerun && len(f.Runnable) > 0 {
-				return []string{ActRunCriteria, waive}
-			}
+		switch {
+		case !ok && f.Settled:
+			return []string{AnswerDropAndEnd + "/" + variantSettled, ActNote}
+		case !ok && f.ApprovalKind == ApprovalCriteriaRerun && len(f.Runnable) > 0:
+			return []string{ActRunCriteria, waive}
+		case !ok:
 			return []string{ActGrantCriteria, waive}
 		}
 		switch state, _ := promiseState(f, p); state {
 		case stateHuman:
 			return append(human, waive)
 		case stateRunning:
-			return []string{waive}
+			return []string{waive, ActNote}
 		case stateRunnable, stateCut, stateRanPast:
 			return []string{ActRunCriteria, waive}
 		case stateJudged, stateGapOpen:
