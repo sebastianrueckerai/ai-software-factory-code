@@ -31,11 +31,20 @@ const freezeResumedSentence = "The class resumed on its own"
 
 // freezeResumedFace is the card's face once its class resumed on its
 // own: the held time and the close the face schedules.
-const freezeResumedFace = "Class: %s\n\n" + freezeResumedSentence + " at %s: the freeze held %s. The card closes itself at %s.\n\n" + freezeStarted + "%s."
+const freezeResumedFace = "Class: %s\n\n" + freezeResumedSentence + " at %s: the freeze held %s. The card closes itself at %s.\n\n" + freezeStarted + "%s.\n" + freezeResetWas + "%s."
 
 // freezeStarted opens the line of a face that names when the card's
 // freeze started: the clock of the card's ask, which a restart reads back.
 const freezeStarted = "The freeze started at "
+
+// freezeResetWas opens the line of a resumed face that names the reset
+// the card's hold had, which an arm inside the close's five minutes is
+// measured against, after a restart too.
+const freezeResetWas = "The hold's reset was "
+
+// freezeRefusedReset opens the part of a given-up face that keeps the
+// reset and the start of a freeze that still stands.
+const freezeRefusedReset = "\n\nThe class resets at "
 
 // freezeRefusedSentence is the given-up face's tell.
 const freezeRefusedSentence = "Forgejo refused this card's issue"
@@ -278,7 +287,7 @@ func (w *FreezeCard) Check(ctx context.Context) error {
 // restart, which the memory lost, files its card. A freeze the retry
 // press answered since is over, its class_resumed row not read yet: the
 // press cleared the hold. A freeze whose card a human closed gets no
-// card again before a new reset.
+// card again before a new reset (endedOutside).
 func (w *FreezeCard) restore(ctx context.Context) error {
 	standing, err := w.Store.StandingFreezes(ctx)
 	if err != nil {
@@ -290,14 +299,8 @@ func (w *FreezeCard) restore(ctx context.Context) error {
 	}
 	for _, ev := range standing {
 		if !beforeReset(w.now(), ev.Reset) || slices.ContainsFunc(done, func(t Task) bool {
-			if !objectiveHasClassLine(t.Objective, ev.Class) {
-				return false
-			}
-			if at, ok := freezePressStamp(t.Objective); ok {
-				return !at.Before(ev.At)
-			}
-			// a human closed the card of this reset: no card speaks again
-			return t.Repository == ev.Repository && !strings.Contains(t.Objective, freezeRefusedSentence) && freezeFaceReset(t.Objective) == ev.Reset
+			at, ok := freezePressStamp(t.Objective)
+			return ok && objectiveHasClassLine(t.Objective, ev.Class) && !at.Before(ev.At)
 		}) {
 			continue
 		}
@@ -359,14 +362,18 @@ func freezeCardClass(objective string) string {
 	return ""
 }
 
-// freezeFaceReset reads the reset a holding card's face names on its line
-// 'The class resets at <stamp> (': the last such line, as the provider's
-// words come before it on the face; "" on a face that names none.
+// freezeFaceReset reads the reset a card's face names, on a holding
+// face's line 'The class resets at <stamp> (' or a resumed face's 'The
+// hold's reset was <stamp>.': the last such line, as the provider's words
+// come before it on the face; "" on a face that names none.
 func freezeFaceReset(objective string) string {
 	reset := ""
 	for _, line := range strings.Split(objective, "\n") {
-		if rest, ok := strings.CutPrefix(line, "The class resets at "); ok {
-			reset, _, _ = strings.Cut(rest, " ")
+		for _, prefix := range []string{"The class resets at ", freezeResetWas} {
+			if rest, ok := strings.CutPrefix(line, prefix); ok {
+				reset, _, _ = strings.Cut(rest, " ")
+				reset = strings.TrimSuffix(reset, ".")
+			}
 		}
 	}
 	if _, err := time.Parse(time.RFC3339, reset); err != nil {
@@ -395,7 +402,8 @@ func freezeResumeStamp(objective string) (time.Time, bool) {
 // re-arms each, which cancels a pending close, reopens each card the
 // press closed before its reset, and files the card of the arming
 // repository when it has none; an end starts each open card's close and
-// drops every arm Forgejo stopped.
+// drops every arm Forgejo stopped and the clock a given-up card kept for
+// its replacement.
 func (w *FreezeCard) event(ctx context.Context, ev FreezeEvent) error {
 	repos, err := w.openCardRepositories(ctx, ev.Class)
 	if err != nil {
@@ -425,6 +433,9 @@ func (w *FreezeCard) event(ctx context.Context, ev FreezeEvent) error {
 			if st.class == ev.Class {
 				w.unarm(st)
 			}
+		}
+		if err := w.endGivenUp(ctx, ev.Class); err != nil {
+			return err
 		}
 		for _, repo := range repos {
 			if err := w.resumed(ctx, w.class(repo, ev.Class), ev); err != nil {
@@ -550,7 +561,7 @@ func countHumanEnd(ctx context.Context, m *telemetry.Metrics, store interface {
 func freezeRefusedBody(st *freezeClass, why string) string {
 	body := fmt.Sprintf("Class: %s\n\n%s #%d for good (%s), so the card ended: a new card speaks for the class while it is frozen.", st.class, freezeRefusedSentence, st.issue, why)
 	if reset, err := time.Parse(time.RFC3339, st.reset); err == nil && st.resumedAt.IsZero() {
-		body += fmt.Sprintf("\n\nThe class resets at %s (the reset its freeze held).\n%s%s.", stamp(reset), freezeStarted, stamp(st.frozenAt))
+		body += fmt.Sprintf(freezeRefusedReset+"%s (the reset its freeze held).\n%s%s.", stamp(reset), freezeStarted, stamp(st.frozenAt))
 	}
 	return freezeCardTitle(st.class) + "\n\n" + body
 }
@@ -597,6 +608,9 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 	if st.closed && !beforeReset(ev.At, st.reset) {
 		*st = freezeClass{repo: st.repo, class: st.class}
 	}
+	if quiet, err := w.endedOutside(ctx, st, ev.Reset); err != nil || quiet {
+		return err
+	}
 	if st.taskID == "" {
 		if t, ok, err := w.findCard(ctx, st); err != nil {
 			return err
@@ -605,8 +619,9 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		} else if t, ok, err := w.findClosedCard(ctx, st, ev.At); err != nil {
 			return err
 		} else if ok {
-			// the press closed the card and a restart lost the memory:
-			// adopt it as closed, so the re-arm below opens the same card
+			// factoryd closed the card on a press and a restart lost the
+			// memory: adopt it as closed, so the re-arm below opens the
+			// same card
 			st.taskID, st.issue, st.frozenAt, st.reset = t.ID, t.IssueNumber, freezeCardStart(t), freezeFaceReset(t.Objective)
 			st.closed = true
 		}
@@ -639,11 +654,9 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 	if st.closed {
 		// the press closed the card; a first dated refusal re-arms the
 		// hold and updates the same card — no second card, no ask — whose
-		// next close is its own. The issue opens before the row, so a step
-		// that fails leaves the row done and the next pass does it again.
-		if err := w.Store.ForgetFactoryClose(ctx, st.taskID, st.issue); err != nil {
-			return err
-		}
+		// next close is its own. The close's record goes last: while a
+		// step fails, the record tells that factoryd closed the card, and
+		// the next pass, or a restarted watcher's, opens it again.
 		repo, err := SplitRepo(st.repo)
 		if err != nil {
 			return err
@@ -654,7 +667,10 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		if err := w.Store.SetObjective(ctx, st.taskID, freezeCardTitle(st.class)+"\n\n"+body); err != nil {
 			return err
 		}
-		if err := w.Store.TransitionTask(ctx, st.taskID, []string{"done"}, "waiting-human"); err != nil {
+		if err := w.Store.TransitionTask(ctx, st.taskID, []string{"done"}, "waiting-human"); err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		if err := w.Store.ForgetFactoryClose(ctx, st.taskID, st.issue); err != nil {
 			return err
 		}
 		if _, err := w.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, st.issue,
@@ -709,18 +725,100 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 
 // givenUpStart is the clock of a card filed for st's class at reset: the
 // start of the freeze a given-up card of that reset held, whose place the
-// new card takes; now for a freeze no card held.
+// new card takes; now for a freeze no card held. A given-up face names
+// its reset only while its freeze stands (endGivenUp), so every given-up
+// card this matches held the same freeze and names the same start.
 func (w *FreezeCard) givenUpStart(ctx context.Context, st *freezeClass, reset string) (time.Time, error) {
 	done, err := w.Store.FreezeCards(ctx, "done")
 	if err != nil {
 		return time.Time{}, err
 	}
-	for _, t := range slices.Backward(done) {
+	for _, t := range done {
 		if t.Repository == st.repo && objectiveHasClassLine(t.Objective, st.class) && strings.Contains(t.Objective, freezeRefusedSentence) && freezeFaceReset(t.Objective) == reset {
 			return freezeCardStart(t), nil
 		}
 	}
 	return w.now(), nil
+}
+
+// endGivenUp takes the reset and the start off the faces of class's
+// given-up cards once the class resumed: their freeze ended, and a later
+// freeze's card starts its own clock.
+func (w *FreezeCard) endGivenUp(ctx context.Context, class string) error {
+	done, err := w.Store.FreezeCards(ctx, "done")
+	if err != nil {
+		return err
+	}
+	for _, t := range done {
+		head, _, kept := strings.Cut(t.Objective, freezeRefusedReset)
+		if kept && objectiveHasClassLine(t.Objective, class) && strings.Contains(t.Objective, freezeRefusedSentence) {
+			if err := w.Store.SetObjective(ctx, t.ID, head); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// endedOutside is the one rule on a card of st's class that ended outside
+// the watcher, a human having closed its issue: frozen applies it to every
+// arm, the restart's among them (restore), and the tick to every card it
+// holds. A card in memory whose row no longer waits is forgotten, so
+// nothing writes its face or comments on its issue again. An arm to reset
+// then stays quiet when a done card of that reset stands which factoryd
+// did not close, and files a new card for any other reset. The watcher's
+// own closes carry their record (closedBy), whatever the face says.
+func (w *FreezeCard) endedOutside(ctx context.Context, st *freezeClass, reset string) (quiet bool, err error) {
+	if st.taskID != "" && !st.closed {
+		if _, ok, err := w.waiting(ctx, st.taskID); err != nil || ok {
+			return false, err
+		}
+		*st = freezeClass{repo: st.repo, class: st.class}
+	}
+	if st.taskID != "" {
+		return false, nil
+	}
+	done, err := w.Store.FreezeCards(ctx, "done")
+	if err != nil {
+		return false, err
+	}
+	for _, t := range done {
+		if t.Repository != st.repo || !objectiveHasClassLine(t.Objective, st.class) || freezeFaceReset(t.Objective) != reset {
+			continue
+		}
+		if _, own, err := w.closedBy(ctx, t); err != nil {
+			return false, err
+		} else if !own {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// freezePressSaid and freezeEndedSaid are the tells of the watcher's two
+// closes in the close's record (closeIssueAsFactory): the retry press's
+// and the self-resume's. A human's close through the console is recorded
+// too, with neither.
+const (
+	freezePressSaid = "'s retry press cleared the "
+	freezeEndedSaid = " class ended: the freeze held "
+)
+
+// closedBy reports how done freeze card t ended: own when the watcher
+// ended it, by the record of its close or by giving the card up, press
+// when that close was the retry press's. Neither means a human closed it.
+func (w *FreezeCard) closedBy(ctx context.Context, t Task) (press, own bool, err error) {
+	if strings.Contains(t.Objective, freezeRefusedSentence) {
+		return false, true, nil
+	}
+	events, err := w.Store.IntakeEvents(ctx, t.ID)
+	for _, e := range events {
+		if e.Kind == IntakeFactoryClosed && e.CommentID == t.IssueNumber {
+			press = strings.Contains(e.Body, freezePressSaid)
+			own = press || strings.Contains(e.Body, freezeEndedSaid)
+		}
+	}
+	return press, own, err
 }
 
 // resumed starts the card's five-minute close hold after a self-resume,
@@ -739,13 +837,13 @@ func (w *FreezeCard) resumed(ctx context.Context, st *freezeClass, ev FreezeEven
 		if !ok {
 			return nil
 		}
-		st.taskID, st.issue, st.frozenAt = t.ID, t.IssueNumber, freezeCardStart(t)
+		st.taskID, st.issue, st.frozenAt, st.reset = t.ID, t.IssueNumber, freezeCardStart(t), freezeFaceReset(t.Objective)
 	}
 	if !st.resumedAt.IsZero() {
 		return nil
 	}
 	body := freezeCardTitle(st.class) + "\n\n" + fmt.Sprintf(
-		freezeResumedFace, st.class, stamp(ev.At), freezeHeld(st.frozenAt, ev.At), stamp(ev.At.Add(freezeResumeHold)), stamp(st.frozenAt))
+		freezeResumedFace, st.class, stamp(ev.At), freezeHeld(st.frozenAt, ev.At), stamp(ev.At.Add(freezeResumeHold)), stamp(st.frozenAt), st.reset)
 	if err := w.Store.SetObjective(ctx, st.taskID, body); err != nil {
 		return err
 	}
@@ -785,7 +883,7 @@ func (w *FreezeCard) CloseOnRetry(ctx context.Context, repository, class, by str
 	if reset == "" && st != nil {
 		reset = st.reset // a resume rewrote the face before the press
 	}
-	msg := fmt.Sprintf("%s's retry press cleared the %s class's hold: the freeze card closes at once.", by, class)
+	msg := fmt.Sprintf("%s"+freezePressSaid+"%s class's hold: the freeze card closes at once.", by, class)
 	if err := closeIssueAsFactory(ctx, w.Store, w.Forgejo, t, "factoryd: "+msg); err != nil {
 		return err
 	}
@@ -901,6 +999,12 @@ func (w *FreezeCard) tick(ctx context.Context) error {
 	}()
 	for key, st := range w.classes {
 		if st.taskID == "" || st.closed {
+			continue
+		}
+		if _, err := w.endedOutside(ctx, st, st.reset); err != nil {
+			return err
+		} else if st.taskID == "" {
+			delete(w.classes, key)
 			continue
 		}
 		switch {
@@ -1063,7 +1167,7 @@ func (w *FreezeCard) close(ctx context.Context, st *freezeClass) error {
 	if !ok {
 		return nil
 	}
-	msg := fmt.Sprintf("The freeze of the %s class ended: the freeze held %s, and the card closes.", st.class, freezeHeld(st.frozenAt, st.resumedAt))
+	msg := fmt.Sprintf("The freeze of the %s"+freezeEndedSaid+"%s, and the card closes.", st.class, freezeHeld(st.frozenAt, st.resumedAt))
 	if err := closeIssueAsFactory(ctx, w.Store, w.Forgejo, t, "factoryd: "+msg); err != nil {
 		return err
 	}
@@ -1097,21 +1201,29 @@ func (w *FreezeCard) findCard(ctx context.Context, st *freezeClass) (Task, bool,
 }
 
 // findClosedCard matches the class's done freeze card of the repository
-// the retry press closed, whose reset lies after at (pressClosedCards), so
-// a restart between the press and a first dated refusal adopts it as
-// closed and the refusal re-arms the same card, no second card. A card
-// that ended on a self-resume, or whose reset passed, ended its episode: a
-// new hold files its own card.
+// that the retry press closed and whose reset lies after at, so a restart
+// between the press and a first dated refusal adopts it as closed and the
+// refusal re-arms the same card, no second card. The close's record tells
+// the press, not the face: a reopen that stopped half way left the holding
+// face on the done row. A card that ended on a self-resume or was given
+// up, or whose reset passed, ended its episode: a new hold files its own
+// card.
 func (w *FreezeCard) findClosedCard(ctx context.Context, st *freezeClass, at time.Time) (Task, bool, error) {
-	pressed, err := w.pressClosedCards(ctx, st.class, at)
+	done, err := w.Store.FreezeCards(ctx, "done")
 	if err != nil {
 		return Task{}, false, err
 	}
-	i := slices.IndexFunc(pressed, func(t Task) bool { return t.Repository == st.repo })
-	if i < 0 {
-		return Task{}, false, nil
+	for _, t := range done {
+		if t.Repository != st.repo || !objectiveHasClassLine(t.Objective, st.class) || !beforeReset(at, freezeFaceReset(t.Objective)) {
+			continue
+		}
+		if press, _, err := w.closedBy(ctx, t); err != nil {
+			return Task{}, false, err
+		} else if press {
+			return t, true, nil
+		}
 	}
-	return pressed[i], true, nil
+	return Task{}, false, nil
 }
 
 // freezeCardBody is a freeze card's face: the provider's words, the

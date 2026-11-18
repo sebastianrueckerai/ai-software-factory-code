@@ -190,4 +190,14 @@ func TestFreezeCardsReadTheSourcePG(t *testing.T) {
 	if id, err := s.InsertIntakeEvent(ctx, record); err != nil || id == 0 {
 		t.Fatalf("the next close's record = %d, %v; want a new one", id, err)
 	}
+	// a second close, forgotten unconfirmed, keeps its own state: it alone
+	// is a close left half done
+	if err := s.ForgetFactoryClose(ctx, "fz-done", 3); err != nil {
+		t.Fatal(err)
+	}
+	half, err = s.UnconfirmedFactoryCloses(ctx, 0, 100)
+	half = slices.DeleteFunc(half, func(e IntakeEvent) bool { return e.TaskID != "fz-done" })
+	if err != nil || len(half) != 1 || half[0].CommentID != 0 {
+		t.Fatalf("after the second forget the unconfirmed closes = %+v, %v; want the second record alone", half, err)
+	}
 }

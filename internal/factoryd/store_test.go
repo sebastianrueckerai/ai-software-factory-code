@@ -1043,10 +1043,20 @@ func (s *fakeStore) ConfirmFactoryClose(ctx context.Context, taskID string, issu
 	return nil
 }
 
+// closeKey keys a close record's confirmation: by its task and issue, and
+// by its own id once the record is off its issue (ForgetFactoryClose), so
+// each forgotten record of a task keeps its own.
+func closeKey(e IntakeEvent) [2]any {
+	if e.CommentID == 0 {
+		return [2]any{e.TaskID, fmt.Sprintf("forgotten %d", e.ID)}
+	}
+	return [2]any{e.TaskID, e.CommentID}
+}
+
 func (s *fakeStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error) {
 	var out []IntakeEvent
 	for _, e := range s.intakeEvents {
-		if e.Kind == IntakeFactoryClosed && !s.confirmedCloses[[2]any{e.TaskID, e.CommentID}] && time.Since(e.CreatedAt) > olderThan && len(out) < limit {
+		if e.Kind == IntakeFactoryClosed && !s.confirmedCloses[closeKey(e)] && time.Since(e.CreatedAt) > olderThan && len(out) < limit {
 			out = append(out, e)
 		}
 	}
@@ -1625,11 +1635,11 @@ func (s *fakeStore) ForgetFactoryClose(ctx context.Context, taskID string, issue
 	for i, e := range s.intakeEvents {
 		if e.TaskID == taskID && e.Kind == IntakeFactoryClosed && e.CommentID == issue {
 			s.intakeEvents[i].CommentID = 0
+			if s.confirmedCloses[closeKey(e)] {
+				delete(s.confirmedCloses, closeKey(e))
+				s.confirmedCloses[closeKey(s.intakeEvents[i])] = true
+			}
 		}
-	}
-	if s.confirmedCloses[[2]any{taskID, issue}] {
-		delete(s.confirmedCloses, [2]any{taskID, issue})
-		s.confirmedCloses[[2]any{taskID, int64(0)}] = true
 	}
 	return nil
 }
