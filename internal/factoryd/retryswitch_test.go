@@ -125,7 +125,11 @@ func (g *switchGateway) call(t *testing.T, id string) (int, string) {
 	switch {
 	case rec.Code == http.StatusOK:
 	case rec.Code == http.StatusTooManyRequests && rec.Header().Get(gateway.HeaderDecision) == gateway.RefusedProviderLimit:
-		json.Unmarshal(rec.Body.Bytes(), &refused) // #nosec G104 -- the gateway's own body; a bad one fails on its reset
+		// call runs on the workflow rig's activity goroutine too, where
+		// t.Fatalf may not stop the test
+		if err := json.Unmarshal(rec.Body.Bytes(), &refused); err != nil {
+			t.Errorf("%s's named refusal %s does not decode: %v", id, rec.Body.String(), err)
+		}
 	default:
 		t.Errorf("%s's call = %d %q: %s, want served or the named refusal", id, rec.Code, rec.Header().Get(gateway.HeaderDecision), rec.Body.String())
 	}
@@ -144,48 +148,31 @@ func (g *switchGateway) session(t *testing.T, id string) SessionResult {
 	return limitRefused(until, "Usage limit reached for 5 hour")
 }
 
-// zaiLimit is zai's dated refusal whose reset the gateway answers as
+// zaiWords are zai's words on a refusal whose reset the gateway answers as
 // reset: zai names the minute before it, in Singapore time.
-func zaiLimit(reset time.Time) string {
+func zaiWords(reset time.Time) string {
 	sg, _ := time.LoadLocation("Asia/Singapore")
-	return fmt.Sprintf(`{"error":{"message":"Usage limit reached for 5 hour. Your limit will reset at %s","type":"rate_limit_error","param":null,"code":"429"}}`,
-		reset.Add(-time.Minute).In(sg).Format(time.DateTime))
+	return "Usage limit reached for 5 hour. Your limit will reset at " + reset.Add(-time.Minute).In(sg).Format(time.DateTime)
+}
+
+// zaiLimit is zai's dated refusal of a call, its words zaiWords(reset).
+func zaiLimit(reset time.Time) string {
+	return fmt.Sprintf(`{"error":{"message":%q,"type":"rate_limit_error","param":null,"code":"429"}}`, zaiWords(reset))
 }
 
 // switchVersion is the runner's policy version with the classes of
 // freezeWatcher's: big and small name the zai provider, which reads
-// Asia/Singapore, and plain names none.
+// Asia/Singapore, and plain names none; big's look calls vision.
 func switchVersion() policy.Version {
 	v := testPolicyVersion()
 	doc := v.Tree.Document
 	doc.Classes = maps.Clone(doc.Classes)
-	doc.Classes["big"] = policy.Class{Models: []string{"big"}, Provider: "zai"}
+	doc.Classes["big"] = policy.Class{Models: []string{"big"}, VisionModel: "vision", Provider: "zai"}
 	doc.Classes["small"] = policy.Class{Models: []string{"small"}, Provider: "zai"}
 	doc.Classes["plain"] = policy.Class{Models: []string{"small"}}
 	doc.ProviderLimits = map[string]policy.ProviderLimit{"zai": {TZ: "Asia/Singapore"}}
 	v.Tree.Document = doc
 	return v
-}
-
-// probeHarness is t1's workflow rig from base: each session's result is
-// sessions' next, the last repeating, and every session's start and every
-// ProviderWait is recorded.
-func probeHarness(t *testing.T, base time.Time, sessions ...func() SessionResult) (*workflowHarness, *[]time.Time, *[]ProviderWait) {
-	h, began, waits := newWorkflowHarness(t), &[]time.Time{}, &[]ProviderWait{}
-	h.env.SetStartTime(base)
-	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, in SessionInput) (SessionResult, error) {
-			h.sessions, *began = append(h.sessions, in), append(*began, h.env.Now())
-			return sessions[min(len(h.sessions), len(sessions))-1](), nil
-		})
-	h.env.OnActivity(ActivityProviderWait, mock.Anything, "t1", mock.Anything).Return(
-		func(ctx context.Context, taskID string, w ProviderWait) error {
-			*waits = append(*waits, w)
-			return nil
-		})
-	h.onChecks(ChecksResult{State: ChecksSuccess})
-	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
-	return h, began, waits
 }
 
 // handlerTransport serves a client's requests in-process, on the caller's
@@ -225,11 +212,12 @@ func rowKinds(store *freezeStore) []string {
 // re-arms sf/acme's same card. The second press's probe meets zai's
 // refusal naming a new reset, 11:05, which re-arms the gateway's hold:
 // every frozen card's next call meets it, t1 waits to it, the card takes
-// it, no one is asked, and the hold's named refusal reaches a caller of
-// the chat's model door, the digest tool's call on a frozen card's
-// account, with its reset. The switch refuses a work card and a done
-// freeze card by their state, and a press with no hold armed and no frozen
-// card is a quiet success.
+// it, and no one is asked. The hold's named refusal reaches the tool error
+// path of a session of the frozen class: its digest and its image look,
+// whose calls run through the chat's model door on the card's account,
+// refuse naming the decision, zai's words and the new reset. The switch
+// refuses a work card and a done freeze card by their state, and a press
+// with no hold armed and no frozen card is a quiet success.
 func TestRetrySwitchEndsFreeze(t *testing.T) {
 	for _, entry := range []struct {
 		name  string
@@ -267,8 +255,12 @@ func retrySwitchEndsFreeze(t *testing.T, press func(sw *RetrySwitch, r *Runner, 
 		t.Gate = GateProvider
 		return t
 	}
-	r, _, runnerStore := newTestRunner(t, frozen("t1", acme), newFakeKube(), &fakeObjectStore{})
+	// the lookEnv rig's session pod and its worker serve a session's
+	// workspace reads
+	look := newLookEnv(t)
+	r, _, runnerStore := newTestRunner(t, frozen("t1", acme), look.runner.kube.(*fakeKube), &fakeObjectStore{})
 	r.cfg.Policy = func() policy.Version { return version }
+	r.workerPort = look.runner.workerPort
 	store := &freezeStore{fakeStore: runnerStore}
 	forgejo, fj := newAlertForgejo(t)
 	now := base
@@ -357,7 +349,10 @@ func retrySwitchEndsFreeze(t *testing.T, press func(sw *RetrySwitch, r *Runner, 
 	// a press whose probe is served: the freeze ends for all
 	gw.answer = ""
 	probe := func() SessionResult { return gw.session(t, "t1") }
-	h, began, waits := probeHarness(t, base, probe)
+	h, began, waits := providerLimitHarness(t, probe)
+	h.env.SetStartTime(base)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 	current = h
 	h.env.RegisterDelayedCallback(func() {
 		if err := press(sw, r, cards[acme].ID); err != nil {
@@ -415,7 +410,10 @@ func retrySwitchEndsFreeze(t *testing.T, press func(sw *RetrySwitch, r *Runner, 
 	// gateway's hold lapses at that reset on the wall clock, which the test
 	// does not wait for, so the session after it pushes as scripted
 	gw.answer = zaiLimit(at(125 * time.Minute))
-	h2, began2, waits2 := probeHarness(t, base, probe, probe, func() SessionResult { return pushed("s3", "c1") })
+	h2, began2, waits2 := providerLimitHarness(t, probe, probe, func() SessionResult { return pushed("s3", "c1") })
+	h2.env.SetStartTime(base)
+	h2.onChecks(ChecksResult{State: ChecksSuccess})
+	h2.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 	signalled, current = nil, h2
 	h2.env.RegisterDelayedCallback(func() {
 		if err := press(sw, r, cards[acme].ID); err != nil {
@@ -459,14 +457,27 @@ func retrySwitchEndsFreeze(t *testing.T, press func(sw *RetrySwitch, r *Runner, 
 			t.Fatalf("a question was asked: %+v", e)
 		}
 	}
-	// the chat's model door, the digest tool's call on a frozen card's
-	// account, meets the hold's named refusal with its reset
+	// a session of the frozen class meets the hold in its tools whose calls
+	// run through the chat's model door on the card's account, the digest
+	// and the image look: each refusal names the decision, zai's words and
+	// the new reset the class is frozen until
+	if err := store.PutLiveSession(ctx, LiveSession{TaskID: "t2", SessionID: "s9", Namespace: "factory-agents-x", Pod: "p1", MessageToken: "msg-tok"}); err != nil {
+		t.Fatal(err)
+	}
 	op := &OperatorModel{GatewayURL: "http://gateway", Token: "gateway-token", HTTP: gw.client()}
-	_, err := op.Digest(ctx, "t2", "", "Summarise this file.", "package main")
-	var refusal *policy.Refusal
-	if until, ok := providerLimitUntil(err); !ok || !until.Equal(at(125*time.Minute)) || !errors.As(err, &refusal) ||
-		!strings.HasPrefix(refusal.Reason, "Usage limit reached for 5 hour") {
-		t.Fatalf("the digest inside the freeze = %v (reset %v, %t), want the hold's named refusal to %s", err, until, ok, stamp(at(125*time.Minute)))
+	frozenUntil := " was refused (refused_provider_limit): " + zaiWords(at(125*time.Minute)) + "; the class is frozen until " + stamp(at(125*time.Minute))
+	for _, tool := range []struct {
+		serve      http.HandlerFunc
+		body, want string
+	}{
+		{r.DigestHandler(op), `{"task_id":"t2","path":"docs/plan.md"}`, "the digest of docs/plan.md" + frozenUntil},
+		{r.ImageLookHandler(op), `{"task_id":"t2","path":"shots/home.png"}`, "the look at shots/home.png" + frozenUntil},
+	} {
+		rec := httptest.NewRecorder()
+		tool.serve(rec, httptest.NewRequest(http.MethodPost, "/internal/tool", strings.NewReader(tool.body)))
+		if got := strings.TrimSpace(rec.Body.String()); rec.Code != http.StatusConflict || got != tool.want {
+			t.Fatalf("%s inside the freeze = %d %q, want %q", tool.body, rec.Code, got, tool.want)
+		}
 	}
 
 	// the done card of sf/other: its freeze ended, which the press names

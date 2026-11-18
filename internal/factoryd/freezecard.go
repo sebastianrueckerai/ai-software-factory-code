@@ -221,11 +221,16 @@ func freezeCardClass(objective string) string {
 	return ""
 }
 
-// freezeFaceReset reads the reset a holding card's face names ('The class
-// resets at <stamp> ('), "" on a face that names none.
+// freezeFaceReset reads the reset a holding card's face names on its line
+// 'The class resets at <stamp> (': the last such line, as the provider's
+// words come before it on the face; "" on a face that names none.
 func freezeFaceReset(objective string) string {
-	_, after, _ := strings.Cut(objective, "The class resets at ")
-	reset, _, _ := strings.Cut(after, " ")
+	reset := ""
+	for _, line := range strings.Split(objective, "\n") {
+		if rest, ok := strings.CutPrefix(line, "The class resets at "); ok {
+			reset, _, _ = strings.Cut(rest, " ")
+		}
+	}
 	if _, err := time.Parse(time.RFC3339, reset); err != nil {
 		return ""
 	}

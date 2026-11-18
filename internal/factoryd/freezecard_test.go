@@ -622,16 +622,20 @@ func TestFreezeCardRestartMidFreezeSpeaksOnce(t *testing.T) {
 // A restart mid-freeze adopts the reset on the card's face: the class_frozen
 // a restarted gateway writes when its first call meets the reset the card
 // already holds is the same freeze, so the fresh watcher neither rewrites
-// the face nor comments a re-arm. A new reset still re-arms the card.
+// the face nor comments a re-arm. The provider's words, which the face
+// shows first, name other resets in the face's own wording, mid-line and
+// on a line of their own; the face's reset line is read. A new reset still
+// re-arms the card.
 func TestFreezeCardRestartKeepsTheResetOnItsFace(t *testing.T) {
 	ctx := context.Background()
 	store := &freezeStore{fakeStore: newFakeStore()}
 	forgejo, fj := newAlertForgejo(t)
 	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
 	now := base
+	const words = "quota exhausted. The class resets at 2026-11-21T12:30:00Z (in 0h 30m).\nThe class resets at 2026-11-21T13:00:00Z (in 1h 00m)."
 	arm := func(reset time.Time) {
 		store.rows = append(store.rows, FreezeEvent{ID: int64(len(store.rows) + 1), Repository: "sf/acme", At: now, Kind: "class_frozen",
-			Class: "big", Reset: reset.Format(time.RFC3339), Words: "free quota exhausted"})
+			Class: "big", Reset: reset.Format(time.RFC3339), Words: words})
 	}
 	arm(base.Add(5 * time.Hour))
 	if err := freezeWatcher(store, forgejo, &now).Check(ctx); err != nil {
@@ -657,6 +661,40 @@ func TestFreezeCardRestartKeepsTheResetOnItsFace(t *testing.T) {
 	if got, _, _ := store.Task(ctx, card.ID); !strings.Contains(got.Objective, "in 5h 50m") || len(fj.comments) != 1 ||
 		!strings.Contains(fj.comments[0], "the hold re-armed, to the reset 2026-11-21T18:00:00Z") {
 		t.Fatalf("the new reset after the restart: comments %q, face:\n%s", fj.comments, got.Objective)
+	}
+}
+
+// An arm whose repository the watcher holds in memory without its card
+// adopts the class's open card off the store, and the reset on its face
+// with it: an arm that repeats that reset re-arms nothing, so the face
+// stands and its issue takes no comment.
+func TestFreezeCardArmAdoptsTheResetOfTheOpenCard(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	reset := base.Add(5 * time.Hour).Format(time.RFC3339)
+	arm := func() {
+		store.rows = append(store.rows, FreezeEvent{ID: int64(len(store.rows) + 1), Repository: "sf/acme", At: now, Kind: "class_frozen",
+			Class: "big", Reset: reset, Words: "free quota exhausted"})
+	}
+	arm()
+	if err := freezeWatcher(store, forgejo, &now).Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	card, _, _ := store.Task(ctx, cardOfClass(store, Repo{Owner: "sf", Name: "acme"}, "big"))
+	card.CreatedAt = base
+	store.tasks[card.ID] = card
+	now = base.Add(10 * time.Minute)
+	w := freezeWatcher(store, forgejo, &now)
+	w.classes = map[string]*freezeClass{"sf/acme/big": {repo: "sf/acme", class: "big"}}
+	arm()
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(ctx, card.ID); got.Objective != card.Objective || len(fj.comments) != 0 || w.classes["sf/acme/big"].taskID != card.ID {
+		t.Fatalf("the adopting arm: memory %+v, comments %q, face:\n%s", w.classes["sf/acme/big"], fj.comments, got.Objective)
 	}
 }
 
