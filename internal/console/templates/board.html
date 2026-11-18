@@ -295,7 +295,7 @@
 {{define "criteria-row"}}{{$r := .Row}}<fieldset class="question{{if or (eq $r.Verdict "met") (eq $r.Verdict "waived")}} settled{{end}}"><legend>{{$r.ID}} ({{$r.Kind}}): {{if $r.Verdict}}{{$r.Verdict}}{{else}}open{{end}}{{with $r.Word}} ({{.}}){{end}}</legend>
 <p class="meta">{{or $r.Claim $r.Suite}}</p>
 {{with $r.Evidence}}<p class="reason">{{.}}</p>
-{{end}}{{with $r.Artifact}}<details class="fold"><summary>{{.Name}} at {{printf "%.7s" .Head}}, {{or $r.CutLine (kib (len .Content))}}</summary><pre class="artifact" tabindex="0">{{.Content}}</pre></details>
+{{end}}{{with $r.Artifact}}<details class="fold"><summary>{{.Name}} at {{printf "%.7s" .Head}}, {{$r.Size}}</summary><pre class="artifact" tabindex="0">{{.Content}}</pre></details>
 {{else}}{{if $r.Human}}{{with $r.PlanCriterion.Evidence}}<p class="meta">Evidence: {{.}}</p>
 {{end}}{{end}}{{end}}{{if and $.Approver (ne $r.Verdict "met") (ne $r.Verdict "waived")}}<form method="post" action="/approvals/{{$.ID}}/criterion" hx-post="/approvals/{{$.ID}}/criterion">
 {{if $r.Human}}<button type="submit" disabled hidden></button>{{end}}<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="criterion" value="{{$r.ID}}">

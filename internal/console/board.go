@@ -43,9 +43,6 @@ var funcs = template.FuncMap{
 	},
 	// eur2 is money to the cent, as a card's face reads spend against budget
 	"eur2": func(v float64) string { return fmt.Sprintf("\u20ac%.2f", v) },
-	// kib is a size in bytes in whole KiB, rounded up, as a folded
-	// artifact's summary names it
-	"kib": func(n int) string { return fmt.Sprintf("%d KiB", (n+1023)>>10) },
 	// the metrics page's rows (C30): the deck's formatters, the weeks'
 	// spark, and the window-move subtraction
 	"mDur": mDur, "mDurMove": mDurMove, "mPct": mPct, "mPctMove": mPctMove,

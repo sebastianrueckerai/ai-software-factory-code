@@ -128,7 +128,7 @@ func orderPlanCases(list []factoryd.Case) {
 		}
 	}
 	slices.SortStableFunc(plan, func(a, b factoryd.Case) int {
-		return cmp.Or(cmp.Compare(factInt(b, "revision"), factInt(a, "revision")),
+		return cmp.Or(cmp.Compare(caseRevision(b), caseRevision(a)),
 			cmp.Compare(btoi(a.Kind == factoryd.CasePlanConfirmation), btoi(b.Kind == factoryd.CasePlanConfirmation)),
 			cmp.Compare(factInt(a, "index"), factInt(b, "index")))
 	})

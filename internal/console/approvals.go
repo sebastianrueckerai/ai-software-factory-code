@@ -28,7 +28,7 @@ type criterionRow struct {
 	Evidence string
 	Word     string                 // "blind" or "open" for a met gate row, from its evidence
 	Artifact *factoryd.GateArtifact // a human criterion's artifact as the gate's newest run wrote it; nil without one
-	CutLine  string                 // "the first 8 KiB of <n> KiB" when the card shows the artifact's first maxCardArtifact bytes
+	Size     string                 // the artifact's size, "<n> KiB", or "the first 8 KiB of <n> KiB" when the card shows its first maxCardArtifact bytes
 	Human    bool                   // Met and Not met are offered: a human criterion on a merge card
 }
 
@@ -553,8 +553,9 @@ func (c *Console) planRows(ctx context.Context, t factoryd.Task) (rows []criteri
 		if err := json.Unmarshal(b, a); err != nil {
 			return nil, nil, false, fmt.Errorf("the artifact of %s: %w", row.ID, err)
 		}
+		rows[i].Size = fmt.Sprintf("%d KiB", (len(a.Content)+1023)>>10)
 		if len(a.Content) > maxCardArtifact {
-			rows[i].CutLine = fmt.Sprintf("the first %d KiB of %d KiB", maxCardArtifact>>10, (len(a.Content)+1023)>>10)
+			rows[i].Size = fmt.Sprintf("the first %d KiB of %s", maxCardArtifact>>10, rows[i].Size)
 			a.Content = strings.ToValidUTF8(a.Content[:maxCardArtifact], "")
 		}
 		rows[i].Artifact = a
