@@ -141,27 +141,25 @@ func plFreezeEvent(t *testing.T, db *sql.DB, kind, class, reset, words string) {
 }
 
 // plFreezeWatcher wires the real watcher over the real store and the fake
-// Forgejo, under a policy version whose waits.provider_limit is limit:
-// the wait past which the class's card speaks once.
+// Forgejo, under a policy version that runs the class big on zai and whose
+// waits.provider_limit is limit: the wait past which the class's card
+// speaks once.
 func plFreezeWatcher(s *factoryd.PGStore, forge *factoryd.Forgejo, limit time.Duration) *factoryd.FreezeCard {
 	version := policy.Version{ID: 1, Commit: "fz-1", Tree: policy.Tree{Document: policy.Document{
-		Waits: policy.Waits{ProviderLimit: limit}}}}
+		Waits:          policy.Waits{ProviderLimit: limit},
+		Classes:        map[string]policy.Class{"big": {Provider: "zai"}},
+		ProviderLimits: map[string]policy.ProviderLimit{"zai": {TZ: "Asia/Singapore"}}}}}
 	return &factoryd.FreezeCard{Store: s, Forgejo: forge, Current: func() policy.Version { return version }}
 }
 
 // plFreezeWorkCards files the nine running cards of the class big the
-// freeze covers, through the production writers: the card row, then the
-// alias the rung ladder writes.
+// freeze covers, through the production writer.
 func plFreezeWorkCards(ctx context.Context, t *testing.T, s *factoryd.PGStore, prefix string) {
 	t.Helper()
 	for i := 0; i < 9; i++ {
-		id := fmt.Sprintf("%s-%d", prefix, i)
-		card := factoryd.Task{ID: id, Kind: "agent", Track: policy.TrackDirect,
-			Status: "running", Repository: plFreezeRepo, Objective: "the freeze's work"}
+		card := factoryd.Task{ID: fmt.Sprintf("%s-%d", prefix, i), Kind: "agent", Track: policy.TrackDirect, Status: "running",
+			Repository: plFreezeRepo, Objective: "the freeze's work", RequiredCapabilities: []string{"big"}}
 		if err := s.CreateTask(ctx, card); err != nil {
-			t.Fatal(err)
-		}
-		if err := s.SetTaskModelAlias(ctx, id, "big"); err != nil {
 			t.Fatal(err)
 		}
 	}
