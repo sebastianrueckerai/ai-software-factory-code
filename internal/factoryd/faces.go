@@ -378,10 +378,12 @@ func AnswerFor(key string, f Facts) (Answer, bool) {
 		}
 	}
 	if a.Action == ActConfirmAudit {
+		// a box per finding of the head's newest audit, which posts the
+		// finding's id
 		a.Fields = slices.Clone(a.Fields)
-		for _, text := range strings.Split(auditFindings(f), "\n") {
-			if text != "" {
-				a.Fields[0].Options = append(a.Fields[0].Options, Option{text, text})
+		for _, id := range f.AuditFindings {
+			if text := f.FindingTexts[id]; text != "" {
+				a.Fields[0].Options = append(a.Fields[0].Options, Option{id, text})
 			}
 		}
 	}
@@ -430,7 +432,8 @@ func moreActions(f Facts) []Answer {
 	return out
 }
 
-// depWait says which cards card f waits for, none of them done yet; ""
+// depWait says which cards card f waits for, none of them done yet: each
+// filed one by its issue, and the count of the ones not filed yet; ""
 // while it waits for none.
 func depWait(f Facts) string {
 	var refs []string
@@ -439,11 +442,15 @@ func depWait(f Facts) string {
 			refs = append(refs, fmt.Sprintf("#%d", d.Issue))
 		}
 	}
+	switch n := len(f.Dependencies) - len(refs); {
+	case n == 1:
+		refs = append(refs, "another card")
+	case n > 1:
+		refs = append(refs, fmt.Sprintf("%d other cards", n))
+	}
 	switch n := len(refs); {
-	case len(f.Dependencies) == 0:
-		return ""
 	case n == 0:
-		return "It waits for another card to be done first."
+		return ""
 	case n > 1:
 		refs = []string{strings.Join(refs[:n-1], ", ") + " and " + refs[n-1]}
 	}

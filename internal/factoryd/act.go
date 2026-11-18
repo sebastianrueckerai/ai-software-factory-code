@@ -344,7 +344,7 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 		return out, ranErr(out.Did, err)
 	}
 	if res.Action == ActConfirmAudit && in.Rung == 3 {
-		if err := r.confirmAudit(ctx, t, in); err != nil {
+		if err := r.confirmAudit(ctx, t, in, f); err != nil {
 			return out, err
 		}
 	}
@@ -876,23 +876,23 @@ func answersACase(a Action) bool {
 }
 
 // confirmAudit records the audit findings a person's confirm_audit marks
-// fixtures (audit-confirm): each finding text prefix they named, as an
-// audit_finding_confirmed step with who, why and when. Every GateAudit of
-// the task reads the steps off the timeline and settles its verdict past
-// them, on this attempt and a fresh one alike, until the head's audit
-// clears on its own. A confirmation stands once: one already recorded
-// under the same prefix is not recorded again.
-func (r *Runner) confirmAudit(ctx context.Context, t Task, in ActInput) error {
-	named := confirmAuditFindings(in.Res.Args)
+// fixtures (audit-confirm): each finding they named by its id, as its
+// whole text on facts f, in an audit_finding_confirmed step with who, why
+// and when. Every GateAudit of the task reads the steps off the timeline
+// and settles its verdict past the findings they name, on this attempt and
+// a fresh one alike, until the head's audit clears on its own. A
+// confirmation stands once: one already recorded is not recorded again.
+func (r *Runner) confirmAudit(ctx context.Context, t Task, in ActInput, f CaseFacts) error {
 	seen, err := r.auditConfirmations(ctx, t.ID)
 	if err != nil {
 		return err
 	}
-	for _, prefix := range named {
-		if _, done := seen[prefix]; done {
+	for _, id := range confirmAuditFindings(in.Res.Args) {
+		text := f.FindingTexts[id]
+		if _, done := seen[text]; done {
 			continue
 		}
-		detail := map[string]any{"finding": prefix, "by": in.By, "why": strings.TrimSpace(in.Res.Note)}
+		detail := map[string]any{"finding": text, "by": in.By, "why": strings.TrimSpace(in.Res.Note)}
 		if err := r.timeline.Append(ctx, t.ID, stepAuditConfirmed, detail); err != nil {
 			return err
 		}

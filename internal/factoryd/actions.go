@@ -23,7 +23,7 @@ const (
 	ActRouteApproval = "route_approval"
 	ActRerunChecks   = "rerun_checks"
 	ActWaitChecks    = "wait_checks"   // runs a stopped checks wait again: no session, no agent time
-	ActConfirmAudit  = "confirm_audit" // args: findings, one per line; note: the reason
+	ActConfirmAudit  = "confirm_audit" // args: findings, their ids, one per line; note: the reason
 	ActExtend        = "extend"        // args: sessions, agent_time_s, lines
 	ActFund          = "fund"          // args: eur
 	ActRaiseCeiling  = "raise_ceiling" // args: eur
@@ -232,9 +232,9 @@ var Actions = []Action{
 		case len(confirmAuditFindings(r.Args)) == 0:
 			return "no finding is ticked: tick at least one finding to clear"
 		}
-		for _, p := range confirmAuditFindings(r.Args) {
-			if !f.auditFindingNamed(p) {
-				return fmt.Sprintf("the head's audit holds no finding %q names; name each finding as its audit section shows it", p)
+		for _, id := range confirmAuditFindings(r.Args) {
+			if !slices.Contains(f.AuditFindings, id) || f.FindingTexts[id] == "" {
+				return fmt.Sprintf("finding %s is not open on the head's newest audit: open the card again and tick the findings it shows now", id)
 			}
 		}
 		return ""
@@ -551,8 +551,8 @@ func argString(args map[string]any, key string) string {
 	return s
 }
 
-// confirmAuditFindings is confirm_audit's findings argument: the finding
-// text prefixes a person confirms, one per line.
+// confirmAuditFindings is confirm_audit's findings argument: the ids of
+// the findings a person confirms, one per line.
 func confirmAuditFindings(args map[string]any) []string {
 	var out []string
 	for _, line := range strings.Split(argString(args, "findings"), "\n") {
@@ -561,16 +561,6 @@ func confirmAuditFindings(args map[string]any) []string {
 		}
 	}
 	return out
-}
-
-// auditFindingNamed: text prefixes one of f's audit findings' texts.
-func (f CaseFacts) auditFindingNamed(text string) bool {
-	for _, id := range f.AuditFindings {
-		if strings.HasPrefix(f.FindingTexts[id], text) {
-			return true
-		}
-	}
-	return false
 }
 
 // boardActions are the actions whose work the console's code does
@@ -604,7 +594,7 @@ func probe(a Action, f CaseFacts) Resolution {
 	case a.Name == ActExtend && f.Kind == CaseAgentTimeCap:
 		p.Args = map[string]any{"agent_time_s": 60}
 	case a.Name == ActConfirmAudit && len(f.AuditFindings) > 0:
-		p.Args = map[string]any{"findings": f.FindingTexts[f.AuditFindings[0]]}
+		p.Args = map[string]any{"findings": f.AuditFindings[0]}
 	}
 	return p
 }

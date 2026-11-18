@@ -214,7 +214,7 @@ func TestAPlansWaitTellsThePlansStory(t *testing.T) {
 // review judged the new head; the audit's eight, which the audit has not
 // judged on the new head, count as nothing. The left line alone names the
 // gates that have not checked the newest change, in one phrase, and says
-// no finding is open once none is, the checks red or not.
+// no finding is open once none is, the checks red or green.
 func TestTheLastSessionClaimsNoFixItsGateHasNotJudged(t *testing.T) {
 	ids := func(prefix string, n int) []string {
 		var out []string
@@ -255,6 +255,10 @@ func TestTheLastSessionClaimsNoFixItsGateHasNotJudged(t *testing.T) {
 	if s, happened, left := factoryd.FaceOf(c, g).Story, "It spent 1.50 of 2.00 EUR in all 3 sessions it was given. Before the last session, 2 review findings were open.",
 		"No finding is open, and the checks failed. One more session costs about 0.40 EUR."; s.Happened != happened || s.Left != left {
 		t.Errorf("every finding gone: %q / %q, want %q / %q", s.Happened, s.Left, happened, left)
+	}
+	g.Checks, g.LastSession.Audit = "green", audit
+	if s, left := factoryd.FaceOf(c, g).Story, "No finding is open, and the checks are green. The audit has not checked the newest change yet. One more session costs about 0.40 EUR."; s.Left != left {
+		t.Errorf("every finding gone, the checks green and the audit unjudged: %q, want %q", s.Left, left)
 	}
 	g = f
 	g.LastSession = &factoryd.LastSessionFacts{Pushed: true, Judged: []string{"review"}, Audit: audit}

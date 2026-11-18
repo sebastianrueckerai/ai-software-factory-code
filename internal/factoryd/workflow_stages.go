@@ -56,8 +56,8 @@ const noVerdict = "the review gave no verdict: "
 const stepAdjudicated = "finding_adjudicated"
 
 // stepAuditConfirmed records a person's confirmation of one audit finding
-// (audit-confirm): the finding's text prefix a person judged a fixture,
-// with who, why and when, which the audit's verdict settles past.
+// (audit-confirm): the finding's text a person judged a fixture, with who,
+// why and when, which the audit's verdict settles past.
 const stepAuditConfirmed = "audit_finding_confirmed"
 
 // reviewHistory opens the history lines of the review stage's findings.

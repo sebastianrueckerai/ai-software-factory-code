@@ -309,7 +309,7 @@ func (c *Console) placeOf(ctx context.Context, v *boardView, k card, asks bool) 
 	t := k.Task
 	switch {
 	case t.Track == policy.TrackPlan:
-		p, ok := v.planOf(ctx, c, t.ID)
+		p, ok, _ := v.planOf(ctx, c, t.ID)
 		words := "plan"
 		if name := t.PlanName; name != "" || asks {
 			words += " " + cmp.Or(name, factoryd.CardTitle(t))
@@ -331,7 +331,7 @@ func (c *Console) placeOf(ctx context.Context, v *boardView, k card, asks bool) 
 			return ""
 		}
 		out := `<a class="ref-link" href="#card=` + template.HTMLEscapeString(t.Parent) + `">` + template.HTMLEscapeString(name) + `</a>`
-		if p, ok := v.planOf(ctx, c, t.Parent); ok {
+		if p, ok, _ := v.planOf(ctx, c, t.Parent); ok {
 			if i := slices.IndexFunc(p.FilingOrder(), func(pc factoryd.PlanCard) bool { return pc.Key == t.PlanKey }); t.PlanKey != "" && i >= 0 {
 				out += fmt.Sprintf(" %d/%d", i+1, len(p.Cards))
 			}
@@ -353,10 +353,11 @@ func (c *Console) placeOf(ctx context.Context, v *boardView, k card, asks bool) 
 	return ""
 }
 
-// planOf is plan id's newest revision, read once a render.
-func (v *boardView) planOf(ctx context.Context, c *Console, id string) (factoryd.Plan, bool) {
-	if p, ok := v.plans[id]; ok {
-		return p, p.Cards != nil
+// planOf is plan id's newest revision, read once a render: ok while it
+// holds cards, err when it could not be read.
+func (v *boardView) planOf(ctx context.Context, c *Console, id string) (factoryd.Plan, bool, error) {
+	if r, ok := v.plans[id]; ok {
+		return r.plan, r.plan.Cards != nil, r.err
 	}
 	_, p, _, err := c.planTable(ctx, id, 0)
 	if err != nil {
@@ -364,10 +365,17 @@ func (v *boardView) planOf(ctx context.Context, c *Console, id string) (factoryd
 		v.problems = append(v.problems, "the plan of "+id+" could not be read")
 	}
 	if v.plans == nil {
-		v.plans = map[string]factoryd.Plan{}
+		v.plans = map[string]planRead{}
 	}
-	v.plans[id] = p
-	return p, p.Cards != nil
+	v.plans[id] = planRead{p, err}
+	return p, p.Cards != nil, err
+}
+
+// planRead is a plan's read: its newest revision, or why it could not be
+// read.
+type planRead struct {
+	plan factoryd.Plan
+	err  error
 }
 
 // helperWords are the states a card reads while its helper task of each
@@ -384,12 +392,21 @@ func helperNote(h card) string {
 	return "This ask is " + step + "'s, a step of this card: its answers act on " + step + " alone."
 }
 
-// working says work still runs on card k: its helper task, or a card of
-// a plan that is done planning.
+// working says work runs on card k beyond its own state: its newest
+// helper task runs, or it is a plan done planning with a card that has
+// not ended. The status line counts it working and its face wears the hue
+// of running work.
 func (c *Console) working(ctx context.Context, v *boardView, k card) bool {
+	if k.helperRuns() {
+		return true
+	}
 	_, open := c.planState(ctx, v, k.Task)
-	return k.Helper != nil || open
+	return open
 }
+
+// helperRuns says card k's newest helper task runs: the card's state then
+// names the helper's step.
+func (k card) helperRuns() bool { return k.Helper != nil && k.Helper.Status == "running" }
 
 // stateOf sets face f's state from card k: its word in its hue, its one
 // time, and while it is active the marks of an exceptional state. A card
@@ -401,13 +418,13 @@ func (c *Console) stateOf(ctx context.Context, v *boardView, f *faceView, k card
 	word := template.HTML(template.HTMLEscapeString(c.stateWord(ctx, v, k.Task)))
 	f.Hue = k.StatusClass
 	switch {
+	case c.working(ctx, v, k):
+		f.Hue = statusClass("running")
 	case fiveColumn(k.Task) == colQueued:
 		f.Hue = statusClass("queued")
-	case k.Final() && c.working(ctx, v, k):
-		f.Hue = statusClass("running")
 	}
 	switch {
-	case k.Helper != nil:
+	case k.helperRuns():
 		word = template.HTML(template.HTMLEscapeString(helperWords[k.Helper.Source]))
 	case k.Status == "merged" && k.Stage != "":
 		f.Hue = k.ChainHue()
@@ -425,7 +442,7 @@ func (c *Console) stateOf(ctx context.Context, v *boardView, f *faceView, k card
 	}
 	f.State = word
 	switch {
-	case k.Helper != nil:
+	case k.helperRuns():
 		f.Clock = minutes(time.Since(k.Helper.CreatedAt))
 	case f.Final && k.Cover != "":
 		f.Clock = k.Cover

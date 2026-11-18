@@ -145,30 +145,27 @@ func parseAudit(content string) ([]AuditFinding, string) {
 }
 
 // auditConfirmedOf is the confirmation that covers finding f: the key of
-// confirmed that prefixes f's text, the longest such key winning. A
+// confirmed that names f, its text the same finding (FindingID). A
 // finding that names no verdict (the audit did not run) is no person's to
 // confirm: never covered. false: none.
 func auditConfirmedOf(f AuditFinding, confirmed map[string]Adjudication) (string, Adjudication, bool) {
 	if f.Item == auditNoVerdict {
 		return "", Adjudication{}, false
 	}
-	text, key, adj, found := f.Text(), "", Adjudication{}, false
-	for k, got := range confirmed {
-		if !strings.HasPrefix(text, k) {
-			continue
-		}
-		if !found || len(k) > len(key) {
-			key, adj, found = k, got, true
+	id := FindingID(f.Text())
+	for k, adj := range confirmed {
+		if FindingID(k) == id {
+			return k, adj, true
 		}
 	}
-	return key, adj, found
+	return "", Adjudication{}, false
 }
 
 // auditConfirmations reads the audit findings a person confirmed on the
 // task (audit-confirm): the audit_finding_confirmed steps, each the
-// finding's text prefix a person judged a fixture, with who, why and
-// when; a later step's over an earlier one's prefix. A card with no
-// timeline confirmed none.
+// finding's text a person judged a fixture, with who, why and when; a
+// later step's over an earlier one's. A card with no timeline confirmed
+// none.
 func (r *Runner) auditConfirmations(ctx context.Context, taskID string) (map[string]Adjudication, error) {
 	b, err := r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
 	if err != nil {

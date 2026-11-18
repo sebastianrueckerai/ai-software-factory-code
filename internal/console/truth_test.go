@@ -52,6 +52,9 @@ func TestAPlanWithOpenCardsIsNotDone(t *testing.T) {
 	r.tasks.tasks = append(tasks, factoryd.BoardTask{Task: note})
 
 	const state = `<span class="st st-running"><i class="dot" aria-hidden="true"></i>3 of 8 cards done</span>`
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/?project="+labCodeProject.Name, nil), ck).Body.String(); !strings.Contains(body, `<b class="n">2</b> working`) {
+		t.Errorf("the status line does not count the plan and t-note working:\n%s", body)
+	}
 	face := smallCard(t, r, ck, "t-plan")
 	if !strings.Contains(face, state) || strings.Contains(face, " final") || !strings.Contains(face, `<span class="why">Every card shows one face.</span>`) {
 		t.Errorf("the plan's small card does not read 3 of 8 cards done as running work with its why line:\n%s", face)
@@ -68,8 +71,47 @@ func TestAPlanWithOpenCardsIsNotDone(t *testing.T) {
 			r.tasks.tasks[i].Status, r.tasks.tasks[i].FinishedAt = "done", &planned
 		}
 	}
-	if face := smallCard(t, r, ck, "t-plan"); !strings.Contains(face, "final d-done") || !strings.Contains(face, `<span class="it st">done</span>`) {
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project="+labCodeProject.Name, nil), ck).Body.String()
+	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, "final d-done") || !strings.Contains(face, `<span class="it st">done</span>`) {
 		t.Errorf("the plan whose 8 cards are done does not read done:\n%s", face)
+	}
+	if !strings.Contains(body, `<b class="n">1</b> working`) {
+		t.Errorf("the status line counts the done plan working:\n%s", body)
+	}
+}
+
+// Work runs on a card while its newest helper task runs, and only then:
+// the status line counts it working and its face wears the hue of running
+// work. A done plan whose prover is queued reads done, as a finished card,
+// and a queued card whose screening runs reads screening, as running work.
+func TestACardWorksWhileItsHelperRuns(t *testing.T) {
+	statusOf := func(r *rig, id, status string) {
+		r.tasks.mu.Lock()
+		defer r.tasks.mu.Unlock()
+		for i := range r.tasks.tasks {
+			if r.tasks.tasks[i].ID == id {
+				r.tasks.tasks[i].Status = status
+			}
+		}
+	}
+	r, ck, _ := helperRig(t)
+	statusOf(r, "t-prove", "queued")
+	body := getPage(r, ck, "/").Body.String()
+	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, "final d-done") || !strings.Contains(face, `<span class="it st">done</span>`) {
+		t.Errorf("the done plan whose prover is queued does not read done:\n%s", face)
+	}
+	if !strings.Contains(body, `<b class="n">2</b> working`) {
+		t.Errorf("the status line counts the done plan whose prover is queued working")
+	}
+
+	r, ck, _ = helperRig(t)
+	statusOf(r, "t-d", "queued")
+	body = getPage(r, ck, "/").Body.String()
+	if face := faceOf(t, body, "t-d"); !strings.Contains(face, `<span class="st st-running"><i class="dot" aria-hidden="true"></i>screening</span>`) {
+		t.Errorf("the queued card whose screening runs does not read screening as running work:\n%s", face)
+	}
+	if !strings.Contains(body, `<b class="n">3</b> working`) {
+		t.Errorf("the status line does not count t-c, the queued t-d whose screening runs and the plan whose prover runs working")
 	}
 }
 
@@ -129,7 +171,8 @@ func TestReviewsSectionShowsTheFindingsTheAskCites(t *testing.T) {
 // A finding's text reaches the page only through the face's scrubber: a
 // token it quotes is masked and a link to a host the policy does not
 // allow is defanged, on the small card and on the opened card alike, in
-// the list of findings and in the box that clears one.
+// the list of findings and in the box that clears one, which posts the
+// finding's id.
 func TestFindingsPassTheFaceScrubber(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -154,35 +197,82 @@ func TestFindingsPassTheFaceScrubber(t *testing.T) {
 			t.Errorf("%s shows the token or a link to an outside host:\n%s", name, page)
 		}
 	}
-	// the box that clears a finding posts the part before the token, a
-	// prefix the audit's confirmation still names the finding by
-	if !strings.Contains(opened, `name="confirm_audit.findings" value="the client sends Authorization: Bearer">`) {
-		t.Errorf("the box of the finding with the token posts no prefix of it:\n%s", opened)
+	// the box that clears a finding posts its id, no text of it
+	if !strings.Contains(opened, `name="confirm_audit.findings" value="`+factoryd.FindingID(texts[0])+`">`) {
+		t.Errorf("the box of the finding with the token does not post its id:\n%s", opened)
 	}
 }
 
-// A plan whose cards could not be read does not read done: its state says
-// only that its planning ended, and the board says what it could not read.
-func TestAPlanWhoseCardsCannotBeReadIsNotDone(t *testing.T) {
+// Each box of "Clear the audit's findings" posts its finding's id: a
+// finding whose token comes first, and two that differ only in their
+// token, each post a value of their own, and the press hands Act the ids
+// ticked; their labels show no token.
+func TestAuditBoxesPostEachFindingsID(t *testing.T) {
 	r := newRig(t)
-	ck, _ := r.loggedIn(t)
-	planned := time.Now().Add(-time.Hour)
-	plan := factoryd.Task{ID: "t-plan", Kind: "agent", Track: policy.TrackPlan, Status: "done", Repository: "sf/code", IssueNumber: 40,
-		Objective: "Plan one face", Why: "Every card shows one face.", CreatedAt: planned, FinishedAt: &planned}
-	raw, err := json.Marshal(factoryd.Plan{Cards: []factoryd.PlanCard{{Key: "c1", Title: "Build part c1"}}})
-	if err != nil {
-		t.Fatal(err)
+	ck, s := r.loggedIn(t)
+	first := "ghp_" + strings.Repeat("a", 36) + " sits in acceptance/rig_test.go"
+	tokenA, tokenB := "the client sends ghp_"+strings.Repeat("b", 36)+" at rig_test.go:4", "the client sends ghp_"+strings.Repeat("c", 36)+" at rig_test.go:4"
+	texts := []string{first, tokenA, tokenB}
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-f", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 41,
+		Objective: "Import a snapshot back", BudgetEUR: 2, CreatedAt: time.Now()}, AskCase: 1}}
+	seatAsk(r, "t-f", factoryd.CaseSessionCap, roomyFacts(func(f *factoryd.CaseFacts) {
+		f.Head, f.FindingTexts = "c0ffee1", map[string]string{}
+		for _, text := range texts {
+			id := factoryd.FindingID(text)
+			f.Findings, f.AuditFindings, f.FindingOrder, f.FindingTexts[id] = append(f.Findings, id), append(f.AuditFindings, id), append(f.FindingOrder, id), text
+		}
+	}))
+	opened := drawer(t, r, ck, "t-f", "overview")
+	for _, text := range texts {
+		if !strings.Contains(opened, `name="confirm_audit.findings" value="`+factoryd.FindingID(text)+`">`) {
+			t.Errorf("no box posts the id of %q:\n%s", text, opened)
+		}
 	}
-	r.tasks.plans = map[string][]factoryd.PlanRevision{plan.ID: {{TaskID: plan.ID, Revision: 1, Plan: raw, CreatedAt: planned}}}
-	r.tasks.tasks = []factoryd.BoardTask{{Task: plan}}
-	r.c.cfg.Tasks = unreadPlanCards{r.tasks}
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project="+labCodeProject.Name, nil), ck).Body.String()
-	face := faceOf(t, body, "t-plan")
-	if strings.Contains(face, ">done<") || strings.Contains(face, " final") || !strings.Contains(face, "planned</span>") {
-		t.Errorf("the plan whose cards could not be read reads done:\n%s", face)
+	if strings.Contains(opened, "ghp_") || strings.Contains(opened, `name="confirm_audit.findings" value=""`) {
+		t.Errorf("a box shows a token or posts nothing:\n%s", opened)
 	}
-	if !strings.Contains(body, "the cards of plan t-plan could not be read") {
-		t.Errorf("the board does not say it could not read the plan's cards")
+	rec := r.do(post("/tasks/t-f/resolve", url.Values{"csrf": {s.csrf}, "case_id": {"1"}, "action": {factoryd.ActConfirmAudit},
+		"confirm_audit.findings": {factoryd.FindingID(first), factoryd.FindingID(tokenB)}, "confirm_audit.note": {"The rig's fakes."}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("the clearing = %d: %s", rec.Code, rec.Body)
+	}
+	if got, _ := actedOnce(t, r); got.Res.Args["findings"] != factoryd.FindingID(first)+"\n"+factoryd.FindingID(tokenB) {
+		t.Fatalf("Act took %+v, want the ids of the two ticked findings", got.Res)
+	}
+}
+
+// A plan whose revision or whose cards could not be read does not read
+// done: its state says it could not be read, and the board says what it
+// could not read.
+func TestAPlanWhoseCardsCannotBeReadIsNotDone(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		store   func(*fakeTasks) Tasks
+		problem string
+	}{
+		{"its cards", func(s *fakeTasks) Tasks { return unreadPlanCards{s} }, "the cards of plan t-plan could not be read"},
+		{"its revision", func(s *fakeTasks) Tasks { return unreadPlanRevision{s} }, "the plan of t-plan could not be read"},
+	} {
+		r := newRig(t)
+		ck, _ := r.loggedIn(t)
+		planned := time.Now().Add(-time.Hour)
+		plan := factoryd.Task{ID: "t-plan", Kind: "agent", Track: policy.TrackPlan, Status: "done", Repository: "sf/code", IssueNumber: 40,
+			Objective: "Plan one face", Why: "Every card shows one face.", CreatedAt: planned, FinishedAt: &planned}
+		raw, err := json.Marshal(factoryd.Plan{Cards: []factoryd.PlanCard{{Key: "c1", Title: "Build part c1"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.tasks.plans = map[string][]factoryd.PlanRevision{plan.ID: {{TaskID: plan.ID, Revision: 1, Plan: raw, CreatedAt: planned}}}
+		r.tasks.tasks = []factoryd.BoardTask{{Task: plan}}
+		r.c.cfg.Tasks = tc.store(r.tasks)
+		body := r.do(httptest.NewRequest(http.MethodGet, "/?project="+labCodeProject.Name, nil), ck).Body.String()
+		face := faceOf(t, body, "t-plan")
+		if strings.Contains(face, ">done<") || strings.Contains(face, " final") || !strings.Contains(face, "its state could not be read</span>") {
+			t.Errorf("%s: the plan whose state could not be read reads otherwise:\n%s", tc.name, face)
+		}
+		if !strings.Contains(body, tc.problem) {
+			t.Errorf("%s: the board does not say %q", tc.name, tc.problem)
+		}
 	}
 }
 
@@ -191,6 +281,30 @@ type unreadPlanCards struct{ *fakeTasks }
 
 func (unreadPlanCards) PlanCards(context.Context, string) ([]factoryd.Task, error) {
 	return nil, errors.New("the store did not answer")
+}
+
+// unreadPlanRevision is the rig's store whose read of a plan's revision
+// fails.
+type unreadPlanRevision struct{ *fakeTasks }
+
+func (unreadPlanRevision) PlanRevision(context.Context, string, int) (factoryd.PlanRevision, bool, error) {
+	return factoryd.PlanRevision{}, false, errors.New("the store did not answer")
+}
+
+// The rig opens a stop's case as the trip opens it in production: a card
+// at its session cap, whose escalation is the cap's reason and whose case
+// no test seats, asks the session cap's ask on its small card.
+func TestTheRigOpensTheTripsCase(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	k := factoryd.Task{ID: "t-cap", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 41, Objective: "Import a snapshot back",
+		BudgetEUR: 2, SpentEUR: 1.48, CreatedAt: time.Now()}
+	k.Usage.Attempts = 3
+	r.tasks.tasks = []factoryd.BoardTask{{Task: k, Escalation: factoryd.CapReached, AskCase: 1}}
+	const ask = `<strong class="title">The card used all 3 sessions. Allow more, or end the card?</strong>`
+	if face := smallCard(t, r, ck, "t-cap"); !strings.Contains(face, ask) {
+		t.Errorf("the card at its session cap does not ask the session cap's ask:\n%s", face)
+	}
 }
 
 // A card's text that names a pull request names its live state: #40
@@ -257,6 +371,12 @@ func TestHumanCardSaysWhatItWaitsFor(t *testing.T) {
 	face, opened = smallCard(t, r, ck, id), drawer(t, r, ck, id, "overview")
 	if !strings.Contains(face, `<span class="why">It waits for another card to be done first.</span>`) || strings.Contains(opened, "I did it") {
 		t.Errorf("a card waiting for an unfiled card does not say so, or offers I did it:\n%s", face)
+	}
+	r.tasks.mu.Lock()
+	r.tasks.tasks[0].Dependencies = []factoryd.DepFact{{TaskID: "t-2100", Issue: 2100, Status: "queued"}, {TaskID: "t-unfiled", Status: "queued"}}
+	r.tasks.mu.Unlock()
+	if face = smallCard(t, r, ck, id); !strings.Contains(face, `(Narrow the close refusal, queued)</span> and another card to be done first.</span>`) {
+		t.Errorf("a card waiting for #2100 and an unfiled card does not name both:\n%s", face)
 	}
 
 	r.tasks.mu.Lock()

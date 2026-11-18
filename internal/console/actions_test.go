@@ -853,7 +853,7 @@ func TestAddMoneyFundsItsAmount(t *testing.T) {
 }
 
 // The board reads every ticked box of a field: clearing two of the audit's
-// findings sends those two to Act, one per line.
+// findings sends their two ids to Act, one per line.
 func TestTheBoardSendsEveryTickedFinding(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
@@ -866,12 +866,13 @@ func TestTheBoardSendsEveryTickedFinding(t *testing.T) {
 			f.Findings, f.AuditFindings, f.FindingTexts[id] = append(f.Findings, id), append(f.AuditFindings, id), text
 		}
 	}))
+	ids := []string{factoryd.FindingID(two[0]), factoryd.FindingID(two[1])}
 	rec := r.do(post("/tasks/t-e/resolve", url.Values{"csrf": {s.csrf}, "case_id": {"1"}, "action": {factoryd.ActConfirmAudit},
-		"confirm_audit.findings": two, "confirm_audit.note": {"The rig's fakes."}}), ck)
+		"confirm_audit.findings": ids, "confirm_audit.note": {"The rig's fakes."}}), ck)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("the clearing = %d: %s", rec.Code, rec.Body)
 	}
-	if got, _ := actedOnce(t, r); got.Res.Action != factoryd.ActConfirmAudit || got.Res.Args["findings"] != strings.Join(two, "\n") {
+	if got, _ := actedOnce(t, r); got.Res.Action != factoryd.ActConfirmAudit || got.Res.Args["findings"] != strings.Join(ids, "\n") {
 		t.Fatalf("Act took %+v, want the two ticked findings", got.Res)
 	}
 }

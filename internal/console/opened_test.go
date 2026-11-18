@@ -412,13 +412,14 @@ func TestOneSendPostsAnswerFieldsAndNote(t *testing.T) {
 	if values.Has("confirm_audit.findings") || values.Get("confirm_audit.note") != "" {
 		t.Fatalf("the clearing opens with %v, want no box ticked and no reason", values)
 	}
-	values["confirm_audit.findings"] = two
+	ids := []string{factoryd.FindingID(two[0]), factoryd.FindingID(two[1])}
+	values["confirm_audit.findings"] = ids
 	values.Set("confirm_audit.note", "The rig's fakes.")
 	if rec := r.do(post(action, values), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("the send = %d: %s", rec.Code, rec.Body)
 	}
 	got, _ := actedOnce(t, r)
-	if got.Res.Action != factoryd.ActConfirmAudit || got.Res.Args["findings"] != strings.Join(two, "\n") || got.Res.Note != "The rig's fakes." {
+	if got.Res.Action != factoryd.ActConfirmAudit || got.Res.Args["findings"] != strings.Join(ids, "\n") || got.Res.Note != "The rig's fakes." {
 		t.Fatalf("Act took %+v, want the two ticked findings and the reason in one answer", got.Res)
 	}
 }

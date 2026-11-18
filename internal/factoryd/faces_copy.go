@@ -181,18 +181,6 @@ var Vocabulary = []Answer{
 		Fields: []Field{requiredNote("Your reason", "Why the plan no longer needs them")}},
 }
 
-// auditFindings are the texts of the head's newest audit findings, one per
-// line: the boxes of the findings to clear.
-func auditFindings(f Facts) string {
-	var out []string
-	for _, id := range f.AuditFindings {
-		if text := f.FindingTexts[id]; text != "" {
-			out = append(out, text)
-		}
-	}
-	return strings.Join(out, "\n")
-}
-
 func criterionField() Field {
 	return Field{Name: "criterion", Label: "The promise", Hint: "The promise's name", Kind: FieldText, Required: true}
 }
@@ -886,9 +874,12 @@ func leftLine(f Facts) string {
 	switch n := openFindings(f.CaseFacts); {
 	case n > 0:
 		parts = append(parts, fmt.Sprintf("%s %s open", plural(n, "finding"), isAre(n)))
-	case len(before) > 0 && f.Checks != "green":
+	case len(before) > 0:
 		// the story counted the findings before: it says none is left
 		parts = append(parts, "no finding is open")
+		if f.Checks == "green" {
+			parts = append(parts, "the checks are green")
+		}
 	}
 	if f.Checks == "red" {
 		parts = append(parts, "the checks failed")

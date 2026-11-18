@@ -211,6 +211,27 @@ func TestGateAuditKeepsAFindingItsConfirmationDoesNotCover(t *testing.T) {
 	}
 }
 
+// A confirmation covers its own finding alone: one of the finding at line
+// 4 leaves the finding at line 41, whose text it begins, to hold the
+// verdict.
+func TestGateAuditConfirmationCoversItsFindingAlone(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n--- a/Makefile\n+++ b/Makefile\n@@ -1 +1,2 @@\n all:\n+check:\n"}
+	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[` +
+		`{"item":"secrets","file":"internal/x/x_test.go","line":4,"why":"a rig literal"},` +
+		`{"item":"secrets","file":"internal/x/x_test.go","line":41,"why":"a real credential"}]}`}
+	r, _ := newAuditRunner(t, fj, ll, true)
+	if err := r.timeline.Append(context.Background(), "t1", stepAuditConfirmed,
+		map[string]any{"finding": "secrets at internal/x/x_test.go:4", "by": "sebastian", "why": "test rig fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	res := getInto[AuditResult](t, val, err)
+	want := []AuditFinding{{Item: "secrets", File: "internal/x/x_test.go", Line: 41, Why: "a real credential"}}
+	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) {
+		t.Fatalf("audit = %+v, want the finding at line 41 holding the verdict", res)
+	}
+}
+
 // A finding that names no verdict is no person's to confirm: the
 // audit that did not run still holds the verdict, whatever stands
 // confirmed.

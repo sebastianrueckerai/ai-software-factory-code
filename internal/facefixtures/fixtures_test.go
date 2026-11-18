@@ -17,7 +17,7 @@ func answer(name string) factoryd.Resolution {
 		factoryd.ActRaiseCeiling: {"eur": 1.0}, factoryd.ActSetDependency: {"depends_on": "t-2188"},
 		factoryd.ActRemoveDependency: {"depends_on": "t-2188"}, factoryd.ActFileCard: {"title": "Board export: the snapshot writer"},
 		factoryd.ActAnswerCriteria: {"criterion": "size_bound_escape", "verdict": "met"},
-		factoryd.ActConfirmAudit:   {"findings": "secrets at acceptance/price_floor_acceptance_test.go:71"},
+		factoryd.ActConfirmAudit:   {"findings": factoryd.FindingID("secrets at acceptance/price_floor_acceptance_test.go:71")},
 	}
 	return factoryd.Resolution{Action: name, Args: args[name], Note: "the reason, one line"}
 }

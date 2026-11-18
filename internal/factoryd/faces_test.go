@@ -1,6 +1,7 @@
 package factoryd_test
 
 import (
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -500,9 +501,36 @@ func TestAHumanCardAsksWhetherItsTitledWorkIsDone(t *testing.T) {
 	}
 }
 
+// A human card that waits for cards names each filed one by its issue and
+// counts the ones not filed yet.
+func TestAHumanCardNamesTheCardsItWaitsFor(t *testing.T) {
+	c := factoryd.Case{Kind: factoryd.CaseHumanCard}
+	card := factoryd.Task{ID: "t1", Kind: "human", IssueNumber: 7, Objective: "Rotate the bot token"}
+	filed := func(n int64) factoryd.DepFact {
+		return factoryd.DepFact{TaskID: fmt.Sprintf("t-%d", n), Issue: n, Status: "queued"}
+	}
+	unfiled := factoryd.DepFact{TaskID: "t-unfiled", Status: "queued"}
+	for _, tc := range []struct {
+		deps []factoryd.DepFact
+		want string
+	}{
+		{[]factoryd.DepFact{filed(2100)}, "It waits for #2100 to be done first."},
+		{[]factoryd.DepFact{filed(2100), filed(2102)}, "It waits for #2100 and #2102 to be done first."},
+		{[]factoryd.DepFact{unfiled}, "It waits for another card to be done first."},
+		{[]factoryd.DepFact{unfiled, unfiled}, "It waits for 2 other cards to be done first."},
+		{[]factoryd.DepFact{filed(2100), unfiled}, "It waits for #2100 and another card to be done first."},
+		{[]factoryd.DepFact{filed(2100), filed(2102), unfiled, unfiled}, "It waits for #2100, #2102 and 2 other cards to be done first."},
+	} {
+		if got := factoryd.FaceOf(c, factoryd.Facts{Card: card, CaseFacts: factoryd.CaseFacts{Dependencies: tc.deps}}).Why; got != tc.want {
+			t.Errorf("waits for %v: %q, want %q", tc.deps, got, tc.want)
+		}
+	}
+}
+
 // Clear the audit's findings clears the findings ticked and nothing else:
-// a box per finding in More, no box ticked is refused before anything
-// clears, and two ticked boxes name those two findings alone.
+// a box per finding in More that posts the finding's id, no box ticked is
+// refused before anything clears, and two ticked boxes name those two
+// findings alone.
 func TestClearingTheAuditClearsOnlyTheTickedFindings(t *testing.T) {
 	x := fixture(t, "case", string(factoryd.CaseBudgetFloor))
 	i := slices.IndexFunc(x.face.More, func(a factoryd.Answer) bool { return a.Action == factoryd.ActConfirmAudit })
@@ -516,7 +544,12 @@ func TestClearingTheAuditClearsOnlyTheTickedFindings(t *testing.T) {
 	if _, err := clear.Press(x.facts, map[string]string{"findings": ""}, "The rig's fakes."); err == nil || err.Error() != "Tick at least one finding to clear" {
 		t.Errorf("no box ticked = %v, want the refusal to tick at least one", err)
 	}
-	two := "secrets at acceptance/price_floor_acceptance_test.go:71\nloopback endpoint at acceptance/price_floor_acceptance_test.go:64"
+	two := factoryd.FindingID("secrets at acceptance/price_floor_acceptance_test.go:71") + "\n" + factoryd.FindingID("loopback endpoint at acceptance/price_floor_acceptance_test.go:64")
+	for _, o := range clear.Fields[0].Options {
+		if o.Value != factoryd.FindingID(o.Label) {
+			t.Errorf("box %q posts %q, want its finding's id", o.Label, o.Value)
+		}
+	}
 	res, err := clear.Press(x.facts, map[string]string{"findings": two}, "The rig's fakes.")
 	if err != nil || res.Args["findings"] != two || factoryd.PressRefusal(x.facts, res) != "" {
 		t.Fatalf("two ticked = %+v, %v, refusal %q; want the two findings alone", res, err, factoryd.PressRefusal(x.facts, res))

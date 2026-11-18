@@ -1581,7 +1581,7 @@ type boardView struct {
 	// cases are the shown repository's cases, plans the plans the faces
 	// read and rollups their cards' states, each once
 	cases   caseSet
-	plans   map[string]factoryd.Plan
+	plans   map[string]planRead
 	rollups map[string]rollup
 }
 
@@ -2074,6 +2074,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		// a done plan that waits on its failed card holds its case at the
 		// human: its row of Needs you carries the case
 		holds := cs.holds(t)
+		k := c.boardCard(ctx, v, bt)
 		// the status line counts the project's cards, whatever the accent;
 		// a card that holds a case at the human counts once, as its row,
 		// and a plan that waits for its answers counts as its approval
@@ -2084,7 +2085,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			if !factoryd.Final(t.Status) {
 				d.Status.NeedYou++
 			}
-		case len(bt.Helpers) > 0 && bt.Helpers[len(bt.Helpers)-1].Status == "running":
+		case c.working(ctx, v, k):
 			d.Status.Working++
 		case col == colProgress && t.Status == "running" && c.timelineFace(ctx, t.ID).provider:
 			d.Status.Waiting++
@@ -2093,7 +2094,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		case col == colNeedsYou && !v.planned[t.ID]:
 			d.Status.NeedYou++
 		}
-		k := c.boardCard(ctx, v, bt)
 		// a card that holds a case at the human is one row of Needs you, its
 		// case in view, and yields its column to it as a merge card does
 		var row need

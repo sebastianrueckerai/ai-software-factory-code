@@ -906,11 +906,11 @@ func TestASettleEndsTheCaseAndAHumanCardsParkKeepsIt(t *testing.T) {
 }
 
 // The human's confirm_audit on the gate stop's case records the audit
-// findings it names as audit_finding_confirmed steps with who and why,
-// and ends the case; a second one under a recorded prefix records nothing
-// again. The project agent's press, a press without a reason, one naming
-// no finding and one naming a finding the audit does not hold are
-// refused, and write nothing.
+// findings it names by their ids as audit_finding_confirmed steps, each
+// the finding's whole text with who and why, and ends the case; a second
+// one of a finding already recorded records nothing again. The project
+// agent's press, a press without a reason, one naming no finding and one
+// naming an id no open finding has are refused, and write nothing.
 func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
@@ -944,8 +944,11 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures"}}, "rung 2 may not pick confirm_audit: the human may"},
 		{"naming an unknown finding", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
 			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures",
-				Args: map[string]any{"findings": "secrets at acceptance/rig_test.go:118"}}},
-			`the head's audit holds no finding "secrets at acceptance/rig_test.go:118" names`},
+				Args: map[string]any{"findings": FindingID("secrets at acceptance/rig_test.go:118")}}},
+			"finding " + FindingID("secrets at acceptance/rig_test.go:118") + " is not open on the head's newest audit"},
+		{"naming a finding by its text", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
+			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures", Args: map[string]any{"findings": findingB}}},
+			"finding " + findingB + " is not open on the head's newest audit"},
 		{"naming no finding", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
 			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures"}}, "no finding is ticked: tick at least one finding to clear"},
 	} {
@@ -958,7 +961,7 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 		t.Fatalf("the refusals wrote %v, want nothing", got)
 	}
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
-		Res: Resolution{Action: ActConfirmAudit, Note: "the rig's fakes, not secrets", Args: map[string]any{"findings": findingB}}}); err != nil {
+		Res: Resolution{Action: ActConfirmAudit, Note: "the rig's fakes, not secrets", Args: map[string]any{"findings": FindingID(findingB)}}}); err != nil {
 		t.Fatal(err)
 	}
 	got := steps()
@@ -968,15 +971,56 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 	if c, err := g.r.store.CaseByID(ctx, 9); err != nil || c.Status != CaseResolved {
 		t.Fatalf("the case is %s (%v), want it resolved", c.Status, err)
 	}
-	// a finding named as its text, already recorded: the case answers, nothing records again
+	// a finding already recorded: the case answers, nothing records again
 	g.store.cases = append(g.store.cases, Case{ID: 10, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
 		Facts: map[string]any{"head": "h2", "gate": "GateCriteria"}})
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 10, By: "sebastian", Rung: 3,
-		Res: Resolution{Action: ActConfirmAudit, Note: "again", Args: map[string]any{"findings": findingB}}}); err != nil {
+		Res: Resolution{Action: ActConfirmAudit, Note: "again", Args: map[string]any{"findings": FindingID(findingB)}}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := steps(); len(got) != 1 {
 		t.Fatalf("confirmations = %v, want the one standing, the second press recording nothing again", got)
+	}
+}
+
+// A confirmation clears exactly the findings ticked, by their ids: a
+// finding whose token comes first, and one of two findings that differ
+// only in their token, each records its own whole text and no other.
+func TestActConfirmAuditClearsExactlyTheTickedFindings(t *testing.T) {
+	g := newFactsRig(t)
+	g.card()
+	g.r.timeline = g.tl
+	t1 := g.store.tasks["t1"]
+	t1.IssueNumber = 0
+	g.store.tasks["t1"] = t1
+	first := "ghp_" + strings.Repeat("a", 36) + " sits in acceptance/rig_test.go"
+	tokenA, tokenB := "the client sends ghp_"+strings.Repeat("b", 36)+" at rig_test.go:4", "the client sends ghp_"+strings.Repeat("c", 36)+" at rig_test.go:4"
+	ctx := context.Background()
+	if err := g.tl.Append(ctx, "t1", "audit", map[string]any{"commit": "h2", "verdict": "findings",
+		"findings": []map[string]any{{"item": first}, {"item": tokenA}, {"item": tokenB}}}); err != nil {
+		t.Fatal(err)
+	}
+	confirmed := func() []string {
+		b, _ := g.tl.Objects.Get(ctx, "sessions/t1/timeline.jsonl")
+		var out []string
+		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			var m map[string]any
+			if json.Unmarshal([]byte(line), &m) == nil && m["step"] == stepAuditConfirmed {
+				out = append(out, m["finding"].(string))
+			}
+		}
+		return out
+	}
+	for i, ticked := range []string{tokenB, first} {
+		id := int64(20 + i)
+		g.store.cases = append(g.store.cases, Case{ID: id, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman, Facts: map[string]any{"head": "h2"}})
+		if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: id, By: "sebastian", Rung: 3,
+			Res: Resolution{Action: ActConfirmAudit, Note: "the rig's fakes", Args: map[string]any{"findings": FindingID(ticked)}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := confirmed(); !slices.Equal(got, []string{tokenB, first}) {
+		t.Fatalf("confirmations = %q, want exactly the two ticked findings' texts", got)
 	}
 }
 
