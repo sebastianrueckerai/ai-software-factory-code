@@ -28,7 +28,7 @@ func fixtureOf(t *testing.T, group, kind string) facefixtures.Fixture {
 func TestCardMessageComesFromTheFace(t *testing.T) {
 	fx := fixtureOf(t, facefixtures.GroupCase, string(factoryd.CaseSessionCap))
 	m, ok := factoryd.PokeOf(factoryd.Event{Kind: factoryd.EventQuestionAsked, TaskID: fx.Task.ID, Detail: fx.Ask.Detail}, fx.Task, factoryd.Task{})
-	want := "#2291 (Board export: import a snapshot back) needs you. A card runs only the sessions it was given, and this one has used all 3."
+	want := "#2292 (Board export: import a snapshot back) needs you. A card runs only the sessions it was given, and this one has used all 3."
 	if !ok || m.Content != want {
 		t.Fatalf("the message = %q, %v\nwant %q", m.Content, ok, want)
 	}
@@ -88,6 +88,13 @@ func TestEveryPokePassesLint(t *testing.T) {
 		for _, kind := range []string{factoryd.EventCardFiled, factoryd.EventCardRetried, factoryd.EventSessionGranted} {
 			add(factoryd.Event{Kind: kind, Detail: map[string]any{"autonomy": "assisted", "decider": "agent"}}, card)
 		}
+	}
+	// the longest name a card has, so the notice drops its detail to fit
+	held := factoryd.Task{ID: "t-held", Kind: "agent", Status: "waiting-deps", IssueNumber: 12345, Objective: strings.Repeat("word ", 20),
+		Hold: &factoryd.CardHold{Reason: "after the split", Release: "t-rel"}}
+	for _, status := range []string{"closed", "failed"} {
+		add(factoryd.Event{Kind: factoryd.EventCardHoldStranded, Detail: map[string]any{"release_task": "t-rel", "release": "#12346 (plan #12300)",
+			"release_issue": float64(12346), "status": status}}, held)
 	}
 	add(factoryd.Event{Kind: factoryd.EventChatBudgetSpent, Detail: map[string]any{"budget_eur": 5.0, "spent_eur": 5.0}}, factoryd.Task{ID: "t-chat-code-2026-11", Kind: factoryd.KindChat})
 	add(factoryd.Event{Kind: factoryd.EventAutonomyChanged, Actor: "sebastian", Detail: map[string]any{"from": "manual", "to": "assisted"}}, factoryd.Task{})

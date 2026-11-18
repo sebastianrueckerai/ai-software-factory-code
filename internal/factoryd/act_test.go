@@ -1019,9 +1019,11 @@ func TestASettleEndsTheCaseAndAHumanCardsParkKeepsIt(t *testing.T) {
 // The human's confirm_audit on the gate stop's case records the audit
 // findings it names by their ids as audit_finding_confirmed steps, each
 // the finding's whole text with who and why, and ends the case; a second
-// one of a finding already recorded records nothing again. The project
-// agent's press, a press without a reason, one naming no finding and one
-// naming an id no open finding has are refused, and write nothing.
+// one of a finding already recorded records nothing again. Of the newest
+// audit's two findings, the one at no file is never recorded. The project
+// agent's press, a press without a reason, one naming no finding, one
+// naming an id no open finding has, one naming a finding by its text and
+// one naming the finding at no file are refused, and write nothing.
 func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
@@ -1059,16 +1061,19 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 		{"without a reason", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
 			Res: Resolution{Action: ActConfirmAudit}}, "a one-line reason is required"},
 		{"by the project agent", ActInput{TaskID: "t1", CaseID: 9, By: ChatUser, Rung: 2,
-			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures"}}, "the factory agent may not pick `confirm_audit`: the human may, and the factory agent may take `route_approval`, `reverify`, `raise_ceiling`, `successor`, `replan`, `close` and `note`"},
+			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures"}}, "the factory agent may not pick `confirm_audit`: the human may, and the factory agent may take `route_approval`, `reverify`, `extend`, `raise_ceiling`, `successor`, `replan`, `close` and `note`"},
 		{"naming an unknown finding", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
 			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures",
 				Args: map[string]any{"findings": FindingID("secrets at acceptance/rig_test.go:118")}}},
 			"finding " + FindingID("secrets at acceptance/rig_test.go:118") + " is not open on the head's newest audit"},
 		{"naming a finding by its text", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
-			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures", Args: map[string]any{"findings": findingB}}},
-			"finding " + findingB + " is not open on the head's newest audit"},
+			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures", Args: map[string]any{"findings": rig}}},
+			"finding " + rig + " is not open on the head's newest audit"},
 		{"naming no finding", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
 			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures"}}, "no finding is ticked: tick at least one finding to clear"},
+		{"naming the finding at no file", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
+			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures", Args: map[string]any{"findings": FindingID("... and 2 more")}}},
+			"finding " + FindingID("... and 2 more") + " names no file, which no confirmation covers"},
 	} {
 		var refused ErrActRefused
 		if _, err := g.r.Act(ctx, tc.in); !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), tc.want) {
@@ -1079,7 +1084,7 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 		t.Fatalf("the refusals wrote %v, want nothing", got)
 	}
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
-		Res: Resolution{Action: ActConfirmAudit, Note: "the rig's fakes, not secrets", Args: map[string]any{"findings": FindingID(findingB)}}}); err != nil {
+		Res: Resolution{Action: ActConfirmAudit, Note: "the rig's fakes, not secrets", Args: map[string]any{"findings": FindingID(rig)}}}); err != nil {
 		t.Fatal(err)
 	}
 	got := steps()
@@ -1093,21 +1098,11 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 	g.store.cases = append(g.store.cases, Case{ID: 10, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
 		Facts: map[string]any{"head": "h2", "gate": "GateCriteria"}})
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 10, By: "sebastian", Rung: 3,
-		Res: Resolution{Action: ActConfirmAudit, Note: "again", Args: map[string]any{"findings": FindingID(findingB)}}}); err != nil {
+		Res: Resolution{Action: ActConfirmAudit, Note: "again", Args: map[string]any{"findings": FindingID(rig)}}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := steps(); len(got) != 1 {
 		t.Fatalf("confirmations = %v, want the one standing, the second press recording nothing again", got)
-	}
-	// a start of the finding's text names it whole: the recorded text stands, nothing records again
-	g.store.cases = append(g.store.cases, Case{ID: 11, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
-		Facts: map[string]any{"head": "h2", "gate": "GateCriteria"}})
-	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 11, By: "sebastian", Rung: 3,
-		Res: Resolution{Action: ActConfirmAudit, Note: "once more", Args: map[string]any{"findings": "secrets at accept"}}}); err != nil {
-		t.Fatal(err)
-	}
-	if got := steps(); len(got) != 1 || got[0]["finding"] != rig {
-		t.Fatalf("confirmations = %v, want %q alone, the start resolved to it", got, rig)
 	}
 }
 
@@ -1121,11 +1116,12 @@ func TestActConfirmAuditClearsExactlyTheTickedFindings(t *testing.T) {
 	t1 := g.store.tasks["t1"]
 	t1.IssueNumber = 0
 	g.store.tasks["t1"] = t1
-	first := "ghp_" + strings.Repeat("a", 36) + " sits in acceptance/rig_test.go"
-	tokenA, tokenB := "the client sends ghp_"+strings.Repeat("b", 36)+" at rig_test.go:4", "the client sends ghp_"+strings.Repeat("c", 36)+" at rig_test.go:4"
+	const file = "acceptance/rig_test.go"
+	first := "ghp_" + strings.Repeat("a", 36) + " sits in the rig"
+	tokenA, tokenB := "the client sends ghp_"+strings.Repeat("b", 36), "the client sends ghp_"+strings.Repeat("c", 36)
 	ctx := context.Background()
 	if err := g.tl.Append(ctx, "t1", "audit", map[string]any{"commit": "h2", "verdict": "findings",
-		"findings": []map[string]any{{"item": first}, {"item": tokenA}, {"item": tokenB}}}); err != nil {
+		"findings": []map[string]any{{"item": first, "file": file}, {"item": tokenA, "file": file}, {"item": tokenB, "file": file}}}); err != nil {
 		t.Fatal(err)
 	}
 	confirmed := func() []string {
@@ -1139,6 +1135,8 @@ func TestActConfirmAuditClearsExactlyTheTickedFindings(t *testing.T) {
 		}
 		return out
 	}
+	// a finding's text is its item at its file
+	first, tokenB = first+" at "+file, tokenB+" at "+file
 	for i, ticked := range []string{tokenB, first} {
 		id := int64(20 + i)
 		g.store.cases = append(g.store.cases, Case{ID: id, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman, Facts: map[string]any{"head": "h2"}})

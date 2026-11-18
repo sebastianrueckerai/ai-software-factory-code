@@ -306,24 +306,25 @@ func TestGateAuditKeepsAFindingItsConfirmationDoesNotCover(t *testing.T) {
 	}
 }
 
-// A confirmation covers its own finding alone: one of the finding at line
-// 4 leaves the finding at line 41, whose text it begins, to hold the
-// verdict.
+// A confirmation covers its own finding alone: one of the finding in
+// x_test.go leaves the finding in x_test.go.orig, whose text it begins, to
+// hold the verdict.
 func TestGateAuditConfirmationCoversItsFindingAlone(t *testing.T) {
-	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n--- a/Makefile\n+++ b/Makefile\n@@ -1 +1,2 @@\n all:\n+check:\n"}
+	fj := &gateForgejo{diff: "diff --git a/internal/x/x_test.go b/internal/x/x_test.go\n--- a/internal/x/x_test.go\n+++ b/internal/x/x_test.go\n@@ -1 +1,2 @@\n package x\n+var rig = 1\n" +
+		"diff --git a/internal/x/x_test.go.orig b/internal/x/x_test.go.orig\n--- a/internal/x/x_test.go.orig\n+++ b/internal/x/x_test.go.orig\n@@ -1 +1,2 @@\n package x\n+var key = 1\n"}
 	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[` +
-		`{"item":"secrets","file":"internal/x/x_test.go","line":4,"why":"a rig literal"},` +
-		`{"item":"secrets","file":"internal/x/x_test.go","line":41,"why":"a real credential"}]}`}
+		`{"item":1,"file":"internal/x/x_test.go","line":4,"why":"a rig literal"},` +
+		`{"item":1,"file":"internal/x/x_test.go.orig","line":41,"why":"a real credential"}]}`}
 	r, _ := newAuditRunner(t, fj, ll, true)
 	if err := r.timeline.Append(context.Background(), "t1", stepAuditConfirmed,
-		map[string]any{"finding": "secrets at internal/x/x_test.go:4", "by": "sebastian", "why": "test rig fixture"}); err != nil {
+		map[string]any{"finding": "secrets at internal/x/x_test.go", "by": "sebastian", "why": "test rig fixture"}); err != nil {
 		t.Fatal(err)
 	}
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
-	want := []AuditFinding{{Item: "secrets", File: "internal/x/x_test.go", Line: 41, Why: "a real credential"}}
+	want := []AuditFinding{{Item: "secrets", File: "internal/x/x_test.go.orig", Line: 41, Why: "a real credential"}}
 	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) {
-		t.Fatalf("audit = %+v, want the finding at line 41 holding the verdict", res)
+		t.Fatalf("audit = %+v, want the finding in x_test.go.orig holding the verdict", res)
 	}
 }
 
@@ -693,7 +694,7 @@ func TestGateAuditReadsABigFileInPieces(t *testing.T) {
 // Every audit call reads the whole checklist: no call sees another's.
 func TestAuditPromptsCarryTheChecklist(t *testing.T) {
 	for name, prompt := range map[string]string{"first": auditPrompt, "part": auditPartPrompt} {
-		if !strings.HasSuffix(prompt, auditChecklist+"\n\n"+writingguide.For(writingguide.JobFinding)) || !strings.Contains(auditChecklist, "\n6. the sandbox contract") {
+		if !strings.HasSuffix(prompt, auditChecklist+"\n\n"+writingguide.For(writingguide.JobFinding)) || !strings.Contains(auditChecklist, "\n6. sandbox contract: ") {
 			t.Errorf("the %s prompt does not end with the checklist and the finding form", name)
 		}
 	}

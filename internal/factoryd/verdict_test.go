@@ -4053,7 +4053,7 @@ func TestCloseHeldPlanRecordsPlanClosedWithTheWaivers(t *testing.T) {
 		t.Fatalf("the sweep's ask: %+v, want one pending criteria_rerun", pending)
 	}
 	if got := commentBodies(fj); len(got) != 1 ||
-		!strings.HasPrefix(got[0], "#1 factoryd: every card of the plan has ended, and no verdict on main settles these criteria: the criteria gate has not settled k1, k2,") {
+		!strings.HasPrefix(got[0], "#1 Every card of the plan has ended, and no verdict on main settles these criteria: the criteria gate has not settled k1, k2,") {
 		t.Errorf("the ask's comment = %q, want it to say every card ended and nothing on main settles the criteria", got)
 	}
 	n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "the cards moved to the rebuild", true)

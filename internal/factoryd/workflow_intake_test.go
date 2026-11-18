@@ -468,6 +468,9 @@ func (f *requestInfoForgejo) srv(t *testing.T) *httptest.Server {
 			f.closed = true
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{}`)
+		case r.Method == "GET" && r.URL.Path == "/api/v1/repos/factory-agent/repo/branches/factory/t1":
+			// the fork holds no branch of the card
+			http.NotFound(w, r)
 		default:
 			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotImplemented)

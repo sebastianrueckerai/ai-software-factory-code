@@ -260,11 +260,7 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 	if refrozen.Status != "waiting-human" || !strings.Contains(refrozen.Objective, "in 1h 45m") || len(fj.issues) != 2 {
 		t.Fatalf("the refrozen card stands %s over %d issues:\n%s", refrozen.Status, len(fj.issues), refrozen.Objective)
 	}
-	for _, e := range store.events {
-		if e.Kind == EventQuestionAsked {
-			t.Fatalf("a question was asked: %+v", e)
-		}
-	}
+	freezeAsks(t, store)
 	if !slices.Equal(g.cleared, []string{"big", "big"}) {
 		t.Fatalf("cleared = %q, want the class at each press", g.cleared)
 	}

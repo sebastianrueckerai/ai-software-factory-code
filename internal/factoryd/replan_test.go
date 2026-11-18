@@ -1857,7 +1857,7 @@ func TestRecordReplanCountsAKeyOnce(t *testing.T) {
 	if err := r.recordReplan(ctx, p, repo, 3, next, step, map[string]int64{"api2": 52}); err != nil {
 		t.Fatal(err)
 	}
-	if got := commentsOn(fj, 1); !slices.Equal(got, []string{"factoryd: replanned at revision 3: kept 0, changed 1, dropped 0, added 0.\nThe cut of #51: the rest"}) {
+	if got := commentsOn(fj, 1); !slices.Equal(got, []string{"Replanned at revision 3: kept 0, changed 1, dropped 0, added 0.\nThe cut of #51: the rest"}) {
 		t.Fatalf("the plan's comments %q", got)
 	}
 	for _, id := range []string{"t-api", succ} {
@@ -1886,7 +1886,7 @@ func TestRecordReplanSkipsASizingSwitch(t *testing.T) {
 		t.Fatalf("the children: %+v", ref)
 	}
 	for _, c := range fj.comments {
-		if strings.Contains(c.body, "replanned at revision") {
+		if strings.Contains(c.body, "Replanned at revision") {
 			t.Fatalf("a replan's comment on #%d: %s", c.issue, c.body)
 		}
 	}
@@ -2844,7 +2844,7 @@ func TestRecordReplanTakesOffMainAKeysCard(t *testing.T) {
 	if err := r.recordReplan(ctx, p, repo, 2, next, step, map[string]int64{"api2": 22}); err != nil {
 		t.Fatal(err)
 	}
-	want := "factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1. It takes #24 (api) off main.\nAsked by ana: the api is wrong."
+	want := "Replanned at revision 2: kept 0, changed 0, dropped 1, added 1. It takes #24 (api) off main.\nAsked by ana: the api is wrong."
 	if got := commentsOn(fj, 1); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the plan's comments %q, want %q", got, want)
 	}

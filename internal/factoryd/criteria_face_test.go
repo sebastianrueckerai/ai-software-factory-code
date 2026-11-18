@@ -67,8 +67,9 @@ func TestPromiseIsChecked(t *testing.T) {
 // A press of "Run the tests now" on a plan whose last card closed without a
 // merge hands the plan to the criteria gate pass, which runs the tests of
 // its promises no verdict judged at main's head in one pod and writes one
-// verdict per promise on that card: size_bound's stored proof fails, door's
-// and all_green's pass, and the review model judges the page reads_calm's
+// verdict per promise on that card: size_bound's stored proof fails,
+// door's passes, the invariant all_green reads the head's required checks
+// and runs in no pod, and the review model judges the page reads_calm's
 // test wrote. group_open has no proof, so no test runs for it and no row
 // stands; the hold-out runs nowhere, and pages_ok waits for a human. The
 // case stays at the human: the rows settle the request.
@@ -79,6 +80,7 @@ func TestRunCriteriaRunsTheGate(t *testing.T) {
 	g := newProofsAtMainRig(t, "integ", p, slices.Concat(proofsAtMainRows(), artifactRows()))
 	ll := &fakeLiteLLM{content: `{"verdict":"met","reason":"the page names every size"}`}
 	g.r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	g.hub.statuses = map[string]string{"29b0d33aa": statusBody("success", [4]string{"success", "ci / test", "", ""})}
 	home := g.store.tasks["t1"]
 	home.Status, home.PRNumber = "closed", 0
 	g.store.tasks["t1"] = home
@@ -107,17 +109,17 @@ func TestRunCriteriaRunsTheGate(t *testing.T) {
 		defer close(done)
 		g.r.CriteriaGatePass(ctx)
 	}()
-	scriptReproPods(g.kube, proofLines(failed, passedRun(t, "door", "TestDoor"), passedRun(t, "all_green", "TestA"), readsCalmWrote(t)))
+	scriptReproPods(g.kube, proofLines(failed, passedRun(t, "door", "TestDoor"), readsCalmWrote(t)))
 	<-done
 	fetch := containerEnv(initContainer(t, g.kube.podAt(0).spec["spec"].(map[string]any), "fetch"))
-	if fetch["PR_REF"] != "refs/heads/main" || fetch["REPO_SHA"] != "29b0d33aa" {
-		t.Fatalf("fetch env = %v, want main at 29b0d33aa", fetch)
+	if fetch["PR_REF"] != "29b0d33aa" || fetch["REPO_SHA"] != "29b0d33aa" {
+		t.Fatalf("fetch env = %v, want the commit 29b0d33aa itself, main's head", fetch)
 	}
 	var ids []string
 	for _, e := range g.list(t) {
 		ids = append(ids, e.ID)
 	}
-	if want := []string{"size_bound", "door", "all_green", "reads_calm"}; !slices.Equal(ids, want) {
+	if want := []string{"size_bound", "door", "reads_calm"}; !slices.Equal(ids, want) {
 		t.Fatalf("the pod ran %v, want %v", ids, want)
 	}
 	got := map[string]string{}
@@ -129,12 +131,12 @@ func TestRunCriteriaRunsTheGate(t *testing.T) {
 		t.Fatalf("reads_calm's row %q after %d calls, want met on the model's reason after one", got["reads_calm"], len(ll.chats))
 	}
 	delete(got, "reads_calm")
-	// each line is criterionLine's: the failure's message and text, the
-	// suite's count (junit.go)
+	// each line is criterionLine's: the failure's message and text
+	// (junit.go), and the invariant's the head its checks passed on
 	want := map[string]string{
 		"size_bound": "unmet blind: criterion size_bound: TestSizeBound in ./proofs/size_bound failed: Failed want 400, got 404",
 		"door":       "met blind: criterion door: TestDoor in ./proofs/door passed",
-		"all_green":  "met criterion all_green: suite ./... passed (1 passed, 0 skipped)",
+		"all_green":  "met criterion all_green: the required checks passed on 29b0d33a",
 	}
 	if !maps.Equal(got, want) {
 		t.Fatalf("rows = %v, want %v", got, want)
@@ -193,8 +195,9 @@ func TestDroppingTheLastPromiseClosesThePlan(t *testing.T) {
 	}
 }
 
-// A plan whose last card, #2011, closed without a merge never ran its
-// tests: the close check opens the criteria-never-judged request with why
+// A plan whose last card, #2011, closed without a merge has its tests run
+// at main's head once every card ended, and the run settles no promise:
+// the close check then opens the criteria-never-judged request with why
 // in words, and each of its 5 promises asks on a page of its own: the
 // plan finished and no test checked them, what stays blocked, the promise,
 // why no test ran and that none checked it, and exactly "Run the tests
@@ -213,12 +216,15 @@ func TestCriteriaNeverJudgedTellsWhy(t *testing.T) {
 	plan := s.tasks["t-plan"]
 	plan.PlanName = "one face"
 	s.tasks["t-plan"] = plan
+	r.criteriaGate = gateWritesNothing
+	r.planCloseCheck(ctx, "t-plan")
+	r.CriteriaGatePass(ctx)
 	r.planCloseCheck(ctx, "t-plan")
 	pending, err := s.ApprovalRequests(ctx, "pending")
 	if err != nil || len(pending) != 1 || pending[0].Kind != ApprovalCriteriaRerun {
 		t.Fatalf("pending requests %+v, %v; want one of criteria never judged", pending, err)
 	}
-	const notRun = "The last card, #2011, closed without a merge, so the factory never ran the plan's tests."
+	const notRun = "The plan's tests ran, but none of them checked these promises."
 	var spec CriteriaSpec
 	if err := json.Unmarshal(pending[0].Spec, &spec); err != nil || spec.NotRun != notRun {
 		t.Fatalf("the request's spec %s, want NotRun %q", pending[0].Spec, notRun)
@@ -259,7 +265,12 @@ func TestAPendingRequestCountsItsPromisesAsTheyStand(t *testing.T) {
 		{ApprovalCriteria, nil, "This plan finished, but 10 of 10 promises are not met. Settle each one."},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
-			r, s, _ := tenCriteriaPlan(t, "closed")
+			// the gap's rows judge main: its last card merged at the head they judged
+			status := "done"
+			if tc.kind == ApprovalCriteriaRerun {
+				status = "closed"
+			}
+			r, s, _ := tenCriteriaPlan(t, status)
 			card := s.tasks["card-1"]
 			card.IssueNumber = 2011
 			if tc.kind == ApprovalCriteriaRerun {
@@ -274,6 +285,9 @@ func TestAPendingRequestCountsItsPromisesAsTheyStand(t *testing.T) {
 				}
 			}
 			s.tasks["card-1"] = card
+			r.criteriaGate = gateWritesNothing
+			r.planCloseCheck(ctx, "t-plan")
+			r.CriteriaGatePass(ctx)
 			r.planCloseCheck(ctx, "t-plan")
 			pending, err := s.ApprovalRequests(ctx, "pending")
 			if err != nil || len(pending) != 1 || pending[0].Kind != tc.kind {

@@ -37,7 +37,7 @@ func freezeClassMarker(class string) string { return "Class: " + class + "\n" }
 
 // freezeCardTitle is the stable title of a class's freeze card.
 func freezeCardTitle(class string) string {
-	return "The provider limit freezes the " + class + " class"
+	return "Model calls of the " + class + " class wait for the provider's limit to reset"
 }
 
 // FreezeEvent is one class_frozen or class_resumed row the gateway wrote
@@ -66,7 +66,7 @@ type FreezeCardStore interface {
 	// ListFrozenCards lists the running and queued cards whose classes
 	// hold class, in every repository.
 	ListFrozenCards(ctx context.Context, class string) ([]Task, error)
-	CreateTask(ctx context.Context, t Task) error
+	Record(ctx context.Context, e Event) (int64, error)
 	SetObjective(ctx context.Context, id, objective string) error
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
@@ -84,9 +84,10 @@ type FreezeCardStore interface {
 var errNoPolicyReader = errors.New("the freeze card watcher has no policy reader (FreezeCard.Current): it cannot tell which cards a class's hold freezes")
 
 // FreezeCard is the watcher in the month alarm's cap-card shape: the
-// first class_frozen for a class files ONE card naming the provider's
-// words, the class, the reset with its countdown and how many cards wait;
-// it holds no slot and asks nothing. A re-arm (a second class_frozen with
+// first class_frozen for a class files ONE human card naming the
+// provider's words, the class, the reset with its countdown and how many
+// cards wait; it holds no slot, and its ask takes "Noted" and "Not now"
+// (FreezeQuestion). A re-arm (a second class_frozen with
 // a later reset) updates the same card, no second card. A self-resume
 // (class_resumed) leaves it five minutes, the held time on its face, then
 // it closes itself. Past waits.provider_limit it alone speaks once: add a
@@ -306,7 +307,8 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 			count++
 		}
 	}
-	body := freezeCardBody(ev, count, w.now())
+	q := FreezeQuestion(ev, count, w.now())
+	body := q.Info
 	if st.closed {
 		// the press closed the card; a first dated refusal re-arms the
 		// hold and updates the same card — no second card, no ask
@@ -323,8 +325,12 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		if err := w.Forgejo.ReopenIssue(ctx, repo.Owner, repo.Name, st.issue); err != nil {
 			return err
 		}
+		// the card stands in Needs you again: it asks again
+		if _, err := w.Store.Record(ctx, freezeAsk(q).Event(Task{ID: st.taskID, Repository: st.repo, IssueNumber: st.issue})); err != nil {
+			return err
+		}
 		if _, err := w.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, st.issue,
-			fmt.Sprintf("factoryd: the hold re-armed after the retry, to the reset %s. %d cards of the class wait.", ev.Reset, count)); err != nil {
+			fmt.Sprintf("The provider's limit holds the class again after the retry, until %s. %s of the class wait.", ev.Reset, plural(count, "card"))); err != nil {
 			log.Printf("freeze card: comment the re-arm on issue #%d: %v", st.issue, err)
 		}
 		st.closed = false
@@ -335,7 +341,7 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		return nil
 	}
 	if st.taskID == "" {
-		t, err := w.file(ctx, st, ev, body)
+		t, err := w.file(ctx, st, ev, q)
 		if err != nil {
 			return err
 		}
@@ -353,7 +359,7 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		return err
 	}
 	if _, err := w.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, st.issue,
-		fmt.Sprintf("factoryd: the hold re-armed, to the reset %s. %d cards of the class wait.", ev.Reset, count)); err != nil {
+		fmt.Sprintf("The provider's limit holds the class longer, until %s. %s of the class wait.", ev.Reset, plural(count, "card"))); err != nil {
 		log.Printf("freeze card: comment the re-arm on issue #%d: %v", st.issue, err)
 	}
 	st.reset = ev.Reset
@@ -412,7 +418,7 @@ func (w *FreezeCard) CloseOnRetry(ctx context.Context, repository, class string)
 		return err
 	}
 	msg := fmt.Sprintf("The retry press cleared the %s class's hold: the freeze card closes at once.", class)
-	if err := closeIssueAsFactory(ctx, w.Store, w.Forgejo, t, "factoryd: "+msg); err != nil {
+	if err := closeIssueAsFactory(ctx, w.Store, w.Forgejo, t, msg); err != nil {
 		return err
 	}
 	if st := w.classes[repository+"/"+class]; st != nil {
@@ -509,9 +515,9 @@ func (w *FreezeCard) providerLimit(repository string) time.Duration {
 // speak makes the freeze card ask once: add a fallback, switch the model,
 // keep waiting. The work cards ask nothing.
 func (w *FreezeCard) speak(ctx context.Context, st *freezeClass, limit time.Duration) error {
-	ask := fmt.Sprintf("The freeze of the %s class has held past waits.provider_limit (%s). "+
+	ask := fmt.Sprintf("The provider's limit has held the %s class for more than %s. "+
 		"Add a fallback for the class, switch the class's model in policy, or keep waiting. The work cards ask nothing.",
-		st.class, limit)
+		st.class, minutesWord(limit))
 	t, ok, err := w.waiting(ctx, st.taskID)
 	if err != nil {
 		return err
@@ -525,7 +531,7 @@ func (w *FreezeCard) speak(ctx context.Context, st *freezeClass, limit time.Dura
 	if err != nil {
 		return err
 	}
-	if _, err := w.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, st.issue, "factoryd: "+ask); err != nil {
+	if _, err := w.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, st.issue, ask); err != nil {
 		return fmt.Errorf("comment the provider-limit ask on issue #%d: %w", st.issue, err)
 	}
 	log.Printf("freeze card: the %s class's freeze outgrew %s, its card #%d asked once", st.class, limit, st.issue)
@@ -542,7 +548,7 @@ func (w *FreezeCard) close(ctx context.Context, st *freezeClass) error {
 		return nil
 	}
 	msg := fmt.Sprintf("The freeze of the %s class ended: the freeze held %s, and the card closes.", st.class, freezeHeld(st.frozenAt, st.resumedAt))
-	if err := closeIssueAsFactory(ctx, w.Store, w.Forgejo, t, "factoryd: "+msg); err != nil {
+	if err := closeIssueAsFactory(ctx, w.Store, w.Forgejo, t, msg); err != nil {
 		return err
 	}
 	if err := w.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
@@ -617,8 +623,24 @@ func freezeCardBody(ev FreezeEvent, count int, now time.Time) string {
 		fmt.Fprintf(&b, "The class resets at %s. ", ev.Reset)
 	}
 	fmt.Fprintf(&b, "%d cards of the class wait.\n\n", count)
-	b.WriteString("This card holds no work slot and asks nothing. It updates on a re-arm, and closes itself five minutes after the class resumes.")
+	b.WriteString("This card holds no work slot. It updates when the provider names a new reset, and closes itself five minutes after the class resumes.")
 	return b.String()
+}
+
+// FreezeQuestion is the freeze card of ev's class as it asks, count cards
+// waiting at now: the ask and the why line its brief writes, its text
+// (freezeCardBody) and a notice's answers, since the factory ends the
+// freeze by itself.
+func FreezeQuestion(ev FreezeEvent, count int, now time.Time) HumanQuestion {
+	b := SourceBriefs[SourceFreezeCard](BriefFacts{Name: ev.Class})
+	return HumanQuestion{Ask: b.Title, Why: b.Why, Info: freezeCardBody(ev, count, now), Choices: choices(ActClose+"/"+variantNoted, KeyPark),
+		Happened: "The model provider refused a call of the " + ev.Class + " class and named when its limit resets.",
+		Waits:    "The cards of the class wait until the limit resets."}
+}
+
+// freezeAsk is the freeze card's ask q as the factory puts it.
+func freezeAsk(q HumanQuestion) HumanAsk {
+	return HumanAsk{Q: q, By: "factoryd", Asker: SourceFreezeCard, Via: ViaFactoryd}
 }
 
 // freezeCountdown is reset's distance from now, "in 4h 59m".
@@ -640,29 +662,18 @@ func freezeHeld(from, to time.Time) string {
 }
 
 // file files the class's freeze card on the events' repository: the issue
-// first, then its row, no ask row — the card asks nothing. An open issue
-// of the title that no row holds is taken on, so a filing whose row the
-// store refused leaves no stranded issue behind.
-func (w *FreezeCard) file(ctx context.Context, st *freezeClass, ev FreezeEvent, body string) (Task, error) {
+// first, then its row with its ask (FileHumanCard). An open issue of the
+// title that no row holds is taken on, so a filing whose row the store
+// refused leaves no stranded issue behind.
+func (w *FreezeCard) file(ctx context.Context, st *freezeClass, ev FreezeEvent, q HumanQuestion) (Task, error) {
 	repo, err := SplitRepo(ev.Repository)
 	if err != nil {
 		return Task{}, err
 	}
 	title := freezeCardTitle(st.class)
-	reuse, err := strandedIssue(ctx, w.Store, w.Forgejo, repo, title)
-	if err != nil {
-		return Task{}, err
-	}
-	t := Task{ID: NewTaskID(), Kind: "human", Status: "waiting-human", RiskClass: "standard", Repository: ev.Repository,
-		Source: SourceFreezeCard, Author: w.Forgejo.BotUser, Objective: title + "\n\n" + body}
-	b := SourceBriefs[SourceFreezeCard](BriefFacts{Name: st.class})
-	b.Body = body
-	got, _, err := fileOnIssue(ctx, w.Forgejo, repo, b, []string{"human"}, t, reuse, func(t Task) (Task, error) {
-		if err := w.Store.CreateTask(ctx, t); err != nil {
-			return Task{}, err
-		}
-		return t, nil
-	})
+	t := Task{ID: NewTaskID(), RiskClass: "standard", Repository: ev.Repository,
+		Source: SourceFreezeCard, Author: w.Forgejo.BotUser, Objective: title + "\n\n" + q.Info}
+	got, _, err := FileHumanCard(ctx, w.Store, w.Forgejo, repo, BriefText{Title: q.Ask, Why: q.Why, Body: q.Info}, []string{"human"}, t, freezeAsk(q))
 	if err != nil {
 		return Task{}, err
 	}

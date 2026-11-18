@@ -131,11 +131,11 @@ func TestPokeOf(t *testing.T) {
 		{"the agent's filing at manual", agentDid(EventCardFiled, "manual", map[string]any{}), card, ChatMessage{}, false},
 		{"the member's retry", Event{Kind: EventCardRetried, TaskID: "t-1", Detail: map[string]any{"autonomy": "assisted", "decider": "member"}}, card, ChatMessage{}, false},
 		{"a stranded hold", stranded, heldOn("t-9"),
-			ChatMessage{Kind: MessagePoke, Content: "#603 - Session store: pick the table's store stays on hold: its release card #31 (plan #30) ended closed and releases nothing. " +
-				"Release the hold, or hold it again with another release card."}, true},
+			ChatMessage{Kind: MessagePoke, Content: "#603 (Session store: pick the table's store) stays on hold: its release card #31 (plan #30) was closed. " +
+				"Release the hold or hold it again."}, true},
 		{"a hold whose release card failed", failedRelease, heldOn("t-9"),
-			ChatMessage{Kind: MessagePoke, Content: "#603 - Session store: pick the table's store stays on hold: its release card #31 (plan #30) ended failed and releases nothing. " +
-				"Retry #31, whose retry takes the hold over, or release the hold, or hold it again with another release card."}, true},
+			ChatMessage{Kind: MessagePoke, Content: "#603 (Session store: pick the table's store) stays on hold: its release card #31 (plan #30) failed. " +
+				"Retry #31 or release the hold."}, true},
 		{"a hold released before the pass", stranded, func() Task { c := card; c.Status = "queued"; return c }(), ChatMessage{}, false},
 		{"a hold a retry's card took over", stranded, heldOn("t-9-r1"), ChatMessage{}, false},
 	} {
@@ -844,7 +844,7 @@ func TestAStrandedHoldPokesTheHumanOnce(t *testing.T) {
 			held = append(held, m)
 		}
 	}
-	const want = "#6 - Card t-held stays on hold: its release card #31 (plan #30) ended failed and releases nothing. Retry #31, whose retry takes the hold over, or release the hold, or hold it again with another release card."
+	const want = "#6 (Card t-held) stays on hold: its release card #31 (plan #30) failed. Retry #31 or release the hold."
 	if len(held) != 1 || held[0].Kind != MessagePoke || held[0].TaskID != "t-held" || held[0].Content != want || held[0].Repeats != 0 || len(held[0].Choices) != 0 {
 		t.Fatalf("the hold's pokes = %+v, want one inform about #6: %q", held, want)
 	}

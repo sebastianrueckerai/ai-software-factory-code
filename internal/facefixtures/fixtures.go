@@ -221,14 +221,15 @@ func unanswered(f *factoryd.CaseFacts) {
 }
 
 // withFindings are f with texts as the review's findings on its head, in
-// the order the gates raised them; audit marks them the audit's.
+// the order the gates raised them; audit marks them the audit's, each at
+// a file.
 func withFindings(f *factoryd.CaseFacts, audit bool, texts ...string) {
 	f.FindingTexts = map[string]string{}
 	for _, s := range texts {
 		id := factoryd.FindingID(s)
 		f.Findings, f.FindingOrder, f.FindingTexts[id] = append(f.Findings, id), append(f.FindingOrder, id), s
 		if audit {
-			f.AuditFindings = append(f.AuditFindings, id)
+			f.AuditFindings, f.AuditConfirmable = append(f.AuditFindings, id), append(f.AuditConfirmable, id)
 		} else {
 			f.ReviewFindings = append(f.ReviewFindings, id)
 		}
@@ -693,6 +694,13 @@ var humanSources = []humanSource{
 		q := factoryd.MonthCapCardQuestion(450, b.now.UTC().Format("2006-01"), 450.12, "https://git.example/sf/infra/src/commit/9d2e4f1/factory/policy.yaml#L12", "")
 		return b.filedHuman(group, name, n, factoryd.SourceMonthCap, "", q, 35*time.Minute)
 	}, factoryd.BriefFacts{Name: "450.00 EUR"}},
+	{factoryd.SourceFreezeCard, func(b *builder, group, name string, n int64) Fixture {
+		q := factoryd.FreezeQuestion(factoryd.FreezeEvent{Class: "coder", Reset: b.now.Add(5 * time.Hour).UTC().Format(time.RFC3339),
+			Words: "rate limit exceeded: the weekly limit resets later"}, 3, b.now)
+		fx := b.filedHuman(group, name, n, factoryd.SourceFreezeCard, "", q, 35*time.Minute)
+		fx.Task.Objective = factoryd.IssueObjective(q.Ask, q.Info)
+		return fx
+	}, factoryd.BriefFacts{Name: "coder"}},
 	{factoryd.SourceConfig, escalates(factoryd.SourceConfig, "factoryd", func(*builder) factoryd.HumanQuestion {
 		bad := policy.ProjectConfig{Repository: Repository, MergeRule: policy.MergeHuman, Objects: policy.ObjectsFactory, Agents: policy.AgentsCoder,
 			Budget: &policy.ProjectBudget{MonthEUR: -5}}
@@ -1623,6 +1631,7 @@ func (b *builder) cards() {
 	for _, s := range []struct{ name, source string }{
 		{"roll refused", factoryd.SourceRollRefused}, {"roll failed", factoryd.SourceRollFailed}, {"rerun", factoryd.SourceRerun},
 		{"still red", factoryd.SourceStillRed}, {"config rejected", factoryd.SourceConfig}, {"month cap", factoryd.SourceMonthCap},
+		{"provider freeze", factoryd.SourceFreezeCard},
 		{"judgment budget", factoryd.SourceChatBudget}, {"production held", factoryd.SourceProductionHeld},
 	} {
 		b.out = append(b.out, humanSourceOf(s.source).file(b, GroupCard, s.name, b.next()))

@@ -511,7 +511,7 @@ var moneylessKinds = slices.Concat([]CaseKind{CaseMergeApproval, CasePlanQuestio
 // that no longer merges into main: the merge queue's turn meets the same
 // refusal, and only a session that merges main clears it (conflictFit).
 func conflictRefusal(f CaseFacts, action string) string {
-	return fmt.Sprintf("the pull request no longer merges into main (Forgejo refused to merge main into %s), so %s only runs the gates into the same refusal at the merge queue: "+
+	return fmt.Sprintf("the pull request no longer merges into main (Forgejo refused to merge main into %s), so `%s` only runs the gates into the same refusal at the merge queue: "+
 		"%s, or the card closes as superseded when main already carries its work", short(f.Head), action, conflictFit(f))
 }
 
@@ -523,7 +523,7 @@ var rerunGates = []string{ActRouteApproval, ActReverify}
 // card's timeline, which records a merge conflict, could not be read: try
 // again, or a rung below the human hands it up.
 func timelineUnread(action string, rung int) string {
-	why := "the card's timeline could not be read, so it is unknown whether the pull request still merges into main, which " + action + " needs: try again in a minute"
+	why := "the card's timeline could not be read, so it is unknown whether the pull request still merges into main, which `" + action + "` needs: try again in a minute"
 	if rung < 3 {
 		why += ", or hand it up"
 	}
@@ -813,10 +813,10 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 		return (&UnreviewedMergeError{Stages: f.UnreadGates}).Error()
 	}
 	if rung == 2 && a.Name == ActRestartPlan && slices.Contains(f.Partial, "open criteria") {
-		return "the plan's open criteria could not be read, so rung 2 cannot tell whether a restart's close waives any, and a waiver is the human's: hand it up with restart_plan as the recommendation"
+		return "the plan's open criteria could not be read, so the factory agent cannot tell whether a restart's close waives any, and a waiver is the human's: `hand_up` with `restart_plan` as the recommendation"
 	}
 	if rung == 2 && a.Name == ActRestartPlan && f.OpenCriteria > 0 {
-		return fmt.Sprintf("the plan holds %s, which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: hand it up with restart_plan as the recommendation",
+		return fmt.Sprintf("the plan holds %s, which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: `hand_up` with `restart_plan` as the recommendation",
 			OpenCriteriaPhrase(f.OpenCriteria))
 	}
 	if slices.Contains(mergeDecisions, a.Name) && (r.Fund != nil || !r.drawIsZero()) {

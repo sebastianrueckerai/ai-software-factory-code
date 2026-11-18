@@ -376,14 +376,14 @@ func TestARefusedExtendIsOfferedOnlyWhileAFitRemains(t *testing.T) {
 		{"minutes and lines at a gate stop, the pool's minutes gone", gateSessions, map[string]any{"agent_time_s": 1800, "lines": 200}, true},
 	} {
 		got := actRefusal(c.f, ActInput{CaseID: 6354, Rung: 2, Res: Resolution{Action: ActExtend, Args: c.args}}, "#2109")
-		_, list, _ := strings.Cut(got, ", and rung 2 may take ")
-		offered := slices.Contains(strings.Split(strings.ReplaceAll(list, " and ", ", "), ", "), ActExtend)
+		_, list, _ := strings.Cut(got, ", and the factory agent may take ")
+		offered := slices.Contains(strings.Split(strings.ReplaceAll(list, " and ", ", "), ", "), "`"+ActExtend+"`")
 		if strings.Contains(got, ": ask for that") != c.fit || strings.Contains(got, "hand_up") == c.fit || offered != c.fit {
 			t.Errorf("%s: %q; want a fit and the extend on offer %v", c.name, got, c.fit)
 		}
 	}
 	got := actRefusal(timeCap, ActInput{CaseID: 6354, Rung: 2, Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1, "agent_time_s": 1800}}}, "#2109")
-	if !strings.Contains(got, "The largest draw that fits is 0 sessions, 30 minutes of agent time and 0.00 EUR: ask for that, and rung 2 may take extend") {
+	if !strings.Contains(got, "The largest draw that fits is 0 sessions, 30 minutes of agent time and 0.00 EUR: ask for that, and the factory agent may take `extend`") {
 		t.Errorf("6354's refusal = %q, want the fit and the extend on offer", got)
 	}
 }
@@ -1134,13 +1134,14 @@ func TestAMergeConflictRefusesTheAnswersThatRerunTheGates(t *testing.T) {
 		Attempts: 3, SessionCap: 3, AuditFindings: []string{idA}, AuditConfirmable: []string{idA}, FindingTexts: map[string]string{idA: "the migration runs outside its transaction"}}
 	conflict := ready
 	conflict.MergeConflict = "the branch conflicts with its base: status 409: merge failed because of conflict"
-	note := Resolution{Note: "a fixture the human judged safe"}
+	// the clearing of the audit names the finding it clears
+	note := Resolution{Note: "a fixture the human judged safe", Args: map[string]any{"findings": idA}}
 	for _, name := range []string{ActRouteApproval, ActReverify, ActConfirmAudit} {
 		if got := applies(t, name, ready, note); got != "" {
 			t.Errorf("no conflict: %s applies = %q, want it to apply", name, got)
 		}
-		want := "the pull request no longer merges into main (Forgejo refused to merge main into abcdef1), so " + name +
-			" only runs the gates into the same refusal at the merge queue: extend the card for a session that merges main into the branch," +
+		want := "the pull request no longer merges into main (Forgejo refused to merge main into abcdef1), so `" + name +
+			"` only runs the gates into the same refusal at the merge queue: extend the card for a session that merges main into the branch," +
 			" or the card closes as superseded when main already carries its work"
 		if got := applies(t, name, conflict, note); got != want {
 			t.Errorf("conflict: %s applies = %q, want %q", name, got, want)
@@ -1154,7 +1155,7 @@ func TestAMergeConflictRefusesTheAnswersThatRerunTheGates(t *testing.T) {
 	} {
 		f := conflict
 		f.Kind = kind
-		want := "the pull request no longer merges into main (Forgejo refused to merge main into abcdef1), so reverify" +
+		want := "the pull request no longer merges into main (Forgejo refused to merge main into abcdef1), so `reverify`" +
 			" only runs the gates into the same refusal at the merge queue: " + fit + ", or the card closes as superseded when main already carries its work"
 		if got := applies(t, ActReverify, f, note); got != want {
 			t.Errorf("conflict at %s: reverify applies = %q, want %q", kind, got, want)
@@ -1181,9 +1182,9 @@ func TestAnUnreadTimelineRefusesTheGatesReruns(t *testing.T) {
 		r      Resolution
 		want   string
 	}{
-		{ActRouteApproval, 2, Resolution{}, unread + "route_approval needs: try again in a minute, or hand it up"},
-		{ActReverify, 1, Resolution{}, unread + "reverify needs: try again in a minute, or hand it up"},
-		{ActReverify, 3, Resolution{}, unread + "reverify needs: try again in a minute"},
+		{ActRouteApproval, 2, Resolution{}, unread + "`route_approval` needs: try again in a minute, or hand it up"},
+		{ActReverify, 1, Resolution{}, unread + "`reverify` needs: try again in a minute, or hand it up"},
+		{ActReverify, 3, Resolution{}, unread + "`reverify` needs: try again in a minute"},
 		{ActConfirmAudit, 3, Resolution{Note: "fixtures"}, "the card's timeline could not be read, so the head's audit findings and whether the pull request still merges into main are unknown: try again in a minute"},
 	} {
 		a, _ := ActionByName(tc.action)
@@ -1342,7 +1343,7 @@ func TestBoardRowsApplyOnTheirPreconditions(t *testing.T) {
 // The human takes all of them, and rung 2 keeps the grant, which buys a
 // card and waives nothing.
 func TestSettlingCriteriaByWordIsTheHumans(t *testing.T) {
-	const want = "settling a plan's criteria by word is the human's: hand it up with your recommendation; the human waives or confirms"
+	const want = "settling a plan's criteria by word is the human's, who waives or confirms them: hand it up with your recommendation"
 	criteria := CaseFacts{Kind: CasePlanCriteria}
 	merge := CaseFacts{Kind: CaseMergeApproval, Criteria: true, Head: "h1", PR: 9, PROpen: true, Checks: "green"}
 	verdict := func(v, note string) Resolution {
@@ -1592,7 +1593,7 @@ func TestTheAuthorsAnswerBuysItsSession(t *testing.T) {
 // and a plan with none open stays rung 2's.
 func TestRestartPlanOverOpenCriteriaIsTheHumansAlone(t *testing.T) {
 	a, _ := ActionByName(ActRestartPlan)
-	const why = ", which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: hand it up with restart_plan as the recommendation"
+	const why = ", which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: `hand_up` with `restart_plan` as the recommendation"
 	for _, c := range []struct {
 		name    string
 		open    int
@@ -1603,7 +1604,7 @@ func TestRestartPlanOverOpenCriteriaIsTheHumansAlone(t *testing.T) {
 		{"one open", 1, nil, "the plan holds 1 open criterion" + why},
 		{"three open", 3, nil, "the plan holds 3 open criteria" + why},
 		{"the count unread", 0, []string{"open criteria"},
-			"the plan's open criteria could not be read, so rung 2 cannot tell whether a restart's close waives any, and a waiver is the human's: hand it up with restart_plan as the recommendation"},
+			"the plan's open criteria could not be read, so the factory agent cannot tell whether a restart's close waives any, and a waiver is the human's: `hand_up` with `restart_plan` as the recommendation"},
 	} {
 		f := CaseFacts{Kind: CaseDependencyFailed, Plan: "p", PlanStatus: "done", OpenCriteria: c.open, Partial: c.partial}
 		if got := a.refusal(f, 2, Resolution{Action: ActRestartPlan, Note: "one card"}); got != c.want {
@@ -1651,7 +1652,7 @@ func TestCaseFactsCountThePlansOpenCriteria(t *testing.T) {
 	}
 	s.cases = []Case{{ID: 9, TaskID: "t-plan", Kind: CaseDependencyFailed, Status: CaseOpen}}
 	_, err := r.Act(ctx, ActInput{TaskID: "t-plan", CaseID: 9, By: "sebastian", Rung: 2, Res: Resolution{Action: ActRestartPlan, Note: "one card"}})
-	want := "the plan holds 10 open criteria, which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: hand it up with restart_plan as the recommendation"
+	want := "the plan holds 10 open criteria, which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: `hand_up` with `restart_plan` as the recommendation"
 	var refused ErrActRefused
 	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
 		t.Fatalf("rung 2's restart_plan = %v, want the refusal %q", err, want)

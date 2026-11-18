@@ -281,7 +281,7 @@ var ErrNotHuman = errors.New("only a human criterion's verdict is the approver's
 // criterion, a waiver among them, or a confirmation of a criteria request
 // — by anyone but a person (isPerson): factoryd, the check-in and the
 // project agent hand it up.
-var ErrNotPerson = errors.New("settling a plan's criteria by word is the human's: hand it up with your recommendation; the human waives or confirms")
+var ErrNotPerson = errors.New("settling a plan's criteria by word is the human's, who waives or confirms them: hand it up with your recommendation")
 
 // planOfStore is plan task parent's newest plan revision, the one that
 // filed its cards, and its number; child names the card that reads it. A

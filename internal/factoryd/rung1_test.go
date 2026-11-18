@@ -140,8 +140,8 @@ func TestRung1StatementSaysThePullRequestNoLongerMerges(t *testing.T) {
 	said := "The pull request does not merge into main: the branch conflicts with its base: status 409. Neither reverify nor route_approval clears it:" +
 		" extend the card for a session that merges main into the branch, or the card closes as superseded."
 	refusal := func(name string) string {
-		return "- " + name + ": not offered: the pull request no longer merges into main (Forgejo refused to merge main into c1), so " + name +
-			" only runs the gates into the same refusal at the merge queue: extend the card for a session that merges main into the branch," +
+		return "- " + name + ": not offered: the pull request no longer merges into main (Forgejo refused to merge main into c1), so `" + name +
+			"` only runs the gates into the same refusal at the merge queue: extend the card for a session that merges main into the branch," +
 			" or the card closes as superseded when main already carries its work\n"
 	}
 	for _, w := range []string{"PROBLEM\n" + said + "\n", refusal(ActRouteApproval), refusal(ActReverify), "- extend\n"} {

@@ -332,7 +332,7 @@ func TestSectionMustResolve(t *testing.T) {
 // the opening sentence of the body's first paragraph, its wrapped lines
 // joined, when that has at most 160 characters; none when the body opens
 // with a heading, a list, a quote, a table or a fence. Its text is the
-// issue's.
+// issue's, with the web editor's line ends as line feeds.
 func TestHumanIssueWhyIsItsOpeningSentence(t *testing.T) {
 	long := strings.Repeat("word ", 33) + "ends here."
 	for _, tc := range []struct{ title, body, why string }{
@@ -358,7 +358,7 @@ func TestHumanIssueWhyIsItsOpeningSentence(t *testing.T) {
 		var task Task
 		for _, task = range store.tasks {
 		}
-		if CardTitle(task) != tc.title || task.Why != tc.why || task.Summary != "" || task.Objective != IssueObjective(tc.title, tc.body) || task.BriefUnchecked {
+		if CardTitle(task) != tc.title || task.Why != tc.why || task.Summary != "" || task.Objective != IssueObjective(tc.title, strings.ReplaceAll(tc.body, "\r\n", "\n")) || task.BriefUnchecked {
 			t.Errorf("issue %q: title %q, why %q, summary %q, objective %q, unchecked %v; want the why %q",
 				tc.body, CardTitle(task), task.Why, task.Summary, task.Objective, task.BriefUnchecked, tc.why)
 		}

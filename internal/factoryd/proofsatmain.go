@@ -322,8 +322,10 @@ func (r *Runner) healTests(ctx context.Context, id string, p Plan) {
 // head of the card's pull request while the card is open, else at main's
 // head. The card is funded up to the gate reserve first (no_room when its
 // ceiling has none). The rows are the gate's (criteriaReport): a test's
-// or an invariant's gate row, met when its test passed, else not met with
-// the run's line; a judgement's verdict on the artifact its test wrote.
+// gate row, met when its test passed, else not met with the run's line;
+// an invariant's, on the head's required checks, which run no pod and
+// leave no row while they still run, a cut the page shows; a judgement's
+// verdict on the artifact its test wrote.
 // The outcome is on record, a cut with why it stopped, which the
 // promise's page shows. Only the newest press, still asked, runs.
 func (r *Runner) runTests(ctx context.Context, id string) {
@@ -384,19 +386,33 @@ func (r *Runner) runTests(ctx context.Context, id string) {
 		}
 		try.pr, try.mark = 0, g.mark
 	}
-	entries := make([]harness.Proof, 0, len(runs))
-	for _, c := range runs {
-		entries = append(entries, c.proof())
-	}
 	r.runTry(rctx, try, head, func(gctx context.Context) error {
-		ran, outcomes, err := r.runAt(gctx, home, repo, ref, head, entries)
-		if err != nil {
-			return &tryFault{"its sandbox did not run", err}
-		}
 		results := make(map[string]gateResult, len(runs))
+		var entries []harness.Proof
+		var checks *gateResult
 		for _, c := range runs {
-			run, ok := ran[c.id]
-			results[c.id] = gateResult{outcome: outcomes[c.id], output: run.Output, ran: ok && run.Started, artifacts: run.Artifacts, dropped: run.Dropped}
+			if !c.checks {
+				entries = append(entries, c.proof())
+				continue
+			}
+			if checks == nil {
+				res, err := r.HeadChecks(gctx, home.ID, head)
+				if err != nil {
+					return &tryFault{"the required checks of its code could not be read", err}
+				}
+				checks = &gateResult{checks: res, checked: head}
+			}
+			results[c.id] = *checks
+		}
+		if len(entries) > 0 {
+			ran, outcomes, err := r.runAt(gctx, home, repo, ref, head, entries)
+			if err != nil {
+				return &tryFault{"its sandbox did not run", err}
+			}
+			for _, e := range entries {
+				run, ok := ran[e.ID]
+				results[e.ID] = gateResult{outcome: outcomes[e.ID], output: run.Output, ran: ok && run.Started, artifacts: run.Artifacts, dropped: run.Dropped}
+			}
 		}
 		rep := criteriaReport(p, head, runs, results)
 		// a run on the card's pull request writes as the card, which a card
@@ -415,6 +431,9 @@ func (r *Runner) runTests(ctx context.Context, id string) {
 			return &tryFault{"the model's judgement failed", err}
 		}
 		r.record(gctx, id, "criteria_run", map[string]any{"task": home.ID, "ref": ref, "head": head, "by": by, "proofs": rep.proofs})
+		if rep.pending {
+			return &tryFault{"the required checks of its code were still running", errors.New(head)}
+		}
 		return nil
 	})
 }

@@ -967,12 +967,13 @@ func digestPlanRig(t *testing.T, key string) digestRig {
 
 // The digest of the successor that carries the integration card's key
 // counts the plan's criteria and reads their rows on the plan-filed
-// integration card: at its approval the one criterion no row holds there
-// flags.
+// integration card: at its approval the one test criterion no row holds
+// there, whose proof is stored, flags. The human criterion pages_ok, with no row either, is asked
+// on the merge's own page and flags nothing.
 func TestCardDigestOfASuccessorReadsTheIntegrationCardsRows(t *testing.T) {
 	var rows []CriterionVerdict
 	for _, c := range digestPlan().Criteria {
-		if c.ID != "pages_ok" {
+		if c.ID != "pages_ok" && c.ID != "group_open" {
 			rows = append(rows, CriterionVerdict{Criterion: c.ID, Verdict: "met", Kind: c.Kind, Source: CriteriaSourceGate,
 				DecidedBy: FactoryDecider, CreatedAt: digestAt(30)})
 		}
@@ -984,8 +985,12 @@ func TestCardDigestOfASuccessorReadsTheIntegrationCardsRows(t *testing.T) {
 	g.store.tasks["t-int"] = Task{ID: "t-int", Kind: "agent", Repository: "sf/app", IssueNumber: 1400, Source: SourcePlan, Parent: "plan1",
 		PlanKey: "integ", Status: "failed"}
 	g.store.criteriaVerdicts = map[string][]CriterionVerdict{"t-int": rows}
+	if _, err := g.store.PutPlanProofs(context.Background(), "plan1", 1, []PlanProof{{Idx: 1, Origin: ProofOriginCriterion, Criterion: "group_open", ID: "group_open",
+		State: ProofStored, Suite: "proofs/group_open", Name: "TestGroupOpen", Path: "proofs/group_open/group_open_test.go", Code: "package group_open"}}); err != nil {
+		t.Fatal(err)
+	}
 	d := g.digest(t)
-	if want := []DigestFlag{{"criterion_unproven", "pages_ok"}}; d.Head.Criteria != 7 || !slices.Equal(d.Flags, want) {
+	if want := []DigestFlag{{"criterion_unproven", "group_open"}}; d.Head.Criteria != 7 || !slices.Equal(d.Flags, want) {
 		t.Fatalf("Head criteria %d, flags %+v; want 7 and %+v", d.Head.Criteria, d.Flags, want)
 	}
 }

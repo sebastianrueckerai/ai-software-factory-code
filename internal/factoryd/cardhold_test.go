@@ -442,15 +442,15 @@ func TestARungsAnswerOnAHeldCardIsRefusedNamingTheHold(t *testing.T) {
 		in   ActInput
 		want string
 	}{
-		{ActInput{TaskID: "t-b", CaseID: 3, By: FactoryDecider, Rung: 0, Res: Resolution{Action: ActResume}}, held + "the factory takes no resume on it" + rung0},
-		{ActInput{TaskID: "t-b", CaseID: 3, By: CheckinDecider, Rung: 1, Res: Resolution{Action: ActHandover, Args: map[string]any{"model": "stronger"}}}, held + "the check-in takes no handover on it" + rung1},
-		{ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 2, Res: Resolution{Action: ActClose, Note: "the human closed its dependency"}}, held + "the factory agent takes no close on it" + rung2},
-		{ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 2, Res: Resolution{Action: ActReplan, Note: "the plan is wrong"}}, held + "the factory agent takes no replan on it" + rung2},
+		{ActInput{TaskID: "t-b", CaseID: 3, By: FactoryDecider, Rung: 0, Res: Resolution{Action: ActResume}}, held + "the factory takes no `resume` on it" + rung0},
+		{ActInput{TaskID: "t-b", CaseID: 3, By: CheckinDecider, Rung: 1, Res: Resolution{Action: ActHandover, Args: map[string]any{"model": "stronger"}}}, held + "the check-in takes no `handover` on it" + rung1},
+		{ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 2, Res: Resolution{Action: ActClose, Note: "the human closed its dependency"}}, held + "the factory agent takes no `close` on it" + rung2},
+		{ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 2, Res: Resolution{Action: ActReplan, Note: "the plan is wrong"}}, held + "the factory agent takes no `replan` on it" + rung2},
 		{ActInput{TaskID: "t-b", By: "sebastian", Rung: 2, Res: Resolution{Action: ActClose, Note: "the human closed its dependency"}},
-			held + "the factory agent takes no close on it: ask the human instead, and the factory agent may take `extend`, `fund`, `raise_ceiling`, `retry`, `set_dependency` and `remove_dependency`"},
-		{ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 2, Res: Resolution{Action: ActRestartPlan, Note: "one card"}}, held + "the factory agent takes no restart_plan on its plan" + rung2},
+			held + "the factory agent takes no `close` on it: ask the human instead, and the factory agent may take `extend`, `fund`, `raise_ceiling`, `retry`, `set_dependency` and `remove_dependency`"},
+		{ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Rung: 2, Res: Resolution{Action: ActRestartPlan, Note: "one card"}}, held + "the factory agent takes no `restart_plan` on its plan" + rung2},
 		{ActInput{TaskID: "t-f", CaseID: 5, By: "sebastian", Rung: 2, Res: Resolution{Action: ActRestartPlan, Note: "one card"}},
-			held + "the factory agent takes no restart_plan on its plan: note the case, settle it or hand it up to the human, and the factory agent may take `replan`, `close`, `settle` and `note`"},
+			held + "the factory agent takes no `restart_plan` on its plan: note the case, settle it or hand it up to the human, and the factory agent may take `close`, `settle` and `note`"},
 	} {
 		var refused ErrActRefused
 		if _, err := r.Act(ctx, c.in); !errors.As(err, &refused) || err.Error() != c.want {
@@ -515,13 +515,13 @@ func TestAHeldCardsCaseOffersTheRungsNoStartOrClose(t *testing.T) {
 			if !a.Rungs[rung] {
 				continue
 			}
-			if got, want := a.offerRefusal(f, rung), held+who(rung)+" takes no "+name+" on it"+fit[rung]; got != want {
+			if got, want := a.offerRefusal(f, rung), held+who(rung)+" takes no `"+name+"` on it"+fit[rung]; got != want {
 				t.Errorf("rung %d's %s = %q\nwant %q", rung, name, got, want)
 			}
 		}
 	}
 	statement := new(Runner).rungStatement(dep, f, "", nil, 2)
-	if line := "- close: not offered: " + held + "the factory agent takes no close on it" + fit[2] + "\n"; !strings.Contains(statement, line) {
+	if line := "- close: not offered: " + held + "the factory agent takes no `close` on it" + fit[2] + "\n"; !strings.Contains(statement, line) {
 		t.Errorf("rung 2's statement lacks %q:\n%s", line, statement)
 	}
 	if !slices.Contains(offeredNames(f, 3), ActClose) {
@@ -533,7 +533,7 @@ func TestAHeldCardsCaseOffersTheRungsNoStartOrClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, facts := range []CaseFacts{f, sibling} {
-		if got, want := restart.offerRefusal(facts, 2), held+"the factory agent takes no restart_plan on its plan"+fit[2]; got != want {
+		if got, want := restart.offerRefusal(facts, 2), held+"the factory agent takes no `restart_plan` on its plan"+fit[2]; got != want {
 			t.Errorf("rung 2's restart_plan = %q\nwant %q", got, want)
 		}
 	}
@@ -546,7 +546,7 @@ func TestAHeldCardsCaseOffersTheRungsNoStartOrClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	closeAct, _ := ActionByName(ActClose)
-	if got, want := closeAct.offerRefusal(unread, 2), "the card's hold could not be read, so the factory agent takes no close on it: try again in a minute, or hand it up to the human"; got != want {
+	if got, want := closeAct.offerRefusal(unread, 2), "the card's hold could not be read, so the factory agent takes no `close` on it: try again in a minute, or hand it up to the human"; got != want {
 		t.Errorf("rung 2's close on an unread hold = %q\nwant %q", got, want)
 	}
 }
@@ -568,7 +568,7 @@ func TestARestartIsRefusedOverAHeldSuccessor(t *testing.T) {
 	store.tasks[succ.ID] = succ
 	store.cases = []Case{{ID: 5, TaskID: "t-f", Kind: CaseAgentEscalate, Status: CaseAtHuman}}
 	_, err := r.Act(ctx, ActInput{TaskID: "t-f", CaseID: 5, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActRestartPlan, Note: "one card"}})
-	const want = "card #9 is on hold: after the pg split. Only a human releases a held card, starts it or closes it, so the factory agent takes no restart_plan on its plan: note the case or hand it up to the human"
+	const want = "card #9 is on hold: after the pg split. Only a human releases a held card, starts it or closes it, so the factory agent takes no `restart_plan` on its plan: note the case or hand it up to the human"
 	var refused ErrActRefused
 	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want+", and the factory agent may take ") {
 		t.Fatalf("rung 2's restart_plan = %v\nwant the refusal %q and the actions rung 2 may take", err, want)

@@ -185,12 +185,12 @@ func holdRefusal(f CaseFacts, rung int, action string, args map[string]any) stri
 		if partial == partialPlanHold {
 			what = "the holds of its plan's cards"
 		}
-		return fmt.Sprintf("%s could not be read, so %s takes no %s on %s: try again in a minute, or hand it up to the human", what, who(rung), action, on)
+		return fmt.Sprintf("%s could not be read, so %s takes no `%s` on %s: try again in a minute, or hand it up to the human", what, who(rung), action, on)
 	}
 	if held == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s. Only a human releases a held card, starts it or closes it, so %s takes no %s on %s: %s", held, who(rung), action, on, holdFit(f, rung))
+	return fmt.Sprintf("%s. Only a human releases a held card, starts it or closes it, so %s takes no `%s` on %s: %s", held, who(rung), action, on, holdFit(f, rung))
 }
 
 // holdFit is what fits rung on f instead of an answer a hold refuses: the

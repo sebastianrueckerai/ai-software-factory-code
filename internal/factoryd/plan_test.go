@@ -2956,8 +2956,8 @@ func TestAPlanCardItsPlanNoLongerHoldsKeepsTheFeatureGuide(t *testing.T) {
 }
 
 // The successor that carries a plan card's key is that key's card: its
-// session carries the plan's spec, the key's role and its plan row's
-// directories, and its clone holds the plan's salvage branch, which a
+// brief holds the plan with the key's place in it, its session carries
+// the key's role and its plan row's directories, and its clone holds the plan's salvage branch, which a
 // revision's card that lands work again applies from.
 func TestASuccessorsSessionCarriesItsKeysSpecAndSalvage(t *testing.T) {
 	ctx := context.Background()
@@ -2979,9 +2979,13 @@ func TestASuccessorsSessionCarriesItsKeysSpecAndSalvage(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := podEnv(kube.podAt(0))
-	spec := "Link shortener\n\nBuild a link shortener, cc @ops.\n\nThe plan's summary: The foundation first, then links and redirects, then the acceptance tests."
-	if env["SPEC"] != spec || env["CARD_ROLE"] != RoleIntegration || env["DIRECTORIES"] != `["acceptance/","internal/links"]` {
-		t.Fatalf("SPEC %q CARD_ROLE %q DIRECTORIES %q", env["SPEC"], env["CARD_ROLE"], env["DIRECTORIES"])
+	if env["CARD_ROLE"] != RoleIntegration || env["DIRECTORIES"] != `["acceptance/","internal/links"]` {
+		t.Fatalf("CARD_ROLE %q DIRECTORIES %q", env["CARD_ROLE"], env["DIRECTORIES"])
+	}
+	brief, err := store.CardBrief(ctx, "t1")
+	if err != nil || brief.Plan == nil || brief.Plan.Issue != 1 || brief.Plan.Key != "integration" || brief.Plan.Role != RoleIntegration ||
+		brief.Plan.Summary != "The foundation first, then links and redirects, then the acceptance tests." {
+		t.Fatalf("the successor's brief = %+v, %v; want plan #1 with the key integration, its role and the plan's summary", brief.Plan, err)
 	}
 	if clone := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "clone")); clone["BRANCHES"] != "salvage/t-plan:salvage" {
 		t.Fatalf("clone BRANCHES %q, want the plan's salvage branch", clone["BRANCHES"])
