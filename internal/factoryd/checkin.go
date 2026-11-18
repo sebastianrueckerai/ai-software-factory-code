@@ -1236,6 +1236,7 @@ func (g *checkinGateway) Call(ctx context.Context, taskID, alias string, in Chec
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(gateway.HeaderFactoryTask, taskID)
 	req.Header.Set(gateway.HeaderFactoryPurpose, policy.PurposeCheckin)
+	setCard(ctx, req)
 	client := g.HTTP
 	if client == nil {
 		client = http.DefaultClient

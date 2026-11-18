@@ -46,7 +46,7 @@ func (b *BriefWriter) askCase(ctx context.Context, c Case, t, bill Task) (backgr
 		return "", "", err
 	}
 	v := b.Current()
-	content, _, err := b.Model.Chat(ctx, bill.ID, v.Document.FactoryModel(t.RequiredCapabilities, policy.PurposeBrief), policy.PurposeBrief,
+	content, _, err := b.Model.Chat(forCard(ctx, t), bill.ID, v.Document.FactoryModel(t.RequiredCapabilities, policy.PurposeBrief), policy.PurposeBrief,
 		v.Document.Limits.SupervisorTimeout, caseBriefPrompt, json.RawMessage(facts))
 	if err != nil {
 		return "", "", err

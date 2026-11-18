@@ -128,3 +128,15 @@ func ParseProviderReset(h http.Header, body []byte, entry *policy.ProviderLimit)
 	}
 	return time.Time{}, false
 }
+
+// policyClass is the policy's own key for class, "" when it names none: a
+// class read off a request — a card's, in X-Factory-Card — reaches the
+// holds, the events and the logs only as the policy spells it.
+func policyClass(doc *policy.Document, class string) string {
+	for key := range doc.Classes {
+		if key == class {
+			return key
+		}
+	}
+	return ""
+}

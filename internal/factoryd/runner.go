@@ -1543,7 +1543,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 			ask.Pace, ask.CostState = r.pace(ctx, t, s, lines, time.Now(), deadline), r.costState(ctx, t, limits.GateReserve())
 			row, now := r.cardNow(ctx, t, s)
 			tools.facts = checkinFacts(row, now, wipOutcome{})
-			return r.runCheckin(ctx, callTask, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.Checkin, tools,
+			return r.runCheckin(forCard(ctx, t), callTask, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.Checkin, tools,
 				limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, s.pastCheckin(deadline.Add(s.checkinExtra))))
 		})
 		if out.Record != nil {
@@ -1745,7 +1745,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 		ask.Pace, ask.CostState = r.pace(ctx, t, s, lines, started, deadline), r.costState(ctx, t, limits.GateReserve())
 		row, now := r.cardNow(ctx, t, s)
 		tools.facts = checkinFacts(row, now, wip)
-		return r.runCheckin(ctx, callTask, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.Checkin, tools,
+		return r.runCheckin(forCard(ctx, t), callTask, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.Checkin, tools,
 			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
 	})
 	out.Record.Session = s.id

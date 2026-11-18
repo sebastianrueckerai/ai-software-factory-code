@@ -747,7 +747,7 @@ func (r *Runner) rungConversation(ctx context.Context, t Task, repo Repo, c Case
 	tools := &CaseTools{r: r, t: t, c: c, f: f, repo: repo}
 	defer tools.close()
 	limits := v.Document.Limits
-	out := r.runRung(ctx, r.Checkin, chat.ID, r.callModel(t, policy.PurposeCheckin), f, 1, rungSystem+" "+rungToolsLine, statement,
+	out := r.runRung(forCard(ctx, t), r.Checkin, chat.ID, r.callModel(t, policy.PurposeCheckin), f, 1, rungSystem+" "+rungToolsLine, statement,
 		CaseEvidence(), tools, limits.CheckinCallCap(), limits.CheckinTimeCap())
 	for i := range out.Read {
 		out.Read[i].Args = r.scrub(out.Read[i].Args)

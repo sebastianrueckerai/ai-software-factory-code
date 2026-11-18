@@ -56,6 +56,9 @@ func TestRunSessionCheckinJudgmentGateMomentRunsOnTheChatTask(t *testing.T) {
 	if want := chatTaskOf(runner); chat.calls != 1 || !slices.Equal(chat.ids, []string{want}) || !strings.HasPrefix(want, "t-chat-") {
 		t.Fatalf("calls %d on %q, want one on %q", chat.calls, chat.ids, want)
 	}
+	if !slices.Equal(chat.cards, []string{policy.ClassCoder}) {
+		t.Fatalf("the call named the cards %q, want the card's class coder", chat.cards)
+	}
 	// the default chat budget of 10 EUR, nothing spent
 	if got := chat.gots[0].Input; !strings.Contains(got, "calls left 20, 10.00 EUR left in the project's judgment budget this month") {
 		t.Fatalf("statement = %q, want the policy's calls and the project's judgment money", got)
@@ -72,6 +75,9 @@ func TestRunSessionCheckinJudgmentSessionMomentRunsOnTheChatTask(t *testing.T) {
 	}
 	if want := chatTaskOf(runner); !slices.Equal(chat.ids, []string{want}) {
 		t.Fatalf("calls booked on %q, want %q", chat.ids, want)
+	}
+	if !slices.Equal(chat.cards, []string{policy.ClassCoder}) {
+		t.Fatalf("the call named the cards %q, want the card's class coder", chat.cards)
 	}
 }
 

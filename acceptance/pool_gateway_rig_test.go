@@ -2,17 +2,19 @@ package acceptance
 
 // The gateway side of the pool's acceptance proofs (the pool-gateway
 // rig): a real gateway.NewServer stood on in-memory fakes — the Store
-// contract the gateway defines (Task, InsertAudit, CurrentPolicy,
-// TakeHold, ReleaseHold) as a ledger whose TakeHold fits calls with
-// policy.Fit exactly as the production store does, an Authenticator that
-// names the calling task, a KeyMinter that records, a Pricer of the one
-// alias the proofs call — and a stub LiteLLM that counts the backend
-// calls none of these proofs may reach. The policy version in force is
-// built from the code project's file text, so the proof's ceilings are
-// the file's, its pool with them.
+// contract the gateway defines (Task, InsertAudit, InsertEvent,
+// CurrentPolicy, TakeHold, ReleaseHold) as a ledger whose TakeHold fits
+// calls with policy.Fit exactly as the production store does, an
+// Authenticator that names the calling task, a KeyMinter that records, a
+// Pricer of the one alias the proofs call — and a stub LiteLLM that
+// counts the backend calls, which the refusal proofs may not reach and
+// a provider-limit proof serves the provider's answer from. The policy
+// version in force is built from the code project's file text, so the
+// proof's ceilings are the file's, its pool with them.
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"math"
@@ -140,6 +142,7 @@ type accGatewayStore struct {
 	holds  map[int64]policy.Hold
 	nextID int64
 	audits []factorygateway.AuditRow
+	events []factorygateway.EventRow
 	reqs   []policy.HoldRequest
 	pol    *policy.Version // nil = none loaded
 }
@@ -254,6 +257,9 @@ func (s *accGatewayStore) InsertAudit(_ context.Context, row factorygateway.Audi
 }
 
 func (s *accGatewayStore) InsertEvent(_ context.Context, row factorygateway.EventRow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, row)
 	return nil
 }
 
@@ -339,9 +345,10 @@ func (s *accGatewayStore) ReleaseHold(_ context.Context, h policy.Hold, cost *fl
 	return b, nil
 }
 
-// auditRows, holdRequests, openHolds and spent answer the proof's reads:
-// the audit rows in order, the hold requests the handler fitted, the
-// holds still live, a task's spent figure.
+// auditRows, holdRequests, eventRows, openHolds and spent answer the
+// proof's reads: the audit rows in order, the hold requests the handler
+// fitted, the event rows in order, the holds still live, a task's spent
+// figure.
 func (s *accGatewayStore) auditRows() []factorygateway.AuditRow {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -352,6 +359,12 @@ func (s *accGatewayStore) holdRequests() []policy.HoldRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]policy.HoldRequest(nil), s.reqs...)
+}
+
+func (s *accGatewayStore) eventRows() []factorygateway.EventRow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]factorygateway.EventRow(nil), s.events...)
 }
 
 func (s *accGatewayStore) openHolds() int {
@@ -412,11 +425,24 @@ func (p accGatewayPrices) Price(_ context.Context, alias string) (policy.Price, 
 }
 
 // accStubLiteLLM counts the backend calls the gateway proxied — a proof
-// of refusals answers none.
+// of refusals answers none — and, once a proof has served it an answer,
+// answers that answer: the status, the body and the headers a provider
+// limit proof reads the reset from.
 type accStubLiteLLM struct {
 	*httptest.Server
-	mu   sync.Mutex
-	seen []string
+	mu      sync.Mutex
+	seen    []string
+	status  int
+	body    string
+	headers map[string]string
+}
+
+// serve points the stub at the provider answer the next proxied calls
+// carry.
+func (s *accStubLiteLLM) serve(status int, body string, headers map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.status, s.body, s.headers = status, body, headers
 }
 
 func newAccStubLiteLLM(t *testing.T) *accStubLiteLLM {
@@ -425,9 +451,14 @@ func newAccStubLiteLLM(t *testing.T) *accStubLiteLLM {
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.seen = append(s.seen, r.Method+" "+r.URL.Path)
+		status, body, headers := cmp.Or(s.status, http.StatusOK), cmp.Or(s.body, "{}"), s.headers
 		s.mu.Unlock()
+		for k, v := range headers {
+			w.Header().Set(k, v)
+		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, "{}") // #nosec G104 -- nothing of these proofs reads the stub's answer
+		w.WriteHeader(status)
+		fmt.Fprint(w, body) // #nosec G104 -- nothing of these proofs reads past writing the answer
 	}))
 	t.Cleanup(s.Close)
 	return s
