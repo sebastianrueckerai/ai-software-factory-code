@@ -1106,6 +1106,52 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 	}
 }
 
+// The gate and confirm_audit read one finding the same way, by its whole
+// text as written: a confirmation recorded for a path in other letters,
+// which a file system holds as another file, covers the head's finding at
+// neither, so the gate still raises it and the press records it.
+func TestActConfirmAuditReadsAFindingAsTheGateDoes(t *testing.T) {
+	g := newFactsRig(t)
+	g.card()
+	g.timeline(t)
+	g.r.timeline = g.tl
+	const rig, other = "secrets at acceptance/rig_test.go", "secrets at Acceptance/Rig_test.go"
+	finding := AuditFinding{Item: "secrets", File: "acceptance/rig_test.go", Line: 118, Why: "a rig literal"}
+	ctx := context.Background()
+	g.tl.now = func() time.Time { return factsAt(9, 50) }
+	if err := g.tl.Append(ctx, "t1", "audit", map[string]any{"commit": "h2", "verdict": "findings", "findings": []AuditFinding{finding}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.tl.Append(ctx, "t1", stepAuditConfirmed, map[string]any{"finding": other, "by": "sebastian", "why": "another file"}); err != nil {
+		t.Fatal(err)
+	}
+	t1 := g.store.tasks["t1"]
+	t1.IssueNumber = 0
+	g.store.tasks["t1"] = t1
+	g.store.cases = append(g.store.cases, Case{ID: 9, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
+		Facts: map[string]any{"head": "h2", "gate": "GateCriteria"}})
+	covered := func() (bool, int) {
+		confirmed, err := g.r.auditConfirmations(ctx, "t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return auditConfirmedOf(finding, confirmed), len(confirmed)
+	}
+	if FindingID(rig) != FindingID(other) {
+		t.Fatalf("the two texts have the ids %s and %s, want one id", FindingID(rig), FindingID(other))
+	}
+	if ok, n := covered(); ok || n != 1 {
+		t.Fatalf("before the press the gate covers the finding: %t, of %d confirmations; want false of 1", ok, n)
+	}
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
+		Res: Resolution{Action: ActConfirmAudit, Note: "the rig's fakes, not secrets", Args: map[string]any{"findings": FindingID(rig)}}}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, n := covered(); !ok || n != 2 {
+		t.Fatalf("after the press the gate covers the finding: %t, of %d confirmations; want true of 2", ok, n)
+	}
+}
+
 // A confirmation clears exactly the findings ticked, by their ids: a
 // finding whose token comes first, and one of two findings that differ
 // only in their token, each records its own whole text and no other.
