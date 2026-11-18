@@ -19,6 +19,19 @@ type Digester interface {
 	Digest(ctx context.Context, taskID, thread, ask, text string) (string, error)
 }
 
+// refusedSentence is a session tool's sentence for its call the gateway
+// refused: what was refused, the decision and its reason, and for a
+// provider limit the reset its class is frozen until and what ends the
+// freeze sooner.
+func refusedSentence(what string, refused *policy.Refusal) string {
+	s := fmt.Sprintf("%s was refused (%s): %s", what, refused.Decision, refused.Reason)
+	if !refused.Until.IsZero() {
+		s += "; the class is frozen until " + stamp(refused.Until) + ", when the work resumes by itself, " +
+			"or sooner if an approver presses Retry now on the class's freeze card or retries a frozen case in the chat"
+	}
+	return s
+}
+
 // DigestHandler is POST /internal/digest, the gateway's hand-over of a
 // session's digest: {task_id, path, ask} answers {"text"}, the path and
 // what the Small model answered over the file's text, read from the
@@ -71,7 +84,7 @@ func (r *Runner) DigestHandler(d Digester) http.HandlerFunc {
 		var refused *policy.Refusal
 		switch {
 		case errors.As(err, &refused):
-			http.Error(w, fmt.Sprintf("the digest of %s was refused (%s): %s", in.Path, refused.Decision, refused.Reason), http.StatusConflict)
+			http.Error(w, refusedSentence("the digest of "+in.Path, refused), http.StatusConflict)
 			return
 		case err != nil:
 			log.Printf("digest of task %s at %s: %v", t.ID, in.Path, err)

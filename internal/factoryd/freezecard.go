@@ -179,9 +179,10 @@ func (w *FreezeCard) Check(ctx context.Context) error {
 
 // rehydrate adopts the waiting freeze cards a previous watcher filed, so
 // a restart between a persisted cursor and a clock does not leave the
-// card open for ever or mute its one-time ask: the class from the card's
-// face, frozenAt from the row, the resume hold from the face's stamp
-// ('The card closes itself at <stamp>'), and the ask from its face.
+// card open for ever, mute its one-time ask or re-arm it on the reset it
+// holds: the class and the reset from the card's face, frozenAt from the
+// row, the resume hold from the face's stamp ('The card closes itself at
+// <stamp>'), and the ask from its face.
 func (w *FreezeCard) rehydrate(ctx context.Context) error {
 	open, err := w.Store.ListTasksByStatus(ctx, "waiting-human")
 	if err != nil {
@@ -199,7 +200,7 @@ func (w *FreezeCard) rehydrate(ctx context.Context) error {
 		if _, ok := w.classes[key]; ok {
 			continue
 		}
-		st := &freezeClass{repo: t.Repository, class: class, taskID: t.ID, issue: t.IssueNumber, frozenAt: t.CreatedAt}
+		st := &freezeClass{repo: t.Repository, class: class, taskID: t.ID, issue: t.IssueNumber, frozenAt: t.CreatedAt, reset: freezeFaceReset(t.Objective)}
 		if at, ok := freezeResumeStamp(t.Objective); ok {
 			st.resumedAt = at.Add(-freezeResumeHold)
 		}
@@ -218,6 +219,22 @@ func freezeCardClass(objective string) string {
 		}
 	}
 	return ""
+}
+
+// freezeFaceReset reads the reset a holding card's face names on its line
+// 'The class resets at <stamp> (': the last such line, as the provider's
+// words come before it on the face; "" on a face that names none.
+func freezeFaceReset(objective string) string {
+	reset := ""
+	for _, line := range strings.Split(objective, "\n") {
+		if rest, ok := strings.CutPrefix(line, "The class resets at "); ok {
+			reset, _, _ = strings.Cut(rest, " ")
+		}
+	}
+	if _, err := time.Parse(time.RFC3339, reset); err != nil {
+		return ""
+	}
+	return reset
 }
 
 // freezeResumeStamp reads the closes-itself stamp of a resumed card's
@@ -285,7 +302,7 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		if t, issue, ok, err := w.findCard(ctx, st); err != nil {
 			return err
 		} else if ok {
-			st.taskID, st.issue, st.frozenAt = t.ID, issue, t.CreatedAt
+			st.taskID, st.issue, st.frozenAt, st.reset = t.ID, issue, t.CreatedAt, freezeFaceReset(t.Objective)
 		} else if t, issue, ok, err := w.findClosedCard(ctx, st); err != nil {
 			return err
 		} else if ok {

@@ -2951,14 +2951,15 @@ func limitRefused(until time.Time, words string) SessionResult {
 		Findings: []string{"previous session ended without a pushed commit: " + reason}}
 }
 
-// providerLimitHarness answers RunSession with results in order (the last
-// repeats) and records when each session began and every ProviderWait.
-func providerLimitHarness(t *testing.T, results ...SessionResult) (h *workflowHarness, began *[]time.Time, waits *[]ProviderWait) {
+// providerLimitHarness answers RunSession with the result of each of
+// sessions in order (the last repeats) and records when each session began
+// and every ProviderWait.
+func providerLimitHarness(t *testing.T, sessions ...func() SessionResult) (h *workflowHarness, began *[]time.Time, waits *[]ProviderWait) {
 	h, began, waits = newWorkflowHarness(t), &[]time.Time{}, &[]ProviderWait{}
 	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, in SessionInput) (SessionResult, error) {
 			h.sessions, *began = append(h.sessions, in), append(*began, h.env.Now())
-			return results[min(len(h.sessions), len(results))-1], nil
+			return sessions[min(len(h.sessions), len(sessions))-1](), nil
 		})
 	h.env.OnActivity(ActivityProviderWait, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID string, w ProviderWait) error {
@@ -2966,6 +2967,15 @@ func providerLimitHarness(t *testing.T, results ...SessionResult) (h *workflowHa
 			return nil
 		})
 	return h, began, waits
+}
+
+// scripted is results as providerLimitHarness's sessions, one each.
+func scripted(results ...SessionResult) []func() SessionResult {
+	out := make([]func() SessionResult, len(results))
+	for i, res := range results {
+		out[i] = func() SessionResult { return res }
+	}
+	return out
 }
 
 // A refusal that names a reset holds the card to it (provider-freeze): the
@@ -2981,8 +2991,8 @@ func providerLimitHarness(t *testing.T, results ...SessionResult) (h *workflowHa
 // six-refusal escalation for the same refusal.
 func TestProviderLimitWaitToReset(t *testing.T) {
 	words := "rate limit exceeded until 2026-10-14 18:04:50 (Asia/Singapore)"
-	h, began, waits := providerLimitHarness(t, limitRefused(oct(14, 9, 30), words), limitRefused(oct(14, 9, 55), words),
-		limitRefused(oct(14, 10, 20), words), limitRefused(oct(14, 10, 30), words), pushed("s5", "c1"))
+	h, began, waits := providerLimitHarness(t, scripted(limitRefused(oct(14, 9, 30), words), limitRefused(oct(14, 9, 55), words),
+		limitRefused(oct(14, 10, 20), words), limitRefused(oct(14, 10, 30), words), pushed("s5", "c1"))...)
 	var reads []string
 	h.env.OnActivity(ActivityLimitResume, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, model string) (bool, error) {

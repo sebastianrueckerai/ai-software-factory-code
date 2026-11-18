@@ -14,7 +14,6 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -390,17 +389,8 @@ func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose strin
 		return "", "", err
 	}
 	if res.StatusCode != http.StatusOK {
-		var refused struct {
-			Error struct {
-				Message string `json:"message"`
-			} `json:"error"`
-			Reset string `json:"reset"`
-		}
-		if d := res.Header.Get(gateway.HeaderDecision); d != "" && json.Unmarshal(body, &refused) == nil {
-			// the named limit's reset (server.go's writeProviderLimit) is
-			// what a consumer holds its retry to
-			until, _ := time.Parse(time.RFC3339, refused.Reset)
-			return "", "", fmt.Errorf("gateway %s: %w", d, &policy.Refusal{Decision: d, Reason: refused.Error.Message, Until: until})
+		if err := gatewayRefused(res.Header, body); err != nil {
+			return "", "", err
 		}
 		return "", "", fmt.Errorf("status %d: %s", res.StatusCode, textutil.Truncate(string(body), 300))
 	}
