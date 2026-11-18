@@ -233,18 +233,26 @@ func freezeResumeStamp(objective string) (time.Time, bool) {
 	return t, true
 }
 
-// event applies one gateway row: an arm to its repository's card of the
-// class, an end to every repository's open card of the class, as the
-// gateway's hold is the class's in all of them.
+// event applies one gateway row to every repository's open card of the
+// class, as the gateway's hold is the class's in all of them: an arm
+// re-arms each, which cancels a pending close, and files or reopens the
+// card of the arming repository; an end starts each one's close.
 func (w *FreezeCard) event(ctx context.Context, ev FreezeEvent) error {
+	repos, err := w.openCardRepositories(ctx, ev.Class)
+	if err != nil {
+		return err
+	}
 	switch ev.Kind {
 	case "class_frozen":
-		return w.frozen(ctx, w.class(ev.Repository, ev.Class), ev)
-	case "class_resumed":
-		repos, err := w.openCardRepositories(ctx, ev.Class)
-		if err != nil {
-			return err
+		if !slices.Contains(repos, ev.Repository) {
+			repos = append(repos, ev.Repository)
 		}
+		for _, repo := range repos {
+			if err := w.frozen(ctx, w.class(repo, ev.Class), ev); err != nil {
+				return err
+			}
+		}
+	case "class_resumed":
 		for _, repo := range repos {
 			if err := w.resumed(ctx, w.class(repo, ev.Class), ev); err != nil {
 				return err
@@ -354,8 +362,9 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 }
 
 // resumed starts the card's five-minute close hold after a self-resume,
-// the held time on its face. The retry press's at-once close is the
-// freeze-close-on-retry card's item.
+// the held time on its face. The hold runs from the row's own time, so
+// every repository's card and a retry after a failed write read the same
+// moment, and it starts only once the face is written.
 func (w *FreezeCard) resumed(ctx context.Context, st *freezeClass, ev FreezeEvent) error {
 	if st.closed {
 		return nil // the press closed it; success keeps it closed
@@ -373,13 +382,12 @@ func (w *FreezeCard) resumed(ctx context.Context, st *freezeClass, ev FreezeEven
 	if !st.resumedAt.IsZero() {
 		return nil
 	}
-	st.resumedAt = w.now()
-	held := freezeHeld(st.frozenAt, st.resumedAt)
 	body := freezeCardTitle(st.class) + "\n\n" + fmt.Sprintf(
-		freezeResumedFace, st.class, stamp(st.resumedAt), held, stamp(st.resumedAt.Add(freezeResumeHold)))
+		freezeResumedFace, st.class, stamp(ev.At), freezeHeld(st.frozenAt, ev.At), stamp(ev.At.Add(freezeResumeHold)))
 	if err := w.Store.SetObjective(ctx, st.taskID, body); err != nil {
 		return err
 	}
+	st.resumedAt = ev.At
 	log.Printf("freeze card: the %s class resumed, its card #%d closes at %s", st.class, st.issue, stamp(st.resumedAt.Add(freezeResumeHold)))
 	return nil
 }

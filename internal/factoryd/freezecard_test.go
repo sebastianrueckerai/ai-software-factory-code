@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"slices"
 	"strings"
@@ -670,6 +671,128 @@ func TestFreezeCardSelfResumeClosesEveryRepositorysCard(t *testing.T) {
 	for repo, c := range cards {
 		if !slices.Contains(fj.closed, c.IssueNumber) {
 			t.Errorf("%s's issue #%d stands open", repo, c.IssueNumber)
+		}
+	}
+}
+
+// twoRepoCards files the big class's open card in sf/acme and in sf/other
+// at base: two arms, the second with the later reset base+6h, which every
+// open card of the class takes.
+func twoRepoCards(t *testing.T, store *freezeStore, w *FreezeCard, base time.Time) map[string]Task {
+	t.Helper()
+	for i, repo := range []string{"sf/acme", "sf/other"} {
+		store.rows = append(store.rows, FreezeEvent{ID: int64(i + 1), Repository: repo, At: base, Kind: "class_frozen",
+			Class: "big", Reset: base.Add(time.Duration(5+i) * time.Hour).Format(time.RFC3339), Words: "free quota exhausted"})
+	}
+	if err := w.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cards := map[string]Task{}
+	for _, c := range store.tasks {
+		if c.Source == SourceFreezeCard {
+			cards[c.Repository] = c
+		}
+	}
+	if len(cards) != 2 {
+		t.Fatalf("freeze cards = %+v, want one in each repository", cards)
+	}
+	return cards
+}
+
+// The class resumes at 13:30, which starts both repositories' five-minute
+// closes; at 13:32, inside them, one of sf/acme's cards meets a dated
+// refusal and the class re-arms to 22:00. The arm re-arms both cards: each
+// face holds the new reset (in 8h 28m) again, and neither closes at 13:35,
+// nor after a restart of the watcher.
+func TestFreezeCardReArmCancelsEveryRepositorysPendingClose(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	w := freezeWatcher(store, forgejo, &now)
+	cards := twoRepoCards(t, store, w, base)
+	now = base.Add(90 * time.Minute)
+	store.rows = append(store.rows, FreezeEvent{ID: 3, Repository: "sf/acme", At: now, Kind: "class_resumed", Class: "big"})
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now = base.Add(92 * time.Minute)
+	store.rows = append(store.rows, FreezeEvent{ID: 4, Repository: "sf/acme", At: now, Kind: "class_frozen",
+		Class: "big", Reset: base.Add(10 * time.Hour).Format(time.RFC3339), Words: "free quota exhausted"})
+	stand := func(w *FreezeCard) {
+		t.Helper()
+		if err := w.Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+		for repo, c := range cards {
+			got, _, _ := store.Task(ctx, c.ID)
+			if got.Status != "waiting-human" || !strings.Contains(got.Objective, "in 8h 28m") || strings.Contains(got.Objective, "closes itself at") {
+				t.Fatalf("at %s %s's card stands %s, want waiting on the re-armed face:\n%s", now, repo, got.Status, got.Objective)
+			}
+		}
+	}
+	stand(w)
+	now = base.Add(97 * time.Minute)
+	stand(w)
+	now = base.Add(100 * time.Minute)
+	stand(freezeWatcher(store, forgejo, &now))
+	if len(fj.closed) != 0 {
+		t.Fatalf("closed issues %v, want none while the class is frozen", fj.closed)
+	}
+}
+
+// failOnce fails the first face write of card id, as a store outage does.
+type failOnce struct {
+	*freezeStore
+	id     string
+	failed bool
+}
+
+func (s *failOnce) SetObjective(ctx context.Context, id, objective string) error {
+	if id == s.id && !s.failed {
+		s.failed = true
+		return errors.New("the store is down")
+	}
+	return s.freezeStore.SetObjective(ctx, id, objective)
+}
+
+// The class_resumed row of 13:30 reaches the watcher at 13:31, and sf/other's
+// face write fails once; the watcher reads the row again at 13:33. Both
+// cards then hold the same resume: held 1h 30m, closing at 13:35, the row's
+// own time plus five minutes, and both close then.
+func TestFreezeCardResumeStampsEveryCardFromTheRow(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	w := freezeWatcher(store, forgejo, &now)
+	cards := twoRepoCards(t, store, w, base)
+	f := &failOnce{freezeStore: store, id: cards["sf/other"].ID}
+	w.Store = f
+	store.rows = append(store.rows, FreezeEvent{ID: 3, Repository: "sf/acme", At: base.Add(90 * time.Minute), Kind: "class_resumed", Class: "big"})
+	now = base.Add(91 * time.Minute)
+	if err := w.Check(ctx); err == nil || !f.failed {
+		t.Fatalf("Check = %v, want sf/other's failed write", err)
+	}
+	now = base.Add(93 * time.Minute)
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := "the freeze held 1h 30m. The card closes itself at " + stamp(base.Add(95*time.Minute))
+	for repo, c := range cards {
+		if got, _, _ := store.Task(ctx, c.ID); !strings.Contains(got.Objective, want) {
+			t.Fatalf("%s's face, want %q:\n%s", repo, want, got.Objective)
+		}
+	}
+	now = base.Add(95 * time.Minute)
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for repo, c := range cards {
+		if got, _, _ := store.Task(ctx, c.ID); got.Status != "done" || !slices.Contains(fj.closed, c.IssueNumber) {
+			t.Fatalf("%s's card stands %s at 13:35, want closed", repo, got.Status)
 		}
 	}
 }
