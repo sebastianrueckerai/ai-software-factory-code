@@ -14,6 +14,7 @@ package acceptance
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -154,10 +155,26 @@ func TestGatewayZaiBodyFreeze(t *testing.T) {
 	plFrozen(t, "the zai body", plPost(t, h), store, "zai-class", "2026-11-14T17:05:50Z", words)
 
 	// the no-entry zone: the entry stands but names no tz, so the naive
-	// stamp reads UTC
+	// stamp reads UTC. That is the whole of "no provider entry": policy
+	// refuses a class whose provider is absent from provider_limits
+	// outright, so no version the gateway ever holds reads entry-less
+	// and the no-entry case can only be an entry naming no zone
 	h, store, _ = plServer(t, plTask("utc-class"), pv, stub)
 	stub.serve(http.StatusTooManyRequests, plZaiBody, nil)
 	plFrozen(t, "the naive stamp without a zone", plPost(t, h), store, "utc-class", "2026-11-15T01:05:50Z", words)
+
+	// the provider absent from provider_limits never stands: the version
+	// itself fails validation, and the gateway answers no call under it —
+	// pinned here so the entry-less read stays out of the question
+	bad := plPolicy()
+	bad.Tree.Document.Classes["absent-class"] = policy.Class{Models: []string{"small"}, Provider: "absentprov"}
+	h, _, _ = plServer(t, plTask("absent-class"), bad, stub)
+	stub.serve(http.StatusTooManyRequests, plZaiBody, nil)
+	rec := plPost(t, h)
+	refusal, _ := io.ReadAll(rec.Body)
+	if rec.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(refusal), "names no provider_limits entry") {
+		t.Fatalf("the absent provider's version = %d %s, want the policy's refusal", rec.StatusCode, refusal)
+	}
 
 	// the offset header: the stamp carries its offset and reads as is,
 	// the Singapore offset again naming 17:04:50 UTC

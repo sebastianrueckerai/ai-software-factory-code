@@ -110,6 +110,7 @@ func newAccFreezeForgejo(t *testing.T) (*factoryd.Forgejo, *accFreezeForgejo) {
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{}`) // #nosec G104 -- test stub
 		case r.Method == http.MethodGet && rest != "":
+			fmt.Sscanf(rest, "issues/%d", &n)
 			state := "open"
 			if fj.patches[n] == "closed" {
 				state = "closed"
@@ -171,8 +172,14 @@ func plFreezeEvent(t *testing.T, db *sql.DB, kind, class, reset, words string) {
 // Forgejo, its provider limit 24 hours so the five-minute close is the
 // only clock the proof waits out.
 func plFreezeWatcher(s *factoryd.PGStore, db *sql.DB, forge *factoryd.Forgejo) *factoryd.FreezeCard {
+	return plFreezeWatcherLimit(s, db, forge, 24*time.Hour)
+}
+
+// plFreezeWatcherLimit is plFreezeWatcher with the provider-limit bound
+// named: the wait past which the class's card speaks once.
+func plFreezeWatcherLimit(s *factoryd.PGStore, db *sql.DB, forge *factoryd.Forgejo, limit time.Duration) *factoryd.FreezeCard {
 	version := policy.Version{ID: 1, Commit: "fz-1", Tree: policy.Tree{Document: policy.Document{
-		Waits: policy.Waits{ProviderLimit: 24 * time.Hour}}}}
+		Waits: policy.Waits{ProviderLimit: limit}}}}
 	return &factoryd.FreezeCard{Store: accFreezeStore{PGStore: s, db: db}, Forgejo: forge,
 		Current: func() policy.Version { return version }}
 }
@@ -315,5 +322,70 @@ func TestFreezeCardSpeaksForTheClass(t *testing.T) {
 	// a second press is quiet: no open card stands
 	if err := w.CloseOnRetry(ctx, plFreezeRepo, "big"); err != nil {
 		t.Fatalf("the second press: %v", err)
+	}
+}
+
+// TestFreezeCardAsksAtProviderLimit: a freeze held past
+// waits.provider_limit speaks once — the card alone asks add a fallback,
+// switch the model, keep waiting — and the work cards ask nothing; a
+// second pass stays quiet, the spoke latch. The proof's watcher names one
+// minute as the bound, so the ask costs a minute of wall clock.
+// [one_freeze_card_per_class]
+func TestFreezeCardAsksAtProviderLimit(t *testing.T) {
+	ctx := context.Background()
+	s, db := plFreezeStore(t)
+	forge, fj := newAccFreezeForgejo(t)
+	w := plFreezeWatcherLimit(s, db, forge, time.Minute)
+
+	// nine cards of the class wait on the freeze, armed as the class
+	// proof arms them
+	for i := 0; i < 9; i++ {
+		id := fmt.Sprintf("fz-ask-%d", i)
+		card := factoryd.Task{ID: id, Kind: "agent", Track: policy.TrackDirect,
+			Status: "running", Repository: plFreezeRepo, Objective: "the freeze's work"}
+		if err := s.CreateTask(ctx, card); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, `UPDATE tasks SET model_alias = $2 WHERE id = $1`, id, "big"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// the hold arms: the card files at once and asks nothing
+	plFreezeEvent(t, db, "class_frozen", "big", "2027-01-04T21:01:00Z", plFreezeWords)
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	card, ok := plFreezeCard(ctx, t, s)
+	if !ok || card.Status != "waiting-human" {
+		t.Fatalf("the freeze card = %+v, want a waiting card", card)
+	}
+	if asks := len(fj.comments); asks != 0 {
+		t.Fatalf("%d comments at the arm, want none: the card asks nothing", asks)
+	}
+
+	// past the bound the card speaks once for the class: the ask on its
+	// issue and on its face
+	time.Sleep(70 * time.Second) // past the one-minute provider-limit bound
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if asks := len(fj.comments); asks != 1 || !strings.Contains(fj.comments[0], "has held past waits.provider_limit") {
+		t.Fatalf("comments %q, want the one provider-limit ask", fj.comments)
+	}
+	if !strings.HasPrefix(fj.comments[0], fmt.Sprintf("#issues/%d ", card.IssueNumber)) {
+		t.Errorf("the ask %q is not on the card's issue #%d: the work cards ask nothing", fj.comments[0], card.IssueNumber)
+	}
+	asked, _ := plFreezeCard(ctx, t, s)
+	if !strings.Contains(asked.Objective, "has held past waits.provider_limit") {
+		t.Errorf("the card's face lacks the ask:\n%s", asked.Objective)
+	}
+
+	// the spoke latch: a second pass asks nothing again
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if asks := len(fj.comments); asks != 1 {
+		t.Fatalf("%d comments after the second pass, want the one ask still", asks)
 	}
 }
