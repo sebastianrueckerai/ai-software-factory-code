@@ -418,7 +418,8 @@ func cardBody(in toolInput) string {
 }
 
 // describe is one line saying what a proposal of tool with in would do,
-// an approve_merge's with its warning; a card of another project refuses it, and so do an
+// an approve_merge's with its warning, an answer's Merge it of a human
+// card with the pull request's head, which it carries; a card of another project refuses it, and so do an
 // approve_merge or a deny_merge without a pending merge request and a
 // github_export the console would refuse.
 func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
@@ -559,6 +560,22 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		}
 		if in.Decision != "" {
 			parts = append(parts, "decision "+in.Decision)
+		}
+		if in.Action == factoryd.ActApproveMerge && k.Kind == "human" && k.PRNumber != 0 {
+			// the proposal carries the head it names, so Do it merges what the human read
+			repo, err := factoryd.SplitRepo(k.Repository)
+			if err != nil {
+				return "", err
+			}
+			head, err := t.c.pullHead(t.r.Context(), t.a.s, repo, k.PRNumber)
+			if err != nil {
+				return "", &forgejoRefusal{what: fmt.Sprintf("read the head of pull request #%d", k.PRNumber), err: err}
+			}
+			args := map[string]any{}
+			json.Unmarshal(in.Args, &args) // #nosec G104 -- args that do not decode refuse at the run
+			args["head"] = head
+			in.Args, _ = json.Marshal(args)
+			parts = append(parts, fmt.Sprintf("merges %s of pull request #%d", shortHead(head), k.PRNumber))
 		}
 		if len(in.Answers) > 0 {
 			lines := make([]string, 0, len(in.Answers))

@@ -215,6 +215,8 @@ func (c *Console) askFace(ctx context.Context, v *boardView, f *faceView, k card
 	ap := row.Approval
 	switch {
 	case slices.ContainsFunc(answer.Fields, needsField) || !k.MayWriteSummary:
+	case answer.Action == factoryd.ActApproveMerge && k.Kind == "human":
+		// the opened card names the head the merge takes
 	case ap != nil && (!ap.Approver || answer.Action == factoryd.ActApproveMerge && (len(ap.Unsettled) > 0 || ap.HeadUnread)):
 	case ap != nil && row.Case.ID == 0:
 		a.Press, _ = requestPress(v, k, *ap, answer, o.Value)

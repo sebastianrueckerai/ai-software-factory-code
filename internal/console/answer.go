@@ -235,7 +235,7 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 	if t.Status != "waiting-human" && !factoryd.PlanWaitAsk(m, events, t) {
 		return fmt.Sprintf("#%d waits no more: it was answered or moved on elsewhere.", t.IssueNumber), nil
 	}
-	return c.doAnswerValue(ctx, a, id, choice, "")
+	return c.doAnswerValue(ctx, a, id, choice, "", "")
 }
 
 // inboxAskRefusal answers an ask without choices in the inbox, where no

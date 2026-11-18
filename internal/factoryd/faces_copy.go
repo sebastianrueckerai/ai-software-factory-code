@@ -292,7 +292,7 @@ var effectFills = map[string]func(Facts) string{
 	ActClose + "/" + variantDone: func(f Facts) string { return factString(f.Case, "check") },
 	ActApproveMerge: func(f Facts) string {
 		if ChoiceCase(f.Case, f.Card.Kind) {
-			return "Merges the pull request as you. The card ends."
+			return HumanMergeEffect("")
 		}
 		return ""
 	},
@@ -1485,6 +1485,15 @@ var resourceFace = FaceSpec{
 
 // humanFace is the face of a card a human does or decides: its question as
 // filed, and the choices it stores, each in the vocabulary's words.
+// HumanMergeEffect is the effect of a human card's Merge it at head, the
+// pull request's head the human reads beside it, "" before it is read.
+func HumanMergeEffect(head string) string {
+	if head == "" {
+		return "Merges the pull request as you. The card ends."
+	}
+	return "Merges " + head[:min(7, len(head))] + " as you. The card ends."
+}
+
 // WorkDoneAsk is a human card's ask where neither its stored ask nor its
 // title reads as one.
 const WorkDoneAsk = "Is the work of this card done?"

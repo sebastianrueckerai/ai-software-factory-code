@@ -458,7 +458,8 @@ func TestTheFactorysPullRequestWaitsForAHumansPress(t *testing.T) {
 	}
 	r, ra := newCard(t, policy.AutonomyFullAuto)
 	ck, s := r.loggedIn(t)
-	rec := r.do(post("/tasks/t-pr/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.ActApproveMerge}, "case": {fmt.Sprint(ra.caseID)}}), ck)
+	r.fg.setPullHead("/api/v1/repos/sf/code/pulls/14", "abc1234")
+	rec := r.do(post("/tasks/t-pr/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.ActApproveMerge}, "case": {fmt.Sprint(ra.caseID)}, "head": {"abc1234"}}), ck)
 	if rec.Code != http.StatusSeeOther || !slices.Contains(r.fg.calls, merge) || ra.caseNow(t).Status != factoryd.CaseResolved {
 		t.Fatalf("the human's Merge it = %d %q, calls %q, case %s; want the merge as the human and the case resolved", rec.Code, rec.Body, r.fg.calls, ra.caseNow(t).Status)
 	}

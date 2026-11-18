@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"html/template"
+	"log"
 	"net/http"
 	"net/url"
 	"path"
@@ -262,6 +263,9 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 			}
 			return casePress(v, k, *row, a, key)
 		}, r.URL.Query().Get("press"), seen)
+		if t := row.card(k).Task; t.Kind == "human" && t.PRNumber != 0 {
+			c.pinMerge(ctx, button(r), t, o.Ask.Answers)
+		}
 		o.Ask.whoMay()
 		if row.Owner != nil {
 			o.Ask.Note = helperNote(*row.Owner)
@@ -673,6 +677,30 @@ func casePress(v *boardView, k card, row caseRow, a factoryd.Answer, key string)
 	p.Post = "/tasks/" + k.ID + "/resolve"
 	p.Values = []hidden{{"case_id", strconv.FormatInt(row.Case.ID, 10)}, {"action", key}}
 	return p, named(key + ".note")
+}
+
+// pinMerge names on human card t's Merge it the head of its pull request,
+// read as a, and has the press post that head, so the merge takes the head
+// the human read. A head that cannot be read offers no Merge it.
+func (c *Console) pinMerge(ctx context.Context, a actor, t factoryd.Task, answers []answerView) {
+	key := factoryd.Answer{Value: factoryd.ActApproveMerge}.Key()
+	i := slices.IndexFunc(answers, func(v answerView) bool { return v.Action == key && v.Press != nil })
+	if i < 0 {
+		return
+	}
+	repo, err := factoryd.SplitRepo(t.Repository)
+	head := ""
+	if err == nil {
+		head, err = c.pullHead(ctx, a.s, repo, t.PRNumber)
+	}
+	if err != nil {
+		log.Printf("console: the head of %s#%d: %v", t.Repository, t.PRNumber, err)
+		answers[i].Press = nil
+		answers[i].Effect = template.HTML(fmt.Sprintf("The head of pull request #%d could not be read, so it does not merge from here. Reload the card.", t.PRNumber))
+		return
+	}
+	answers[i].Effect = template.HTML(template.HTMLEscapeString(factoryd.HumanMergeEffect(head)))
+	answers[i].Press.Values = append(answers[i].Press.Values, hidden{"head", head})
 }
 
 // planQuestionCase is the case plan request ap's first open question

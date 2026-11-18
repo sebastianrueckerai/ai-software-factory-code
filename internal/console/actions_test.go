@@ -75,7 +75,8 @@ func TestAHumanCardsWayOutAndItsPullRequest(t *testing.T) {
 		}
 	}
 	r, ck, csrf, card = seat(t, "factory pull request on a project without agents")
-	if rec := answer(r, ck, csrf, card, factoryd.ActApproveMerge, ""); rec.Code != http.StatusSeeOther {
+	r.fg.setPullHead("/api/v1/repos/sf/code/pulls/14", "abc1234")
+	if rec := r.do(post("/tasks/"+card.ID+"/answer", url.Values{"csrf": {csrf}, "value": {factoryd.ActApproveMerge}, "head": {"abc1234"}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("Merge it = %d %q", rec.Code, rec.Body)
 	}
 	if got, posts := actedOnce(t, r); got.Res.Action != factoryd.ActApproveMerge || !posts || !slices.Contains(r.fg.calls, merge) {
@@ -98,6 +99,56 @@ func TestAHumanCardsWayOutAndItsPullRequest(t *testing.T) {
 	if r.fg.comments["/api/v1/repos/sf/code/issues/14/comments"] != "Rejected in the factory console: "+reason ||
 		!slices.Equal(r.fg.closed, []string{"/api/v1/repos/sf/code/pulls/14 closed"}) || slices.Contains(r.fg.calls, merge) {
 		t.Errorf("Forgejo: comments %v, closed %v, calls %q; want the reason commented and the pull request closed", r.fg.comments, r.fg.closed, r.fg.calls)
+	}
+}
+
+// The factory pull request's Merge it takes the head the human read: the
+// opened card names the head's short SHA, and its press posts the head,
+// which the merge pins. A push between the reading and the press is
+// refused with the new head, and nothing merges; read again, the card
+// names the new head and merges it. A press without a head is refused.
+func TestMergeItTakesTheHeadTheHumanRead(t *testing.T) {
+	const pull = "/api/v1/repos/sf/code/pulls/14"
+	const read, pushed = "abc1234aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "def5678bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	all := facefixtures.All()
+	i := slices.IndexFunc(all, func(fx facefixtures.Fixture) bool {
+		return fx.Group == facefixtures.GroupCard && fx.Kind == "factory pull request on a project without agents"
+	})
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.seedScene(fixtureScene(all[i], all))
+	card := all[i].Task
+	key := "choice:" + factoryd.ActApproveMerge
+	open := func(head string) answerPost {
+		t.Helper()
+		body := drawer(t, r, ck, card.ID, "overview")
+		if want := `<span class="effect">Merges ` + head[:7] + ` as you. The card ends.</span>`; !strings.Contains(body, want) {
+			t.Fatalf("the opened card lacks %q:\n%s", want, body)
+		}
+		form := answerForm(t, body, key)
+		if form.Values.Get("head") != head {
+			t.Fatalf("Merge it posts head %q, want %q", form.Values.Get("head"), head)
+		}
+		form.Values.Set("csrf", s.csrf)
+		return form
+	}
+
+	r.fg.setPullHead(pull, read)
+	merge := open(read)
+	r.fg.setPullHead(pull, pushed)
+	rec := r.do(post(merge.Action, merge.Values), ck)
+	if want := "Pull request #14 moved to def5678 after you read it: read it again, then press Merge it."; rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) || len(r.fg.merged) != 0 {
+		t.Fatalf("a press after a push = %d %q, merged %v; want 409 %q and no merge", rec.Code, rec.Body, r.fg.merged, want)
+	}
+	merge = open(pushed)
+	if rec := r.do(post(merge.Action, merge.Values), ck); rec.Code != http.StatusSeeOther || !slices.Equal(r.fg.merged, []string{pull + " " + pushed}) {
+		t.Fatalf("a press on the head read again = %d %q, merged %v; want the merge of %s", rec.Code, rec.Body, r.fg.merged, pushed)
+	}
+
+	merge.Values.Del("head")
+	if rec := r.do(post(merge.Action, merge.Values), ck); rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), "Merge it names no head of pull request #14: open the card, read the change, then press Merge it.") {
+		t.Fatalf("a press without a head = %d %q, want 400", rec.Code, rec.Body)
 	}
 }
 

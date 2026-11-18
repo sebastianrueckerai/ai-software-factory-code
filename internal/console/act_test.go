@@ -600,7 +600,7 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 			r := newRig(t)
 			_, s := r.loggedIn(t)
 			r.tasks.tasks = []factoryd.BoardTask{card}
-			if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, card.ID, "", c.Value); err != nil || len(r.acted) != 1 {
+			if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, card.ID, "", c.Value, ""); err != nil || len(r.acted) != 1 {
 				t.Errorf("%s, %s: %v, Act took %+v", card.ID, c.Value, err, r.acted)
 				continue
 			}

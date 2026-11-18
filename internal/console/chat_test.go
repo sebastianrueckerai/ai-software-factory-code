@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
@@ -3025,6 +3026,41 @@ func TestChatProposalIsStored(t *testing.T) {
 	chatRows(t, r.events, before, "sebastian", card)
 }
 
+// The project agent's proposal of a factory pull request's Merge it
+// carries the head it was proposed on and names it. A push before Do it
+// refuses the press with the new head, and nothing merges.
+func TestAMergeProposalTakesTheHeadItNamed(t *testing.T) {
+	const pull = "/api/v1/repos/sf/code/pulls/14"
+	const read, pushed = "abc1234aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "def5678bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	r, chat, g := newChatRig(t)
+	all := facefixtures.All()
+	i := slices.IndexFunc(all, func(fx facefixtures.Fixture) bool {
+		return fx.Group == facefixtures.GroupCard && fx.Kind == "factory pull request on a project without agents"
+	})
+	r.seedScene(fixtureScene(all[i], all))
+	card := all[i].Task
+	r.fg.setPullHead(pull, read)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "answer", `{"task_id":"`+card.ID+`","action":"approve_merge"}`)}, {say("The pull request moved: read it again.")}}
+	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"merge the template update"}})
+	if len(tokens) != 1 {
+		t.Fatalf("proposals %q, want one", tokens)
+	}
+	row, _ := chat.proposal(tokens[0])
+	var args struct {
+		Args map[string]any `json:"args"`
+	}
+	json.Unmarshal(row.Args, &args)
+	if args.Args["head"] != read || !strings.Contains(row.Description, "merges abc1234 of pull request #14") {
+		t.Fatalf("the proposal = %s %q, want the head %s carried and named", row.Args, row.Description, read)
+	}
+	r.fg.setPullHead(pull, pushed)
+	_, events, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	if want := "Pull request #14 moved to def5678 after you read it: read it again, then press Merge it."; !slices.ContainsFunc(events, func(e string) bool { return strings.Contains(e, want) }) || len(r.fg.merged) != 0 {
+		t.Fatalf("Do it after a push: events %q, merged %v; want %q and no merge", events, r.fg.merged, want)
+	}
+}
+
 // A refused Do it is not the end: the refusal feeds the agent another
 // model call, which reads the refused row and files again, its acceptance
 // argument carrying the tests the ready check wants. A successful Do it
@@ -3671,7 +3707,7 @@ func TestCardAnswerInWordsLandsInAnOwnThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.replies = [][]string{{say("I read the card.")}}
-	note, err := r.c.doAnswerValue(ctx, actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "use your own judgement on the replica", "")
+	note, err := r.c.doAnswerValue(ctx, actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "use your own judgement on the replica", "", "")
 	if err != nil || note != "The words are in the project chat; the agent answers there." {
 		t.Fatalf("the answer in words = %q, %v", note, err)
 	}

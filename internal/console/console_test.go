@@ -121,6 +121,20 @@ type fakeForgejo struct {
 	// issueReads answer the reads of these issue paths in place of the
 	// rig's issues, a pull request among them
 	issueReads map[string]map[string]any
+	// merged are the merges of sf/code's pull requests, "path head", the
+	// head the merge pinned; a pinned head other than the pull request's
+	// own in issueReads is refused 409, as Forgejo refuses it
+	merged []string
+}
+
+// setPullHead makes the pull request at path read with head sha.
+func (f *fakeForgejo) setPullHead(path, sha string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.issueReads == nil {
+		f.issueReads = map[string]map[string]any{}
+	}
+	f.issueReads[path] = map[string]any{"head": map[string]any{"sha": sha}}
 }
 
 // briefHead opens the issue body of a card the tests file with the why
@@ -387,6 +401,16 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{"title": cmp.Or(body["title"], "Fix the cache"), "body": cmp.Or(body["body"], "It drops entries.")})
 	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/pulls/") && strings.HasSuffix(r.URL.Path, "/merge"):
+		var body struct {
+			Head string `json:"head_commit_id"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		pull := strings.TrimSuffix(r.URL.Path, "/merge")
+		if read, ok := f.issueReads[pull]["head"].(map[string]any); ok && body.Head != "" && read["sha"] != body.Head {
+			http.Error(w, `{"message":"head out of date"}`, http.StatusConflict)
+			return
+		}
+		f.merged = append(f.merged, pull+" "+body.Head)
 		w.WriteHeader(http.StatusOK)
 	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/pulls/"):
 		var body map[string]string

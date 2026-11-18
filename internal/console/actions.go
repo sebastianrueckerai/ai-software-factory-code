@@ -1094,7 +1094,7 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 // doAnswer answers card id with the human's words: continue, or the
 // choice its words name (doAnswerValue).
 func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (string, error) {
-	return c.doAnswerValue(ctx, a, id, text, "")
+	return c.doAnswerValue(ctx, a, id, text, "", "")
 }
 
 // doAnswerValue answers card id with text. value is the clicked choice's
@@ -1108,10 +1108,15 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 // cap grant what the cap asks for (grantOf), as continue finds no room.
 // The human's own words from the board go to the human's chat, where the
 // agent reads the card and answers with its own judgement; a console
-// without a chat posts them on the issue.
-func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value string) (string, error) {
+// without a chat posts them on the issue. head is the pull request head a
+// human card's Merge it showed, "" for any other press.
+func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, head string) (string, error) {
 	text = strings.TrimSpace(text)
-	t, said, done, err := c.routeAnswer(ctx, a, id, text, value, nil)
+	var typed *factoryd.Resolution
+	if head != "" {
+		typed = &factoryd.Resolution{Action: value, Args: map[string]any{"head": head}}
+	}
+	t, said, done, err := c.routeAnswer(ctx, a, id, text, value, typed)
 	if done {
 		return said, err
 	}
@@ -1199,7 +1204,7 @@ func (c *Console) routeAnswer(ctx context.Context, a actor, id, text, value stri
 // and the case form name; any other key is dropped. A chat's file_card
 // passes the door on its own tries whatever as_written says.
 var answerArgs = []string{"model", "sessions", "agent_time_s", "lines", "eur",
-	"action", "task_id", "depends_on", "title", "why", "summary", "body", "size", "criterion", "verdict",
+	"action", "task_id", "depends_on", "title", "why", "summary", "body", "size", "criterion", "verdict", "head",
 	"track", "track_reason", "rung", "rung_reason", "image", "carry_pr", "roadmap_item", "refile_of", factoryd.AsWritten}
 
 // doAnswerAs answers card id with the typed action the chat names, after
@@ -1665,14 +1670,12 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		if err != nil {
 			return "", refuse(http.StatusInternalServerError, "the task names no repository")
 		}
+		head, _ := res.Args["head"].(string)
+		res.Args = nil // the head is the merge's own; the choice takes no args in Act
 		if value == factoryd.ActApproveMerge {
-			work = func(ctx context.Context) (int64, error) {
-				if err := c.mergePull(ctx, a.s, repo, t.PRNumber); err != nil {
-					return 0, &forgejoRefusal{what: fmt.Sprintf("merge pull request #%d", t.PRNumber), err: err}
-				}
-				return 0, nil
-			}
-			note = fmt.Sprintf("Merged pull request #%d. The card ends with it.", t.PRNumber)
+			// the head check runs once Act took the press, so the chat hears Act's rule first
+			work = func(ctx context.Context) (int64, error) { return 0, c.mergeRead(ctx, a, repo, t.PRNumber, head) }
+			note = fmt.Sprintf("Merged %s of pull request #%d. The card ends with it.", shortHead(head), t.PRNumber)
 			break
 		}
 		if text == label || strings.TrimSpace(text) == "" {
@@ -1717,6 +1720,26 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 	}
 	return note, nil
 }
+
+// mergeRead merges pull request number of repo as a at head, the head a
+// read; no head, or a head that moved since, is refused, the latter with
+// the head it moved to.
+func (c *Console) mergeRead(ctx context.Context, a actor, repo factoryd.Repo, number int64, head string) error {
+	if head == "" {
+		return refuse(http.StatusBadRequest, fmt.Sprintf("Merge it names no head of pull request #%d: open the card, read the change, then press Merge it.", number))
+	}
+	err := c.mergePull(ctx, a.s, repo, number, head)
+	if err == nil {
+		return nil
+	}
+	if now, rerr := c.pullHead(ctx, a.s, repo, number); rerr == nil && now != head {
+		return refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d moved to %s after you read it: read it again, then press Merge it.", number, shortHead(now)))
+	}
+	return &forgejoRefusal{what: fmt.Sprintf("merge pull request #%d", number), err: err}
+}
+
+// shortHead is commit sha as a line names it, its first seven characters.
+func shortHead(sha string) string { return sha[:min(7, len(sha))] }
 
 // isReplanChoice says choice value names a replan.
 func isReplanChoice(value string) bool {
