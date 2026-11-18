@@ -25,8 +25,15 @@ type freezeStore struct {
 	rows         []FreezeEvent
 	storedCursor int64
 	// failReopen fails a card's move back to waiting-human, failForget
-	// the forget of a close's record
-	failReopen, failForget bool
+	// the forget of a close's record, failFace a face's write
+	failReopen, failForget, failFace bool
+}
+
+func (s *freezeStore) SetObjective(ctx context.Context, id, objective string) error {
+	if s.failFace {
+		return errors.New("the store is away")
+	}
+	return s.fakeStore.SetObjective(ctx, id, objective)
 }
 
 func (s *freezeStore) ForgetFactoryClose(ctx context.Context, taskID string, issue int64) error {
@@ -102,6 +109,7 @@ func freezeWatcher(store *freezeStore, forgejo *Forgejo, now *time.Time) *Freeze
 	doc := policy.Document{Waits: policy.Waits{ProviderLimit: 24 * time.Hour},
 		Classes:        map[string]policy.Class{"big": {Provider: "zai"}, "small": {Provider: "zai"}, "plain": {}},
 		ProviderLimits: map[string]policy.ProviderLimit{"zai": {TZ: "Asia/Singapore"}}}
+	store.fakeStore.now = func() time.Time { return *now }
 	return &FreezeCard{Store: store, Forgejo: forgejo, now: func() time.Time { return *now },
 		Current: func() policy.Version { return policy.Version{Tree: policy.Tree{Document: doc}} }}
 }
@@ -2481,11 +2489,10 @@ func TestFreezeCardStateTable(t *testing.T) {
 			h.store.failForget = false
 			h.restart()
 		}, frozen1 + " +close record", map[string]cell{
-			"class_frozen same reset": {frozen1, 0}, "class_frozen new reset": {"#1 waiting frozen R2", 1}, "class_resumed": {resumed1, 0}, "press": {pressed1, 0},
+			"class_frozen same reset": {frozen1, 0}, "class_frozen new reset": {"#1 waiting frozen R2", 1}, "class_resumed": {resumed1, 0}, "press": {pressed1, 1},
 			// the freeze of the card opened again started at 13:58, so no ask
 			// is due at 13:00 the next day and nothing reads the deleted
-			// issue; a press before the watcher's first pass repeats the
-			// first press's words, which stand on the issue, so it posts none
+			// issue
 			"tick past 5 minutes": {frozen1, 0}, "tick past the limit": {frozen1, 0}, "restart": {frozen1, 0}, "refusal": {frozen1, 0}}},
 	}
 	events := []struct {
@@ -2633,10 +2640,10 @@ func TestFreezeCardGivenUpClockEndsWithItsFreeze(t *testing.T) {
 
 // Hand-derived from a reopen whose row move fails before a restart: the
 // press closed big's #1 at 12:10, and the dated refusal at 12:20 opens its
-// issue and writes the holding face, but the store refuses the move back
-// to waiting. The row stays done under the holding face. A watcher built
-// anew at 12:30, the store back, reads the close's record as the press's
-// and opens #1 again: no second card, one re-arm comment more.
+// issue, but the store refuses the move back to waiting. The row stays
+// done under the press's face, never under the holding face, which is a
+// human's close. A watcher built anew at 12:30, the store back, reads the
+// close's record as the press's and opens #1 again: no second card.
 func TestFreezeCardHalfReopenedSurvivesARestart(t *testing.T) {
 	ctx := context.Background()
 	store := &freezeStore{fakeStore: newFakeStore()}
@@ -2660,8 +2667,8 @@ func TestFreezeCardHalfReopenedSurvivesARestart(t *testing.T) {
 	store.failReopen = true
 	now = base.Add(20 * time.Minute)
 	arm()
-	if c := freezeCardOn(t, store, 1); c.Status != "done" || strings.Contains(c.Objective, freezePressedSentence) || store.storedCursor != 2 {
-		t.Fatalf("after the failed row move #1 stands %s at cursor %d, want done under the holding face at 2:\n%s", c.Status, store.storedCursor, c.Objective)
+	if c := freezeCardOn(t, store, 1); c.Status != "done" || !strings.Contains(c.Objective, freezePressedSentence) || store.storedCursor != 2 {
+		t.Fatalf("after the failed row move #1 stands %s at cursor %d, want done under the press's face at 2:\n%s", c.Status, store.storedCursor, c.Objective)
 	}
 	store.failReopen = false
 	now = base.Add(30 * time.Minute)
@@ -2785,5 +2792,164 @@ func TestFreezeCardKeptFilingKeepsTheArmsClock(t *testing.T) {
 	face, said := freezeAsks(t, store, fj, 1)
 	if c := freezeCardOn(t, store, 1); face != 1 || said != 1 || !strings.Contains(c.Objective, "The freeze started at 2026-11-21T12:00:00Z.") {
 		t.Fatalf("the card filed a day late asks %d times on its face and %d on its issue, want the freeze since 12:00 and one ask:\n%s", face, said, c.Objective)
+	}
+}
+
+// freezeProbe is a watcher on a clock over one store, the big class armed
+// at 12:00 to a reset five hours out and its card #1 filed: the start of
+// the probes below.
+type freezeProbe struct {
+	t       *testing.T
+	store   *freezeStore
+	forgejo *Forgejo
+	fj      *alertForgejo
+	base    time.Time
+	now     time.Time
+	w       *FreezeCard
+}
+
+func newFreezeProbe(t *testing.T) *freezeProbe {
+	t.Helper()
+	forgejo, fj := newAlertForgejo(t)
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	p := &freezeProbe{t: t, store: &freezeStore{fakeStore: newFakeStore()}, forgejo: forgejo, fj: fj, base: base, now: base}
+	p.restart()
+	p.pass(0, true)
+	return p
+}
+
+func (p *freezeProbe) restart() { p.w = freezeWatcher(p.store, p.forgejo, &p.now) }
+
+// pass runs the watcher's pass at at past 12:00, after a new class_frozen
+// row of the same reset when arm is set.
+func (p *freezeProbe) pass(at time.Duration, arm bool) {
+	p.t.Helper()
+	p.now = p.base.Add(at)
+	if arm {
+		p.store.rows = append(p.store.rows, FreezeEvent{ID: int64(len(p.store.rows) + 1), Repository: "sf/acme", At: p.now, Kind: "class_frozen", Class: "big",
+			Reset: p.base.Add(5 * time.Hour).Format(time.RFC3339), Words: "free quota exhausted"})
+	}
+	if err := p.w.Check(context.Background()); err != nil {
+		p.t.Fatal(err)
+	}
+}
+
+// close closes #1's issue as factoryd's recorded close at at, in said, and
+// ends the card when the webhook of that close lands.
+func (p *freezeProbe) close(at time.Duration, said string, webhook bool) {
+	p.t.Helper()
+	p.now = p.base.Add(at)
+	card := freezeCardOn(p.t, p.store, 1)
+	if err := closeIssueAsFactory(context.Background(), p.store, p.forgejo, card, said); err != nil {
+		p.t.Fatal(err)
+	}
+	if webhook {
+		if err := p.store.TransitionTask(context.Background(), card.ID, []string{"waiting-human"}, "done"); err != nil {
+			p.t.Fatal(err)
+		}
+	}
+}
+
+// Hand-derived from a press whose face write failed: the press's close of
+// #1 is recorded at 12:10 and its webhook ends the card, which keeps the
+// holding face. The hold never armed again. A watcher built anew passes at
+// 12:11 and 12:12: the record's time, after the arm of 12:00, tells that
+// the press answered the standing freeze, so #1 stays done with no re-arm
+// comment.
+func TestFreezeCardPressAnsweredByItsRecord(t *testing.T) {
+	p := newFreezeProbe(t)
+	p.close(10*time.Minute, "factoryd: sebastian's retry press cleared the big class's hold: the freeze card closes at once.", true)
+	said := len(p.fj.comments)
+	p.restart()
+	p.pass(11*time.Minute, false)
+	p.pass(12*time.Minute, false)
+	if c := freezeCardOn(t, p.store, 1); c.Status != "done" || len(p.fj.comments) != said || len(p.fj.issues) != 1 {
+		t.Fatalf("#1 stands %s over %d issues with the comments %q, want it done as the press left it", c.Status, len(p.fj.issues), p.fj.comments[said:])
+	}
+}
+
+// Hand-derived from a human's close in flight: the console records the
+// close of #1 and closes its issue at 12:10, and the row waits on the
+// webhook. A watcher built anew passes at 12:11: the record, newer than
+// the freeze of 12:00, stays on the issue, so the webhook's close counts
+// as factoryd's recorded one. The card then ends, and the passes at 12:12
+// and, by another new watcher, 12:13 leave it as the human closed it.
+func TestFreezeCardHumanCloseInFlightKeepsItsRecord(t *testing.T) {
+	ctx := context.Background()
+	p := newFreezeProbe(t)
+	p.close(10*time.Minute, "sebastian closed this card.", false)
+	p.restart()
+	p.pass(11*time.Minute, false)
+	card := freezeCardOn(t, p.store, 1)
+	counts, err := closeCounts(ctx, p.store, "factory-agent", nil, card, "factory-agent")
+	if err != nil || !counts || card.Status != "waiting-human" {
+		t.Fatalf("the webhook's close of #1, which stands %s, counts: %t, %v; want the console's record still on the issue", card.Status, counts, err)
+	}
+	if err := p.store.TransitionTask(ctx, card.ID, []string{"waiting-human"}, "done"); err != nil {
+		t.Fatal(err)
+	}
+	said := len(p.fj.comments)
+	p.pass(12*time.Minute, false)
+	p.restart()
+	p.pass(13*time.Minute, false)
+	if c := freezeCardOn(t, p.store, 1); c.Status != "done" || c.Objective != card.Objective || len(p.fj.comments) != said || len(p.fj.issues) != 1 {
+		t.Fatalf("#1 stands %s over %d issues with the comments %q, want it as the human closed it:\n%s", c.Status, len(p.fj.issues), p.fj.comments[said:], c.Objective)
+	}
+}
+
+// Hand-derived from a human's close that meets a stale record: the press
+// closed #1 at 12:10, the reopen at 12:20 stops at the forget of the
+// press's record, and factoryd restarts. Before the new watcher's first
+// pass a human closes the card through the console at 12:25: the close
+// meets the press's record in place of its own. The record is older than
+// the freeze on the card's face, since 12:20, so the close is the human's:
+// the passes at 12:30 and, by another new watcher, 12:31 leave #1 done
+// with the face the human closed and no re-arm comment.
+func TestFreezeCardHumanCloseOverAStaleRecordStaysClosed(t *testing.T) {
+	p := newFreezeProbe(t)
+	p.now = p.base.Add(10 * time.Minute)
+	if err := p.w.CloseOnRetry(context.Background(), "sf/acme", "big", "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	p.store.failForget = true
+	p.pass(20*time.Minute, true)
+	p.store.failForget = false
+	p.restart()
+	p.close(25*time.Minute, "sebastian closed this card.", true)
+	card, said := freezeCardOn(t, p.store, 1), len(p.fj.comments)
+	p.pass(30*time.Minute, false)
+	p.restart()
+	p.pass(31*time.Minute, false)
+	if c := freezeCardOn(t, p.store, 1); c.Status != "done" || c.Objective != card.Objective || len(p.fj.comments) != said || len(p.fj.issues) != 1 {
+		t.Fatalf("#1 stands %s over %d issues with the comments %q, want it as the human closed it:\n%s", c.Status, len(p.fj.issues), p.fj.comments[said:], c.Objective)
+	}
+}
+
+// Hand-derived from a reopen that moved the row and failed at the face:
+// the press closed #1 at 12:10, and the reopen at 12:20 opens the issue
+// and moves the row to waiting, but the store refuses the holding face.
+// The row waits under the press's face. A watcher built anew at 12:30, the
+// store back, ends the row again and opens the card anew for the standing
+// freeze: #1 waits under the holding face, one re-arm comment, no second
+// card.
+func TestFreezeCardReopenStoppedAtItsFaceSurvivesARestart(t *testing.T) {
+	p := newFreezeProbe(t)
+	p.now = p.base.Add(10 * time.Minute)
+	if err := p.w.CloseOnRetry(context.Background(), "sf/acme", "big", "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	p.store.failFace = true
+	p.pass(20*time.Minute, true)
+	if c := freezeCardOn(t, p.store, 1); c.Status != "waiting-human" || !strings.Contains(c.Objective, freezePressedSentence) {
+		t.Fatalf("after the failed face #1 stands %s, want it waiting under the press's face:\n%s", c.Status, c.Objective)
+	}
+	p.store.failFace = false
+	p.restart()
+	p.pass(30*time.Minute, false)
+	p.pass(31*time.Minute, false)
+	rearms := commentsSaying(p.fj, "#1 factoryd: the hold re-armed after the retry, to the reset 2026-11-21T17:00:00Z. 0 cards of the class wait.")
+	if c := freezeCardOn(t, p.store, 1); c.Status != "waiting-human" || strings.Contains(c.Objective, freezePressedSentence) || !strings.Contains(c.Objective, "The freeze started at 2026-11-21T12:20:00Z.") ||
+		rearms != 1 || len(p.fj.issues) != 1 {
+		t.Fatalf("after the restart #1 stands %s with %d re-arm comments over %d issues, want it open under the holding face since 12:20:\n%s", c.Status, rearms, len(p.fj.issues), c.Objective)
 	}
 }

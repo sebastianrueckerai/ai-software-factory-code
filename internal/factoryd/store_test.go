@@ -57,6 +57,9 @@ type fakeStore struct {
 	// the close confirms: it ends a waiting human card (finishHumanTask)
 	// before the closer moves the row
 	webhookOnClose bool
+	// now is the clock that stamps intake events, as the database's does;
+	// nil is the wall clock
+	now func() time.Time
 	// failFreezeCards is FreezeCards' error, set to test its readers
 	failFreezeCards error
 	// failIntakeEvent is InsertIntakeEvent's error, set to test the writers
@@ -1008,6 +1011,13 @@ func (s *fakeStore) SetQuestionProposal(ctx context.Context, taskID string, case
 	return nil
 }
 
+func (s *fakeStore) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
 func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
 	if s.failIntakeEvent != nil {
 		return 0, s.failIntakeEvent
@@ -1021,7 +1031,7 @@ func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64
 	}
 	e.ID = int64(len(s.intakeEvents) + 1)
 	if e.CreatedAt.IsZero() {
-		e.CreatedAt = time.Now()
+		e.CreatedAt = s.clock()
 	}
 	s.intakeEvents = append(s.intakeEvents, e)
 	return e.ID, nil
@@ -1056,7 +1066,7 @@ func closeKey(e IntakeEvent) [2]any {
 func (s *fakeStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error) {
 	var out []IntakeEvent
 	for _, e := range s.intakeEvents {
-		if e.Kind == IntakeFactoryClosed && !s.confirmedCloses[closeKey(e)] && time.Since(e.CreatedAt) > olderThan && len(out) < limit {
+		if e.Kind == IntakeFactoryClosed && !s.confirmedCloses[closeKey(e)] && s.clock().Sub(e.CreatedAt) > olderThan && len(out) < limit {
 			out = append(out, e)
 		}
 	}
