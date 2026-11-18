@@ -314,7 +314,8 @@ func accReceiptDecisions(ctx context.Context, t *testing.T, s *factoryd.PGStore,
 		sessions, _ := res.Args["sessions"].(float64)
 		seconds, _ := res.Args["agent_time_s"].(float64)
 		out = append(out, factoryd.ReceiptDecision{Kind: "case", Decision: res.Action, By: res.By,
-			Draw: fmt.Sprintf("%d sessions and %d minutes of agent time", int(sessions), int(seconds)/60),
+			// the answer of this test draws one whole hour
+			Draw: fmt.Sprintf("%d sessions and %d hour of agent time", int(sessions), int(seconds)/3600),
 			Note: res.Reason, At: c.ResolvedAt})
 	}
 	return out
