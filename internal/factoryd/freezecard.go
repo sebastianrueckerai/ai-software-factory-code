@@ -739,7 +739,7 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		// next close is its own. The store opens the card in one write and
 		// holds the issue's reopen as owed; then Forgejo follows.
 		t := Task{ID: st.taskID, Repository: st.repo, IssueNumber: st.issue}
-		comment := fmt.Sprintf("factoryd: the hold re-armed after the retry, to the reset %s. %d cards of the class wait.", ev.Reset, count)
+		comment := fmt.Sprintf("factoryd: the hold re-armed after the retry, to the reset %s. %s.", ev.Reset, cardsWait(count))
 		if err := w.Store.ReopenFreezeCard(ctx, t, freezeCardTitle(st.class)+"\n\n"+body, comment); err != nil {
 			return err
 		}
@@ -757,7 +757,7 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		}
 		// a replacement takes on its episode's clock and ask
 		st.taskID, st.issue, st.reset, st.frozenAt, st.resumedAt = t.ID, t.IssueNumber, ev.Reset, since, time.Time{}
-		log.Printf("freeze card: %s filed #%d for the frozen %s class (%d cards wait)", st.repo, t.IssueNumber, st.class, count)
+		log.Printf("freeze card: %s filed #%d for the frozen %s class (%s)", st.repo, t.IssueNumber, st.class, cardsWait(count))
 		return nil
 	}
 	// the open card of one episode: its face keeps the ask it spoke once
@@ -782,7 +782,7 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		return err
 	}
 	if err := w.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, st.issue,
-		fmt.Sprintf("factoryd: the hold re-armed, to the reset %s. %d cards of the class wait.", ev.Reset, count)); err != nil {
+		fmt.Sprintf("factoryd: the hold re-armed, to the reset %s. %s.", ev.Reset, cardsWait(count))); err != nil {
 		return fmt.Errorf("comment the re-arm on issue #%d: %w", st.issue, err)
 	}
 	if err := w.Store.SetObjective(ctx, st.taskID, freezeCardTitle(st.class)+"\n\n"+body); err != nil {
@@ -1274,9 +1274,15 @@ func freezeCardBody(ev FreezeEvent, count int, now, since time.Time) string {
 	} else {
 		fmt.Fprintf(&b, "The class resets at %s. ", ev.Reset)
 	}
-	fmt.Fprintf(&b, "%d cards of the class wait.\n%s%s.\n\n", count, freezeStarted, stamp(since))
+	fmt.Fprintf(&b, "%s.\n%s%s.\n\n", cardsWait(count), freezeStarted, stamp(since))
 	b.WriteString("This card holds no work slot and asks nothing. It updates on a re-arm, and closes itself five minutes after the class resumes.")
 	return b.String()
+}
+
+// cardsWait words how many cards a class's hold freezes: "1 card of the
+// class waits", "9 cards of the class wait".
+func cardsWait(count int) string {
+	return textutil.Plural(count, "card of the class waits", "cards of the class wait")
 }
 
 // freezeCountdown is reset's distance from now, "in 4h 59m".

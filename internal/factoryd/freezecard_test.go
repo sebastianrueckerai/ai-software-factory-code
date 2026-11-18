@@ -1421,7 +1421,7 @@ func TestFreezeCardCloseOutrunByItsWebhook(t *testing.T) {
 		t.Fatalf("the pressed card stands %s:\n%s", c.Status, c.Objective)
 	}
 	row(2, "class_frozen", 20*time.Minute)
-	if c := freezeCardOn(t, store, 1); c.Status != "waiting-human" || commentsSaying(fj, "#1 factoryd: the hold re-armed after the retry, to the reset "+reset+". 1 cards of the class wait.") != 1 {
+	if c := freezeCardOn(t, store, 1); c.Status != "waiting-human" || commentsSaying(fj, "#1 factoryd: the hold re-armed after the retry, to the reset "+reset+". 1 card of the class waits.") != 1 {
 		t.Fatalf("the refusal inside the reset left the card %s, comments %q", c.Status, fj.comments)
 	}
 	row(3, "class_resumed", 30*time.Minute)

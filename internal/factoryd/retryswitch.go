@@ -127,7 +127,8 @@ func (s *RetrySwitch) retryFreeze(ctx context.Context, cardID, class, by, via st
 	}
 	woken, frozen, failed := s.Freeze.wake(ctx, cards)
 	errs = append(errs, failed...)
-	log.Printf("retry switch: %s cleared the %s class's hold, %d freeze cards closed, %d of %d frozen cards woken", by, class, closed, woken, frozen)
+	log.Printf("retry switch: %s cleared the %s class's hold, %s closed, %d of %d frozen cards woken", by, class,
+		textutil.Plural(closed, "freeze card", "freeze cards"), woken, frozen)
 	s.Freeze.Timeline.RecordRow(ctx, cardID, EventFreezeRetried, by, via, map[string]any{"class": class, "closed": closed, "woken": woken, "frozen": frozen})
 	if len(errs) > 0 {
 		return &PartialPressError{Err: errors.Join(errs...)}

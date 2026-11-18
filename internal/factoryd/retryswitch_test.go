@@ -308,7 +308,7 @@ func retrySwitchEndsFreeze(t *testing.T, by, via string, press func(sw *RetrySwi
 	}
 	// sf/acme's face counts t1, t2 and the queued t4, not t6, which the
 	// hold of small holds; sf/other's counts t5
-	if a, o := cards[acme].Objective, cards[other].Objective; !strings.Contains(a, "3 cards of the class wait") || !strings.Contains(o, "1 cards of the class wait") {
+	if a, o := cards[acme].Objective, cards[other].Objective; !strings.Contains(a, "3 cards of the class wait") || !strings.Contains(o, "1 card of the class waits.") {
 		t.Fatalf("the faces count wrong:\n%s\n\n%s", a, o)
 	}
 	cardStatus := func(repo string) string {
