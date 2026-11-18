@@ -3,9 +3,12 @@ package factoryd
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -60,8 +63,9 @@ type FreezeCardStore interface {
 	// SetFreezeCursor persists the watcher's cursor (the migration's
 	// freeze_cursor table), so a restart reads forward only.
 	SetFreezeCursor(ctx context.Context, cursor int64) error
-	// FrozenCards counts the class's waiting cards for the face.
-	FrozenCards(ctx context.Context, repository, class string) (int, error)
+	// ListFrozenCards lists the running and queued cards whose classes
+	// hold class, in every repository.
+	ListFrozenCards(ctx context.Context, class string) ([]Task, error)
 	CreateTask(ctx context.Context, t Task) error
 	SetObjective(ctx context.Context, id, objective string) error
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
@@ -75,6 +79,10 @@ type FreezeCardStore interface {
 	CloseFreezeCard(ctx context.Context, repository, class string) (Task, bool, error)
 }
 
+// errNoPolicyReader refuses a freeze watcher wired without its policy
+// reader, which would count no frozen card and wake none.
+var errNoPolicyReader = errors.New("the freeze card watcher has no policy reader (FreezeCard.Current): it cannot tell which cards a class's hold freezes")
+
 // FreezeCard is the watcher in the month alarm's cap-card shape: the
 // first class_frozen for a class files ONE card naming the provider's
 // words, the class, the reset with its countdown and how many cards wait;
@@ -86,12 +94,17 @@ type FreezeCardStore interface {
 type FreezeCard struct {
 	Store   FreezeCardStore
 	Forgejo *Forgejo
-	// Current hands the policy version in force, whose waits.provider_limit
-	// bounds the silence; nil reads the defaults.
+	// Current hands the policy version in force: its classes say which
+	// cards a class's hold freezes, its waits.provider_limit bounds the
+	// silence. Required: Check and the frozen cards' read refuse a watcher
+	// without it (errNoPolicyReader).
 	Current func() policy.Version
 	// Timeline records the card's card_created; nil records none.
 	Timeline *Timeline
 
+	// mu serializes Check, on the watcher's loop, and CloseOnRetry, on a
+	// press's goroutine.
+	mu      sync.Mutex
 	now     func() time.Time
 	cursor  int64
 	classes map[string]*freezeClass
@@ -130,6 +143,11 @@ func (w *FreezeCard) Loop(ctx context.Context, every time.Duration) {
 // classes' clocks: the five-minute resume hold and the provider-limit
 // bound.
 func (w *FreezeCard) Check(ctx context.Context) error {
+	if w.Current == nil {
+		return errNoPolicyReader
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.classes == nil {
 		w.classes = map[string]*freezeClass{}
 	}
@@ -215,25 +233,51 @@ func freezeResumeStamp(objective string) (time.Time, bool) {
 	return t, true
 }
 
-// event applies one gateway row to its class's state.
+// event applies one gateway row to every repository's open card of the
+// class, as the gateway's hold is the class's in all of them: an arm
+// re-arms each, which cancels a pending close, and files or reopens the
+// card of the arming repository; an end starts each one's close.
 func (w *FreezeCard) event(ctx context.Context, ev FreezeEvent) error {
-	key := ev.Repository + "/" + ev.Class
-	st := w.classes[key]
-	if st == nil {
-		st = &freezeClass{repo: ev.Repository, class: ev.Class}
-		w.classes[key] = st
+	repos, err := w.openCardRepositories(ctx, ev.Class)
+	if err != nil {
+		return err
 	}
 	switch ev.Kind {
 	case "class_frozen":
-		return w.frozen(ctx, st, ev)
+		if !slices.Contains(repos, ev.Repository) {
+			repos = append(repos, ev.Repository)
+		}
+		for _, repo := range repos {
+			if err := w.frozen(ctx, w.class(repo, ev.Class), ev); err != nil {
+				return err
+			}
+		}
 	case "class_resumed":
-		return w.resumed(ctx, st, ev)
+		for _, repo := range repos {
+			if err := w.resumed(ctx, w.class(repo, ev.Class), ev); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
 
-// frozen files the class's card on a first arm and updates it on a re-arm
-// with a later reset; an unchanged arm stays quiet.
+// class is the watcher's memory of repository's card of class.
+func (w *FreezeCard) class(repository, class string) *freezeClass {
+	key := repository + "/" + class
+	st := w.classes[key]
+	if st == nil {
+		st = &freezeClass{repo: repository, class: class}
+		w.classes[key] = st
+	}
+	return st
+}
+
+// frozen files the class's card on a first arm and re-arms it on any
+// other: a new reset, a card the press closed, or a resume's pending
+// close, each of which an arm with the reset unchanged also ends. Only a
+// true duplicate, an arm with the reset an open, frozen card already
+// holds, stays quiet.
 func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent) error {
 	if st.taskID == "" {
 		if t, issue, ok, err := w.findCard(ctx, st); err != nil {
@@ -249,12 +293,18 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 			st.closed = true
 		}
 	}
-	if st.reset == ev.Reset && st.taskID != "" {
+	if st.reset == ev.Reset && st.taskID != "" && !st.closed && st.resumedAt.IsZero() {
 		return nil
 	}
-	count, err := w.Store.FrozenCards(ctx, st.repo, st.class)
+	cards, err := w.classCards(ctx, st.class)
 	if err != nil {
 		return err
+	}
+	count := 0
+	for _, c := range cards {
+		if c.Repository == st.repo {
+			count++
+		}
 	}
 	body := freezeCardBody(ev, count, w.now())
 	if st.closed {
@@ -274,7 +324,7 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 			return err
 		}
 		if _, err := w.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, st.issue,
-			fmt.Sprintf("factoryd: the hold re-armed after the retry with a later reset (%s). %d cards of the class wait.", ev.Reset, count)); err != nil {
+			fmt.Sprintf("factoryd: the hold re-armed after the retry, to the reset %s. %d cards of the class wait.", ev.Reset, count)); err != nil {
 			log.Printf("freeze card: comment the re-arm on issue #%d: %v", st.issue, err)
 		}
 		st.closed = false
@@ -303,7 +353,7 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 		return err
 	}
 	if _, err := w.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, st.issue,
-		fmt.Sprintf("factoryd: the hold re-armed with a later reset (%s). %d cards of the class wait.", ev.Reset, count)); err != nil {
+		fmt.Sprintf("factoryd: the hold re-armed, to the reset %s. %d cards of the class wait.", ev.Reset, count)); err != nil {
 		log.Printf("freeze card: comment the re-arm on issue #%d: %v", st.issue, err)
 	}
 	st.reset = ev.Reset
@@ -315,8 +365,9 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 }
 
 // resumed starts the card's five-minute close hold after a self-resume,
-// the held time on its face. The retry press's at-once close is the
-// freeze-close-on-retry card's item.
+// the held time on its face. The hold runs from the row's own time, so
+// every repository's card and a retry after a failed write read the same
+// moment, and it starts only once the face is written.
 func (w *FreezeCard) resumed(ctx context.Context, st *freezeClass, ev FreezeEvent) error {
 	if st.closed {
 		return nil // the press closed it; success keeps it closed
@@ -334,13 +385,12 @@ func (w *FreezeCard) resumed(ctx context.Context, st *freezeClass, ev FreezeEven
 	if !st.resumedAt.IsZero() {
 		return nil
 	}
-	st.resumedAt = w.now()
-	held := freezeHeld(st.frozenAt, st.resumedAt)
 	body := freezeCardTitle(st.class) + "\n\n" + fmt.Sprintf(
-		freezeResumedFace, st.class, stamp(st.resumedAt), held, stamp(st.resumedAt.Add(freezeResumeHold)))
+		freezeResumedFace, st.class, stamp(ev.At), freezeHeld(st.frozenAt, ev.At), stamp(ev.At.Add(freezeResumeHold)))
 	if err := w.Store.SetObjective(ctx, st.taskID, body); err != nil {
 		return err
 	}
+	st.resumedAt = ev.At
 	log.Printf("freeze card: the %s class resumed, its card #%d closes at %s", st.class, st.issue, stamp(st.resumedAt.Add(freezeResumeHold)))
 	return nil
 }
@@ -355,6 +405,8 @@ func (w *FreezeCard) resumed(ctx context.Context, st *freezeClass, ev FreezeEven
 // restart that loses the memory adopts the done card again
 // (findClosedCard), so the re-arm survives it.
 func (w *FreezeCard) CloseOnRetry(ctx context.Context, repository, class string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	t, ok, err := w.Store.CloseFreezeCard(ctx, repository, class)
 	if err != nil || !ok {
 		return err
@@ -368,6 +420,40 @@ func (w *FreezeCard) CloseOnRetry(ctx context.Context, repository, class string)
 	}
 	log.Printf("freeze card: the retry press closed %s's card #%d at once", class, t.IssueNumber)
 	return nil
+}
+
+// openCardRepositories lists the repositories that hold an open freeze
+// card of class, each once.
+func (w *FreezeCard) openCardRepositories(ctx context.Context, class string) ([]string, error) {
+	open, err := w.Store.ListTasksByStatus(ctx, "waiting-human")
+	if err != nil {
+		return nil, err
+	}
+	var repos []string
+	for _, t := range open {
+		if t.Source == SourceFreezeCard && objectiveHasClassLine(t.Objective, class) && !slices.Contains(repos, t.Repository) {
+			repos = append(repos, t.Repository)
+		}
+	}
+	return repos, nil
+}
+
+// classCards lists the cards the class's hold freezes, in every
+// repository: the running and queued cards the policy in force holds
+// under class, by the gateway's own rule (policy.Document.ProviderLimitOf).
+func (w *FreezeCard) classCards(ctx context.Context, class string) ([]Task, error) {
+	if w.Current == nil {
+		return nil, errNoPolicyReader
+	}
+	cards, err := w.Store.ListFrozenCards(ctx, class)
+	if err != nil {
+		return nil, err
+	}
+	doc := w.Current().Document
+	return slices.DeleteFunc(cards, func(t Task) bool {
+		held, _ := doc.ProviderLimitOf(t.RequiredCapabilities)
+		return held != class
+	}), nil
 }
 
 // objectiveHasClassLine answers whether objective carries the class's
@@ -412,11 +498,8 @@ func (w *FreezeCard) tick(ctx context.Context) error {
 }
 
 // providerLimit is repository's waits.provider_limit, the default's when
-// no version stands.
+// the version in force names none.
 func (w *FreezeCard) providerLimit(repository string) time.Duration {
-	if w.Current == nil {
-		return policy.DefaultWaits.ProviderLimit
-	}
 	if d := w.Current().Tree.WaitsOf(repository).ProviderLimit; d > 0 {
 		return d
 	}
@@ -622,14 +705,12 @@ func (s *PGStore) SetFreezeCursor(ctx context.Context, cursor int64) error {
 	return err
 }
 
-// FrozenCards counts the class's waiting cards for the face: the cards of
-// the repository whose model alias is the class and that hold a work slot
-// or wait for one, the cards the freeze covers.
-func (s *PGStore) FrozenCards(ctx context.Context, repository, class string) (int, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM tasks
-		WHERE repository = $1 AND model_alias = $2 AND status IN ('running', 'waiting', 'queued')`, repository, class).Scan(&n)
-	return n, err
+// ListFrozenCards lists the running and queued cards whose classes hold
+// class, in every repository, in id order: the cards that hold a work slot
+// or wait for one.
+func (s *PGStore) ListFrozenCards(ctx context.Context, class string) ([]Task, error) {
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks
+		WHERE status IN ('running', 'queued') AND required_capabilities @> jsonb_build_array($1::text) ORDER BY id`, class)
 }
 
 // CloseFreezeCard closes the class's open freeze card's row at once, no

@@ -2,6 +2,8 @@ package factoryd
 
 import (
 	"context"
+	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -35,24 +37,27 @@ func (s *freezeStore) SetFreezeCursor(ctx context.Context, cursor int64) error {
 	return nil
 }
 
-// FrozenCards counts the fake's waiting cards of the class, as the store's
-// read does.
-func (s *freezeStore) FrozenCards(ctx context.Context, repository, class string) (int, error) {
-	n := 0
-	for _, t := range s.tasks {
-		if t.Repository == repository && t.ModelAlias == class && slices.Contains([]string{"running", "waiting", "queued"}, t.Status) {
-			n++
+// ListFrozenCards lists the fake's running and queued cards whose classes
+// hold class, in every repository, in id order, as the store's read does.
+func (s *freezeStore) ListFrozenCards(ctx context.Context, class string) ([]Task, error) {
+	var out []Task
+	for _, id := range slices.Sorted(maps.Keys(s.tasks)) {
+		if t := s.tasks[id]; slices.Contains(t.RequiredCapabilities, class) && slices.Contains([]string{"running", "queued"}, t.Status) {
+			out = append(out, t)
 		}
 	}
-	return n, nil
+	return out, nil
 }
 
-// freezeWatcher is a watcher with a fixed clock over store.
+// freezeWatcher is a watcher with a fixed clock over store, under a policy
+// whose big and small classes name the zai provider and whose plain class
+// names none.
 func freezeWatcher(store *freezeStore, forgejo *Forgejo, now *time.Time) *FreezeCard {
+	doc := policy.Document{Waits: policy.Waits{ProviderLimit: 24 * time.Hour},
+		Classes:        map[string]policy.Class{"big": {Provider: "zai"}, "small": {Provider: "zai"}, "plain": {}},
+		ProviderLimits: map[string]policy.ProviderLimit{"zai": {TZ: "Asia/Singapore"}}}
 	return &FreezeCard{Store: store, Forgejo: forgejo, now: func() time.Time { return *now },
-		Current: func() policy.Version {
-			return policy.Version{Tree: policy.Tree{Document: policy.Document{Waits: policy.Waits{ProviderLimit: 24 * time.Hour}}}}
-		}}
+		Current: func() policy.Version { return policy.Version{Tree: policy.Tree{Document: doc}} }}
 }
 
 // Hand-derived against the plan's test 5: one hold on big with nine frozen
@@ -74,7 +79,7 @@ func TestFreezeCardOnePerClass(t *testing.T) {
 	// nine cards of the big class, all waiting on the freeze
 	for i := 0; i < 9; i++ {
 		if err := store.CreateTask(ctx, Task{ID: string(rune('a' + i)), Kind: "agent", Track: policy.TrackDirect, Status: "running",
-			Repository: repo.String(), ModelAlias: "big"}); err != nil {
+			Repository: repo.String(), RequiredCapabilities: []string{"big"}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -611,5 +616,258 @@ func TestFreezeCardRestartMidFreezeSpeaksOnce(t *testing.T) {
 		if e.Kind == EventQuestionAsked {
 			t.Fatalf("a question was asked: %+v", e)
 		}
+	}
+}
+
+// The gateway's hold is the class's in every repository, and its lapse
+// writes one class_resumed, on the repository of the call that found it
+// lapsed. Two repositories hold an open card of the big class; the one
+// class_resumed on sf/acme resumes both: the held time on each face, then
+// five minutes, then each closes on its own.
+func TestFreezeCardSelfResumeClosesEveryRepositorysCard(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	w := freezeWatcher(store, forgejo, &now)
+	const words = "free quota exhausted, resets 2026-11-22 01:04:50"
+	for i, repo := range []string{"sf/acme", "sf/other"} {
+		store.rows = append(store.rows, FreezeEvent{ID: int64(i + 1), Repository: repo, At: base, Kind: "class_frozen",
+			Class: "big", Reset: base.Add(time.Duration(5+i) * time.Hour).Format(time.RFC3339), Words: words})
+	}
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cards := map[string]Task{}
+	for _, c := range store.tasks {
+		if c.Source == SourceFreezeCard {
+			cards[c.Repository] = c
+		}
+	}
+	if len(cards) != 2 || len(fj.issues) != 2 {
+		t.Fatalf("freeze cards = %+v over %d issues, want one in each repository", cards, len(fj.issues))
+	}
+	now = base.Add(90 * time.Minute)
+	store.rows = append(store.rows, FreezeEvent{ID: 3, Repository: "sf/acme", At: now, Kind: "class_resumed",
+		Class: "big", Reset: base.Add(6 * time.Hour).Format(time.RFC3339)})
+	stand := func(want string) {
+		t.Helper()
+		if err := w.Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+		for repo, c := range cards {
+			got, _, _ := store.Task(ctx, c.ID)
+			if got.Status != want || !strings.Contains(got.Objective, "the freeze held 1h 30m") {
+				t.Fatalf("at %s %s's card stands %s, want %s on the resumed face:\n%s", now, repo, got.Status, want, got.Objective)
+			}
+		}
+	}
+	stand("waiting-human")
+	now = now.Add(4 * time.Minute)
+	stand("waiting-human")
+	now = now.Add(2 * time.Minute)
+	stand("done")
+	for repo, c := range cards {
+		if !slices.Contains(fj.closed, c.IssueNumber) {
+			t.Errorf("%s's issue #%d stands open", repo, c.IssueNumber)
+		}
+	}
+}
+
+// twoRepoCards files the big class's open card in sf/acme and in sf/other
+// at base: two arms, the second with the later reset base+6h, which every
+// open card of the class takes.
+func twoRepoCards(t *testing.T, store *freezeStore, w *FreezeCard, base time.Time) map[string]Task {
+	t.Helper()
+	for i, repo := range []string{"sf/acme", "sf/other"} {
+		store.rows = append(store.rows, FreezeEvent{ID: int64(i + 1), Repository: repo, At: base, Kind: "class_frozen",
+			Class: "big", Reset: base.Add(time.Duration(5+i) * time.Hour).Format(time.RFC3339), Words: "free quota exhausted"})
+	}
+	if err := w.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cards := map[string]Task{}
+	for _, c := range store.tasks {
+		if c.Source == SourceFreezeCard {
+			cards[c.Repository] = c
+		}
+	}
+	if len(cards) != 2 {
+		t.Fatalf("freeze cards = %+v, want one in each repository", cards)
+	}
+	return cards
+}
+
+// The class resumes at 13:30, which starts both repositories' five-minute
+// closes; at 13:32, inside them, one of sf/acme's cards meets a dated
+// refusal and the class re-arms to 22:00. The arm re-arms both cards: each
+// face holds the new reset (in 8h 28m) again, and neither closes at 13:35,
+// nor after a restart of the watcher.
+func TestFreezeCardReArmCancelsEveryRepositorysPendingClose(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	w := freezeWatcher(store, forgejo, &now)
+	cards := twoRepoCards(t, store, w, base)
+	now = base.Add(90 * time.Minute)
+	store.rows = append(store.rows, FreezeEvent{ID: 3, Repository: "sf/acme", At: now, Kind: "class_resumed", Class: "big"})
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now = base.Add(92 * time.Minute)
+	store.rows = append(store.rows, FreezeEvent{ID: 4, Repository: "sf/acme", At: now, Kind: "class_frozen",
+		Class: "big", Reset: base.Add(10 * time.Hour).Format(time.RFC3339), Words: "free quota exhausted"})
+	stand := func(w *FreezeCard) {
+		t.Helper()
+		if err := w.Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+		for repo, c := range cards {
+			got, _, _ := store.Task(ctx, c.ID)
+			if got.Status != "waiting-human" || !strings.Contains(got.Objective, "in 8h 28m") || strings.Contains(got.Objective, "closes itself at") {
+				t.Fatalf("at %s %s's card stands %s, want waiting on the re-armed face:\n%s", now, repo, got.Status, got.Objective)
+			}
+		}
+	}
+	stand(w)
+	now = base.Add(97 * time.Minute)
+	stand(w)
+	now = base.Add(100 * time.Minute)
+	stand(freezeWatcher(store, forgejo, &now))
+	if len(fj.closed) != 0 {
+		t.Fatalf("closed issues %v, want none while the class is frozen", fj.closed)
+	}
+}
+
+// failOnce fails the first face write of card id, as a store outage does.
+type failOnce struct {
+	*freezeStore
+	id     string
+	failed bool
+}
+
+func (s *failOnce) SetObjective(ctx context.Context, id, objective string) error {
+	if id == s.id && !s.failed {
+		s.failed = true
+		return errors.New("the store is down")
+	}
+	return s.freezeStore.SetObjective(ctx, id, objective)
+}
+
+// The class_resumed row of 13:30 reaches the watcher at 13:31, and sf/other's
+// face write fails once; the watcher reads the row again at 13:33. Both
+// cards then hold the same resume: held 1h 30m, closing at 13:35, the row's
+// own time plus five minutes, and both close then.
+func TestFreezeCardResumeStampsEveryCardFromTheRow(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	w := freezeWatcher(store, forgejo, &now)
+	cards := twoRepoCards(t, store, w, base)
+	f := &failOnce{freezeStore: store, id: cards["sf/other"].ID}
+	w.Store = f
+	store.rows = append(store.rows, FreezeEvent{ID: 3, Repository: "sf/acme", At: base.Add(90 * time.Minute), Kind: "class_resumed", Class: "big"})
+	now = base.Add(91 * time.Minute)
+	if err := w.Check(ctx); err == nil || !f.failed {
+		t.Fatalf("Check = %v, want sf/other's failed write", err)
+	}
+	now = base.Add(93 * time.Minute)
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := "the freeze held 1h 30m. The card closes itself at " + stamp(base.Add(95*time.Minute))
+	for repo, c := range cards {
+		if got, _, _ := store.Task(ctx, c.ID); !strings.Contains(got.Objective, want) {
+			t.Fatalf("%s's face, want %q:\n%s", repo, want, got.Objective)
+		}
+	}
+	now = base.Add(95 * time.Minute)
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for repo, c := range cards {
+		if got, _, _ := store.Task(ctx, c.ID); got.Status != "done" || !slices.Contains(fj.closed, c.IssueNumber) {
+			t.Fatalf("%s's card stands %s at 13:35, want closed", repo, got.Status)
+		}
+	}
+}
+
+// An arm whose reset the card already holds re-arms it whenever the card
+// does not stand open on that freeze. Right after an early press the
+// provider still limits to the same moment: that class_frozen reopens the
+// card the press closed, with the frozen face. Inside a resume's five
+// minutes it cancels the close. On an open, frozen card it is a true
+// duplicate and writes nothing.
+func TestFreezeCardSameResetArm(t *testing.T) {
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	reset := base.Add(5 * time.Hour).Format(time.RFC3339)
+	for name, between := range map[string]func(ctx context.Context, store *freezeStore, w *FreezeCard, now *time.Time) error{
+		"after the press": func(ctx context.Context, store *freezeStore, w *FreezeCard, now *time.Time) error {
+			if err := w.CloseOnRetry(ctx, "sf/acme", "big"); err != nil {
+				return err
+			}
+			store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: "sf/acme", At: *now, Kind: "class_resumed", Class: "big", Reset: reset})
+			return w.Check(ctx)
+		},
+		"inside a resume's close": func(ctx context.Context, store *freezeStore, w *FreezeCard, now *time.Time) error {
+			store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: "sf/acme", At: *now, Kind: "class_resumed", Class: "big", Reset: reset})
+			return w.Check(ctx)
+		},
+		"a duplicate": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := &freezeStore{fakeStore: newFakeStore()}
+			forgejo, fj := newAlertForgejo(t)
+			now := base
+			w := freezeWatcher(store, forgejo, &now)
+			arm := func(id int64) {
+				store.rows = append(store.rows, FreezeEvent{ID: id, Repository: "sf/acme", At: now, Kind: "class_frozen", Class: "big", Reset: reset, Words: "free quota exhausted"})
+				if err := w.Check(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			arm(1)
+			if len(store.tasks) != 1 {
+				t.Fatalf("tasks = %+v, want the one freeze card", store.tasks)
+			}
+			var card Task
+			for _, c := range store.tasks {
+				card = c
+			}
+			now = base.Add(time.Hour)
+			if between != nil {
+				if err := between(ctx, store, w, &now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, _, _ := store.Task(ctx, card.ID)
+			comments := len(fj.comments)
+			now = base.Add(time.Hour + 2*time.Minute)
+			arm(3)
+			got, _, _ := store.Task(ctx, card.ID)
+			if between == nil {
+				if got.Objective != before.Objective || len(fj.comments) != comments || len(fj.issues) != 1 {
+					t.Fatalf("the duplicate wrote: face changed %t, comments %d -> %d, issues %d", got.Objective != before.Objective, comments, len(fj.comments), len(fj.issues))
+				}
+				return
+			}
+			if got.Status != "waiting-human" || !strings.Contains(got.Objective, "in 3h 58m") || strings.Contains(got.Objective, "closes itself at") ||
+				len(fj.comments) != comments+1 || len(fj.issues) != 1 {
+				t.Fatalf("the card stands %s after the same-reset arm over %d issues, comments %d -> %d:\n%s", got.Status, len(fj.issues), comments, len(fj.comments), got.Objective)
+			}
+			now = base.Add(time.Hour + 6*time.Minute)
+			if err := w.Check(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if still, _, _ := store.Task(ctx, card.ID); still.Status != "waiting-human" {
+				t.Fatalf("the card stands %s six minutes on, want it holding the freeze", still.Status)
+			}
+		})
 	}
 }

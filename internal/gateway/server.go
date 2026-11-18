@@ -315,12 +315,14 @@ func (s *Server) currentPolicy(ctx context.Context) (*policy.Version, error) {
 }
 
 // Routes is the gateway's full HTTP surface: the model route, the MCP
-// tools and the pinned healthz shape from internal/health.
+// tools, the hold-clear door and the pinned healthz shape from
+// internal/health.
 func (s *Server) Routes(version string) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/chat/completions", http.HandlerFunc(s.handleChat))
 	mux.Handle("GET /v1/window/{alias}", http.HandlerFunc(s.handleWindow))
 	mux.Handle("POST /v1/tools/{tool}", http.HandlerFunc(s.handleChatTool))
+	mux.Handle("POST /v1/hold/clear", http.HandlerFunc(s.handleHoldClear))
 	mux.Handle("/mcp", s.mcpHandler())
 	mux.Handle("/healthz", health.Handler("factory-gateway", version))
 	return telemetry.Handler(s.tel.tp, "factory-gateway", mux)
@@ -385,7 +387,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// the provider-limit hold speaks first: a class frozen by a dated
 	// refusal answers every work call locally, no upstream call, until
 	// the hold lapses
-	if class, _ := providerLimitEntry(&pv.Tree.Document, task); class != "" {
+	if class, _ := pv.Document.ProviderLimitOf(task.Classes); class != "" {
 		if h := s.holdFor(ctx, task, class); h != nil {
 			s.audit(pid, task.ID, purpose, RefusedProviderLimit,
 				"provider limit hold for class "+class+": reset "+h.reset+": "+h.words, chatReq.Model, &task.SpentEUR)
@@ -541,6 +543,47 @@ func (s *Server) handleWindow(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(struct { // #nosec G104 -- best-effort response write
 		Window int `json:"window"`
 	}{price.Window})
+}
+
+// handleHoldClear is the retry switch's door: factoryd, by the
+// gateway-factoryd token on the pressing card's task, ends the class's
+// provider-limit hold at once (ClearClassHold) and is answered the
+// cleared class; a class with no armed hold is a success. No sandbox opens
+// it, no call is made and nothing is booked.
+func (s *Server) handleHoldClear(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	taskID := r.Header.Get(HeaderFactoryTask)
+	if !s.factorydBearer(r) {
+		s.refuse(w, nil, taskID, auditFactoryd, "refused_auth",
+			"the hold-clear door takes the factoryd shared token, not a sandbox token", "", http.StatusUnauthorized, "authentication_error")
+		return
+	}
+	if taskID == "" {
+		s.refuse(w, nil, "", auditFactoryd, "refused_auth",
+			"a factoryd call names its task in "+HeaderFactoryTask, "", http.StatusBadRequest, "invalid_request_error")
+		return
+	}
+	var req struct {
+		Class string `json:"class"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxDoorBody)).Decode(&req); err != nil || req.Class == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", `the body names the class to clear: {"class": string}`)
+		return
+	}
+	task, ok, err := s.opts.Store.Task(ctx, taskID)
+	switch {
+	case err != nil:
+		s.refuse(w, nil, taskID, auditFactoryd, "error_store", err.Error(), "", http.StatusInternalServerError, "server_error")
+		return
+	case !ok:
+		s.refuse(w, nil, taskID, auditFactoryd, "refused_task_unknown", "no task row for "+taskID, "", http.StatusNotFound, "invalid_request_error")
+		return
+	}
+	s.ClearClassHold(ctx, task, req.Class)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(struct { // #nosec G104 -- best-effort response write
+		Class string `json:"class"`
+	}{req.Class})
 }
 
 // price is alias's LiteLLM price under the version's output limit; a
@@ -1187,7 +1230,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 			// a dated provider limit freezes the class: the parse reads an
 			// absolute reset, a bare or relative error keeps the ladder
 			if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusPaymentRequired {
-				if class, entry := providerLimitEntry(&c.pv.Tree.Document, c.task); entry != nil {
+				if class, entry := c.pv.Document.ProviderLimitOf(c.task.Classes); entry != nil {
 					if reset, ok := ParseProviderReset(res.Header, respBody, entry); ok {
 						until := reset.Add(time.Minute).UTC().Format(time.RFC3339)
 						words := upstreamMessage(respBody)
