@@ -96,7 +96,7 @@ func agentDocJSON(s string) string {
 
 // agentDocInputLead is the heading every JSON-mode call's user message
 // opens with.
-var agentDocInputLead = agentdoc.Span{Name: "the input heading", Symbol: "factoryd.chatInputLead", Kind: agentdoc.KindBuilder,
+var agentDocInputLead = agentdoc.Span{Name: "the input heading", Symbol: "factoryd.ChatInputLead", Kind: agentdoc.KindBuilder,
 	Place: agentdoc.PlaceUser, Text: ChatInputLead}
 
 // agentDocFiles is the fixture diff one file wide, the review and audit
