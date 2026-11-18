@@ -311,6 +311,16 @@ func TestFreezeCardCloseOnRetry(t *testing.T) {
 	if asks := freezeAsks(t, store); asks[card.ID] != 2 {
 		t.Fatalf("the asks = %v, want the reopened card's second", asks)
 	}
+	// the withdrawn ask keeps what it knew: only the new ask holds the new reset
+	var infos []string
+	for _, e := range store.events {
+		if e.TaskID == card.ID && e.Kind == EventQuestionAsked {
+			infos = append(infos, e.Detail["info"].(string))
+		}
+	}
+	if !strings.Contains(infos[0], "in 4h 59m") || strings.Contains(infos[0], "in 8h 59m") || !strings.Contains(infos[1], "in 8h 59m") {
+		t.Fatalf("the first ask knows:\n%s\nand the second:\n%s\nwant the first reset in the first and the new one in the second alone", infos[0], infos[1])
+	}
 	// and the re-armed card still closes five minutes after a resume
 	now = base.Add(3 * time.Minute)
 	store.rows = append(store.rows, FreezeEvent{ID: 4, Repository: repo.String(), At: now, Kind: "class_resumed",

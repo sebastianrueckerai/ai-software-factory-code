@@ -412,8 +412,9 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 	body := q.Info
 	if st.closed {
 		// the press closed the card; a first dated refusal re-arms the
-		// hold and updates the same card — no second card, no ask
-		if err := w.setFace(ctx, st, body); err != nil {
+		// hold and updates the same card — no second card. The ask below
+		// carries the new face: the withdrawn one keeps what it knew
+		if err := w.Store.SetObjective(ctx, st.taskID, freezeCardTitle(st.class)+"\n\n"+body); err != nil {
 			return err
 		}
 		if err := w.Store.TransitionTask(ctx, st.taskID, []string{"done"}, "waiting-human"); err != nil {
