@@ -158,7 +158,16 @@ activities, each with a timeline step and a comment on the pull request:
    Per entry the worker writes the proof's file into the tree and runs
    `bash check test <suite> [<name>]` there by exec, with `CHECK_REPORT`
    and `CHECK_ARTIFACTS` bound, and one stdout line answers the exit, the
-   output's tail, the gzipped JUnit report and the artifacts.
+   output's tail, the gzipped JUnit report and the artifacts. If an
+   entry has no file, names a test and names a suite of one directory,
+   and no `*_test.go` file in that directory declares `func <name>(`,
+   the worker searches the tree. If exactly one directory declares the
+   test, the entry runs there and its line names both directories:
+   "TestX in ./b passed (the criterion names ./a)". If two or more
+   directories declare it, the entry runs in its own suite and its line
+   names them: "no test TestX in ./a (declared in ./b, ./c)". The search
+   skips the directories go skips and reads only regular files inside
+   the tree.
    `readReport` reads that report: a suite passes when no case failed and
    one ran, a named test is read by its own case (a case of its name that
    failed fails, no case of its name is missing, every one skipped

@@ -471,9 +471,27 @@ func TestProofResultReadsTheRunOrSaysWhyThereIsNone(t *testing.T) {
 	}
 	o := proofResult(harness.ProofRun{Exit: 1, Report: broken, Output: summary}, true, "", "TestB")
 	run := criterionRun{id: "b_guard", kind: CriterionTest, suite: "./b", name: "TestB"}
-	if got, want := criterionLine(run, o), "criterion b_guard: no test TestB in ./b: Failed FAIL x/b [build failed] "+
+	if got, want := criterionLine(run, gateResult{outcome: o}), "criterion b_guard: no test TestB in ./b: Failed FAIL x/b [build failed] "+
 		"b/b_test.go:5:32: undefined: Door b/b_test.go:6:2: undefined: Lock"; got != want {
 		t.Errorf("the card's line = %q, want %q", got, want)
+	}
+}
+
+// A run whose test moved names the directory it ran in beside the
+// criterion's; a test two directories declare and the criterion's does
+// not is missing, with the directories named.
+func TestCriterionLineNamesWhereAMovedTestRan(t *testing.T) {
+	run := criterionRun{id: "x", kind: CriterionTest, suite: "./a", name: "TestX"}
+	for _, c := range []struct {
+		res  gateResult
+		want string
+	}{
+		{gateResult{outcome: proofOutcome{proofPassed, ""}, suite: "./b"}, "criterion x: TestX in ./b passed (the criterion names ./a)"},
+		{gateResult{outcome: proofOutcome{proofMissing, ""}, declared: []string{"./b", "./c"}}, "criterion x: no test TestX in ./a (declared in ./b, ./c)"},
+	} {
+		if got := criterionLine(run, c.res); got != c.want {
+			t.Errorf("criterionLine(%+v) = %q, want %q", c.res, got, c.want)
+		}
 	}
 }
 
@@ -821,6 +839,18 @@ func TestGateCriteriaRunsACarriedTestFromTheTree(t *testing.T) {
 			verdict:  "unmet",
 			evidence: absent,
 			findings: []string{absent},
+		},
+		"moved and green": {
+			run:      harness.ProofRun{ID: "door_open", Started: true, Suite: "./internal/doors/pg", Report: junitGz(t, wrap(`<testcase name="TestDoorOpen"></testcase>`))},
+			verdict:  "met",
+			evidence: "criterion door_open: TestDoorOpen in ./internal/doors/pg passed (the criterion names ./internal/doors)",
+		},
+		"declared in two directories": {
+			run: harness.ProofRun{ID: "door_open", Started: true, Exit: 1, Declared: []string{"./internal/doors/pg", "./internal/locks"},
+				Report: junitGz(t, wrap(`<testcase name="TestOther"></testcase>`))},
+			verdict:  "unmet",
+			evidence: absent + " (declared in ./internal/doors/pg, ./internal/locks)",
+			findings: []string{absent + " (declared in ./internal/doors/pg, ./internal/locks)"},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

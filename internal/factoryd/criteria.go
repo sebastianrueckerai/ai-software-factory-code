@@ -246,6 +246,8 @@ type gateResult struct {
 	dropped   []string          // the artifacts its line had no room for
 	checks    ChecksResult      // an invariant's: the required checks of checked
 	checked   string            // the head whose checks were read
+	suite     string            // the directory the run used when its test moved from the criterion's
+	declared  []string          // the directories that declare the test, two or more, when the criterion's does not
 }
 
 // openedProof is a proof this run opens.
@@ -342,11 +344,11 @@ func criteriaReport(p Plan, head string, runs []criterionRun, results map[string
 			g.Line = fmt.Sprintf("%s: its open proof is not at %s in %s", c.label(), c.stored.Path, head[:min(7, len(head))])
 			rep.findings = append(rep.findings, g.Line+": commit the test below there.\n"+c.name+" in "+c.suite+":\n"+fenced(c.stored.Code))
 		default:
-			o := res.outcome
 			if !ok {
-				o = proofOutcome{proofNoReport, "the run reported nothing"}
+				res.outcome = proofOutcome{proofNoReport, "the run reported nothing"}
 			}
-			g.Outcome, g.Met, g.Line = o.Outcome, o.Outcome == proofPassed, criterionLine(c, o)
+			o := res.outcome
+			g.Outcome, g.Met, g.Line = o.Outcome, o.Outcome == proofPassed, criterionLine(c, res)
 			g.Message, g.Changed = textutil.Truncate(o.Message, maxProofMessage), res.changed
 			blind := c.state() == proofBlind
 			output := textutil.Tail(res.output, maxProofMessage)
@@ -448,9 +450,12 @@ func openedFinding(o openedProof, head string) string {
 	return s
 }
 
-// criterionLine is a run's line for the comment and the card.
-func criterionLine(r criterionRun, o proofOutcome) string {
-	what := r.name + " in " + r.suite
+// criterionLine is a run's line for the comment and the card: a run
+// whose test moved names the directory it ran in and the criterion's, a
+// run whose test two other directories declare names them.
+func criterionLine(r criterionRun, res gateResult) string {
+	o := res.outcome
+	what := r.name + " in " + cmp.Or(res.suite, r.suite)
 	if r.name == "" {
 		what = "suite " + r.suite
 	}
@@ -470,6 +475,12 @@ func criterionLine(r criterionRun, o proofOutcome) string {
 		if r.name == "" {
 			s += " every test"
 		}
+	}
+	switch {
+	case res.suite != "":
+		s += " (the criterion names " + r.suite + ")"
+	case len(res.declared) > 0:
+		s += " (declared in " + strings.Join(res.declared, ", ") + ")"
 	}
 	switch ev := shortenEvidence(o.Message); {
 	case ev == "":
@@ -687,6 +698,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 			run, ok := ran[e.ID]
 			g := results[e.ID]
 			g.outcome, g.output, g.ran, g.artifacts, g.dropped = outcomes[e.ID], run.Output, ok && run.Started, run.Artifacts, run.Dropped
+			g.suite, g.declared = run.Suite, run.Declared
 			results[e.ID] = g
 		}
 	}
