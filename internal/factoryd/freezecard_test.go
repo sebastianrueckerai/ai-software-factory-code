@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -35,24 +36,27 @@ func (s *freezeStore) SetFreezeCursor(ctx context.Context, cursor int64) error {
 	return nil
 }
 
-// FrozenCards counts the fake's waiting cards of the class, as the store's
-// read does.
-func (s *freezeStore) FrozenCards(ctx context.Context, repository, class string) (int, error) {
-	n := 0
-	for _, t := range s.tasks {
-		if t.Repository == repository && slices.Contains(t.RequiredCapabilities, class) && slices.Contains([]string{"running", "queued"}, t.Status) {
-			n++
+// ListFrozenCards lists the fake's running and queued cards whose classes
+// hold class, in every repository, in id order, as the store's read does.
+func (s *freezeStore) ListFrozenCards(ctx context.Context, class string) ([]Task, error) {
+	var out []Task
+	for _, id := range slices.Sorted(maps.Keys(s.tasks)) {
+		if t := s.tasks[id]; slices.Contains(t.RequiredCapabilities, class) && slices.Contains([]string{"running", "queued"}, t.Status) {
+			out = append(out, t)
 		}
 	}
-	return n, nil
+	return out, nil
 }
 
-// freezeWatcher is a watcher with a fixed clock over store.
+// freezeWatcher is a watcher with a fixed clock over store, under a policy
+// whose big and small classes name the zai provider and whose plain class
+// names none.
 func freezeWatcher(store *freezeStore, forgejo *Forgejo, now *time.Time) *FreezeCard {
+	doc := policy.Document{Waits: policy.Waits{ProviderLimit: 24 * time.Hour},
+		Classes:        map[string]policy.Class{"big": {Provider: "zai"}, "small": {Provider: "zai"}, "plain": {}},
+		ProviderLimits: map[string]policy.ProviderLimit{"zai": {TZ: "Asia/Singapore"}}}
 	return &FreezeCard{Store: store, Forgejo: forgejo, now: func() time.Time { return *now },
-		Current: func() policy.Version {
-			return policy.Version{Tree: policy.Tree{Document: policy.Document{Waits: policy.Waits{ProviderLimit: 24 * time.Hour}}}}
-		}}
+		Current: func() policy.Version { return policy.Version{Tree: policy.Tree{Document: doc}} }}
 }
 
 // Hand-derived against the plan's test 5: one hold on big with nine frozen

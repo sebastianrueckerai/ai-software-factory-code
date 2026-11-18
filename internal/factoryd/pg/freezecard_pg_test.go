@@ -67,10 +67,11 @@ func TestFreezeCardCursorPersistsPG(t *testing.T) {
 	}
 }
 
-// The freeze's reads match the class against a card's classes, never its
-// model alias: ListFrozenCards lists the running cards of the class in
-// every repository, FrozenCards counts the repository's running and
-// queued ones. Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL).
+// ListFrozenCards matches the class against a card's classes, never its
+// model alias, and lists the running and queued cards of every repository
+// in id order; which of a card's classes the hold reads is the watcher's
+// policy rule, not the read's. Requires a disposable Postgres
+// (FACTORYD_TEST_DATABASE_URL).
 func TestFrozenCardsMatchTheClassPG(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "pg_frozencards"))
@@ -79,16 +80,21 @@ func TestFrozenCardsMatchTheClassPG(t *testing.T) {
 	}
 	t.Cleanup(func() { s.DB().Close() })
 	for _, tk := range []Task{
-		{ID: "f-run", Status: "running", Repository: "sf/acme", RequiredCapabilities: []string{"coder"}, ModelAlias: "big"},
-		{ID: "f-other", Status: "running", Repository: "sf/other", RequiredCapabilities: []string{"coder"}, ModelAlias: "small"},
+		{ID: "f-run", Status: "running", Repository: "sf/acme", RequiredCapabilities: []string{"coder"}},
+		{ID: "f-other", Status: "running", Repository: "sf/other", RequiredCapabilities: []string{"coder"}},
 		{ID: "f-queued", Status: "queued", Repository: "sf/acme", RequiredCapabilities: []string{"coder"}},
+		{ID: "f-two", Status: "running", Repository: "sf/acme", RequiredCapabilities: []string{"analyzer", "coder"}},
 		{ID: "f-review", Status: "in-review", Repository: "sf/acme", RequiredCapabilities: []string{"coder"}},
-		{ID: "f-analyzer", Status: "running", Repository: "sf/acme", RequiredCapabilities: []string{"analyzer"}, ModelAlias: "coder"},
+		{ID: "f-analyzer", Status: "running", Repository: "sf/acme", RequiredCapabilities: []string{"analyzer"}},
 	} {
 		tk.BudgetEUR, tk.Kind, tk.Track, tk.Source = 1, "agent", policy.TrackDirect, "webhook"
 		if err := s.CreateTask(ctx, tk); err != nil {
 			t.Fatalf("CreateTask %s: %v", tk.ID, err)
 		}
+	}
+	// the last sessions' models: the analyzer card's alias spells the class
+	if _, err := s.DB().ExecContext(ctx, `UPDATE tasks SET model_alias = CASE id WHEN 'f-analyzer' THEN 'coder' ELSE 'big' END`); err != nil {
+		t.Fatal(err)
 	}
 	cards, err := s.ListFrozenCards(ctx, "coder")
 	if err != nil {
@@ -98,10 +104,7 @@ func TestFrozenCardsMatchTheClassPG(t *testing.T) {
 	for _, c := range cards {
 		ids = append(ids, c.ID)
 	}
-	if !slices.Equal(ids, []string{"f-other", "f-run"}) {
-		t.Fatalf("ListFrozenCards(coder) = %q, want the two running coder cards of both repositories", ids)
-	}
-	if n, err := s.FrozenCards(ctx, "sf/acme", "coder"); err != nil || n != 2 {
-		t.Fatalf("FrozenCards(sf/acme, coder) = %d, %v; want 2: the running and the queued coder card", n, err)
+	if !slices.Equal(ids, []string{"f-other", "f-queued", "f-run", "f-two"}) {
+		t.Fatalf("ListFrozenCards(coder) = %q, want the running and queued coder cards of both repositories", ids)
 	}
 }

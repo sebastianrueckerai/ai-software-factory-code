@@ -1630,6 +1630,7 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		// promised; a run with none schedules the inputs it always did
 		args = append(args, t.answers)
 	}
+	t.dropRetryPresses()
 	v, decided, err := t.race(t.sessionOptions(t.cfg.WallClockCap), &res, ActivityRunReport, args...)
 	switch {
 	case decided && v.escalate != "" &&

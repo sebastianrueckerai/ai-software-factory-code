@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -61,8 +62,9 @@ type FreezeCardStore interface {
 	// SetFreezeCursor persists the watcher's cursor (the migration's
 	// freeze_cursor table), so a restart reads forward only.
 	SetFreezeCursor(ctx context.Context, cursor int64) error
-	// FrozenCards counts the class's waiting cards for the face.
-	FrozenCards(ctx context.Context, repository, class string) (int, error)
+	// ListFrozenCards lists the running and queued cards whose classes
+	// hold class, in every repository.
+	ListFrozenCards(ctx context.Context, class string) ([]Task, error)
 	CreateTask(ctx context.Context, t Task) error
 	SetObjective(ctx context.Context, id, objective string) error
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
@@ -258,9 +260,15 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 	if st.reset == ev.Reset && st.taskID != "" {
 		return nil
 	}
-	count, err := w.Store.FrozenCards(ctx, st.repo, st.class)
+	cards, err := w.classCards(ctx, st.class)
 	if err != nil {
 		return err
+	}
+	count := 0
+	for _, c := range cards {
+		if c.Repository == st.repo {
+			count++
+		}
 	}
 	body := freezeCardBody(ev, count, w.now())
 	if st.closed {
@@ -376,6 +384,40 @@ func (w *FreezeCard) CloseOnRetry(ctx context.Context, repository, class string)
 	}
 	log.Printf("freeze card: the retry press closed %s's card #%d at once", class, t.IssueNumber)
 	return nil
+}
+
+// openCardRepositories lists the repositories that hold an open freeze
+// card of class, each once.
+func (w *FreezeCard) openCardRepositories(ctx context.Context, class string) ([]string, error) {
+	open, err := w.Store.ListTasksByStatus(ctx, "waiting-human")
+	if err != nil {
+		return nil, err
+	}
+	var repos []string
+	for _, t := range open {
+		if t.Source == SourceFreezeCard && objectiveHasClassLine(t.Objective, class) && !slices.Contains(repos, t.Repository) {
+			repos = append(repos, t.Repository)
+		}
+	}
+	return repos, nil
+}
+
+// classCards lists the cards the class's hold freezes, in every
+// repository: the running and queued cards the policy in force holds
+// under class, by the gateway's own rule (policy.Document.ProviderLimitOf).
+func (w *FreezeCard) classCards(ctx context.Context, class string) ([]Task, error) {
+	cards, err := w.Store.ListFrozenCards(ctx, class)
+	if err != nil {
+		return nil, err
+	}
+	var doc policy.Document
+	if w.Current != nil {
+		doc = w.Current().Document
+	}
+	return slices.DeleteFunc(cards, func(t Task) bool {
+		held, _ := doc.ProviderLimitOf(t.RequiredCapabilities)
+		return held != class
+	}), nil
 }
 
 // objectiveHasClassLine answers whether objective carries the class's
@@ -630,14 +672,12 @@ func (s *PGStore) SetFreezeCursor(ctx context.Context, cursor int64) error {
 	return err
 }
 
-// FrozenCards counts the class's waiting cards for the face: the cards of
-// the repository whose classes hold the class and that hold a work slot or
-// wait for one, the cards the freeze covers.
-func (s *PGStore) FrozenCards(ctx context.Context, repository, class string) (int, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM tasks
-		WHERE repository = $1 AND required_capabilities @> jsonb_build_array($2::text) AND status IN ('running', 'queued')`, repository, class).Scan(&n)
-	return n, err
+// ListFrozenCards lists the running and queued cards whose classes hold
+// class, in every repository, in id order: the cards that hold a work slot
+// or wait for one.
+func (s *PGStore) ListFrozenCards(ctx context.Context, class string) ([]Task, error) {
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks
+		WHERE status IN ('running', 'queued') AND required_capabilities @> jsonb_build_array($1::text) ORDER BY id`, class)
 }
 
 // CloseFreezeCard closes the class's open freeze card's row at once, no

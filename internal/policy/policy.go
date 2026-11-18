@@ -100,6 +100,23 @@ type ProviderLimit struct {
 	Patterns []string `yaml:"patterns,omitempty" json:"patterns,omitempty"`
 }
 
+// ProviderLimitOf is the class a task of classes is held under when its
+// provider names a reset, and that provider's entry: the first of classes
+// that names a provider listed in provider_limits. "" and nil when none
+// does.
+func (d *Document) ProviderLimitOf(classes []string) (class string, entry *ProviderLimit) {
+	for _, name := range classes {
+		c, ok := d.Classes[name]
+		if !ok || c.Provider == "" {
+			continue
+		}
+		if e, ok := d.ProviderLimits[c.Provider]; ok {
+			return name, &e
+		}
+	}
+	return "", nil
+}
+
 // Location is the zone the provider's naive stamps read in, UTC when the
 // entry leaves tz out.
 func (p ProviderLimit) Location() *time.Location {

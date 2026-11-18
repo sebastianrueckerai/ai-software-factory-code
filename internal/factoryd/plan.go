@@ -2245,6 +2245,7 @@ func (t *taskRun) planLoop() (string, error) {
 		}
 		began := workflow.Now(t.ctx)
 		var res PlanResult
+		t.dropRetryPresses()
 		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunPlan, t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings)
 		if err == nil && !decided && res.Refused.Status != 0 {
 			ask = t.providerRefused(&refusals, res.Refused, t.cfg.Models.Stronger)

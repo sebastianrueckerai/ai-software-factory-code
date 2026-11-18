@@ -629,6 +629,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.autoMovedHead = workflow.GetVersion(ctx, "auto-moved-head", workflow.DefaultVersion, versionAutoMovedHead)
 	run.checkinDecision = workflow.GetVersion(ctx, "checkin-decision", workflow.DefaultVersion, versionCheckinDecision)
 	run.providerFreeze = workflow.GetVersion(ctx, "provider-freeze", workflow.DefaultVersion, versionProviderFreeze)
+	run.retryPressDrop = workflow.GetVersion(ctx, "retry-press-drop", workflow.DefaultVersion, versionRetryPressDrop)
 	run.humanWaitQueue = workflow.GetVersion(ctx, "human-wait-queue", workflow.DefaultVersion, versionHumanWaitQueue)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
@@ -920,6 +921,11 @@ const (
 	// escalation. A run from before the change replays the ladder as it
 	// was, and a refusal with no reset keeps it.
 	versionProviderFreeze workflow.Version = 1
+	// versionRetryPressDrop (change id "retry-press-drop"): a session's
+	// start drops the retry switch's presses signalled before it, whose
+	// probe that session is, so none is left to end a later provider-limit
+	// wait at once. A run from before keeps them for its next wait.
+	versionRetryPressDrop workflow.Version = 1
 	// versionSuccessorReplansItsPlan (change id
 	// "successor-replans-its-plan", read at the cut of a plan card's
 	// successor): the successor goes back to its plan through ReplanChild,
@@ -1024,6 +1030,7 @@ type taskRun struct {
 	checkinVerdicts   []map[string]CheckVerdict // every check-in's verdicts, the priors the guards read
 	screened          int                       // how many of posterInfo the screening read
 	providerFreeze    workflow.Version          // versionProviderFreeze: the provider-limit hold to a named reset
+	retryPressDrop    workflow.Version          // versionRetryPressDrop: a session's start drops the presses before it
 	// checkedHead is the head whose checks hold for the synced head the
 	// cheap turn merges; "" when the merged head's own
 	// checks ran
@@ -1861,6 +1868,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		} else {
 			in.Handover = handoverNote
 		}
+		t.dropRetryPresses()
 		v, decided, err := t.race(t.sessionOptions(window), &res, ActivityRunSession, in)
 		t.gateFindings, t.deadFrom, handoverNote = false, "", ""
 		if !decided && imageNotPinned(err) {
@@ -2415,6 +2423,16 @@ func (t *taskRun) waitOnProvider(w ProviderWait) {
 	}
 	sel.AddFuture(workflow.NewTimer(timerCtx, w.Backoff), func(workflow.Future) {})
 	sel.Select(t.ctx)
+}
+
+// dropRetryPresses drops the retry switch's presses signalled before a
+// session starts (versionRetryPressDrop): that session is their probe.
+func (t *taskRun) dropRetryPresses() {
+	if t.retryPressDrop < versionRetryPressDrop {
+		return
+	}
+	for workflow.GetSignalChannel(t.ctx, SignalProviderRetry).ReceiveAsync(nil) {
+	}
 }
 
 // waitOnLimit holds the card to a named limit's reset (versionProviderFreeze)
