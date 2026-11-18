@@ -642,3 +642,43 @@ func TestRunReportCarriesTheAnswersToItsSession(t *testing.T) {
 		t.Fatalf("the statement holds no answer:\n%s", statement)
 	}
 }
+
+// Hand-derived from a report task that outlived its card: a human closes
+// card t-card while its sizing task t-size waits frozen to the provider's
+// reset, and plan t-plan fails while its prover t-prove runs. Each end
+// sends issue_closed, the factory's own close, to the card's open report
+// tasks and to no other: not to the screening task that is done, and not
+// to the work card the plan cut. A card that ends done ends none of its
+// report tasks: a done plan's prover still writes its proofs.
+func TestTaskEndedEndsTheOpenReportTasksOfAClosedCard(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	for _, c := range []Task{
+		{ID: "t-card", Status: "closed", Track: policy.TrackDirect},
+		{ID: "t-screen", Status: "done", Source: SourceScreening, Parent: "t-card", Track: policy.TrackDirect},
+		{ID: "t-size", Status: "running", Source: SourceSizing, Parent: "t-card", Track: policy.TrackDirect},
+		{ID: "t-plan", Status: "failed", Track: policy.TrackPlan},
+		{ID: "t-prove", Status: "queued", Source: SourceProver, Parent: "t-plan", Track: policy.TrackDirect},
+		{ID: "t-cut", Status: "running", Parent: "t-plan", Track: policy.TrackDirect},
+		{ID: "t-done-plan", Status: "done", Track: policy.TrackPlan},
+		{ID: "t-done-prove", Status: "running", Source: SourceProver, Parent: "t-done-plan", Track: policy.TrackDirect},
+	} {
+		c.Kind, c.Repository = "agent", "demo/app"
+		store.tasks[c.ID] = c
+	}
+	wf := &fakeWorkflows{}
+	for id, final := range map[string]string{"t-card": "closed", "t-plan": "failed", "t-done-plan": "done"} {
+		taskEnded(ctx, &Timeline{Objects: &fakeObjectStore{}}, store, nil, wf, store.tasks[id], final, "")
+	}
+	var closes []string
+	for _, s := range wf.signals {
+		if strings.Contains(s, " "+SignalIssueClosed+" ") {
+			closes = append(closes, s)
+		}
+	}
+	slices.Sort(closes)
+	want := []string{"t-prove issue_closed factoryd #0: ", "t-size issue_closed factoryd #0: "}
+	if !slices.Equal(closes, want) {
+		t.Fatalf("the ends sent the closes %q, want %q", closes, want)
+	}
+}

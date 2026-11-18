@@ -193,9 +193,10 @@ func (t Task) Left() float64 { return policy.Left(t.BudgetEUR, t.SpentEUR, t.Hel
 // Report tells a report task by its source: a plan's cards
 // have a parent too and are no report. The report flow, the analytics
 // and the runner's RunState ask it; it folds Source alone, no row read.
-func (t Task) Report() bool {
-	return t.Source == SourceScreening || t.Source == SourceSizing || t.Source == SourceProver
-}
+func (t Task) Report() bool { return slices.Contains(reportSources, t.Source) }
+
+// reportSources are the sources of a report task.
+var reportSources = []string{SourceScreening, SourceSizing, SourceProver}
 
 // Standing is the issue author's standing: telemetry for an
 // alert card, writer for an author who could write the repository,
