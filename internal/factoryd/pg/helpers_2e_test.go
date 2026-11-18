@@ -157,7 +157,7 @@ func (b *boardStub) act(r *Runner, in ActInput) (ActResult, error) {
 }
 
 // mergeRig is the rung rig with a pending merge request on t1's pull request 9
-// at head h2, whose case is at the human.
+// at head h2, whose case is open at rung 0.
 func mergeRig(t *testing.T, checks string) (rungRig, *boardStub, int64) {
 	t.Helper()
 	g := newRungRig(t, checks)
@@ -172,6 +172,49 @@ func mergeRig(t *testing.T, checks string) (rungRig, *boardStub, int64) {
 	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalMerge, "pr": int64(9)})
 	stub := &boardStub{s: g.s, approval: id}
 	return g, stub, id
+}
+
+// mergeWakeRig is the rung 2 rig at autonomy state whose card t1 is in
+// review, its pull request 9 at head h2 reviewed and audited, with a
+// pending merge request of class standard at h2, whose case is open at
+// rung 0 and due at the request's opening, with no step yet; the stub
+// decides the request.
+func mergeWakeRig(t *testing.T, state string) (rungRig, *Waker, *fakeWakeStarter, *boardStub, Case) {
+	t.Helper()
+	g, w, starter := rungTwoRig(t, policy.JudgmentAlways)
+	g.atAutonomy(state)
+	ctx := context.Background()
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'in-review' WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	g.record(t, EventGateAudit, map[string]any{"commit": "h2", "ran": true})
+	spec, err := json.Marshal(MergeSpec{RiskClass: "standard", HeadSHA: "h2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := g.s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "demo-app/demo-app", PRNumber: 9, Spec: spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalMerge, "pr": int64(9), "class": "standard", "factory": false, "red_checks": false})
+	c := g.liveCase(t, CaseMergeApproval)
+	var opened time.Time
+	if err := g.s.PgDB().QueryRowContext(ctx, `SELECT created_at FROM approval_requests WHERE id = $1`, id).Scan(&opened); err != nil {
+		t.Fatal(err)
+	}
+	if c.Status != CaseOpen || c.OwnerRung != 0 || c.NextWakeAt == nil || !c.NextWakeAt.Equal(opened) || len(g.steps(t, c.ID)) != 0 {
+		t.Fatalf("case = %+v with steps %+v, want it open at rung 0, due at the request's opening %s, with no step", c, g.steps(t, c.ID), opened)
+	}
+	return g, w, starter, &boardStub{s: g.s, approval: id}, c
+}
+
+// approveWork is the console's approve of t1's pull request 9 as approver,
+// whose decision signals wf: Act's work for approve_merge.
+func (g rungRig) approveWork(wf Workflows, approver string) func(context.Context) (int64, error) {
+	return func(ctx context.Context) (int64, error) {
+		at := func(context.Context, int64) (policy.Version, bool) { return g.r.PgCfg().Policy(), true }
+		return 0, ApproveMerge(ctx, g.s, at, wf, "t1", 9, approver)
+	}
 }
 
 func (g rungRig) record(t *testing.T, kind string, detail map[string]any) {

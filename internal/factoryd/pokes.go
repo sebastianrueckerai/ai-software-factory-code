@@ -385,23 +385,12 @@ func routineDecider(routine string, n int, schedule string) string {
 }
 
 // approvalPoke is an approval request's poke row, its content and its
-// choices, false for a kind that pokes nobody: a criteria request, whose
-// case climbs first and whose face's ask pokes.
+// choices, false for a kind that pokes nobody: a merge or a criteria
+// request, whose case climbs first and whose face's ask pokes.
 func approvalPoke(e Event, t Task) (string, []string, bool) {
 	ref := cardRef(e, t)
-	str := func(k string) string { s, _ := e.Detail[k].(string); return s }
 	num := func(k string) int64 { n, _ := e.Detail[k].(float64); return int64(n) }
-	bl := func(k string) bool { v, _ := e.Detail[k].(bool); return v }
-	switch str("kind") {
-	case ApprovalMerge:
-		if bl("red_checks") {
-			if !bl("factory") {
-				return fmt.Sprintf("%s waits for you: PR #%d cannot merge, its checks are red; send it back to the agent with what to change, or close it.", ref, num("pr")), nil, true
-			}
-			return fmt.Sprintf("%s waits for you: the checks of PR #%d are red, so it cannot merge; run them again, or close it with your words.", ref, num("pr")), []string{ChoiceRerun}, true
-		}
-		return fmt.Sprintf("%s waits for you: merge PR #%d, %s risk.", ref, num("pr"), str("class")), []string{"Approve"}, true
-	case ApprovalPlan:
+	if kind, _ := e.Detail["kind"].(string); kind == ApprovalPlan {
 		return fmt.Sprintf("Plan %s %q waits for your answers: revision %d, %d cards; the planner revises it with them.", ref, CardTitle(t), num("revision"), num("cards")), nil, true
 	}
 	return "", nil, false

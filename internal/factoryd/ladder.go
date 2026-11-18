@@ -641,11 +641,10 @@ func boardLevel(c Case) bool {
 
 // rungTwoTakes reports whether rung 2 takes case c: at every autonomy
 // level, where below autonomous its answer is a proposal the human
-// confirms (Proposes), every kind but a human card, the judgment budget's
-// and a merge approval. A case only a human decides is taken for its
-// analysis alone.
+// confirms (Proposes), every kind but a human card and the judgment
+// budget's. A case only a human decides is taken for its analysis alone.
 func rungTwoTakes(c Case) bool {
-	return c.Kind != CaseHumanCard && c.Kind != CaseJudgmentBudget && c.Kind != CaseMergeApproval
+	return c.Kind != CaseHumanCard && c.Kind != CaseJudgmentBudget
 }
 
 // startRung2 hands case c to rung 2 as a step in progress due after the
@@ -1522,11 +1521,12 @@ func PlanWaitCase(c Case, t Task) bool {
 }
 
 // caseBesideRun says no run of card t waits on case c's face: a monitor
-// flag's case, beside the card's run, a plan's wait on its failed card and
-// a plan's criteria case, opened on the done plan. Its face moves no card,
+// flag's case, beside the card's run, a plan's wait on its failed card, a
+// plan's criteria case, opened on the done plan, and a merge approval,
+// whose run waits on its request's decision. Its face moves no card,
 // writes no escalated step and sends no case_faced.
 func caseBesideRun(c Case, t Task) bool {
-	return c.Kind == CaseMonitorFlag || c.Kind == CasePlanCriteria || PlanWaitCase(c, t)
+	return c.Kind == CaseMonitorFlag || c.Kind == CasePlanCriteria || c.Kind == CaseMergeApproval || PlanWaitCase(c, t)
 }
 
 // outlivesCard says case c stays live after card t ended: it is woken,
@@ -1540,15 +1540,16 @@ func outlivesCard(c Case, t Task) bool {
 // next, the line that says what moves the card on, and a question_asked
 // row, written before the wait, with its question and case c (none for the
 // zero Case); the agent's choices, if any, ride on that row and the
-// timeline's step. A monitor flag's case sits beside the card's run, and a
-// plan's case on its failed card and its criteria case beside the plan at
-// rest: its face is the comment, the row and the alert, and moves no
-// status, writes no ask the run reads and no timeline line. A criteria
-// case's comment is its request's words. A case that asks its card's stop
-// again (asked_again) says so above the stop. An asked-again reason is a
-// stop of its own on a case that has no face yet, and on a case at the
-// human repeats the face it had (repeatFace). It returns the comment's id:
-// only later comments answer it.
+// timeline's step. A monitor flag's case and a merge approval sit beside
+// the card's run, and a plan's case on its failed card and its criteria
+// case beside the plan at rest: its face is the comment, the row and the
+// alert, and moves no status, writes no ask the run reads and no timeline
+// line. A criteria case's comment is its request's words; a merge's face
+// posts none. A case that asks its card's stop again (asked_again) says so
+// above the stop. An asked-again reason is a stop of its own on a case
+// that has no face yet, and on a case at the human repeats the face it had
+// (repeatFace). It returns the comment's id: only later comments answer
+// it.
 func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next string, choices []string, up *HandUp) (int64, error) {
 	beside := caseBesideRun(c, t)
 	repo, err := SplitRepo(t.Repository)
@@ -1598,7 +1599,7 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		body = reason
 	}
 	var id int64
-	if t.IssueNumber != 0 {
+	if t.IssueNumber != 0 && c.Kind != CaseMergeApproval {
 		// a task without one (a report task) has its question on the card alone
 		if id, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body); err != nil {
 			return 0, err
@@ -1621,6 +1622,8 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 			shaped = r.monitorFace(t, reason)
 		case CasePlanCriteria:
 			shaped = criteriaQuestion(c.Problem, reason)
+		case CaseMergeApproval:
+			shaped = mergeQuestion(c)
 		default:
 			qf, held := r.questionFacts(ctx, t, reason), factsOf(c)
 			qf.BranchRead, qf.BranchHead = held.BranchRead, held.BranchHead
@@ -1661,6 +1664,8 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 				shaped.Info += "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal)
 			}
 		}
+		// a merge's face has no info of its own: the rungs' lines open it
+		shaped.Info = strings.TrimLeft(shaped.Info, "\n")
 		question = shaped.Ask
 	}
 	if askedAgain(reason) {

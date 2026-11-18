@@ -1545,7 +1545,7 @@ func newRig(t *testing.T) *rig {
 			for id, ask := range r.caseAsks {
 				d.Asks[id] = ask
 			}
-			// a plan's criteria request's case is on the desk, its plan on the board or not
+			// a pending request's case is on the desk, its card on the board or not
 			for _, a := range r.approvals.rows {
 				if a.Project == repository && !slices.ContainsFunc(tasks, func(bt factoryd.BoardTask) bool { return bt.ID == a.TaskID }) {
 					tasks = append(tasks, factoryd.BoardTask{Task: factoryd.Task{ID: a.TaskID, Repository: repository}})
@@ -1554,7 +1554,7 @@ func newRig(t *testing.T) *rig {
 			for _, bt := range tasks {
 				open, _ := r.ownCasesOf(ctx, bt.ID)
 				for _, q := range r.requestCases(ctx, bt.ID) {
-					if q.c.Kind == factoryd.CasePlanCriteria && !slices.ContainsFunc(open, func(k factoryd.Case) bool { return approvalOf(q.req, k) }) {
+					if !slices.ContainsFunc(open, func(k factoryd.Case) bool { return approvalOf(q.req, k) }) {
 						open = append(open, q.c)
 					}
 				}
@@ -2834,11 +2834,14 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 9}})
 	// the human lane's approvals column is the wide view's, its cards as
 	// brief as the narrow view's: each title opens its task's drawer,
-	// which holds the facts in full
+	// which holds the facts in full. A merge request, faced, is its case's
+	// row among the escalations, which hosts it
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	start := strings.Index(body, `id="col-approvals"`)
-	end := strings.Index(body[start:], "</section>")
-	lane := body[start : start+end]
+	column := func(id string) string {
+		start := strings.Index(body, `id="`+id+`"`)
+		return body[start : start+strings.Index(body[start:], "</section>")]
+	}
+	lane, escalations := column("col-approvals"), column("col-escalations")
 	for _, want := range []string{
 		// the resource request: type, purpose, lease, monthly cost, project, the task
 		`<article class="card approval" data-card="t-res"`,
@@ -2853,6 +2856,12 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		`<p class="why">a lease of 300 minutes exceeds the envelope&#39;s 4 h</p>`,
 		`<span class="effect">commissions the server for this lease; the project&#39;s envelope is its file&#39;s</span>`,
 		`<span class="effect">refuses the request; the agent is told your reason</span>`,
+	} {
+		if !strings.Contains(lane, want) {
+			t.Errorf("approval lane lacks %q", want)
+		}
+	}
+	for _, want := range []string{
 		// the merge request: the PR, the chips and the one decide block;
 		// the whole text lives in the drawer
 		`<article class="card approval" data-card="t-m"`,
@@ -2867,19 +2876,13 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		`sends the pull request back to its agent with your note`,
 		`name="csrf" value="` + s.csrf + `"`, `<label for="note-t-m">Note, posted on the issue as you; the actions marked "stays on the step" keep it there</label>`, `<textarea id="note-t-m" name="note"`,
 	} {
-		if !strings.Contains(lane, want) {
-			t.Errorf("approval lane lacks %q", want)
+		if !strings.Contains(escalations, want) {
+			t.Errorf("the merge's case row lacks %q", want)
 		}
 	}
-	// each asking face of the lane holds exactly one decide: one send,
-	// one fund control, one note box (the one-face contract)
-	for _, id := range []string{"t-res", "t-m"} {
-		at := strings.Index(lane, `data-card="`+id+`"`)
-		if at < 0 {
-			t.Fatalf("the lane holds no %s card", id)
-		}
-		begin := strings.LastIndex(lane[:at], "<article")
-		kard := lane[begin : begin+strings.Index(lane[begin:], "</article>")]
+	// each asking face holds exactly one decide: one send, one fund
+	// control, one note box (the one-face contract)
+	for id, kard := range map[string]string{"t-res": approvalFaceOf(t, lane, "t-res"), "t-m": hostedFaceOf(t, escalations, "t-m")} {
 		for what, want := range map[string]int{`<form`: 1, `class="decide resolve"`: 1, `name="fund_eur"`: 1, `<textarea`: 1} {
 			if got := strings.Count(kard, what); got != want {
 				t.Errorf("the %s card's decide carries %s %d times, want %d:\n%s", id, what, got, want, kard)
@@ -2895,11 +2898,11 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		}
 	}
 	for _, wall := range []string{"<dl class=\"facts\">", "Risk class", "Earlier review", "Security audit", "Why a human", "Agent's recommendation", "Red in the log"} {
-		if strings.Contains(lane, wall) {
+		if strings.Contains(lane+escalations, wall) {
 			t.Errorf("the wide approval card shows the facts wall %q", wall)
 		}
 	}
-	if strings.Contains(lane, "/approvals/5/") || !strings.Contains(lane, `Approvals <span class="count">2</span>`) {
+	if strings.Contains(lane+escalations, "/approvals/5/") || !strings.Contains(lane, `Approvals <span class="count">1</span>`) {
 		t.Error("the lane shows a decided request")
 	}
 }

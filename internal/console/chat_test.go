@@ -1568,15 +1568,15 @@ Waiting on the author (0):
 In review (0):
 Merged (0):
 Human lane (0):
-Escalated, waiting on an answer (1):
+Escalated, waiting on an answer (2):
+  #5 t-m "Fix the cache. It drops entries." queued (waits for a free work slot, in filing order), €0.40 of €3.00
   #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
 Finished cards, ended in the last 7 days and open no more:
 Done (0):
 Failed (0):
 Closed (0):
-Approval requests waiting (2):
-  resource request 3 of t-res
-  merge request 4 of t-m (#5), pull request #9`
+Approval requests waiting (1):
+  resource request 3 of t-res`
 
 // A text reply streams piece by piece and ends with done; it acts on
 // nothing. The one model call goes out as the operator's on the month's
@@ -5130,6 +5130,12 @@ func TestChatTurnContextHasFreshStatus(t *testing.T) {
 	if !found {
 		t.Fatal("t-m not found in tasks")
 	}
+	// a card that runs again holds no merge request: the factory denied it
+	for i := range r.approvals.rows {
+		if r.approvals.rows[i].TaskID == "t-m" && r.approvals.rows[i].Kind == factoryd.ApprovalMerge {
+			r.approvals.rows[i].Status = "denied"
+		}
+	}
 	g.replies = [][]string{{say("second answer")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"how many cards are open?"}})
 	calls := g.calls()
@@ -5142,7 +5148,7 @@ func TestChatTurnContextHasFreshStatus(t *testing.T) {
 	if !strings.Contains(firstSystem, "\nStatus: waiting on you; 1 working; 3 need you; ") {
 		t.Errorf("the first turn's status line counts no 1 working:\n%s", firstSystem)
 	}
-	if !strings.Contains(secondSystem, "\nStatus: waiting on you; 2 working; 3 need you; ") {
+	if !strings.Contains(secondSystem, "\nStatus: waiting on you; 2 working; 2 need you; ") {
 		t.Errorf("the second turn's status line counts no 2 working:\n%s", secondSystem)
 	}
 	var oldBoard string

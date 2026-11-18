@@ -223,6 +223,7 @@ var (
 	ProofProposed             = factoryd.ProofProposed
 	SettleOf                  = factoryd.SettleOf
 	SignalCaseFaced           = factoryd.SignalCaseFaced
+	SignalApproved            = factoryd.SignalApproved
 	SourceSizing              = factoryd.SourceSizing
 	resendCaseSignals         = factoryd.PgResendCaseSignals
 	sessionRoom               = factoryd.PgSessionRoom
@@ -278,6 +279,7 @@ var (
 	Cents                     = factoryd.Cents
 	EventChatBudgetSpent      = factoryd.EventChatBudgetSpent
 	FinalStatuses             = factoryd.FinalStatuses
+	ApproveMerge              = factoryd.ApproveMerge
 	GateApproval              = factoryd.GateApproval
 	GateChecks                = factoryd.GateChecks
 	GateMergeQueue            = factoryd.GateMergeQueue

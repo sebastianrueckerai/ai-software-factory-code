@@ -331,17 +331,18 @@ func TestRung1MomentHumanIsItsStep(t *testing.T) {
 }
 
 // A human card and a merge approval reach the trip but run no rung 1: Act
-// refuses rung 1 an answer on them.
+// refuses rung 1 an answer on them. A human card faces at once; a merge
+// goes to rung 2 for its analysis, and its decision on full auto.
 func TestRung1SkipsHumanCardsAndMergeApprovals(t *testing.T) {
-	for _, kind := range []CaseKind{CaseHumanCard, CaseMergeApproval} {
+	for kind, rung := range map[CaseKind]int{CaseHumanCard: 3, CaseMergeApproval: 2} {
 		g := newRungRig(t, "success")
 		out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: "a stop of " + string(kind), Kind: kind, StateKey: "k"}, tripAttempt{N: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
 		g.settle()
-		if out.Rung != 3 || g.chat.calls != 0 || slices.ContainsFunc(g.steps(t, out.CaseID), func(s CaseStep) bool { return s.Rung == 1 }) {
-			t.Fatalf("%s: outcome %+v, %d conversations; want the face at once and no step of rung 1", kind, out, g.chat.calls)
+		if out.Rung != rung || g.chat.calls != 0 || slices.ContainsFunc(g.steps(t, out.CaseID), func(s CaseStep) bool { return s.Rung == 1 }) {
+			t.Fatalf("%s: outcome %+v, %d conversations; want rung %d and no step of rung 1", kind, out, g.chat.calls, rung)
 		}
 	}
 }

@@ -1743,7 +1743,7 @@ async function text(page) {
       await p.page.waitForTimeout(600);
       if (!(await p.page.locator("#thread-head").innerText()).includes("the factory's thread: it speaks here uninvited, you answer with its buttons")) fails.push("poke: the inbox's head does not say it is the factory's thread");
       const log = await p.page.locator("#chat").innerText();
-      for (const w of ["#600 is done", "needs you", "#606 waits for you: merge PR #612", "moved on ·"]) if (!log.includes(w)) fails.push('poke: the inbox shows no "' + w + '"');
+      for (const w of ["#600 is done", "needs you", "#606 needs you: Merge PR #612", "moved on ·"]) if (!log.includes(w)) fails.push('poke: the inbox shows no "' + w + '"');
       const settled = p.page.locator("#chat-log .msg.esc.settled");
       if (!(await settled.count())) fails.push("poke: the answered merge ask does not sit settled");
       else if (await settled.locator("button").count()) fails.push("poke: the settled ask keeps its buttons");

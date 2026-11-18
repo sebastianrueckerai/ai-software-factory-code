@@ -474,11 +474,12 @@ func TestAttachAnalysisRefusalNamesTheAsk(t *testing.T) {
 	}
 }
 
-// A merge approval row is an ask like any: the analysis rides its inbox
-// row after the request's own line, and the spine records it. Once a human
-// approved the merge the ask is settled: the refusal names the merge
-// request approved by that human, and nothing more is written.
-func TestAttachAnalysisReachesAMergeRow(t *testing.T) {
+// A merge case faced beside the card's run, the card in review: its ask,
+// the face's row, waits while the request pends and takes the analysis,
+// while the request's own row is no ask. Once a human approved the merge
+// the ask is settled: the refusal names the question approved by that
+// human, and nothing more is written.
+func TestAttachAnalysisReachesAMergeCasesFace(t *testing.T) {
 	s := newAskStore(t)
 	ctx := t.Context()
 	if err := s.CreateTask(ctx, Task{ID: "t-merge", Kind: "agent", Status: "in-review", Repository: "sf/wake", IssueNumber: 41,
@@ -490,28 +491,33 @@ func TestAttachAnalysisReachesAMergeRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Record(ctx, Event{Repository: "sf/wake", TaskID: "t-merge", IssueNumber: 41, Kind: EventApprovalRequested, Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail: map[string]any{"approval": id, "kind": ApprovalMerge, "pr": 9, "class": "high", "factory": false, "red_checks": false}}); err != nil {
-		t.Fatal(err)
+	const question = "Merge PR #9, high risk."
+	for _, e := range []Event{
+		{Kind: EventApprovalRequested, Detail: map[string]any{"approval": id, "kind": ApprovalMerge, "pr": 9, "class": "high", "factory": false, "red_checks": false}},
+		{Kind: EventQuestionAsked, Detail: map[string]any{"question": question, "case_kind": string(CaseMergeApproval), "choices": []string{"Approve"}}},
+	} {
+		e.Repository, e.TaskID, e.IssueNumber, e.Actor, e.Via = "sf/wake", "t-merge", 41, FactoryDecider, ViaFactoryd
+		if _, err := s.Record(ctx, e); err != nil {
+			t.Fatal(err)
+		}
 	}
 	conv, err := s.EnsureInbox(ctx, "sf/wake", "sebastian")
 	if err != nil {
 		t.Fatal(err)
 	}
-	const mergeRow = "#41 waits for you: merge PR #9, high risk."
+	base := "#41 - Add the index. needs you: " + question
 	if _, err := s.AddChatMessage(ctx, "sf/wake", "sebastian", ChatMessage{Role: "assistant", Conversation: conv, Kind: MessageEscalation,
-		TaskID: "t-merge", BirthKind: EventApprovalRequested, Content: mergeRow, Choices: []string{"Approve"}}); err != nil {
+		TaskID: "t-merge", BirthKind: EventQuestionAsked, Content: base, Choices: []string{"Approve"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AttachAnalysis(ctx, "t-merge", "The index covers the board's query.", "Approve it", sebastiansAnalysis); err != nil {
+	if err := s.AttachAnalysis(ctx, "t-merge", "The index covers the board's query.", "approve_merge", sebastiansAnalysis); err != nil {
 		t.Fatalf("AttachAnalysis: %v", err)
 	}
-	if got, want := rowContent(t, s, "sf/wake", "t-merge", EventApprovalRequested),
-		mergeRow+"\nAnalysis: The index covers the board's query.\nRecommendation: Approve it"; got != want {
-		t.Fatalf("the merge row = %q, want %q", got, want)
+	if got, want := rowContent(t, s, "sf/wake", "t-merge", EventQuestionAsked), base+"\nAnalysis: The index covers the board's query.\nRecommendation: approve_merge"; got != want {
+		t.Fatalf("the face's row = %q, want %q", got, want)
 	}
 	if rows := analyses(t, s, "t-merge"); len(rows) != 1 || rows[0].IssueNumber != 41 ||
-		rows[0].Detail["found"] != "The index covers the board's query." || rows[0].Detail["recommendation"] != "Approve it" {
+		rows[0].Detail["found"] != "The index covers the board's query." || rows[0].Detail["recommendation"] != "approve_merge" {
 		t.Fatalf("the analysis rows = %+v", rows)
 	}
 
@@ -524,8 +530,8 @@ func TestAttachAnalysisReachesAMergeRow(t *testing.T) {
 	}
 	err = s.AttachAnalysis(ctx, "t-merge", "The index is still fine.", "", sebastiansAnalysis)
 	var se *AskSettledError
-	if !errors.As(err, &se) || se.Kind != ApprovalMerge || se.Word != "approved" || se.By != "sebastian" {
-		t.Fatalf("the refusal = %v, want the merge request approved by sebastian", err)
+	if !errors.As(err, &se) || se.Kind != "question" || se.Word != "approved" || se.By != "sebastian" {
+		t.Fatalf("the refusal = %v, want the question approved by sebastian", err)
 	}
 	if rows := analyses(t, s, "t-merge"); len(rows) != 1 {
 		t.Fatalf("%d analysis rows after the settled attach, want 1", len(rows))

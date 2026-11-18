@@ -1217,6 +1217,9 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendat
 			// by its case's number: the analysis is the card's own ask's
 			family = "question"
 		case e.Kind == EventApprovalRequested:
+			if _, _, pokes := approvalPoke(*e, t); !pokes {
+				continue // a merge's or a criteria request's case climbs: its face is the ask
+			}
 			family = "approval"
 		default:
 			continue

@@ -1855,6 +1855,17 @@ func approvalFaceOf(t *testing.T, body, id string) string {
 	return ""
 }
 
+// hostedFaceOf is the face of card id's approval its case's row hosts: the
+// row's parts through the approval's article.
+func hostedFaceOf(t *testing.T, body, id string) string {
+	t.Helper()
+	start := strings.Index(body, `<article class="card case" id="need-`+id+`"`)
+	if start < 0 {
+		t.Fatalf("no case row of %s:\n%s", id, body)
+	}
+	return body[start : start+strings.Index(body[start:], "</article>")]
+}
+
 // The merge and resource faces decide through the shared partial: each
 // approval fixture's board card shows one decide block in the five-part
 // shape — the ask with its numbers, the why, what the call needs, the
@@ -1877,6 +1888,10 @@ func TestMergeAndResourceFacesDecideThroughTheSharedPartial(t *testing.T) {
 		note := "the lease is worth it"
 		body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
 		esc := approvalFaceOf(t, body, id)
+		if tc.kind == factoryd.ApprovalMerge {
+			// a merge request, faced, is its case's row, which hosts it
+			esc = hostedFaceOf(t, body, id)
+		}
 		for _, want := range []string{
 			`<p class="ask">` + fx.Asks[0].Ask + `</p>`,
 			`<p class="why">` + fx.Asks[0].Why + `</p>`,

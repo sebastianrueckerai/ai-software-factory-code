@@ -235,6 +235,28 @@ func criteriaQuestion(problem, reason string) *HumanQuestion {
 	return &HumanQuestion{Ask: problem, Why: why, Info: criteriaInfo}
 }
 
+// mergeQuestion is the face of merge approval case c: what its request
+// asks on the head's checks, green the merge at its risk with Approve, red
+// a factory pull request's checks run again with the re-run, red an
+// agent's pull request sent back or closed, which no choice answers; and
+// why a human decides it. The rungs' lines are its info.
+func mergeQuestion(c Case) *HumanQuestion {
+	pr, _ := toInt(c.Facts["pr"])
+	class, _ := c.Facts["class"].(string)
+	red, _ := c.Facts["red_checks"].(bool)
+	factory, _ := c.Facts["factory"].(bool)
+	q := &HumanQuestion{Ask: fmt.Sprintf("Merge PR #%d, %s risk.", pr, class), Why: mergeWhy(c), Choices: []QuestionChoice{{Value: "Approve", Label: "Approve"}}}
+	switch {
+	case red && factory:
+		q.Ask = fmt.Sprintf("The checks of PR #%d are red, so it cannot merge: run them again, or close it with your words.", pr)
+		q.Choices = []QuestionChoice{{Value: ChoiceRerun, Label: ChoiceRerun}}
+	case red:
+		q.Ask = fmt.Sprintf("PR #%d cannot merge, its checks are red: send it back to the agent with what to change, or close it.", pr)
+		q.Choices = nil
+	}
+	return q
+}
+
 // planWaitMark is the phrase of a plan's wait on its failed card
 // (planCardFailedReason), whose face the plan's wait carries.
 const planWaitMark = "this plan's close and its next round wait on it"

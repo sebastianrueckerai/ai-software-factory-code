@@ -938,13 +938,36 @@ func (t *turn) pending(in toolInput, kinds ...string) (factoryd.ApprovalRequest,
 }
 
 // mergeRequest is the pending merge approval request of card id in the
-// chat's project.
+// chat's project, refused while its case climbs its rungs (mergeOnRungs).
 func (t *turn) mergeRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 	q, k, ok, err := t.pending(in, factoryd.ApprovalMerge)
 	if err == nil && !ok {
 		err = wrongState(k, t.c.capFactsOf(t.r.Context(), k), "a pending merge request")
 	}
+	if err == nil {
+		err = t.mergeOnRungs(k, q)
+	}
 	return q, err
+}
+
+// mergeOnRungs refuses a decision on card k's merge request q while its
+// case climbs its rungs: the merge reaches a human only through the
+// case's face, once a rung hands it up. In rung 2's wake the refusal names
+// the case's own ends.
+func (t *turn) mergeOnRungs(k factoryd.Task, q factoryd.ApprovalRequest) error {
+	c, climbs, err := t.c.climbing(t.r.Context(), q)
+	switch {
+	case err != nil:
+		log.Printf("console: the cases of %s: %v", q.TaskID, err)
+		return refuse(http.StatusServiceUnavailable, "The card's cases could not be read, so nothing was decided. Try again.")
+	case !climbs:
+		return nil
+	case t.a.caseWake():
+		return refuse(http.StatusConflict, fmt.Sprintf("The merge request of #%d is case %d, open at rung %d: end it with answer and case_id %d, or with attach_analysis, case_id %d and the recommended action.",
+			k.IssueNumber, c.ID, c.OwnerRung, c.ID, c.ID))
+	}
+	return refuse(http.StatusConflict, fmt.Sprintf("The merge request of #%d waits on its case %d, open at rung %d: rung 2 decides it or hands it up, and only then is it the human's, in Needs you.",
+		k.IssueNumber, c.ID, c.OwnerRung))
 }
 
 // criteriaRequest is the pending criteria or criteria_rerun approval
@@ -1720,8 +1743,11 @@ var tools = []chatTool{
 			var q factoryd.ApprovalRequest
 			switch in.Action {
 			case "waive", "met", "not_met":
-				if q, _, ok, err = t.pending(in, factoryd.ApprovalMerge); err == nil && !ok {
+				var k factoryd.Task
+				if q, k, ok, err = t.pending(in, factoryd.ApprovalMerge); err == nil && !ok {
 					q, err = t.criteriaRequest(in)
+				} else if err == nil {
+					err = t.mergeOnRungs(k, q)
 				}
 			default:
 				q, err = t.criteriaRequest(in)

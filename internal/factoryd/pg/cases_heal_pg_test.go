@@ -138,7 +138,10 @@ func TestReconcileCasesResolvesAMergeCaseWhoseApprovalWasDecided(t *testing.T) {
 		t.Fatalf("deny: %v", err)
 	}
 	reconcile(t, s, CaseHealReport{Withdrawn: 1})
-	withdrawnFor(t, s, c.ID, leftQueue)
+	want := &CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: leftQueue}
+	if got := caseByID(t, s, c.ID); got.Status != CaseWithdrawn || !reflect.DeepEqual(got.Resolution, want) || len(caseStepsOf(t, s, c.ID)) != 0 {
+		t.Fatalf("case = %+v, resolution %+v, steps %+v; want withdrawn %+v with no step: it never climbed", got, got.Resolution, caseStepsOf(t, s, c.ID), want)
+	}
 }
 
 // agedMerge opens a merge request of caseTask for pull request 1479 at
@@ -173,11 +176,12 @@ func TestReconcileCasesOpensTheCaseOfAPendingMergeWithNone(t *testing.T) {
 	}
 	reconcile(t, s, CaseHealReport{Opened: 1})
 	c := onlyOpenCase(t, s)
-	if c.Kind != CaseMergeApproval || c.StateKey != "pr:1479@abc1479" || c.Status != CaseAtHuman || c.Facts["approval"] != float64(id) {
-		t.Fatalf("case = %+v; want the pending request's merge case at the human", c)
+	if c.Kind != CaseMergeApproval || c.StateKey != "pr:1479@abc1479" || c.Status != CaseOpen || c.OwnerRung != 0 || c.Facts["approval"] != float64(id) ||
+		c.NextWakeAt == nil || c.NextWakeAt.After(time.Now()) {
+		t.Fatalf("case = %+v; want the pending request's merge case open at rung 0 and due", c)
 	}
-	if steps := caseStepsOf(t, s, c.ID); len(steps) != 1 || steps[0].Rung != 3 || steps[0].Outcome != StepInProgress {
-		t.Fatalf("steps = %+v; want one running rung 3 step", steps)
+	if steps := caseStepsOf(t, s, c.ID); len(steps) != 0 {
+		t.Fatalf("steps = %+v; want none: the case-wake pass climbs it", steps)
 	}
 	reconcile(t, s, CaseHealReport{})
 }

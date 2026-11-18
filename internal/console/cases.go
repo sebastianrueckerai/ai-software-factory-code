@@ -207,6 +207,9 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		if own && !approvalOf(a, shown) {
 			continue // its own case shows it
 		}
+		if !own && waitsForFace(a) {
+			continue // its case has not reached the human
+		}
 		ap := c.approvalCard(ctx, a, act, v.byID, v.csrf, v.approves(k.Repository), true)
 		ap.Filter, ap.Writer = v.filter, v.writes
 		ap.buildDecide()
@@ -367,8 +370,28 @@ func approvalOf(a factoryd.ApprovalRequest, k factoryd.Case) bool {
 	return false
 }
 
-// faced is the case at the human that holds criteria request a, false
-// while none does: the request waits for its case's face.
+// waitsForFace says request a waits for its case's face before any page
+// lists it: a merge's and a plan's criteria request's.
+func waitsForFace(a factoryd.ApprovalRequest) bool {
+	return a.Kind == factoryd.ApprovalMerge || a.Kind == factoryd.ApprovalCriteria || a.Kind == factoryd.ApprovalCriteriaRerun
+}
+
+// climbing is the live case that holds request q while it climbs its
+// rungs, false once it is at the human or with no live case.
+func (c *Console) climbing(ctx context.Context, q factoryd.ApprovalRequest) (factoryd.Case, bool, error) {
+	open, err := c.cfg.OpenCasesOf(ctx, q.TaskID)
+	if err != nil {
+		return factoryd.Case{}, false, err
+	}
+	i := slices.IndexFunc(open, func(k factoryd.Case) bool { return approvalOf(q, k) })
+	if i < 0 || open[i].Status == factoryd.CaseAtHuman {
+		return factoryd.Case{}, false, nil
+	}
+	return open[i], true, nil
+}
+
+// faced is the case at the human that holds request a, false while none
+// does: a merge or criteria request waits for its case's face.
 func (cs caseSet) faced(a factoryd.ApprovalRequest) (factoryd.Case, bool) {
 	i := slices.IndexFunc(cs.byCard[a.TaskID], func(k factoryd.Case) bool { return approvalOf(a, k) })
 	if i < 0 {

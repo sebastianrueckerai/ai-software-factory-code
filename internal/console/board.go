@@ -1940,13 +1940,9 @@ type boardView struct {
 	byID            map[string]factoryd.Task
 	pending         []factoryd.ApprovalRequest
 	carded, planned map[string]bool
-	// mergePended names the tasks whose merge approval pends: in the four
-	// columns the card yields In progress to that approval (Needs you
-	// holds it), as a plan does to its open questions.
-	mergePended map[string]bool
-	writes      bool // the viewer writes the shown project
-	unchecked   bool // a writers check failed, logged once per render
-	problems    []string
+	writes          bool // the viewer writes the shown project
+	unchecked       bool // a writers check failed, logged once per render
+	problems        []string
 	// planTrack names the repositories whose project's process has a plan
 	// track.
 	planTrack map[string]bool
@@ -1967,7 +1963,6 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 	for _, a := range v.pending {
 		v.carded[a.TaskID] = true
 		v.planned[a.TaskID] = v.planned[a.TaskID] || a.Kind == factoryd.ApprovalPlan
-		v.mergePended[a.TaskID] = v.mergePended[a.TaskID] || a.Kind == factoryd.ApprovalMerge
 	}
 	return v, all, nil
 }
@@ -1977,8 +1972,7 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 // approval.
 func (c *Console) projectsOf(r *http.Request, f boardFilter) (*boardView, []factoryd.Project, error) {
 	ctx, s := r.Context(), current(r)
-	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{},
-		mergePended: map[string]bool{}}
+	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{}}
 	v.policy, v.policyOK = c.inForce(ctx)
 	all, err := c.coderProjects(ctx)
 	if err != nil {
@@ -2585,11 +2579,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			}
 			needs = append(needs, n)
 		case col >= 0:
-			// a card whose merge approval pends yields In progress to
-			// that approval, as a plan yields to its questions' card
-			if col == colProgress && v.mergePended[t.ID] && !v.planned[t.ID] {
-				break
-			}
 			d.Columns[col].Cards = append(d.Columns[col].Cards, k)
 		}
 	}
@@ -2602,11 +2591,11 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		if t, ok := v.byID[a.TaskID]; ok && len(cs.byCard[a.TaskID]) > 0 && !factoryd.Final(t.Status) {
 			continue
 		}
-		// a plan's criteria request waits for its case to reach the human,
-		// whose face the card carries
+		// a merge or a plan's criteria request waits for its case to reach
+		// the human, whose face the card carries
 		criteria := a.Kind == factoryd.ApprovalCriteria || a.Kind == factoryd.ApprovalCriteriaRerun
 		held, faced := cs.faced(a)
-		if criteria && !faced {
+		if waitsForFace(a) && !faced {
 			continue
 		}
 		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver, true)
@@ -4000,8 +3989,16 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 				}
 			}
 		}
+		cs, cerr := c.caseSetOf(ctx, bt.Repository)
+		if cerr != nil {
+			problem("cases", "Reload the board.", cerr)
+		}
 		for _, a := range v.pending {
 			if a.TaskID == bt.ID && (a.Kind == factoryd.ApprovalMerge || a.Kind == factoryd.ApprovalPlan) {
+				// a merge request waits for its case's face, as Needs you's does
+				if _, faced := cs.faced(a); a.Kind == factoryd.ApprovalMerge && (cerr != nil || !faced) {
+					continue
+				}
 				m := c.approvalCard(ctx, a, button(r), v.byID, v.csrf, v.approves(a.Project), false)
 				m.Filter, m.IDSuffix = k.Filter, "-d"
 				m.buildDecide()
@@ -4018,9 +4015,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 		if v.escalated(bt.Task) && bt.Escalation != "" {
 			d.Need = &need{Card: k, Escalated: true, CSRF: v.csrf, Suffix: "-d"}
 			// a card with a live case answers from the case's own face
-			if cs, err := c.caseSetOf(ctx, bt.Repository); err != nil {
-				problem("cases", "Reload the board.", err)
-			} else if len(cs.byCard[bt.ID]) > 0 {
+			if cerr == nil && len(cs.byCard[bt.ID]) > 0 {
 				n := c.caseNeed(ctx, v, button(r), bt, k, cs, 0)
 				n.Suffix = "-d"
 				d.Need = &n

@@ -351,10 +351,10 @@ func resolvePlanCase(ctx context.Context, q rowQuerier, e Event) error {
 }
 
 // openRequestCase opens the case of approval request id while it is
-// pending: a merge request's merge case at the human, its pull request at
-// the head the gates passed, or a plan's criteria request's plan_criteria
-// case, open at rung 0 and due at the request's opening, with the words
-// its face posts. It tells whether it opened one.
+// pending, open at rung 0 and due at the request's opening: a merge
+// request's merge case, its pull request at the head the gates passed, or
+// a plan's criteria request's plan_criteria case, with the words its face
+// posts. It tells whether it opened one.
 func openRequestCase(ctx context.Context, q rowQuerier, id int64) (bool, error) {
 	var kind, reason string
 	var c Case
@@ -370,8 +370,8 @@ func openRequestCase(ctx context.Context, q rowQuerier, id int64) (bool, error) 
 	if err != nil {
 		return false, err
 	}
+	c.Status, c.NextWakeAt = CaseOpen, &created
 	if kind == ApprovalMerge {
-		c.Status = CaseAtHuman
 		var spec MergeSpec
 		if err := json.Unmarshal(raw, &spec); err != nil {
 			return false, err
@@ -394,7 +394,7 @@ func openRequestCase(ctx context.Context, q rowQuerier, id int64) (bool, error) 
 		if err := json.Unmarshal(raw, &spec); err != nil {
 			return false, err
 		}
-		c.Kind, c.Status, c.NextWakeAt = CasePlanCriteria, CaseOpen, &created
+		c.Kind = CasePlanCriteria
 		c.StateKey = fmt.Sprintf("%s:%d", kind, id)
 		c.Problem = cmp.Or(reason, "The plan's criteria wait for a verdict")
 		c.Facts = map[string]any{"approval": id, "approval_kind": kind}
@@ -405,26 +405,33 @@ func openRequestCase(ctx context.Context, q rowQuerier, id int64) (bool, error) 
 	if c.Follows, err = newestEndedCase(ctx, q, c.TaskID); err != nil {
 		return false, err
 	}
-	got, opened, err := openCase(ctx, q, c)
-	if err != nil || !opened || c.Status == CaseOpen {
-		return opened, err
-	}
-	_, err = appendCaseStep(ctx, q, CaseStep{CaseID: got.ID, Rung: 3, Actor: FactoryDecider})
-	return err == nil, err
+	_, opened, err := openCase(ctx, q, c)
+	return opened, err
 }
 
 // reopenMergeCase puts the merge case that request id's decision ended
-// back at the human, its end and any wake it carried cleared, with a step
-// naming reason, the why of the undo; with no such case, or a live one of
-// its key, it opens the request's case as openRequestCase does.
+// back open at rung 0, due now, its end, its wake events and its brief
+// cleared, so it climbs again at once. The undo, "approval undone:" and
+// reason, is a step of rung 0 handed up, and the found of each rung 1 and
+// rung 2 step the decision ended, which the face then reads as that rung's
+// hand-up. With no such case, or a live one of its key, it opens the
+// request's case as openRequestCase does.
 func reopenMergeCase(ctx context.Context, q rowQuerier, id int64, reason string) error {
+	found := "approval undone: " + reason
 	var caseID int64
-	err := q.QueryRowContext(ctx, `UPDATE cases c SET status = $3, resolution = NULL, resolved_at = NULL,
-		owner_rung = 3, wake_on = '{}', next_wake_at = NULL, brief = '', brief_detail = '', brief_error = ''
-		WHERE c.id = (SELECT max(id) FROM cases WHERE kind = $2 AND (facts->>'approval')::bigint = $1) AND c.status NOT IN `+caseLiveStatuses+`
-		AND NOT EXISTS (SELECT 1 FROM cases o WHERE o.task_id = c.task_id AND o.kind = c.kind AND o.state_key = c.state_key
-		    AND o.status IN `+caseLiveStatuses+`)
-		RETURNING c.id`, id, CaseMergeApproval, CaseAtHuman).Scan(&caseID)
+	// the decision ended the rungs' steps resolved with no decision of their own
+	err := q.QueryRowContext(ctx, `WITH reopened AS (
+		    UPDATE cases c SET status = $3, resolution = NULL, resolved_at = NULL,
+		        owner_rung = 0, wake_on = '{}', next_wake_at = now(), brief = '', brief_detail = '', brief_error = ''
+		    WHERE c.id = (SELECT max(id) FROM cases WHERE kind = $2 AND (facts->>'approval')::bigint = $1) AND c.status NOT IN `+caseLiveStatuses+`
+		    AND NOT EXISTS (SELECT 1 FROM cases o WHERE o.task_id = c.task_id AND o.kind = c.kind AND o.state_key = c.state_key
+		        AND o.status IN `+caseLiveStatuses+`)
+		    RETURNING c.id
+		), steps AS (
+		    UPDATE case_steps SET outcome = $4, found = $5
+		    WHERE case_id IN (SELECT id FROM reopened) AND rung IN (1, 2) AND outcome = $6 AND decision = ''
+		)
+		SELECT id FROM reopened`, id, CaseMergeApproval, CaseOpen, StepHandedUp, found, StepResolved).Scan(&caseID)
 	if errors.Is(err, sql.ErrNoRows) {
 		_, err = openRequestCase(ctx, q, id)
 		return err
@@ -432,7 +439,7 @@ func reopenMergeCase(ctx context.Context, q rowQuerier, id int64, reason string)
 	if err != nil {
 		return err
 	}
-	_, err = appendCaseStep(ctx, q, CaseStep{CaseID: caseID, Rung: 3, Actor: FactoryDecider, Found: "approval undone: " + reason})
+	_, err = appendCaseStep(ctx, q, CaseStep{CaseID: caseID, Rung: 0, Actor: FactoryDecider, Found: found, Outcome: StepHandedUp})
 	return err
 }
 

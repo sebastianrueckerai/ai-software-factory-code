@@ -31,6 +31,77 @@ func TestMergeApprovalYieldsTheCardInNeedsYou(t *testing.T) {
 	}
 }
 
+// A merge request waits for its case's face: while the case is open on its
+// rungs Needs you lists no approval for the card, which stays in In
+// progress, and the card's drawer offers no merge, neither Approve nor
+// Deny; once the case is at the human the card's row in Needs you is the
+// case's, hosting the approval with the rungs' analysis and
+// recommendation, In progress holds the card no more, and the drawer
+// offers the merge.
+func TestAMergeRequestWaitsForItsCasesFace(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("", factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 7, PRNumber: 9})
+	r.openCases = map[string][]factoryd.Case{"t-m": {{ID: 41, TaskID: "t-m", Repository: "sf/code", Kind: factoryd.CaseMergeApproval,
+		Status: factoryd.CaseOpen, Problem: "Pull request #9 waits for a merge approval", Facts: map[string]any{"approval": 4.0, "class": "high"}}}}
+	ck, _ := r.loggedIn(t)
+	board := func() string { return r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String() }
+	body := board()
+	if needs := col(t, body, "Needs you"); strings.Contains(needs, `data-card="t-m"`) || strings.Contains(needs, "approval-4") {
+		t.Fatalf("Needs you lists the request while its case is open:\n%s", needs)
+	}
+	if progress := col(t, body, "In progress"); !strings.Contains(progress, `data-card="t-m"`) {
+		t.Fatalf("In progress lacks the card whose merge case is open:\n%s", progress)
+	}
+	drawer := func() string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
+	}
+	if got := drawer(); strings.Contains(got, "/approvals/4/") || strings.Contains(got, `value="approve"`) || strings.Contains(got, `value="deny"`) {
+		t.Fatalf("the drawer offers the merge while its case is open:\n%s", got)
+	}
+	r.openCases["t-m"][0].Status = factoryd.CaseAtHuman
+	r.caseAsks = map[int64]factoryd.CaseAsk{41: {Detail: map[string]any{"info": "The factory agent found: the column is added with its default.",
+		"recommendation": "approve_merge: the migration is additive", "recommended_by": "the factory agent"}}}
+	body = board()
+	needs := col(t, body, "Needs you")
+	for _, want := range []string{`id="need-t-m"`, `aria-labelledby="approval-4"`, "The factory agent found: the column is added with its default.",
+		`<p class="recommendation">Recommendation (the factory agent): approve_merge: the migration is additive</p>`} {
+		if !strings.Contains(needs, want) {
+			t.Fatalf("Needs you lacks %q once the case is at the human:\n%s", want, needs)
+		}
+	}
+	if strings.Contains(col(t, body, "In progress"), `data-card="t-m"`) {
+		t.Fatal("In progress holds the card whose merge case is at the human")
+	}
+	if got := drawer(); !strings.Contains(got, `action="/approvals/4/approve"`) || !strings.Contains(got, `value="approve"`) || !strings.Contains(got, `value="deny"`) {
+		t.Fatalf("the drawer lacks the merge's Approve and Deny once its case is at the human:\n%s", got)
+	}
+}
+
+// A merge request whose case climbs its rungs rides no other case's row:
+// card t-m's monitor flag at the human is its row in Needs you, in its
+// carousel's page and in its card swap, each with no approval of the
+// merge.
+func TestAClimbingMergeRidesNoOtherCasesRow(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("", factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 7, PRNumber: 9})
+	r.openCases = map[string][]factoryd.Case{"t-m": {
+		{ID: 41, TaskID: "t-m", Repository: "sf/code", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseOpen, OwnerRung: 2,
+			Problem: "Pull request #9 waits for a merge approval", Facts: map[string]any{"approval": 4.0, "class": "high"}},
+		{ID: 42, TaskID: "t-m", Repository: "sf/code", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman,
+			Problem: "the review waits past its bound", Facts: map[string]any{"flag": "wait_over_bound"}}}}
+	ck, _ := r.loggedIn(t)
+	for where, path := range map[string]string{"Needs you": "/", "the carousel's page": "/projects/ai-software-factory-code/cards/t-m/cases/42",
+		"the card swap": "/cards/t-m"} {
+		got := r.do(httptest.NewRequest(http.MethodGet, path, nil), ck).Body.String()
+		if where == "Needs you" {
+			got = col(t, got, "Needs you")
+		}
+		if !strings.Contains(got, `data-case="42"`) || strings.Contains(got, "approval-4") || strings.Contains(got, "/approvals/4/") {
+			t.Errorf("%s: want case 42's row with no approval of the climbing merge:\n%s", where, got)
+		}
+	}
+}
+
 // The drawer's merge card: the case's brief renders as markup (its own
 // lists, never a raw wall), each why-a-human entry its own line, and an
 // agent pull request on red checks shows its return and close directly —

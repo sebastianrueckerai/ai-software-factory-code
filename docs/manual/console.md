@@ -356,9 +356,10 @@ decimals: a task's model calls cost fractions of a cent.
   other than auto the inbox decides no merge: a turn there refuses
   `approve_merge` and `deny_merge` before any proposal, naming
   `attach_analysis`. The agent never approves a GitHub sync's pull
-  request: a human approves the GitHub commits it carries, its refusal
-  names `attach_analysis`, and a wake's line for its merge row says a
-  human approves. A wake counts its asks and its merge rows apart. A project
+  request: a human approves the GitHub commits it carries, and its refusal
+  names `attach_analysis`. A merge request's row wakes nobody: its case
+  climbs to rung 2, whose wake is the case's. A wake counts its asks and
+  its cases apart. A project
   without a chat token gets no wake; the refusal names `tokens.chat`.
   `steer` reaches a running session on the supervisor's message path
   (`Runner.MessageSession`). The conversation

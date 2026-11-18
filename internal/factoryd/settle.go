@@ -90,8 +90,9 @@ func SettleWord(kind string) string { return cmp.Or(settleWords[kind], "moved on
 // until its card ends, and the ask of an ended card's open issue past
 // that, until the issue closes. A plan's ask beside it on its failed card
 // (PlanWaitCase) waits on its case alone too, and its criteria case's face
-// as an approval row does, while its request pends. A row's repeats move
-// its time, so a bumped row asks again after an answer that preceded it.
+// and a merge case's face as an approval row does, while the request
+// pends. A row's repeats move its time, so a bumped row asks again after
+// an answer that preceded it.
 // PlanWaitAsk says ask row m on card t is a plan's wait on its failed card
 // (PlanWaitCase): an open ask beside the ended plan, answered on the failed
 // card.
@@ -140,7 +141,7 @@ func SettleOf(m ChatMessage, events []Event, status string, approvalWaits bool) 
 	}
 	if monitor && (!Final(status) || birth.Detail["flag"] == "issue_open_after_end") ||
 		birth.Detail["case_kind"] == string(CaseDependencyFailed) && Final(status) ||
-		birth.Detail["case_kind"] == string(CasePlanCriteria) && approvalWaits {
+		(birth.Detail["case_kind"] == string(CasePlanCriteria) || birth.Detail["case_kind"] == string(CaseMergeApproval)) && approvalWaits {
 		return PokeSettle{Open: true}
 	}
 	if cardWaits && (family == "question" || family == "" && m.Kind == MessagePoke) || approvalWaits && family == "approval" {

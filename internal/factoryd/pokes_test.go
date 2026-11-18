@@ -58,12 +58,10 @@ func TestPokeOf(t *testing.T) {
 			ChatMessage{Kind: MessagePoke, Content: "#603 needs you no more: its question is withdrawn because reviewer sebastian requested changes."}, true},
 		{"another flag withdrawn for the same reason reads differently", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"case_id": float64(13), "case_kind": string(CaseMonitorFlag), "reason": "the wait ended", "problem": "wait_over_bound(review 5h)"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: "The flag on #603 - Session store: pick the table's store (wait_over_bound(review 5h)) needs you no more: its question is withdrawn because the wait ended."}, true},
-		{"a merge", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "high"}}, card,
-			ChatMessage{Kind: MessageEscalation, Content: "#603 waits for you: merge PR #612, high risk.", Choices: []string{"Approve"}}, true},
-		{"an agent's merge on red checks offers no Approve", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": false, "red_checks": true}}, card,
-			ChatMessage{Kind: MessageEscalation, Content: "#603 waits for you: PR #612 cannot merge, its checks are red; send it back to the agent with what to change, or close it."}, true},
-		{"a factory merge on red checks offers the re-run", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": true, "red_checks": true}}, card,
-			ChatMessage{Kind: MessageEscalation, Content: "#603 waits for you: the checks of PR #612 are red, so it cannot merge; run them again, or close it with your words.", Choices: []string{ChoiceRerun}}, true},
+		// a merge request's case climbs first: its face's ask is the poke
+		{"a merge", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "high"}}, card, ChatMessage{}, false},
+		{"an agent's merge on red checks", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": false, "red_checks": true}}, card, ChatMessage{}, false},
+		{"a factory merge on red checks", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": true, "red_checks": true}}, card, ChatMessage{}, false},
 		{"a plan", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "plan", "revision": float64(2), "cards": float64(6)}}, plan,
 			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for your answers: revision 2, 6 cards; the planner revises it with them.`}, true},
 		// a criteria request's case climbs first: its face's ask is the poke
