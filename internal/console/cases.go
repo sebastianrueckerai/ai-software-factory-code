@@ -279,10 +279,3 @@ func (c *Console) caseFragment(w http.ResponseWriter, r *http.Request) {
 	}
 	c.render(w, "face", c.faceOf(ctx, v, n, true))
 }
-
-func btoi(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
-}

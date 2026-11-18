@@ -52,8 +52,9 @@ type HoldoutRow struct {
 // revision's questions and its extra promises; Promises the plan's.
 //
 // A criteria request's: its spec, Promises the plan's with their rows,
-// Delivered whether every card of the plan is, and Run the newest run of
-// its tests a human asked for.
+// Delivered whether every card of the plan is, ClosesItself whether the
+// close check closes the plan by itself once every promise is settled
+// (closesItself), and Run the newest run of its tests a human asked for.
 type Request struct {
 	ApprovalRequest
 	Merge                    MergeSpec
@@ -64,13 +65,17 @@ type Request struct {
 	Promises                 []PromiseRow
 	Integration              string
 	Unsettled                []string
-	Delivered                bool
+	Delivered, ClosesItself  bool
 	Run                      *RunFact
 	Plan                     Plan
 	TakeOffRefs, TakeOffWhys []string
 	PlanQuestions            []PlanQuestion
 	HoldoutRows              []HoldoutRow
 }
+
+// ErrRequestSpec is a request whose spec does not read, which names no
+// rows to read.
+var ErrRequestSpec = errors.New("the request's spec does not read")
 
 // RequestReads are the store's reads a request's rows come from.
 type RequestReads interface {
@@ -94,7 +99,7 @@ func ReadRequest(ctx context.Context, s RequestReads, a ApprovalRequest, t Task,
 	switch a.Kind {
 	case ApprovalMerge:
 		if err := json.Unmarshal(a.Spec, &r.Merge); err != nil {
-			return r, fmt.Errorf("spec: %w", err)
+			return r, fmt.Errorf("%w: %v", ErrRequestSpec, err)
 		}
 		// a red request whose recorded head's checks are green now (#1013)
 		// merges again; a read that fails leaves the red face
@@ -155,7 +160,7 @@ func MergeRows(ctx context.Context, s interface {
 // its questions and its round's extra promises.
 func (r *Request) planRows(ctx context.Context, s RequestReads) error {
 	if err := json.Unmarshal(r.Spec, &r.PlanSpec); err != nil {
-		return fmt.Errorf("spec: %w", err)
+		return fmt.Errorf("%w: %v", ErrRequestSpec, err)
 	}
 	rev, ok, err := s.PlanRevision(ctx, r.TaskID, r.PlanSpec.Revision)
 	switch {
@@ -211,7 +216,7 @@ func (r *Request) planRows(ctx context.Context, s RequestReads) error {
 // request the newest run of its tests a human asked for.
 func (r *Request) criteriaRows(ctx context.Context, s RequestReads) error {
 	if err := json.Unmarshal(r.Spec, &r.CriteriaSpec); err != nil {
-		return fmt.Errorf("spec: %w", err)
+		return fmt.Errorf("%w: %v", ErrRequestSpec, err)
 	}
 	rev, ok, err := s.PlanRevision(ctx, r.TaskID, r.CriteriaSpec.Revision)
 	if err != nil {
@@ -233,6 +238,13 @@ func (r *Request) criteriaRows(ctx context.Context, s RequestReads) error {
 	for _, c := range r.Plan.Criteria {
 		v, _ := StandingRow(rows, c)
 		r.Promises = append(r.Promises, PromiseRow{PlanCriterion: c, Verdict: v.Verdict, Evidence: v.Evidence})
+	}
+	cards, err := s.PlanCards(ctx, r.TaskID)
+	if err != nil {
+		return fmt.Errorf("the cards of plan %s: %w", r.TaskID, err)
+	}
+	if integration, ok := integrationCardOf(cards, r.Plan); ok {
+		r.ClosesItself = closesItself(r.Plan, integration, rows)
 	}
 	if r.Kind != ApprovalCriteriaRerun {
 		return nil
@@ -319,15 +331,15 @@ func (r Request) questionCase() (Case, bool) {
 // onPromises is criteria case c as request r's rows read now: the promises
 // still open, those of them nothing judged yet and the plan's count, so its
 // ask counts them and Drop this promise picks among them, whether every
-// one is settled and whether the plan's cards are delivered. Rows it could
-// not read leave the request's own count.
+// one is settled, whether the plan's cards are delivered and whether the
+// plan then closes by itself. Rows it could not read leave the request's
+// own count.
 func (r Request) onPromises(c Case) Case {
-	asked := slices.DeleteFunc(slices.Clone(r.Promises), PromiseRow.GateLine)
-	if len(asked) == 0 {
+	if len(r.Promises) == 0 {
 		return c
 	}
 	var open, unchecked []string
-	for _, p := range asked {
+	for _, p := range r.Promises {
 		if !p.Settled() {
 			open = append(open, p.ID)
 			if p.Verdict == "" {
@@ -336,7 +348,7 @@ func (r Request) onPromises(c Case) Case {
 		}
 	}
 	c = OnOpen(c, open, unchecked, len(r.Promises))
-	c.Facts = withFacts(c.Facts, map[string]any{"settled": len(open) == 0, "undelivered": !r.Delivered})
+	c.Facts = withFacts(c.Facts, map[string]any{"settled": len(open) == 0, "undelivered": !r.Delivered, "closes_itself": r.ClosesItself})
 	return c
 }
 

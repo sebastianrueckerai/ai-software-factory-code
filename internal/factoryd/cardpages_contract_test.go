@@ -17,8 +17,9 @@ import (
 // waiting for its verdict and with its red checks healed; a plan with its
 // confirmation alone, with an extra promise waiting, with an open question
 // and answered; a criteria request with its promises unjudged, one not
-// met, a human's waiting, all settled, before and after delivery; and a
-// rerun request in each state of the run of its tests.
+// met, a human's waiting, all settled, before and after delivery, and
+// every promise met by the gate; and a rerun request in each state of the
+// run of its tests.
 func requestStates(fx facefixtures.Fixture) map[string]factoryd.Request {
 	a := *fx.Approval
 	base := factoryd.Request{ApprovalRequest: a}
@@ -70,6 +71,13 @@ func requestStates(fx facefixtures.Fixture) map[string]factoryd.Request {
 			return r
 		}
 		none := func(factoryd.PlanCriterion) string { return "" }
+		gate := base
+		gate.Delivered = true
+		for _, c := range plan.Criteria {
+			c.Kind = factoryd.CriterionTest
+			gate.Promises = append(gate.Promises, factoryd.PromiseRow{PlanCriterion: c, Verdict: "met", Evidence: "blind: criterion " + c.ID + ": its test passed"})
+		}
+		out["every promise met by the gate"] = gate
 		for _, delivered := range []bool{false, true} {
 			at := fmt.Sprintf(" (delivered %v)", delivered)
 			out["unjudged"+at] = state(delivered, none, nil)
@@ -79,7 +87,9 @@ func requestStates(fx facefixtures.Fixture) map[string]factoryd.Request {
 				}
 				return "met"
 			}, nil)
-			out["all settled"+at] = state(delivered, func(factoryd.PlanCriterion) string { return "waived" }, nil)
+			settled := state(delivered, func(factoryd.PlanCriterion) string { return "waived" }, nil)
+			settled.ClosesItself = true
+			out["all settled"+at] = settled
 			if a.Kind == factoryd.ApprovalCriteriaRerun {
 				for _, outcome := range []string{"asked", "started", "ran", "cut", "no_room"} {
 					out["a run "+outcome+at] = state(delivered, none, &factoryd.RunFact{Outcome: outcome, By: "sebastian", At: time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)})
@@ -99,14 +109,38 @@ func caseOf(fx facefixtures.Fixture) factoryd.Case {
 }
 
 // Every page a card can show offers 2 to 4 answers: the pages of every
-// fixture's case, and of every fixture's request in each state of its
-// rows, on the card's case and with no case to hold it.
+// fixture's case, as its card's own, on a human card that waits for
+// another card, and as a helper's under its parent's card, and of every
+// fixture's request in each state of its rows, on the card's case and
+// with no case to hold it.
 func TestEveryPageOffersTwoToFourAnswers(t *testing.T) {
+	type holder struct {
+		name  string
+		card  factoryd.BoardTask
+		cases []factoryd.Case
+	}
 	for _, fx := range facefixtures.All() {
 		if fx.Case == nil && fx.Approval == nil {
 			continue
 		}
-		card := factoryd.BoardTask{Task: fx.Task}
+		var holders []holder
+		if fx.Case != nil {
+			holders = append(holders, holder{"its card's", factoryd.BoardTask{Task: fx.Task}, []factoryd.Case{*fx.Case}})
+			if fx.Task.Kind == "human" {
+				waits := factoryd.BoardTask{Task: fx.Task, Dependencies: []factoryd.DepFact{{TaskID: "t-dep", Issue: 1999, Status: "queued"}}}
+				holders = append(holders, holder{"on a card that waits for #1999", waits, []factoryd.Case{*fx.Case}})
+			}
+			if fx.Task.Kind == "agent" && fx.Approval == nil {
+				helper := fx.Task
+				helper.Source, helper.Parent = factoryd.SourceSizing, "t-parent"
+				parent := factoryd.BoardTask{Task: factoryd.Task{ID: "t-parent", Kind: "agent", Status: "running", Repository: fx.Task.Repository, IssueNumber: 1998,
+					Objective: "Board export: import a snapshot back"}, Helpers: []factoryd.BoardTask{{Task: helper}}}
+				holders = append(holders, holder{"a helper's", parent, []factoryd.Case{*fx.Case}})
+			}
+		}
+		if fx.Approval != nil {
+			holders = append(holders, holder{"no case's", factoryd.BoardTask{Task: fx.Task}, nil})
+		}
 		states := map[string]factoryd.Request{"no request": {}}
 		_, promise := factoryd.PromiseOn(caseOf(fx))
 		_, holdout := factoryd.HoldoutOn(caseOf(fx))
@@ -124,26 +158,19 @@ func TestEveryPageOffersTwoToFourAnswers(t *testing.T) {
 				pending = []factoryd.ApprovalRequest{*fx.Approval}
 			}
 			read := func(factoryd.ApprovalRequest) factoryd.Request { return r }
-			var held [][]factoryd.Case
-			if fx.Case != nil {
-				held = append(held, []factoryd.Case{*fx.Case})
-			}
-			if fx.Approval != nil {
-				held = append(held, nil)
-			}
-			for _, cases := range held {
+			for _, h := range holders {
 				asks := map[int64]factoryd.CaseAsk{}
 				if fx.Ask != nil && fx.Case != nil {
 					asks[fx.Case.ID] = *fx.Ask
 				}
-				for _, p := range factoryd.CardPages(card, cases, asks, pending, read) {
+				for _, p := range factoryd.CardPages(h.card, h.cases, asks, pending, read) {
 					if n := len(p.Face.Offers); n < 2 || n > 4 {
 						var labels []string
 						for _, o := range p.Face.Offers {
 							labels = append(labels, o.Label)
 						}
-						t.Errorf("%s/%s, %s, %d cases, page %s (%s): %q offers %d answers %q, want 2 to 4",
-							fx.Group, fx.Kind, state, len(cases), p.Key(), p.Case.Kind, p.Face.Ask, n, labels)
+						t.Errorf("%s/%s, %s, %s case, page %s (%s): %q offers %d answers %q, want 2 to 4",
+							fx.Group, fx.Kind, state, h.name, p.Key(), p.Case.Kind, p.Face.Ask, n, labels)
 					}
 				}
 			}
@@ -152,9 +179,9 @@ func TestEveryPageOffersTwoToFourAnswers(t *testing.T) {
 }
 
 // A criteria request offers what its rows take: with every promise met or
-// dropped, the plan's close now or the wait for the factory's close, and
-// no card to build; The work is enough only once the plan's cards are
-// delivered.
+// dropped, the plan's close now or the wait, which ends in the factory's
+// close only where the close check closes the plan by itself, and no card
+// to build; The work is enough only once the plan's cards are delivered.
 func TestACriteriaRequestOffersWhatItsRowsTake(t *testing.T) {
 	i := slices.IndexFunc(facefixtures.All(), func(fx facefixtures.Fixture) bool {
 		return fx.Group == facefixtures.GroupApproval && fx.Kind == factoryd.ApprovalCriteria
@@ -172,11 +199,14 @@ func TestACriteriaRequestOffersWhatItsRowsTake(t *testing.T) {
 		}
 		return answers, labels(face.More)
 	}
-	settled := pages("all settled (delivered true)")
-	answers, more := offered(settled[0])
-	if want := []string{"Close the plan now: Closes the plan now, so production deploys go on.", "Not now: The plan closes by itself within minutes."}; len(settled) != 1 || !slices.Equal(answers, want) ||
-		slices.Contains(more, "Build the missing part") || settled[0].Face.Ask != "Every promise of plan “divide and conquer” is met or dropped. Close it now?" {
-		t.Errorf("all settled: %d pages, ask %q, answers %q, more %q; want one page that asks to close now, %q, and no card to build", len(settled), settled[0].Face.Ask, answers, more, want)
+	for state, wait := range map[string]string{"all settled (delivered true)": "The plan closes by itself within minutes.",
+		"every promise met by the gate": "The plan stays open until someone closes it."} {
+		settled := pages(state)
+		answers, more := offered(settled[0])
+		if want := []string{"Close the plan now: Closes the plan now, so production deploys go on.", "Not now: " + wait}; len(settled) != 1 || !slices.Equal(answers, want) ||
+			slices.Contains(more, "Build the missing part") || settled[0].Face.Ask != "Every promise of plan “divide and conquer” is met or dropped. Close it now?" {
+			t.Errorf("%s: %d pages, ask %q, answers %q, more %q; want one page that asks to close now, %q, and no card to build", state, len(settled), settled[0].Face.Ask, answers, more, want)
+		}
 	}
 	for _, state := range []string{"unjudged (delivered false)", "unjudged (delivered true)"} {
 		for _, p := range pages(state) {

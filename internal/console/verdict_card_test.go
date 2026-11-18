@@ -878,3 +878,52 @@ func TestTheMergeCardHoldsARowPerCriterion(t *testing.T) {
 		t.Errorf("a failed read of the rows is not said on the card:\n%s", k)
 	}
 }
+
+// A request no case holds takes its page's answers too: Close the plan now
+// is the plan's own close, open to every writer as the server's close is
+// once nothing is open, and Not now posts a press that leaves the card as
+// it is and keeps no note, for no ask holds one.
+func TestARequestsPageTakesCloseAndNotNow(t *testing.T) {
+	v := &boardView{csrf: "c1", user: "ana"}
+	k := card{Task: factoryd.Task{ID: "t-plan", Repository: "sf/code", Status: "done", Track: policy.TrackPlan}}
+	ap := approvalCard{Request: factoryd.Request{ApprovalRequest: factoryd.ApprovalRequest{ID: 30, Kind: factoryd.ApprovalCriteria, TaskID: "t-plan"}}}
+	closePlan, _ := factoryd.AnswerOf(factoryd.AnswerClosePlan)
+	notNow, _ := factoryd.AnswerOf(factoryd.ActNote)
+	if p, name := requestForm(v, k, ap, closePlan); p == nil || p.Post != "/tasks/t-plan/resolve" || len(p.Values) != 1 || p.Values[0] != (hidden{"action", factoryd.ActClose}) ||
+		p.DataTo != "closed" || name("note") != "close.note" {
+		t.Errorf("Close the plan now on a request posts %+v, want the plan's own close", p)
+	}
+	if p, name := requestForm(v, k, ap, notNow); p == nil || p.Post != "/tasks/t-plan/resolve" || len(p.Values) != 1 || p.Values[0] != (hidden{"action", factoryd.ActNote}) ||
+		p.DataTo != "" || name("note") != "note.note" {
+		t.Errorf("Not now on a request posts %+v, want the card's resolve that keeps it where it stands", p)
+	}
+	if !mayAnswer(v, k, factoryd.AnswerClosePlan) || mayAnswer(v, k, factoryd.AnswerDropAndEnd) {
+		t.Error("a writer who approves nothing: Close the plan now is not theirs, or Drop them and close is")
+	}
+
+	r := newRig(t)
+	verdictRig(r)
+	ck, s := r.loggedIn(t)
+	before := len(r.approvals.rows)
+	if rec := r.do(post("/tasks/t-plan/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.ActNote}}), ck); rec.Code >= 400 {
+		t.Errorf("Not now with no case = %d %q, want it taken", rec.Code, rec.Body.String())
+	}
+	rec := r.do(post("/tasks/t-plan/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.ActNote}, "note.note": {"later"}}), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "No ask of this card keeps a note") || len(r.approvals.rows) != before {
+		t.Errorf("Not now with a note and no case = %d %q, want it refused and nothing changed", rec.Code, rec.Body.String())
+	}
+}
+
+// A merge request whose spec does not read says so in its own words, and
+// not as rows it could not read.
+func TestAMergeRequestWhoseSpecDoesNotReadSaysSo(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("", factoryd.Task{ID: "t-res", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 21, Track: policy.TrackDirect})
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 77, Kind: factoryd.ApprovalMerge, TaskID: "t-res", Project: "sf/code",
+		Status: "pending", PRNumber: 9, Spec: json.RawMessage(`[]`)})
+	ck, _ := r.loggedIn(t)
+	body := drawer(t, r, ck, "t-res", "overview")
+	if !strings.Contains(body, "The console could not read the merge request: the request&#39;s spec does not read") || strings.Contains(body, "could not read the criterion rows") {
+		t.Errorf("the drawer does not name the spec that does not read:\n%s", body)
+	}
+}

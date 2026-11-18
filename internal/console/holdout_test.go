@@ -85,8 +85,9 @@ func planPages(t *testing.T, r *rig, ck *http.Cookie) []string {
 // keep it; on the opened card each page tells what an extra promise is,
 // names its claim whole and what keeping it costs, and offers Keep it and
 // Drop it, which post the row's own index with no field to fill. The
-// confirmation's page comes last and offers Ask for changes alone, its why
-// naming the 2 extra promises it waits on, and no text names Confirm. The full brief lists the extra
+// confirmation's page comes last and offers Ask for changes and Not now,
+// its why naming the 2 extra promises it waits on, and no text names
+// Confirm. The full brief lists the extra
 // promises with their state and holds no form; a proof's code, an earlier
 // round's row and the old zone with its script reach no page.
 func TestEachExtraPromiseAsksOnItsOwnPage(t *testing.T) {

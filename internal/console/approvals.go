@@ -187,6 +187,10 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 	switch a.Kind {
 	case factoryd.ApprovalMerge:
 		k.PRURL = fmt.Sprintf("%s/pulls/%d", base, a.PRNumber)
+		if errors.Is(err, factoryd.ErrRequestSpec) {
+			k.Problem = "The console could not read the merge request: " + errText(err) + "."
+			break
+		}
 		if !face {
 			var oerr error
 			if k.Opened, oerr = c.openedProofsOf(ctx, act, t, a.Project, k.Merge.HeadSHA); oerr != nil {

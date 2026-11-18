@@ -35,9 +35,12 @@ func storedFaceRow(ask, why string, labels ...string) map[string]any {
 // than four, and #2090 a human's own issue moved into the plan with no why
 // line, which keeps its text as written. A helper's ask with one button
 // counts on its card, #2100, and on #2110, a finished card the board shows
-// for its helper's ask. The same board with the accepted briefs, the
-// register's faces and a request no case holds has no finding. A read the
-// audit could not make fails it, naming what it read.
+// for its helper's ask. The same board with the accepted briefs and the
+// register's faces has no finding: a resource request no case holds, a
+// plan's request whose confirmation waits for an extra promise, and a done
+// plan's request of criteria never judged whose tests run now, each read
+// from the store as the console reads it. A read the audit could not make
+// fails it, naming what it read.
 func TestAuditBoardFindsTheNamedFaults(t *testing.T) {
 	ctx := context.Background()
 	dsn := schematest.DSN(t, "boardaudit")
@@ -166,13 +169,78 @@ func TestAuditBoardFindsTheNamedFaults(t *testing.T) {
 		Reason: "The card needs a server for its load test."}); err != nil {
 		t.Fatal(err)
 	}
+	planned := Task{ID: "ok-1960", Kind: "agent", Track: policy.TrackPlan, Status: "waiting-human", Repository: "sf/accepted", IssueNumber: 1960,
+		Source: SourceWebhook, RiskClass: "standard", Objective: "Fire the gate on an empty commit"}
+	create(planned)
+	gatePlan := Plan{Cards: []PlanCard{{Key: "gate", Role: RoleIntegration, Title: "Fire the gate on an empty commit", Size: "small"}},
+		Criteria: []PlanCriterion{{ID: "gate_fires", Kind: CriterionTest, Claim: "an empty commit fires the gate", Promise: "An empty commit fires the gate."}}}
+	if _, err := s.AddPlanRevision(ctx, planned.ID, mustJSON(gatePlan), "g1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.PutPlanConfirmation(ctx, planned.ID, 1, PlanQuestion{Kind: QuestionConfirmation, Text: ConfirmationQuestion(1, gatePlan)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutPlanProofs(ctx, planned.ID, 1, []PlanProof{{Idx: 1, Round: 1, ID: "empty_tree", Origin: ProofOriginHoldout,
+		Claim: "An empty tree fires the gate too.", State: ProofProposed}}); err != nil {
+		t.Fatal(err)
+	}
+	planReq := ApprovalRequest{Kind: ApprovalPlan, TaskID: planned.ID, Project: "sf/accepted", Spec: mustJSON(PlanSpec{Revision: 1, SHA256: "g1"})}
+	if planReq.ID, err = s.OpenApproval(ctx, planReq); err != nil {
+		t.Fatal(err)
+	}
+	faced := Task{ID: "ok-1850", Kind: "agent", Track: policy.TrackPlan, Status: "done", Repository: "sf/accepted", IssueNumber: 1850,
+		Source: SourceWebhook, RiskClass: "standard", Objective: "Keep one face for every card"}
+	last := Task{ID: "ok-1851", Kind: "agent", Track: policy.TrackDirect, Status: "closed", Repository: "sf/accepted", IssueNumber: 1851,
+		Source: SourcePlan, Parent: faced.ID, PlanKey: "face", RiskClass: "standard", Objective: "Keep the face test green"}
+	create(faced)
+	create(last)
+	facePlan := Plan{Cards: []PlanCard{{Key: "face", Role: RoleIntegration, Title: "Keep the face test green", Size: "small"}},
+		Criteria: []PlanCriterion{{ID: "face_test", Kind: CriterionTest, Claim: "every face passes its test", Promise: "Every face passes its test.",
+			Suite: "./internal/faces", Name: "TestFace"}}}
+	if _, err := s.AddPlanRevision(ctx, faced.ID, mustJSON(facePlan), "f1"); err != nil {
+		t.Fatal(err)
+	}
+	rerun, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteriaRerun, TaskID: faced.ID, Project: "sf/accepted",
+		Reason: "criteria never judged: the criteria gate has not settled face_test",
+		Spec:   mustJSON(CriteriaSpec{Revision: 1, Task: last.ID, Runnable: []string{"face_test"}, Open: []string{"face_test"}, Unchecked: []string{"face_test"}, Of: 1})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for kind, detail := range map[string]map[string]any{EventApprovalRequested: {"approval": rerun},
+		EventCriteriaGateRun: {"by": "sebastian", "outcome": "started", "task": last.ID}} {
+		if _, err := s.Record(ctx, Event{Repository: "sf/accepted", TaskID: faced.ID, IssueNumber: faced.IssueNumber, Kind: kind, Actor: FactoryDecider,
+			Via: ViaFactoryd, Detail: detail}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	got, err = AuditBoard(ctx, ro, "sf/accepted", briefRefs{}, green)
 	if err != nil || len(got) > 0 {
 		t.Errorf("the accepted board's findings:\n%s\nerror %v, want none", findingLines(got), err)
 	}
 	desk, err := s.CaseDesk(ctx, "sf/accepted")
-	if err != nil || len(desk.Cases) != 2 || slices.ContainsFunc(desk.Cases, func(c Case) bool { return c.Status != CaseAtHuman }) {
-		t.Fatalf("the accepted board holds the cases %+v, %v; want the asks of #2101 and #2004 at the human", desk.Cases, err)
+	if err != nil || len(desk.Cases) != 3 || slices.ContainsFunc(desk.Cases, func(c Case) bool { return c.Status != CaseAtHuman }) ||
+		!slices.ContainsFunc(desk.Cases, func(c Case) bool { return c.TaskID == faced.ID && c.Kind == CasePlanCriteria }) {
+		t.Fatalf("the accepted board holds the cases %+v, %v; want the asks of #2101 and #2004 and #1850's criteria at the human", desk.Cases, err)
+	}
+	// the plan's page counts: its confirmation waits for the extra promise
+	readStore := func(t Task) func(ApprovalRequest) Request {
+		return func(a ApprovalRequest) Request { r, _ := ReadRequest(ctx, ro, a, t, green); return r }
+	}
+	confirm := CardPages(BoardTask{Task: planned}, nil, nil, []ApprovalRequest{planReq}, readStore(planned))
+	if len(confirm) != 1 || len(confirm[0].Face.Offers) != 2 || confirm[0].Face.Offers[0].Label != "Ask for changes" || confirm[0].Face.Offers[1].Label != "Not now" {
+		t.Errorf("the plan's pages %+v, want its confirmation offering Ask for changes and Not now", confirm)
+	}
+	// the criteria page counts: its promise's test runs now
+	var running []CardPage
+	for _, p := range CardPages(BoardTask{Task: faced}, CardCases(BoardTask{Task: faced}, desk.Cases), desk.Asks, []ApprovalRequest{{ID: rerun, Kind: ApprovalCriteriaRerun,
+		TaskID: faced.ID, Project: "sf/accepted", Spec: mustJSON(CriteriaSpec{Revision: 1, Task: last.ID, Runnable: []string{"face_test"}})}},
+		readStore(faced)) {
+		if p.Part > 0 {
+			running = append(running, p)
+		}
+	}
+	if len(running) != 1 || running[0].Face.Story.Happened != "The tests run now, as sebastian asked at "+runStamp(running[0].Request.Run.At)+"." {
+		t.Errorf("the criteria pages %+v, want one page of face_test whose tests run now", running)
 	}
 
 	broken := Task{ID: "broken-3001", Kind: "agent", Track: policy.TrackDirect, Status: "in-review", Repository: "sf/broken", IssueNumber: 3001,
@@ -182,7 +250,7 @@ func TestAuditBoardFindsTheNamedFaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := AuditBoard(ctx, ro, "sf/broken", briefRefs{}, green); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("approval request %d: spec", id)) {
+	if _, err := AuditBoard(ctx, ro, "sf/broken", briefRefs{}, green); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("approval request %d: %v", id, ErrRequestSpec)) {
 		t.Errorf("a request whose spec does not read = %v, want the audit failed naming the request", err)
 	}
 }

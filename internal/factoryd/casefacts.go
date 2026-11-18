@@ -123,9 +123,11 @@ type CaseFacts struct {
 	Runnable []string `json:"runnable,omitempty"`
 	// Settled: every promise a criteria request asks about stands met or
 	// dropped as its rows read now; Undelivered: a card of its plan is not
-	// delivered yet. A request's page carries both (CardPages).
+	// delivered yet; ClosesItself: the close check then closes the plan by
+	// itself. A request's page carries all three (CardPages).
 	Settled      bool      `json:"settled,omitempty"`
 	Undelivered  bool      `json:"undelivered,omitempty"`
+	ClosesItself bool      `json:"closes_itself,omitempty"`
 	Pushed       bool      `json:"pushed,omitempty"` // a session pushed a branch head
 	Dependencies []DepFact `json:"dependencies,omitempty"`
 	// Waiters counts the cards that wait for this one and have not ended

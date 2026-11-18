@@ -596,7 +596,7 @@ func dataTo(k card, a factoryd.Answer) string {
 		return ""
 	case factoryd.ActApproveMerge, factoryd.ActDenyMerge, factoryd.AnswerApprove, factoryd.AnswerDeny:
 		return k.Status
-	case factoryd.ActClose, factoryd.AnswerDropAndEnd:
+	case factoryd.ActClose, factoryd.AnswerDropAndEnd, factoryd.AnswerClosePlan:
 		if k.Kind == "human" {
 			return "off"
 		}
@@ -644,10 +644,8 @@ func casePress(v *boardView, k card, row caseRow, a factoryd.Answer, key string)
 		// the plan's own end, no answer of its question
 		return cardPress(v, k, a, key)
 	}
-	if a.Action == factoryd.AnswerDropAndEnd {
-		// the plan's own Close, whose note waives each open promise
-		p.Post, p.Values, p.DataTo = "/tasks/"+k.ID+"/resolve", []hidden{{"action", factoryd.ActClose}}, "closed"
-		return p, func(field string) string { return factoryd.ActClose + "." + field }
+	if a.Action == factoryd.AnswerDropAndEnd || a.Action == factoryd.AnswerClosePlan {
+		return planClosePress(p, k)
 	}
 	if h, ok := factoryd.HoldoutOn(row.Case); ok {
 		// an extra promise's page keeps it or drops it, and the card waits
@@ -811,10 +809,23 @@ func requestForm(v *boardView, k card, ap approvalCard, a factoryd.Answer) (*pre
 	case a.Action == factoryd.AnswerRevisePlan:
 		p.Post = "/tasks/" + k.ID + "/plan/changes"
 		return p, named("text")
+	case a.Action == factoryd.AnswerDropAndEnd || a.Action == factoryd.AnswerClosePlan:
+		return planClosePress(p, k)
+	case a.Action == factoryd.ActNote:
+		// Not now on a request no case holds: the card keeps waiting
+		p.Post, p.Values = "/tasks/"+k.ID+"/resolve", []hidden{{"action", factoryd.ActNote}}
+		return p, func(field string) string { return factoryd.ActNote + "." + field }
 	default:
 		return nil, nil
 	}
 	return p, named("note")
+}
+
+// planClosePress is p as the plan's own Close of card k, whose note
+// waives each open promise: the card's resolve with no case.
+func planClosePress(p *pressForm, k card) (*pressForm, func(string) string) {
+	p.Post, p.Values, p.DataTo = "/tasks/"+k.ID+"/resolve", []hidden{{"action", factoryd.ActClose}}, "closed"
+	return p, func(field string) string { return factoryd.ActClose + "." + field }
 }
 
 // cardPress is the press of card k's own action a by key, which no case

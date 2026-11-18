@@ -38,6 +38,7 @@ const (
 	AnswerKeepHoldout = "keep_holdout"
 	AnswerDropHoldout = "drop_holdout"
 	AnswerDropAndEnd  = "drop_promises"
+	AnswerClosePlan   = "close_plan"
 )
 
 // The variants of the vocabulary: the form of an action for one class of
@@ -60,7 +61,6 @@ const (
 	variantAlone    = "alone"
 	variantFile     = "file"
 	variantOpen     = "open"
-	variantSettled  = "settled"
 )
 
 // The keys of a routine's answers in their other states: the undo of a
@@ -204,7 +204,7 @@ var Vocabulary = []Answer{
 	{Action: ActSettle, Variant: variantKeepOpen, Label: "Keep the plan open", Effect: "The plan stays open and holds production deploys until an approver closes it."},
 	{Action: AnswerDropAndEnd, Label: "Drop them and close", Effect: "Drops the open promises with your reason and closes the plan, so production deploys go on.",
 		Fields: []Field{requiredNote("Your reason", "Why the plan no longer needs them")}},
-	{Action: AnswerDropAndEnd, Variant: variantSettled, Label: "Close the plan now", Effect: "Closes the plan now, so production deploys go on."},
+	{Action: AnswerClosePlan, Label: "Close the plan now", Effect: "Closes the plan now, so production deploys go on."},
 }
 
 func criterionField() Field {
@@ -412,8 +412,11 @@ func waitEffect(f Facts) string {
 			return "The tests go on, and each result lands on its promise."
 		}
 	}
-	if f.Settled {
+	switch {
+	case f.Settled && f.ClosesItself:
 		return "The plan closes by itself within minutes."
+	case f.Settled:
+		return "The plan stays open until someone closes it."
 	}
 	if asked, err := time.Parse(time.RFC3339, factString(f.Case, "asked_at")); err == nil && f.Case.Kind == CaseAgentRequestInfo {
 		return "The card keeps waiting for the author's answer until " + timeWords(asked.Add(infoWait)) +
@@ -1450,7 +1453,7 @@ var planConfirmFace = FaceSpec{
 		}
 		p, ok := planOn(f)
 		if p.HoldoutsOpen > 0 {
-			// Ask for changes is the one answer before they are settled
+			// a confirm waits until they are settled
 			n := plural(p.HoldoutsOpen, "extra promise")
 			return firstAsk(fmt.Sprintf("Does %s need changes before its %s %s settled?", askedPlan(f), n, isAre(p.HoldoutsOpen)),
 				fmt.Sprintf("Does this plan need changes before its %s %s settled?", n, isAre(p.HoldoutsOpen)))
@@ -1938,7 +1941,7 @@ var criteriaFace = FaceSpec{
 		waive, human := ActAnswerCriteria+"/waive", []string{ActAnswerCriteria, ActAnswerCriteria + "/not_met"}
 		switch {
 		case !ok && f.Settled:
-			return []string{AnswerDropAndEnd + "/" + variantSettled, ActNote}
+			return []string{AnswerClosePlan, ActNote}
 		case !ok && f.ApprovalKind == ApprovalCriteriaRerun && len(f.Runnable) > 0:
 			return []string{ActRunCriteria, waive}
 		case !ok:

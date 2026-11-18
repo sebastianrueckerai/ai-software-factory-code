@@ -722,6 +722,15 @@ func integrationCardOf(cards []Task, p Plan) (Task, bool) {
 	return cards[i], true
 }
 
+// closesItself says the close check closes plan p by itself once its
+// promises stand settled on rows, its integration card's: when the card
+// merged or is done, or ended off main with every promise judged by a
+// person (judgedByPerson).
+func closesItself(p Plan, integration Task, rows []CriterionVerdict) bool {
+	reached := integration.Status == "merged" || integration.Status == "done"
+	return reached || Final(integration.Status) && judgedByPerson(p, rows)
+}
+
 // judgedByPerson: every criterion of p stands on an approver's row, a
 // waiver or a confirmation, or is an invariant its gate met, so a plan
 // whose integration card ended off main closes on the person's word: no
@@ -1354,8 +1363,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		return
 	}
 	if len(openCriteria(p, rows)) == 0 {
-		reached := integration.Status == "merged" || integration.Status == "done"
-		if r.planClosed(ctx, parent) || !reached && !(Final(integration.Status) && judgedByPerson(p, rows)) || !r.planAtRest(ctx, t) {
+		if r.planClosed(ctx, parent) || !closesItself(p, integration, rows) || !r.planAtRest(ctx, t) {
 			return
 		}
 		cards, err := planWaits(ctx, r.store, parent)
