@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -141,5 +142,45 @@ func TestAMergeSuggestsWhatItsReviewApproved(t *testing.T) {
 		if face.Preselected != c.want || c.want != "" && (face.Source != "the model review" || face.Recommendation != "It approved the change with no finding.") {
 			t.Errorf("%s: suggests %q by %q on %q, want %q by the model review", name, face.Preselected, face.Source, face.Recommendation, c.want)
 		}
+	}
+}
+
+// A budget floor on a card whose sessions left no work on its branch says
+// the work is lost on its face, read from the case's stored facts, in the
+// same words as the ask the human was sent.
+func TestCaseFaceAndAskAgreeOnLostWork(t *testing.T) {
+	g := newFactsRig(t)
+	ctx := context.Background()
+	card := g.store.tasks["t1"]
+	card.SpentEUR, card.HeldEUR, card.IssueNumber = 4.4, 0, 0
+	g.store.tasks["t1"] = card
+	g.r.timeline = &Timeline{Objects: &fakeObjectStore{}, Events: g.store, Store: g.store}
+	f, err := g.r.tripFacts(ctx, card, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	why, err := g.r.SessionFunded(ctx, "t1", "factory/small")
+	if err != nil || !BudgetRefusal(why) {
+		t.Fatalf("SessionFunded = (%q, %v), want the money ask", why, err)
+	}
+	c, _, err := g.r.tripCase(ctx, card, f, TripInput{TaskID: "t1", Reason: why})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.r.AskHuman(ctx, card, c, why, "next", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	var asked Story
+	var askedWhy string
+	for _, e := range g.store.events {
+		if e.Kind == EventQuestionAsked {
+			asked, _ = e.Detail["story"].(Story)
+			askedWhy, _ = e.Detail["why"].(string)
+		}
+	}
+	const lost = "The last session's work was not pushed and is lost. The next session starts again from main."
+	face := CaseFace(c, card, CaseAsk{})
+	if asked.Left != lost || face.Story != asked || askedWhy == "" || face.Why != askedWhy {
+		t.Errorf("the face's story %+v and why %q, the ask's story %+v and why %q; want both to say the work is lost", face.Story, face.Why, asked, askedWhy)
 	}
 }

@@ -1948,3 +1948,22 @@ func TestFactoryMergeFaceKeepsTheClose(t *testing.T) {
 		t.Errorf("the close never reached the pull request: %q", r.fg.calls)
 	}
 }
+
+// The successor that carries a plan card's key is that plan's card: its
+// face names the plan and its place in it, and its opened card marks it
+// among the plan's cards.
+func TestAPlanCardsSuccessorNamesItsPlan(t *testing.T) {
+	r, ck := drawerRig(t)
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-s4", Kind: "agent", Status: "running", Track: "direct",
+		Process: "spec", Objective: "Links API, carried on", Repository: "linkshort/linkshort", IssueNumber: 14, Source: factoryd.SourceSuccessor,
+		Parent: "t-plan", PlanKey: "links-api"}})
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-s4"); !strings.Contains(face, `<span class="it place"><a class="ref-link" href="#card=t-plan">Link shortener</a> 2/3</span>`) {
+		t.Errorf("the successor's face lacks its plan and its place in it:\n%s", face)
+	}
+	card := drawer(t, r, ck, "t-s4", "overview")
+	if !strings.Contains(card, `<details class="fold" data-sec="plan"><summary>The plan<span class="hint">Link shortener, 3 cards, 0 ended</span></summary>`) ||
+		!strings.Contains(card, `<li class="this" aria-current="true">Links API`) {
+		t.Errorf("the successor's opened card does not mark it among its plan's cards:\n%s", card)
+	}
+}

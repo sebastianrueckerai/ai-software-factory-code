@@ -1,6 +1,9 @@
 package factoryd
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"slices"
 	"testing"
 )
@@ -41,8 +44,9 @@ func TestAFactslessPlanCaseSortsInItsKeysRevision(t *testing.T) {
 
 // A plan case whose facts name no revision and no index takes both from
 // its state key and its ask's place among its revision's questions, with
-// that question's choices; one whose ask matches no question, or whose
-// revision is not the request's, stays as it is.
+// that question's choices; a question's case whose ask matches none asks
+// the revision's first open question, and one whose revision is not the
+// request's stays as it is.
 func TestAFactslessPlanCaseTakesItsQuestionsSlot(t *testing.T) {
 	r := &Request{ApprovalRequest: ApprovalRequest{Kind: ApprovalPlan}, PlanSpec: PlanSpec{Revision: 2},
 		PlanQuestions: []PlanQuestion{{Text: "Which store?", Choices: []string{"Postgres", "SQLite"}, Recommended: "Postgres"}, {Text: "Who may read  the feed?"}}}
@@ -54,12 +58,42 @@ func TestAFactslessPlanCaseTakesItsQuestionsSlot(t *testing.T) {
 	if choices, _ := got.Facts["choices"].([]any); FactInt(got, "index") != 1 || len(choices) != 2 || choices[0] != "Postgres" || got.Facts["recommended"] != "Postgres" {
 		t.Errorf("the first question's case holds %v, want index 1, its two choices and Postgres recommended", got.Facts)
 	}
+	// a question's case whose ask matches none asks the first open question
+	got = withPlanSlot(Case{Kind: CasePlanQuestion, StateKey: "c3@r2", Problem: "Which region?"}, r)
+	if choices, _ := got.Facts["choices"].([]any); got.Problem != "Which store?" || FactInt(got, "revision") != 2 || FactInt(got, "index") != 1 || len(choices) != 2 {
+		t.Errorf("an ask of no question: the case asks %q with %v, want the first open question, index 1 with its two choices", got.Problem, got.Facts)
+	}
 	for name, c := range map[string]Case{
-		"an ask of no question": {Kind: CasePlanQuestion, StateKey: "c3@r2", Problem: "Which region?"},
-		"another revision":      {Kind: CasePlanQuestion, StateKey: "d4@r1", Problem: "Which store?"},
+		"a confirmation of no question": {Kind: CasePlanConfirmation, StateKey: "c3@r2", Problem: "Does the plan match?"},
+		"another revision":              {Kind: CasePlanQuestion, StateKey: "d4@r1", Problem: "Which store?"},
 	} {
-		if got := withPlanSlot(c, r); got.Facts != nil {
-			t.Errorf("%s: facts = %v, want none", name, got.Facts)
+		if got := withPlanSlot(c, r); got.Facts != nil || got.Problem != c.Problem {
+			t.Errorf("%s: the case asks %q with %v, want it as it is", name, got.Problem, got.Facts)
 		}
+	}
+}
+
+// The merge request of the successor that carries the integration card's
+// key shows the plan's promises with their standing rows on the
+// plan-filed integration card, as the card's own request does, and its
+// human promise with no verdict holds the merge.
+func TestMergeRowsOfASuccessorOfTheIntegrationCard(t *testing.T) {
+	plan, _ := json.Marshal(Plan{Criteria: []PlanCriterion{
+		{ID: "c1", Kind: "test", Claim: "a link is stored", Inputs: "POST /api/links", Expected: "201"},
+		{ID: "c2", Kind: "human", Claim: "the feature reads well"},
+	}, Cards: []PlanCard{{Key: "integration", Role: RoleIntegration}}})
+	store := newFakeStore()
+	store.plans = map[string][]PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan}}}
+	store.tasks["t-int"] = Task{ID: "t-int", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Status: "failed"}
+	store.criteriaVerdicts = map[string][]CriterionVerdict{"t-int": {{Criterion: "c1", Kind: "test", Verdict: "met", Evidence: "TestLink passed"}}}
+	succ := Task{ID: "t-succ", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "integration"}
+	rows, unsettled, integration, err := MergeRows(context.Background(), store, succ)
+	var got []string
+	for _, r := range rows {
+		got = append(got, fmt.Sprintf("%s %s %q %q", r.ID, r.Kind, r.Verdict, r.Evidence))
+	}
+	want := []string{`c1 test "met" "TestLink passed"`, `c2 human "" ""`}
+	if err != nil || !slices.Equal(got, want) || !slices.Equal(unsettled, []string{"c2"}) || integration != "t-int" {
+		t.Fatalf("the successor's merge rows = %q, unsettled %q on %q (%v); want %q, c2 unsettled on t-int", got, unsettled, integration, err, want)
 	}
 }

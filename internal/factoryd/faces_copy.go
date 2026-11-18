@@ -1988,9 +1988,13 @@ var criteriaFace = FaceSpec{
 
 // heldPlanFace is the ask of a plan whose card a human closed while its
 // promises were open: close it and drop them, or keep it open, holding
-// production deploys.
+// production deploys. A close that drops none, as the tests on main met
+// them all, takes no reason.
 var heldPlanFace = FaceSpec{
 	Ask: func(f Facts) string {
+		if dropsNone(f) {
+			return firstAsk(fmt.Sprintf("Close %s now?", askedPlan(f)), "Close this plan now?")
+		}
 		n := plural(len(factStrings(f.Case, "open")), "open promise")
 		return firstAsk(fmt.Sprintf("Close %s and drop its %s?", askedPlan(f), n), fmt.Sprintf("Close this plan and drop its %s?", n))
 	},
@@ -2010,7 +2014,19 @@ var heldPlanFace = FaceSpec{
 		}
 		return s
 	},
-	Answers: keys(AnswerDropAndEnd, ActSettle+"/"+variantKeepOpen),
+	Answers: func(f Facts) []string {
+		if dropsNone(f) {
+			return []string{AnswerClosePlan, ActSettle + "/" + variantKeepOpen}
+		}
+		return []string{AnswerDropAndEnd, ActSettle + "/" + variantKeepOpen}
+	},
+}
+
+// dropsNone says the close of the held plan on f drops no promise: the
+// last run of its tests on main met every open one.
+func dropsNone(f Facts) bool {
+	met := len(factStrings(f.Case, "met_on_main"))
+	return met > 0 && met == len(factStrings(f.Case, "open"))
 }
 
 // HeldPlanComment is the words on the issue of plan t, held with its open

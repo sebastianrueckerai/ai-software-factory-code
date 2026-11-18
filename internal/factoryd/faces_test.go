@@ -770,3 +770,41 @@ func TestAResourceRequestsWhyReadsWhateverItsPurpose(t *testing.T) {
 		}
 	}
 }
+
+// A held plan's face follows what its close drops: with promises the last
+// run on main did not meet, it asks to drop them, with a reason; where the
+// run met some, it says the close drops only the others; where it met
+// every open one, it asks a plain close, which takes no reason.
+func TestAHeldPlansFaceFollowsWhatItsCloseDrops(t *testing.T) {
+	face := func(met ...string) factoryd.AskFace {
+		c := factoryd.Case{Kind: factoryd.CasePlanHeld, Status: factoryd.CaseAtHuman, Facts: map[string]any{
+			"open": []string{"c1", "c2"}, "promises": []string{"A link is stored", "The pages read well"}, "met_on_main": met}}
+		return factoryd.FaceOf(c, factoryd.Facts{Case: c})
+	}
+	labels := func(f factoryd.AskFace) (out []string) {
+		for _, a := range f.Answers {
+			required := ""
+			if slices.ContainsFunc(a.Fields, func(x factoryd.Field) bool { return x.Required }) {
+				required = " (a reason)"
+			}
+			out = append(out, a.Label+required)
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		met       []string
+		ask, left string
+		answers   []string
+	}{
+		{nil, "Close this plan and drop its 2 open promises?", "", []string{"Drop them and close (a reason)", "Keep the plan open"}},
+		{[]string{"c1"}, "Close this plan and drop its 2 open promises?",
+			"The last run of the plan's tests on main met 1 of them, so closing drops only the other 1.", []string{"Drop them and close (a reason)", "Keep the plan open"}},
+		{[]string{"c1", "c2"}, "Close this plan now?",
+			"The last run of the plan's tests on main met all of them, so closing drops none.", []string{"Close the plan now", "Keep the plan open"}},
+	} {
+		f := face(tc.met...)
+		if f.Ask != tc.ask || f.Story.Left != tc.left || !slices.Equal(labels(f), tc.answers) {
+			t.Errorf("met on main %v: the face asks %q, left %q, answers %q; want %q, %q, %q", tc.met, f.Ask, f.Story.Left, labels(f), tc.ask, tc.left, tc.answers)
+		}
+	}
+}

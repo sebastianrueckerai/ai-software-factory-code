@@ -358,6 +358,86 @@ func TestCriteriaRerunDeliveredFollowsACutCardToItsSuccessor(t *testing.T) {
 	}
 }
 
+// A request whose promises no test checked offers Build the missing part
+// too: its press reaches Act as one grant_criteria and approves the
+// request.
+func TestCriteriaNeverJudgedGrantsOneCard(t *testing.T) {
+	r := newRig(t)
+	verdictRig(r)
+	r.approvals.rows[len(r.approvals.rows)-1].Kind = factoryd.ApprovalCriteriaRerun
+	r.c.cfg.GrantCriteria = func(context.Context, string, string, int64) (int, error) { return 2, nil }
+	ck, s := r.loggedIn(t)
+	grant := answerForm(t, drawer(t, r, ck, "t-plan", "overview"), factoryd.ActGrantCriteria)
+	if grant.Action != "/tasks/t-plan/resolve" || grant.Label != "Build the missing part" {
+		t.Fatalf("the opened card's grant posts %+v", grant)
+	}
+	rec := r.do(post("/approvals/30/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	if rec.Code != http.StatusSeeOther || len(r.acted) != 1 || r.acted[0].Res.Action != factoryd.ActGrantCriteria {
+		t.Fatalf("approve = %d %q, Act took %+v, want one grant_criteria", rec.Code, rec.Body.String(), r.acted)
+	}
+	if a := r.approvals.get(30); a.Status != "approved" {
+		t.Errorf("the grant left the request %+v", a)
+	}
+}
+
+// A card of the plan closed with no successor (a replan cut it, or a
+// human closed it) does not keep The work is enough off: its press takes
+// the evidence typed with it, a field the form requires, and the store's
+// refusal of an empty line names the closed card and what to type. A
+// failed card keeps the answer off.
+func TestCriteriaRerunConfirmsOverAClosedCard(t *testing.T) {
+	r := newRig(t)
+	verdictRig(r)
+	r.approvals.rows[len(r.approvals.rows)-1].Kind = factoryd.ApprovalCriteriaRerun
+	closed := factoryd.BoardTask{Task: factoryd.Task{ID: "t-cut-card", Kind: "agent", Repository: "sf/code", Status: "closed",
+		Parent: "t-plan", Source: factoryd.SourcePlan, PlanKey: "cut"}}
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, closed)
+	r.tasks.mu.Unlock()
+	gateRanOnMain(r, "t-plan", "t-int", "rev 1 t-cut-card:closed t-found:done t-int:done")
+	var calls []string
+	r.c.cfg.ConfirmDeliveredCriteria = func(_ context.Context, id, by, line string) (int, error) {
+		calls = append(calls, fmt.Sprintf("confirm %s by %s: %q", id, by, line))
+		if line == "" {
+			return 0, fmt.Errorf("t-cut-card is closed: %w", factoryd.ErrNoEvidence)
+		}
+		return 3, nil
+	}
+	ck, s := r.loggedIn(t)
+	card := drawer(t, r, ck, "t-plan", "overview")
+	confirm := answerForm(t, card, factoryd.ActConfirmCriteria)
+	if confirm.Action != "/tasks/t-plan/resolve" || confirm.Label != "The work is enough" {
+		t.Fatalf("a plan with a closed card lacks The work is enough: %+v", confirm)
+	}
+	if !regexp.MustCompile(`<textarea[^>]* name="confirm_criteria\.note"[^>]* required[ >]`).MatchString(card) || !strings.Contains(card, "What shows it") {
+		t.Errorf("the answer's form lacks its required evidence line:\n%s", card)
+	}
+	rec := r.do(post("/approvals/30/confirm", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	if want := "Cannot confirm the delivered cards: t-cut-card is closed: a confirmation over closed cards needs your evidence. " +
+		"Type the line that shows main meets the criteria, then confirm again."; rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("an empty confirm = %d %q, want 400 with %q", rec.Code, rec.Body.String(), want)
+	}
+	const line = "main at 6e3b46e: the tests pass and ci / test is green"
+	rec = r.do(post("/approvals/30/confirm", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "note": {line}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("confirm with evidence = %d %q", rec.Code, rec.Body.String())
+	}
+	if want := []string{`confirm t-plan by sebastian: ""`, fmt.Sprintf("confirm t-plan by sebastian: %q", line)}; !slices.Equal(calls, want) {
+		t.Errorf("calls = %q, want %q", calls, want)
+	}
+
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == closed.ID {
+			r.tasks.tasks[i].Status = "failed"
+		}
+	}
+	r.tasks.mu.Unlock()
+	if card := drawer(t, r, ck, "t-plan", "overview"); strings.Contains(card, `data-answer="confirm_criteria"`) {
+		t.Errorf("a plan with a failed card offers The work is enough:\n%s", card)
+	}
+}
+
 // Fault 9: typed text on the opened card is draft state: every typed
 // field carries the preserve treatment, so one answer's press does not
 // erase another's words. Each answer's typed fields are its own, so a

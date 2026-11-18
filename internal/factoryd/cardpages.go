@@ -539,8 +539,9 @@ func planCaseRevision(c Case) int {
 // withPlanSlot is plan case c with the facts its form reads, where its own
 // name no revision or index: the revision planCaseRevision reads, the
 // index its ask's place among the questions of request r's revision,
-// matched on its words, and that question's choices. A case that matches
-// none stays as it is.
+// matched on its words, and that question's words and choices. A
+// question's case that matches none asks the revision's first open
+// question.
 func withPlanSlot(c Case, r *Request) Case {
 	if !PlanCase(c) || FactInt(c, "revision") > 0 && FactInt(c, "index") > 0 {
 		return c
@@ -550,21 +551,26 @@ func withPlanSlot(c Case, r *Request) Case {
 		return c
 	}
 	ask := strings.Join(strings.Fields(c.Problem), " ")
-	for i, q := range r.PlanQuestions {
-		if strings.Join(strings.Fields(q.Text), " ") != ask {
-			continue
-		}
-		more := map[string]any{"revision": revision, "index": i + 1}
-		if c.Facts["choices"] == nil && len(q.Choices) > 0 {
-			choices := make([]any, len(q.Choices))
-			for j, ch := range q.Choices {
-				choices[j] = ch
-			}
-			more["choices"], more["recommended"] = choices, q.Recommended
-		}
-		c.Facts = withFacts(c.Facts, more)
+	at := slices.IndexFunc(r.PlanQuestions, func(q PlanQuestion) bool { return strings.Join(strings.Fields(q.Text), " ") == ask })
+	if at < 0 && c.Kind == CasePlanQuestion {
+		at = slices.IndexFunc(r.PlanQuestions, func(q PlanQuestion) bool { return q.Kind != QuestionConfirmation && !q.Answered() })
+	}
+	if at < 0 {
 		return c
 	}
+	q := r.PlanQuestions[at]
+	if c.Kind == CasePlanQuestion {
+		c.Problem = q.Text
+	}
+	more := map[string]any{"revision": revision, "index": at + 1}
+	if c.Facts["choices"] == nil && len(q.Choices) > 0 {
+		choices := make([]any, len(q.Choices))
+		for j, ch := range q.Choices {
+			choices[j] = ch
+		}
+		more["choices"], more["recommended"] = choices, q.Recommended
+	}
+	c.Facts = withFacts(c.Facts, more)
 	return c
 }
 
@@ -656,18 +662,27 @@ func CardPages(card BoardTask, cases []Case, asks map[int64]CaseAsk, pending []A
 		c.ID, c.Kind, c.OpenedAt = -a.ID, CaseKind(ApprovalResource), a.CreatedAt
 		shown = append(shown, c)
 	}
-	for _, c := range append(shown, cases...) {
+	answers := func(c Case) *Request {
+		for _, a := range pending {
+			if a.TaskID == c.TaskID && RequestAnswers(a, c) {
+				return request(a)
+			}
+		}
+		return nil
+	}
+	// a plan's cases read in its questions' order, their place derived
+	// where their facts name none
+	shown = append(shown, cases...)
+	for i, c := range shown {
+		shown[i] = withPlanSlot(c, answers(c))
+	}
+	orderPlanCases(shown)
+	for _, c := range shown {
 		owner := card
 		if i := slices.IndexFunc(card.Helpers, func(h BoardTask) bool { return h.ID == c.TaskID }); i >= 0 {
 			owner = card.Helpers[i]
 		}
-		var r *Request
-		for _, a := range pending {
-			if a.TaskID == c.TaskID && RequestAnswers(a, c) {
-				r = request(a)
-				break
-			}
-		}
+		r := answers(c)
 		parts := r.parts(c)
 		for i, p := range parts {
 			out = append(out, casePage(owner, p, i+1, r, asks))
@@ -682,7 +697,7 @@ func CardPages(card BoardTask, cases []Case, asks map[int64]CaseAsk, pending []A
 // casePage is part (0 for the whole) c of a case of owner, which request r
 // answers, with the facts and the ask its face reads.
 func casePage(owner BoardTask, c Case, part int, r *Request, asks map[int64]CaseAsk) CardPage {
-	k := withPlanSlot(withDeps(c, owner), r)
+	k := withDeps(c, owner)
 	if r != nil && r.Kind == ApprovalPlan {
 		k = OnPlan(k, r.planFacts())
 	}
