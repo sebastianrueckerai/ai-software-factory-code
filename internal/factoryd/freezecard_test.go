@@ -255,7 +255,7 @@ func TestFreezeCardCloseOnRetry(t *testing.T) {
 	}
 	// the retry press: the card closes at once, no five-minute wait, and
 	// only the big class's card closes
-	if err := w.CloseOnRetry(ctx, repo.String(), "big"); err != nil {
+	if err := w.CloseOnRetry(ctx, repo.String(), "big", "sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	closed, _, _ := store.Task(ctx, card.ID)
@@ -269,7 +269,7 @@ func TestFreezeCardCloseOnRetry(t *testing.T) {
 		t.Errorf("the press closed bigv2's card too: %s", nb.Status)
 	}
 	// a second press is quiet: no open card stands
-	if err := w.CloseOnRetry(ctx, repo.String(), "big"); err != nil {
+	if err := w.CloseOnRetry(ctx, repo.String(), "big", "sebastian"); err != nil {
 		t.Fatalf("the second press: %v", err)
 	}
 	if n := len(fj.closed); n != 1 {
@@ -360,7 +360,7 @@ func TestFreezeCardCloseSurvivesRestart(t *testing.T) {
 	}
 	// the retry press closes it at once, then factoryd restarts: a fresh
 	// watcher over the same store, no memory of the press
-	if err := w.CloseOnRetry(ctx, repo.String(), "big"); err != nil {
+	if err := w.CloseOnRetry(ctx, repo.String(), "big", "sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	if closed, _, _ := store.Task(ctx, card.ID); closed.Status != "done" {
@@ -606,6 +606,85 @@ func TestFreezeCardRestartMidFreezeSpeaksOnce(t *testing.T) {
 	freezeAsks(t, store)
 }
 
+// A restart mid-freeze adopts the reset on the card's face: the class_frozen
+// a restarted gateway writes when its first call meets the reset the card
+// already holds is the same freeze, so the fresh watcher neither rewrites
+// the face nor comments a re-arm. The provider's words, which the face
+// shows first, name other resets in the face's own wording, mid-line and
+// on a line of their own; the face's reset line is read. A new reset still
+// re-arms the card.
+func TestFreezeCardRestartKeepsTheResetOnItsFace(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	const words = "quota exhausted. The class resets at 2026-11-21T12:30:00Z (in 0h 30m).\nThe class resets at 2026-11-21T13:00:00Z (in 1h 00m)."
+	arm := func(reset time.Time) {
+		store.rows = append(store.rows, FreezeEvent{ID: int64(len(store.rows) + 1), Repository: "sf/acme", At: now, Kind: "class_frozen",
+			Class: "big", Reset: reset.Format(time.RFC3339), Words: words})
+	}
+	arm(base.Add(5 * time.Hour))
+	if err := freezeWatcher(store, forgejo, &now).Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	card, _, _ := store.Task(ctx, cardOfClass(store, Repo{Owner: "sf", Name: "acme"}, "big"))
+	// the row's stamp the restart reads frozenAt from
+	card.CreatedAt = base
+	store.tasks[card.ID] = card
+	now = base.Add(10 * time.Minute)
+	w := freezeWatcher(store, forgejo, &now)
+	arm(base.Add(5 * time.Hour))
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(ctx, card.ID); got.Objective != card.Objective || len(fj.comments) != 0 {
+		t.Fatalf("the same reset after the restart rewrote the face or commented: comments %q, face:\n%s", fj.comments, got.Objective)
+	}
+	arm(base.Add(6 * time.Hour))
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(ctx, card.ID); !strings.Contains(got.Objective, "in 5h 50m") || len(fj.comments) != 1 ||
+		!strings.Contains(fj.comments[0], "The provider's limit holds the class longer, until 2026-11-21T18:00:00Z.") {
+		t.Fatalf("the new reset after the restart: comments %q, face:\n%s", fj.comments, got.Objective)
+	}
+}
+
+// An arm whose repository the watcher holds in memory without its card
+// adopts the class's open card off the store, and the reset on its face
+// with it: an arm that repeats that reset re-arms nothing, so the face
+// stands and its issue takes no comment.
+func TestFreezeCardArmAdoptsTheResetOfTheOpenCard(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	reset := base.Add(5 * time.Hour).Format(time.RFC3339)
+	arm := func() {
+		store.rows = append(store.rows, FreezeEvent{ID: int64(len(store.rows) + 1), Repository: "sf/acme", At: now, Kind: "class_frozen",
+			Class: "big", Reset: reset, Words: "free quota exhausted"})
+	}
+	arm()
+	if err := freezeWatcher(store, forgejo, &now).Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	card, _, _ := store.Task(ctx, cardOfClass(store, Repo{Owner: "sf", Name: "acme"}, "big"))
+	card.CreatedAt = base
+	store.tasks[card.ID] = card
+	now = base.Add(10 * time.Minute)
+	w := freezeWatcher(store, forgejo, &now)
+	w.classes = map[string]*freezeClass{"sf/acme/big": {repo: "sf/acme", class: "big"}}
+	arm()
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(ctx, card.ID); got.Objective != card.Objective || len(fj.comments) != 0 || w.classes["sf/acme/big"].taskID != card.ID {
+		t.Fatalf("the adopting arm: memory %+v, comments %q, face:\n%s", w.classes["sf/acme/big"], fj.comments, got.Objective)
+	}
+}
+
 // The gateway's hold is the class's in every repository, and its lapse
 // writes one class_resumed, on the repository of the call that found it
 // lapsed. Two repositories hold an open card of the big class; the one
@@ -795,7 +874,7 @@ func TestFreezeCardSameResetArm(t *testing.T) {
 	reset := base.Add(5 * time.Hour).Format(time.RFC3339)
 	for name, between := range map[string]func(ctx context.Context, store *freezeStore, w *FreezeCard, now *time.Time) error{
 		"after the press": func(ctx context.Context, store *freezeStore, w *FreezeCard, now *time.Time) error {
-			if err := w.CloseOnRetry(ctx, "sf/acme", "big"); err != nil {
+			if err := w.CloseOnRetry(ctx, "sf/acme", "big", "sebastian"); err != nil {
 				return err
 			}
 			store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: "sf/acme", At: *now, Kind: "class_resumed", Class: "big", Reset: reset})
@@ -868,7 +947,7 @@ func freezeAsks(t *testing.T, store *freezeStore) map[string]int {
 		if e.Kind != EventQuestionAsked {
 			continue
 		}
-		if e.Detail["source"] != SourceFreezeCard || !slices.Equal(e.Detail["choices"].([]string), []string{"Noted", "Not now"}) {
+		if e.Detail["source"] != SourceFreezeCard || !slices.Equal(e.Detail["choices"].([]string), []string{"Retry now", "Noted", "Not now"}) {
 			t.Fatalf("a question was asked that is no freeze card's: %+v", e)
 		}
 		asks[e.TaskID]++

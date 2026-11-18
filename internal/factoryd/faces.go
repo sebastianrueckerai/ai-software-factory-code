@@ -388,6 +388,11 @@ func AnswerFor(key string, f Facts) (Answer, bool) {
 	if !ok || a.Key() == ActClose+"/"+variantDone && len(f.Dependencies) > 0 {
 		return Answer{}, false
 	}
+	if a.Key() == ActRetry && endsFreeze(f.CaseFacts, Resolution{}) {
+		// the retry of a frozen card ends its freeze
+		thaw, _ := AnswerOf(ActRetry + "/" + variantThaw)
+		a.Label, a.Effect = thaw.Label, thaw.Effect
+	}
 	if a.Action == ActExtend && f.Kind == CaseAgentTimeCap {
 		// the stop asks agent time: its minutes lead
 		a.Fields = slices.Clone(a.Fields)

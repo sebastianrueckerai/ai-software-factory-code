@@ -118,7 +118,7 @@ func (r *Runner) ImageLookHandler(v Visioner) http.HandlerFunc {
 		var refused *policy.Refusal
 		switch {
 		case errors.As(err, &refused):
-			http.Error(w, fmt.Sprintf("the look at %s was refused (%s): %s", name, refused.Decision, refused.Reason), http.StatusConflict)
+			http.Error(w, refusedSentence("the look at "+name, refused), http.StatusConflict)
 			return
 		case err != nil:
 			log.Printf("image look of task %s at %s: %v", t.ID, name, err)

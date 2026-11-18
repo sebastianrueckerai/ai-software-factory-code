@@ -96,6 +96,25 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("status %d: %s", e.Code, e.Body)
 }
 
+// gatewayRefused is the gateway's refusal of a call as a *policy.Refusal
+// in the chain: the decision its header names, its body's message, and the
+// reset a refused_provider_limit names (server.go's writeProviderLimit),
+// which a caller holds its retry to. nil when no decision names one.
+func gatewayRefused(h http.Header, body []byte) error {
+	var refused struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		Reset string `json:"reset"`
+	}
+	d := h.Get(gateway.HeaderDecision)
+	if d == "" || json.Unmarshal(body, &refused) != nil {
+		return nil
+	}
+	until, _ := time.Parse(time.RFC3339, refused.Reset)
+	return fmt.Errorf("gateway %s: %w", d, &policy.Refusal{Decision: d, Reason: refused.Error.Message, Until: until})
+}
+
 // Stream is one call of alias on task taskID's account with messages and
 // tools, cut after operatorTimeout: each piece of the answer's text goes
 // to text as it arrives, each piece of its reasoning to think, and the
@@ -317,13 +336,8 @@ func (m *OperatorModel) callRaw(ctx context.Context, purpose, taskID, thread str
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
-		var refused struct {
-			Error struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if d := res.Header.Get(gateway.HeaderDecision); d != "" && json.Unmarshal(body, &refused) == nil {
-			return OperatorMessage{}, fmt.Errorf("gateway %s: %w", d, &policy.Refusal{Decision: d, Reason: refused.Error.Message})
+		if err := gatewayRefused(res.Header, body); err != nil {
+			return OperatorMessage{}, err
 		}
 		return OperatorMessage{}, &StatusError{Code: res.StatusCode, Body: textutil.Truncate(string(bytes.TrimSpace(body)), 300)}
 	}
@@ -463,13 +477,8 @@ func (w *WebTools) call(ctx context.Context, taskID, tool string, args any) (str
 	defer res.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 128<<10))
 	if res.StatusCode != http.StatusOK {
-		var refused struct {
-			Error struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if d := res.Header.Get(gateway.HeaderDecision); d != "" && json.Unmarshal(body, &refused) == nil {
-			return "", fmt.Errorf("gateway %s: %w", d, &policy.Refusal{Decision: d, Reason: refused.Error.Message})
+		if err := gatewayRefused(res.Header, body); err != nil {
+			return "", err
 		}
 		return "", &StatusError{Code: res.StatusCode, Body: textutil.Truncate(string(bytes.TrimSpace(body)), 300)}
 	}

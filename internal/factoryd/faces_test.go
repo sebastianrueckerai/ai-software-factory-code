@@ -808,3 +808,23 @@ func TestAHeldPlansFaceFollowsWhatItsCloseDrops(t *testing.T) {
 		}
 	}
 }
+
+// The retry of a card a provider freeze holds ends the freeze, and its
+// answer says so; with a failed dependency open to a retry it files that
+// card again, as on a card no freeze holds.
+func TestARetryOnAFrozenCardReadsRetryNow(t *testing.T) {
+	failed := factoryd.DepFact{TaskID: "t-a", Issue: 9, Status: "failed"}
+	for _, tc := range []struct {
+		name  string
+		facts factoryd.CaseFacts
+		label string
+	}{
+		{"a frozen card", factoryd.CaseFacts{FreezeCard: "t-fz"}, "Retry now"},
+		{"a frozen card with a failed dependency", factoryd.CaseFacts{FreezeCard: "t-fz", Dependencies: []factoryd.DepFact{failed}}, "Try the failed card again"},
+		{"no freeze", factoryd.CaseFacts{Dependencies: []factoryd.DepFact{failed}}, "Try the failed card again"},
+	} {
+		if a, ok := factoryd.AnswerFor(factoryd.ActRetry, factoryd.Facts{CaseFacts: tc.facts}); !ok || a.Label != tc.label {
+			t.Errorf("%s: the retry reads %q (%v), want %q", tc.name, a.Label, ok, tc.label)
+		}
+	}
+}

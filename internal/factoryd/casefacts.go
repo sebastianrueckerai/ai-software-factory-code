@@ -116,6 +116,9 @@ type CaseFacts struct {
 	NoIssue bool `json:"no_issue,omitempty"`
 	// Report: a report card, whose stops run the report again or end it.
 	Report bool `json:"report,omitempty"`
+	// FreezeCard is the open freeze card of the provider freeze that holds
+	// the card (freezeCardOf), "" when none does: the retry ends it.
+	FreezeCard string `json:"freeze_card,omitempty"`
 	// Criteria: the card is the integration or a delta card of a plan whose
 	// criteria a human judges on its merge
 	Criteria bool `json:"criteria,omitempty"`
@@ -449,6 +452,11 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			}
 			cost, _, err := r.store.SpendAndCallsBetween(ctx, t.ID, newest.start, cmp.Or(newest.end, r.Clock()))
 			f.LastSession.CostEUR = cost
+			return err
+		}},
+		{"freeze", func() error {
+			var err error
+			f.FreezeCard, err = r.freezeCardOf(ctx, t)
 			return err
 		}},
 		{"checks", func() error {
@@ -1052,4 +1060,33 @@ func fundFor(need, left float64) float64 {
 		return 0
 	}
 	return math.Ceil(policy.RoundMicro(need-left)*100-1e-6) / 100
+}
+
+// freezeCardOf is the open freeze card of the provider freeze that holds
+// card t: t itself when it is one, else, while t waits on the provider,
+// the card of the class the policy holds t under, its own repository's
+// first; "" when no freeze holds t.
+func (r *Runner) freezeCardOf(ctx context.Context, t Task) (string, error) {
+	if t.Source == SourceFreezeCard {
+		if t.Status != "waiting-human" {
+			return "", nil
+		}
+		return t.ID, nil
+	}
+	if t.Status != "running" || t.Gate != GateProvider {
+		return "", nil
+	}
+	v := r.cfg.Policy()
+	class, _ := v.Document.ProviderLimitOf(t.RequiredCapabilities)
+	if class == "" {
+		return "", nil
+	}
+	cards, err := openFreezeCards(ctx, r.store, class)
+	if err != nil || len(cards) == 0 {
+		return "", err
+	}
+	if i := slices.IndexFunc(cards, func(c Task) bool { return c.Repository == t.Repository }); i >= 0 {
+		return cards[i].ID, nil
+	}
+	return cards[0].ID, nil
 }

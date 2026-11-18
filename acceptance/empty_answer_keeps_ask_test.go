@@ -139,9 +139,11 @@ var parkRigs = struct {
 
 // parkRig is the factory around one parked card: the store, the runner,
 // the signed webhook intake and the console over the same store, with
-// the fake Forgejo and the object store behind them all.
+// the fake Forgejo and the object store behind them all; dsn is the
+// store's database, for a gateway's store beside it.
 type parkRig struct {
 	mu        sync.Mutex
+	dsn       string
 	replies   [][]string // each the stream chunks of the next operator call
 	store     *factoryd.PGStore
 	runner    *factoryd.Runner
@@ -338,7 +340,7 @@ func newParkRig(t *testing.T) *parkRig {
 			t.Errorf("the rig's Forgejo answered no %s", call)
 		}
 	})
-	rig = &parkRig{store: store, runner: runner, forgejo: forgejo, fj: fj, intake: in, console: board,
+	rig = &parkRig{dsn: dsn, store: store, runner: runner, forgejo: forgejo, fj: fj, intake: in, console: board,
 		workflows: workflows, objects: objects, version: v}
 	return rig
 }
@@ -406,6 +408,19 @@ func (r *parkRig) postCommentWebhook(t *testing.T, issue, comment int64, author,
 // token.
 func (r *parkRig) login(t *testing.T) (*http.Cookie, string) {
 	t.Helper()
+	session := r.session(t)
+	rec := r.get(t, "/", session)
+	m := regexp.MustCompile(`name="csrf" value="([^"]+)"`).FindSubmatch(rec.Body.Bytes())
+	if rec.Code != http.StatusOK || m == nil {
+		t.Fatalf("the board after the login = %d, a form token on it: %v", rec.Code, m != nil)
+	}
+	return session, string(m[1])
+}
+
+// session walks the member through the console's OAuth flow against the
+// fake Forgejo and answers their session cookie.
+func (r *parkRig) session(t *testing.T) *http.Cookie {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/login", nil)
 	rec := httptest.NewRecorder()
 	r.console.ServeHTTP(rec, req)
@@ -438,15 +453,7 @@ func (r *parkRig) login(t *testing.T) (*http.Cookie, string) {
 	if rec.Code != http.StatusSeeOther || session == nil {
 		t.Fatalf("the OAuth callback = %d, session cookie set: %v", rec.Code, session != nil)
 	}
-	req = httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(session)
-	rec = httptest.NewRecorder()
-	r.console.ServeHTTP(rec, req)
-	m := regexp.MustCompile(`name="csrf" value="([^"]+)"`).FindSubmatch(rec.Body.Bytes())
-	if rec.Code != http.StatusOK || m == nil {
-		t.Fatalf("the board after the login = %d, a form token on it: %v", rec.Code, m != nil)
-	}
-	return session, string(m[1])
+	return session
 }
 
 // Reply scripts the next operator calls: each reply is one call's stream

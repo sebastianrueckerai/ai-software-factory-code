@@ -372,7 +372,9 @@ func TestBriefPromptNamesNoButton(t *testing.T) {
 }
 
 // The brief rides its own purpose, so the gateway takes it on the judgment
-// budget; a refusal marks the row with the gateway's decision and reason.
+// budget, and names the card's class, which the provider-limit hold holds
+// it under; a refusal marks the row with the gateway's decision and
+// reason.
 func TestBriefWriterMarksARefusal(t *testing.T) {
 	for _, tt := range []struct {
 		decision, message, mark string
@@ -381,9 +383,9 @@ func TestBriefWriterMarksARefusal(t *testing.T) {
 		{policy.RefusedMonthCap, "the month cap is spent", "refused_month_cap: the month cap is spent"},
 		{"refused_task_status", "task t1 is done", "refused_task_status: task t1 is done"},
 	} {
-		var purpose string
+		var purpose, card string
 		gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			purpose = r.Header.Get(gateway.HeaderFactoryPurpose)
+			purpose, card = r.Header.Get(gateway.HeaderFactoryPurpose), r.Header.Get(gateway.HeaderFactoryCard)
 			w.Header().Set(gateway.HeaderDecision, tt.decision)
 			w.WriteHeader(http.StatusPaymentRequired)
 			_, _ = w.Write([]byte(`{"error":{"message":"` + tt.message + `"}}`))
@@ -396,8 +398,8 @@ func TestBriefWriterMarksARefusal(t *testing.T) {
 			t.Fatal(err)
 		}
 		gw.Close()
-		if purpose != policy.PurposeBrief {
-			t.Errorf("%s: the call's purpose is %q, want %q", tt.decision, purpose, policy.PurposeBrief)
+		if purpose != policy.PurposeBrief || card != policy.ClassCoder {
+			t.Errorf("%s: the call's purpose is %q, its card %q; want %q and the card's class coder", tt.decision, purpose, card, policy.PurposeBrief)
 		}
 		if store.failed[9] != tt.mark {
 			t.Errorf("%s: mark %q, want %q", tt.decision, store.failed[9], tt.mark)
@@ -421,13 +423,13 @@ func briefCaseWriter(store *fakeBriefStore, gw *httptest.Server) *BriefWriter {
 // pick, and the lines are stored as written.
 func TestBriefWriterBriefsACaseOnTheJudgmentBudget(t *testing.T) {
 	var body []byte
-	var task, purpose string
+	var task, purpose, card string
 	happened, left := "The check-in found the change edits the importer, not the exporter it was asked to fix.", "The exporter still drops the accent on a round trip."
 	answer, _ := json.Marshal(map[string]any{"happened": happened, "left": left})
 	reply, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(answer)}}}})
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ = io.ReadAll(r.Body)
-		task, purpose = r.Header.Get(gateway.HeaderFactoryTask), r.Header.Get(gateway.HeaderFactoryPurpose)
+		task, purpose, card = r.Header.Get(gateway.HeaderFactoryTask), r.Header.Get(gateway.HeaderFactoryPurpose), r.Header.Get(gateway.HeaderFactoryCard)
 		_, _ = w.Write(reply)
 	}))
 	defer gw.Close()
@@ -438,8 +440,8 @@ func TestBriefWriterBriefsACaseOnTheJudgmentBudget(t *testing.T) {
 	if err := briefCaseWriter(store, gw).Pass(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if task != "t-chat-proj-2026-11" || purpose != policy.PurposeBrief {
-		t.Fatalf("the call's task %q purpose %q, want the chat task t-chat-proj-2026-11 and brief", task, purpose)
+	if task != "t-chat-proj-2026-11" || purpose != policy.PurposeBrief || card != policy.ClassCoder {
+		t.Fatalf("the call's task %q purpose %q card %q, want the chat task t-chat-proj-2026-11, brief and the card's class coder", task, purpose, card)
 	}
 	for _, want := range []string{"the check-in found a green build", "rung two found the last review approved", "one more session ends it",
 		"#12 · budget 3.00 spent 0.40 holds 0.00 EUR · in-review, approval"} {

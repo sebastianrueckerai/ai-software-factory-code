@@ -320,10 +320,10 @@ var Actions = []Action{
 	{Name: ActRetry, Rungs: rungs(0, 1, 2, 3), Applies: func(f CaseFacts, r Resolution) string {
 		id, _ := r.Args["task_id"].(string)
 		if id == "" {
-			if slices.ContainsFunc(f.Dependencies, func(d DepFact) bool { return retryRefusal(d) == "" }) {
+			if f.FreezeCard != "" || slices.ContainsFunc(f.Dependencies, func(d DepFact) bool { return retryRefusal(d) == "" }) {
 				return ""
 			}
-			return "no failed dependency is open to a retry"
+			return "no failed dependency is open to a retry, and no provider freeze holds the card"
 		}
 		if _, ok := retriedAs(f, id); ok {
 			return ""
@@ -802,6 +802,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	if why := endedRefusal(f.Final, planWait, a.Name); onCase && why != "" {
 		return "the card " + why
 	}
+	if a.Name == ActRetry && rung < 2 && endsFreeze(f, r) {
+		return fmt.Sprintf("rung %d ends no provider freeze, which a human's press or the factory agent's ends: `hand_up` with `retry` as the recommendation", rung)
+	}
 	if i := slices.IndexFunc(f.Partial, func(p string) bool { return strings.HasPrefix(p, partialHumanClasses) }); rung == 2 && a.Name == ActApproveMerge && i >= 0 {
 		return fmt.Sprintf("the classes that keep a human on a merge could not be read (%s), so the factory agent cannot tell whether class %s keeps one: `hand_up` with `approve_merge` as the recommendation",
 			strings.TrimPrefix(f.Partial[i], partialHumanClasses+": "), f.RiskClass)
@@ -1093,4 +1096,12 @@ var terminalEnds = []string{refusedToAgents, ReasonIssueClosed, alertNoLongerFir
 // why names none of terminalEnds.
 func retryableEnd(why string) bool {
 	return !slices.ContainsFunc(terminalEnds, func(end string) bool { return strings.Contains(why, end) })
+}
+
+// endsFreeze reports whether retry r on facts f ends the provider freeze
+// that holds the card: no task_id and no failed dependency open to a
+// retry, the freeze card set.
+func endsFreeze(f CaseFacts, r Resolution) bool {
+	id, _ := r.Args["task_id"].(string)
+	return id == "" && f.FreezeCard != "" && !slices.ContainsFunc(f.Dependencies, func(d DepFact) bool { return retryRefusal(d) == "" })
 }

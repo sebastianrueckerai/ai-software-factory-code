@@ -1643,3 +1643,39 @@ func TestProviderLimitOfReadsTheFirstClassWithAProvider(t *testing.T) {
 		}
 	}
 }
+
+// HeldClass holds a brief or a check-in on the project's chat task under
+// the card's class that runs the call's alias, and every other call under
+// the task's own: the chat's title and digest calls on small, an empty
+// model and a card class on another alias are held under none.
+func TestHeldClassHoldsTheChatTasksCallsUnderTheCard(t *testing.T) {
+	doc := Document{
+		Classes: map[string]Class{"big": {Provider: "zai", SupervisorModel: "big", CheckinModel: "big"},
+			"analyzer": {Provider: "zai", SupervisorModel: "big"}, "small": {Provider: "zai", SupervisorModel: "small"}, "plain": {SupervisorModel: "big"}},
+		ProviderLimits: map[string]ProviderLimit{"zai": {TZ: "Asia/Singapore"}},
+	}
+	chat := []string{ClassChat}
+	for _, tc := range []struct {
+		name           string
+		classes        []string
+		purpose, model string
+		card           []string
+		want           string
+	}{
+		{"a big card's brief", chat, PurposeBrief, "big", []string{"big"}, "big"},
+		{"an analyzer card's brief on the same alias", chat, PurposeBrief, "big", []string{"analyzer"}, "analyzer"},
+		{"a big card's check-in", chat, PurposeCheckin, "big", []string{"big"}, "big"},
+		{"a card class with no provider before one with it", chat, PurposeBrief, "big", []string{"plain", "big"}, "big"},
+		{"a card class on another alias", chat, PurposeBrief, "big", []string{"small"}, ""},
+		{"a brief that names no card", chat, PurposeBrief, "big", nil, ""},
+		{"an empty model", chat, PurposeBrief, "", []string{"big"}, ""},
+		{"the chat's title call on small", chat, PurposeTitle, "small", []string{"small"}, ""},
+		{"the chat's digest call on small", chat, PurposeDigest, "small", []string{"small"}, ""},
+		{"a card's own call", []string{"big"}, PurposeReview, "big", []string{"analyzer"}, "big"},
+	} {
+		class, entry := doc.HeldClass(tc.classes, tc.purpose, tc.model, tc.card)
+		if class != tc.want || (entry == nil) != (tc.want == "") {
+			t.Errorf("%s: HeldClass = %q, %+v; want %q", tc.name, class, entry, tc.want)
+		}
+	}
+}

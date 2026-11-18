@@ -146,6 +146,9 @@ type Runner struct {
 	// what and decided by whom, and answers the commit sent
 	// (ReleaseKeeper.DeployNow); Act's deploy_now runs it
 	DeployNow func(ctx context.Context, repository, by, via, decider string) (string, error)
+	// RetryFreeze presses the retry switch on freeze card cardID for by
+	// (RetrySwitch.RetryFreeze); Act's retry of a frozen case runs it
+	RetryFreeze func(ctx context.Context, cardID, by string) error
 	// gateQueue holds the plans whose criteria gate is due, which the
 	// close check fills under gateMu and CriteriaGatePass takes; gateRun
 	// is the plan whose gate runs now, which the close check leaves alone;
@@ -1570,7 +1573,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 			ask.Pace, ask.CostState = r.pace(ctx, t, s, lines, time.Now(), deadline), r.costState(ctx, t, limits.GateReserve())
 			row, now := r.cardNow(ctx, t, s)
 			tools.facts = checkinFacts(row, now, wipOutcome{})
-			return r.runCheckin(ctx, callTask, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.Checkin, tools,
+			return r.runCheckin(forCard(ctx, t), callTask, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.Checkin, tools,
 				limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, s.pastCheckin(deadline.Add(s.checkinExtra))))
 		})
 		if out.Record != nil {
@@ -1772,7 +1775,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 		ask.Pace, ask.CostState = r.pace(ctx, t, s, lines, started, deadline), r.costState(ctx, t, limits.GateReserve())
 		row, now := r.cardNow(ctx, t, s)
 		tools.facts = checkinFacts(row, now, wip)
-		return r.runCheckin(ctx, callTask, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.Checkin, tools,
+		return r.runCheckin(forCard(ctx, t), callTask, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.Checkin, tools,
 			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
 	})
 	out.Record.Session = s.id

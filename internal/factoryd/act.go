@@ -238,12 +238,18 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	}
 	var f CaseFacts
 	proposing := in.Rung == 2 && c.ID != 0 && res.Action != ActNote && Proposes(r.autonomyOf(t), res.Action)
+	// the freeze card's own retry ends its freeze: the one choice besides
+	// the deploy that Act carries out itself
+	thaws := choice && res.Action == ActRetry && t.Source == SourceFreezeCard
 	if choice {
 		if res.Action == ActDeployNow {
 			deploy, _ := ActionByName(ActDeployNow)
 			if why := deploy.Applies(CaseFacts{Kind: c.Kind}, res); why != "" {
 				return ActResult{}, ErrActRefused(why)
 			}
+		}
+		if thaws {
+			f.FreezeCard = t.ID
 		}
 		why, err := r.humanChoice(ctx, t, c, in)
 		if err != nil {
@@ -305,7 +311,7 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	via := cmp.Or(in.Via, ViaFactoryd)
 	var out ActResult
 	var draw *CaseDraw
-	if !choice || res.Action == ActDeployNow {
+	if !choice || res.Action == ActDeployNow || thaws {
 		if out.Did, err = r.actOutside(ctx, t, f, in); err != nil {
 			return out, err
 		}
@@ -1118,9 +1124,29 @@ func (r *Runner) wordsRefusal(ctx context.Context, t Task, c Case) string {
 	return choiceRefusal(t, offers)
 }
 
+// endFreeze ends the provider freeze that holds the card through the
+// retry switch's press on its freeze card card, a human's answer or the
+// project agent's: refusal keeps the factory's own rungs from it.
+func (r *Runner) endFreeze(ctx context.Context, card string, in ActInput) ([]CaseAction, error) {
+	if r.RetryFreeze == nil {
+		return nil, errors.New("no retry switch is wired (Runner.RetryFreeze)")
+	}
+	err := r.RetryFreeze(ctx, card, in.By)
+	var no ErrNoFreeze
+	if errors.As(err, &no) {
+		return nil, ErrActRefused(no.Error())
+	}
+	if err != nil {
+		return nil, err
+	}
+	return []CaseAction{{Action: ActRetry, Args: map[string]any{"freeze_card": card},
+		Result: "Ended the provider freeze: its hold cleared, its freeze card closed, and its frozen cards call the provider again."}}, nil
+}
+
 // actOutside runs what in.Res does outside the run before the case ends:
-// a retry files the failed dependency again, or finishes a retry of it
-// that stopped part way, and names the replacement of one retried already;
+// a retry of a frozen case ends its freeze (endFreeze), any other files
+// the failed dependency again, or finishes a retry of it that stopped part
+// way, and names the replacement of one retried already;
 // a replan sends the card to the planner, or a failed dependency's work to
 // its plan's planner, which the card then waits on. It answers what ran,
 // with its result.
@@ -1133,6 +1159,9 @@ func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInpu
 	case ActRunCriteria:
 		return r.askTestRun(ctx, t, in.By)
 	case ActRetry:
+		if endsFreeze(f, in.Res) && in.Rung >= 2 {
+			return r.endFreeze(ctx, f.FreezeCard, in)
+		}
 		id, _ := in.Res.Args["task_id"].(string)
 		if id == "" {
 			i := slices.IndexFunc(f.Dependencies, func(d DepFact) bool { return retryRefusal(d) == "" })

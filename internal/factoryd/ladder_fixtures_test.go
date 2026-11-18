@@ -134,14 +134,15 @@ type rungRig struct {
 
 type idChat struct {
 	scriptedChat
-	mu  sync.Mutex
-	ids []string
+	mu    sync.Mutex
+	ids   []string
+	cards []string // each call's X-Factory-Card, as the check-in client sends it
 }
 
 func (c *idChat) Call(ctx context.Context, taskID, alias string, in CheckinRequest) (CheckinResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.ids = append(c.ids, taskID)
+	c.ids, c.cards = append(c.ids, taskID), append(c.cards, cardHeader(ctx))
 	return c.scriptedChat.Call(ctx, taskID, alias, in)
 }
 

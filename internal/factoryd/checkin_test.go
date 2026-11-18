@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
@@ -1286,18 +1287,22 @@ func TestCheckinToolsHoldNoRun(t *testing.T) {
 
 // The gateway's request body carries tool_choice when the call forces a
 // tool, in the named-function form the gateway accepts, and leaves the
-// field out when the call forces none.
+// field out when the call forces none; a call made for a card names the
+// card's classes, which the provider-limit hold holds it under.
 func TestCheckinGatewayPostsToolChoice(t *testing.T) {
 	var bodies [][]byte
+	var cards []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		bodies = append(bodies, raw)
+		cards = append(cards, r.Header.Get(gateway.HeaderFactoryCard))
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"choices":[{"message":{"content":"hi"}}],"usage":{"cost":0.01}}`))
 	}))
 	defer srv.Close()
 	g := &checkinGateway{URL: srv.URL, Token: "bearer"}
-	if _, err := g.Call(context.Background(), "t-1", "checkin", CheckinRequest{
+	card := forCard(context.Background(), Task{RequiredCapabilities: []string{policy.ClassCoder, "reviewer"}})
+	if _, err := g.Call(card, "t-1", "checkin", CheckinRequest{
 		System: "s", Input: "i",
 		Tools:      []CheckinTool{momentAnswerTool(&CheckInAsk{Moment: CheckInGate})},
 		ToolChoice: ForcedToolChoice(CheckinAnswerTool),
@@ -1306,6 +1311,9 @@ func TestCheckinGatewayPostsToolChoice(t *testing.T) {
 	}
 	if _, err := g.Call(context.Background(), "t-1", "checkin", CheckinRequest{System: "s", Input: "i"}); err != nil {
 		t.Fatalf("the unforced call = %v", err)
+	}
+	if want := []string{"coder,reviewer", ""}; !slices.Equal(cards, want) {
+		t.Fatalf("the calls named the cards %q, want %q: the card's classes on the call made for it, none on the other", cards, want)
 	}
 	var forced map[string]any
 	if err := json.Unmarshal(bodies[0], &forced); err != nil {

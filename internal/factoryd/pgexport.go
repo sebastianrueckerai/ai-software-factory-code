@@ -10,6 +10,10 @@ import (
 // the unexported names the *_pg_test.go files moved there still touch.
 // Later move cards extend this file with the names their groups reach.
 
+// PgCardHeader exposes cardHeader: the X-Factory-Card value a check-in
+// client sends for the card ctx carries.
+func PgCardHeader(ctx context.Context) string { return cardHeader(ctx) }
+
 // DB returns the store's database handle, for the tests moved into the pg
 // package that read and write a store's rows directly.
 func (s *PGStore) DB() *sql.DB { return s.db }

@@ -1239,6 +1239,7 @@ func (g *checkinGateway) Call(ctx context.Context, taskID, alias string, in Chec
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(gateway.HeaderFactoryTask, taskID)
 	req.Header.Set(gateway.HeaderFactoryPurpose, policy.PurposeCheckin)
+	setCard(ctx, req)
 	client := g.HTTP
 	if client == nil {
 		client = http.DefaultClient
@@ -1253,15 +1254,8 @@ func (g *checkinGateway) Call(ctx context.Context, taskID, alias string, in Chec
 		return CheckinResponse{}, err
 	}
 	if res.StatusCode != http.StatusOK {
-		var refused struct {
-			Error struct {
-				Message string `json:"message"`
-			} `json:"error"`
-			Reset string `json:"reset"`
-		}
-		if d := res.Header.Get(gateway.HeaderDecision); d != "" && json.Unmarshal(raw, &refused) == nil {
-			until, _ := time.Parse(time.RFC3339, refused.Reset)
-			return CheckinResponse{}, fmt.Errorf("gateway %s: %w", d, &policy.Refusal{Decision: d, Reason: refused.Error.Message, Until: until})
+		if err := gatewayRefused(res.Header, raw); err != nil {
+			return CheckinResponse{}, err
 		}
 		return CheckinResponse{}, fmt.Errorf("status %d: %s", res.StatusCode, textutil.Truncate(string(bytes.TrimSpace(raw)), 300))
 	}

@@ -3420,6 +3420,110 @@ func TestProviderLimitHoldLocalRefusal(t *testing.T) {
 	}
 }
 
+// A factoryd brief or check-in on the project's chat task is held under
+// the class of the card it runs for, when that class runs the call's
+// alias: big and analyzer share zai and the supervisor alias big, and a
+// dated 429 on a big card's brief freezes big alone. Its retry and its
+// check-in are answered by the hold with no upstream call; an analyzer
+// card's brief on the same alias, a brief that names no card and the
+// chat's own title call on small reach the upstream.
+func TestProviderLimitHoldsTheChatTasksCalls(t *testing.T) {
+	stub := newStubUpstream(t)
+	task := Task{Classes: []string{policy.ClassChat}, ID: "t-chat-code-2026-11", BudgetEUR: 5, Status: "running", Repository: "sf/code"}
+	store := newMemStore(task)
+	pv := providerLimitPolicy()
+	big := pv.Document.Classes["big"]
+	big.SupervisorModel, big.CheckinModel = "big", "big"
+	pv.Document.Classes["big"] = big
+	pv.Document.Classes["analyzer"] = policy.Class{Models: []string{"big"}, SupervisorModel: "big", Provider: "zai"}
+	store.setPolicy(pv)
+	s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: &fakeMinter{},
+		LiteLLMURL: stub.URL, Prices: testPrices, FactorydToken: testFactorydToken})
+	s.now = func() time.Time { return time.Date(2026, 11, 14, 16, 0, 0, 0, time.UTC) }
+	h := s.Routes("test")
+	call := func(purpose, card, model string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody(model)))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Authorization", "Bearer "+testFactorydToken)
+		r.Header.Set(HeaderFactoryTask, task.ID)
+		r.Header.Set(HeaderFactoryPurpose, purpose)
+		if card != "" {
+			r.Header.Set(HeaderFactoryCard, card)
+		}
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, r)
+		return rr
+	}
+	frozen := func(what string, rr *httptest.ResponseRecorder) {
+		t.Helper()
+		if rr.Code != http.StatusTooManyRequests || rr.Header().Get(HeaderDecision) != RefusedProviderLimit ||
+			!strings.Contains(rr.Body.String(), `"class":"big"`) || !strings.Contains(rr.Body.String(), `"reset":"2026-11-14T17:05:50Z"`) {
+			t.Fatalf("%s = %d %q: %s, want big's named refusal with the reset", what, rr.Code, rr.Header().Get(HeaderDecision), rr.Body.String())
+		}
+	}
+
+	stub.setResp(stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"Usage limit reached for 5 hour. Your limit will reset at 2026-11-15 01:04:50"}}`})
+	frozen("the big card's brief", call(policy.PurposeBrief, "big", "big"))
+	stub.setResp(stubResp{status: http.StatusOK, body: `{}`})
+	frozen("its retry", call(policy.PurposeBrief, "big", "big"))
+	frozen("its check-in", call(policy.PurposeCheckin, "big", "big"))
+	if hits := len(stub.auths); hits != 1 {
+		t.Fatalf("upstream hits = %d, want the arming brief's one: the hold answers the retry and the check-in", hits)
+	}
+	for _, served := range []struct{ what, purpose, card, model string }{
+		{"the analyzer card's brief on big", policy.PurposeBrief, "analyzer", "big"},
+		{"a brief that names no card", policy.PurposeBrief, "", "big"},
+		{"the chat's title call on small", policy.PurposeTitle, "big", "small"},
+	} {
+		if rr := call(served.purpose, served.card, served.model); rr.Code != http.StatusOK {
+			t.Fatalf("%s = %d: %s, want it served: big's hold holds none of it", served.what, rr.Code, rr.Body.String())
+		}
+	}
+	if events := store.eventRows(); len(events) != 1 || events[0].Kind != "class_frozen" || events[0].Detail["class"] != "big" {
+		t.Fatalf("events = %+v, want the one class_frozen on big", events)
+	}
+}
+
+// A card class whose brief runs on premium is held on the requested
+// model when the premium cap serves the call on big: the dated 429 of the
+// fallback call freezes the card's class, and the next brief is answered
+// by the hold.
+func TestProviderLimitArmsTheCardClassOnThePremiumFallback(t *testing.T) {
+	stub := newStubUpstream(t)
+	task := Task{Classes: []string{policy.ClassChat}, ID: "t-chat-code-2026-11", BudgetEUR: 5, Status: "running", Repository: "sf/code"}
+	store := newMemStore(task)
+	pv := providerLimitPolicy()
+	pv.Document.Classes["writer"] = policy.Class{Models: []string{"premium"}, SupervisorModel: policy.Premium, Provider: "zai"}
+	pv.Document.Budget.PremiumMonthEUR = 0.001
+	pv.Document.Prices.MaxOutputTokens[policy.Premium] = 32768
+	store.setPolicy(pv)
+	s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: stub.URL,
+		Prices: fakePrices{"big": testPrice, "small": testPrice, "premium": testPrice}, FactorydToken: testFactorydToken})
+	s.now = func() time.Time { return time.Date(2026, 11, 14, 16, 0, 0, 0, time.UTC) }
+	h := s.Routes("test")
+	brief := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody(policy.Premium)))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Authorization", "Bearer "+testFactorydToken)
+		r.Header.Set(HeaderFactoryTask, task.ID)
+		r.Header.Set(HeaderFactoryPurpose, policy.PurposeBrief)
+		r.Header.Set(HeaderFactoryCard, "writer")
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, r)
+		return rr
+	}
+	stub.setResp(stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"Usage limit reached for 5 hour. Your limit will reset at 2026-11-15 01:04:50"}}`})
+	for _, what := range []string{"the brief served on big", "the next brief"} {
+		rr := brief()
+		if rr.Code != http.StatusTooManyRequests || rr.Header().Get(HeaderDecision) != RefusedProviderLimit || !strings.Contains(rr.Body.String(), `"class":"writer"`) {
+			t.Fatalf("%s = %d %q: %s, want writer's named refusal", what, rr.Code, rr.Header().Get(HeaderDecision), rr.Body.String())
+		}
+	}
+	if len(stub.bodies) != 1 || !strings.Contains(stub.bodies[0], `"model":"big"`) {
+		t.Fatalf("upstream bodies %q, want the one call served on big: the hold answers the next", stub.bodies)
+	}
+}
+
 // TestHoldClearPath: the hold-clear door ends the class's armed hold on
 // factoryd's token alone. A request without it, a sandbox's token among
 // them, is refused and leaves the hold armed: the next call is still

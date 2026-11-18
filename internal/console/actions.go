@@ -697,6 +697,13 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 	return fmt.Sprintf("Retried #%d as #%d; it starts once a work slot is free.", t.IssueNumber, issue), nil
 }
 
+// partialPress is the answer, on every entry, to a press that cleared the
+// hold and failed part of what follows: what failed, and what comes of it.
+func partialPress(part *factoryd.PartialPressError) error {
+	return refuse(http.StatusInternalServerError, "The hold cleared, but part of the press failed: "+errText(part.Err)+
+		". A frozen card it did not wake starts at its reset, and a freeze card it did not close closes five minutes after its class resumed.")
+}
+
 // filedReplacement is the issue of the replacement a retry among did
 // filed; false when it filed none, as when it named one a retry filed
 // before.
@@ -1592,7 +1599,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		note, posted, err = c.closeHumanCard(ctx, a, t, label)
 		return posted, err
 	}
-	res, post := chosen, (func(context.Context) (int64, error))(nil)
+	res, post, thaws := chosen, (func(context.Context) (int64, error))(nil), false
 	var gone factoryd.ErrStallGone
 	switch {
 	case label == "" && value == "":
@@ -1604,6 +1611,9 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 			}
 			return posted, nil
 		}
+	case value == factoryd.ActRetry && t.Source == factoryd.SourceFreezeCard:
+		// Act presses the retry switch, which closes the freeze card itself
+		thaws = true
 	case !choiceCard(t) && slices.Contains([]string{factoryd.AnswerRerunAgain, factoryd.AnswerDismiss, factoryd.AnswerRetryRoll, factoryd.AnswerCheckAgain}, value):
 		work = closing
 	case t.Source == factoryd.SourceProductionHeld && isReplanChoice(value):
@@ -1735,7 +1745,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 	if err != nil {
 		return "", err
 	}
-	if out.Proposed || value == factoryd.ActDeployNow {
+	if out.Proposed || value == factoryd.ActDeployNow || thaws {
 		return out.Text, nil
 	}
 	return note, nil
@@ -1913,6 +1923,11 @@ func (c *Console) callActWork(ctx context.Context, a actor, t factoryd.Task, cas
 			return factoryd.ActResult{}, err
 		}
 	}
+	if res.Action == factoryd.ActRetry {
+		if err := c.admit(ctx, accessTable["retry"], a, t.Repository, "task "+t.ID); err != nil {
+			return factoryd.ActResult{}, err
+		}
+	}
 	in := factoryd.ActInput{TaskID: t.ID, CaseID: caseID, By: a.approver(), Via: a.via, Rung: a.rung(), Res: res, Post: post, Work: work,
 		Detail: stamped(ctx, c.eventOf(a, t.Repository, t.ID, t.IssueNumber, factoryd.EventQuestionAnswered, nil)).Detail}
 	if in.Rung == 2 && a.reads != nil {
@@ -1939,6 +1954,7 @@ func (c *Console) actErr(ctx context.Context, a actor, t factoryd.Task, res fact
 	var ended factoryd.ErrCaseEnded
 	var noRetry factoryd.ErrNoRetry
 	var capped *factoryd.CardCapError
+	var part *factoryd.PartialPressError
 	var fj *forgejoRefusal
 	switch {
 	case err == nil:
@@ -1955,10 +1971,16 @@ func (c *Console) actErr(ctx context.Context, a actor, t factoryd.Task, res fact
 		return refuse(http.StatusConflict, err.Error())
 	case errors.As(err, &capped):
 		return refuse(http.StatusConflict, capSpent(t.IssueNumber, capped.Budget, res, c.ceilingOf(ctx, t), a.via))
+	case errors.As(err, &part):
+		log.Printf("console: %s answers %s with %s: %v", a.s.user, t.ID, res.Action, err)
+		return partialPress(part)
 	case errors.Is(err, factoryd.ErrNotFound):
 		return refuse(http.StatusNotFound, "There is no card "+t.ID+" in this project.")
 	}
 	log.Printf("console: %s answers %s with %s: %v", a.s.user, t.ID, res.Action, err)
+	if res.Action == factoryd.ActRetry && t.Source == factoryd.SourceFreezeCard {
+		return refuse(http.StatusInternalServerError, "The freeze could not be ended: "+errText(err)+". Press Retry now again, or wait for the reset on the card.")
+	}
 	return refuse(http.StatusInternalServerError, "The answer failed: "+errText(err)+". Reload the board and press the button again.")
 }
 

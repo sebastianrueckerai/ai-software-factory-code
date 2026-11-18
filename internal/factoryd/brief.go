@@ -290,7 +290,7 @@ func (b *BriefWriter) ask(ctx context.Context, a ApprovalRequest, t, bill Task) 
 	}
 	// the version in force names the alias, as every factoryd call site
 	v := b.Current()
-	content, _, err := b.Model.Chat(ctx, bill.ID, v.Document.FactoryModel(t.RequiredCapabilities, policy.PurposeBrief), policy.PurposeBrief,
+	content, _, err := b.Model.Chat(forCard(ctx, t), bill.ID, v.Document.FactoryModel(t.RequiredCapabilities, policy.PurposeBrief), policy.PurposeBrief,
 		v.Document.Limits.SupervisorTimeout, briefPrompt(a.Kind), json.RawMessage(raw))
 	if err != nil {
 		return "", "", err

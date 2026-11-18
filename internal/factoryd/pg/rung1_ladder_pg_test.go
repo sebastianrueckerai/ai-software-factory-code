@@ -114,6 +114,9 @@ func TestRung1ResolvesWithinBound(t *testing.T) {
 	if want := ChatTaskID("demo-app", time.Now()); !slices.Equal(g.chat.ids, []string{want, want}) || !slices.Equal(g.chat.aliases, []string{"big", "big"}) {
 		t.Fatalf("calls booked on %v under %v, want the project's chat task %s on the check-in alias big", g.chat.ids, g.chat.aliases, want)
 	}
+	if !slices.Equal(g.chat.cards, []string{"coder", "coder"}) {
+		t.Fatalf("calls named the cards %q, want the card's class coder on both: the provider-limit hold holds them under it", g.chat.cards)
+	}
 }
 
 // The same card with two sessions drawn already, one on rung 0 and one on
