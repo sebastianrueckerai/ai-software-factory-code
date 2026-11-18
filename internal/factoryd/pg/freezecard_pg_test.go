@@ -2,9 +2,11 @@ package pg
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
 
@@ -62,5 +64,47 @@ func TestFreezeCardCursorPersistsPG(t *testing.T) {
 	events, cursor, err = s.FreezeEvents(ctx)
 	if err != nil || cursor != ids[2] || len(events) != 0 {
 		t.Fatalf("events = %+v, cursor %d, err %v; want a quiet read at the cursor", events, cursor, err)
+	}
+}
+
+// ListFrozenCards matches the class against a card's classes, never its
+// model alias, and lists the running and queued cards of every repository
+// in id order; which of a card's classes the hold reads is the watcher's
+// policy rule, not the read's. Requires a disposable Postgres
+// (FACTORYD_TEST_DATABASE_URL).
+func TestFrozenCardsMatchTheClassPG(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "pg_frozencards"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	t.Cleanup(func() { s.DB().Close() })
+	for _, tk := range []Task{
+		{ID: "f-run", Status: "running", Repository: "sf/acme", RequiredCapabilities: []string{"coder"}},
+		{ID: "f-other", Status: "running", Repository: "sf/other", RequiredCapabilities: []string{"coder"}},
+		{ID: "f-queued", Status: "queued", Repository: "sf/acme", RequiredCapabilities: []string{"coder"}},
+		{ID: "f-two", Status: "running", Repository: "sf/acme", RequiredCapabilities: []string{"analyzer", "coder"}},
+		{ID: "f-review", Status: "in-review", Repository: "sf/acme", RequiredCapabilities: []string{"coder"}},
+		{ID: "f-analyzer", Status: "running", Repository: "sf/acme", RequiredCapabilities: []string{"analyzer"}},
+	} {
+		tk.BudgetEUR, tk.Kind, tk.Track, tk.Source = 1, "agent", policy.TrackDirect, "webhook"
+		if err := s.CreateTask(ctx, tk); err != nil {
+			t.Fatalf("CreateTask %s: %v", tk.ID, err)
+		}
+	}
+	// the last sessions' models: the analyzer card's alias spells the class
+	if _, err := s.DB().ExecContext(ctx, `UPDATE tasks SET model_alias = CASE id WHEN 'f-analyzer' THEN 'coder' ELSE 'big' END`); err != nil {
+		t.Fatal(err)
+	}
+	cards, err := s.ListFrozenCards(ctx, "coder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, c := range cards {
+		ids = append(ids, c.ID)
+	}
+	if !slices.Equal(ids, []string{"f-other", "f-queued", "f-run", "f-two"}) {
+		t.Fatalf("ListFrozenCards(coder) = %q, want the running and queued coder cards of both repositories", ids)
 	}
 }
