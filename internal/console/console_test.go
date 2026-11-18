@@ -4136,3 +4136,30 @@ func TestCapFactsOfReadsTheEscalationOfTheBoardTask(t *testing.T) {
 		t.Errorf("the ladder's cap: capped %v, timeCap %v; want a session cap", f.capped, f.timeCap)
 	}
 }
+
+// The pulse's board text is read with no session. A pending merge request
+// on red checks stands in that text as it is, and the read asks Forgejo
+// nothing as a member, where the opened card of a logged-in human reads
+// the head's checks again.
+func TestThePulsesBoardTextShowsARedMergeRequestWithNoSession(t *testing.T) {
+	r := newRig(t)
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{
+		ID: 9, Kind: "merge", TaskID: "t-m", Project: "sf/code", PRNumber: 11, Status: "pending",
+		Spec: json.RawMessage(`{"risk_class":"normal","red_checks":true,"head_sha":"deadbeef",` +
+			`"verdict_summary":"the change is safe","recommendation":"Merge it.","why_human":["a human decides this merge"]}`),
+	})
+	req, rerr := http.NewRequestWithContext(context.WithValue(t.Context(), ctxKey{}, &session{}), http.MethodGet, "/", nil)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	text, err := r.c.boardText(req, projectRows()[0], actor{})
+	if err != nil {
+		t.Fatalf("the pulse's board read: %v", err)
+	}
+	if !strings.Contains(text, "pull request #11") {
+		t.Errorf("the pulse's board text lacks the red merge request:\n%s", text)
+	}
+	if len(r.fg.calls) != 0 {
+		t.Errorf("the pulse's read asked Forgejo as a member: %v", r.fg.calls)
+	}
+}
