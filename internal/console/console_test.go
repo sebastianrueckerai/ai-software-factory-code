@@ -1569,7 +1569,7 @@ func newRig(t *testing.T) *rig {
 						if ok && ask.Detail != nil {
 							detail = ask.Detail
 						}
-						if offers, refusals := factoryd.OffersFor(factoryd.FactsOf(k)); factoryd.AnswersByOffers(k, bt.Kind) {
+						if offers, refusals := factoryd.OffersFor(factoryd.FactsOf(k)); factoryd.AnswersByOffers(k) {
 							detail["offers"], detail["refusals"] = offers, refusals
 						}
 						d.Asks[k.ID] = factoryd.CaseAsk{At: ask.At, Detail: detail}

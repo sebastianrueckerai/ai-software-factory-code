@@ -1,0 +1,5 @@
+-- The factory's month cap card opens a case of its own kind, which reaches the human at its opening; an agent card's stop at the month cap keeps month_cap and climbs. No ask opens agent_request_info.
+ALTER TABLE cases DROP CONSTRAINT cases_kind_check;
+UPDATE cases c SET kind = 'factory_month_cap' FROM tasks t WHERE t.id = c.task_id AND t.kind = 'human' AND c.kind = 'month_cap';
+UPDATE cases SET kind = 'agent_escalate' WHERE kind = 'agent_request_info';
+ALTER TABLE cases ADD CONSTRAINT cases_kind_check CHECK (kind IN ('session_cap','agent_time_cap','budget_floor','day_cap','month_cap','factory_month_cap','project_cap','checkin_human','checkin_share','checkin_failed','gate_stop','findings_repeated','dependency_closed','wait_expired','pod_never_started','provider_refused','no_answer','content_filter','image_wait','screening_suspect','agent_escalate','plan_question','plan_confirmation','merge_approval','human_card','other','dependency_failed','monitor_flag','judgment_budget','policy_class','red_main','roll_held','config_refused','plan_criteria'));

@@ -192,7 +192,7 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		}
 		row.Plan = slot
 	}
-	if row.Decides = row.Answers && factoryd.AnswersByOffers(shown, bt.Kind); row.Decides {
+	if row.Decides = row.Answers && factoryd.AnswersByOffers(shown); row.Decides {
 		row.Offers, row.Refusals = offersOf(face, shown.Kind == factoryd.CaseAgentTimeCap || factoryd.FactsOf(shown).Planner)
 		row.Premade = bt.Choices
 	}

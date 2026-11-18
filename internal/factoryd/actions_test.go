@@ -731,7 +731,7 @@ func TestExtendAnswersACapAlone(t *testing.T) {
 	one := Resolution{Args: map[string]any{"sessions": 1}}
 	for kind, want := range map[CaseKind]string{
 		CaseSessionCap: "", CaseCheckinShare: "", CaseGateStop: "", CaseFindingsRepeated: "", "": "",
-		CaseAgentEscalate: asked, CaseAgentRequestInfo: asked, CaseOther: asked, CaseCheckinHuman: asked,
+		CaseAgentEscalate: asked, CaseOther: asked, CaseCheckinHuman: asked,
 		CaseBudgetFloor: "this card waits on money, not a session: fund it",
 		CaseMonthCap:    "this card waits on the month cap, not a session: raise budget.month_eur or wait for the month to turn, then fund or retry",
 	} {

@@ -102,8 +102,7 @@ func (f *healAskForgejo) comments() []string {
 // a human with no live ask. It tells the ended case.
 func park(t *testing.T, s *PGStore, resolvedAgo time.Duration) Case {
 	t.Helper()
-	askCap(t, s, 27001)
-	c := onlyOpenCase(t, s)
+	c := facedCap(t, s, 27001)
 	recordCaseEvent(t, s, EventQuestionAnswered, "sebastian", ViaChat, map[string]any{
 		"action": ActExtend, "agent_time_s": 1800, "comment": int64(27002)})
 	if got := caseByID(t, s, c.ID); got.Status != CaseResolved || got.ResolvedAt == nil {
@@ -177,7 +176,7 @@ func TestHealPassReasksACardWaitingWithNoAsk(t *testing.T) {
 func TestHealPassCaseCarriesTheCaseItAsksAgain(t *testing.T) {
 	ctx := context.Background()
 	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
-	if _, err := g.r.FaceStop(ctx, "t1", whichFile, nil); err != nil {
+	if _, err := g.r.PgFaceStop(ctx, "t1", whichFile, nil); err != nil {
 		t.Fatal(err)
 	}
 	first := onlyLiveCase(t, g.s, "t1")
@@ -243,8 +242,8 @@ func TestHealPassLeavesAskedAndFreshlyParkedCards(t *testing.T) {
 	if err != nil || len(cases) != 1 || cases[0].ID != live[0].ID {
 		t.Fatalf("the asked card's cases = %+v, %v; want its one live ask's case", cases, err)
 	}
-	if ask, err := g.s.NewestAskCase(ctx, "t1420"); err != nil || ask.ID != live[0].ID || ask.Status != CaseAtHuman {
-		t.Fatalf("the asked card's live ask = %+v, %v; want the ask that stood", ask, err)
+	if ask, err := g.s.NewestAskCase(ctx, "t1420"); err != nil || ask.ID != live[0].ID || ask.Status != CaseOpen {
+		t.Fatalf("the asked card's live ask = %+v, %v; want the ask that stood, open as its ask opened it", ask, err)
 	}
 	if posted := g.forge.comments(); len(posted) != 0 {
 		t.Fatalf("posted %q; want no face: both cards wait as they are", posted)
@@ -315,8 +314,8 @@ func TestHealPassReasksWhenOnlyAMonitorFlagIsLive(t *testing.T) {
 	ctx := context.Background()
 	g := newHealAskRig(t, "heal_ask_flag")
 	ended := park(t, g.s, 10*time.Minute)
-	flag, _, err := g.s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: "wait_over_bound|at_human",
-		Status: CaseAtHuman, Problem: "Monitor flag: wait_over_bound"})
+	flag, _, err := openAtHuman(ctx, g.s, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: "wait_over_bound|at_human",
+		Problem: "Monitor flag: wait_over_bound"})
 	if err != nil {
 		t.Fatalf("open the flag: %v", err)
 	}
@@ -470,8 +469,8 @@ func TestAsklessSinceSkipsMonitorFlags(t *testing.T) {
 	ctx := context.Background()
 	g := newHealAskRig(t, "heal_ask_since")
 	park(t, g.s, 2*time.Minute)
-	flag, _, err := g.s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: "wait_over_bound|at_human",
-		Status: CaseAtHuman, Problem: "Monitor flag: wait_over_bound"})
+	flag, _, err := openAtHuman(ctx, g.s, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: "wait_over_bound|at_human",
+		Problem: "Monitor flag: wait_over_bound"})
 	if err != nil {
 		t.Fatalf("open the flag: %v", err)
 	}

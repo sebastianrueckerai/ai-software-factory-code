@@ -404,7 +404,7 @@ func TestOpenTripWritesTheFaceWithTheCaseID(t *testing.T) {
 func TestEscalateOpensTheCaseByTheTripsKey(t *testing.T) {
 	g := newTripRig(t, "success")
 	g.atHead(t, true)
-	id, err := g.r.FaceStop(context.Background(), "t1", tripCap, nil)
+	id, err := g.r.PgFaceStop(context.Background(), "t1", tripCap, nil)
 	if err != nil || id != 501 {
 		t.Fatalf("Escalate = %d, %v; want comment 501", id, err)
 	}
@@ -423,7 +423,7 @@ func TestEscalateOpensTheCaseByTheTripsKey(t *testing.T) {
 func TestEscalateOpensItsCaseBeforeItsFace(t *testing.T) {
 	g := newTripRig(t, "success")
 	g.forge.failComment = true
-	if _, err := g.r.FaceStop(context.Background(), "t1", tripCap, nil); err == nil {
+	if _, err := g.r.PgFaceStop(context.Background(), "t1", tripCap, nil); err == nil {
 		t.Fatal("Escalate = nil; want the comment's failure")
 	}
 	cases, err := g.s.CasesOf(context.Background(), "t1")
@@ -451,9 +451,11 @@ func TestOpenTripCarriesTheMoneyFact(t *testing.T) {
 	}
 }
 
-// An ask that names its live case puts that case at the human with the
-// ask's comment and the human's step. One that names a case that ended
-// opens a case of its words, as an ask that names none does.
+// An ask that names its live case, the face, puts that case at the human
+// through the door with the ask's comment and the human's step, once a rung
+// worked it: on a case no rung worked the door refuses the row. One that
+// names a case that ended opens a case of its words, as an ask that names
+// none does.
 func TestAnAskNamingItsCaseTakesThatCase(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
@@ -462,13 +464,24 @@ func TestAnAskNamingItsCaseTakesThatCase(t *testing.T) {
 		t.Fatal(err)
 	}
 	ask := map[string]any{"question": capAsk, "ask": capAsk, "comment": int64(27001), "source": "cap", "reason": CapReached, "case_id": c.ID}
+	refusal := fmt.Sprintf("case %d (session_cap) has no rung 1 or rung 2 step and no exception: the case climbs first", c.ID)
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: caseTask, IssueNumber: 1410, Kind: EventQuestionAsked, Actor: FactoryDecider,
+		Via: ViaFactoryd, Detail: ask}); err == nil || !strings.Contains(err.Error(), refusal) {
+		t.Fatalf("a face's ask on a case no rung worked = %v, want the door's refusal %q", err, refusal)
+	}
+	if got := onlyOpenCase(t, s); got.Status != CaseOpen || len(caseStepsOf(t, s, c.ID)) != 0 {
+		t.Fatalf("case = %+v, want it open with no step after the refused ask", got)
+	}
+	if _, err := s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp}); err != nil {
+		t.Fatal(err)
+	}
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, ask)
 	got := onlyOpenCase(t, s)
-	if got.ID != c.ID || got.Status != CaseAtHuman || got.CommentID != 27001 || got.Problem != "Card 1410 used its sessions" {
-		t.Fatalf("case = %+v, want case %d at the human on comment 27001", got, c.ID)
+	if got.ID != c.ID || got.Status != CaseAtHuman || got.OwnerRung != 3 || got.NextWakeAt != nil || got.CommentID != 27001 || got.Problem != "Card 1410 used its sessions" {
+		t.Fatalf("case = %+v, want case %d at the human on rung 3 with no wake, on comment 27001", got, c.ID)
 	}
-	if steps := caseStepsOf(t, s, c.ID); len(steps) != 1 || steps[0].Rung != 3 || steps[0].Outcome != StepInProgress {
-		t.Fatalf("steps = %+v, want the human's", steps)
+	if steps := caseStepsOf(t, s, c.ID); len(steps) != 2 || steps[0].Rung != 2 || steps[1].Rung != 3 || steps[1].Outcome != StepInProgress {
+		t.Fatalf("steps = %+v, want rung 2's hand-up and the human's", steps)
 	}
 
 	if err := s.WithdrawCase(ctx, c.ID, "moved on"); err != nil {
@@ -476,8 +489,8 @@ func TestAnAskNamingItsCaseTakesThatCase(t *testing.T) {
 	}
 	ask["comment"] = int64(27002)
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, ask)
-	if again := onlyOpenCase(t, s); again.ID == c.ID || again.Problem != capAsk || again.CommentID != 27002 || again.Follows != c.ID {
-		t.Fatalf("case = %+v, want a case of the ask's words following case %d", again, c.ID)
+	if again := onlyOpenCase(t, s); again.ID == c.ID || again.Status != CaseOpen || again.Problem != capAsk || again.CommentID != 0 || again.Follows != c.ID {
+		t.Fatalf("case = %+v, want a case of the ask's words following case %d, open to climb to its own face", again, c.ID)
 	}
 }
 
@@ -607,8 +620,8 @@ func TestAnAskNamingAnotherCardsCaseGoesByItsWords(t *testing.T) {
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
 		"question": capAsk, "ask": capAsk, "comment": int64(27001), "source": "cap", "reason": CapReached, "case_id": other.ID})
 	mine := onlyOpenCase(t, s)
-	if mine.ID == other.ID || mine.Problem != capAsk || mine.CommentID != 27001 {
-		t.Fatalf("the asking card's case = %+v, want one of its own words", mine)
+	if mine.ID == other.ID || mine.Problem != capAsk || mine.Status != CaseOpen || mine.CommentID != 0 {
+		t.Fatalf("the asking card's case = %+v, want one of its own words, open to climb to its face", mine)
 	}
 	if got := caseByID(t, s, other.ID); got.Status != CaseOpen || got.CommentID != 0 || len(caseStepsOf(t, s, other.ID)) != 0 {
 		t.Fatalf("the other card's case = %+v, want it untouched", got)
@@ -647,7 +660,7 @@ func TestActLeavesTheGrantToARunFromBeforeTheGate(t *testing.T) {
 	}
 	t.Run("a run from before the gate", func(t *testing.T) {
 		g := newTripRig(t, "success")
-		if _, err := g.r.FaceStop(context.Background(), "t1", tripCap, nil); err != nil {
+		if _, err := g.r.PgFaceStop(context.Background(), "t1", tripCap, nil); err != nil {
 			t.Fatal(err)
 		}
 		c := onlyLiveCase(t, g.s, "t1")
@@ -660,7 +673,7 @@ func TestActLeavesTheGrantToARunFromBeforeTheGate(t *testing.T) {
 	for name, open := range map[string]func(t *testing.T, g tripRig) int64{
 		"a trip's case": func(t *testing.T, g tripRig) int64 { return g.trip(t, tripCap).CaseID },
 		"the old run's case after a restart": func(t *testing.T, g tripRig) int64 {
-			if _, err := g.r.FaceStop(context.Background(), "t1", tripCap, nil); err != nil {
+			if _, err := g.r.PgFaceStop(context.Background(), "t1", tripCap, nil); err != nil {
 				t.Fatal(err)
 			}
 			return g.trip(t, HealedReason).CaseID
@@ -714,7 +727,7 @@ func TestOpenTripsFaceNamesWhatMovesTheCard(t *testing.T) {
 			g := newTripRig(t, "success")
 			rung1Off(g.r)
 			if tc.escalate {
-				if _, err := g.r.FaceStop(context.Background(), "t1", tc.reason, nil); err != nil {
+				if _, err := g.r.PgFaceStop(context.Background(), "t1", tc.reason, nil); err != nil {
 					t.Fatal(err)
 				}
 			} else {
@@ -767,7 +780,7 @@ var whichFile = AgentAsks + "Which file?\nWhy: two match\nRecommendation: a.txt"
 func TestARestartsCaseClimbsBeforeItsFace(t *testing.T) {
 	ctx := context.Background()
 	g := newRungRig(t, "success")
-	if _, err := g.r.FaceStop(ctx, "t1", whichFile, nil); err != nil {
+	if _, err := g.r.PgFaceStop(ctx, "t1", whichFile, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.s.WithdrawCase(ctx, onlyLiveCase(t, g.s, "t1").ID, "the run that asked it is gone"); err != nil {
@@ -833,15 +846,19 @@ func TestARestartWithNoAskFacesRung2sAnalysis(t *testing.T) {
 func TestARestartLeavesACaseAtTheHumanWithItsFace(t *testing.T) {
 	ctx := context.Background()
 	g := newRungRig(t, "success")
-	if _, err := g.r.FaceStop(ctx, "t1", whichFile, nil); err != nil {
+	if _, err := g.r.PgFaceStop(ctx, "t1", whichFile, nil); err != nil {
 		t.Fatal(err)
 	}
 	c := onlyLiveCase(t, g.s, "t1")
+	rungSteps := func(steps []CaseStep) int {
+		return len(slices.DeleteFunc(slices.Clone(steps), func(s CaseStep) bool { return s.Rung != 1 && s.Rung != 2 }))
+	}
+	before := rungSteps(g.steps(t, c.ID))
 	out := g.trip(t, HealedReason)
 	steps := g.steps(t, c.ID)
-	rung := slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 1 || s.Rung == 2 })
-	if out.CaseID != c.ID || out.Comment != 501 || len(g.forge.comments) != 1 || rung || steps[len(steps)-1].Found != "asked again after a restart" {
-		t.Fatalf("outcome %+v, steps %+v, comments %d; want case %d on comment 501, no rung step and the restart's step last", out, steps, len(g.forge.comments), c.ID)
+	if out.CaseID != c.ID || out.Comment != 501 || len(g.forge.comments) != 1 || rungSteps(steps) != before || steps[len(steps)-1].Found != "asked again after a restart" {
+		t.Fatalf("outcome %+v, steps %+v, comments %d; want case %d on comment 501, no rung step past the %d of its face and the restart's step last",
+			out, steps, len(g.forge.comments), c.ID, before)
 	}
 }
 
@@ -937,7 +954,7 @@ func TestARepeatedAskCarriesTheFaceItRepeats(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
 	reason := CapReached + "\nlast: no session produced a result\nRecommendation: a.txt, it is first"
-	if _, err := g.r.FaceStop(ctx, "t1", reason, []string{"a.txt", "b.txt"}); err != nil {
+	if _, err := g.r.PgFaceStop(ctx, "t1", reason, []string{"a.txt", "b.txt"}); err != nil {
 		t.Fatal(err)
 	}
 	// a proposal lands on the ask before the restart asks again
@@ -947,7 +964,7 @@ func TestARepeatedAskCarriesTheFaceItRepeats(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := g.r.FaceStop(ctx, "t1", HealedReason, nil); err != nil {
+	if _, err := g.r.PgFaceStop(ctx, "t1", HealedReason, nil); err != nil {
 		t.Fatal(err)
 	}
 	asks := g.asks(t)
@@ -1152,8 +1169,9 @@ func TestTripCaseMakesAChatEscalatedHumanCardAHumanCard(t *testing.T) {
 		t.Fatalf("trip case = %+v, %v; want a human card case", c, err)
 	}
 	agent := Task{ID: "a1", Kind: "agent"}
-	if HumanCardKind(CaseAgentEscalate, agent) != CaseAgentEscalate || HumanCardKind(CaseMonthCap, h) != CaseMonthCap || HumanCardKind(CaseOther, h) != CaseHumanCard {
-		t.Error("humanCardKind turns an agent card's ask, or a specialised kind, into a human card")
+	if HumanCardKind(CaseAgentEscalate, agent) != CaseAgentEscalate || HumanCardKind(CaseMonthCap, agent) != CaseMonthCap ||
+		HumanCardKind(CaseMonthCap, h) != CaseFactoryMonthCap || HumanCardKind(CaseRollHeld, h) != CaseRollHeld || HumanCardKind(CaseOther, h) != CaseHumanCard {
+		t.Error("humanCardKind turns an agent card's ask, or a specialised kind other than the month cap, into a human card, or misses the factory's month cap card")
 	}
 }
 
@@ -1182,7 +1200,7 @@ func TestAFaceOnAnUnreadTimelineIsWeighedAgain(t *testing.T) {
 	g.atHead(t, true)
 	objects := &downTimeline{ObjectStore: g.r.PgObjects(), down: true}
 	g.r.PgSetObjects(objects)
-	if _, err := g.r.FaceStop(ctx, "t1", tripCap, nil); err != nil {
+	if _, err := g.r.PgFaceStop(ctx, "t1", tripCap, nil); err != nil {
 		t.Fatal(err)
 	}
 	offered := func() ([]string, bool) {

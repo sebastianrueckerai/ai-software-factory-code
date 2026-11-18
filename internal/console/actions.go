@@ -1301,7 +1301,7 @@ func (c *Console) doAnswerCase(ctx context.Context, a actor, id string, caseID i
 	switch {
 	case open[i].Kind == factoryd.CaseMonitorFlag:
 		post = nil
-	case factoryd.ChoiceCase(open[i], t.Kind):
+	case factoryd.ChoiceKind(open[i].Kind):
 		// a human card's choice is routed to its work here (doHumanAnswer)
 		var said string
 		var done bool
@@ -1779,7 +1779,7 @@ const noCase = "this card waits with no open case: the heal pass opens one withi
 // not the human's thread, which a refill's resume and a retry also run as a
 // wake.
 func (a actor) caseWake() bool {
-	return a.wake && (a.birth == factoryd.WakeAsk || a.birth == factoryd.EventCaseClimbed)
+	return a.wake && a.birth == factoryd.EventCaseClimbed
 }
 
 // rung is the rung a answers on: the agent's own decision, unconfirmed, is

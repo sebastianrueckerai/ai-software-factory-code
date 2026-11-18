@@ -16,7 +16,7 @@ import (
 
 // The chat-answer rig: one live case with an in-flight rung step and its
 // escalation row (EventQuestionAsked) in a member's thread, beside a
-// human card's open choice case (ChoiceCase), both answered through
+// human card's open choice case (ChoiceKind), both answered through
 // POST /projects/{name}/chat/answer — 204, the member's answer on
 // the case's record, and the case's ending as the real Act ends it.
 
@@ -64,7 +64,7 @@ func (a *AcceptanceRig) SeedRungCase(t *testing.T, taskID string, issue int64, q
 }
 
 // SeedChoiceCase stands a human card in Needs you with its one open
-// choice case (ChoiceCase) and the escalation row in sebastian's thread.
+// choice case (ChoiceKind) and the escalation row in sebastian's thread.
 // It answers the card's id, the row's message id and the case.
 func (a *AcceptanceRig) SeedChoiceCase(t *testing.T, question string, choices []factoryd.QuestionChoice) (string, int64, factoryd.Case) {
 	t.Helper()

@@ -1550,13 +1550,24 @@ func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 	if e.Kind == EventQuestionAsked {
 		id, _ := toInt(e.Detail["case_id"])
 		if id == 0 {
-			// a case the ask opens open climbs to its face
-			if c := s.askOpensCase(e); c.Status == CaseAtHuman {
+			// a case the ask opens climbs to its face, unless the ask
+			// reaches the human at its opening
+			if c, opened := s.askOpensCase(e); opened && asksAtOnce(e, c.Kind) {
 				id = int(c.ID)
+				if e.Via == ViaChat {
+					recommendation, _ := e.Detail["recommendation"].(string)
+					why, _ := e.Detail["why"].(string)
+					if _, err := s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp, Grounds: recommendation, Found: why}); err != nil {
+						return 0, err
+					}
+				}
 			}
 		}
 		if id != 0 {
-			s.faced(int64(id), e)
+			if err := s.faced(int64(id), e); err != nil {
+				s.events = s.events[:len(s.events)-1]
+				return 0, err
+			}
 		}
 	}
 	if _, ok := s.closed[e.TaskID]; e.Kind == EventPlanClosed && !ok {
@@ -1566,38 +1577,41 @@ func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 }
 
 // askOpensCase opens the case ask row e goes to when it names none, as the
-// events writer does, stamps the row with it and answers it; the zero Case
-// when the card is unknown or the ask has no words.
-func (s *fakeStore) askOpensCase(e Event) Case {
+// events writer does, stamps the row with it and answers it and whether it
+// opened it; the zero Case when the card is unknown or the ask has no words.
+func (s *fakeStore) askOpensCase(e Event) (Case, bool) {
 	t, ok := s.tasks[e.TaskID]
 	if !ok {
-		return Case{}
+		return Case{}, false
 	}
 	c, err := CaseFromAsk(t, e, "")
 	if err != nil {
-		return Case{}
+		return Case{}, false
 	}
-	got, _, _ := s.OpenCase(context.Background(), c)
+	got, opened, _ := s.OpenCase(context.Background(), c)
 	last := &s.events[len(s.events)-1]
 	last.Detail = maps.Clone(last.Detail)
 	if last.Detail == nil {
 		last.Detail = map[string]any{}
 	}
 	last.Detail["case_id"] = got.ID
-	return got
+	return got, opened
 }
 
 // faced is the events writer's face of ask row e on its case: the case at
-// the human with the face's comment, and the face step that carries it.
-func (s *fakeStore) faced(caseID int64, e Event) {
+// the human through the door with the face's comment, and the face step
+// that carries it.
+func (s *fakeStore) faced(caseID int64, e Event) error {
 	i := slices.IndexFunc(s.cases, func(c Case) bool {
 		return c.ID == caseID && c.TaskID == e.TaskID && (c.Status == CaseOpen || c.Status == CaseAtHuman)
 	})
 	if i < 0 {
-		return
+		return nil
+	}
+	if err := s.ToHuman(context.Background(), caseID); err != nil {
+		return err
 	}
 	comment, _ := toInt(e.Detail["comment"])
-	s.cases[i].Status = CaseAtHuman
 	if comment != 0 {
 		s.cases[i].CommentID = int64(comment)
 	}
@@ -1606,6 +1620,7 @@ func (s *fakeStore) faced(caseID int64, e Event) {
 	}
 	s.caseSteps[caseID] = append(s.caseSteps[caseID], CaseStep{ID: int64(len(s.caseSteps[caseID]) + 1), CaseID: caseID, Rung: 3, Actor: FactoryDecider,
 		StartedAt: cmp.Or(e.At, time.Now()), CommentID: int64(comment), Outcome: StepHandedUp})
+	return nil
 }
 
 func (s *fakeStore) PruneDeliveries(ctx context.Context, age time.Duration) error {
@@ -1798,6 +1813,9 @@ var _ Store = (*fakeStore)(nil)
 // with the next id, open when it names no status, owned by rung 0 when
 // open and by rung 3 at the human, due at its own wake.
 func (s *fakeStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
+	if c.Status = cmp.Or(c.Status, CaseOpen); c.Status != CaseOpen {
+		return Case{}, false, errOpenOnly
+	}
 	live := func(o Case) bool { return o.Status == CaseOpen || o.Status == CaseAtHuman }
 	if i := slices.IndexFunc(s.cases, func(o Case) bool {
 		return o.TaskID == c.TaskID && o.Kind == c.Kind && o.StateKey == c.StateKey && live(o)
@@ -1808,11 +1826,7 @@ func (s *fakeStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
 		c.ID = max(c.ID, o.ID)
 	}
 	c.ID++
-	c.Status = cmp.Or(c.Status, CaseOpen)
-	c.OwnerRung, c.WakeOn = 3, []string{}
-	if c.Status == CaseOpen {
-		c.OwnerRung = 0
-	}
+	c.OwnerRung, c.WakeOn = 0, []string{}
 	s.cases = append(s.cases, c)
 	return c, true, nil
 }
@@ -1856,12 +1870,20 @@ func (s *fakeStore) EnsureChatTask(_ context.Context, name, repository string, b
 	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Repository: repository, BudgetEUR: budget, SpentEUR: s.chatSpent}, nil
 }
 
-func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
+// ToHuman moves live case id to the human as PGStore.ToHuman does: through
+// the door, owned by rung 3 with no wake.
+func (s *fakeStore) ToHuman(ctx context.Context, id int64) error {
 	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id && (c.Status == CaseOpen || c.Status == CaseAtHuman) })
 	if i < 0 {
 		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
 	}
-	s.cases[i].Status = status
+	if s.cases[i].Status == CaseAtHuman {
+		return nil
+	}
+	if err := doorRefusal(s.cases[i], climbed(s.caseSteps[id])); err != nil {
+		return err
+	}
+	s.cases[i].Status, s.cases[i].OwnerRung, s.cases[i].NextWakeAt = CaseAtHuman, 3, nil
 	return nil
 }
 
@@ -6335,4 +6357,27 @@ func TestPGStoreTasksByParent(t *testing.T) {
 
 func (s *fakeStore) SetCaseOffers(context.Context, int64, []AskOffer, []ActionRefusal) error {
 	return nil
+}
+
+// openAtHuman opens case c in s and seats it at the human as the door leaves
+// a case, owned by rung 3 with no wake: the seed of a test whose case reached
+// the human by a path the test does not drive.
+func openAtHuman(ctx context.Context, s Store, c Case) (Case, bool, error) {
+	got, opened, err := s.OpenCase(ctx, c)
+	if err != nil {
+		return got, opened, err
+	}
+	switch st := s.(type) {
+	case *fakeStore:
+		i := slices.IndexFunc(st.cases, func(o Case) bool { return o.ID == got.ID })
+		st.cases[i].Status, st.cases[i].OwnerRung, st.cases[i].NextWakeAt = CaseAtHuman, 3, nil
+		got = st.cases[i]
+	case *PGStore:
+		if _, err = st.db.ExecContext(ctx, `UPDATE cases SET status = 'at_human', owner_rung = 3, next_wake_at = NULL WHERE id = $1`, got.ID); err == nil {
+			got, err = st.CaseByID(ctx, got.ID)
+		}
+	default:
+		err = fmt.Errorf("openAtHuman: no seat for a %T", s)
+	}
+	return got, opened, err
 }

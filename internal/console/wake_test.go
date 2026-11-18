@@ -491,7 +491,7 @@ type wakeCall struct {
 	status       int
 }
 
-// mergeWake runs a merge row's wake on sebastian's inbox, or with inbox
+// mergeWake runs a merge case's wake on sebastian's inbox, or with inbox
 // false on his own thread 1, at autonomous under merge rule rule, the
 // model answering replies, and answers the rig, its chat and the turn's
 // stored tool calls.
@@ -513,8 +513,8 @@ func mergeWake(t *testing.T, rule string, inbox bool, setup func(*rig), replies 
 		conv = 1
 	}
 	g.replies = replies
-	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask",
-		"Wake: 1 ask waits for a human.\n#5: merge of PR #9, high risk"); err != nil {
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, factoryd.EventCaseClimbed,
+		"Wake: 1 case waits for the factory agent.\n#5: merge of PR #9, high risk"); err != nil {
 		t.Fatalf("StartWake: %v", err)
 	}
 	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 20)

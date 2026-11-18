@@ -751,7 +751,7 @@ func (s *accBatchStore) EndCaseStep(ctx context.Context, st factoryd.CaseStep) e
 func (s *accBatchStore) EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error) {
 	panic("unused")
 }
-func (s *accBatchStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
+func (s *accBatchStore) ToHuman(ctx context.Context, id int64) error {
 	panic("unused")
 }
 func (s *accBatchStore) StartRung1Step(ctx context.Context, taskID string, limit int, st factoryd.CaseStep) (int64, bool, error) {

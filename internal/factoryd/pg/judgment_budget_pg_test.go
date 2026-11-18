@@ -91,7 +91,7 @@ func TestRung1PerCardCountSendsTheCaseToRung2(t *testing.T) {
 	g := newRungRig(t, "success")
 	ctx := context.Background()
 	for i := range 2 {
-		c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: fmt.Sprint("k", i), Status: CaseAtHuman, Problem: "old"})
+		c, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: fmt.Sprint("k", i), Problem: "old"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -125,7 +125,7 @@ func TestRung1PerCardCountFollowsPolicy(t *testing.T) {
 	v.Document.Escalation.Rung1Runs = 7
 	g.r.PgSetPolicy(func() policy.Version { return v })
 	ctx := context.Background()
-	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: "k", Status: CaseAtHuman, Problem: "old"})
+	c, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: "k", Problem: "old"})
 	if err != nil {
 		t.Fatal(err)
 	}

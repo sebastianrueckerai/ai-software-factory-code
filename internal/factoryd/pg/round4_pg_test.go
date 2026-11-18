@@ -97,7 +97,7 @@ func TestAMergeRequestWhoseCaseWasAnsweredGetsItsCaseAgain(t *testing.T) {
 // offers stored and leaves them.
 func TestAnAskStoresItsRefusalsAsAList(t *testing.T) {
 	g := newTripRig(t, "success")
-	if _, err := g.r.FaceStop(context.Background(), "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.PgFaceStop(context.Background(), "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	got, ok := g.asks(t)[0].Detail["refusals"].([]any)
@@ -182,11 +182,11 @@ func TestActGrantsCriteriaNeverJudged(t *testing.T) {
 func TestSetCaseOffersTakesTheNewestAsk(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.FaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.PgFaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")
-	if _, err := g.r.FaceStop(ctx, "t1", HealedReason, nil); err != nil {
+	if _, err := g.r.PgFaceStop(ctx, "t1", HealedReason, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.s.SetCaseOffers(ctx, cases[0].ID, []AskOffer{{Value: ActNote, Label: "Note", Effect: "marker"}}, nil); err != nil {

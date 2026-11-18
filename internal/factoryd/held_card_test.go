@@ -66,18 +66,18 @@ func TestFactorydsHumanCardWaitsForItsFace(t *testing.T) {
 		t.Fatalf("rows = %+v, want one held ask with the labels human and bug", store.events)
 	}
 	c, err := CaseFromAsk(got, store.events[0], "")
-	if err != nil || c.Status != CaseOpen || c.Kind != CaseHumanCard {
-		t.Fatalf("its case = %+v, %v; want a human card's case open", c, err)
+	if err != nil || c.Status != CaseOpen || c.Kind != CaseHumanCard || asksAtOnce(store.events[0], c.Kind) {
+		t.Fatalf("its case = %+v, %v; want a human card's case open, which climbs", c, err)
 	}
 	_, err = EscalateToHuman(ctx, store, silentForge(t), Repo{Owner: "sf", Name: "r"}, HumanQuestion{Ask: "The chain is pending. Re-run it?", Why: "w", Info: "i"},
 		"the chain poller", Task{ID: "t-held", Source: SourceChainStall, SHA: "c2c2"})
 	if want := "card t-held stands already (waiting-agent), so this second filing of it is refused: its case asks"; err == nil || err.Error() != want || len(store.events) != 1 {
 		t.Fatalf("a second filing = %v with %d rows, want %q and no second ask", err, len(store.events), want)
 	}
-	chat, err := CaseFromAsk(Task{ID: "t-chat", Kind: "human", Status: "waiting-human"}, Event{Kind: EventQuestionAsked, Via: ViaChat,
-		Detail: map[string]any{"ask": "Write the criteria?", "source": "agent"}}, "")
-	if err != nil || chat.Status != CaseAtHuman {
-		t.Fatalf("the chat's case = %+v, %v; want it at the human", chat, err)
+	chatAsk := Event{Kind: EventQuestionAsked, Via: ViaChat, Detail: map[string]any{"ask": "Write the criteria?", "source": "agent"}}
+	chat, err := CaseFromAsk(Task{ID: "t-chat", Kind: "human", Status: "waiting-human"}, chatAsk, "")
+	if err != nil || chat.Status != CaseOpen || chat.Kind != CaseHumanCard || !asksAtOnce(chatAsk, chat.Kind) {
+		t.Fatalf("the chat's case = %+v, %v; want a human card's case open, which reaches the human at its opening", chat, err)
 	}
 }
 

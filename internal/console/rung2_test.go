@@ -38,10 +38,10 @@ func TestACaseWakeRunsOnBigAtAnyPremiumSpend(t *testing.T) {
 		spent, cap  float64
 		want        string
 	}{
-		{"no spend", "wake_ask", 0, 50, policy.Big},
-		{"under the old share", "wake_ask", 42.49, 50, policy.Big},
+		{"no spend", "case_climbed", 0, 50, policy.Big},
+		{"under the old share", "case_climbed", 42.49, 50, policy.Big},
 		{"over the cap", "case_climbed", 80, 50, policy.Big},
-		{"no cap of its own", "wake_ask", 1000, 0, policy.Big},
+		{"no cap of its own", "case_climbed", 1000, 0, policy.Big},
 		{"a watch's wake", "wake_card", 0, 50, policy.Small},
 		{"a timer's wake", "wake_timer", 49, 50, policy.Small},
 		{"the refill", "queue_refill", 0, 50, policy.Small},
@@ -52,10 +52,10 @@ func TestACaseWakeRunsOnBigAtAnyPremiumSpend(t *testing.T) {
 		}
 	}
 	r.c.cfg.Costs = nil
-	if got := wakeTurnOf(r, "wake_ask", 50).model(); got != policy.Big {
+	if got := wakeTurnOf(r, "case_climbed", 50).model(); got != policy.Big {
 		t.Errorf("no ledger: %s, want big", got)
 	}
-	member := wakeTurnOf(r, "wake_ask", 50)
+	member := wakeTurnOf(r, "case_climbed", 50)
 	member.a.wake = false
 	if got := member.model(); got != policy.Big {
 		t.Errorf("a member's turn: %s, want its own model big", got)
@@ -238,11 +238,10 @@ func TestOnlyTheWakersAnswerOnACaseSkipsTheChatsConfirm(t *testing.T) {
 	}{
 		{"a member's turn", "", "answer", answer, false, true},
 		{"a refill's resume", "resume", "answer", answer, true, true},
-		{"the Waker's ask", "wake_ask", "answer", answer, true, false},
 		{"the Waker's climbed case", "case_climbed", "answer", answer, true, false},
-		{"the Waker's answer on no case", "wake_ask", "answer", `{"task_id":"13","text":"go on"}`, true, true},
-		{"the Waker's retry with a stray case_id", "wake_ask", "retry", `{"task_id":"13","case_id":5}`, true, true},
-		{"the Waker's set_autonomy with a stray case_id", "wake_ask", "set_autonomy", `{"autonomy":"autonomous","case_id":5}`, true, true},
+		{"the Waker's answer on no case", "case_climbed", "answer", `{"task_id":"13","text":"go on"}`, true, true},
+		{"the Waker's retry with a stray case_id", "case_climbed", "retry", `{"task_id":"13","case_id":5}`, true, true},
+		{"the Waker's set_autonomy with a stray case_id", "case_climbed", "set_autonomy", `{"autonomy":"autonomous","case_id":5}`, true, true},
 	} {
 		r.acted = nil
 		trn := r.chatTurnOf(t, s, &events)
@@ -266,7 +265,7 @@ func TestAProposalIsNoAppliedWrite(t *testing.T) {
 	_, s := r.loggedIn(t)
 	var events []string
 	trn := r.chatTurnOf(t, s, &events)
-	trn.a.wake, trn.a.birth = true, "wake_ask"
+	trn.a.wake, trn.a.birth = true, "case_climbed"
 	for _, proposes := range []bool{true, false} {
 		r.actProposes = proposes
 		events = nil
@@ -288,7 +287,7 @@ func TestAWakeTurnsChoiceOnAHumanCardRunsNoWorkWhereActProposes(t *testing.T) {
 			r.openCases = map[string][]factoryd.Case{"t-ask": {{ID: 4, TaskID: "t-ask", Kind: factoryd.CaseRollHeld, Status: factoryd.CaseAtHuman}}}
 			r.actProposes = level == policy.AutonomyAssisted
 			_, s := r.loggedIn(t)
-			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: level, wake: true, birth: "wake_ask"}
+			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: level, wake: true, birth: "case_climbed"}
 			_, err := r.c.doAnswerCase(t.Context(), a, "t-ask", 4, "", factoryd.AnswerReplanOnTop+":t-pl", nil, 0)
 			if level == policy.AutonomyAssisted {
 				if err != nil || len(*replans) != 0 || len(r.acted) != 1 || r.acted[0].Rung != 2 || r.acted[0].Res.Action != factoryd.AnswerReplanOnTop+":t-pl" {

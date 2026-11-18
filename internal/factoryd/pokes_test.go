@@ -537,6 +537,10 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// the flag's face follows rung 2's hand-up, which passes it through the door
+	if _, err := s.AppendCaseStep(ctx, CaseStep{CaseID: flag.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp}); err != nil {
+		t.Fatal(err)
+	}
 	record := func(kind string, detail map[string]any) {
 		t.Helper()
 		if _, err := s.Record(ctx, Event{Repository: "sf/code", TaskID: "t-1", IssueNumber: 603, Kind: kind, Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail}); err != nil {
@@ -608,6 +612,9 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 	for _, flag := range []string{"issue_open_after_end", "checkin_cut"} {
 		c, _, err := s.OpenCase(ctx, Case{TaskID: "t-1", Repository: "sf/code", Kind: CaseMonitorFlag, StateKey: flag + "|x", Problem: "Monitor flag: " + flag})
 		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp}); err != nil {
 			t.Fatal(err)
 		}
 		faced = append(faced, c.ID)

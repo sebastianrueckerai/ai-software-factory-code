@@ -1649,6 +1649,9 @@ func TestNoFaceOnACardThatCannotWaitForAHuman(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := g2.s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := g2.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'merged', finished_at = now() WHERE id = 't1'`); err != nil {
 		t.Fatal(err)
 	}

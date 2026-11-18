@@ -229,7 +229,7 @@ func TestChatMetOnACriteriaRerunNamesConfirmAndWaive(t *testing.T) {
 // doors.
 func TestChatAnswersCriteriaOnlyOnTheHumansLine(t *testing.T) {
 	for _, tc := range []struct{ birth, want string }{
-		{"wake_ask", "Refused: Settling a plan's criteria by word is the human's: take grant_criteria for one more bounded card, or hand the case up with attach_analysis and recommend answer_criteria (waive), deny_criteria or confirm_criteria."},
+		{"case_climbed", "Refused: Settling a plan's criteria by word is the human's: take grant_criteria for one more bounded card, or hand the case up with attach_analysis and recommend answer_criteria (waive), deny_criteria or confirm_criteria."},
 		{"wake_timer", "Refused: This turn runs on no line the human typed, so their word decides no criteria: give them choices with ask, or let them answer on the board's card, and answer_criteria runs on their word."},
 	} {
 		t.Run(tc.birth, func(t *testing.T) {
@@ -290,7 +290,7 @@ func TestChatRefusesTheWakeOverAnOlderHumanLine(t *testing.T) {
 		}
 	}
 	g.replies = [][]string{{call(1, "answer_criteria", `{"task_id":"t-plan","action":"waive","criterion":"c3","reason":"not mine to decide"}`)}, {say("I asked them.")}}
-	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "The criteria gap of #3 waits."); err != nil {
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "case_climbed", "The criteria gap of #3 waits."); err != nil {
 		t.Fatalf("StartWake: %v", err)
 	}
 	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 10)

@@ -17,18 +17,15 @@ import (
 // enums. All pure functions on CaseFacts; the conversation that asks and
 // the re-ask on a refusal are runRung's business.
 
-// caseKindNames are every case kind a case is opened as, in the order
-// cases.go declares them.
-var caseKindNames = []string{
-	string(CaseSessionCap), string(CaseAgentTimeCap), string(CaseBudgetFloor), string(CaseDayCap),
-	string(CaseMonthCap), string(CaseProjectCap), string(CaseCheckinHuman), string(CaseCheckinShare), string(CaseCheckinFailed),
-	string(CaseGateStop), string(CaseFindingsRepeated), string(CaseDependencyClosed), string(CaseDependencyFailed),
-	string(CaseWaitExpired), string(CasePodNeverStarted), string(CaseProviderRefused), string(CaseNoAnswer),
-	string(CaseContentFilter), string(CaseImageWait), string(CaseScreeningSuspect), string(CaseAgentEscalate),
-	string(CaseAgentRequestInfo), string(CasePlanQuestion), string(CasePlanConfirmation), string(CaseMergeApproval),
-	string(CaseHumanCard), string(CaseOther), string(CaseMonitorFlag), string(CaseJudgmentBudget),
-	string(CasePolicyClass), string(CaseRedMain), string(CaseRollHeld), string(CaseConfigRefused), string(CasePlanCriteria),
-}
+// caseKindNames are every case kind a case is opened as, in the kind
+// table's order.
+var caseKindNames = func() []string {
+	names := make([]string, len(caseKinds))
+	for i, row := range caseKinds {
+		names[i] = string(row.Kind)
+	}
+	return names
+}()
 
 // answerReasonKinds is the closed enum of an answer's reason_kind: every
 // case kind, then the check-in's reason constants, the shapes of a stop

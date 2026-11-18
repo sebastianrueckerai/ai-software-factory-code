@@ -42,7 +42,7 @@ func TestPostedTextIsSanitised(t *testing.T) {
 		fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}}
 		r, _, _ := newActivityRunner(t, prTask, fj)
 		linkPolicy(r)
-		if _, err := r.FaceStop(context.Background(), "t1", hostile, nil); err != nil {
+		if _, err := r.PgFaceStop(context.Background(), "t1", hostile, nil); err != nil {
 			t.Fatal(err)
 		}
 		if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "```\n"+hostileOut+"\n```") {

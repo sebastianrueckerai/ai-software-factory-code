@@ -454,8 +454,8 @@ func TestMonitorSweepOpensFlagsAndTheWakePassWakesDueCases(t *testing.T) {
 	g.card(t, "t3", 14, "running")
 	g.filed(t, "t3", 14)
 	const quiet = "Monitor flag: wait_over_bound(run_quiet since +0:00)"
-	faced, _, err := g.s.OpenCase(ctx, Case{TaskID: "t3", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag,
-		StateKey: "wait_over_bound|run_quiet|2026-11-04T08:00:00Z", Status: CaseAtHuman, Problem: quiet,
+	faced, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t3", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag,
+		StateKey: "wait_over_bound|run_quiet|2026-11-04T08:00:00Z", Problem: quiet,
 		Facts: map[string]any{"reason": quiet, "flag": "wait_over_bound", "wait": "run_quiet", "state": "run_quiet|2026-11-04T08:00:00Z"}})
 	if err != nil {
 		t.Fatal(err)
@@ -564,8 +564,8 @@ func TestMonitorRungZeroClosesTheIssueOfAnEndedCard(t *testing.T) {
 		status string
 	}{{"t1", 12, "closed"}, {"t2", 13, "done"}, {"t3", 14, "failed"}, {"t4", 15, "done"}} {
 		g.card(t, c.id, c.issue, c.status)
-		if _, _, err := g.s.OpenCase(ctx, Case{TaskID: c.id, Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
-			Status: CaseAtHuman, Problem: "Card used its sessions"}); err != nil {
+		if _, _, err := openAtHuman(ctx, g.s, Case{TaskID: c.id, Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
+			Problem: "Card used its sessions"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -624,8 +624,8 @@ func TestMonitorWithdrawsTheIssueCaseOnceTheIssueCloses(t *testing.T) {
 	g.rung1Off()
 	ctx := context.Background()
 	g.card(t, "t1", 13, "done")
-	if _, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
-		Status: CaseAtHuman, Problem: "Card used its sessions"}); err != nil {
+	if _, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
+		Problem: "Card used its sessions"}); err != nil {
 		t.Fatal(err)
 	}
 	g.forge.failClose = true
@@ -687,8 +687,8 @@ func TestMonitorSweepWithdrawsAnEndedCardsFlagCaseOnceItsIssueCloses(t *testing.
 		issue int64
 	}{{"t1", 13}, {"t2", 14}} {
 		g.card(t, c.id, c.issue, "done")
-		if _, _, err := g.s.OpenCase(ctx, Case{TaskID: c.id, Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
-			Status: CaseAtHuman, Problem: "Card used its sessions"}); err != nil {
+		if _, _, err := openAtHuman(ctx, g.s, Case{TaskID: c.id, Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
+			Problem: "Card used its sessions"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -778,7 +778,7 @@ func TestActKeepsTheNoteOfAHumansCloseOfAnEndedCard(t *testing.T) {
 	g.forge.closed[13] = true
 	note := "factoryd: sebastian answered with close.\n\n```\nnot worth it\n```"
 	for id, result := range map[string]string{"t1": "Closed #12.", "t2": "#13 was closed already."} {
-		c, _, err := g.s.OpenCase(ctx, Case{TaskID: id, Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap", Status: CaseAtHuman, Problem: "p"})
+		c, _, err := openAtHuman(ctx, g.s, Case{TaskID: id, Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap", Problem: "p"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -867,8 +867,8 @@ func TestActSignalsNoRunForAMonitorCase(t *testing.T) {
 	g := newMonitorRig(t)
 	ctx := context.Background()
 	g.queued(t, "t1", 12)
-	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: queuedKey,
-		Status: CaseAtHuman, Problem: queuedLine})
+	c, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: queuedKey,
+		Problem: queuedLine})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -911,15 +911,15 @@ func TestMonitorWithdrawsACaseWhoseFlagNoLongerHolds(t *testing.T) {
 	g.rung1Off()
 	ctx := context.Background()
 	g.queued(t, "t1", 12)
-	run, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseAgentEscalate, StateKey: "run",
-		Status: CaseAtHuman, Problem: "Which file?"})
+	run, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseAgentEscalate, StateKey: "run",
+		Problem: "Which file?"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	g.pass(t)
 	const cut = "Monitor flag: checkin_cut(+0:20)"
-	stale, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20",
-		Status: CaseAtHuman, Problem: cut, Facts: map[string]any{"reason": cut, "flag": "checkin_cut", "state": "+0:20"}})
+	stale, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20",
+		Problem: cut, Facts: map[string]any{"reason": cut, "flag": "checkin_cut", "state": "+0:20"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1062,12 +1062,12 @@ func TestNewestAskCaseLeavesAMonitorCaseOut(t *testing.T) {
 	for name, open := range monitorStores {
 		t.Run(name, func(t *testing.T) {
 			ctx, s := context.Background(), open(t)
-			run, _, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap", Status: CaseAtHuman, Problem: "p"})
+			run, _, err := openAtHuman(ctx, s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap", Problem: "p"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20",
-				Status: CaseAtHuman, Problem: "Monitor flag: checkin_cut(+0:20)"}); err != nil {
+			if _, _, err := openAtHuman(ctx, s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20",
+				Problem: "Monitor flag: checkin_cut(+0:20)"}); err != nil {
 				t.Fatal(err)
 			}
 			if got, err := s.NewestAskCase(ctx, "t1"); err != nil || got.ID != run.ID {
@@ -1217,8 +1217,8 @@ func TestACardWaitingOnAPlanAtTheHumanOpensOneCaseNamingThePlansAsk(t *testing.T
 		t.Fatal(err)
 	}
 	asked := monitorAt.Add(-51 * time.Hour)
-	if _, _, err := g.s.OpenCase(ctx, Case{TaskID: "p1", Repository: "demo-app/demo-app", Kind: CasePlanConfirmation, StateKey: "confirm:1",
-		Status: CaseAtHuman, Problem: "Confirm the plan?"}); err != nil {
+	if _, _, err := openAtHuman(ctx, g.s, Case{TaskID: "p1", Repository: "demo-app/demo-app", Kind: CasePlanConfirmation, StateKey: "confirm:1",
+		Problem: "Confirm the plan?"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE cases SET opened_at = $1 WHERE task_id = 'p1'`, asked); err != nil {

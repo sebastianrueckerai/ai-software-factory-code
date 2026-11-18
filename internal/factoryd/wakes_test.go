@@ -71,7 +71,7 @@ func newWakeRig(t *testing.T, projects map[string]policy.ProjectConfig) (*Waker,
 		t.Fatalf("OpenStore: %v", err)
 	}
 	t.Cleanup(func() { s.db.Close() })
-	for _, table := range []string{"events", "tasks", "chat_messages", "chat_conversations", "chat_watches", "chat_timers",
+	for _, table := range []string{"events", "tasks", "cases", "chat_messages", "chat_conversations", "chat_watches", "chat_timers",
 		"chat_wake_cursor", "chat_wake_state", "chat_intake", "roadmap_pull"} {
 		if _, err := s.db.ExecContext(t.Context(), `TRUNCATE `+table+` CASCADE`); err != nil {
 			t.Fatalf("truncate %s: %v", table, err)
@@ -96,26 +96,24 @@ func newWakeRig(t *testing.T, projects map[string]policy.ProjectConfig) (*Waker,
 	return w, s, starter, clock
 }
 
-// wakeAsk records one ask of task on repository, via chat when the agent
-// itself filed it, and returns the event's id.
-func wakeAsk(t *testing.T, s *PGStore, repository, task, ask, via string) int64 {
+// wakeClimb hands a case of task on repository with problem to rung 2 as
+// startRung2 does: the case open, rung 2's step in progress on it, and the
+// case_climbed row that names the case. It returns the row's id.
+func wakeClimb(t *testing.T, s *PGStore, repository, task, problem string) int64 {
 	t.Helper()
-	id, err := s.Record(t.Context(), Event{Repository: repository, TaskID: task, Kind: EventQuestionAsked, Via: via,
-		Detail: map[string]any{"ask": ask}})
+	ctx := t.Context()
+	c, _, err := s.OpenCase(ctx, Case{TaskID: task, Repository: repository, Kind: CaseOther, StateKey: problem, Problem: problem})
 	if err != nil {
-		t.Fatalf("record the ask: %v", err)
+		t.Fatalf("open the case: %v", err)
 	}
-	return id
-}
-
-// wakeAskComment records one ask of task on repository that filed the
-// issue comment id, and returns the event's id.
-func wakeAskComment(t *testing.T, s *PGStore, repository, task, ask string, comment int64, via string) int64 {
-	t.Helper()
-	id, err := s.Record(t.Context(), Event{Repository: repository, TaskID: task, Kind: EventQuestionAsked, Via: via,
-		Detail: map[string]any{"ask": ask, "comment": comment}})
+	due := time.Now().Add(time.Hour)
+	if _, err := s.StartRungStep(ctx, CaseStep{CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepInProgress, DueAt: &due}); err != nil {
+		t.Fatalf("start rung 2's step: %v", err)
+	}
+	id, err := s.Record(ctx, Event{Repository: repository, TaskID: task, Kind: EventCaseClimbed, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"case_id": c.ID, "rung": 2, "kind": string(CaseOther), "problem": problem}})
 	if err != nil {
-		t.Fatalf("record the ask: %v", err)
+		t.Fatalf("record the climb: %v", err)
 	}
 	return id
 }
@@ -153,16 +151,17 @@ func wakeStateKeys(t *testing.T, s *PGStore, repository string) []string {
 	return keys
 }
 
-// wakeAskMarked says a mark of task's ask sits in the keys.
-func wakeAskMarked(keys []string, task string) bool {
-	return slices.ContainsFunc(keys, func(k string) bool { return strings.HasPrefix(k, "ask:"+task+":") })
+// caseMarks counts the marks of cases among the keys.
+func caseMarks(keys []string) int {
+	return len(slices.DeleteFunc(slices.Clone(keys), func(k string) bool { return !strings.HasPrefix(k, "case:") }))
 }
 
-// An ask the agent did not file wakes one turn on the venue member's
-// inbox, its birth kind wake_ask, and the cursor moves past the event.
-func TestWakerWakesOnAskAtAutonomous(t *testing.T) {
+// A case handed to rung 2 wakes one turn on the venue member's inbox, its
+// birth kind case_climbed and the case named, and the cursor moves past the
+// event.
+func TestWakerWakesOnAClimbedCase(t *testing.T) {
 	w, s, starter, _ := newWakeRig(t, nil)
-	id := wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
+	id := wakeClimb(t, s, "sf/wake", "t-1", "Raise the month cap?")
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
@@ -175,9 +174,9 @@ func TestWakerWakesOnAskAtAutonomous(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := calls[0]
-	if c.project != "wake-proj" || c.login != "sebastian" || c.conversation != conv || c.birth != "wake_ask" ||
-		!strings.Contains(c.text, "Raise the month cap?") {
-		t.Fatalf("the wake = %+v, want wake-proj sebastian on %d about the ask", c, conv)
+	if c.project != "wake-proj" || c.login != "sebastian" || c.conversation != conv || c.birth != EventCaseClimbed ||
+		!strings.Contains(c.text, "Raise the month cap?") || len(c.cases) != 1 {
+		t.Fatalf("the wake = %+v, want wake-proj sebastian on %d about the one case", c, conv)
 	}
 	if got := wakeCursorOf(t, s, "sf/wake"); got < id {
 		t.Fatalf("the cursor %d stayed behind the event %d", got, id)
@@ -188,58 +187,46 @@ func TestWakerWakesOnAskAtAutonomous(t *testing.T) {
 // autonomous and above alone.
 var judgesAtAutonomous = &policy.Escalation{Judgment: policy.JudgmentAutonomousAndAbove}
 
-// An ask the chat agent itself filed wakes nobody, and a project whose rungs
-// do not judge at its level wakes nobody however the ask was filed.
-func TestWakerIgnoresChatFiledAsksAndProjectsThatDoNotJudge(t *testing.T) {
+// A climbed case wakes the agent at every level, where below autonomous
+// rung 2's answer is a proposal: a manual and an assisted project whose
+// rungs judge at autonomous and above are woken too.
+func TestWakerWakesAClimbedCaseAtEveryLevel(t *testing.T) {
 	w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
 		"auto":     {Repository: "sf/auto", Autonomy: policy.AutonomyAutonomous, Notify: []string{"sebastian"}},
 		"assisted": {Repository: "sf/assisted", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}, Escalation: judgesAtAutonomous},
 		"manual":   {Repository: "sf/manual", Autonomy: policy.AutonomyManual, Notify: []string{"sebastian"}, Escalation: judgesAtAutonomous},
 	})
-	idAuto := wakeAsk(t, s, "sf/auto", "t-1", "Raise the month cap?", ViaChat)
-	idAssisted := wakeAsk(t, s, "sf/assisted", "t-2", "Fund the build?", ViaFactoryd)
-	idManual := wakeAsk(t, s, "sf/manual", "t-3", "Merge the branch?", ViaFactoryd)
+	for _, repo := range []string{"sf/auto", "sf/assisted", "sf/manual"} {
+		wakeClimb(t, s, repo, "t-"+repo, "Merge the branch?")
+	}
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
-	if calls := starter.recorded(); len(calls) != 0 {
-		t.Fatalf("%d wakes, want 0: %+v", len(calls), calls)
-	}
-	for repo, id := range map[string]int64{"sf/auto": idAuto, "sf/assisted": idAssisted, "sf/manual": idManual} {
-		if got := wakeCursorOf(t, s, repo); got < id {
-			t.Fatalf("%s's cursor %d stayed behind its event %d", repo, got, id)
+	var projects []string
+	for _, c := range starter.recorded() {
+		if c.birth != EventCaseClimbed {
+			t.Fatalf("a wake = %+v, want case_climbed", c)
 		}
+		projects = append(projects, c.project)
+	}
+	if slices.Sort(projects); !slices.Equal(projects, []string{"assisted", "auto", "manual"}) {
+		t.Fatalf("woken projects %v, want all three", projects)
 	}
 }
 
-// Under judgment always an ask wakes the agent at every level, a manual
-// project's included.
-func TestWakerWakesAtEveryLevelUnderJudgmentAlways(t *testing.T) {
-	w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
-		"manual": {Repository: "sf/manual", Autonomy: policy.AutonomyManual, Notify: []string{"sebastian"}},
-	})
-	wakeAsk(t, s, "sf/manual", "t-3", "Merge the branch?", ViaFactoryd)
-	if err := drainPass(t, w); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	if calls := starter.recorded(); len(calls) != 1 || calls[0].birth != "wake_ask" {
-		t.Fatalf("the wakes are %+v, want one wake_ask", calls)
-	}
-}
-
-// Several asks of one batch ride one wake whose text names them all, and
-// every ask carries its mark.
-func TestWakerBatchesAsks(t *testing.T) {
+// Several cases of one batch ride one wake whose text names them all, and
+// every case carries its mark.
+func TestWakerBatchesCases(t *testing.T) {
 	w, s, starter, _ := newWakeRig(t, nil)
-	wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
-	wakeAsk(t, s, "sf/wake", "t-2", "Fund the build?", ViaFactoryd)
-	wakeAsk(t, s, "sf/wake", "t-3", "Merge the branch?", ViaFactoryd)
+	wakeClimb(t, s, "sf/wake", "t-1", "Raise the month cap?")
+	wakeClimb(t, s, "sf/wake", "t-2", "Fund the build?")
+	wakeClimb(t, s, "sf/wake", "t-3", "Merge the branch?")
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	calls := starter.recorded()
-	if len(calls) != 1 {
-		t.Fatalf("%d wakes, want 1: %+v", len(calls), calls)
+	if len(calls) != 1 || len(calls[0].cases) != 3 {
+		t.Fatalf("wakes %+v, want 1 naming three cases", calls)
 	}
 	text := calls[0].text
 	for _, want := range []string{"Raise the month cap?", "Fund the build?", "Merge the branch?", "t-1", "t-2", "t-3"} {
@@ -247,64 +234,29 @@ func TestWakerBatchesAsks(t *testing.T) {
 			t.Fatalf("the wake text %q misses %q", text, want)
 		}
 	}
-	keys := wakeStateKeys(t, s, "sf/wake")
-	for _, task := range []string{"t-1", "t-2", "t-3"} {
-		if !wakeAskMarked(keys, task) {
-			t.Fatalf("no ask mark for %s among %v", task, keys)
-		}
+	if keys := wakeStateKeys(t, s, "sf/wake"); caseMarks(keys) != 3 {
+		t.Fatalf("the marks are %v, want one for each of the three cases", keys)
 	}
 }
 
-// An ask that carries no comment of its own falls back to its sentence:
-// the same text of the same card again wakes no second time.
-func TestWakerNoSecondAttemptOnRepeatedAsk(t *testing.T) {
-	w, s, starter, _ := newWakeRig(t, nil)
-	wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
-	if err := drainPass(t, w); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
-	if err := drainPass(t, w); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	if calls := starter.recorded(); len(calls) != 1 {
-		t.Fatalf("%d wakes, want 1: %+v", len(calls), calls)
-	}
-}
-
-// A new ask that repeats a sentence wakes again: the mark keys the ask's
-// own comment, so two asks of one sentence are two asks.
-func TestWakerANewAskThatRepeatsASentenceWakesAgain(t *testing.T) {
+// The same case climbed again, its mark standing, wakes no second time:
+// a reprocessed batch wakes once.
+func TestWakerTheSameCaseWakesOnce(t *testing.T) {
 	w, s, starter, clock := newWakeRig(t, nil)
-	wakeAskComment(t, s, "sf/wake", "t-1", "Raise the month cap?", 27247, ViaFactoryd)
+	wakeClimb(t, s, "sf/wake", "t-1", "Raise the month cap?")
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
-	wakeAskComment(t, s, "sf/wake", "t-1", "Raise the month cap?", 27258, ViaFactoryd)
-	*clock = clock.Add(11 * time.Second)
-	if err := drainPass(t, w); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	if calls := starter.recorded(); len(calls) != 2 {
-		t.Fatalf("%d wakes, want 2: %+v", len(calls), calls)
-	}
-}
-
-// The same ask again, the same comment however it reappears, is the one
-// the mark holds: no second wake.
-func TestWakerTheSameAskWakesOnce(t *testing.T) {
-	w, s, starter, clock := newWakeRig(t, nil)
-	wakeAskComment(t, s, "sf/wake", "t-1", "Raise the month cap?", 27247, ViaFactoryd)
-	if err := drainPass(t, w); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	wakeAskComment(t, s, "sf/wake", "t-1", "Raise the month cap?", 27247, ViaFactoryd)
+	again := wakeClimb(t, s, "sf/wake", "t-1", "Raise the month cap?")
 	*clock = clock.Add(11 * time.Second)
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	if calls := starter.recorded(); len(calls) != 1 {
 		t.Fatalf("%d wakes, want 1: %+v", len(calls), calls)
+	}
+	if got := wakeCursorOf(t, s, "sf/wake"); got < again {
+		t.Fatalf("the cursor %d stayed behind the second climb %d", got, again)
 	}
 }
 
@@ -323,8 +275,8 @@ func wakeApproval(t *testing.T, s *PGStore, repository, task string, issue int64
 // No approval row wakes: at full auto, where a merge's would be the
 // agent's to decide, a merge's, a plan's, a criteria gap's and a criteria
 // rerun's rows start no turn and leave no mark, for a merge's and a
-// criteria request's case climbs to rung 2 on its own; an ask after them
-// wakes alone, and its pass moves the cursor past them all.
+// criteria request's case climbs to rung 2 on its own; a climbed case after
+// them wakes alone, and its pass moves the cursor past them all.
 func TestWakeApprovalRowsWakeNobody(t *testing.T) {
 	w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
 		"wake-proj": {Repository: "sf/wake", Autonomy: policy.AutonomyAutonomous, MergeRule: policy.MergeAuto,
@@ -343,16 +295,16 @@ func TestWakeApprovalRowsWakeNobody(t *testing.T) {
 	if keys := wakeStateKeys(t, s, "sf/wake"); len(keys) != 0 {
 		t.Fatalf("the marks are %v, want none", keys)
 	}
-	last := wakeAsk(t, s, "sf/wake", "t-1", "Use a replica?", ViaFactoryd)
+	last := wakeClimb(t, s, "sf/wake", "t-1", "Use a replica?")
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
-	want := "Wake: 1 ask waits for a human.\nt-1: Use a replica?"
+	want := "Wake: 1 case waits for the factory agent.\nt-1: Use a replica?"
 	if calls := starter.recorded(); len(calls) != 1 || calls[0].text != want {
 		t.Fatalf("the wakes are %+v, want one with text %q", calls, want)
 	}
 	if got := wakeCursorOf(t, s, "sf/wake"); got < last {
-		t.Fatalf("the cursor %d stayed behind the ask %d", got, last)
+		t.Fatalf("the cursor %d stayed behind the climb %d", got, last)
 	}
 }
 
@@ -438,12 +390,12 @@ func TestWakerPassesWhileAWakeTurnRuns(t *testing.T) {
 // cursor waits; eleven seconds later it starts.
 func TestWakerTurnRateCaps(t *testing.T) {
 	w, s, starter, clock := newWakeRig(t, nil)
-	wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
+	wakeClimb(t, s, "sf/wake", "t-1", "Raise the month cap?")
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	capped := wakeCursorOf(t, s, "sf/wake")
-	id := wakeAsk(t, s, "sf/wake", "t-2", "Fund the build?", ViaFactoryd)
+	id := wakeClimb(t, s, "sf/wake", "t-2", "Fund the build?")
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
@@ -469,15 +421,15 @@ func TestWakerTurnRateCaps(t *testing.T) {
 // A wake the console refuses because the chat stands at its budget
 // (ErrChatUnfunded) is held as a refused one, whatever woke it: no card is
 // filed, the cooldown is marked, and the cause stays (the cursor behind
-// the ask or the move, the timer's row), so once the chat is funded the
+// the climb or the move, the timer's row), so once the chat is funded the
 // pass after the cooldown wakes the same turn.
 func TestWakerHoldsWhatAStoppedChatRefuses(t *testing.T) {
 	for _, tc := range []struct {
 		name, birth, text string
 		cause             func(t *testing.T, s *PGStore, at time.Time) int64
 	}{
-		{"an ask", "wake_ask", "Use a replica?", func(t *testing.T, s *PGStore, _ time.Time) int64 {
-			return wakeAsk(t, s, "sf/wake", "t-1", "Use a replica?", ViaFactoryd)
+		{"a climbed case", EventCaseClimbed, "Use a replica?", func(t *testing.T, s *PGStore, _ time.Time) int64 {
+			return wakeClimb(t, s, "sf/wake", "t-1", "Use a replica?")
 		}},
 		{"a watched card", "wake_card", "The watched card t-1 moved", func(t *testing.T, s *PGStore, _ time.Time) int64 {
 			conv, err := s.NewConversation(t.Context(), "sf/wake", "sebastian")
@@ -543,24 +495,17 @@ func TestWakerHoldsWhatAStoppedChatRefuses(t *testing.T) {
 	}
 }
 
-// A factory ask wakes the agent, the roll ladder's face for the analysis
-// it attaches; a month cap's or a chat budget's ask wakes nobody, since each refuses
-// the agent's own calls, nor does an ask the factory answered as it asked it
-// (an identical plan re-file's confirmation), nor a plan's question, the
-// planner's row or its face's, nor factoryd's own human card's held ask,
-// whose case climbs to rung 2 on its own wake, and the cursor moves past
-// them.
-func TestWakerWakesOnFactoryAsksButNotTheMonthCap(t *testing.T) {
+// No ask wakes the agent, the Waker reads none: a factory card's ask, a
+// month cap's or a chat budget's, one the factory answered as it asked it,
+// a plan's question, the planner's row or its face's, factoryd's own human
+// card's held ask and its face, for each case climbs to rung 2 on its own
+// case_climbed or reaches the human with no rung able to run. The cursor
+// stays where the Waker's own rows leave it.
+func TestWakerWakesOnNoAsk(t *testing.T) {
 	w, s, starter, _ := newWakeRig(t, nil)
-	ask := func(task string, detail map[string]any) int64 {
-		t.Helper()
-		id, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: task, Kind: EventQuestionAsked, Via: ViaFactoryd, Detail: detail})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return id
-	}
+	before := wakeCursorOf(t, s, "sf/wake")
 	for _, detail := range []map[string]any{
+		{"ask": "3 rolls failed since the last one merged. Retry the roll?", "source": SourceRollFailed},
 		{"ask": "The month cap is reached. Raise it?", "source": SourceMonthCap},
 		{"ask": "The judgment budget of 50.00 EUR for 2026-11 is spent: raise it?", "source": SourceChatBudget},
 		{"question": "Confirmation of the spec and the criteria of plan revision 6", "revision": 6, "index": 1, "kind": QuestionConfirmation,
@@ -568,21 +513,17 @@ func TestWakerWakesOnFactoryAsksButNotTheMonthCap(t *testing.T) {
 		{"question": "Which database?", "revision": 6, "index": 2, "choices": []string{"Postgres", "SQLite"}},
 		{"question": "Which queue?", "revision": 6, "index": 3, "case_id": 31, "case_kind": string(CasePlanQuestion), "comment": 501},
 		{"ask": "3 rolls failed since the last one merged. Retry the roll?", "source": SourceRollFailed, "held": true},
+		{"ask": "Use a replica?", "comment": 27247},
 	} {
-		id := ask("t-cap", detail)
+		if _, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: "t-ask", Kind: EventQuestionAsked, Via: ViaFactoryd, Detail: detail}); err != nil {
+			t.Fatal(err)
+		}
 		if err := drainPass(t, w); err != nil {
 			t.Fatalf("Pass: %v", err)
 		}
-		if calls := starter.recorded(); len(calls) != 0 || wakeCursorOf(t, s, "sf/wake") < id {
-			t.Fatalf("%v: wakes %+v, cursor %d; want none and the cursor past %d", detail, calls, wakeCursorOf(t, s, "sf/wake"), id)
+		if calls := starter.recorded(); len(calls) != 0 || wakeCursorOf(t, s, "sf/wake") != before {
+			t.Fatalf("%v: wakes %+v, cursor %d; want none and the cursor at %d", detail, calls, wakeCursorOf(t, s, "sf/wake"), before)
 		}
-	}
-	ask("t-roll", map[string]any{"ask": "3 rolls failed since the last one merged. Retry the roll?", "source": SourceRollFailed})
-	if err := drainPass(t, w); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	if calls := starter.recorded(); len(calls) != 1 || !strings.Contains(calls[0].text, "rolls failed since the last one merged") {
-		t.Fatalf("wakes %+v, want one on the roll's ask", calls)
 	}
 }
 
@@ -592,7 +533,7 @@ func TestWakerWakesOnFactoryAsksButNotTheMonthCap(t *testing.T) {
 func TestWakerFailedTurnRetriesColdly(t *testing.T) {
 	w, s, starter, clock := newWakeRig(t, nil)
 	starter.err = errors.New("the wake did not run")
-	id := wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
+	id := wakeClimb(t, s, "sf/wake", "t-1", "Raise the month cap?")
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
@@ -625,19 +566,15 @@ func TestWakerFailedTurnRetriesColdly(t *testing.T) {
 	}
 }
 
-// The wake text lists each ask with its card ref and reads the ask the event
-// carries (the question key the real askers write); no rule of the old
-// prose follows it.
-func TestWakeAskTextNamesCards(t *testing.T) {
+// The wake text lists each case with its card ref and reads the problem
+// its climb carries; no rule of the old prose follows it.
+func TestWakeTextNamesCards(t *testing.T) {
 	w, s, starter, _ := newWakeRig(t, nil)
 	if err := s.CreateTask(t.Context(), Task{ID: "t-1", Kind: "agent", Status: "waiting-human",
 		Repository: "sf/wake", IssueNumber: 40, Objective: "Use a replica?", Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: "t-1", IssueNumber: 40,
-		Kind: EventQuestionAsked, Via: ViaFactoryd, Detail: map[string]any{"question": "Use a replica?"}}); err != nil {
-		t.Fatal(err)
-	}
+	wakeClimb(t, s, "sf/wake", "t-1", "Use a replica?")
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
@@ -647,47 +584,41 @@ func TestWakeAskTextNamesCards(t *testing.T) {
 	}
 	text := calls[0].text
 	for _, want := range []string{
-		"Wake: 1 ask waits for a human.",
+		"Wake: 1 case waits for the factory agent.",
 		"#40: Use a replica?",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("the wake text %q misses %q", text, want)
 		}
 	}
-	for _, gone := range []string{"Settle what", "Read each card", "already answered"} {
+	for _, gone := range []string{"Settle what", "Read each card", "already answered", "a human"} {
 		if strings.Contains(text, gone) {
 			t.Fatalf("the wake text %q still holds %q", text, gone)
 		}
 	}
 }
 
-// The wake line counts asks in the singular and the plural: one ask
-// waits, two asks wait.
-func TestWakeAskTextCountsAsks(t *testing.T) {
+// The wake line counts cases in the singular and the plural: one case
+// waits, two cases wait.
+func TestWakeTextCountsCases(t *testing.T) {
 	w, s, starter, clock := newWakeRig(t, nil)
-	wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
+	wakeClimb(t, s, "sf/wake", "t-1", "Raise the month cap?")
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
-	for _, batch := range [][]func(){
-		{func() { wakeAsk(t, s, "sf/wake", "t-2", "Fund the build?", ViaFactoryd) },
-			func() { wakeAsk(t, s, "sf/wake", "t-3", "Merge the branch?", ViaFactoryd) }},
-	} {
-		for _, record := range batch {
-			record()
-		}
-		*clock = clock.Add(11 * time.Second)
-		if err := drainPass(t, w); err != nil {
-			t.Fatalf("Pass: %v", err)
-		}
+	wakeClimb(t, s, "sf/wake", "t-2", "Fund the build?")
+	wakeClimb(t, s, "sf/wake", "t-3", "Merge the branch?")
+	*clock = clock.Add(11 * time.Second)
+	if err := drainPass(t, w); err != nil {
+		t.Fatalf("Pass: %v", err)
 	}
 	calls := starter.recorded()
 	if len(calls) != 2 {
 		t.Fatalf("%d wakes, want 2: %+v", len(calls), calls)
 	}
 	for i, want := range []string{
-		"Wake: 1 ask waits for a human.",
-		"Wake: 2 asks wait for a human.",
+		"Wake: 1 case waits for the factory agent.",
+		"Wake: 2 cases wait for the factory agent.",
 	} {
 		if !strings.HasPrefix(calls[i].text, want) {
 			t.Fatalf("wake %d's text %q does not open %q", i, calls[i].text, want)
@@ -699,11 +630,11 @@ func TestWakeAskTextCountsAsks(t *testing.T) {
 // one Waker handled stays handled, and what it left blocked still starts.
 func TestWakerMarksSurviveRestart(t *testing.T) {
 	w1, s, starter1, clock := newWakeRig(t, nil)
-	wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
+	wakeClimb(t, s, "sf/wake", "t-1", "Raise the month cap?")
 	if err := drainPass(t, w1); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
-	wakeAsk(t, s, "sf/wake", "t-2", "Fund the build?", ViaFactoryd)
+	wakeClimb(t, s, "sf/wake", "t-2", "Fund the build?")
 	if err := drainPass(t, w1); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
@@ -721,13 +652,13 @@ func TestWakerMarksSurviveRestart(t *testing.T) {
 	calls := starter2.recorded()
 	if len(calls) != 1 || !strings.Contains(calls[0].text, "Fund the build?") ||
 		strings.Contains(calls[0].text, "Raise the month cap?") {
-		t.Fatalf("the restart's wake = %+v, want only the blocked ask", calls)
+		t.Fatalf("the restart's wake = %+v, want only the blocked case", calls)
 	}
 }
 
 // A wake whose venue is gone is not a failure to retry: the watch row
-// goes with the thread, the cursor moves past the move, and a later ask
-// on the same project still wakes.
+// goes with the thread, the cursor moves past the move, and a later
+// climbed case on the same project still wakes.
 func TestVenueGoneDropsItsWatch(t *testing.T) {
 	w, s, starter, _ := newWakeRig(t, nil)
 	conv, err := s.NewConversation(t.Context(), "sf/wake", "sebastian")
@@ -747,13 +678,13 @@ func TestVenueGoneDropsItsWatch(t *testing.T) {
 	} else if len(ws) != 0 {
 		t.Fatalf("the watch outlived its venue: %+v", ws)
 	}
-	wakeAsk(t, s, "sf/wake", "t-1", "Where does the cache live?", "member")
+	wakeClimb(t, s, "sf/wake", "t-1", "Where does the cache live?")
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("second Pass returned %v, want nil", err)
 	}
 	calls := starter.recorded()
-	if len(calls) != 2 || calls[1].birth != "wake_ask" {
-		t.Fatalf("the wakes are %+v, want the refused card wake then wake_ask", calls)
+	if len(calls) != 2 || calls[1].birth != EventCaseClimbed {
+		t.Fatalf("the wakes are %+v, want the refused card wake then case_climbed", calls)
 	}
 }
 

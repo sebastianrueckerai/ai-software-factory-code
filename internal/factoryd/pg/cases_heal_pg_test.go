@@ -49,8 +49,7 @@ func TestReconcileCasesWithdrawsTheCasesOfEndedCards(t *testing.T) {
 	for _, status := range []string{"done", "failed", "closed"} {
 		t.Run(status, func(t *testing.T) {
 			s := cardCaseStore(t, "cases_heal")
-			askCap(t, s, 27001)
-			c := onlyOpenCase(t, s)
+			c := facedCap(t, s, 27001)
 			setCaseTaskStatus(t, s, status)
 
 			reconcile(t, s, CaseHealReport{Withdrawn: 1})
@@ -66,10 +65,9 @@ func TestReconcileCasesWithdrawsTheCasesOfEndedCards(t *testing.T) {
 // withdraws it.
 func TestReconcileCasesLeavesAnEndedCardsMonitorCase(t *testing.T) {
 	s := cardCaseStore(t, "cases_heal")
-	askCap(t, s, 27001)
-	own := onlyOpenCase(t, s)
-	flag, _, err := s.OpenCase(context.Background(), Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: "issue_open_after_end|x",
-		Status: CaseAtHuman, Problem: "Monitor flag: issue_open_after_end"})
+	own := facedCap(t, s, 27001)
+	flag, _, err := openAtHuman(context.Background(), s, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: "issue_open_after_end|x",
+		Problem: "Monitor flag: issue_open_after_end"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +88,7 @@ func TestReconcileCasesLeavesAPlansWaitOnItsFailedCard(t *testing.T) {
 	setCaseTaskStatus(t, s, "done")
 	open := func(id string) Case {
 		t.Helper()
-		c, _, err := s.OpenCase(ctx, Case{TaskID: id, Repository: "sf/r", Kind: CaseDependencyFailed, StateKey: "t-a", Status: CaseAtHuman,
+		c, _, err := openAtHuman(ctx, s, Case{TaskID: id, Repository: "sf/r", Kind: CaseDependencyFailed, StateKey: "t-a",
 			Problem: "A dependency failed: #5"})
 		if err != nil {
 			t.Fatal(err)
@@ -264,8 +262,7 @@ func TestReconcileCasesKeepsThePlanCaseOfACardWithNoRevision(t *testing.T) {
 func TestReconcileCasesWithdrawsTheAsksOfACardThatMovedOn(t *testing.T) {
 	ctx := context.Background()
 	s := cardCaseStore(t, "cases_heal")
-	askCap(t, s, 27001)
-	capCase := onlyOpenCase(t, s)
+	capCase := facedCap(t, s, 27001)
 	askPlan(t, s, "Which database?", 1, "")
 	openMerge(t, s, "abc1479")
 	setCaseTaskStatus(t, s, "running")

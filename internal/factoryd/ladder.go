@@ -90,23 +90,23 @@ type resolver struct {
 	Hold func(ctx context.Context, r *Runner, c Case) (held bool, err error)
 }
 
-// headKinds are the stops keyed on the card's head, whose way on rung 0
-// may find in the facts: the caps, the floor, the check-in's spend stops and a
-// gate stop.
+// headKinds are the stops keyed on the card's head: the caps, the floor, the
+// check-in's spend stops and a gate stop.
 var headKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloor, CaseCheckinShare, CaseCheckinFailed, CaseGateStop}
 
-// rung0 is rung 0's table, in the order its rows are tried. Act carries a
-// row's resolution out on rung 0: it checks the action table again, runs
-// what lives outside the run and records the step.
+// rung0 is rung 0's table, in the order its rows are tried on a case whose
+// kind names them (caseKinds). Act carries a row's resolution out on rung
+// 0: it checks the action table again, runs what lives outside the run and
+// records the step.
 var rung0 = []resolver{
 	// an open pull request whose head is green and approved goes to the
 	// approval again: no session is asked for
 	{Name: "route_approval", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
-		return rungZeroTakes(c, f, append(slices.Clone(headKinds), CasePolicyClass), Resolution{Action: ActRouteApproval}), nil
+		return rungZeroTakes(f, Resolution{Action: ActRouteApproval}), nil
 	}},
 	// a red head's checks run again, once per head (RerunOnHead)
 	{Name: "rerun_checks", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
-		return rungZeroTakes(c, f, headKinds, Resolution{Action: ActRerunChecks}), nil
+		return rungZeroTakes(f, Resolution{Action: ActRerunChecks}), nil
 	}},
 	// a checks wait's stop with every check green: the wait runs again,
 	// once per head (WaitedOnHead)
@@ -114,7 +114,7 @@ var rung0 = []resolver{
 		if f.Checks != "green" {
 			return nil, nil
 		}
-		return rungZeroTakes(c, f, []CaseKind{CaseGateStop}, Resolution{Action: ActWaitChecks}), nil
+		return rungZeroTakes(f, Resolution{Action: ActWaitChecks}), nil
 	}},
 	// a day's, a month's or a project's cap: the run's own wait (capWait)
 	// ends it when the cap turns, and the case waits on the human until then
@@ -126,7 +126,7 @@ var rung0 = []resolver{
 		if f.Plan != "" || d == nil || d.RetryOf != "" {
 			return nil, nil
 		}
-		return rungZeroTakes(c, f, []CaseKind{CaseDependencyFailed}, Resolution{Action: ActRetry, Args: map[string]any{"task_id": d.TaskID}}), nil
+		return rungZeroTakes(f, Resolution{Action: ActRetry, Args: map[string]any{"task_id": d.TaskID}}), nil
 	}},
 	// inside a plan, the failed dependency's work goes to the plan's planner
 	{Name: "impasse", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
@@ -134,22 +134,22 @@ var rung0 = []resolver{
 		if f.Plan == "" || d == nil {
 			return nil, nil
 		}
-		return rungZeroTakes(c, f, []CaseKind{CaseDependencyFailed}, Resolution{Action: ActReplan, Args: map[string]any{"task_id": d.TaskID}}), nil
+		return rungZeroTakes(f, Resolution{Action: ActReplan, Args: map[string]any{"task_id": d.TaskID}}), nil
 	}},
 	// the monitor's issue_open_after_end, which the monitor raises only
 	// where Finish closes the issue: rung 0 closes it on the ended card, as
 	// the heal closes it
 	{Name: "close_ended", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
-		if c.Kind != CaseMonitorFlag || c.Facts["flag"] != "issue_open_after_end" || f.Final == "" {
+		if c.Facts["flag"] != "issue_open_after_end" || f.Final == "" {
 			return nil, nil
 		}
-		return rungZeroTakes(c, f, []CaseKind{CaseMonitorFlag}, Resolution{Action: ActClose}), nil
+		return rungZeroTakes(f, Resolution{Action: ActClose}), nil
 	}},
 	// the monitor's wait_over_bound on a rung that did not answer: the
 	// card's steps past their bound end as ExpireSteps ends one, and that
 	// ends the case, with no face: the steps' hand-up is the record
 	{Name: "expire_step", Fire: func(ctx context.Context, r *Runner, c Case, _ CaseFacts) (*Resolution, error) {
-		if c.Kind != CaseMonitorFlag || c.Facts["flag"] != "wait_over_bound" || c.Facts["wait"] != "rung_answer" {
+		if c.Facts["flag"] != "wait_over_bound" || c.Facts["wait"] != "rung_answer" {
 			return nil, nil
 		}
 		ended, err := r.expireCardSteps(ctx, c.TaskID)
@@ -165,9 +165,6 @@ var rung0 = []resolver{
 	// a plan's criteria case whose gate last judged another head than
 	// main's: the gate runs once more on main, and the case waits for it
 	{Name: "rerun_criteria_gate", Hold: func(ctx context.Context, r *Runner, c Case) (bool, error) {
-		if c.Kind != CasePlanCriteria {
-			return false, nil
-		}
 		return r.rerunCriteriaGate(ctx, c)
 	}},
 }
@@ -215,15 +212,18 @@ func (r *Runner) expireCardSteps(ctx context.Context, taskID string) ([]string, 
 	return ended, r.ClimbExpired(ctx, expired)
 }
 
-// rungZeroTakes is res when case c is of kinds and the action table lets
-// rung 0 take res on facts f, else nil.
-func rungZeroTakes(c Case, f CaseFacts, kinds []CaseKind, res Resolution) *Resolution {
+// rungZeroTakes is res when the action table lets rung 0 take res on facts
+// f, else nil.
+func rungZeroTakes(f CaseFacts, res Resolution) *Resolution {
 	a, ok := ActionByName(res.Action)
-	if !ok || !slices.Contains(kinds, c.Kind) || a.refusal(f, 0, res) != "" {
+	if !ok || a.refusal(f, 0, res) != "" {
 		return nil
 	}
 	return &res
 }
+
+// tries says row is tried on case c: the kind table names it for c's kind.
+func (row resolver) tries(c Case) bool { return slices.Contains(kindRow(c.Kind).Rung0, row.Name) }
 
 // caseDep is the dependency a case of a dependency kind is about, the one
 // its state key names, and nil for any other case.
@@ -368,7 +368,7 @@ func (r *Runner) Climb(ctx context.Context, t Task, c Case, f CaseFacts, from in
 				}
 			}
 		}
-		if c.Kind == CaseCheckinHuman || c.Kind == CasePolicyClass {
+		if kindRow(c.Kind).NoRung1 == checkinJudged {
 			if err := r.momentStep(ctx, c); err != nil {
 				return TripOutcome{}, err
 			}
@@ -449,7 +449,7 @@ func (r *Runner) unreadJudgment(ctx context.Context, t Task, c Case, steps []Cas
 // on its problem, in a step of rung 0 that found found, and, through the
 // hand-up, on its face's ask.
 func (r *Runner) notJudged(ctx context.Context, c Case, steps []CaseStep, mark, found string) (*HandUp, error) {
-	if err := r.store.AppendCaseProblem(ctx, c.ID, " ("+mark+")"); err != nil {
+	if err := r.store.AppendCaseProblem(ctx, c.ID, notJudgedSuffix(mark)); err != nil {
 		return nil, err
 	}
 	return &HandUp{Found: found, Mark: mark}, r.stepOnce(ctx, c, steps, mark, found)
@@ -588,6 +588,9 @@ const (
 	markProviderRefused = "not judged: the model provider refused"
 )
 
+// notJudgedSuffix is what notJudged appends to a case's problem for mark.
+func notJudgedSuffix(mark string) string { return " (" + mark + ")" }
+
 // FacedTries and facedBackoff bound the retries of a case_faced signal.
 const FacedTries = 4
 
@@ -619,39 +622,26 @@ func (r *Runner) signalFaced(ctx context.Context, taskID string, c Case, comment
 	}
 }
 
-// ChoiceKind reports whether a case of kind k is answered with a value of its question's choices.
-func ChoiceKind(k CaseKind) bool { return slices.Contains(choiceKinds, k) }
+// ChoiceKind reports whether a case of kind k is answered with a value of
+// its question's choices: the kind table's choice column.
+func ChoiceKind(k CaseKind) bool { return kindRow(k).Choices }
 
-// ChoiceCase says case c of a card of kind cardKind is answered by one of its
-// question's choices: a human card's kinds, and any case a human card asks,
-// the month cap's among them, which keeps its own kind.
-func ChoiceCase(c Case, cardKind string) bool {
-	return ChoiceKind(c.Kind) || cardKind == "human" && c.Kind == CaseMonthCap
-}
-
-// choiceKinds are the cases of a human card, which its question's choices
-// answer.
-var choiceKinds = []CaseKind{CaseHumanCard, CaseJudgmentBudget, CaseRedMain, CaseRollHeld, CaseConfigRefused}
-
-// boardKinds are the cases about the board, not one card's work: they skip
-// rung 1 and go to rung 2.
-var boardKinds = []CaseKind{CaseDependencyClosed, CaseDependencyFailed, CaseRedMain, CaseRollHeld, CaseConfigRefused}
-
-// boardFlags are the monitor flags that are board-level too.
+// boardFlags are the monitor flags about the board, not one card's work:
+// they skip rung 1 and go to rung 2.
 var boardFlags = []string{"queued_over_bound"}
 
-// boardLevel says case c is about the board and goes to rung 2 directly.
-func boardLevel(c Case) bool {
+// boardFlag says case c is a monitor flag about the board.
+func boardFlag(c Case) bool {
 	flag, _ := c.Facts["flag"].(string)
-	return slices.Contains(boardKinds, c.Kind) || c.Kind == CaseMonitorFlag && slices.Contains(boardFlags, flag)
+	return c.Kind == CaseMonitorFlag && slices.Contains(boardFlags, flag)
 }
 
 // rungTwoTakes reports whether rung 2 takes case c: at every autonomy
 // level, where below autonomous its answer is a proposal the human
-// confirms (Proposes), every kind but the judgment budget's. A case only a
-// human decides is taken for its analysis alone.
+// confirms (Proposes), every kind the kind table gives rung 2 a part in. A
+// case only a human decides is taken for its analysis alone.
 func rungTwoTakes(c Case) bool {
-	return c.Kind != CaseJudgmentBudget
+	return kindRow(c.Kind).Rung2 != rung2Nothing
 }
 
 // startRung2 hands case c to rung 2 as a step in progress due after the
@@ -702,8 +692,7 @@ func asksAgain(c Case) int64 {
 
 // rungOneJudges reports whether rung 1 takes the case c, on facts f.
 func (r *Runner) rungOneJudges(t Task, c Case, f CaseFacts) bool {
-	if human, _ := humanOnly(c, f); human || boardLevel(c) || slices.Contains(choiceKinds, c.Kind) || c.Kind == CaseCheckinHuman || c.Kind == CaseMergeApproval ||
-		c.Kind == CasePlanCriteria || planAsk(c) {
+	if human, _ := humanOnly(c, f); human || kindRow(c.Kind).NoRung1 != "" || boardFlag(c) {
 		return false
 	}
 	return r.cfg.Policy().EscalationOf(t.Repository).Judges(f.Autonomy) && r.Checkin != nil && r.callModel(t, policy.PurposeCheckin) != ""
@@ -914,9 +903,22 @@ func (e errNoWait) Error() string {
 }
 
 // Face is the human's Face of case c: the question asked (askHuman), the
-// case at the human and its next move the human's. A card that cannot wait
-// for a human gets no Face, and the case ends.
+// case at the human through the door (ToHuman) and its next move the
+// human's. The door is asked first, on the case as it stands now, so a case
+// it refuses gets no comment. A card that cannot wait for a human gets no
+// Face, and the case ends.
 func (r *Runner) Face(ctx context.Context, t Task, c Case, reason, next string, choices []string, up *HandUp) (TripOutcome, error) {
+	live, err := r.store.CaseByID(ctx, c.ID)
+	if err != nil {
+		return TripOutcome{}, err
+	}
+	steps, err := r.store.CaseSteps(ctx, c.ID)
+	if err != nil {
+		return TripOutcome{}, err
+	}
+	if err := doorRefusal(live, climbed(steps)); err != nil {
+		return TripOutcome{}, err
+	}
 	comment, err := r.AskHuman(ctx, t, c, reason, next, choices, up)
 	if no := (errNoWait{}); errors.As(err, &no) {
 		return TripOutcome{CaseID: c.ID, Rung: 3}, caseEnded(r.store.WithdrawCase(ctx, c.ID, no.Error()))
@@ -924,10 +926,7 @@ func (r *Runner) Face(ctx context.Context, t Task, c Case, reason, next string, 
 	if err != nil {
 		return TripOutcome{}, err
 	}
-	if err := r.store.SetCaseStatus(ctx, c.ID, CaseAtHuman); err != nil {
-		return TripOutcome{}, err
-	}
-	if err := r.store.SetCaseWake(ctx, c.ID, 3, c.WakeOn, nil); err != nil {
+	if err := r.store.ToHuman(ctx, c.ID); err != nil {
 		return TripOutcome{}, err
 	}
 	return TripOutcome{CaseID: c.ID, Comment: comment, Rung: 3}, nil
@@ -980,7 +979,7 @@ func (r *Runner) ClimbExpired(ctx context.Context, steps []CaseStep) error {
 // from being asked.
 func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, cases []Case) (*Resolution, string, error) {
 	for _, row := range rung0 {
-		if row.Hold == nil {
+		if row.Hold == nil || !row.tries(c) {
 			continue
 		}
 		held, err := row.Hold(ctx, r, c)
@@ -1005,7 +1004,7 @@ func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, case
 		return nil, "rung 0 took this stop with " + cases[i].Resolution.Action + " before, and it came back", nil
 	}
 	for _, row := range rung0 {
-		if row.Fire == nil {
+		if row.Fire == nil || !row.tries(c) {
 			continue
 		}
 		res, err := row.Fire(ctx, r, c, f)
@@ -1467,6 +1466,9 @@ func (r *Runner) monitorFace(t Task, reason string) *HumanQuestion {
 // chat's fund, for a monitor flag, whose card goes on, the flag in the
 // chat, and elsewhere a reply (replyNext).
 func tripNext(c Case, reason string) string {
+	if ChoiceKind(c.Kind) {
+		return "This card is yours: answer with a choice on the card or reply to leave a note. No attempt starts. Close this issue to end it."
+	}
 	switch c.Kind {
 	case CaseMonitorFlag:
 		return "The card goes on meanwhile. Answer the flag in the project chat."
@@ -1510,9 +1512,7 @@ func tripNext(c Case, reason string) string {
 		return "A reply alone changes nothing: the stop repeats until the card's limits or the review's word change. Use the exits above (extend the card, overrule the review, end the card, or close into a successor), or close this issue to end the task."
 	case CaseScreeningSuspect:
 		return "A human reads the screening first: reply on this issue to let the agent work on it, or close the issue to end the task."
-	case CaseHumanCard, CaseJudgmentBudget, CaseRedMain, CaseRollHeld, CaseConfigRefused:
-		return "This card is yours: answer with a choice on the card or reply to leave a note. No attempt starts. Close this issue to end it."
-	case CaseWaitExpired, CaseMergeApproval, CasePlanCriteria, CaseAgentRequestInfo:
+	case CaseWaitExpired, CaseMergeApproval, CasePlanCriteria:
 		return "This stop is answered on its own form, not by a reply on this issue. Close this issue to end the task."
 	case CasePlanQuestion, CasePlanConfirmation:
 		return "A reply on this issue asks the planner for a new revision instead. Closing the issue ends the plan."
@@ -1767,7 +1767,7 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 	if shaped == nil {
 		r.repeatFace(ctx, t, c, asked)
 	}
-	if c.Kind != CaseMonitorFlag && c.ID != 0 && AnswersByOffers(c, t.Kind) {
+	if c.Kind != CaseMonitorFlag && c.ID != 0 && AnswersByOffers(c) {
 		// the buttons are decided once, on the facts Act judges, as the case
 		// reaches the human; a render reads them as stored
 		if f, err := r.FactsAtCase(ctx, t, c); err != nil {

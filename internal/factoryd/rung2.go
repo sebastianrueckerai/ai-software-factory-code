@@ -39,7 +39,7 @@ func (r *Runner) RungTwoStatement(ctx context.Context, id int64) (text string, e
 	steps = slices.DeleteFunc(steps, func(s CaseStep) bool { return s.Rung == 2 && s.Outcome == StepInProgress })
 	d, derr := r.CardDigest(ctx, t.ID)
 	var choices []QuestionChoice
-	if answersByChoices(c, t.Kind) {
+	if answersByChoices(c) {
 		ask, _ := r.CaseAsk(ctx, c)
 		if choices = AskOffers(ask.Detail); choices == nil {
 			choices = []QuestionChoice{}
@@ -176,7 +176,7 @@ func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, f
 // answer where it offers none, every other case an action the human may
 // take.
 func (r *Runner) rungTwoRecommends(ctx context.Context, t Task, c Case, rec string) error {
-	if ChoiceCase(c, t.Kind) {
+	if ChoiceKind(c.Kind) {
 		ask, _ := r.CaseAsk(ctx, c)
 		offers := AskOffers(ask.Detail)
 		if len(offers) == 0 || slices.ContainsFunc(offers, func(o QuestionChoice) bool { return o.Value == rec }) {

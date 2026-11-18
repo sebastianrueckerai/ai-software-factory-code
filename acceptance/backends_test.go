@@ -1606,7 +1606,7 @@ func (s *acceptanceStore) EnsureChatTask(context.Context, string, string, float6
 	return factoryd.Task{}, nil
 }
 
-func (s *acceptanceStore) SetCaseStatus(context.Context, int64, string) error { return nil }
+func (s *acceptanceStore) ToHuman(context.Context, int64) error { return nil }
 
 func (s *acceptanceStore) StartRung1Step(context.Context, string, int, factoryd.CaseStep) (int64, bool, error) {
 	return 0, false, nil

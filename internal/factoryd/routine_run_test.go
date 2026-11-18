@@ -1038,7 +1038,11 @@ func TestRoutineRunLongWaitsListsCardsPastADay(t *testing.T) {
 	now := time.Now().UTC()
 	hand := func(id string, issue int64, title, ask string, status string, since time.Duration) time.Time {
 		store.tasks[id] = Task{ID: id, Repository: repo, IssueNumber: issue, HumanSummary: title}
-		c, _, err := store.OpenCase(ctx, Case{TaskID: id, Repository: repo, Kind: CaseHumanCard, StateKey: id, Status: status, Problem: ask})
+		open := store.OpenCase
+		if status == CaseAtHuman {
+			open = func(ctx context.Context, c Case) (Case, bool, error) { return openAtHuman(ctx, store, c) }
+		}
+		c, _, err := open(ctx, Case{TaskID: id, Repository: repo, Kind: CaseHumanCard, StateKey: id, Problem: ask})
 		if err != nil {
 			t.Fatal(err)
 		}

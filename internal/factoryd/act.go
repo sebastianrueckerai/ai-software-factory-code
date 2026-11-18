@@ -125,7 +125,7 @@ var keepsWaiting = []string{AnswerRerunAgain}
 // or a filed card, a decision whose request ended the case already, or a
 // human card's choice that keeps the card waiting.
 func keepsOpen(c Case, t Task, res Resolution) bool {
-	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(requestEnds, res.Action) || ChoiceCase(c, t.Kind) && slices.Contains(keepsWaiting, res.Action)
+	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(requestEnds, res.Action) || ChoiceKind(c.Kind) && slices.Contains(keepsWaiting, res.Action)
 }
 
 // Act is the one way a human, the chat or a rung answers a case. It reads
@@ -208,8 +208,8 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	// ownNote is the answer's note as its author wrote it, added what code puts
 	// beside it for the session: the issue's record names them apart
 	ownNote, added := res.Note, ""
-	choice := ChoiceCase(c, t.Kind) && res.Action != ActNote
-	if ChoiceCase(c, t.Kind) && res.Action == ActNote && in.Rung != 0 {
+	choice := ChoiceKind(c.Kind) && res.Action != ActNote
+	if ChoiceKind(c.Kind) && res.Action == ActNote && in.Rung != 0 {
 		if why := r.wordsRefusal(ctx, t, c); why != "" {
 			return ActResult{}, ErrActRefused(why)
 		}
@@ -416,7 +416,7 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 			continue
 		}
 		for _, c := range cases {
-			if c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
+			if c.Status != CaseAtHuman || !AnswersByOffers(c) {
 				continue
 			}
 			ask, found := r.CaseAsk(ctx, c)
@@ -450,7 +450,7 @@ func (r *Runner) refreshOffersOf(ctx context.Context, taskID string, caseID int6
 		return
 	}
 	c, err := r.store.CaseByID(ctx, caseID)
-	if err != nil || c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
+	if err != nil || c.Status != CaseAtHuman || !AnswersByOffers(c) {
 		return
 	}
 	if f, err := r.FactsAtCase(ctx, t, c); err == nil {

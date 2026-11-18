@@ -100,9 +100,8 @@ func caseWhy(c Case, f CaseFacts, steps []CaseStep) string {
 	if reason, _ := c.Facts["reason"].(string); reason != "" {
 		why = ShapedQuestion(reason, questionFactsOf(f), nil).Why
 	} else if why = mergeWhy(c); why == "" {
-		words, ok := caseKindWords[c.Kind]
-		why = "The case is the " + cmp.Or(words, "open problem") + "."
-		if !ok {
+		why = "The case is the " + kindRow(c.Kind).Words + "."
+		if kindRow(c.Kind).Words == "" {
 			why = "The case is " + strings.ReplaceAll(string(c.Kind), "_", " ") + "."
 		}
 	}

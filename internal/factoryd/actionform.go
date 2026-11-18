@@ -129,13 +129,13 @@ func OffersFor(f CaseFacts) ([]AskOffer, []ActionRefusal) {
 	return out, refusals
 }
 
-// AnswersByOffers reports whether the face of case c on a card of kind cardKind stores table
-// offers: not a human card's, whose question's choices answer it, and not a
-// merge's or a plan's criteria, whose approval card is their face, nor a
-// monitor's flag.
-func AnswersByOffers(c Case, cardKind string) bool {
+// AnswersByOffers reports whether the face of case c stores table offers:
+// not a human card's, whose question's choices answer it, and not a merge's
+// or a plan's criteria, whose approval card is their face, nor a monitor's
+// flag.
+func AnswersByOffers(c Case) bool {
 	k := c.Kind
-	return !ChoiceCase(c, cardKind) && k != CaseMergeApproval && k != CasePlanCriteria && k != CaseMonitorFlag &&
+	return !ChoiceKind(k) && k != CaseMergeApproval && k != CasePlanCriteria && k != CaseMonitorFlag &&
 		k != CasePlanQuestion && k != CasePlanConfirmation
 }
 
@@ -144,7 +144,7 @@ func AnswersByOffers(c Case, cardKind string) bool {
 // wait on its failed card keeps the actions its ended plan card's case
 // takes: the failed card's own exits lead as the question's choices.
 func storeOffers(c Case, t Task, f CaseFacts) (offers []AskOffer, refusals []ActionRefusal, ok bool) {
-	if c.ID == 0 || !AnswersByOffers(c, t.Kind) {
+	if c.ID == 0 || !AnswersByOffers(c) {
 		return nil, nil, false
 	}
 	offers, refusals = OffersFor(f)

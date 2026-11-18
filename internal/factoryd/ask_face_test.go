@@ -21,5 +21,7 @@ func (s *fakeStore) face(taskID string, caseID int64, kind CaseKind, comment int
 	}
 	s.events = append(s.events, Event{TaskID: taskID, Kind: EventQuestionAsked, At: at,
 		Detail: map[string]any{"case_id": caseID, "comment": comment, "question": EscalationQuestion(body)}})
-	s.faced(caseID, s.events[len(s.events)-1])
+	if err := s.faced(caseID, s.events[len(s.events)-1]); err != nil {
+		panic(err)
+	}
 }

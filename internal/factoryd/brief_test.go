@@ -1011,8 +1011,8 @@ func TestBriefWakeAtReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.filed(t, "t-brief", 21)
-	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t-brief", Repository: "demo-app/demo-app", Kind: CaseOther,
-		StateKey: "stop", Status: CaseAtHuman, Problem: "the stop", Facts: map[string]any{"reason": "the stop"}})
+	c, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t-brief", Repository: "demo-app/demo-app", Kind: CaseOther,
+		StateKey: "stop", Problem: "the stop", Facts: map[string]any{"reason": "the stop"}})
 	if err != nil {
 		t.Fatal(err)
 	}

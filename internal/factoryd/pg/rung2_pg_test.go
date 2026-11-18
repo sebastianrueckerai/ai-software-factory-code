@@ -110,17 +110,17 @@ func TestRung2AnalysisFacesTheHumanWithItsRecommendation(t *testing.T) {
 	if faced := g.signalsOf(SignalCaseFaced); len(faced) != 1 || faced[0].sig.Case.Comment == 0 {
 		t.Fatalf("case_faced signals = %+v, want one carrying the face's comment", faced)
 	}
-	// a pass past the gap between wakes: the face wakes nobody, and an
-	// unrelated ask of the same pass still does
+	// a pass past the gap between wakes: neither the face nor an unrelated
+	// ask of the same pass wakes anyone, for a case climbs to rung 2 on its
+	// case_climbed alone
 	g.r.PgSetNow(func() time.Time { return time.Now().Add(time.Minute) })
 	before := len(starter.recorded())
 	wakeAsk(t, g.s, "demo-app/demo-app", "t-x", "Is the other card fine?", ViaFactoryd)
 	if err := drainPass(t, w); err != nil {
 		t.Fatal(err)
 	}
-	calls := starter.recorded()
-	if len(calls) != before+1 || !strings.Contains(calls[before].text, "Is the other card fine?") || strings.Contains(calls[before].text, "Grant it one more session") {
-		t.Fatalf("wakes = %+v; want one more, for the unrelated ask alone: the face of a case rung 2 worked wakes nobody", calls)
+	if calls := starter.recorded(); len(calls) != before {
+		t.Fatalf("wakes = %+v; want none past the %d before: no ask wakes the agent", calls, before)
 	}
 }
 
@@ -717,7 +717,7 @@ func TestWakeNamesOnlyTheClimbedCases(t *testing.T) {
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
 	out := g.trip(t, tripCap)
 	g.settle()
-	other, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseHumanCard, StateKey: "h", Status: CaseAtHuman, Problem: "a human card"})
+	other, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseHumanCard, StateKey: "h", Problem: "a human card"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1368,5 +1368,69 @@ func TestADeniedPlanRequestEndsItsCases(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The record names who decided a criteria case. When a human's waivers
+// settled the plan's criteria, the close check's resolve ends the case
+// with that human as the decider at rung 3, and the request names them too;
+// when the gate's rows on main alone settled them, factoryd stays the
+// decider at rung 0.
+func TestTheCloseCheckNamesWhoSettledTheCriteria(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		settle func(t *testing.T, g rungRig)
+		by     string
+		rung   int
+	}{
+		{"a human's waivers", func(t *testing.T, g rungRig) {
+			for _, id := range []string{"k1", "k2", "k3"} {
+				if err := factoryd.DecideCriterion(context.Background(), g.s, "t1", id, "waived", "sebastian", "the page "+id+" is gone"); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}, "sebastian", 3},
+		{"the gate's rows on main", func(t *testing.T, g rungRig) {
+			var rows []CriterionVerdict
+			for _, id := range []string{"k1", "k2", "k3"} {
+				rows = append(rows, CriterionVerdict{Criterion: id, Verdict: "met", Kind: CriterionTest})
+			}
+			if err := g.s.PutCriteriaVerdicts(context.Background(), "t1-int", CriteriaSourceGate, FactoryDecider, rows); err != nil {
+				t.Fatal(err)
+			}
+		}, FactoryDecider, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, _, _, _, c := planCriteriaRig(t, "m1", "m1")
+			ctx := context.Background()
+			tc.settle(t, g)
+			g.r.CriteriaPass(ctx)
+			want := &CaseResolution{By: tc.by, Rung: tc.rung, Action: ActAnswerCriteria, Reason: "every criterion is met or waived"}
+			if got := caseByID(t, g.s, c.ID); got.Status != CaseResolved || !reflect.DeepEqual(got.Resolution, want) {
+				t.Fatalf("case %s, resolution %+v; want it resolved by %+v", got.Status, got.Resolution, want)
+			}
+			if a, ok, err := g.s.NewestApproval(ctx, "t1", ApprovalCriteria); err != nil || !ok || a.Status != "approved" || a.DecidedBy != tc.by {
+				t.Fatalf("request = %+v, %v, %v; want it approved by %s", a, ok, err, tc.by)
+			}
+		})
+	}
+}
+
+// An agent card's stop at the month cap opens month_cap, not the factory's
+// month cap: no exception passes it to the human, so it climbs to rung 2,
+// which analyses it, with one step in progress, one case_climbed row and
+// no face yet.
+func TestAnAgentCardsMonthCapStopClimbs(t *testing.T) {
+	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+	out := g.trip(t, monthCapReached+" for 2026-11")
+	g.settle()
+	if c := caseByID(t, g.s, out.CaseID); c.Kind != CaseMonthCap || c.Status != CaseOpen || out.Rung != 2 {
+		t.Fatalf("outcome %+v, case %s %s; want the month cap open with rung 2", out, c.Kind, c.Status)
+	}
+	if two := g.stepsOfRung(t, out.CaseID, 2); len(two) != 1 || two[0].Outcome != StepInProgress {
+		t.Fatalf("rung 2 steps %+v; want one in progress", two)
+	}
+	if rows := g.rows(t, EventCaseClimbed); len(rows) != 1 || rows[0].Detail["case_id"] != float64(out.CaseID) || len(g.forge.comments) != 0 {
+		t.Fatalf("case_climbed rows %+v, comments %d; want one for case %d and no face", rows, len(g.forge.comments), out.CaseID)
 	}
 }

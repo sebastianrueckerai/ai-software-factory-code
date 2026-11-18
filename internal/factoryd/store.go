@@ -942,7 +942,9 @@ type Store interface {
 	// EnsureChatTask is project name's chat task for the month of at, whose
 	// budget the project agent's and the rungs' model calls book on.
 	EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (Task, error)
-	SetCaseStatus(ctx context.Context, id int64, status string) error
+	// ToHuman moves live case id to the human, the one writer of at_human,
+	// once the door passes it (doorRefusal).
+	ToHuman(ctx context.Context, id int64) error
 	// SetCaseFact sets fact key of live case id to value, or removes it
 	// for the empty value.
 	SetCaseFact(ctx context.Context, id int64, key, value string) error

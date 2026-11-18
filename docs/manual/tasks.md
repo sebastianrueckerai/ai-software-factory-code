@@ -201,7 +201,13 @@ condition gone, and never park it out of sight. A card rung 2 decides
 ends with no issue. Otherwise its face files the issue (a card that has
 one gets a comment), moves the card to `waiting-human` and pokes. The
 chat's escalation, the month cap's card and the judgment budget's card
-ask a human at once.
+ask a human at once: the escalation's filing is rung 2's step, and the two
+caps' cases (`factory_month_cap`, `judgment_budget`) are the kind table's
+exceptions, since no rung can run while they stand. Every case opens
+`open`, and only one door (`ToHuman`) moves a case to the human: it passes
+a case a rung 1 or rung 2 step stands on, an exception's kind, or a case
+marked not judged, and refuses any other, naming the case, its kind and
+that it climbs first.
 
 ## Task workflow
 

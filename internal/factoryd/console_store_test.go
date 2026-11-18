@@ -81,6 +81,19 @@ func TestPGStoreBoardTasks(t *testing.T) {
 		{"question": "the database is unreachable", "ask": "the database is unreachable", "why": "the replica answers", "info": "pick one", "comment": 42, "source": "agent",
 			"reason": "cannot reach the database", "choices": []string{"use the replica", "wait for it", "give up"}, "recommendation": "use the replica", "recommended_by": "the agent"},
 	} {
+		// each ask is the face of its case at the human, which names it
+		high, _, err := s.Task(ctx, "high")
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := CaseFromAsk(high, Event{Kind: EventQuestionAsked, Detail: detail}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c, _, err = openAtHuman(ctx, s, c); err != nil {
+			t.Fatal(err)
+		}
+		detail["case_id"] = c.ID
 		if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "high", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail}); err != nil {
 			t.Fatal(err)
 		}

@@ -212,3 +212,61 @@ func TestCaseKindsBoardMigrationRelabelsExistingRows(t *testing.T) {
 		t.Fatalf("kinds after the migration = %v, want %s", got, want)
 	}
 }
+
+// The factory month cap migration relabels the month cap cases of human
+// cards, the factory's own month cap card, and the agent_request_info cases
+// no ask opens any more. An agent card's month cap stop keeps month_cap, and
+// every other row keeps its kind.
+func TestFactoryMonthCapMigrationRelabelsExistingRows(t *testing.T) {
+	db, err := sql.Open("pgx", schematest.DSN(t, "schema_kinds_month_cap"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	const old = `'month_cap','agent_request_info','session_cap'`
+	for _, stmt := range []string{
+		`ALTER TABLE cases DROP CONSTRAINT cases_kind_check`,
+		`DELETE FROM cases`,
+		`DELETE FROM tasks WHERE id IN ('mc-human', 'mc-agent', 'mc-info', 'mc-other')`,
+		`ALTER TABLE cases ADD CONSTRAINT cases_kind_check CHECK (kind IN (` + old + `))`,
+		`INSERT INTO tasks (id, kind, budget_eur, status, track) VALUES
+		 ('mc-human', 'human', 0, 'waiting-human', 'direct'),
+		 ('mc-agent', 'agent', 5, 'waiting-human', 'direct'),
+		 ('mc-info', 'agent', 5, 'waiting-human', 'direct'),
+		 ('mc-other', 'human', 0, 'waiting-human', 'direct')`,
+		`INSERT INTO cases (task_id, kind, state_key, status, problem) VALUES
+		 ('mc-human', 'month_cap', 'k1', 'at_human', 'p'),
+		 ('mc-agent', 'month_cap', 'k2', 'at_human', 'p'),
+		 ('mc-info', 'agent_request_info', 'k3', 'resolved', 'p'),
+		 ('mc-other', 'session_cap', 'k4', 'resolved', 'p')`,
+		`DELETE FROM schema_migrations WHERE name = 'factoryd/20261122100000_factory_month_cap_kind.sql'`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.QueryContext(ctx, `SELECT task_id, kind FROM cases ORDER BY task_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var task, kind string
+		if err := rows.Scan(&task, &kind); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, task+"="+kind)
+	}
+	want := "mc-agent=month_cap mc-human=factory_month_cap mc-info=agent_escalate mc-other=session_cap"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("kinds after the migration = %v, want %s", got, want)
+	}
+}

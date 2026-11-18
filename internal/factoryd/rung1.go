@@ -18,15 +18,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// humanOnlyKinds are the case kinds only a human decides: the rungs above
-// code analyse them but do not decide.
-var humanOnlyKinds = map[CaseKind]string{
-	CaseMonthCap:    "only a commit raises the month cap",
-	CaseProjectCap:  "only a commit raises the project cap",
-	CaseDayCap:      "only a commit raises the day cap",
-	CasePolicyClass: "the merge gate marks the policy class human",
-}
-
 // humanOnlyReasons are the reason kinds of a check-in's hand to the human
 // that no rung decides.
 var humanOnlyReasons = map[string]string{
@@ -35,10 +26,10 @@ var humanOnlyReasons = map[string]string{
 }
 
 // humanOnly says whether case c skips the rungs' decision, and why in
-// words.
+// words: a kind rung 2 only analyses, or a fact only a human decides on.
 func humanOnly(c Case, f CaseFacts) (bool, string) {
-	if why, ok := humanOnlyKinds[c.Kind]; ok {
-		return true, why
+	if row := kindRow(c.Kind); row.Rung2 == rung2Analyses {
+		return true, row.Rung2Why
 	}
 	switch c.Kind {
 	case CaseCheckinHuman:
@@ -145,10 +136,10 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 	return b.String()
 }
 
-// answersByChoices says case kind k is answered by one of its ask's choices:
+// answersByChoices says case c is answered by one of its ask's choices:
 // a human card's kinds and a plan's questions.
-func answersByChoices(c Case, cardKind string) bool {
-	return ChoiceCase(c, cardKind) || planAsk(c)
+func answersByChoices(c Case) bool {
+	return ChoiceKind(c.Kind) || planAsk(c)
 }
 
 // planAsk says case c is a plan's question or its confirmation.

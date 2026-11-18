@@ -376,12 +376,13 @@ decimals: a task's model calls cost fractions of a cent.
   `approve_merge` and `deny_merge` before any proposal, naming
   `attach_analysis`. The agent never approves a GitHub sync's pull
   request: a human approves the GitHub commits it carries, and its refusal
-  names `attach_analysis`. A merge request's row wakes nobody, and
-  neither does a plan's question, the planner's row or its face's: each
-  case climbs to rung 2, whose wake is the case's. In that wake the plan's
+  names `attach_analysis`. No ask row wakes the agent, and neither does a
+  merge request's row: each case climbs to rung 2, whose wake is the
+  case's `case_climbed` row, or reaches the human with no rung able to
+  run. In that wake the plan's
   `answer` and `request_changes` run as the agent at every level, and
   below full auto the plan's guard refuses them, naming `attach_analysis`.
-  A wake counts its asks and its cases apart. A project
+  A wake counts its cases. A project
   without a chat token gets no wake; the refusal names `tokens.chat`.
   `steer` reaches a running session on the supervisor's message path
   (`Runner.MessageSession`). The conversation
