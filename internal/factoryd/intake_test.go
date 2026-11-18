@@ -461,7 +461,7 @@ func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
 		t.Fatalf("asks = %+v, want the ask's one", store.askedRows(task.ID))
 	}
 	if e, q := store.askedRows(task.ID)[0], store.askedRows(task.ID)[0].Question; q == nil ||
-		q.Ask != "Needs a decision" || q.Why != "filed by sebastian into the human lane" || q.Info != "please look" ||
+		q.Ask != "Needs a decision" || q.Why != "sebastian filed it for a human, so no agent works on it" || q.Info != "please look" ||
 		!slices.Equal(q.Labels(), []string{"I did it", "Have the factory do it", "Not now"}) {
 		t.Fatalf("intake event = %+v, want the issue asked as a question", e)
 	}
@@ -2242,18 +2242,19 @@ func TestValidateReproCommand(t *testing.T) {
 	}
 }
 
-// The person's card of a refused reproduction command names the poster
-// and the sandbox rule, and asks for the issue again.
+// The person's card of a refused reproduction command says what to do,
+// names the poster and the sandbox rule its command breaks.
 func TestReproQuestionText(t *testing.T) {
-	q := ReproQuestion("A card", "sebastian", ValidateReproCommand("cd /tmp/x && make repro"))
-	if want := "filed by sebastian: the reproduction command chains cd out of the checked-out worktree: the sandbox has one checkout, the command runs in place"; q.Why != want {
-		t.Errorf("Why = %q, want %q", q.Why, want)
+	q := ReproQuestion("sebastian", ValidateReproCommand("cd /tmp/x && make repro"))
+	want := HumanQuestion{Ask: "Write the reproduction command so the sandbox can run it, then file the issue again",
+		Why:      "sebastian wrote a reproduction command that breaks the sandbox rule, so no agent works on the issue",
+		Happened: "The command chains cd out of the checked-out worktree: the sandbox has one checkout, the command runs in place.",
+		Choices:  humanWorkChoices(false)}
+	if !reflect.DeepEqual(q, want) {
+		t.Errorf("ReproQuestion = %+v, want %+v", q, want)
 	}
-	if !strings.HasPrefix(q.Info, "No agent builds a card whose reproduction command breaks the sandbox rule. File the issue again") {
-		t.Errorf("Info = %q", q.Info)
-	}
-	if q := ReproQuestion("A card", "sebastian", ValidateReproCommand("git worktree add /tmp/w HEAD")); !strings.Contains(q.Why, "creates a git worktree: "+sandboxCheckoutRule) {
-		t.Errorf("worktree Why = %q, want the sandbox rule named", q.Why)
+	if q := ReproQuestion("sebastian", ValidateReproCommand("git worktree add /tmp/w HEAD")); q.Happened != "The command creates a git worktree: "+sandboxCheckoutRule+"." {
+		t.Errorf("worktree Happened = %q, want the sandbox rule named", q.Happened)
 	}
 }
 
@@ -2275,14 +2276,14 @@ func TestIntakeRefusesASandboxBreakingRepro(t *testing.T) {
 			if started := workflowsOf(in).started; len(started) != 0 {
 				t.Fatalf("started %q, want nothing", started)
 			}
-			var whys []string
+			var saw []string
 			for _, e := range store.askedRows(got.ID) {
 				if e.Question != nil {
-					whys = append(whys, e.Question.Why)
+					saw = append(saw, e.Question.Happened)
 				}
 			}
-			if want := "filed by sebastian: the reproduction command " + tc.rule; !slices.Equal(whys, []string{want}) {
-				t.Fatalf("asks %q, want %q", whys, want)
+			if want := "The command " + tc.rule + "."; !slices.Equal(saw, []string{want}) {
+				t.Fatalf("asks %q, want %q", saw, want)
 			}
 		})
 	}
@@ -2888,8 +2889,8 @@ func TestIntakeFilesAWorkflowOnlyCardForAHuman(t *testing.T) {
 					asks = append(asks, *e.Question)
 				}
 			}
-			if len(asks) != 1 || !strings.Contains(asks[0].Why, "push rule refuses changes to workflow files") || !strings.Contains(asks[0].Info, "Fix the CI.") {
-				t.Fatalf("asks = %+v, want one that names the push rule and carries the brief", asks)
+			if len(asks) != 1 || !reflect.DeepEqual(asks[0], WorkflowQuestion("A card")) || !strings.Contains(got.Objective, "Fix the CI.") {
+				t.Fatalf("asks = %+v, objective %q; want the ask that names the push rule, and the brief in the card's text", asks, got.Objective)
 			}
 		})
 	}

@@ -386,6 +386,8 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal(raw, &body)
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{"title": cmp.Or(body["title"], "Fix the cache"), "body": cmp.Or(body["body"], "It drops entries.")})
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/pulls/") && strings.HasSuffix(r.URL.Path, "/merge"):
+		w.WriteHeader(http.StatusOK)
 	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/pulls/"):
 		var body map[string]string
 		json.NewDecoder(r.Body).Decode(&body)

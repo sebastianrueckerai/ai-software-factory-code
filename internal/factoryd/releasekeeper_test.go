@@ -161,10 +161,12 @@ func TestReleaseKeeperAsksAfterSixHours(t *testing.T) {
 		t.Errorf("ask card %+v, want a human card waiting on #31", card)
 	}
 	want := HumanQuestion{
-		Ask:     title,
-		Why:     holdWhy,
-		Info:    "Production of sf-demo-app has waited 6 hours: plan #12 is open on main. " + holdSince + "\n\nThe open plans and what each waits on:\n" + holdPlanLine + "\n\n" + holdInfoTail,
-		Choices: holdChoices,
+		Ask:      title,
+		Why:      holdWhy,
+		Info:     "Production of sf-demo-app has waited 6 hours: plan #12 is open on main. " + holdSince + "\n\nThe open plans and what each waits on:\n" + holdPlanLine + "\n\n" + holdInfoTail,
+		Choices:  holdChoices,
+		Happened: "Production of sf-demo-app has waited 6 hours for plan #12, which has 2 of 4 cards merged.",
+		Waits:    "Production of sf-demo-app stays held while plan #12 is open on main.",
 	}
 	if !reflect.DeepEqual(q, want) {
 		t.Errorf("question\n%+v, want\n%+v", q, want)
@@ -303,7 +305,9 @@ func TestReleaseKeeperOffersTheReplansOfTheLongestHeldPlan(t *testing.T) {
 				Why: holdWhy,
 				Info: "Production of sf-demo-app has waited 6 hours: " + c.reason + " are open on main. " + since + "\n\nThe open plans and what each waits on:\n" +
 					c.lines + "\n\n" + holdInfoTail + "\n\n" + c.others,
-				Choices: choices,
+				Choices:  choices,
+				Happened: "Production of sf-demo-app has waited 6 hours: " + c.reason + " are open on main.",
+				Waits:    "Production of sf-demo-app stays held while " + c.reason + " are open on main.",
 			}
 			if !reflect.DeepEqual(q, want) {
 				t.Errorf("question\n%+v, want\n%+v", q, want)

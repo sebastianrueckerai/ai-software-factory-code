@@ -121,11 +121,12 @@ func lockWithin(ctx context.Context, mu *sync.Mutex) error {
 var keepsWaiting = []string{AnswerRerunAgain, AnswerPark, AnswerKeepWaiting, AnswerHoldWait}
 
 // keepsOpen says answer res leaves case c live: a note, a criterion's verdict
-// or a filed card, a decision whose request ended the case already, a
+// or a filed card, a decision whose request ended the case already (a
+// human card's merge or rejection is its choice, which ends it), a
 // human card's choice that keeps the card waiting, or a draw on the agent's
 // question, which buys its answer room and answers nothing.
 func keepsOpen(c Case, t Task, res Resolution) bool {
-	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(requestEnds, res.Action) ||
+	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(requestEnds, res.Action) && !ChoiceCase(c, t.Kind) ||
 		ChoiceCase(c, t.Kind) && slices.Contains(keepsWaiting, res.Action) || slices.Contains(questionKinds, c.Kind) && slices.Contains(capDraws, res.Action)
 }
 
@@ -204,7 +205,8 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	// ownNote is the answer's note as its author wrote it, added what code puts
 	// beside it for the session: the issue's record names them apart
 	ownNote, added := res.Note, ""
-	choice := ChoiceCase(c, t.Kind) && res.Action != ActNote
+	// a hand-back is the table's, as a note is: it carries the human's words
+	choice := ChoiceCase(c, t.Kind) && res.Action != ActNote && res.Action != ActHandBack
 	if ChoiceCase(c, t.Kind) && res.Action == ActNote && in.Rung != 0 {
 		if why := r.wordsRefusal(ctx, t, c); why != "" {
 			return ActResult{}, ErrActRefused(why)
@@ -1018,6 +1020,15 @@ func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInpu
 		}
 		return []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": id, "replacement": issue},
 			Result: fmt.Sprintf("Filed #%d in place of #%d.", issue, old.IssueNumber)}}, nil
+	case ActHandBack:
+		said, err := r.replanPlan(ctx, GroupOf(t), ReplanAsk{By: in.By, Comment: ReplanComment(in.Res.Note), Card: t.ID})
+		if no := ErrNoReplan(""); errors.As(err, &no) {
+			return nil, ErrActRefused(string(no))
+		}
+		if err != nil {
+			return nil, err
+		}
+		return []CaseAction{{Action: ActHandBack, Result: said}}, nil
 	case ActReplan:
 		if id, _ := in.Res.Args["task_id"].(string); id != "" {
 			return r.replanDependency(ctx, t, id)

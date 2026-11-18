@@ -204,5 +204,8 @@ func questionOfAsk(detail map[string]any) *HumanQuestion {
 	q.Info, _ = detail["info"].(string)
 	q.Recommendation, _ = detail["recommendation"].(string)
 	q.Source, _ = detail["recommended_by"].(string)
+	q.Happened, _ = detail["happened"].(string)
+	q.Waits, _ = detail["waits"].(string)
+	q.Check, _ = detail["check"].(string)
 	return q
 }

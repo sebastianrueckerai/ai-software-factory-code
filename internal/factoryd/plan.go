@@ -4053,7 +4053,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 				row.IssueNumber, err = file()
 			}
 			if err == nil {
-				card, fresh, err = r.store.CreateHumanCard(ctx, row, HumanAsk{Q: WorkflowQuestion(title, body), By: "factoryd", Asker: SourcePlan, Via: ViaFactoryd})
+				card, fresh, err = r.store.CreateHumanCard(ctx, row, PlanHumanAsk(t, title))
 			}
 		} else {
 			card, err = r.store.CreatePlanCard(ctx, row)

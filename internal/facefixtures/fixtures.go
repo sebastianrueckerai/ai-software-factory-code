@@ -36,7 +36,9 @@ import (
 // pending request the card waits on and Plan a plan card's newest
 // revision, nil for none. Brief is the facts a Go-filed card's brief is
 // written from (factoryd.SourceBriefs). Parent is a helper task's parent,
-// the card the board shows the helper on; nil for any other card.
+// the card the board shows the helper on; nil for any other card. Human is
+// the ask a human card is filed with (CreateHumanCard), nil for any other
+// card.
 type Fixture struct {
 	Group, Kind string
 	Task        factoryd.Task
@@ -47,6 +49,7 @@ type Fixture struct {
 	Plan        *factoryd.Plan
 	Brief       factoryd.BriefFacts
 	Parent      *factoryd.Task
+	Human       *factoryd.HumanAsk
 }
 
 // The groups of All. A source's Kind is the source and the column it
@@ -289,7 +292,7 @@ func (b *builder) asked(group, name string, t factoryd.Task, ask factoryd.HumanA
 		panic(err)
 	}
 	c := b.atHuman(opened, t.IssueNumber*3, age)
-	return Fixture{Group: group, Kind: name, Task: t, Facts: factoryd.FactsOf(*c), Case: c, Ask: &factoryd.CaseAsk{At: c.OpenedAt, Detail: roundTrip(e.Detail)}}
+	return Fixture{Group: group, Kind: name, Task: t, Facts: factoryd.FactsOf(*c), Case: c, Ask: &factoryd.CaseAsk{At: c.OpenedAt, Detail: roundTrip(e.Detail)}, Human: &ask}
 }
 
 // human is the human card of issue n factoryd files for source with ask,
@@ -332,7 +335,7 @@ var plan1947Cards = []factoryd.PlanCard{
 	{Key: "narrow-doclose-409", Role: factoryd.RoleFoundation, Title: "The doClose refusal narrowed to plans that hold criteria: the review finding answered on branch card/2084", Size: "small",
 		Why:     "A plan without criteria cannot close today, because the close refusal asks every plan for criteria.",
 		Summary: "The close refusal applies only to plans that hold criteria. A test closes a plan with none and a plan with two."},
-	{Key: "manifests-name-the-proofs", Role: factoryd.RoleFeature, Title: "The two reproducible manifests name the proofs trees: the red goes green and the merge records the six verdicts",
+	{Key: "manifests-name-the-proofs", Role: factoryd.RoleFeature, Title: "Change two lines in the runner's build files",
 		Size: "small", DependsOn: []string{"narrow-doclose-409"},
 		Why:     "The criteria gate finds no proofs, because the two reproducible manifests do not name the proofs trees.",
 		Summary: "Both manifests list the proofs trees. The gate then finds the six proofs and records their verdicts at the merge."},
@@ -1352,6 +1355,8 @@ func (b *builder) actions() {
 			fx = b.flag(GroupAction, name, "queued_over_bound")
 		case factoryd.ActSalvage:
 			fx = b.flag(GroupAction, name, "wait_over_bound")
+		case factoryd.ActHandBack:
+			fx = b.card2101(GroupAction, name)
 		default:
 			continue // the console's gallery test names the action with no fixture
 		}
@@ -1431,12 +1436,14 @@ func (b *builder) cards() {
 		factoryd.IssueQuestion(humanIssueTitle, humanIssueBody, "alice", true), 2*time.Hour))
 	reproTitle, reproBody := "Gateway: the 429 retry loses the request id", "Retrying a 429 drops the provider's request id from the log.\n\n```repro\ncd /tmp && go test ./internal/gateway\n```"
 	b.out = append(b.out, b.humanIssue(GroupCard, "reproduction-rule card", b.next(), reproTitle, reproBody,
-		factoryd.ReproQuestion(reproTitle, "alice", factoryd.ValidateReproCommand(factoryd.ReproCommand(reproBody))), 2*time.Hour))
-	b.out = append(b.out, b.card2101())
+		factoryd.ReproQuestion("alice", factoryd.ValidateReproCommand(factoryd.ReproCommand(reproBody))), 2*time.Hour))
+	b.out = append(b.out, b.card2101(GroupCard, "workflow-files card"))
 	movedTitle, movedBody := "Board export: keep the nightly snapshots", "Write the board to a JSON snapshot every night so a lost database still leaves the cards. Keep 30 snapshots."
 	b.out = append(b.out, b.humanIssue(GroupCard, "card moved to a human", b.next(), movedTitle, movedBody, factoryd.MovedQuestion(movedTitle, movedBody, "sebastian"), 2*time.Hour))
-	b.out = append(b.out, b.filedHuman(GroupCard, "factory pull request on a project without agents", b.next(), factoryd.SourceTemplateUpdate, "",
-		factoryd.FactoryPRQuestion(factoryd.TemplateUpdateCard("go-service", 14, ".forgejo/workflows/ci.yml, Dockerfile"), "https://git.example/sf/code/pulls/14"), 2*time.Hour))
+	pr := b.filedHuman(GroupCard, "factory pull request on a project without agents", b.next(), factoryd.SourceTemplateUpdate, "",
+		factoryd.FactoryPRQuestion(factoryd.TemplateUpdateCard("go-service", 14, ".forgejo/workflows/ci.yml, Dockerfile"), 14, "https://git.example/sf/code/pulls/14"), 2*time.Hour)
+	pr.Task.PRNumber = 14
+	b.out = append(b.out, pr)
 	b.out = append(b.out, humanSourceOf(factoryd.SourceChat).file(b, GroupCard, "chat escalation", b.next()))
 	b.out = append(b.out, b.escalated(GroupCard, "alert (human)", b.next(), factoryd.SourceAlert, "factoryd",
 		factoryd.AlertQuestion(fiveXX, Project, "factory", factoryd.AlertHumanWhy(factoryd.Project{Agents: policy.AgentsNone}, fiveXX),
@@ -1451,21 +1458,22 @@ func (b *builder) cards() {
 	} {
 		b.out = append(b.out, humanSourceOf(s.source).file(b, GroupCard, s.name, b.next()))
 	}
-	digest := policy.Routine{Name: "needs-you-digest", Title: "Cards waiting on a human", Files: policy.FilesHuman, Schedule: []policy.Trigger{{Cron: "0 8 * * 1"}}}
+	digest := policy.Routine{Name: "needs-you-digest", Title: "Answer every card that waited in Needs you over a day", Files: policy.FilesHuman, Schedule: []policy.Trigger{{Cron: "0 8 * * 1"}}}
 	b.out = append(b.out, b.filedHuman(GroupCard, "routine for a human", b.next(), factoryd.SourceRoutine, factoryd.RoutineDecider(digest.Name, 9, digest.Words()),
 		factoryd.RoutineQuestion(digest, "Read every card in Needs you older than a day and answer it or close it.", factoryd.RoutineProvenanceLine(digest.Name, 9), true), 2*time.Hour))
 }
 
-// card2101 is #2101 as the board read it: a plan's card for a human whose
-// files sit under a workflow directory, its objective as captured, asked
-// as the plan files it (WorkflowQuestion).
-func (b *builder) card2101() Fixture {
-	objective := liveText(2101)
-	title, brief, _ := strings.Cut(objective, "\n\n")
+// card2101 is #2101 as the plan files it now: a plan's card for a human
+// whose files sit under a workflow directory, its title the instruction
+// the planner writes and its steps as the board read them.
+func (b *builder) card2101(group, name string) Fixture {
+	_, steps, _ := strings.Cut(liveText(2101), "\n\n")
+	c := plan1947Cards[slices.IndexFunc(plan1947Cards, func(c factoryd.PlanCard) bool { return c.Key == "manifests-name-the-proofs" })]
 	t := factoryd.Task{ID: "t-d23e2a8d3419", Kind: "human", Status: "waiting-human", Repository: Repository, IssueNumber: 2101, Source: factoryd.SourcePlan,
-		Objective: objective, Parent: plan1947ID, PlanKey: "manifests-name-the-proofs", Author: "controller", RiskClass: "standard", BudgetEUR: 4,
-		CreatedAt: b.now.Add(-75 * time.Minute)}
-	fx := b.asked(GroupCard, "workflow-files card", t, factoryd.HumanAsk{Q: factoryd.WorkflowQuestion(title, brief), By: "factoryd", Asker: factoryd.SourcePlan, Via: factoryd.ViaFactoryd}, 75*time.Minute)
+		Objective: factoryd.IssueObjective(c.Title, steps), Why: c.Why, Summary: c.Summary, Parent: plan1947ID, PlanKey: c.Key, Author: "controller",
+		RiskClass: "standard", BudgetEUR: 4, CreatedAt: b.now.Add(-75 * time.Minute)}
+	plan := factoryd.Task{ID: plan1947ID, IssueNumber: 1947, PlanName: "empty commit fires gate"}
+	fx := b.asked(group, name, t, factoryd.PlanHumanAsk(plan, c.Title), 75*time.Minute)
 	fx.Case.ID = 5848
 	return fx
 }

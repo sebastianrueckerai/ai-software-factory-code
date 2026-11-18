@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -225,7 +226,7 @@ func TestBadReproFilesAPersonsCard(t *testing.T) {
 			asks = append(asks, *e.Question)
 		}
 	}
-	if len(asks) != 1 || !strings.HasPrefix(asks[0].Why, "filed by sebastian: the reproduction command ") || !strings.Contains(asks[0].Info, "File the issue again") {
+	if len(asks) != 1 || !reflect.DeepEqual(asks[0], ReproQuestion("sebastian", ValidateReproCommand("cd /tmp/x && make repro"))) {
 		t.Fatalf("asks = %+v, want the one repro ask", asks)
 	}
 }

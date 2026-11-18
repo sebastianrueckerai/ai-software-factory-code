@@ -106,7 +106,9 @@ var Vocabulary = []Answer{
 	{Action: ActReplan, Variant: variantOffMain, Label: "Take the plan off main", Effect: "Reverts the plan's merged cards, then the planner plans it again."},
 	{Action: ActClose, Label: "End the card", Effect: "Ends the card and closes its issue. Nothing more runs.",
 		Fields: []Field{optionalNote("A note on why")}},
-	{Action: ActClose, Variant: variantDone, Label: "I did it", Effect: "Closes the card. The factory runs no check of the work."},
+	{Action: ActClose, Variant: variantDone, Label: "I did it", Effect: "The factory does not check this. The card closes."},
+	{Action: ActHandBack, Label: "I cannot do this", Effect: "The planner plans the whole plan again with your note. Its started cards stop.",
+		Fields: []Field{requiredNote("What stops you", "One line for the planner: what keeps you from doing it")}},
 	{Action: ActClose, Variant: variantNoted, Label: "Noted", Effect: "Ends this notice."},
 	{Action: ActClose, Variant: variantDismiss, Label: "End the card", Effect: "Ends the card and stops watching the chain until main moves."},
 	{Action: ActClose, Variant: variantPlanWait, Label: "End the failed card", Effect: "Ends the failed card. The plan goes on without it.",
@@ -299,6 +301,7 @@ var effectFills = map[string]func(Facts) string{
 		return ""
 	},
 	ActNote: waitEffect, ActNote + "/" + variantPark: waitEffect,
+	ActClose + "/" + variantDone: func(f Facts) string { return factString(f.Case, "check") },
 	ActClose: func(f Facts) string {
 		switch {
 		case f.Kind == CaseMonitorFlag && f.Final != "":
@@ -344,9 +347,13 @@ var effectFills = map[string]func(Facts) string{
 	},
 }
 
-// waitEffect is "Not now"'s effect: at a cap, when the cap resets; on a
-// notice, that it stays.
+// waitEffect is "Not now"'s effect: on a human's card, that it stays and
+// what waits on it; at a cap, when the cap resets; on a notice, that it
+// stays.
 func waitEffect(f Facts) string {
+	if f.Card.Kind == "human" {
+		return strings.TrimSpace("The card stays in Needs you. " + factString(f.Case, "waits"))
+	}
 	if when := capReset(f); when != "" && slices.Contains(questionKinds, f.Case.Kind) {
 		return "The card waits, and the agent's question comes back to you when the limit resets on " + when + "."
 	} else if when != "" {
@@ -395,22 +402,7 @@ var FlagFaces = map[string]FaceSpec{}
 
 func init() {
 	capFace := func(ask string) FaceSpec {
-		return FaceSpec{
-			Ask: func(f Facts) string {
-				if f.Card.Kind == "human" {
-					return humanFace.Ask(f)
-				}
-				return ask
-			},
-			Why:   capWhy,
-			Story: capStory,
-			Answers: func(f Facts) []string {
-				if f.Card.Kind == "human" {
-					return humanFace.Answers(f)
-				}
-				return []string{ActNote, ActClose}
-			},
-		}
+		return FaceSpec{Ask: fixed(ask), Why: capWhy, Story: workStory, Answers: keys(ActNote, ActClose)}
 	}
 	work := func(s FaceSpec) FaceSpec {
 		if s.Story == nil {
@@ -999,9 +991,6 @@ func budgetWhy(f Facts) string {
 
 // capWhy names the limit and the file that sets it.
 func capWhy(f Facts) string {
-	if f.Card.Kind == "human" {
-		return humanFace.Why(f)
-	}
 	limit, file := "The daily limit", "policy.yaml"
 	switch f.Kind {
 	case CaseMonthCap:
@@ -1010,13 +999,6 @@ func capWhy(f Facts) string {
 		limit, file = "The project's monthly limit", cmp.Or(projectFile.FindString(f.CapWait+" "+factString(f.Case, "reason")), "the project's file")
 	}
 	return fmt.Sprintf("%s is set in %s, and %s when it resets.", limit, file, onward(f, "the card goes on by itself"))
-}
-
-func capStory(f Facts) Story {
-	if f.Card.Kind == "human" {
-		return humanFace.Story(f)
-	}
-	return workStory(f)
 }
 
 // factString is fact key of case c as a string.
@@ -1507,7 +1489,7 @@ var humanFace = FaceSpec{
 		return cmp.Or(depWait(f), whyOf(factString(f.Case, "why")), whyOf(f.Card.Why), "Only a human can do this work.")
 	},
 	Story: func(f Facts) Story {
-		return Story{Planned: line(title(f)), Happened: whyOf(factString(f.Case, "why"))}
+		return Story{Planned: line(title(f)), Happened: line(factString(f.Case, "happened"))}
 	},
 	Answers: humanAnswers,
 	Suggest: func(f Facts) (string, string, string) {

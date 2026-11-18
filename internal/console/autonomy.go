@@ -175,7 +175,7 @@ func (c *Console) commitProjectFileGuarded(ctx context.Context, a actor, name, m
 		http.StatusCreated, &pull); err != nil {
 		return 0, &forgejoRefusal{what: "open the pull request", err: err}
 	}
-	if err := c.mergeInfra(ctx, a.s, pull.Number); err != nil {
+	if err := c.mergePull(ctx, a.s, c.cfg.InfraRepo, pull.Number); err != nil {
 		return 0, &forgejoRefusal{what: fmt.Sprintf("merge the pull request #%d", pull.Number), err: err}
 	}
 	if c.cfg.PolicyReload != nil {

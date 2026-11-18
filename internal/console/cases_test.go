@@ -328,7 +328,7 @@ func TestCaseFaceInfoIsTheAsksAndTheLifeLoadsOnDemand(t *testing.T) {
 	r.caseAsks = map[int64]factoryd.CaseAsk{1: {At: time.Now().Add(-time.Hour), Detail: map[string]any{"info": "Postgres is shared."}}}
 	ck, _ := r.loggedIn(t)
 	needs := needsOf(t, r, ck, "/")
-	if !strings.Contains(needs, `<span class="since">1 h 0 min</span>`) || strings.Contains(needs, "Last answer processed") {
+	if !strings.Contains(needs, `<span class="since">waits for you, 1 h 0 min</span>`) || strings.Contains(needs, "Last answer processed") {
 		t.Errorf("the small card's band lacks the wait, or names the last answer:\n%s", needs)
 	}
 	if drawer := getAs(r, ck, "/cards/t-a/drawer?tab=overview", false).Body.String(); !strings.Contains(drawer, "Postgres is shared.") {
@@ -424,7 +424,7 @@ func TestACaseRowShowsOneWaitingTime(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	needs := needsOf(t, r, ck, "/")
 	row := needs[strings.Index(needs, `data-card="t-a"`):strings.Index(needs, `data-card="t-b"`)]
-	if strings.Count(row, `class="since"`) != 1 || !strings.Contains(row, `<span class="since">1 h 35 min</span>`) {
+	if strings.Count(row, `class="since"`) != 1 || !strings.Contains(row, `<span class="since">waits for you, 1 h 35 min</span>`) {
 		t.Errorf("t-a's row does not show the case's one waiting time, 1 h 35 min:\n%s", row)
 	}
 }

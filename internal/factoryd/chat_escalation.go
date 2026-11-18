@@ -105,6 +105,11 @@ func (a HumanAsk) Event(t Task) Event {
 		"source":   a.Asker,
 		"by":       a.By,
 	})
+	for key, line := range map[string]string{"happened": a.Q.Happened, "waits": a.Q.Waits, "check": a.Q.Check} {
+		if line != "" {
+			asked[key] = line
+		}
+	}
 	if a.Q.Recommendation != "" {
 		asked["recommendation"], asked["recommended_by"] = a.Q.Recommendation, cmp.Or(a.Q.Source, "the factory")
 	}
@@ -159,6 +164,12 @@ type HumanQuestion struct {
 	Recommended string           `json:"recommended,omitempty"`
 	Source      string           `json:"source,omitempty"`
 	Choices     []QuestionChoice `json:"choices,omitempty"`
+	// Happened is what the factory saw, one line with its numbers; Waits
+	// what waits on the card, one sentence; Check what the factory checks
+	// once a human says the work is done, "" where it checks nothing.
+	Happened string `json:"happened,omitempty"`
+	Waits    string `json:"waits,omitempty"`
+	Check    string `json:"check,omitempty"`
 }
 
 // The caps an escalation names.

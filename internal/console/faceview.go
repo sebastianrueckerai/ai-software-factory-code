@@ -143,6 +143,9 @@ func (c *Console) faceOf(ctx context.Context, v *boardView, n need, needs bool) 
 		if row := n.Case; row != nil {
 			f.Key, f.CaseID = "case "+k.Place, row.Case.ID
 			f.Since = row.Waiting()
+			if f.Since != "" && k.Status == "waiting-human" {
+				f.Since = "waits for you, " + f.Since
+			}
 			if row.Owner != nil {
 				f.Marks = append(f.Marks, fine{helperSteps[row.Owner.Source] + " asks", "flag"})
 			}

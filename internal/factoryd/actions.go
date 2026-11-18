@@ -50,6 +50,10 @@ const (
 	ActDenyCriteria     = "deny_criteria"     // note: the reason; waive a criterion instead if it should not hold
 )
 
+// ActHandBack returns a plan's work card for a human to its planner with
+// the human's note: the human cannot do the work as it was cut.
+const ActHandBack = "hand_back"
+
 // Resolution is one answer on a case: the action with its arguments, an
 // optional draw that rides beside it, and a note.
 type Resolution struct {
@@ -459,6 +463,17 @@ var Actions = []Action{
 	{Name: ActWithdraw, Rungs: rungs(0, 1), Applies: applyAlways},
 	// a note with no words is the human's "Not now": the press is the record
 	{Name: ActNote, Rungs: rungs(2, 3), Applies: applyAlways},
+	{Name: ActHandBack, Rungs: rungs(3), Applies: func(f CaseFacts, r Resolution) string {
+		switch {
+		case !ChoiceKind(f.Kind):
+			return "hand_back returns a human's work card to its planner, and this case is no human card's: answer the case"
+		case f.Plan == "":
+			return "this card is in no plan, so no planner takes it back: have the factory do it, or end the card with your note"
+		case strings.TrimSpace(r.Note) == "":
+			return "hand_back carries what stops you, for the planner: the note"
+		}
+		return ""
+	}},
 }
 
 // capKinds are the stops at a spending limit of the factory or the project,

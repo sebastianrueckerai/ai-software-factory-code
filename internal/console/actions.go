@@ -1251,6 +1251,7 @@ func (c *Console) doPressCase(ctx context.Context, a actor, id string, caseID in
 var approverRules = map[string]accessRule{
 	factoryd.ActRetry:           accessTable["retry"],
 	factoryd.ActReplan:          accessTable["replan"],
+	factoryd.ActHandBack:        accessTable["replan"],
 	factoryd.ActExtend:          {need: approver, scope: scCard, what: "extend a card"},
 	factoryd.ActFund:            accessTable["fund"],
 	factoryd.ActRaiseCeiling:    {need: approver, scope: scCard, what: "raise a card's spend limit"},
@@ -1509,7 +1510,8 @@ func choiceCard(t factoryd.Task) bool {
 
 // doHumanAnswer answers human card t with the choice value or text names,
 // one of its question's own, and once the choice's work went through
-// resolves the card's case through Act with the value. The stall card's
+// resolves the card's case through Act with the value; a hand-back goes to
+// Act with the human's words as its note. The stall card's
 // act on the card's own commit: re-run again re-runs the head's stuck runs
 // and keeps the card waiting, nothing posted; check again closes the card
 // and lets the watch run on; dismiss dismisses the stall until the head
@@ -1522,11 +1524,16 @@ func choiceCard(t factoryd.Task) bool {
 // closes the card on its label. The held-production ask's Deploy anyway is
 // Act's deploy_now, which the chat's agent may press too; its replans are
 // phase 4's doReplan of the plan the value names, and the card closes once
-// factoryd accepted. Words that
+// factoryd accepted. A factory pull request's card merges or closes its
+// pull request as the human, the reason commented, and the pull request's
+// end ends the card. Words that
 // name no choice are the human's comment on a card that is no choice
 // card, a note on its case, the card still waiting; on a choice card they
 // are refused with the choices, as is a value the question does not offer.
 func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, text, value string, typed *factoryd.Resolution) (string, error) {
+	if value == factoryd.ActHandBack {
+		return c.answerCard(ctx, a, t, factoryd.Resolution{Action: value, Note: text})
+	}
 	bt, _, err := c.cfg.Tasks.BoardTask(ctx, t.ID)
 	if err != nil {
 		return "", err
@@ -1653,6 +1660,31 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 			}
 			return closing(ctx)
 		}
+	case t.PRNumber != 0 && (value == factoryd.ActApproveMerge || value == factoryd.ActDenyMerge):
+		repo, err := factoryd.SplitRepo(t.Repository)
+		if err != nil {
+			return "", refuse(http.StatusInternalServerError, "the task names no repository")
+		}
+		if value == factoryd.ActApproveMerge {
+			work = func(ctx context.Context) (int64, error) {
+				poster, err := c.posterOf(ctx, a, t.Repository)
+				if err != nil {
+					return 0, err
+				}
+				if err := c.mergePull(ctx, poster.s, repo, t.PRNumber); err != nil {
+					return 0, &forgejoRefusal{what: fmt.Sprintf("merge pull request #%d", t.PRNumber), err: err}
+				}
+				return 0, nil
+			}
+			note = fmt.Sprintf("Merged pull request #%d. The card ends with it.", t.PRNumber)
+			break
+		}
+		if text == label || strings.TrimSpace(text) == "" {
+			return "", refuse(http.StatusBadRequest, "Your reason is empty: why the change should not land.")
+		}
+		res.Note, res.Args = text, nil
+		work = func(ctx context.Context) (int64, error) { return 0, c.rejectPull(ctx, a, repo, t.PRNumber, text) }
+		note = fmt.Sprintf("Closed pull request #%d with your reason. The card ends with it.", t.PRNumber)
 	case value == factoryd.AnswerPark || value == factoryd.AnswerKeepWaiting:
 		note = fmt.Sprintf("The ask is settled: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber)
 	case value == factoryd.AnswerGo:
@@ -3108,18 +3140,8 @@ func (c *Console) denyMerge(ctx context.Context, a actor, q factoryd.ApprovalReq
 			return "", err
 		}
 	case "reject":
-		poster, err := c.posterOf(ctx, a, q.Project)
-		if err != nil {
+		if err := c.rejectPull(ctx, a, repo, q.PRNumber, note); err != nil {
 			return "", err
-		}
-		pr := fmt.Sprintf("/api/v1/repos/%s/%s", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
-		if err := c.as(ctx, poster.s, http.MethodPost, fmt.Sprintf("%s/issues/%d/comments", pr, q.PRNumber),
-			map[string]string{"body": "Rejected in the factory console: " + note}, http.StatusCreated, nil); err != nil {
-			return "", &forgejoRefusal{what: "comment the rejection", err: err}
-		}
-		if err := c.as(ctx, poster.s, http.MethodPatch, fmt.Sprintf("%s/pulls/%d", pr, q.PRNumber),
-			map[string]string{"state": "closed"}, http.StatusCreated, nil); err != nil {
-			return "", &forgejoRefusal{what: "close the pull request", err: err}
 		}
 		if err := c.decide(ctx, a, q, "denied", "rejected: "+note); err != nil {
 			return "", err
@@ -3129,6 +3151,26 @@ func (c *Console) denyMerge(ctx context.Context, a actor, q factoryd.ApprovalReq
 	}
 	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeDenied, map[string]any{"pr": q.PRNumber, "action": action})
 	return fmt.Sprintf("Denied pull request #%d (%s).", q.PRNumber, strings.ReplaceAll(action, "_", " ")), nil
+}
+
+// rejectPull rejects pull request number of repo for a, each Forgejo
+// write as its decider (posterOf): the reason commented, the pull request
+// closed.
+func (c *Console) rejectPull(ctx context.Context, a actor, repo factoryd.Repo, number int64, note string) error {
+	poster, err := c.posterOf(ctx, a, repo.String())
+	if err != nil {
+		return err
+	}
+	pr := fmt.Sprintf("/api/v1/repos/%s/%s", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
+	if err := c.as(ctx, poster.s, http.MethodPost, fmt.Sprintf("%s/issues/%d/comments", pr, number),
+		map[string]string{"body": "Rejected in the factory console: " + note}, http.StatusCreated, nil); err != nil {
+		return &forgejoRefusal{what: "comment the rejection", err: err}
+	}
+	if err := c.as(ctx, poster.s, http.MethodPatch, fmt.Sprintf("%s/pulls/%d", pr, number),
+		map[string]string{"state": "closed"}, http.StatusCreated, nil); err != nil {
+		return &forgejoRefusal{what: "close the pull request", err: err}
+	}
+	return nil
 }
 
 // noRows refuses a criterion press on a request whose card holds no

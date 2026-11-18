@@ -197,6 +197,57 @@ func TestActReplansAndARefusedReplanLeavesTheCaseOpen(t *testing.T) {
 	}
 }
 
+// "I cannot do this" on a plan's card for a human returns it to the plan's
+// planner with the human's words: the plan's replan step carries them and
+// stops the card, and the case resolves. A card in no plan, or a press with
+// no words, is refused with the state and the fitting answer, and nothing
+// moves.
+func TestHandBackReturnsTheCardToItsPlanner(t *testing.T) {
+	ctx := context.Background()
+	const why = "The runner's build files are not mine to change."
+	r, store, _ := replanRig(t, "done", 2)
+	if err := store.CreateTask(ctx, Task{ID: "h", Kind: "human", Status: "waiting-human", Source: SourcePlan, Parent: "p", PlanKey: "manifests",
+		PlanRevision: 1, Repository: "sf/repo", IssueNumber: 15}); err != nil {
+		t.Fatal(err)
+	}
+	store.cases = []Case{{ID: 9, TaskID: "h", Repository: "sf/repo", Kind: CaseHumanCard, Status: CaseAtHuman}}
+	var refused ErrActRefused
+	_, err := r.Act(ctx, ActInput{TaskID: "h", CaseID: 9, By: "ana", Rung: 3, Res: Resolution{Action: ActHandBack}})
+	if want := "hand_back carries what stops you, for the planner: the note"; !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("a hand-back with no words = %v, want the refusal %q", err, want)
+	}
+	if steps := replanSteps(t, r, "p"); len(steps) != 0 || store.cases[0].Status != CaseAtHuman {
+		t.Fatalf("after the refusal: steps %+v, case %s; want nothing moved", steps, store.cases[0].Status)
+	}
+	got, err := r.Act(ctx, ActInput{TaskID: "h", CaseID: 9, By: "ana", Rung: 3, Res: Resolution{Action: ActHandBack, Note: why}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []CaseAction{{Action: ActHandBack, Result: "Plan #10 goes back to the planner: 1 card stops, and its work stays on its branch."}}; !reflect.DeepEqual(got.Did, want) {
+		t.Errorf("Did %+v, want %+v", got.Did, want)
+	}
+	want := []ReplanStep{{Origin: ReplanPerson, By: "ana", Comment: why, Stops: []string{"h"}, Revision: 2, Time: replanAt}}
+	if steps := replanSteps(t, r, "p"); !reflect.DeepEqual(steps, want) {
+		t.Errorf("the plan's replan steps %+v, want %+v", steps, want)
+	}
+	if h := store.tasks["h"]; h.Status != "closed" || store.cases[0].Status != CaseResolved {
+		t.Errorf("the card is %s and its case %s, want closed and resolved", h.Status, store.cases[0].Status)
+	}
+
+	r, store, _ = replanRig(t, "done", 2)
+	if err := store.CreateTask(ctx, Task{ID: "h", Kind: "human", Status: "waiting-human", Source: SourceWebhook, Repository: "sf/repo", IssueNumber: 15}); err != nil {
+		t.Fatal(err)
+	}
+	store.cases = []Case{{ID: 9, TaskID: "h", Repository: "sf/repo", Kind: CaseHumanCard, Status: CaseAtHuman}}
+	_, err = r.Act(ctx, ActInput{TaskID: "h", CaseID: 9, By: "ana", Rung: 3, Res: Resolution{Action: ActHandBack, Note: why}})
+	if want := "this card is in no plan, so no planner takes it back: have the factory do it, or end the card with your note"; !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("a direct card's hand-back = %v, want the refusal %q", err, want)
+	}
+	if steps := replanSteps(t, r, "p"); len(steps) != 0 || store.tasks["h"].Status != "waiting-human" || store.cases[0].Status != CaseAtHuman {
+		t.Errorf("after the refusals: steps %+v, card %s, case %s; want nothing moved", steps, store.tasks["h"].Status, store.cases[0].Status)
+	}
+}
+
 // A human card's case is the human's or the chat's: rung 1 is refused,
 // and a card that asks no question with choices takes a note.
 func TestActHumanCardRefusals(t *testing.T) {

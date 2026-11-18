@@ -185,7 +185,7 @@ func TestHumanCardSaysWhatItWaitsFor(t *testing.T) {
 	r.tasks.tasks[1].Status = "done"
 	r.tasks.mu.Unlock()
 	face, opened = smallCard(t, r, ck, id), drawer(t, r, ck, id, "overview")
-	if strings.Contains(face, "It waits for") || !strings.Contains(face, "workflow directory") {
+	if strings.Contains(face, "It waits for") || !strings.Contains(face, "keeps agents out of workflow files") {
 		t.Errorf("once #2100 is done the why line does not give the card's reason:\n%s", face)
 	}
 	if !strings.Contains(askBlockOf(t, opened), ">I did it</button>") {

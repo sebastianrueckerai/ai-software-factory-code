@@ -768,7 +768,7 @@ func (c *Console) mergeProject(w http.ResponseWriter, r *http.Request) {
 		c.refuse(w, r, name, "No open pull request from project-"+name+".", http.StatusConflict)
 		return
 	}
-	err = c.mergeInfra(r.Context(), current(r), pr.Number)
+	err = c.mergePull(r.Context(), current(r), c.cfg.InfraRepo, pr.Number)
 	refusal := ""
 	if ae := (*apiError)(nil); errors.As(err, &ae) {
 		refusal = ae.reason()
@@ -800,15 +800,15 @@ func (c *Console) mergeProject(w http.ResponseWriter, r *http.Request) {
 	c.acted(w, r, name)
 }
 
-// mergeInfra merges pull request number of the infra repository as
-// member s, its branch deleted; Forgejo's 405 while it still checks the
-// pull request's mergeability is retried.
-func (c *Console) mergeInfra(ctx context.Context, s *session, number int64) error {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/merge", url.PathEscape(c.cfg.InfraRepo.Owner), url.PathEscape(c.cfg.InfraRepo.Name), number)
+// mergePull merges pull request number of repo as member s, its branch
+// deleted; Forgejo's 405 while it still checks the pull request's
+// mergeability is retried.
+func (c *Console) mergePull(ctx context.Context, s *session, repo factoryd.Repo, number int64) error {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/merge", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), number)
 	body := map[string]any{"Do": "merge", "delete_branch_after_merge": true}
 	err := c.as(ctx, s, http.MethodPost, path, body, http.StatusOK, nil)
 	for attempts := 0; apiStatus(err) == http.StatusMethodNotAllowed && attempts < mergeRetryTries && ctx.Err() == nil; attempts++ {
-		log.Printf("console: Forgejo refused %s's merge of %s#%d with 405; retry %d/%d", s.user, c.cfg.InfraRepo, number, attempts+1, mergeRetryTries)
+		log.Printf("console: Forgejo refused %s's merge of %s#%d with 405; retry %d/%d", s.user, repo, number, attempts+1, mergeRetryTries)
 		time.Sleep(time.Second)
 		err = c.as(ctx, s, http.MethodPost, path, body, http.StatusOK, nil)
 	}

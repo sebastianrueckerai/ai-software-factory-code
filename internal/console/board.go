@@ -1810,8 +1810,9 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 	// newest of its newest event and its newest timeline step (its own
 	// session's last report), one that never had either its own age —
 	// comes only on a card that is running its work: never a final one,
-	// never a queued one; a card parked for a slot owes no work while it
-	// waits. A helper task at work on the card is the card's activity.
+	// a queued one or one that waits for a human's answer; a card parked
+	// for a slot owes no work while it waits. A helper task at work on the
+	// card is the card's activity.
 	setActivity := func(k *card) {
 		lastAt := func(at time.Time) time.Time {
 			last := []time.Time{at, k.stepAt}
@@ -1821,7 +1822,7 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			return slices.MaxFunc(last, time.Time.Compare)
 		}
 		ring := func(d time.Duration) bool { return d >= factoryd.StaleWindow }
-		live := !factoryd.Final(k.Status) && k.Status != "queued"
+		live := !factoryd.Final(k.Status) && k.Status != "queued" && k.Status != "waiting-human" && k.Status != "waiting-poster"
 		reason := func() string {
 			q, _, _ := strings.Cut(strings.TrimPrefix(k.Reason, factoryd.AgentAsks), "\n")
 			return q

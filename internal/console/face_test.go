@@ -520,14 +520,15 @@ func TestCardFaceAccent(t *testing.T) {
 
 // The amber ring and the stale mark: a live card whose newest event is
 // half an hour old or more, or that has had none in its half hour on the
-// board; never a final card, never one parked in the queue. The opened
-// card says how long.
+// board; never a final card, one parked in the queue or one that waits
+// for a human's answer. The opened card says how long.
 func TestCardFaceStaleRing(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	ck, _ := r.loggedIn(t)
 	old, recent := time.Now().Add(-45*time.Minute), time.Now().Add(-5*time.Minute)
 	r.tasks.set("",
 		factoryd.Task{ID: "t-quiet", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "quiet", CreatedAt: old},
+		factoryd.Task{ID: "t-silent", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "silent", CreatedAt: old},
 		factoryd.Task{ID: "t-busy", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "busy", CreatedAt: old},
 		factoryd.Task{ID: "t-new", Kind: "agent", Status: "queued", Track: "direct", Repository: "sf/code", Objective: "never moved", CreatedAt: old},
 		factoryd.Task{ID: "t-done", Kind: "agent", Status: "done", Repository: "sf/code", Objective: "done", CreatedAt: old})
@@ -540,23 +541,18 @@ func TestCardFaceStaleRing(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-ask", Kind: "agent", Status: "waiting-human",
 		Repository: "sf/code", Objective: "asks", CreatedAt: old}, Escalation: "The agent asks: which region?\nthe details"})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	// the waiting card stands in Needs you, its mark in its band
-	for id, want := range map[string][2]string{
-		"t-quiet": {`<article class="card face stale" data-card="t-quiet" `, `<span class="it flag">stale</span>`},
-		"t-ask":   {`<article class="card face need stale" data-card="t-ask" `, `<span class="flag">stale</span>`},
-	} {
-		if face := faceOf(t, body, id); !strings.HasPrefix(face, want[0]) || !strings.Contains(face, want[1]) {
+	// a quiet running card wears the ring, its mark in its band, and the
+	// opened card says how long nothing happened
+	for id, words := range map[string]string{"t-quiet": "stale, nothing for over 45 min", "t-silent": "stale, no event yet, 45 min on the card"} {
+		if face := faceOf(t, body, id); !strings.HasPrefix(face, `<article class="card face stale" data-card="`+id+`" `) || !strings.Contains(face, `<span class="it flag">stale</span>`) {
 			t.Errorf("%s lacks the ring or the stale mark:\n%s", id, face)
 		}
-	}
-	// the opened card says so, and how long nothing happened when no ask
-	// fills its open part
-	for id, words := range map[string]string{"t-quiet": `<span class="it flag">stale, nothing for over 45 min</span>`, "t-ask": `<span class="it flag">stale, no event yet, 45 min on the card</span>`} {
-		if d := drawer(t, r, ck, id, "overview"); !strings.Contains(d, words) {
+		if d := drawer(t, r, ck, id, "overview"); !strings.Contains(d, `<span class="it flag">`+words+`</span>`) {
 			t.Errorf("the opened card of %s lacks %q:\n%s", id, words, d)
 		}
 	}
-	for _, id := range []string{"t-busy", "t-done", "t-new"} {
+	// a card that waits for a human's answer owes no work: no ring
+	for _, id := range []string{"t-busy", "t-done", "t-new", "t-ask"} {
 		if face := faceOf(t, body, id); strings.Contains(face, "stale") || strings.Contains(face, "nothing for over") || strings.Contains(face, "no event yet") {
 			t.Errorf("%s wears the ring:\n%s", id, face)
 		}

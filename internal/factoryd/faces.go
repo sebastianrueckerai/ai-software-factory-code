@@ -242,6 +242,8 @@ func faceSpecOf(c Case, f Facts) FaceSpec {
 		if s, ok := ApprovalFaces[f.ApprovalKind]; ok {
 			return s
 		}
+	case ChoiceCase(c, f.Card.Kind):
+		return humanFace
 	}
 	if s, ok := CaseFaces[c.Kind]; ok {
 		return s

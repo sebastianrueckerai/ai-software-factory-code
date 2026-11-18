@@ -454,12 +454,12 @@ var reproChainOperators = []string{"&&", "||", ";"}
 // ReproQuestion is the person's card of an issue whose reproduction
 // command breaks the sandbox rule for reason: no agent card is filed on
 // it, and its poster files it again with a command that keeps the rule.
-func ReproQuestion(title, poster, reason string) HumanQuestion {
+func ReproQuestion(poster, reason string) HumanQuestion {
 	return HumanQuestion{
-		Ask:     oneLine(title),
-		Why:     "filed by " + poster + ": the reproduction command " + reason,
-		Info:    "No agent builds a card whose reproduction command breaks the sandbox rule. File the issue again with a command that keeps it, then close this card.",
-		Choices: humanWorkChoices(false),
+		Ask:      "Write the reproduction command so the sandbox can run it, then file the issue again",
+		Why:      poster + " wrote a reproduction command that breaks the sandbox rule, so no agent works on the issue",
+		Happened: "The command " + reason + ".",
+		Choices:  humanWorkChoices(false),
 	}
 }
 
@@ -481,14 +481,25 @@ func workflowOnly(paths []string) bool {
 
 // WorkflowQuestion is the person's card of a card whose files all sit
 // under a workflow directory: the factory's push rule refuses them, so a
-// human opens the pull request from the brief.
-func WorkflowQuestion(title, brief string) HumanQuestion {
+// human does the work its title names and its brief lists.
+func WorkflowQuestion(title string) HumanQuestion {
 	return HumanQuestion{
 		Ask:     oneLine(title),
-		Why:     "every file of this card sits under a workflow directory (" + strings.Join(WorkflowDirs, ", ") + "), and the factory's push rule refuses changes to workflow files",
-		Info:    "No agent session is bought for it. A human opens the pull request; the brief below says what to change, then close this card.\n\n" + brief,
+		Why:     "The factory's push rule keeps agents out of workflow files, so a human does this card",
 		Choices: humanWorkChoices(false),
 	}
+}
+
+// PlanHumanAsk is the ask of plan's work card for a human, titled title: a
+// workflow files card the plan waits for, which the human may hand back
+// to its planner.
+func PlanHumanAsk(plan Task, title string) HumanAsk {
+	q := WorkflowQuestion(title)
+	q.Why = fmt.Sprintf("The factory's push rule keeps agents out of workflow files, so a human does this card, and plan #%d waits for it", plan.IssueNumber)
+	q.Waits = "The plan waits for it."
+	q.Check = "The factory does not check this. The card closes, and the plan goes on."
+	q.Choices = choices(ActClose+"/"+variantDone, ActHandBack, ActNote+"/"+variantPark)
+	return HumanAsk{Q: q, By: "factoryd", Asker: SourcePlan, Via: ViaFactoryd, Facts: map[string]any{"plan": plan.ID}}
 }
 
 // splitReproSegments cuts a reproduction command at its chain operators
@@ -1097,10 +1108,10 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	if reason := ValidateReproCommand(task.ReproCommand); track != LabelHuman && reason != "" {
 		// the sandbox rule is known at filing: no session discovers it
 		// under GateReproduction, the poster fixes the issue
-		ask, track = ReproQuestion(issue.Title, poster, reason), LabelHuman
+		ask, track = ReproQuestion(poster, reason), LabelHuman
 	}
 	if track != LabelHuman && workflowOnly(askedDirectories(text)) {
-		ask, track = WorkflowQuestion(issue.Title, text), LabelHuman
+		ask, track = WorkflowQuestion(issue.Title), LabelHuman
 	}
 	if track == LabelHuman {
 		// no runner ever claims a person's card: it waits on a human from
@@ -1420,7 +1431,7 @@ func FileFactoryPRTask(ctx context.Context, store interface {
 	if p.Agents == policy.AgentsNone {
 		t.Kind, t.RiskClass, t.Author = "human", "standard", cmp.Or(t.Author, forgejo.BotUser)
 		url := fmt.Sprintf("%s/%s/pulls/%d", forgejo.PublicURL, p.Repository, prNumber)
-		t, number, err := fileHumanTask(ctx, store, forgejo, tl, p.Repo(), FactoryPRQuestion(b, url), labels, t, "")
+		t, number, err := fileHumanTask(ctx, store, forgejo, tl, p.Repo(), FactoryPRQuestion(b, prNumber, url), labels, t, "")
 		return t, IssueRef{Number: number}, err
 	}
 	t.BudgetEUR = policy.CardBudget(budget, p.Budget, "", false, 0)

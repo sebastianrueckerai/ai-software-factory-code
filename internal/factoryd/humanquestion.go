@@ -25,7 +25,9 @@ func StallQuestion(repository, sha string, since time.Time, pending []string, ca
 			"\n\n" + held + "\n\nRun the chain again runs the pending run and keeps this card. Look again closes it and lets the watch run on: " +
 			"a head still pending a stall bound later asks again. End the card resolves the stall alert and asks nothing more until the head changes. " +
 			"A head that concludes, green or red, closes this card by itself.",
-		Choices: choices(AnswerRerunAgain, AnswerCheckAgain, ActClose+"/"+variantDismiss),
+		Choices:  choices(AnswerRerunAgain, AnswerCheckAgain, ActClose+"/"+variantDismiss),
+		Happened: fmt.Sprintf("The chain at %s has been pending since %s, on %s.", sha[:min(7, len(sha))], timeWords(since), strings.Join(pending, ", ")),
+		Waits:    waitOnChain(cards),
 	}
 }
 
@@ -49,21 +51,25 @@ func RepairQuestion(repository, sha string, findings []string, runURL string, ca
 		Info: fmt.Sprintf("The chain of %s is red at %s: %s. The project runs no agents, so a human repairs it.", repository, sha, strings.Join(findings, "; ")) +
 			"\n\n" + carried + "\n\nRead the run's log or the red status, find the cause, fix it from main's head, and push: the fix rides the chain again, and a green chain ends every wait. " +
 			"A green head closes this card by itself, and so does a head that moves on. Closing it yourself dismisses the red at " + short + ": no new card asks until the head changes.",
-		Choices: humanDoneChoices,
+		Choices:  humanDoneChoices,
+		Happened: fmt.Sprintf("The chain of %s is red at %s: %s.", repository, short, strings.Join(findings, ", ")),
+		Waits:    waitOnChain(cards),
+		Check:    fmt.Sprintf("Closes the card and lets the red at %s stand. A red chain at a newer head files a new card.", short),
 	}
 }
 
-// FactoryPRQuestion is the human card of the pull request at url, of
+// FactoryPRQuestion is the human card of pull request number at url, of
 // brief b, which factoryd opened on a project without agents: no card's
-// gates carry it, so a person merges it in Forgejo or closes it there.
-func FactoryPRQuestion(b BriefText, url string) HumanQuestion {
+// gates carry it, so a human merges it or closes it, on the card or in
+// Forgejo, and either ends the card.
+func FactoryPRQuestion(b BriefText, number int64, url string) HumanQuestion {
 	return HumanQuestion{
 		Ask: b.Title,
 		Why: b.Why,
 		Info: "factoryd opened the pull request, and the project runs no agents: no card's gates check it, so a human merges it. " +
-			"The pull request: " + url + "\n\nRead its change and merge it in Forgejo, or close it there if it should not land: " +
-			"either ends this card.",
-		Choices: humanDoneChoices,
+			"The pull request: " + url + "\n\nRead its change, then merge it or close it, on the card or in Forgejo: either ends this card.",
+		Choices:  choices(ActApproveMerge, ActDenyMerge+"/reject"),
+		Happened: fmt.Sprintf("The factory opened pull request #%d, and with no agents on the project, no gate checks it.", number),
 	}
 }
 
@@ -83,12 +89,20 @@ func AlertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
 		}
 		body = info + "\n\n" + body
 	}
-	return HumanQuestion{
+	q := HumanQuestion{
 		Ask:     b.Title,
 		Why:     b.Why,
 		Info:    why + "\n\n" + body,
 		Choices: choices(ActClose+"/"+variantNoted, ActNote+"/"+variantPark),
 	}
+	if !a.StartsAt.IsZero() {
+		q.Happened = "It has fired since " + timeWords(a.StartsAt)
+		if v := oneLine(a.Annotations["value"]); v != "" {
+			q.Happened += ", at " + v
+		}
+		q.Happened += "."
+	}
+	return q
 }
 
 // RollRefusedQuestion is the card of a green main CI run whose images the
@@ -103,7 +117,10 @@ func RollRefusedQuestion(short string, names, lines []string, runURL string) Hum
 			"Main CI's image jobs sign each image they push. No signature means a job did not sign it or the tag was pushed outside main CI; " +
 			"a signature by another key means the code repository's Actions secret COSIGN_PRIVATE_KEY is not the key k8s/cosign.pub holds. " +
 			"Find which, fix it, and close this issue. The next green push run of main is judged again; an empty commit on main starts one.",
-		Choices: humanDoneChoices,
+		Choices:  humanDoneChoices,
+		Happened: fmt.Sprintf("Main's run is green at %s, and %s of it %s no signature by the factory's key.", short, plural(len(names), "image"), carry(len(names))),
+		Waits:    "The new images stay off the cluster until they are signed.",
+		Check:    "Closes the card. The factory judges the images of main's next green run again.",
 	}
 }
 
@@ -121,7 +138,10 @@ func RerunQuestion(index int64, sha, failed string, lost []string, why string) H
 			"\n\n" + strings.Join(lost, "\n\n") + "\n\n" +
 			"Re-run each job from its page. The project's merge queue is paused until a push run of main is green: the re-run's green " +
 			"result ends the pause, and factoryd closes this issue.",
-		Choices: humanDoneChoices,
+		Choices:  humanDoneChoices,
+		Happened: fmt.Sprintf("Main's push run %d failed in %s, and each failed job lost its runner while it ran.", index, failed),
+		Waits:    queuePaused,
+		Check:    mainRunChecked,
 	}
 }
 
@@ -136,7 +156,10 @@ func StillRedQuestion(index int64, sha, remedy, link string) HumanQuestion {
 			"the fix-forward card or the revert after it, and main stayed red after it, so a human decides.", index, sha, remedy) +
 			"\n\nThe run: " + link + "\n\nRead its log, then fix main or revert by hand. The project's merge queue is paused until a push run of " +
 			"main is green: that run ends the pause, and factoryd closes this issue.",
-		Choices: humanDoneChoices,
+		Choices:  humanDoneChoices,
+		Happened: fmt.Sprintf("Main's push run %d failed at %s after %s merged.", index, sha[:min(7, len(sha))], remedy),
+		Waits:    queuePaused,
+		Check:    mainRunChecked,
 	}
 }
 
@@ -150,7 +173,10 @@ func ConfigRejectedQuestion(dir, short, link, stays, reasons string) HumanQuesti
 		Why: b.Why,
 		Info: fmt.Sprintf("The commit %s of %s/ was rejected. ", short, dir) + stays + "\n\nReasons (`factoryd config check " + dir + "` shows the same):\n\n" + fenced(reasons) + "\n\n" +
 			"Fix the files and push; the next valid commit on main becomes current within 30 s and closes this issue. The tree: " + link,
-		Choices: humanDoneChoices,
+		Choices:  humanDoneChoices,
+		Happened: fmt.Sprintf("The factory refused commit %s of %s/. %s", short, dir, stays),
+		Waits:    "The configuration before it stays in force.",
+		Check:    fmt.Sprintf("Closes the card. The factory checks each new commit of %s/, and a valid one takes effect within 30 seconds.", dir),
 	}
 }
 
@@ -170,7 +196,9 @@ func MonthCapCardQuestion(limit float64, month string, eur float64, link, refusa
 				"if it passes, the counter ran ahead and `max_budget` needs the raise all the same.", month, eur, limit) +
 				"\n\nRaise `max_budget` in k8s/platform/litellm/helmrelease.yaml, the LiteLLM helmrelease, which stays at 1.25 times the cap or more: " + link +
 				"\n\nThe policy cap needs no change. Close this issue once decided.\n\nThe newest refusal:\n\n" + fenced(refusal),
-			Choices: choices(ActNote+"/"+variantPark, ActClose+"/"+variantNoted),
+			Choices:  choices(ActNote+"/"+variantPark, ActClose+"/"+variantNoted),
+			Happened: fmt.Sprintf("LiteLLM refused a model call at %.2f EUR of spend this month, below the cap of %.2f EUR.", eur, limit),
+			Waits:    "Model calls fail until the guard's limit is raised.",
 		}
 	}
 	info := "The gateway refuses every further call with `refused_month_cap` until the month ends or the cap is raised; " +
@@ -185,7 +213,9 @@ func MonthCapCardQuestion(limit float64, month string, eur float64, link, refusa
 		Why: b.Why,
 		Info: fmt.Sprintf("The factory's variable spend in %s (UTC, over the cost ledger: model calls, paid tools, commissioned servers) is %.2f EUR of the cap of %.2f EUR (`budget.month_eur`). ", month, eur, limit) +
 			info,
-		Choices: choices(ActNote+"/"+variantPark, ActClose+"/"+variantNoted),
+		Choices:  choices(ActNote+"/"+variantPark, ActClose+"/"+variantNoted),
+		Happened: fmt.Sprintf("The factory spent %.2f EUR of its %.2f EUR limit in %s.", eur, limit, monthWords(month)),
+		Waits:    "Every model call waits until the limit is raised or the month ends.",
 	}
 }
 
@@ -214,11 +244,50 @@ func MovedQuestion(title, body, poster string) HumanQuestion {
 func IssueQuestion(title, body, poster string, agents bool) HumanQuestion {
 	return HumanQuestion{
 		Ask:     oneLine(title),
-		Why:     "filed by " + poster + " into the human lane",
+		Why:     poster + " filed it for a human, so no agent works on it",
 		Info:    body,
 		Choices: humanWorkChoices(agents),
 	}
 }
+
+// timeWords is t as a face says it: "16 November at 05:12 UTC".
+func timeWords(t time.Time) string { return t.UTC().Format("2 January at 15:04 UTC") }
+
+// monthWords is month, 2006-01, as its name; month itself when it is no
+// month.
+func monthWords(month string) string {
+	if m, err := time.Parse("2006-01", month); err == nil {
+		return m.Month().String()
+	}
+	return month
+}
+
+// carry is "carries" for one, else "carry".
+func carry(n int) string {
+	if n == 1 {
+		return "carries"
+	}
+	return "carry"
+}
+
+// waitOnChain is what waits on a chain that is not green: the merged cards
+// it holds, "" for none.
+func waitOnChain(cards []int64) string {
+	switch len(cards) {
+	case 0:
+		return ""
+	case 1:
+		return issueRefs(cards) + " waits for a green chain."
+	}
+	return issueRefs(cards) + " wait for a green chain."
+}
+
+// The lines of a red main's human card: the merge queue waits on it, and a
+// green push run ends the wait.
+const (
+	queuePaused    = "The merge queue stays paused until a push run of main is green."
+	mainRunChecked = "Closes the card. The factory reads main's next push run, and a green one ends the queue's pause."
+)
 
 // humanDoneChoices are the answers of a card whose work a human does where
 // no agent may: "I did it" and "Not now".

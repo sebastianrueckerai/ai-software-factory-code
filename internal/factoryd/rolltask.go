@@ -958,6 +958,10 @@ func RollFailedQuestion(failed []RollFailure) HumanQuestion {
 			facts[i] += fmt.Sprintf(" (card #%d)", f.Issue)
 		}
 	}
+	runs := make([]string, len(failed))
+	for i, f := range failed {
+		runs[i] = strconv.FormatInt(f.RunID, 10)
+	}
 	b := SourceBriefs[SourceRollFailed](BriefFacts{Name: strconv.Itoa(len(failed))})
 	return HumanQuestion{
 		Ask: b.Title,
@@ -968,7 +972,18 @@ func RollFailedQuestion(failed []RollFailure) HumanQuestion {
 		Recommended:    AnswerRetryRoll,
 		Source:         "the roller",
 		Choices:        choices(ActRetry+"/"+variantRoll, ActNote+"/"+variantPark, ActClose),
+		Happened:       rollsOf(runs) + " failed, so main's newest images do not run live.",
+		Waits:          "Every card merged since the last roll waits for a green chain.",
 	}
+}
+
+// rollsOf names the rolls of runs: "The roll of run 7", "The rolls of
+// runs 7 and 9".
+func rollsOf(runs []string) string {
+	if len(runs) == 1 {
+		return "The roll of run " + runs[0]
+	}
+	return "The rolls of runs " + textutil.AndList(runs)
 }
 
 // RollRetryStore is what RetryRoll reads and writes.

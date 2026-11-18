@@ -32,47 +32,55 @@ func TestTheRaiseRoundsAnUncoveredNeedUpToTheCent(t *testing.T) {
 	}
 }
 
-// Each human card's question asks one line, fills its why and info, and
-// offers exactly its answers in order, in the vocabulary's words.
+// Each human card's question asks one line, fills its why and info, says
+// what the factory saw, and offers exactly its answers in order, in the
+// vocabulary's words.
 func TestHumanCardQuestions(t *testing.T) {
 	did, notNow, factory, noted := QuestionChoice{AnswerClose, "I did it"}, QuestionChoice{AnswerPark, "Not now"},
 		QuestionChoice{AnswerGo, "Have the factory do it"}, QuestionChoice{AnswerClose, "Noted"}
 	alert := SigNozAlert{Fingerprint: "fp", Labels: map[string]string{"alertname": "disk full", "service": "db"}, StartsAt: time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)}
 	for name, tt := range map[string]struct {
-		q       HumanQuestion
-		ask     string
-		choices []QuestionChoice
+		q        HumanQuestion
+		ask      string
+		choices  []QuestionChoice
+		happened string
 	}{
 		"alert": {AlertQuestion(alert, "shop", "prod", "the project runs no agents", "body"),
-			"Look into the alert disk full on db", []QuestionChoice{noted, notNow}},
+			"Look into the alert disk full on db", []QuestionChoice{noted, notNow}, "It has fired since 1 October at 08:00 UTC."},
 		"flux alert": {AlertQuestion(SigNozAlert{Fingerprint: "rollout/x", Labels: map[string]string{"alertname": "stuck"}, StartsAt: alert.StartsAt}, "shop", "prod", "w", "b"),
-			"Look into the alert stuck on prod", []QuestionChoice{noted, notNow}},
+			"Look into the alert stuck on prod", []QuestionChoice{noted, notNow}, "It has fired since 1 October at 08:00 UTC."},
 		"event alert": {AlertQuestion(SigNozAlert{Fingerprint: "fp", Labels: map[string]string{"alertname": "Job failed", "event": "true"}, StartsAt: alert.StartsAt}, "infra", "forgejo", "w", "b"),
-			"Look into the alert Job failed on forgejo", []QuestionChoice{noted, notNow}},
+			"Look into the alert Job failed on forgejo", []QuestionChoice{noted, notNow}, "It has fired since 1 October at 08:00 UTC."},
 		"roll refused": {RollRefusedQuestion("abc1234", []string{"gateway", "worker"}, []string{"gateway: x", "worker: y"}, "https://git/run/1"),
-			"Fix the signing of the images gateway, worker, then close this card", []QuestionChoice{did, notNow}},
+			"Fix the signing of the images gateway, worker, then close this card", []QuestionChoice{did, notNow},
+			"Main's run is green at abc1234, and 2 images of it carry no signature by the factory's key."},
 		"rerun": {RerunQuestion(1208, "abc1234def5678", "ci / test", []string{"ci / test: lost"}, "factoryd re-ran it once."),
-			"Re-run the check ci / test on main after a lost runner", []QuestionChoice{did, notNow}},
+			"Re-run the check ci / test on main after a lost runner", []QuestionChoice{did, notNow},
+			"Main's push run 1208 failed in ci / test, and each failed job lost its runner while it ran."},
 		"config": {ConfigRejectedQuestion("factory", "c9c9c9c9c9", "https://git/tree", "Version 1 stays current.", "bad key"),
-			"Fix the rejected configuration in factory/ and push", []QuestionChoice{did, notNow}},
+			"Fix the rejected configuration in factory/ and push", []QuestionChoice{did, notNow}, "The factory refused commit c9c9c9c9c9 of factory/. Version 1 stays current."},
 		"month cap": {MonthCapCardQuestion(50, "2026-09", 49.98, "https://git/policy#L7", "refused"),
-			"The factory spent its monthly limit of 50.00 EUR. Raise it in policy.yaml, or wait for the month to end?", []QuestionChoice{notNow, noted}},
+			"The factory spent its monthly limit of 50.00 EUR. Raise it in policy.yaml, or wait for the month to end?", []QuestionChoice{notNow, noted},
+			"The factory spent 49.98 EUR of its 50.00 EUR limit in September."},
 		"routine": {RoutineQuestion(policy.Routine{Name: "bump", Title: "Bump the pins"}, "brief", "prov", true),
-			"Bump the pins", []QuestionChoice{did, factory, notNow}},
+			"Bump the pins", []QuestionChoice{did, factory, notNow}, ""},
 		"issue": {IssueQuestion("Two\nlines  here", "text", "sebastian", true),
-			"Two lines here", []QuestionChoice{did, factory, notNow}},
+			"Two lines here", []QuestionChoice{did, factory, notNow}, ""},
 		"routine without agents": {RoutineQuestion(policy.Routine{Name: "bump", Title: "Bump the pins"}, "brief", "prov", false),
-			"Bump the pins", []QuestionChoice{did, notNow}},
+			"Bump the pins", []QuestionChoice{did, notNow}, ""},
 		"issue without agents": {IssueQuestion("Two\nlines  here", "text", "sebastian", false),
-			"Two lines here", []QuestionChoice{did, notNow}},
+			"Two lines here", []QuestionChoice{did, notNow}, ""},
 		"failed roll": {RollFailedQuestion([]RollFailure{{RunID: 7, Title: "Roll the images", Issue: 41}}), "",
-			[]QuestionChoice{{AnswerRetryRoll, "Try the roll again"}, notNow, {AnswerClose, "End the card"}}},
+			[]QuestionChoice{{AnswerRetryRoll, "Try the roll again"}, notNow, {AnswerClose, "End the card"}},
+			"The roll of run 7 failed, so main's newest images do not run live."},
 		"chain stall": {StallQuestion("sf/code", "abc1234def", time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC), []string{"ci / test"}, nil), "",
-			[]QuestionChoice{{AnswerRerunAgain, "Run the chain again"}, {AnswerCheckAgain, "Look again"}, {AnswerDismiss, "End the card"}}},
+			[]QuestionChoice{{AnswerRerunAgain, "Run the chain again"}, {AnswerCheckAgain, "Look again"}, {AnswerDismiss, "End the card"}},
+			"The chain at abc1234 has been pending since 1 November at 08:00 UTC, on ci / test."},
 		"production held": {HoldQuestion("code", time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC), time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC),
 			[]Group{{Plan: "t-plan", Issue: 12, Repository: "sf/code"}}, nil, nil), "",
 			[]QuestionChoice{{AnswerHoldWait, "Not now"}, {ActDeployNow, "Deploy now"},
-				{AnswerReplanOnTop + ":t-plan", "Replan plan #12 on top"}, {AnswerTakeOffMain + ":t-plan", "Take plan #12 off main and replan"}}},
+				{AnswerReplanOnTop + ":t-plan", "Replan plan #12 on top"}, {AnswerTakeOffMain + ":t-plan", "Take plan #12 off main and replan"}},
+			"Production of code has waited 2 hours: plan #12 is open on main."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			q := tt.q
@@ -84,6 +92,9 @@ func TestHumanCardQuestions(t *testing.T) {
 			}
 			if !reflect.DeepEqual(q.Choices, tt.choices) {
 				t.Errorf("choices = %+v, want %+v", q.Choices, tt.choices)
+			}
+			if q.Happened != tt.happened {
+				t.Errorf("happened = %q, want %q", q.Happened, tt.happened)
 			}
 		})
 	}

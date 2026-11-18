@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -31,6 +32,66 @@ func stallCard() factoryd.BoardTask {
 				{Value: factoryd.AnswerCheckAgain, Label: "Check again"},
 				{Value: factoryd.AnswerDismiss, Label: "Dismiss"},
 			}}}
+}
+
+// A human's work card offers its way out and a factory pull request's
+// card its decision, each sent from the opened card's form. "I cannot do
+// this" goes to Act with the human's words, which hands the card back to
+// its plan's planner. "Merge it" merges the pull request as the human, and
+// "Reject and close it" comments the human's reason and closes it; a
+// rejection with no reason is refused and touches nothing.
+func TestAHumanCardsWayOutAndItsPullRequest(t *testing.T) {
+	all := facefixtures.All()
+	seat := func(t *testing.T, kind string) (*rig, *http.Cookie, string, factoryd.Task) {
+		t.Helper()
+		i := slices.IndexFunc(all, func(fx facefixtures.Fixture) bool { return fx.Group == facefixtures.GroupCard && fx.Kind == kind })
+		if i < 0 {
+			t.Fatalf("no fixture %s", kind)
+		}
+		r := newRig(t)
+		ck, s := r.loggedIn(t)
+		r.seedScene(fixtureScene(all[i], all))
+		return r, ck, s.csrf, all[i].Task
+	}
+	answer := func(r *rig, ck *http.Cookie, csrf string, card factoryd.Task, value, words string) *httptest.ResponseRecorder {
+		return r.do(post("/tasks/"+card.ID+"/answer", url.Values{"csrf": {csrf}, "value": {value}, "answer": {words}}), ck)
+	}
+
+	const why = "The runner's build files are not mine to change."
+	r, ck, csrf, card := seat(t, "workflow-files card")
+	if rec := answer(r, ck, csrf, card, factoryd.ActHandBack, why); rec.Code != http.StatusSeeOther {
+		t.Fatalf("I cannot do this = %d %q", rec.Code, rec.Body)
+	}
+	if got, _ := actedOnce(t, r); got.TaskID != card.ID || got.Rung != 3 || !reflect.DeepEqual(got.Res, factoryd.Resolution{Action: factoryd.ActHandBack, Note: why}) {
+		t.Errorf("Act took %+v, want the hand-back with the human's words", got)
+	}
+
+	const merge = "POST /api/v1/repos/sf/code/pulls/14/merge Bearer access-1"
+	r, ck, csrf, card = seat(t, "factory pull request on a project without agents")
+	if rec := answer(r, ck, csrf, card, factoryd.ActApproveMerge, ""); rec.Code != http.StatusSeeOther {
+		t.Fatalf("Merge it = %d %q", rec.Code, rec.Body)
+	}
+	if got, posts := actedOnce(t, r); got.Res.Action != factoryd.ActApproveMerge || !posts || !slices.Contains(r.fg.calls, merge) {
+		t.Errorf("Act took %+v, Forgejo %q; want the merge as the human", got, r.fg.calls)
+	}
+
+	r, ck, csrf, card = seat(t, "factory pull request on a project without agents")
+	if rec := answer(r, ck, csrf, card, factoryd.ActDenyMerge, ""); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Your reason is empty") ||
+		len(r.acted) != 0 || len(r.fg.closed) != 0 {
+		t.Fatalf("a rejection with no reason = %d %q, %d Act calls, closed %v; want 400 and nothing done", rec.Code, rec.Body, len(r.acted), r.fg.closed)
+	}
+	const reason = "The template's new CI step needs a runner the project lacks."
+	if rec := answer(r, ck, csrf, card, factoryd.ActDenyMerge, reason); rec.Code != http.StatusSeeOther {
+		t.Fatalf("Reject and close it = %d %q", rec.Code, rec.Body)
+	}
+	got, _ := actedOnce(t, r)
+	if got.Res.Action != factoryd.ActDenyMerge || got.Res.Note != reason || got.Res.Args != nil {
+		t.Errorf("Act took %+v, want the rejection with the reason", got.Res)
+	}
+	if r.fg.comments["/api/v1/repos/sf/code/issues/14/comments"] != "Rejected in the factory console: "+reason ||
+		!slices.Equal(r.fg.closed, []string{"/api/v1/repos/sf/code/pulls/14 closed"}) || slices.Contains(r.fg.calls, merge) {
+		t.Errorf("Forgejo: comments %v, closed %v, calls %q; want the reason commented and the pull request closed", r.fg.comments, r.fg.closed, r.fg.calls)
+	}
 }
 
 // The stall card's answers carry the card's commit: "re-run again"

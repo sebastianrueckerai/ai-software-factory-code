@@ -70,7 +70,9 @@ func ChatBudgetQuestion(chat Task) HumanQuestion {
 		Info: fmt.Sprintf("The project spent %.2f EUR of the chat's budget of %.2f EUR in %s. The budget pays the chat and the judgment of stopped cards. Until it is raised or the UTC month turns, no stopped card is judged, so every stop comes to Needs you.",
 			chat.EnforcedSpent(), chat.BudgetEUR, month) + "\n\nAdd money to the chat raises it here, and so does Fund and go on in the chat thread that hit the stop. " +
 			"Only a human who approves the project can do either. The raise ends this card.",
-		Choices: choices(AnswerFundChat, ActNote+"/"+variantPark, ActClose+"/"+variantNoted),
+		Choices:  choices(AnswerFundChat, ActNote+"/"+variantPark, ActClose+"/"+variantNoted),
+		Happened: fmt.Sprintf("The chat spent %.2f EUR of its %.2f EUR for %s.", chat.EnforcedSpent(), chat.BudgetEUR, monthWords(month)),
+		Waits:    "Every stopped card comes to you until the budget is raised or the month ends.",
 	}
 }
 

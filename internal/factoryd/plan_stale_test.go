@@ -1159,9 +1159,10 @@ func TestFilePlanRecordsNoRowForARevisionTheStoreAlreadyHolds(t *testing.T) {
 }
 
 // A card whose directories all sit under a workflow directory is filed as a
-// human's card: no queued row, no start, no capability, and an ask that
-// names the push rule. A card with one directory outside them, or with
-// none, is filed as before.
+// human's card: no queued row, no start, no capability, its text the
+// brief, and an ask that names the push rule and the plan that waits, and
+// offers the way back to the planner. A card with one directory outside
+// them, or with none, is filed as before.
 func TestFileChildrenFilesAWorkflowOnlyCardForAHuman(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -1206,9 +1207,11 @@ func TestFileChildrenFilesAWorkflowOnlyCardForAHuman(t *testing.T) {
 			if got.Kind != "human" || got.Status != "waiting-human" || got.Track != "" || len(wf.started) != 0 || got.EnforcedSpent() != 0 {
 				t.Fatalf("card = %+v, started %q; want a human's card waiting, no start, no spend", got, wf.started)
 			}
-			if len(asks) != 1 || !strings.Contains(asks[0].Why, "push rule refuses changes to workflow files") ||
-				!strings.Contains(asks[0].Info, "A human opens the pull request") || !strings.Contains(asks[0].Info, "Change the workflow.") {
-				t.Fatalf("asks = %+v, want one that names the push rule, the human and the brief", asks)
+			want := HumanQuestion{Ask: "Fix the CI", Why: "The factory's push rule keeps agents out of workflow files, so a human does this card, and plan #1 waits for it",
+				Choices: choices(ActClose+"/"+variantDone, ActHandBack, ActNote+"/"+variantPark), Waits: "The plan waits for it.",
+				Check: "The factory does not check this. The card closes, and the plan goes on."}
+			if len(asks) != 1 || !reflect.DeepEqual(asks[0], want) || !strings.Contains(got.Objective, "Change the workflow.") {
+				t.Fatalf("asks = %+v, objective %q; want %+v and the brief in the card's text", asks, got.Objective, want)
 			}
 		})
 	}
