@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -21,54 +22,170 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// retryGateway is the gateway's class holds behind its hold-clear door:
-// the door takes the factoryd token on a named task alone, an arm writes
-// the class_frozen row on the arming card's repository and a clear the
-// class_resumed row on the pressing card's, as the gateway does.
-type retryGateway struct {
+// switchGateway is the real gateway (gateway.NewServer) at
+// http://gateway, standing on the freeze store as it stands on the shared
+// tables: its task rows are the store's cards, and its class_frozen and
+// class_resumed rows land where the watcher reads them. It takes the
+// factoryd token gateway-token, and a sandbox's bearer sandbox-<id> names
+// card id; its holds and its key cost nothing. The provider behind it
+// answers every call with answer, zai's dated refusal, or a success when
+// answer is "". The class holds live in the server: restart stands a new
+// one on the same store.
+type switchGateway struct {
 	store   *freezeStore
-	armed   map[string]string // class -> the reset it holds
-	words   string
-	nextID  int64
-	cleared []string // the classes the door cleared, in press order
+	version policy.Version
+	answer  string
+	server  http.Handler
 }
 
-func (g *retryGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost || r.URL.Path != "/v1/hold/clear" {
-		http.NotFound(w, r)
-		return
-	}
-	task, ok := g.store.tasks[r.Header.Get(gateway.HeaderFactoryTask)]
-	if r.Header.Get("Authorization") != "Bearer gateway-token" || !ok {
-		http.Error(w, "the hold-clear door takes the factoryd shared token on a known task", http.StatusUnauthorized)
-		return
-	}
-	var req struct {
-		Class string `json:"class"`
-	}
-	if json.NewDecoder(r.Body).Decode(&req) != nil || req.Class == "" {
-		http.Error(w, "no class", http.StatusBadRequest)
-		return
-	}
-	if reset, ok := g.armed[req.Class]; ok {
-		delete(g.armed, req.Class)
-		g.row(task.Repository, "class_resumed", req.Class, reset)
-	}
-	g.cleared = append(g.cleared, req.Class)
-	fmt.Fprintf(w, `{"class":%q}`, req.Class)
+func newSwitchGateway(store *freezeStore, version policy.Version) *switchGateway {
+	g := &switchGateway{store: store, version: version}
+	g.restart()
+	return g
 }
 
-// arm arms class's hold at reset and writes the class_frozen row on repo,
-// as a dated refusal of one of repo's cards does.
-func (g *retryGateway) arm(repo, class, reset string) {
-	g.armed[class] = reset
-	g.row(repo, "class_frozen", class, reset)
+func (g *switchGateway) restart() {
+	provider := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if g.answer == "" {
+			io.WriteString(w, `{"choices":[{"message":{"content":"done"}}]}`)
+			return
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+		io.WriteString(w, g.answer)
+	})
+	g.server = gateway.NewServer(gateway.ServerOptions{Auth: g, Store: g, Minter: g, Prices: g, LiteLLMURL: "http://litellm",
+		HTTP: &http.Client{Transport: handlerTransport{provider}}, FactorydToken: "gateway-token"}).Routes("test")
 }
 
-func (g *retryGateway) row(repo, kind, class, reset string) {
-	g.nextID++
-	g.store.rows = append(g.store.rows, FreezeEvent{ID: g.nextID, Repository: repo, At: time.Now(), Kind: kind,
-		Class: class, Reset: reset, Words: g.words})
+func (g *switchGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) { g.server.ServeHTTP(w, r) }
+
+// client reaches the gateway in-process, on the caller's goroutine.
+func (g *switchGateway) client() *http.Client { return &http.Client{Transport: handlerTransport{g}} }
+
+func (g *switchGateway) Authenticate(r *http.Request) (gateway.Identity, error) {
+	id, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer sandbox-")
+	if !ok {
+		return gateway.Identity{}, errors.New("no sandbox token")
+	}
+	return gateway.Identity{Subject: "system:serviceaccount:factory:task-" + id, Namespace: "factory", TaskID: id, SAUID: "sa-" + id}, nil
+}
+
+func (g *switchGateway) Task(ctx context.Context, id string) (gateway.Task, bool, error) {
+	t, ok, err := g.store.Task(ctx, id)
+	return gateway.Task{ID: t.ID, BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, Status: t.Status, Classes: t.RequiredCapabilities,
+		Repository: t.Repository, Source: t.Source, ModelAlias: t.ModelAlias}, ok, err
+}
+
+func (g *switchGateway) TaskCosts(context.Context, string) (gateway.TaskCosts, bool, error) {
+	return gateway.TaskCosts{}, true, nil
+}
+
+func (g *switchGateway) InsertAudit(context.Context, gateway.AuditRow) error { return nil }
+
+func (g *switchGateway) InsertEvent(_ context.Context, row gateway.EventRow) error {
+	detail := func(key string) string { s, _ := row.Detail[key].(string); return s }
+	g.store.rows = append(g.store.rows, FreezeEvent{ID: int64(len(g.store.rows) + 1), Repository: row.Repository, TaskID: row.TaskID,
+		At: time.Now(), Kind: row.Kind, Class: detail("class"), Reset: detail("reset"), Words: detail("words")})
+	return nil
+}
+
+func (g *switchGateway) CurrentPolicy(context.Context) (policy.Version, bool, error) {
+	return g.version, true, nil
+}
+
+func (g *switchGateway) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hold, error) {
+	return policy.Hold{ID: 1, TaskID: r.TaskID, Kind: r.Kind, Ref: r.Ref, MaxOut: 1024}, nil
+}
+
+func (g *switchGateway) ReleaseHold(context.Context, policy.Hold, *float64, policy.Usage) (policy.Booking, error) {
+	return policy.Booking{}, nil
+}
+
+func (g *switchGateway) Mint(_ context.Context, _, taskID string, _ []string) (string, error) {
+	return "sk-" + taskID, nil
+}
+
+func (g *switchGateway) Block(context.Context, string) error { return nil }
+
+func (g *switchGateway) Price(context.Context, string) (policy.Price, error) {
+	return policy.Price{In: 1e-6, Out: 4e-6, MaxOutput: 32768}, nil
+}
+
+// call is card id's model call through the gateway, as its session's
+// sandbox makes it: the answer's status and the reset a named refusal
+// holds the class to. Any other answer fails the test.
+func (g *switchGateway) call(t *testing.T, id string) (int, string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"messages":[{"role":"user","content":"go on"}],"model":"big"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer sandbox-"+id)
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+	var refused struct{ Reset string }
+	switch {
+	case rec.Code == http.StatusOK:
+	case rec.Code == http.StatusTooManyRequests && rec.Header().Get(gateway.HeaderDecision) == gateway.RefusedProviderLimit:
+		json.Unmarshal(rec.Body.Bytes(), &refused) // #nosec G104 -- the gateway's own body; a bad one fails on its reset
+	default:
+		t.Errorf("%s's call = %d %q: %s, want served or the named refusal", id, rec.Code, rec.Header().Get(gateway.HeaderDecision), rec.Body.String())
+	}
+	return rec.Code, refused.Reset
+}
+
+// session is a session of card id whose one model call is its probe: a
+// served call pushes, the named refusal ends the session on the provider
+// limit, to the reset the gateway answered.
+func (g *switchGateway) session(t *testing.T, id string) SessionResult {
+	code, reset := g.call(t, id)
+	if code == http.StatusOK {
+		return pushed("s1", "c1")
+	}
+	until, _ := time.Parse(time.RFC3339, reset)
+	return limitRefused(until, "Usage limit reached for 5 hour")
+}
+
+// zaiLimit is zai's dated refusal whose reset the gateway answers as
+// reset: zai names the minute before it, in Singapore time.
+func zaiLimit(reset time.Time) string {
+	sg, _ := time.LoadLocation("Asia/Singapore")
+	return fmt.Sprintf(`{"error":{"message":"Usage limit reached for 5 hour. Your limit will reset at %s","type":"rate_limit_error","param":null,"code":"429"}}`,
+		reset.Add(-time.Minute).In(sg).Format(time.DateTime))
+}
+
+// switchVersion is the runner's policy version with the classes of
+// freezeWatcher's: big and small name the zai provider, which reads
+// Asia/Singapore, and plain names none.
+func switchVersion() policy.Version {
+	v := testPolicyVersion()
+	doc := v.Tree.Document
+	doc.Classes = maps.Clone(doc.Classes)
+	doc.Classes["big"] = policy.Class{Models: []string{"big"}, Provider: "zai"}
+	doc.Classes["small"] = policy.Class{Models: []string{"small"}, Provider: "zai"}
+	doc.Classes["plain"] = policy.Class{Models: []string{"small"}}
+	doc.ProviderLimits = map[string]policy.ProviderLimit{"zai": {TZ: "Asia/Singapore"}}
+	v.Tree.Document = doc
+	return v
+}
+
+// probeHarness is t1's workflow rig from base: each session's result is
+// sessions' next, the last repeating, and every session's start and every
+// ProviderWait is recorded.
+func probeHarness(t *testing.T, base time.Time, sessions ...func() SessionResult) (*workflowHarness, *[]time.Time, *[]ProviderWait) {
+	h, began, waits := newWorkflowHarness(t), &[]time.Time{}, &[]ProviderWait{}
+	h.env.SetStartTime(base)
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions, *began = append(h.sessions, in), append(*began, h.env.Now())
+			return sessions[min(len(h.sessions), len(sessions))-1](), nil
+		})
+	h.env.OnActivity(ActivityProviderWait, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, w ProviderWait) error {
+			*waits = append(*waits, w)
+			return nil
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	return h, began, waits
 }
 
 // handlerTransport serves a client's requests in-process, on the caller's
@@ -89,42 +206,90 @@ func rowKinds(store *freezeStore) []string {
 	return out
 }
 
-// TestRetrySwitchEndsFreeze: an armed hold on the big class freezes two
-// cards of sf/acme (t1 runs in the workflow rig, t2 beside it) and t5 of
-// sf/other, and each repository holds its open freeze card. A press the
-// gateway refuses wakes nothing and closes nothing. A press clears the hold
-// through POST /v1/hold/clear (one class_resumed row), closes both
-// repositories' freeze cards at once through CloseOnRetry before it wakes
-// the frozen cards with provider_retry, and leaves alone the small card,
-// the queued big card and t6, whose first class with a provider is small,
-// as the gateway reads it; a succeeding probe keeps the cards closed. A
-// second press whose probe meets a dated refusal naming a new reset sees
-// the hold re-arm (a fresh class_frozen row) and the cards re-freeze at
-// the new reset with no human question. A press on a class with no hold
-// and no frozen card is a quiet success.
+// TestRetrySwitchEndsFreeze proves the retry switch from both of its entry
+// points, on the real gateway and the real watcher: the freeze card's
+// Retry now, the console route's Config.RetryFreeze, which cmd/factoryd
+// wires to the switch's RetryFreeze, and the chat's retry of a frozen
+// card, Act's ActRetry on t2 by the project agent, which reaches the
+// switch through Runner.RetryFreeze. In each, sf/other's t5 meets zai's
+// dated refusal first, to 09:45; the gateway restarts, which forgets the
+// hold, and sf/acme's t2 meets it to 09:30: the big class's hold stands
+// armed over t1 (in the workflow rig), t2 and t5, and each repository
+// holds its open freeze card. A press the gateway refuses moves nothing.
+// A press clears the hold, one class_resumed row on the pressing card,
+// closes both repositories' freeze cards at once before it wakes the three
+// frozen cards, and leaves alone the small card, the queued big card and
+// t6, whose first class with a provider is small. t1's probe at the press
+// is served, as is every woken card's next call, and the card stays
+// closed on class_resumed: the freeze ended for all. A new dated refusal
+// re-arms sf/acme's same card. The second press's probe meets zai's
+// refusal naming a new reset, 11:05, which re-arms the gateway's hold:
+// every frozen card's next call meets it, t1 waits to it, the card takes
+// it, no one is asked, and the hold's named refusal reaches a caller of
+// the chat's model door, the digest tool's call on a frozen card's
+// account, with its reset. The switch refuses a work card and a done
+// freeze card by their state, and a press with no hold armed and no frozen
+// card is a quiet success.
 func TestRetrySwitchEndsFreeze(t *testing.T) {
-	ctx := context.Background()
-	store := &freezeStore{fakeStore: newFakeStore()}
-	forgejo, fj := newAlertForgejo(t)
-	const acme, other = "sf/acme", "sf/other"
-	const words = "rate limit exceeded until 2026-10-14 18:04:50 (Asia/Singapore)"
-	g := &retryGateway{store: store, armed: map[string]string{}, words: words}
-	now := oct(14, 9, 0)
-	w := freezeWatcher(store, forgejo, &now)
-	for _, c := range []struct {
-		id, repo, status string
-		classes          []string
+	for _, entry := range []struct {
+		name  string
+		press func(sw *RetrySwitch, r *Runner, card string) error
 	}{
-		{"t1", acme, "running", []string{"big"}}, {"t2", acme, "running", []string{"big"}}, {"t5", other, "running", []string{"big"}},
-		{"t3", acme, "running", []string{"small"}}, {"t4", acme, "queued", []string{"big"}}, {"t6", acme, "running", []string{"small", "big"}},
+		{"the freeze card's Retry now", func(sw *RetrySwitch, _ *Runner, card string) error {
+			return sw.RetryFreeze(context.Background(), card, "sebastian")
+		}},
+		{"the chat's retry of a frozen card", func(_ *RetrySwitch, r *Runner, card string) error {
+			got, err := r.Act(context.Background(), ActInput{TaskID: "t2", By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActRetry}})
+			if err == nil && (len(got.Did) != 1 || got.Did[0].Args["freeze_card"] != card) {
+				err = fmt.Errorf("the retry did %+v, want the press on %s", got.Did, card)
+			}
+			return err
+		}},
 	} {
-		if err := store.CreateTask(ctx, Task{ID: c.id, Kind: "agent", Track: policy.TrackDirect, Status: c.status,
-			Repository: c.repo, RequiredCapabilities: c.classes}); err != nil {
+		t.Run(entry.name, func(t *testing.T) { retrySwitchEndsFreeze(t, entry.press) })
+	}
+}
+
+func retrySwitchEndsFreeze(t *testing.T, press func(sw *RetrySwitch, r *Runner, card string) error) {
+	ctx := context.Background()
+	const acme, other = "sf/acme", "sf/other"
+	// tomorrow's 09:00 UTC: the gateway's holds run on the wall clock, so
+	// every reset lies ahead of it
+	base := time.Now().UTC().Truncate(24 * time.Hour).Add(33 * time.Hour)
+	at := func(d time.Duration) time.Time { return base.Add(d) }
+	version := switchVersion()
+	work := func(id, repo, status string, classes ...string) Task {
+		return Task{ID: id, Kind: "agent", Track: policy.TrackDirect, Status: status, Repository: repo,
+			RequiredCapabilities: classes, ModelAlias: "big"}
+	}
+	frozen := func(id, repo string) Task {
+		t := work(id, repo, "running", "big")
+		t.Gate = GateProvider
+		return t
+	}
+	r, _, runnerStore := newTestRunner(t, frozen("t1", acme), newFakeKube(), &fakeObjectStore{})
+	r.cfg.Policy = func() policy.Version { return version }
+	store := &freezeStore{fakeStore: runnerStore}
+	forgejo, fj := newAlertForgejo(t)
+	now := base
+	w := freezeWatcher(store, forgejo, &now)
+	w.Current = r.cfg.Policy
+	for _, c := range []Task{frozen("t2", acme), frozen("t5", other), work("t3", acme, "running", "small"),
+		work("t4", acme, "queued", "big"), work("t6", acme, "running", "small", "big")} {
+		if err := store.CreateTask(ctx, c); err != nil {
 			t.Fatal(err)
 		}
 	}
-	g.arm(acme, "big", "2026-10-14T09:30:00Z")
-	g.arm(other, "big", "2026-10-14T09:45:00Z")
+	gw := newSwitchGateway(store, version)
+	gw.answer = zaiLimit(at(45 * time.Minute))
+	if _, reset := gw.call(t, "t5"); reset != stamp(at(45*time.Minute)) {
+		t.Fatalf("t5's call armed the hold to %q, want 09:45's %s", reset, stamp(at(45*time.Minute)))
+	}
+	gw.restart()
+	gw.answer = zaiLimit(at(30 * time.Minute))
+	if _, reset := gw.call(t, "t2"); reset != stamp(at(30*time.Minute)) {
+		t.Fatalf("t2's call armed the hold to %q, want 09:30's %s", reset, stamp(at(30*time.Minute)))
+	}
 	if err := w.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -146,69 +311,86 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 		c, _, _ := store.Task(ctx, cards[repo].ID)
 		return c.Status
 	}
+	held := func(want time.Time) {
+		t.Helper()
+		for _, id := range []string{"t2", "t5"} {
+			if code, reset := gw.call(t, id); code != http.StatusTooManyRequests || reset != stamp(want) {
+				t.Fatalf("%s's next call = %d to %q, want the hold's named refusal to %s", id, code, reset, stamp(want))
+			}
+		}
+	}
 
 	var signalled []string
-	press := func(h *workflowHarness, token string) *RetrySwitch {
-		return &RetrySwitch{Freeze: w, GatewayURL: "http://gateway", Token: token, HTTP: &http.Client{Transport: handlerTransport{g}},
-			Signal: func(_ context.Context, id string) error {
-				if a, o := cardStatus(acme), cardStatus(other); a == "waiting-human" || o == "waiting-human" {
-					t.Errorf("%s woken while the freeze cards stand %s and %s, want them closed first", id, a, o)
-				}
-				signalled = append(signalled, id)
-				if id == "t1" && h != nil {
-					h.env.SignalWorkflow(SignalProviderRetry, TaskSignal{Author: "sebastian"})
-				}
-				return nil
-			}}
-	}
+	var current *workflowHarness
+	sw := &RetrySwitch{Freeze: w, GatewayURL: "http://gateway", Token: "gateway-token", HTTP: gw.client(),
+		Signal: func(_ context.Context, id string) error {
+			if a, o := cardStatus(acme), cardStatus(other); a == "waiting-human" || o == "waiting-human" {
+				t.Errorf("%s woken while the freeze cards stand %s and %s, want them closed first", id, a, o)
+			}
+			signalled = append(signalled, id)
+			if id == "t1" && current != nil {
+				current.env.SignalWorkflow(SignalProviderRetry, TaskSignal{Author: "sebastian"})
+			}
+			return nil
+		}}
+	r.RetryFreeze = sw.RetryFreeze
 
 	// a press on a card that holds no open freeze names its state and the
 	// action that fits, and moves nothing
 	var no ErrNoFreeze
-	if err := press(nil, "gateway-token").RetryFreeze(ctx, "t1", "sebastian"); !errors.As(err, &no) ||
+	if err := sw.RetryFreeze(ctx, "t1", "sebastian"); !errors.As(err, &no) ||
 		err.Error() != "t1 is no freeze card: the retry switch ends a provider freeze from the class's open freeze card, and Retry files a failed card again" {
 		t.Fatalf("the press on a work card = %v, want the no-freeze refusal", err)
 	}
 	// a press without the factoryd token: the hold stays, nothing moves
-	if err := press(nil, "sandbox-token").RetryFreeze(ctx, cards[acme].ID, "sebastian"); err == nil || !strings.Contains(err.Error(), "status 401") {
+	sandbox := *sw
+	sandbox.Token = "sandbox-t1"
+	if err := sandbox.RetryFreeze(ctx, cards[acme].ID, "sebastian"); err == nil || !strings.Contains(err.Error(), "status 401") {
 		t.Fatalf("the refused press = %v, want the door's 401", err)
 	}
-	if len(signalled) != 0 || cardStatus(acme) != "waiting-human" || cardStatus(other) != "waiting-human" || g.armed["big"] == "" || len(store.rows) != 2 {
-		t.Fatalf("after the refused press: signalled %q, cards %s and %s, armed %q, rows %q; want nothing moved",
-			signalled, cardStatus(acme), cardStatus(other), g.armed, rowKinds(store))
+	if len(signalled) != 0 || cardStatus(acme) != "waiting-human" || cardStatus(other) != "waiting-human" || len(store.rows) != 2 {
+		t.Fatalf("after the refused press: signalled %q, cards %s and %s, rows %q; want nothing moved",
+			signalled, cardStatus(acme), cardStatus(other), rowKinds(store))
 	}
+	held(at(30 * time.Minute))
 
-	// a press whose probe succeeds: the freeze ends for all
-	h, began, waits := providerLimitHarness(t, limitRefused(oct(14, 9, 30), words), pushed("s2", "c1"))
-	h.onChecks(ChecksResult{State: ChecksSuccess})
-	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
-	p := press(h, "gateway-token")
+	// a press whose probe is served: the freeze ends for all
+	gw.answer = ""
+	probe := func() SessionResult { return gw.session(t, "t1") }
+	h, began, waits := probeHarness(t, base, probe)
+	current = h
 	h.env.RegisterDelayedCallback(func() {
-		if err := p.RetryFreeze(ctx, cards[acme].ID, "sebastian"); err != nil {
-			t.Errorf("RetryFreeze: %v", err)
+		if err := press(sw, r, cards[acme].ID); err != nil {
+			t.Errorf("the press: %v", err)
 		}
 	}, 20*time.Minute)
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	if !sameTimes(*began, []time.Time{oct(14, 9, 0), oct(14, 9, 20)}) || len(h.sessions) != 2 {
+	if !sameTimes(*began, []time.Time{base, at(20 * time.Minute)}) || len(h.sessions) != 2 {
 		t.Fatalf("sessions began at %v, want the probe at the press 09:20", *began)
 	}
 	if !slices.Equal(signalled, []string{"t1", "t2", "t5"}) {
 		t.Fatalf("the press woke %q, want the three frozen cards of both repositories", signalled)
 	}
-	if len(*waits) != 1 || (*waits)[0].Backoff != 30*time.Minute || !(*waits)[0].Until.Equal(oct(14, 9, 30)) {
+	if len(*waits) != 1 || (*waits)[0].Backoff != 30*time.Minute || !(*waits)[0].Until.Equal(at(30*time.Minute)) {
 		t.Fatalf("provider waits = %+v, want the one hold to the 09:30 reset", *waits)
 	}
 	if len(h.escalated) != 0 {
 		t.Fatalf("escalations = %q, want none", h.escalated)
 	}
-	if kinds := rowKinds(store); !slices.Equal(kinds, []string{"class_frozen", "class_frozen", "class_resumed"}) || store.rows[2].Repository != acme {
-		t.Fatalf("events = %+v, want the two arms then one class_resumed on the pressing card's sf/acme", store.rows)
+	if kinds := rowKinds(store); !slices.Equal(kinds, []string{"class_frozen", "class_frozen", "class_resumed"}) ||
+		store.rows[2].Repository != acme || store.rows[2].TaskID != cards[acme].ID {
+		t.Fatalf("events = %+v, want the two arms then one class_resumed on the pressing card of sf/acme", store.rows)
 	}
 	for _, repo := range []string{acme, other} {
 		if cardStatus(repo) != "done" || !slices.Contains(fj.closed, cards[repo].IssueNumber) {
 			t.Fatalf("%s's freeze card stands %s (closed issues %v) after the press, want closed at once", repo, cardStatus(repo), fj.closed)
+		}
+	}
+	for _, id := range []string{"t2", "t5"} {
+		if code, _ := gw.call(t, id); code != http.StatusOK {
+			t.Fatalf("%s's next call after the press = %d, want served", id, code)
 		}
 	}
 	if err := w.Check(ctx); err != nil {
@@ -220,7 +402,8 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 
 	// the provider refuses one of sf/acme's cards again, a new freeze: the
 	// same card re-arms
-	g.arm(acme, "big", "2026-10-14T10:20:00Z")
+	gw.answer = zaiLimit(at(80 * time.Minute))
+	held(at(80 * time.Minute))
 	if err := w.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -228,42 +411,44 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 		t.Fatalf("the re-arm stands %s and %s over %d issues, want sf/acme's same card waiting again", cardStatus(acme), cardStatus(other), len(fj.issues))
 	}
 
-	// a press whose probe meets a dated refusal naming a new reset
-	h2, began2, waits2 := providerLimitHarness(t, limitRefused(oct(14, 10, 20), words), limitRefused(oct(14, 11, 5), words), pushed("s3", "c1"))
-	h2.onChecks(ChecksResult{State: ChecksSuccess})
-	h2.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
-	signalled = nil
-	p = press(h2, "gateway-token")
+	// a press whose probe meets zai's refusal naming a new reset; the
+	// gateway's hold lapses at that reset on the wall clock, which the test
+	// does not wait for, so the session after it pushes as scripted
+	gw.answer = zaiLimit(at(125 * time.Minute))
+	h2, began2, waits2 := probeHarness(t, base, probe, probe, func() SessionResult { return pushed("s3", "c1") })
+	signalled, current = nil, h2
 	h2.env.RegisterDelayedCallback(func() {
-		if err := p.RetryFreeze(ctx, cards[acme].ID, "sebastian"); err != nil {
-			t.Errorf("RetryFreeze: %v", err)
+		if err := press(sw, r, cards[acme].ID); err != nil {
+			t.Errorf("the press: %v", err)
 		}
 	}, 20*time.Minute)
 	if final := h2.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	if !sameTimes(*began2, []time.Time{oct(14, 9, 0), oct(14, 9, 20), oct(14, 11, 5)}) || len(h2.sessions) != 3 {
+	if !sameTimes(*began2, []time.Time{base, at(20 * time.Minute), at(125 * time.Minute)}) || len(h2.sessions) != 3 {
 		t.Fatalf("sessions began at %v, want the probe at the press 09:20 and the re-freeze to 11:05", *began2)
 	}
 	if !slices.Equal(signalled, []string{"t1", "t2", "t5"}) {
 		t.Fatalf("the second press woke %q, want the three frozen cards again", signalled)
 	}
 	if len(*waits2) != 2 || (*waits2)[0].Backoff != 80*time.Minute || (*waits2)[1].Backoff != 105*time.Minute ||
-		!(*waits2)[1].Until.Equal(oct(14, 11, 5)) {
+		!(*waits2)[1].Until.Equal(at(125*time.Minute)) {
 		t.Fatalf("provider waits = %+v, want 80m to 10:20, then 105m to the new reset 11:05", *waits2)
 	}
 	if len(h2.escalated) != 0 || len(h2.sessions[2].Answers) != 0 {
 		t.Fatalf("escalations %q, answers %q, want none: the re-freeze asks no one", h2.escalated, h2.sessions[2].Answers)
 	}
-	// the probe's refusal re-arms the gateway's hold at the new reset: a
-	// fresh class_frozen row, and the same card takes the new freeze
-	g.arm(acme, "big", "2026-10-14T11:05:00Z")
-	now = oct(14, 9, 20)
+	// the probe's refusal re-armed the gateway's hold at the new reset: a
+	// fresh class_frozen row, every frozen card's next call meets it, and
+	// the same card takes the new freeze
+	held(at(125 * time.Minute))
+	now = at(20 * time.Minute)
 	if err := w.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if kinds := rowKinds(store); !slices.Equal(kinds, []string{"class_frozen", "class_frozen", "class_resumed", "class_frozen", "class_resumed", "class_frozen"}) {
-		t.Fatalf("events = %q, want the fresh class_frozen of the re-armed hold", kinds)
+	if kinds := rowKinds(store); !slices.Equal(kinds, []string{"class_frozen", "class_frozen", "class_resumed", "class_frozen", "class_resumed", "class_frozen"}) ||
+		store.rows[4].TaskID != cards[acme].ID || store.rows[5].Reset != stamp(at(125*time.Minute)) {
+		t.Fatalf("events = %+v, want the press's class_resumed, then the fresh class_frozen of the re-armed hold", store.rows)
 	}
 	refrozen, _, _ := store.Task(ctx, cards[acme].ID)
 	if refrozen.Status != "waiting-human" || !strings.Contains(refrozen.Objective, "in 1h 45m") || len(fj.issues) != 2 {
@@ -274,12 +459,18 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 			t.Fatalf("a question was asked: %+v", e)
 		}
 	}
-	if !slices.Equal(g.cleared, []string{"big", "big"}) {
-		t.Fatalf("cleared = %q, want the class at each press", g.cleared)
+	// the chat's model door, the digest tool's call on a frozen card's
+	// account, meets the hold's named refusal with its reset
+	op := &OperatorModel{GatewayURL: "http://gateway", Token: "gateway-token", HTTP: gw.client()}
+	_, err := op.Digest(ctx, "t2", "", "Summarise this file.", "package main")
+	var refusal *policy.Refusal
+	if until, ok := providerLimitUntil(err); !ok || !until.Equal(at(125*time.Minute)) || !errors.As(err, &refusal) ||
+		!strings.HasPrefix(refusal.Reason, "Usage limit reached for 5 hour") {
+		t.Fatalf("the digest inside the freeze = %v (reset %v, %t), want the hold's named refusal to %s", err, until, ok, stamp(at(125*time.Minute)))
 	}
 
 	// the done card of sf/other: its freeze ended, which the press names
-	if err := p.RetryFreeze(ctx, cards[other].ID, "sebastian"); !errors.As(err, &no) ||
+	if err := sw.RetryFreeze(ctx, cards[other].ID, "sebastian"); !errors.As(err, &no) ||
 		err.Error() != fmt.Sprintf("the freeze of #%d ended, the card is done: no hold waits on a retry, and the class's next freeze opens its card again", cards[other].IssueNumber) {
 		t.Fatalf("the press on a done freeze card = %v, want the ended-freeze refusal", err)
 	}
@@ -292,7 +483,7 @@ func TestRetrySwitchEndsFreeze(t *testing.T) {
 		t.Fatal(err)
 	}
 	signalled = nil
-	if err := p.RetryFreeze(ctx, premium.ID, "sebastian"); err != nil {
+	if err := sw.RetryFreeze(ctx, premium.ID, "sebastian"); err != nil {
 		t.Fatalf("the empty press: %v", err)
 	}
 	if got, _, _ := store.Task(ctx, premium.ID); len(store.rows) != 6 || len(signalled) != 0 || cardStatus(acme) != "waiting-human" || got.Status != "done" {
@@ -368,11 +559,15 @@ func TestFreezeCardRefusesAWatcherWithoutItsPolicyReader(t *testing.T) {
 	w := freezeWatcher(store, forgejo, &now)
 	w.Current = nil
 	if err := store.CreateTask(ctx, Task{ID: "t1", Kind: "agent", Track: policy.TrackDirect, Status: "running",
-		Repository: "sf/acme", RequiredCapabilities: []string{"big"}}); err != nil {
+		Repository: "sf/acme", RequiredCapabilities: []string{"big"}, ModelAlias: "big"}); err != nil {
 		t.Fatal(err)
 	}
-	g := &retryGateway{store: store, armed: map[string]string{}}
-	g.arm("sf/acme", "big", "2026-10-14T09:30:00Z")
+	gw := newSwitchGateway(store, switchVersion())
+	reset := time.Now().UTC().Truncate(time.Minute).Add(30 * time.Minute)
+	gw.answer = zaiLimit(reset)
+	if _, armed := gw.call(t, "t1"); armed != stamp(reset) {
+		t.Fatalf("t1's call armed the hold to %q, want %s", armed, stamp(reset))
+	}
 	if err := w.Check(ctx); !errors.Is(err, errNoPolicyReader) || len(fj.issues) != 0 {
 		t.Fatalf("Check = %v over %d issues, want the missing policy reader named and no card", err, len(fj.issues))
 	}
@@ -382,13 +577,13 @@ func TestFreezeCardRefusesAWatcherWithoutItsPolicyReader(t *testing.T) {
 		t.Fatal(err)
 	}
 	var signalled []string
-	p := &RetrySwitch{Freeze: w, GatewayURL: "http://gateway", Token: "gateway-token", HTTP: &http.Client{Transport: handlerTransport{g}},
+	p := &RetrySwitch{Freeze: w, GatewayURL: "http://gateway", Token: "gateway-token", HTTP: gw.client(),
 		Signal: func(_ context.Context, id string) error { signalled = append(signalled, id); return nil }}
 	if err := p.RetryFreeze(ctx, card.ID, "sebastian"); !errors.Is(err, errNoPolicyReader) {
 		t.Fatalf("RetryFreeze = %v, want the missing policy reader named", err)
 	}
-	if g.armed["big"] == "" || len(g.cleared) != 0 || len(signalled) != 0 || len(store.rows) != 1 {
-		t.Fatalf("the refused press moved something: armed %q, cleared %q, woke %q, rows %q", g.armed, g.cleared, signalled, rowKinds(store))
+	if code, held := gw.call(t, "t1"); held != stamp(reset) || len(signalled) != 0 || len(store.rows) != 1 {
+		t.Fatalf("the refused press moved something: t1's next call %d to %q, woke %q, rows %q", code, held, signalled, rowKinds(store))
 	}
 }
 

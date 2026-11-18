@@ -619,6 +619,47 @@ func TestFreezeCardRestartMidFreezeSpeaksOnce(t *testing.T) {
 	}
 }
 
+// A restart mid-freeze adopts the reset on the card's face: the class_frozen
+// a restarted gateway writes when its first call meets the reset the card
+// already holds is the same freeze, so the fresh watcher neither rewrites
+// the face nor comments a re-arm. A new reset still re-arms the card.
+func TestFreezeCardRestartKeepsTheResetOnItsFace(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	arm := func(reset time.Time) {
+		store.rows = append(store.rows, FreezeEvent{ID: int64(len(store.rows) + 1), Repository: "sf/acme", At: now, Kind: "class_frozen",
+			Class: "big", Reset: reset.Format(time.RFC3339), Words: "free quota exhausted"})
+	}
+	arm(base.Add(5 * time.Hour))
+	if err := freezeWatcher(store, forgejo, &now).Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	card, _, _ := store.Task(ctx, cardOfClass(store, Repo{Owner: "sf", Name: "acme"}, "big"))
+	// the row's stamp the restart reads frozenAt from
+	card.CreatedAt = base
+	store.tasks[card.ID] = card
+	now = base.Add(10 * time.Minute)
+	w := freezeWatcher(store, forgejo, &now)
+	arm(base.Add(5 * time.Hour))
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(ctx, card.ID); got.Objective != card.Objective || len(fj.comments) != 0 {
+		t.Fatalf("the same reset after the restart rewrote the face or commented: comments %q, face:\n%s", fj.comments, got.Objective)
+	}
+	arm(base.Add(6 * time.Hour))
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(ctx, card.ID); !strings.Contains(got.Objective, "in 5h 50m") || len(fj.comments) != 1 ||
+		!strings.Contains(fj.comments[0], "the hold re-armed, to the reset 2026-11-21T18:00:00Z") {
+		t.Fatalf("the new reset after the restart: comments %q, face:\n%s", fj.comments, got.Objective)
+	}
+}
+
 // The gateway's hold is the class's in every repository, and its lapse
 // writes one class_resumed, on the repository of the call that found it
 // lapsed. Two repositories hold an open card of the big class; the one
