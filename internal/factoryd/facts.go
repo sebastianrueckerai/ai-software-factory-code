@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -24,8 +25,8 @@ type SessionFacts struct {
 // Line is the brief's line of the facts; a carry card's names the pull
 // request whose head the clone holds, which the sandbox cannot fetch.
 func (f SessionFacts) Line() string {
-	line := fmt.Sprintf("factoryd's facts for this session: %.2f of the %.2f EUR budget left for its calls (the model review and the audit hold %.2f EUR of it); %d minutes of agent time left",
-		max(policy.SessionHeadroom(f.BudgetEUR-f.SpentEUR, f.ReserveEUR), 0), f.BudgetEUR, policy.GateHeld(f.BudgetEUR-f.SpentEUR, f.ReserveEUR), int(f.TimeLeft/time.Minute))
+	line := fmt.Sprintf("factoryd's facts for this session: %s of the %s EUR budget left for its calls (the model review and the audit hold %s EUR of it); %d minutes of agent time left",
+		textutil.EUR(max(policy.SessionHeadroom(f.BudgetEUR-f.SpentEUR, f.ReserveEUR), 0)), textutil.EUR(f.BudgetEUR), textutil.EUR(policy.GateHeld(f.BudgetEUR-f.SpentEUR, f.ReserveEUR)), int(f.TimeLeft/time.Minute))
 	switch {
 	case f.Attempt == 0:
 		line += "."

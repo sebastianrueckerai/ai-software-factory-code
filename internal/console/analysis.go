@@ -22,7 +22,7 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 	case found == "" || len(found) > 2000:
 		return "", refuse(http.StatusBadRequest, "found: what you learned about the ask, 1 to 2000 characters")
 	case len(recommendation) > 2000:
-		return "", refuse(http.StatusBadRequest, "recommendation: 0 to 2000 characters, empty to offer none")
+		return "", refuse(http.StatusBadRequest, "`recommendation`: 0 to 2000 characters, empty to suggest none")
 	}
 	if err := groundsRefusal(recommendation); err != nil {
 		return "", err
@@ -58,12 +58,12 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 		if settled.By != "" {
 			line += " by " + settled.By
 		}
-		return "", refuse(http.StatusConflict, line+". A settled ask is done; escalate files a new one when you need a person.")
+		return "", refuse(http.StatusConflict, line+". A settled ask is done. `escalate` files a new one when you need a human.")
 	case errors.As(err, &unshown):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("The %s of #%d holds no case, so no card shows an analysis of it. "+
-			"Tell the human in the chat, or escalate when a person must decide.", askNoun(unshown.Kind), k.IssueNumber))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The %s of #%d holds no open ask, so no card shows an analysis of it. "+
+			"Tell the human in the chat, or `escalate` when a human must decide.", askNoun(unshown.Kind), k.IssueNumber))
 	case errors.Is(err, factoryd.ErrNoAsk):
-		return "", refuse(http.StatusNotFound, fmt.Sprintf("Card #%d asks nothing in the chat; escalate files an ask when you need a person.", k.IssueNumber))
+		return "", refuse(http.StatusNotFound, fmt.Sprintf("Card #%d asks nothing in the chat. `escalate` files an ask when you need a human.", k.IssueNumber))
 	case err != nil:
 		log.Printf("console: the analysis of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		return "", refuse(http.StatusBadGateway, fmt.Sprintf("The analysis could not be recorded: %s. Attach the analysis again.", errText(err)))

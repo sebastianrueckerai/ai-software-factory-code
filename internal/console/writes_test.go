@@ -405,7 +405,7 @@ func TestChatAnswerTextsBoundedAtMaxAnswer(t *testing.T) {
 	long := strings.Repeat("x", 4001)
 	for _, tc := range []struct{ tool, id string }{{"grant_session", "t-cap"}, {"answer", "t-e"}, {"comment", "t-e"}} {
 		code, msg := refused(t, r, tc.tool, toolInput{TaskID: tc.id, Text: long})
-		equal(t, tc.tool+" on "+tc.id, []any{code, msg}, []any{http.StatusBadRequest, "an answer of 1 to 4000 bytes is required; this one has 4001"})
+		equal(t, tc.tool+" on "+tc.id, []any{code, msg}, []any{http.StatusBadRequest, "An answer of 1 to 4000 bytes is required, and this one has 4001."})
 	}
 	equal(t, "the comments", len(r.fg.comments), 0)
 	_, s := r.loggedIn(t)
@@ -549,7 +549,7 @@ func TestChatNewCardFilesWithoutASize(t *testing.T) {
 func TestChatNewCardNeedsATrackAndItsReason(t *testing.T) {
 	r, g := newWritesRig(t)
 	noTrack := "track: direct builds at once, plan plans first, human is a person's card"
-	noReason := "track_reason: why the card takes track direct, one line"
+	noReason := "`track_reason`: why the card takes track direct, one line"
 	ck, s := r.loggedIn(t)
 	for args, refusal := range map[string]string{
 		`{"title":"Cache metrics"}`: noTrack,
@@ -618,7 +618,7 @@ func TestChatNewCardCarriesAPullRequest(t *testing.T) {
 		}
 	}
 
-	refusal := "The sandbox holds no git credential, so its agent cannot fetch a pull request's commits mid-session: name carry_pr as the pull request's number, which supplies its head in the clone."
+	refusal := "The sandbox holds no git credential, so its agent cannot fetch a pull request's commits mid-session: name `carry_pr` as the pull request's number, which supplies its head in the clone."
 	code, msg := refused(t, r, "new_card", toolInput{Title: "Re-land the feed fix", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Body: "Carry pull request #9 to green checks.", Track: policy.TrackDirect, TrackReason: "the fix is known"})
 	equal(t, "a carry brief without carry_pr", []any{code, msg}, []any{http.StatusBadRequest, refusal})
 	// the proposal judges the brief, so the agent corrects it before Do it
@@ -739,7 +739,7 @@ func TestChatSetPool(t *testing.T) {
 	args := `{"action":"set","eur":25,"reason":"the findings cost money"}`
 	_, done, _ := proposeAndDo(t, r, g, "set_pool", args)
 	equal(t, "set", done, ran("set_pool", args,
-		"The pool of ai-software-factory-code is €25.00 now, was €20.00: sf/infra#12 carries the change and the policy in force holds it."))
+		"The pool of ai-software-factory-code is 25.00 EUR now, was 20.00 EUR: sf/infra#12 carries the change and the policy in force holds it."))
 	if got, _ := infra.contents[len(infra.contents)-1].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: escalation pool 25.00 EUR\n") || !strings.Contains(got, "Factory-Role: chat\n") {
 		t.Errorf("the commit's message = %q", got)
 	}
@@ -755,7 +755,7 @@ func TestChatSetPool(t *testing.T) {
 	args = `{"action":"top_up","eur":5,"reason":"a second finding"}`
 	_, done, _ = proposeAndDo(t, r, g, "set_pool", args)
 	equal(t, "top up", done, ran("set_pool", args,
-		"The pool of ai-software-factory-code is €30.00 now, was €25.00: sf/infra#12 carries the change and the policy in force holds it."))
+		"The pool of ai-software-factory-code is 30.00 EUR now, was 25.00 EUR: sf/infra#12 carries the change and the policy in force holds it."))
 	if got, _ := infra.contents[len(infra.contents)-1].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: escalation pool +5.00 EUR\n") {
 		t.Errorf("the top-up's message = %q", got)
 	}
@@ -864,7 +864,7 @@ func TestPoolProposal(t *testing.T) {
 	}
 	_, done, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":12}}`)
 	equal(t, "the corrected Do it", done, ran("set_pool", `{"action":"set","eur":12,"reason":"Allow two small verified follow-ups"}`,
-		"The pool of ai-software-factory-code is €12.00 now, was €8.00: sf/infra#12 carries the change and the policy in force holds it."))
+		"The pool of ai-software-factory-code is 12.00 EUR now, was 8.00 EUR: sf/infra#12 carries the change and the policy in force holds it."))
 	if got, _ := infra.contents[0].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: escalation pool 12.00 EUR\n") {
 		t.Errorf("the commit's message = %q", got)
 	}
@@ -931,7 +931,7 @@ func TestPoolProposal(t *testing.T) {
 		{"pending 503", func(t *testing.T) {
 			r.c.cfg.PolicyReload = func(context.Context) error { return nil }
 		}, http.StatusServiceUnavailable,
-			"The pool change is merged as sf/infra#12, but the policy in force still holds the pool of ai-software-factory-code at EUR 8.00: the loader picks the merge up on its next poll. The pool_changed row is written, and the pool stays EUR 8.00 until the policy holds EUR 12.00.",
+			"The pool change is merged as sf/infra#12, but the policy in force still holds the pool of ai-software-factory-code at 8.00 EUR: the loader picks the merge up on its next poll. The change is recorded, and the pool stays 8.00 EUR until the policy holds 12.00 EUR.",
 			1},
 		{"repair 500", func(t *testing.T) {
 			r.c.cfg.PolicyReload = func(context.Context) error {
@@ -940,7 +940,7 @@ func TestPoolProposal(t *testing.T) {
 			}
 			r.events.fail = errors.New("the events store is down")
 		}, http.StatusInternalServerError,
-			"The pool change is merged as sf/infra#12, but its pool_changed row could not be written: the events store is down. The change stands: write the missing row (action set, from_eur 8.00, confirmed_eur 12.00, to_eur 12.00, reason \"Allow two small verified follow-ups\") and do not repeat the change.",
+			"The pool change is merged as sf/infra#12, but its record could not be written: the events store is down. The change stands, so do not repeat it. The missing record: set from 8.00 EUR, confirmed 12.00 EUR, to 12.00 EUR, reason \"Allow two small verified follow-ups\".",
 			1},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -1083,7 +1083,7 @@ func TestPoolProposalAccess(t *testing.T) {
 		{`{"correction":{"eur":12.005}}`, "a pool change's amount is whole cents"},
 		{`{"correction":{"eur":-3}}`, "a set takes an amount above 0 EUR: a pool of 0 takes the policy's figure"},
 		{`{"correction":{"eur":900000000001}}`, "a pool change's amount is too large"},
-		{strings.Repeat(" ", 8<<10) + `{"correction":{"eur":12}}`, "The correction's body is over 8192 bytes; press the proposal again."},
+		{strings.Repeat(" ", 8<<10) + `{"correction":{"eur":12}}`, "The correction's body is over 8192 bytes. Press the proposal again."},
 	}
 	for _, w := range wrong {
 		if code, body, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], w.body); code != http.StatusBadRequest || body[0] != w.want {
@@ -1172,7 +1172,7 @@ func TestPoolProposalTopUp(t *testing.T) {
 		`done {}`})
 	_, done, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":4}}`)
 	equal(t, "the corrected top-up", done, ran("set_pool", `{"action":"top_up","eur":4,"reason":"a second finding"}`,
-		"The pool of ai-software-factory-code is €14.00 now, was €10.00: sf/infra#12 carries the change and the policy in force holds it."))
+		"The pool of ai-software-factory-code is 14.00 EUR now, was 10.00 EUR: sf/infra#12 carries the change and the policy in force holds it."))
 	rows := r.events.all()
 	e := rows[len(rows)-1]
 	equal(t, "the event's detail", e.Detail, map[string]any{"action": "top_up", "from_eur": 10.0, "confirmed_eur": 4.0, "to_eur": 14.0,
@@ -1233,7 +1233,7 @@ func TestPoolProposalTopUp(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("the bound press = %d: %v", code, events)
 	}
-	const landed = "The pool of ai-software-factory-code is €14.00 now, was €10.00: sf/infra#12 carries the change and the policy in force holds it."
+	const landed = "The pool of ai-software-factory-code is 14.00 EUR now, was 10.00 EUR: sf/infra#12 carries the change and the policy in force holds it."
 	equal(t, "the one-click confirmation", events, []string{
 		`tool {"arguments":{"action":"top_up","eur":4,"reason":"a second finding"},"duration_ms":0,"name":"set_pool","result":"` + landed + `"}`,
 		`applied {"result":"` + landed + `","tool":"set_pool"}`, `done {}`})
@@ -1263,7 +1263,7 @@ func TestPoolProposalTopUp(t *testing.T) {
 		t.Fatalf("the stale bound press wrote: %d commits, %d pull requests, %d merges", len(infra.contents), len(infra.pulls), len(infra.merges))
 	}
 	code, body, _ = chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(ask, 10)}, "choice": {"top it up by 4 EUR"}})
-	equal(t, "the stale attempt's replay", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo; it may have expired."})
+	equal(t, "the stale attempt's replay", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo. It may have expired."})
 
 	// a file that moves in the press's own gap — after the pre-stream
 	// guard read it, before the writer's locked recheck — answers the
@@ -1293,7 +1293,7 @@ func TestPoolProposalTopUp(t *testing.T) {
 		t.Fatalf("%d model calls after the gap's refusal, want the offers' alone", n)
 	}
 	code, body, _ = chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(ask, 10)}, "choice": {"top it up by 4 EUR"}})
-	equal(t, "the gap attempt's replay", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo; it may have expired."})
+	equal(t, "the gap attempt's replay", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo. It may have expired."})
 }
 
 // A rung on new_card reaches the issue as a Rung line with its reason
@@ -1601,7 +1601,7 @@ func TestAWaitingCardWithoutAnIssueOffersClose(t *testing.T) {
 	ra.wire(r, "t-nw", false)
 	// a waiting card with no case waits on the heal pass; the failed card meets the real Act's gate
 	for id, want := range map[string]string{"t-nw": "this card waits with no open case: the heal pass opens one within a minute",
-		"t-nf": "no case is open on card t-nf, so continue has nothing to answer, and the human may take replan and close"} {
+		"t-nf": "no ask is open on card t-nf, so `continue` has nothing to answer, and the human may take `replan` and `close`"} {
 		code, msg := refused(t, r, "answer", toolInput{TaskID: id, Text: "go on"})
 		equal(t, "answer "+id, []any{code, msg}, []any{http.StatusConflict, want})
 	}

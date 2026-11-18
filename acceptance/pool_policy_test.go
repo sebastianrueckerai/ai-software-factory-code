@@ -237,7 +237,7 @@ func TestPoolPolicyPR(t *testing.T) {
 	token := proposePool(t, r, path, ck, csrf, args)
 	equal(t, "the writes the proposal alone made", poolWrites(r), 0)
 	r.OnReload(func() { r.SetLoadedPool(12) })
-	answer := "The pool of " + accProjectName + " is €12.00 now, was €10.00: sf/infra#101 carries the change and the policy in force holds it."
+	answer := "The pool of " + accProjectName + " is 12.00 EUR now, was 10.00 EUR: sf/infra#101 carries the change and the policy in force holds it."
 	code, body := pressPoolRaw(t, r, path, ck, csrf, token, "")
 	if code != http.StatusOK {
 		t.Fatalf("Do it = %d:\n%s", code, body)
@@ -401,7 +401,7 @@ func TestPoolPolicyPR(t *testing.T) {
 		t.Fatalf("the usable proposal's Do it = %d:\n%s", code, body)
 	}
 	landedPress(t, "the top-up's Do it", body, topUp,
-		"The pool of "+accProjectName+" is €13.00 now, was €12.00: sf/infra#102 carries the change and the policy in force holds it.")
+		"The pool of "+accProjectName+" is 13.00 EUR now, was 12.00 EUR: sf/infra#102 carries the change and the policy in force holds it.")
 
 	// the refusals aside: one more validated branch commit, pull request,
 	// merge, reload and row — every refused change wrote nothing

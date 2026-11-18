@@ -24,5 +24,5 @@
 {{template "routine-config" .}}
 {{end}}</div>
 </div>
-{{define "routine-runs"}}<div class="life runs">{{range .}}<span class="mono">{{.Due}}</span><span class="mono">{{if .Issue}}<a href="#card={{.TaskID}}">#{{.Issue}}</a>{{end}}</span><span class="k {{.Class}}">{{.Outcome}}</span><span class="mono num">{{.Duration}}</span><span class="mono num">{{if .Costs}}{{eur2 .EUR}}{{end}}</span><span class="tnote">{{.Note}}</span>{{end}}</div>{{end}}
+{{define "routine-runs"}}<div class="life runs">{{range .}}<span class="mono">{{.Due}}</span><span class="mono">{{if .Issue}}<a href="#card={{.TaskID}}">#{{.Issue}}</a>{{end}}</span><span class="k {{.Class}}">{{.Outcome}}</span><span class="mono num">{{.Duration}}</span><span class="mono num">{{if .Costs}}{{eur .EUR}} EUR{{end}}</span><span class="tnote">{{.Note}}</span>{{end}}</div>{{end}}
 {{define "routine-config"}}<pre>{{.Config}}</pre><p class="quiet">A change of schedule is a configuration change. {{if .Factory}}This routine is the factory's, in policy.yaml. Skip the next run and Run it now act for every project with a template.{{else}}Ask the project agent to change this.{{end}}</p>{{end}}

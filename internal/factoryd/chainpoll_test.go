@@ -2581,7 +2581,7 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 	ask := "Repair the deploy chain of sf/demo-app"
 	q := askedQuestion(t, store, card.ID)
 	if q.Ask != ask || !strings.HasPrefix(card.Objective, ask+"\n\n") ||
-		!strings.HasPrefix(q.Info, "The chain of sf/demo-app is red at "+demoCommit+": required context flux/platform: failure. The project runs no agents, so a human repairs it.\n\n"+
+		!strings.HasPrefix(q.Info, "The chain of sf/demo-app is red at "+ShortSHA(demoCommit)+": required context flux/platform: failure. The project runs no agents, so a human repairs it.\n\n"+
 			"The run: /sf/demo-app/actions/runs/16\n\nNo card's change rides this head") ||
 		!strings.Contains(q.Info, "Closing it yourself dismisses the red at 9d9d9d9") ||
 		!slices.Equal(q.Choices, []QuestionChoice{{AnswerDone, "I did it"}, {AnswerPark, "Not now"}}) {
@@ -2618,7 +2618,7 @@ func TestTheHumanRepairCardNamesTheCarriedCards(t *testing.T) {
 	if len(cards) != 1 || cards[0].Kind != "human" {
 		t.Fatalf("repair cards %+v, want one human card", cards)
 	}
-	if q := askedQuestion(t, store, cards[0].ID); !strings.Contains(q.Info, "The head carries #77: merged, they wait for a green chain to cover them; this card is their repair.") {
+	if q := askedQuestion(t, store, cards[0].ID); !strings.Contains(q.Info, "The head carries #77: merged, they wait for a green chain to cover them. This card is their repair.") {
 		t.Fatalf("info %q, want the carried card #77 named", q.Info)
 	}
 }

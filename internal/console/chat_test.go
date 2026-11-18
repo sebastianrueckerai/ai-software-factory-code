@@ -1562,7 +1562,7 @@ var boardText = defaultPoolRead() + ".\n" + `Open cards:
 Needs you (1):
   #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
 Queued (1):
-  #5 t-m "Fix the cache. It drops entries." queued (waits for a free work slot, in filing order), €0.40 of €3.00
+  #5 t-m "Fix the cache. It drops entries." queued (waits for a free work slot, in filing order), 0.40 of 3.00 EUR
 In progress (1):
   #11 t-r "Speed up the board." running (runs an agent session), gate session (an agent works in a sandbox)
 Finished cards, ended in the last 7 days and open no more:
@@ -1602,7 +1602,7 @@ func TestChatTextReply(t *testing.T) {
 			t.Errorf("the system message lacks %q:\n%s", want, system)
 		}
 	}
-	if want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00, the factory's whole ledger; pool: " + noDraws + "\n" +
+	if want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month 0.00 of 50.00 EUR, the factory's whole ledger; pool: " + noDraws + "\n" +
 		"Sandbox images: none; every card runs the factory image."; !strings.HasSuffix(system, want) {
 		t.Errorf("the system message does not end with %q:\n%s", want, system)
 	}
@@ -2131,7 +2131,7 @@ func TestChatCardLeadsWithTheDigest(t *testing.T) {
 	r, _, g := newChatRig(t)
 	got := reads(t, r, g, "card", `{"task_id":"#5"}`)[0]
 	if want := "#5 · budget 3.00 spent 0.40 holds 0.00 EUR · queued\nflags: none\n\n" +
-		"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\n"; !strings.HasPrefix(got, want) {
+		"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), 0.40 of 3.00 EUR\n"; !strings.HasPrefix(got, want) {
 		t.Fatalf("the card read =\n%s\nwant it to start\n%s", got, want)
 	}
 }
@@ -2145,7 +2145,7 @@ func TestChatCardKeepsTheCardWhenTheDigestFails(t *testing.T) {
 	}
 	got := reads(t, r, g, "card", `{"task_id":"#5"}`)[0]
 	if want := "digest unreadable: read the timeline: s3 down\n\n" +
-		"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\n"; !strings.HasPrefix(got, want) {
+		"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), 0.40 of 3.00 EUR\n"; !strings.HasPrefix(got, want) {
 		t.Fatalf("the card read =\n%s\nwant it to start\n%s", got, want)
 	}
 }
@@ -2338,7 +2338,7 @@ func TestChatReadThenReply(t *testing.T) {
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what about #5?"}})
 	equal(t, "stream", events, []string{
 		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"card","result":"#5 · budget 3.00 spent 0.40 holds 0.00 EUR · queued\nflags: none\n\n` +
-			`#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\ntrack direct of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\nm…"}`,
+			`#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), 0.40 of 3.00 EUR\ntrack direct of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\nmer…"}`,
 		`text {"text":"#5 waits for a work slot."}`, `done {}`})
 	chatRows(t, r.events, before, "sebastian")
 	calls := g.calls()
@@ -2348,7 +2348,7 @@ func TestChatReadThenReply(t *testing.T) {
 		{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "call_1", "type": "function",
 			"function": map[string]any{"name": "card", "arguments": `{"task_id":"t-m"}`}}}},
 		{"role": "tool", "tool_call_id": "call_1", "content": "#5 · budget 3.00 spent 0.40 holds 0.00 EUR · queued\nflags: none\n\n" +
-			"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\n" +
+			"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), 0.40 of 3.00 EUR\n" +
 			"track direct of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\n" +
 			"merge request 4 pending for pull request #9, risk high, review approve, strict improvement no, head abc123; " +
 			"a human decides because the project's merge rule is human, risk class high is requires_approval; recommendation: Adds the column; merge it.\n" +
@@ -2430,7 +2430,7 @@ func TestSystemTool(t *testing.T) {
 			"  autonomous: the chat's remaining confirms go off; merges follow the merge rule; direction and money beyond the pool still ask\n"+
 			"  full auto: autonomous with the merge rule on auto: nothing waits for a person but direction and money beyond the pool\n",
 		"\nProcess maintenance:\n  track direct, class coder\n  merge rule: human\n  approvers: sebastian\n"+
-			"  task budget: €2.00 default, €5.00 maximum\n  sessions per card: 3\n  agent time: 20m0s\n  check-in: none\n"+
+			"  task budget: 2.00 EUR default, 5.00 EUR maximum\n  sessions per card: 3\n  agent time: 20m0s\n  check-in: none\n"+
 			"  supervisor calls per session: 3\n  supervisor timeout: 6m0s\n  returns before the stronger model: 1\n  steps per session: 200\n"+
 			"  identical calls before a nudge: 3, nudges: 1\n  identical calls that trip the supervisor: 4\n"+
 			"\nChat bounds:\n  message size: 8 KiB\n  model calls: as many as the task's budget holds\n")
@@ -2456,7 +2456,7 @@ func TestSystemTool(t *testing.T) {
 	r.ledger.chat = &policy.ChatConfig{Confirm: []string{}}
 	r.c.cfg.Policies = cappedPolicies{r.ledger}
 	got = read(r, g)
-	contains(got, "\n  approvers: sebastian\n  project month cap: €12.00\n  task budget: €2.00 default, €5.00 maximum\n")
+	contains(got, "\n  approvers: sebastian\n  project month cap: 12.00 EUR\n  task budget: 2.00 EUR default, 5.00 EUR maximum\n")
 }
 
 // A tool the chat's confirm names proposes and runs nothing; the
@@ -2839,7 +2839,7 @@ func TestChatShowDocRefusals(t *testing.T) {
 	equal(t, "the malformed path", []any{status, msg}, []any{http.StatusBadRequest, "../escape.md is no file path: name a path from the repository's root, with no . or .. segments"})
 	r, _ = newReadsRig(t)
 	status, msg = refused(t, r, "show_doc", toolInput{Path: "docs/roadmap.md"})
-	equal(t, "no document repository", []any{status, msg}, []any{http.StatusConflict, "the project names no document repository (chat.doc_repo); there are no documents"})
+	equal(t, "no document repository", []any{status, msg}, []any{http.StatusConflict, "The project names no document repository, so there are no documents (`chat.doc_repo`)."})
 }
 
 // TestChatBoardViewRefusals: a word a control does not carry is refused
@@ -3280,7 +3280,7 @@ func TestChatAskBindsOnlyWriteTools(t *testing.T) {
 	g.replies = [][]string{{call(1, "ask", args)}, {say("I will ask without a binding.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close #5 when you are sure"}})
 	equal(t, "the refused binding", events, []string{
-		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Refused: tool: board reads; a bound tool writes"}`,
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Refused: ` + "`tool`" + `: board reads, and a bound tool writes"}`,
 		`text {"text":"I will ask without a binding."}`, `done {}`})
 	chat.mu.Lock()
 	binds := len(chat.proposals)
@@ -3588,7 +3588,7 @@ func TestChatAskPressIsSingleUse(t *testing.T) {
 		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Closed #5; factoryd ends the card."}`,
 		`applied {"result":"Closed #5; factoryd ends the card.","tool":"close"}`, `done {}`})
 	code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(id, 10)}, "choice": {"hold"}})
-	equal(t, "the second press", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo; it may have expired."})
+	equal(t, "the second press", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo. It may have expired."})
 
 	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
 	r.forgetWriters()
@@ -4413,7 +4413,7 @@ func TestChatReads(t *testing.T) {
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what happened?"}})
 	status := `2026-10-11 09:31 #11 t-r task_status by factoryd via factoryd {\"gate\":\"\",\"status\":\"running\"}`
 	moved := `2026-10-11 09:30 #5 t-m card_retried by sebastian via button {\"replacement\":9}`
-	costs := "The project's spend this month €5.50 of €50.00, the factory's whole ledger."
+	costs := "The project's spend this month 5.50 of 50.00 EUR, the factory's whole ledger."
 	if len(events) != 6 {
 		t.Fatalf("stream length = %d, want 6; events: %v", len(events), events)
 	}
@@ -4954,7 +4954,7 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 	rec := r.do(post("/tasks/t-m/answer", url.Values{"csrf": {s.csrf}, "answer": {"x"}}), ck)
 	// the real Act's gate: a queued card has no case, so a typed answer (a continue) has none to answer
 	equal(t, "the button's answer", []any{rec.Code, rec.Body.String()}, []any{http.StatusConflict,
-		"no case is open on card #5, so continue has nothing to answer, and the human may take extend, fund, raise_ceiling, replan, close and set_dependency\n"})
+		"no ask is open on card #5, so “Go on with my note” has nothing to answer, and the human may take “Allow more sessions”, “Add money”, “Raise the spend limit”, “Send back to the planner”, “End the card” and “Make it wait for a card”\n"})
 }
 
 // The fitting action of each state wrongState names, past the ones the

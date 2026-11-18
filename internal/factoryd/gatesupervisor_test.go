@@ -452,7 +452,7 @@ func TestWithdrawQuestionTellsTheIssueAndTheCard(t *testing.T) {
 	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "in-review" || !slices.Equal(fj.labels[4], []string{"agent", "state/in-review"}) {
 		t.Fatalf("status %q, labels %v; want in-review on both", got.Status, fj.labels[4])
 	}
-	comment := "factoryd: task t1 withdraws its question above because the checks failed. It needs no answer."
+	comment := "This card withdraws its question above because the checks failed. It needs no answer."
 	if !slices.Equal(fj.comments, []string{comment}) {
 		t.Fatalf("comments = %q, want %q", fj.comments, comment)
 	}

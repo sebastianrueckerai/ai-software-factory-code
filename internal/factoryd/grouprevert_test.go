@@ -735,7 +735,7 @@ func TestClosedRevertLeavesTheCardsOnMain(t *testing.T) {
 	if p := g.store.tasks["p"]; p.Status != "queued" || !reflect.DeepEqual(g.wf.reopens, []reopenCall{{taskID: "p"}}) {
 		t.Errorf("plan %s, reopens %+v; want it queued and its run reopened", p.Status, g.wf.reopens)
 	}
-	want := []string{"factoryd: the revert of plan #10 did not land (card #20 ended closed): its cards stay on main."}
+	want := []string{"The revert of plan #10 did not land (card #20 ended closed): its cards stay on main."}
 	if c := g.fj.commentsOn(10); !slices.Equal(c, want) {
 		t.Errorf("plan comments %q, want %q", c, want)
 	}
@@ -813,7 +813,7 @@ func TestRevertPausePassHeals(t *testing.T) {
 	rv.FinishedAt = finishedAgo(2 * time.Minute)
 	g.store.tasks["t-rv"] = rv
 	g.r.RevertPausePass(ctx)
-	want := []string{"factoryd: the revert of plan #10 did not land (card #20 ended failed): its cards stay on main."}
+	want := []string{"The revert of plan #10 did not land (card #20 ended failed): its cards stay on main."}
 	if _, ok := g.store.pauses["sf/repo"]; ok || !slices.Equal(g.fj.commentsOn(10), want) || g.store.tasks["c1"].RevertedAt != nil {
 		t.Errorf("paused %t, plan comments %q, c1 reverted at %v; want the pause gone, %q, no mark", ok, g.fj.commentsOn(10), g.store.tasks["c1"].RevertedAt, want)
 	}

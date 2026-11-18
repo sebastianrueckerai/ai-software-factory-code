@@ -271,9 +271,9 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 		case c.Unread != "":
 			unmet = append(unmet, c.Unread)
 		case c.Met:
-			met = append(met, fmt.Sprintf("the companion %s is at or after %s", c.Repository, c.Pin[:7]))
+			met = append(met, fmt.Sprintf("the companion %s is at or after %s", c.Repository, ShortSHA(c.Pin)))
 		default:
-			unmet = append(unmet, fmt.Sprintf("the companion %s is still behind %s, at %s", c.Repository, c.Pin[:7], c.Head[:7]))
+			unmet = append(unmet, fmt.Sprintf("the companion %s is still behind %s, at %s", c.Repository, ShortSHA(c.Pin), ShortSHA(c.Head)))
 		}
 	}
 	if mechanicalSource(source) {
@@ -298,8 +298,10 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 		} else {
 			met = append(met, fmt.Sprintf("risk class high, which merges without a human on a passed security audit (policy version %d)", g.Policy.PolicyVersion))
 		}
+	case g.Policy.Outcome == policy.OutcomeForbidden:
+		unmet = append(unmet, fmt.Sprintf("risk class %s is forbidden to agents", g.Policy.Class))
 	case g.Policy.Outcome != policy.OutcomeAuto:
-		unmet = append(unmet, fmt.Sprintf("risk class %s is %s", g.Policy.Class, g.Policy.Outcome))
+		unmet = append(unmet, fmt.Sprintf("risk class %s needs a human's approval", g.Policy.Class))
 	default:
 		met = append(met, fmt.Sprintf("risk class %s, whose outcome is auto (policy version %d)", g.Policy.Class, g.Policy.PolicyVersion))
 	}
@@ -334,7 +336,7 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 	// On both routes the review must find no drawback
 	strict := rv.StrictImprovement != nil && *rv.StrictImprovement
 	if rv.Verdict != "" && !strict {
-		unmet = append(unmet, "the model review did not find the change a strict improvement with no drawback: "+rv.Summary)
+		unmet = append(unmet, "the model review did not find the change a strict improvement with no drawback")
 	}
 	switch rv.Verdict {
 	case "approve":
@@ -689,7 +691,7 @@ func (r *Runner) GateMigration(ctx context.Context, taskID string, pr int64, mig
 	if err != nil {
 		return err
 	}
-	msg := "factoryd: **schema migration: human review required**. This pull request changes:\n" + listPaths(migrations)
+	msg := "**schema migration: human review required**. This pull request changes:\n" + listPaths(migrations)
 	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr, msg); err != nil {
 		return err
 	}
@@ -734,7 +736,7 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	}
 	note := NotReproduced(t.AgentSummary)
 	if note != "" {
-		r.commentOnce(ctx, t, repo, pr, "factoryd: the agent fixed a fault it did not reproduce exactly (not_reproduced):\n\n"+fenced(r.untrusted(t, note))+
+		r.commentOnce(ctx, t, repo, pr, "The agent fixed a fault it did not reproduce exactly:\n\n"+fenced(r.untrusted(t, note))+
 			"\n\nThe model review is asked whether the change is a strict improvement with no drawback.")
 	}
 	if t.ReproCommand == "" {
@@ -2429,7 +2431,7 @@ func (r *Runner) ReportMergeRetriesExhausted(ctx context.Context, taskID string,
 	if err != nil {
 		return err
 	}
-	r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: merge retries exhausted for %s after %s's approval (%d retries). A new approval restarts the merge.",
+	r.comment(ctx, t, repo, pr, fmt.Sprintf("Merge retries exhausted for %s after %s's approval (%d retries). A new approval restarts the merge.",
 		commit, approver, maxMergeRetries))
 	r.note(ctx, t, fmt.Sprintf("waiting: the merge after %s's approval failed %d times; approve again to retry", approver, maxMergeRetries))
 	r.record(ctx, t.ID, "merge_retries_exhausted", map[string]any{"pr": pr, "commit": commit, "approver": approver, "retries": maxMergeRetries})
@@ -2438,7 +2440,7 @@ func (r *Runner) ReportMergeRetriesExhausted(ctx context.Context, taskID string,
 }
 
 func (r *Runner) reportMergeFailure(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, reason string) {
-	r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: the merge of %s after %s's approval failed: %s\n\nThe approval stands; factoryd tries again in %s.",
+	r.comment(ctx, t, repo, pr, fmt.Sprintf("The merge of %s after %s's approval failed: %s\n\nThe approval stands, and the factory tries again in %s.",
 		commit, approver, reason, mergeRetryAfter))
 	r.note(ctx, t, "waiting: the merge after "+approver+"'s approval failed and is retried: "+reason)
 	r.record(ctx, t.ID, "merge_failed", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "error": reason}))
@@ -2564,9 +2566,9 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 			return r.refuseMerge(ctx, t, repo, pr, commit, approver, "factoryd holds no gate token for "+t.Repository+
 				": its project file names none, or its registration has not run"), nil
 		}
-		body := "factoryd: the project agent approved " + commit + " on the project's merge rule auto"
+		body := "The project agent approved " + commit + " on the project's merge rule auto"
 		if approver == AutoApprover {
-			body = "factoryd: the merge gate passed " + commit + " on the project's merge rule auto"
+			body = "The merge gate passed " + commit + " on the project's merge rule auto"
 			if len(met) > 0 {
 				body += ":\n\n- " + strings.Join(met, "\n- ")
 			} else {
@@ -2712,7 +2714,7 @@ func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, c
 	if approver == AutoApprover {
 		next = "The card goes to a human: an approver approves it in the console, or merges it here."
 	}
-	r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: the merge of %s after %s's approval signal was refused: %s\n\n%s", commit, approver, res.Refusal, next))
+	r.comment(ctx, t, repo, pr, fmt.Sprintf("The merge of %s after %s's approval signal was refused: %s\n\n%s", commit, approver, res.Refusal, next))
 	r.note(ctx, t, "waiting: Forgejo refused the merge after "+approver+"'s approval: "+res.Refusal)
 	r.record(ctx, t.ID, "merge_refused", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
 	r.awaitApprovalAgain(ctx, t)
@@ -2785,7 +2787,7 @@ func (r *Runner) holdMerge(ctx context.Context, t Task, repo Repo, pr int64, com
 	}
 	why := fmt.Sprintf("the merge is held: %s never judged: %s", textutil.Plural(len(never), "criterion was", "criteria were"), strings.Join(parts, " "))
 	res := MergeResult{Refusal: textutil.Truncate(why, 500)}
-	r.comment(ctx, t, repo, pr, "factoryd: "+res.Refusal)
+	r.comment(ctx, t, repo, pr, capitalize(res.Refusal))
 	r.record(ctx, t.ID, "merge_refused", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
 	r.awaitApprovalAgain(ctx, t)
 	r.note(ctx, t, "waiting: "+res.Refusal)
@@ -2800,7 +2802,7 @@ func (r *Runner) movedHead(ctx context.Context, t Task, repo Repo, pr int64, com
 	why := fmt.Sprintf("a head that moved after its gates: the pull request's head is %s, not the gated %s", head, commit)
 	res := MergeResult{MovedHead: true, Refusal: textutil.Truncate(why, 500)}
 	note := fmt.Sprintf("withdrawn: the head moved to %s after its gates; the new head is judged again, and a green head gets a new request", head)
-	r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: the merge of %s after %s's approval was refused: %s\n\nThe approval request is %s.",
+	r.comment(ctx, t, repo, pr, fmt.Sprintf("The merge of %s after %s's approval was refused: %s\n\nThe approval request is %s.",
 		commit, approver, res.Refusal, note))
 	if err := r.store.ResolveApprovals(ctx, t.ID, ApprovalMerge, "denied", FactoryDecider, note); err != nil {
 		log.Printf("task %s: void the approval request: %v", t.ID, err)
@@ -2906,7 +2908,7 @@ func changeSetOf(base, head []TreeEntry) (string, error) {
 // brought it to the card: the approval stays and waits for a new one.
 func (r *Runner) redHead(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, state string) MergeResult {
 	line := fmt.Sprintf("the checks are red on %s: the merge waits for a green head", commit)
-	r.comment(ctx, t, repo, pr, "factoryd: "+line+".")
+	r.comment(ctx, t, repo, pr, capitalize(line)+".")
 	r.note(ctx, t, line)
 	r.record(ctx, t.ID, "merge_red_head", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "state": state}))
 	r.awaitApprovalAgain(ctx, t)
@@ -2925,7 +2927,7 @@ func mergeWaitRefusal(err error) bool {
 func (r *Runner) mergeConflict(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, why string) MergeResult {
 	res := MergeResult{Refusal: textutil.Truncate(r.Scrub.String(why), 500), Conflict: true}
 	r.comment(ctx, t, repo, pr, fmt.Sprintf(
-		"factoryd: the merge of %s after %s's approval was refused: the pull request no longer merges into main (%s). The task goes back to the agent to merge main into the branch.",
+		"The merge of %s after %s's approval was refused: the pull request no longer merges into main (%s). The task goes back to the agent to merge main into the branch.",
 		commit, approver, res.Refusal))
 	r.record(ctx, t.ID, "merge_conflict", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
 	return res

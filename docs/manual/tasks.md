@@ -261,10 +261,10 @@ from the session cap's stop, and a grant buys the next session a quarter
 of the cap. The used time and the attempts are recorded on the task row
 (`RecordUsage` after every session), so a new workflow run for the same
 task (a resubmitted issue, a run restarted by hand) resumes the count
-instead of starting a fresh cap. The console's Extend raises sessions and
-lines in columns the workflow never writes; the workflow reads them before
-each cap check and after every answer, so an Extend on a running or
-queued card stands. A stopping factoryd detaches from a running
+instead of starting a fresh cap. The console's “Allow more sessions”
+raises sessions and lines in columns the workflow never writes. The
+workflow reads them before each cap check and after every answer, so a
+raise on a running or queued card stands. A stopping factoryd detaches from a running
 `RunSession`: the pod runs on, and the next factoryd's retry reattaches to
 it, a pod that finished meanwhile included, and reads its log from where
 the old factoryd stopped. A pod that is gone starts the attempt over from

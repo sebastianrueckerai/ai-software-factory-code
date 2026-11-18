@@ -153,7 +153,7 @@ func (r *Registrar) openTemplateUpdate(ctx context.Context, p Project, want map[
 		return "", err
 	}
 	if replaced != nil {
-		if err := closeIssueAsFactory(ctx, r.Cards, r.Forgejo, *replaced, fmt.Sprintf("factoryd: Pull request #%d replaces #%d; its card is #%d.", ref.Number, last.Number, issue.Number)); err != nil {
+		if err := closeIssueAsFactory(ctx, r.Cards, r.Forgejo, *replaced, fmt.Sprintf("Pull request #%d replaces #%d. Its card is #%d.", ref.Number, last.Number, issue.Number)); err != nil {
 			return "", err
 		}
 	}
@@ -252,7 +252,7 @@ func (r *Registrar) fileDueCard(ctx context.Context, p Project, number int64, fa
 	if err != nil || failed == nil {
 		return err
 	}
-	return closeIssueAsFactory(ctx, r.Cards, r.Forgejo, *failed, fmt.Sprintf("factoryd: Filed again as #%d.", ref.Number))
+	return closeIssueAsFactory(ctx, r.Cards, r.Forgejo, *failed, fmt.Sprintf("Filed again as #%d.", ref.Number))
 }
 
 // leftBranch keeps the branch a closed pull request left when a person
@@ -310,7 +310,7 @@ func (r *Registrar) keepTemplateUpdate(ctx context.Context, f *Forgejo, p Projec
 	if len(changes) > 0 || !pr.Mergeable {
 		err := f.UpdatePullRequest(ctx, repo.Owner, repo.Name, pr.Number)
 		if errors.Is(err, ErrUpdateConflict) {
-			return r.closeTemplateUpdate(ctx, f, repo, pr.Number, "main conflicts with its branch; the next pass opens it anew from main")
+			return r.closeTemplateUpdate(ctx, f, repo, pr.Number, "main conflicts with its branch, and the next pass opens it anew from main")
 		}
 		if err == nil {
 			changes, err = branchChanges(ctx, f, repo, pr.Number, want)
@@ -406,7 +406,7 @@ func (r *Registrar) closeTemplateUpdate(ctx context.Context, f *Forgejo, repo Re
 	if task, ok, err := r.cardByPR(ctx, repo, number); err != nil {
 		return "", err
 	} else if ok {
-		if err := closeIssueAsFactory(ctx, r.Cards, r.Forgejo, task, fmt.Sprintf("factoryd: closing pull request #%d: %s; this card ends with it.", number, why)); err != nil {
+		if err := closeIssueAsFactory(ctx, r.Cards, r.Forgejo, task, fmt.Sprintf("Closing pull request #%d: %s. This card ends with it.", number, why)); err != nil {
 			return "", fmt.Errorf("close card %s: %w", task.ID, err)
 		}
 	}
@@ -416,7 +416,7 @@ func (r *Registrar) closeTemplateUpdate(ctx context.Context, f *Forgejo, repo Re
 	if err := f.ClosePullRequest(ctx, repo.Owner, repo.Name, number); err != nil {
 		return "", err
 	}
-	if _, err := r.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, number, "factoryd: closing this pull request: "+why+"."); err != nil {
+	if _, err := r.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, number, "Closing this pull request: "+why+"."); err != nil {
 		return "", err
 	}
 	return Change(fmt.Sprintf("closed pull request #%d: %s", number, why)), nil

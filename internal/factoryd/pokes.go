@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"log"
 	"regexp"
 	"slices"
@@ -328,7 +329,7 @@ func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
 				m.Choices = []string{LabelOf(ActRetry), LabelOf(ActNote)}
 			}
 		case str("state") == "done" && t.Parent == "":
-			m.Content = fmt.Sprintf("%s is done and live. It cost %s EUR.", name, money(t.SpentEUR))
+			m.Content = fmt.Sprintf("%s is done and live. It cost %s EUR.", name, textutil.EUR(t.SpentEUR))
 		default:
 			return m, false
 		}
@@ -340,7 +341,7 @@ func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
 		budget, _ := e.Detail["budget_eur"].(float64)
 		spent, _ := e.Detail["spent_eur"].(float64)
 		m.Content = fmt.Sprintf("The chat's budget for this month is used up: %s of %s EUR spent. Its turns wait until it is funded or the month turns.",
-			money(spent), money(budget))
+			textutil.EUR(spent), textutil.EUR(budget))
 	case EventRoutineRan:
 		if str("poke") == "" {
 			return m, false
@@ -457,6 +458,31 @@ func offersOf(raw any) []AskOffer {
 func LabelOf(action string) string {
 	a, _ := AnswerOf(action)
 	return a.Label
+}
+
+var (
+	// keySpan is an answer's key in a code span, with the variant an agent
+	// passes beside it: "`deny_merge` with `reject`"
+	keySpan = regexp.MustCompile("`([a-z_]+)`(?: with `([a-z_]+)`)?")
+	// paramSpan is the names or values of a field an agent passes, in
+	// brackets: " (`depends_on`)", " (`met`, `not_met` or `waived`)"
+	paramSpan = regexp.MustCompile(" \\((?:`[^`]+`(?:, | or | and )?)+\\)")
+)
+
+// ForHuman is refusal s as a human reads it: s names each answer by the
+// key an agent types, in a code span, and a human reads its label; s
+// names in brackets the field an agent passes, which a human's form
+// fills, and a human reads no name of it.
+func ForHuman(s string) string {
+	s = keySpan.ReplaceAllStringFunc(s, func(m string) string {
+		g := keySpan.FindStringSubmatch(m)
+		label := cmp.Or(LabelOf(g[1]+"/"+g[2]), LabelOf(g[1]))
+		if label == "" {
+			return m
+		}
+		return "“" + label + "”"
+	})
+	return paramSpan.ReplaceAllString(s, "")
 }
 
 // RoutineDecider is the decider line of a poke run n of routine makes,

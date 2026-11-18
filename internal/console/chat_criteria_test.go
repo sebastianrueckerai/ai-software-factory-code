@@ -180,7 +180,7 @@ func TestChatAnswersCriteriaOnlyOnTheHumansLine(t *testing.T) {
 	if len(rows) != 3 || len(rows[1].ToolCalls) != 1 || rows[1].Content != "" || rows[2].Content != "I asked them." {
 		t.Fatalf("the wake's rows = %+v", rows)
 	}
-	want := "Refused: This turn runs on no line the human typed, so their word decides no criteria: give them choices with ask, or let them answer on the board's card, and answer_criteria runs on their word."
+	want := "Refused: This turn runs on no line the human typed, so their word decides no promise: give them choices with `ask`, or let them answer on the board's card, and `answer_criteria` runs on their word."
 	if got := rows[1].ToolCalls[0].Result; got != want {
 		t.Errorf("the wake's tool result = %q\nwant %q", got, want)
 	}
@@ -229,7 +229,7 @@ func TestChatRefusesTheWakeOverAnOlderHumanLine(t *testing.T) {
 			}
 		}
 	}
-	want := "Refused: This turn runs on no line the human typed, so their word decides no criteria: give them choices with ask, or let them answer on the board's card, and answer_criteria runs on their word."
+	want := "Refused: This turn runs on no line the human typed, so their word decides no promise: give them choices with `ask`, or let them answer on the board's card, and `answer_criteria` runs on their word."
 	if refusal != want {
 		t.Errorf("the wake's tool result = %q\nwant %q", refusal, want)
 	}

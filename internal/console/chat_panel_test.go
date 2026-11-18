@@ -226,7 +226,7 @@ console.log(JSON.stringify({
   share: JSON.stringify([chatView.clampShare(300, 1200, 16), chatView.clampShare(100, 1200, 16),
     chatView.clampShare(1200, 1200, 16), chatView.clampShare(500.25, 1200, 16)]),
   budgetRow: chatView.factoryHTML({id: 12, role: "assistant", kind: "budget", birth_kind: "chat_budget_spent", at: "2026-10-28T22:20:00Z",
-    content: "The chat's budget for October is used up: €14.96 of €15.00 spent, and the next call does not fit what is left.\nfree headroom 0.038793 EUR"},
+    content: "The chat's budget for October is used up: 14.96 of 15.00 EUR spent, and the next call does not fit what is left.\nfree headroom 0.04 EUR"},
     {budget_eur: 15, spent_eur: 14.96, suggest_eur: 3, can_fund: true}),
   budgetRowWriter: chatView.factoryHTML({id: 12, role: "assistant", kind: "budget", birth_kind: "chat_budget_spent", at: "2026-10-28T22:20:00Z",
     content: "The chat's budget is used up."}, {budget_eur: 15, spent_eur: 14.96, suggest_eur: 3, can_fund: false}),
@@ -372,7 +372,7 @@ console.log(JSON.stringify({
 		{"openQ", `<p class="meta chat-open">question that may be open: Can you do that? &lt;b&gt;</p>|`},
 		{"share", `[384,384,720,500.25]`},
 		{"budgetRow", `<div class="msg agent poke" data-message="12"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-28 22:20Z</time></p>` +
-			`<div class="said"><p>The chat's budget for October is used up: €14.96 of €15.00 spent, and the next call does not fit what is left.<br>free headroom 0.038793 EUR</p></div>` +
+			`<div class="said"><p>The chat's budget for October is used up: 14.96 of 15.00 EUR spent, and the next call does not fit what is left.<br>free headroom 0.04 EUR</p></div>` +
 			`<form class="choices fund" data-fund><label>Raise the judgment budget by, EUR <input type="number" name="eur" step="0.01" min="0.01" required value="3"></label> ` +
 			`<button type="submit">Fund and go on</button></form></div>`},
 		{"budgetRowWriter", `<div class="msg agent poke" data-message="12"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-28 22:20Z</time></p>` +
@@ -1112,7 +1112,7 @@ func TestPoolProposalPanel(t *testing.T) {
 	}
 	const driver = `var fs = require("fs"), vm = require("vm");
 var listeners = [], posts = [], made = [], sends = [], byId = {}, poolHostEl = null;
-var poolLine = {present: false, can_ask: true, words: "0 of 30 sessions, 0 h of 30 h agent time and €0.00 of €60.00 drawn this UTC month"};
+var poolLine = {present: false, can_ask: true, words: "0 of 30 sessions, 0 h of 30 h agent time and 0.00 of 60.00 EUR drawn this UTC month"};
 function el() {
   var e = {textContent: "", innerHTML: "", hidden: false, className: "", value: "", disabled: false,
     dataset: {login: "sebastian", project: "p"}, style: {setProperty: function () {}},
@@ -1250,11 +1250,11 @@ Promise.resolve().then(function () {
 		`<form class="pool-edit" data-pool data-action="set" data-from="0" data-suggested="10">` +
 		`<label>Set the pool at, EUR <input type="number" name="eur" step="0.01" min="0.01" value="10" aria-label="Set the pool at, EUR"></label>` +
 		`<p class="pool-reason">reason (fixed): the month's two verified findings</p>` +
-		`<p class="pool-preview" data-pool-preview>the pool would stand at €10.00</p></form>` +
+		`<p class="pool-preview" data-pool-preview>the pool would stand at 10.00 EUR</p></form>` +
 		`<p class="pfoot"><button type="button" class="doit" data-doit>Do it</button> <button type="button" class="skip" data-skip>Skip</button></p></div>`; got["setHTML"] != want {
 		t.Errorf("the set_pool proposal =\n%s\nwant\n%s", got["setHTML"], want)
 	}
-	const poolWords = "0 of 30 sessions, 0 h of 30 h agent time and €0.00 of €60.00 drawn this UTC month"
+	const poolWords = "0 of 30 sessions, 0 h of 30 h agent time and 0.00 of 60.00 EUR drawn this UTC month"
 	if want := `<div class="poolctl" data-pool-ctl><p class="pool-note">` + poolWords + `</p>` +
 		`<p class="pool-why">Only an approver of the project asks for a pool change.</p></div>`; got["readerCtl"] != want {
 		t.Errorf("the non-approver's pool line =\n%s\nwant\n%s", got["readerCtl"], want)
@@ -1368,7 +1368,7 @@ Promise.resolve().then(function () {
   var card = cardFake("tok7", topUp);
   card.input.value = "4";
   fire(byId["chat-log"], "input", {target: {closest: function (sel) { return sel === "form[data-pool]" ? card.edit : null; }}});
-  out.previewFollows = card.preview.textContent === "the pool would stand at €14.00";
+  out.previewFollows = card.preview.textContent === "the pool would stand at 14.00 EUR";
   out.previewAsksNothing = posts.length === 0;
   fire(byId["chat-log"], "click", {target: card.doit});
   return tick(); // the corrected press runs
@@ -1404,7 +1404,7 @@ Promise.resolve().then(function () {
 		`<form class="pool-edit" data-pool data-action="top_up" data-from="10" data-suggested="5">` +
 		`<label>Top up the pool by, EUR <input type="number" name="eur" step="0.01" min="0.01" value="5" aria-label="Top up the pool by, EUR"></label>` +
 		`<p class="pool-reason">reason (fixed): a second verified finding</p>` +
-		`<p class="pool-preview" data-pool-preview>the pool would stand at €15.00</p></form>` +
+		`<p class="pool-preview" data-pool-preview>the pool would stand at 15.00 EUR</p></form>` +
 		`<p class="pfoot"><button type="button" class="doit" data-doit>Do it</button> <button type="button" class="skip" data-skip>Skip</button></p></div>`; got["topUpHTML"] != want {
 		t.Errorf("the top_up proposal =\n%s\nwant\n%s", got["topUpHTML"], want)
 	}
@@ -1450,7 +1450,7 @@ func TestPoolPanelPending(t *testing.T) {
 		repairShown = "The pool change is merged as sf/infra#1482, but its pool_changed row could not be written: the events store is down. " +
 			"The change stands: write the missing row (action set, from_eur 10.00, confirmed_eur 4.00, to_eur 14.00, " +
 			"reason &quot;the month's two verified findings&quot;) and do not repeat the change."
-		landed = "The pool of demo-app is €14.00 now, was €10.00: sf/infra#1482 carries the change and the policy in force holds it."
+		landed = "The pool of demo-app is 14.00 EUR now, was 10.00 EUR: sf/infra#1482 carries the change and the policy in force holds it."
 	)
 	const poolDriver = `var fs = require("fs"), vm = require("vm");
 var listeners = [], posts = [], made = [], byId = {}, answers = ANSWERS;

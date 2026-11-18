@@ -110,9 +110,9 @@ var Vocabulary = []Answer{
 			{Name: "minutes", Label: "More minutes of agent time", Kind: FieldNumber, Default: extendMinutes},
 			{Name: "lines", Label: "More changed lines", Kind: FieldNumber, Default: fixed("0")}}},
 	{Action: ActFund, Label: "Add money", Effect: "Adds the amount to the card's budget and goes on.",
-		Fields: []Field{{Name: "eur", Label: "EUR to add", Kind: FieldMoney, Default: func(f Facts) string { return money(shortfall(f.CaseFacts)) }}}},
+		Fields: []Field{{Name: "eur", Label: "EUR to add", Kind: FieldMoney, Default: func(f Facts) string { return textutil.EUR(shortfall(f.CaseFacts)) }}}},
 	{Action: ActRaiseCeiling, Label: "Raise the spend limit", Effect: "Raises the most this card may ever spend.",
-		Fields: []Field{{Name: "eur", Label: "EUR to raise the limit by", Kind: FieldMoney, Default: func(f Facts) string { return money(ceilingPass(f.CaseFacts)) }}}},
+		Fields: []Field{{Name: "eur", Label: "EUR to raise the limit by", Kind: FieldMoney, Default: func(f Facts) string { return textutil.EUR(ceilingPass(f.CaseFacts)) }}}},
 	{Action: ActSuccessor, Label: "Start a fresh card on this work", Effect: "Ends this card. A new card goes on from its branch with a full budget."},
 	{Action: ActRetry, Label: "Try the failed card again", Effect: "Files the failed card again as a new card."},
 	{Action: ActRetry, Variant: variantRoll, Label: "Try the roll again", Effect: "Starts the image roll again."},
@@ -191,7 +191,7 @@ var Vocabulary = []Answer{
 		Fields: []Field{{Name: "accent", Label: "Colour", Kind: FieldChoice, Default: func(f Facts) string { return f.Card.Accent }, Options: accentOptions()}}},
 	{Action: AnswerThread, Label: "Talk about this card", Effect: "Opens a chat thread on this card."},
 	{Action: AnswerFundChat, Label: "Add money to the chat", Effect: "Raises the chat's budget for this month. The card closes.",
-		Fields: []Field{{Name: "eur", Label: "EUR to add", Kind: FieldMoney, Default: func(f Facts) string { return money(f.Card.BudgetEUR) }}}},
+		Fields: []Field{{Name: "eur", Label: "EUR to add", Kind: FieldMoney, Default: func(f Facts) string { return textutil.EUR(f.Card.BudgetEUR) }}}},
 	{Action: AnswerSkipRun, Label: "Skip the next run", Effect: "The routine misses its next run. “Undo the skip” reverses it."},
 	{Action: AnswerSkipRun, Variant: variantUndo, Label: "Undo the skip", Effect: "The routine runs at its next time again."},
 	{Action: AnswerNeedsMe, Label: "Give it to me", Effect: "The routine files its card for you."},
@@ -281,8 +281,6 @@ func ceilingPass(f CaseFacts) float64 {
 	return max(0, float64(Cents(f.BudgetEUR)+Cents(shortfall(f))-Cents(f.CeilingEUR))/100)
 }
 
-func money(eur float64) string { return fmt.Sprintf("%.2f", eur) }
-
 // openDependency is the one dependency the card still waits for, "" for none
 // or several.
 func openDependency(f Facts) string {
@@ -308,7 +306,7 @@ var effectFills = map[string]func(Facts) string{
 	},
 	ActRaiseCeiling: func(f Facts) string {
 		if need := raiseFund(f.CaseFacts); need > 0 {
-			return fmt.Sprintf("Raises the spend limit by %s EUR and adds %s EUR, and %s.", money(ceilingPass(f.CaseFacts)), money(need), onward(f, "the card goes on"))
+			return fmt.Sprintf("Raises the spend limit by %s EUR and adds %s EUR, and %s.", textutil.EUR(ceilingPass(f.CaseFacts)), textutil.EUR(need), onward(f, "the card goes on"))
 		}
 		return ""
 	},
@@ -372,7 +370,7 @@ var effectFills = map[string]func(Facts) string{
 		// the delta planner sizes the card it files
 		b := policy.Budget{}
 		return fmt.Sprintf("Files one more card for the open promises, which spends up to %s, %s or %s EUR by the size its planner gives it.",
-			money(b.SizeBudget("small")), money(b.SizeBudget("medium")), money(b.SizeBudget("large")))
+			textutil.EUR(b.SizeBudget("small")), textutil.EUR(b.SizeBudget("medium")), textutil.EUR(b.SizeBudget("large")))
 	},
 	ActRunCriteria: func(f Facts) string {
 		if f.Kind == CaseMonitorFlag {
@@ -385,7 +383,7 @@ var effectFills = map[string]func(Facts) string{
 		if r.ServerType == "" {
 			return ""
 		}
-		return fmt.Sprintf("Rents a %s server for %s at about %.2f EUR.", r.ServerType, spanWords(time.Duration(r.LeaseMinutes)*time.Minute), r.ReservationEUR)
+		return fmt.Sprintf("Rents a %s server for %s at about %s EUR.", r.ServerType, spanWords(time.Duration(r.LeaseMinutes)*time.Minute), textutil.EUR(r.ReservationEUR))
 	},
 }
 
@@ -688,7 +686,7 @@ func capLine(words string) func(Facts) string {
 		if amount <= 0 {
 			return fmt.Sprintf(words, "")
 		}
-		return fmt.Sprintf(words, " of "+money(amount)+" EUR")
+		return fmt.Sprintf(words, " of "+textutil.EUR(amount)+" EUR")
 	}
 }
 
@@ -700,7 +698,7 @@ func shareLine(f Facts) string {
 	}
 	share := fmt.Sprintf("%.0f percent", 100*f.SpendShare)
 	if s := f.LastSession; s != nil && s.CostEUR >= 0.005 && f.Attempts > 1 {
-		return fmt.Sprintf("The last session spent %s EUR, more than %s of what the card had left, and pushed nothing.", money(s.CostEUR), share)
+		return fmt.Sprintf("The last session spent %s EUR, more than %s of what the card had left, and pushed nothing.", textutil.EUR(s.CostEUR), share)
 	}
 	return "The last session spent more than " + share + " of what the card had left, and pushed nothing."
 }
@@ -910,11 +908,11 @@ func spentLine(f Facts) string {
 	case f.Attempts == 0 && f.BudgetEUR == 0:
 		return "No session has run on this card."
 	case f.Attempts == 0:
-		return fmt.Sprintf("No session has run on its %s EUR budget yet.", money(f.BudgetEUR))
+		return fmt.Sprintf("No session has run on its %s EUR budget yet.", textutil.EUR(f.BudgetEUR))
 	case f.Kind == CaseSessionCap:
-		return fmt.Sprintf("It spent %s of %s EUR in all %s it was given.", money(f.SpentEUR), money(f.BudgetEUR), plural(f.Attempts, "session"))
+		return fmt.Sprintf("It spent %s of %s EUR in all %s it was given.", textutil.EUR(f.SpentEUR), textutil.EUR(f.BudgetEUR), plural(f.Attempts, "session"))
 	}
-	return fmt.Sprintf("It spent %s of %s EUR in %s.", money(f.SpentEUR), money(f.BudgetEUR), plural(f.Attempts, "session"))
+	return fmt.Sprintf("It spent %s of %s EUR in %s.", textutil.EUR(f.SpentEUR), textutil.EUR(f.BudgetEUR), plural(f.Attempts, "session"))
 }
 
 // leftLine is what is left of the card's work: the open findings and the
@@ -971,7 +969,7 @@ func leftLine(f Facts) string {
 	// at the budget floor the ask's amount and this price are one number: a
 	// session priced at the opening is named by the why
 	if s := f.LastSession; s != nil && s.CostEUR >= 0.005 && (f.Kind != CaseBudgetFloor || pricedBySession(f.CaseFacts)) {
-		out = strings.TrimSpace(out + fmt.Sprintf(" One more session costs about %s EUR.", money(s.CostEUR)))
+		out = strings.TrimSpace(out + fmt.Sprintf(" One more session costs about %s EUR.", textutil.EUR(s.CostEUR)))
 	}
 	return out
 }
@@ -1039,7 +1037,7 @@ func limitWhy(f Facts) string {
 }
 
 func budgetFaceAsk(f Facts) string {
-	n, need := openFindings(f.CaseFacts), money(shortfall(f.CaseFacts))
+	n, need := openFindings(f.CaseFacts), textutil.EUR(shortfall(f.CaseFacts))
 	if ceilingPass(f.CaseFacts) > 0 {
 		if n > 0 {
 			return fmt.Sprintf("Raise the spend limit and add %s EUR to fix the %s, or end the card?", need, plural(n, "open "+openWord(f.CaseFacts)))
@@ -1058,14 +1056,14 @@ func budgetFaceAsk(f Facts) string {
 func budgetWhy(f Facts) string {
 	switch reserve, priced := f.ReserveEUR > 0, pricedBySession(f.CaseFacts); {
 	case reserve && priced:
-		return fmt.Sprintf("The card has %s EUR left, and the review and the audit hold back %s EUR.", money(f.LeftEUR), money(f.ReserveEUR))
+		return fmt.Sprintf("The card has %s EUR left, and the review and the audit hold back %s EUR.", textutil.EUR(f.LeftEUR), textutil.EUR(f.ReserveEUR))
 	case priced:
-		return fmt.Sprintf("The card has %s EUR left.", money(f.LeftEUR))
+		return fmt.Sprintf("The card has %s EUR left.", textutil.EUR(f.LeftEUR))
 	case reserve:
 		return fmt.Sprintf("The card has %s EUR left, the review and the audit hold back %s EUR, and the next session needs %s EUR to start.",
-			money(f.LeftEUR), money(f.ReserveEUR), money(f.FloorEUR))
+			textutil.EUR(f.LeftEUR), textutil.EUR(f.ReserveEUR), textutil.EUR(f.FloorEUR))
 	}
-	return fmt.Sprintf("The card has %s EUR left, and the next session needs %s EUR to start.", money(f.LeftEUR), money(f.FloorEUR))
+	return fmt.Sprintf("The card has %s EUR left, and the next session needs %s EUR to start.", textutil.EUR(f.LeftEUR), textutil.EUR(f.FloorEUR))
 }
 
 // capWhy names the limit and the file that sets it.
@@ -1140,6 +1138,8 @@ func gateAsk(f Facts) string {
 		return "The checks ran past their time limit. Wait for them once more, or end the card?"
 	case reviewStop(f):
 		return "The review keeps raising findings on this card. Overrule it, or allow more sessions?"
+	case strings.HasPrefix(factString(f.Case, "reason"), leftQueue):
+		return "The pull request left the merge queue with red checks. Check the work again, or tell the card how to go on?"
 	}
 	step := "A step of the work"
 	if m := gateShape.FindStringSubmatch(factString(f.Case, "reason")); m != nil {
@@ -1971,7 +1971,7 @@ func HeldPlanComment(c Case, t Task) string {
 	for _, a := range face.Answers {
 		answers += "\n- " + a.Label + ": " + a.Effect
 	}
-	return strings.Join([]string{"factoryd: " + face.Ask + " " + face.Why, happened, answers}, "\n\n")
+	return strings.Join([]string{face.Ask + " " + face.Why, happened, answers}, "\n\n")
 }
 
 // The states of a promise on its page (promiseState).
@@ -2048,7 +2048,7 @@ var resourceFace = FaceSpec{
 		if r.ServerType == "" {
 			return "Rent the server this card asks for?"
 		}
-		return fmt.Sprintf("Rent a %s server for %s at about %.2f EUR?", r.ServerType, spanWords(time.Duration(r.LeaseMinutes)*time.Minute), r.ReservationEUR)
+		return fmt.Sprintf("Rent a %s server for %s at about %s EUR?", r.ServerType, spanWords(time.Duration(r.LeaseMinutes)*time.Minute), textutil.EUR(r.ReservationEUR))
 	},
 	Why: func(f Facts) string {
 		if p := resourceOf(f).Purpose; p != "" {

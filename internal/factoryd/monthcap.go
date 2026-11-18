@@ -15,6 +15,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // SourceMonthCap is the source of the human-lane task filed when the month
@@ -106,18 +107,18 @@ var projectFile = regexp.MustCompile(`projects/[^\s/]+\.yaml`)
 // question row (escalationQuestion), with the actions; the second names by
 // and its state.
 func CapWaitReason(decision, by, state string, until time.Time) string {
-	var what, key, file string
+	var what, cap, file string
 	switch decision {
 	case policy.RefusedDayCap:
-		what, key, file = "the day's free headroom", "budget.day_eur", "policy.yaml"
+		what, cap, file = "the day's free headroom", "the day cap", "policy.yaml"
 	case policy.RefusedMonthCap:
-		what, key, file = "the month's free headroom", "budget.month_eur", "policy.yaml"
+		what, cap, file = "the month's free headroom", "the month cap", "policy.yaml"
 	default:
-		what, key, file = "the project's free month headroom", "budget.month_eur", cmp.Or(projectFile.FindString(state), "the project's file")
+		what, cap, file = "the project's free month headroom", "the project's month cap", cmp.Or(projectFile.FindString(state), "the project's file")
 	}
 	o := capOpenings[decision]
 	return fmt.Sprintf("%s once %s funds a session, at the latest when the UTC %s turns at %s. "+
-		"Raise %s in %s to resume it sooner, or close the card.\n%s: %s", o.resumes, what, o.period, stamp(until), key, file, by, state)
+		"Raise %s in %s to resume it sooner, or close the card.\n%s: %s", o.resumes, what, o.period, stamp(until), cap, file, by, state)
 }
 
 // capWaitDecision is the decision whose resumes opening reason starts
@@ -250,7 +251,7 @@ func (a *MonthAlarm) Check(ctx context.Context) error {
 				Verdict: VerdictReal, ResolvedBy: "factoryd", Detail: detail}); err != nil {
 				return errors.Join(err, closeErr)
 			}
-			log.Printf("month cap: %s spent %.2f EUR of %.2f EUR, %d percent alert", m.Month, m.EUR, limit, pct)
+			log.Printf("month cap: %s spent %s EUR of %s EUR, %d percent alert", m.Month, textutil.EUR(m.EUR), textutil.EUR(limit), pct)
 		}
 		if pct == 100 && row.TaskID == "" && row.ID != 0 {
 			if err := a.file(ctx, v, m, row.ID); err != nil {
@@ -341,7 +342,7 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 // card_created and its ask on tl, decider its poke's decider line ("" for
 // none).
 func fileHumanTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, labels []string, t Task, decider string) (Task, int64, error) {
-	b := HumanCardText(q, t.Source, false)
+	b := HumanCardText(q, "", false)
 	t.Objective = IssueObjective(b.Title, b.Body)
 	ask := HumanAsk{Q: q, By: "factoryd", Asker: t.Source, Via: ViaFactoryd, Decider: decider}
 	t, ref, err := FileHumanCard(ctx, store, forgejo, repo, b, append([]string{"human"}, labels...), t, ask)

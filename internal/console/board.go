@@ -33,7 +33,9 @@ var funcs = template.FuncMap{
 	// markup is the writer's markdown as HTML, for the drawer's question
 	// text; askline is a text's first line, what a card's face shows
 	"markup": markup, "askline": askline,
-	"eur4": func(v float64) string { return fmt.Sprintf("%.4f", v) },
+	"eur":   textutil.EUR,
+	"rate":  textutil.Rate,
+	"short": factoryd.ShortSHA,
 	// away reports whether a link leaves the console, so it opens its own
 	// tab while a console path stays in this one
 	"away": func(href string) bool { return !strings.HasPrefix(href, "/") },
@@ -44,8 +46,6 @@ var funcs = template.FuncMap{
 		}
 		return fmt.Sprintf("%d servers", n)
 	},
-	// eur2 is money to the cent, as a card's face reads spend against budget
-	"eur2": func(v float64) string { return fmt.Sprintf("\u20ac%.2f", v) },
 	// the metrics page's rows (C30): the deck's formatters, the weeks'
 	// spark, and the window-move subtraction
 	"mDur": mDur, "mDurMove": mDurMove, "mPct": mPct, "mPctMove": mPctMove,
@@ -1903,8 +1903,8 @@ func callsLine(t policy.CallTotals) string {
 	if t == (policy.CallTotals{}) {
 		return ""
 	}
-	return commas.Sprintf("%d prompt · %d cached · %d output tokens · €%.4f modeled",
-		t.Prompt, t.Cached, t.Output, t.ModeledEUR)
+	return commas.Sprintf("%d prompt · %d cached · %d output tokens · %s EUR modeled",
+		t.Prompt, t.Cached, t.Output, textutil.EUR(t.ModeledEUR))
 }
 
 // shownProject is the board's shown project under f among all, the
@@ -2256,7 +2256,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 					log.Printf("console: the head of %s: %v", p.Repository, err)
 					d.Problems = append(d.Problems, "main's head could not be read")
 				case head == h.DeployNow:
-					s.Hold.Released = &releaseStanding{Commit: h.DeployNow[:min(7, len(h.DeployNow))], Age: coarse(time.Since(h.DeployAt))}
+					s.Hold.Released = &releaseStanding{Commit: factoryd.ShortSHA(h.DeployNow), Age: coarse(time.Since(h.DeployAt))}
 				}
 			}
 		}
@@ -2434,9 +2434,9 @@ func (c *Console) monthFigures(ctx context.Context, v policy.Version, p factoryd
 // project's own split, which does not sum to it.
 func spendWords(spend factoryd.ProjectSpend, capEUR float64, factory bool) string {
 	if factory {
-		return fmt.Sprintf("spend this month €%.2f of €%.2f, the factory's whole ledger", spend.EUR, capEUR)
+		return fmt.Sprintf("spend this month %s of %s EUR, the factory's whole ledger", textutil.EUR(spend.EUR), textutil.EUR(capEUR))
 	}
-	return fmt.Sprintf("spend this month €%.2f of €%.2f: the cards €%.2f, the chat €%.2f", spend.EUR, capEUR, spend.EUR-spend.ChatEUR, spend.ChatEUR)
+	return fmt.Sprintf("spend this month %s of %s EUR: the cards %s EUR, the chat %s EUR", textutil.EUR(spend.EUR), textutil.EUR(capEUR), textutil.EUR(spend.EUR-spend.ChatEUR), textutil.EUR(spend.ChatEUR))
 }
 
 type timelineEntry struct {
@@ -2808,7 +2808,7 @@ func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 	}
 	caseID, err := strconv.ParseInt(named, 10, 64)
 	if err != nil || caseID <= 0 {
-		c.fail(w, r, refuse(http.StatusBadRequest, "case_id is a case number"))
+		c.fail(w, r, refuse(http.StatusBadRequest, "The press names no ask of this card. Reload the board and press the answer again."))
 		return
 	}
 	if err := c.answersLiveAsk(r.Context(), id, named); err != nil {
@@ -2837,12 +2837,12 @@ func (c *Console) answersLiveAsk(ctx context.Context, id, named string) error {
 	}
 	shown, err := strconv.ParseInt(named, 10, 64)
 	if err != nil {
-		return refuse(http.StatusBadRequest, "case is a case number")
+		return refuse(http.StatusBadRequest, "The press names no ask of this card. Reload the board and press the answer again.")
 	}
 	live, err := c.cfg.NewestAskCase(ctx, id)
 	if err != nil {
 		log.Printf("console: the cases of %s: %v", id, err)
-		return refuse(http.StatusServiceUnavailable, "The card's cases could not be read, so nothing was answered. Try again.")
+		return refuse(http.StatusServiceUnavailable, "The card's asks could not be read, so nothing was answered. Try again.")
 	}
 	if live.ID != shown {
 		// a merge's, a plan's criteria and a monitor's flag are answered by
@@ -2853,9 +2853,9 @@ func (c *Console) answersLiveAsk(ctx context.Context, id, named string) error {
 	}
 	switch {
 	case live.ID == 0:
-		return refuse(http.StatusConflict, fmt.Sprintf("Case %d is not the card's live ask: the card has no live ask, so nothing was answered. Reload the board.", shown))
+		return refuse(http.StatusConflict, "This ask is no longer open, and the card asks nothing now, so nothing was answered. Reload the board.")
 	case live.ID != shown:
-		return refuse(http.StatusConflict, fmt.Sprintf("Case %d is not the card's live ask: the card's live ask is case %d, so nothing was answered. Reload the board.", shown, live.ID))
+		return refuse(http.StatusConflict, "This ask is no longer open, and the card asks something else now, so nothing was answered. Reload the board to see it.")
 	}
 	return nil
 }
@@ -3327,7 +3327,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 		var no *refusal
 		switch d.Session, d.Said, err = c.sessionChat(r, bt.Task); {
 		case errors.As(err, &no):
-			d.Problem = no.msg
+			d.Problem = factoryd.ForHuman(no.msg)
 		case err != nil:
 			problem("session", "Reload the board.", err)
 		}

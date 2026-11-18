@@ -959,7 +959,7 @@ func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, repo Repo, p Pl
 		for _, b := range behaviours {
 			lines = append(lines, "- "+b)
 		}
-		r.commentOnce(ctx, t, repo, t.IssueNumber, "factoryd: the feature's behaviours\n\n"+strings.Join(lines, "\n"))
+		r.commentOnce(ctx, t, repo, t.IssueNumber, "The feature's behaviours\n\n"+strings.Join(lines, "\n"))
 		if _, err := r.store.PutPlanCatches(ctx, t.Parent, revision, CatchBehaviour, FinderReview, behaviours); err != nil {
 			log.Printf("task %s: record the behaviours: %v", t.ID, err)
 		}
@@ -1120,7 +1120,7 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 	for _, c := range criteria {
 		ids = append(ids, c.ID)
 	}
-	r.commentOnce(ctx, t, repo, t.IssueNumber, fmt.Sprintf("factoryd: filed the delta card %s for criteria %s (one planner round).", card.Key, strings.Join(ids, ", ")))
+	r.commentOnce(ctx, t, repo, t.IssueNumber, fmt.Sprintf("Filed the delta card %s for criteria %s (one planner round).", card.Key, strings.Join(ids, ", ")))
 	r.record(ctx, t.ID, "delta_card", map[string]any{"key": card.Key, "criteria": ids, "finder": dues[0].Finder})
 }
 
@@ -1182,7 +1182,7 @@ func (r *Runner) refuseDelta(ctx context.Context, t Task, repo Repo, dues []Plan
 		return
 	}
 	r.markCatches(ctx, t.ID, revision, CatchDeltaRefused, dues)
-	r.commentOnce(ctx, t, repo, t.IssueNumber, fmt.Sprintf("factoryd: the delta round for criteria %s ended without a card: %s. Grant it again or waive a criterion.", strings.Join(duesDetail(dues), ", "), why))
+	r.commentOnce(ctx, t, repo, t.IssueNumber, fmt.Sprintf("The delta round for criteria %s ended without a card: %s. Grant it again or waive a criterion.", strings.Join(duesDetail(dues), ", "), why))
 	r.record(ctx, t.ID, "delta_refused", map[string]any{"criteria": duesDetail(dues), "why": why})
 }
 
@@ -1314,7 +1314,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 				log.Printf("plan %s: deny the %s approval: %v", parent, kind, err)
 			}
 		}
-		r.closePlan(ctx, t, repo, len(p.Criteria), "factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main.")
+		r.closePlan(ctx, t, repo, len(p.Criteria), "The plan card was closed, so the plan is closed. Its merged cards stay on main.")
 		return
 	}
 	if len(p.Outline) > 0 || len(p.Criteria) == 0 {
@@ -1336,7 +1336,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 			r.planClosed(ctx, parent) || !r.planAtRest(ctx, t) {
 			return
 		}
-		comment := "factoryd: every card of this plan is done or closed; the plan is closed."
+		comment := "Every card of this plan is done or closed, so the plan is closed."
 		if r.timeline.hasEvent(ctx, parent, EventAllChildrenDone, nil) {
 			comment = ""
 		}
@@ -1373,7 +1373,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 				log.Printf("plan %s: close the %s approval: %v", parent, kind, err)
 			}
 		}
-		r.closePlan(ctx, t, repo, len(p.Criteria), "factoryd: every criterion of this plan is met or waived; the plan is closed.")
+		r.closePlan(ctx, t, repo, len(p.Criteria), "Every criterion of this plan is met or waived, so the plan is closed.")
 		return
 	}
 	cards, err := planWaits(ctx, r.store, parent)
@@ -1897,7 +1897,7 @@ var criteriaKinds = []string{ApprovalCriteria, ApprovalCriteriaRerun}
 func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, spec CriteriaSpec, open []PlanCriterion, integration Task) {
 	ids, lines := criteriaLines(open, "")
 	r.openPlanAsk(ctx, t, repo, ApprovalCriteria, spec, CriteriaGapReason(ids),
-		"factoryd: the plan's cards ran out with a criterion still unmet.\n\n"+strings.Join(lines, "\n")+
+		"The plan's cards ran out with a criterion still unmet.\n\n"+strings.Join(lines, "\n")+
 			"\n\nGrant one more bounded card, or waive a criterion with your reason.", integration)
 }
 
@@ -1950,7 +1950,7 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, spec CriteriaS
 	}
 	spec.NotRun = notRun
 	r.openPlanAsk(ctx, t, repo, ApprovalCriteriaRerun, spec, reason,
-		"factoryd: the plan's cards are done, and criteria were never judged: "+why+".\n\n"+
+		"The plan's cards are done, and criteria were never judged: "+why+".\n\n"+
 			strings.Join(lines, "\n")+"\n\nWaive a criterion with your reason, or confirm the delivered cards meet them.", integration)
 }
 

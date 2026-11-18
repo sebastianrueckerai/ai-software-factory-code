@@ -186,8 +186,8 @@ func (p Pace) Line() string {
 	if p.Lines >= 0 {
 		lines = fmt.Sprintf("%d changed lines so far against its bound of %d", p.Lines, p.BoundLines)
 	}
-	return fmt.Sprintf("Pace of the card: %s; %.2f EUR spent, %.2f left; %d minutes of agent time spent, %d left; session %d of %d.",
-		lines, p.SpentEUR, max(0, policy.SessionHeadroom(p.BudgetEUR-p.SpentEUR, p.ReserveEUR)), p.SpentMinutes, max(0, p.LeftMinutes), p.Attempt, p.Sessions)
+	return fmt.Sprintf("Pace of the card: %s; %s EUR spent, %s left; %d minutes of agent time spent, %d left; session %d of %d.",
+		lines, textutil.EUR(p.SpentEUR), textutil.EUR(max(0, policy.SessionHeadroom(p.BudgetEUR-p.SpentEUR, p.ReserveEUR))), p.SpentMinutes, max(0, p.LeftMinutes), p.Attempt, p.Sessions)
 }
 
 // CheckInOutcome is the check-in's answer: the decision, the reason and its
@@ -419,7 +419,7 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 	} else {
 		b.WriteString("The parent session's record is absent.\n\n")
 	}
-	fmt.Fprintf(&b, "calls left %d, %.2f EUR left in the project's judgment budget this month", callsLeft, eurLeft)
+	fmt.Fprintf(&b, "calls left %d, %s EUR left in the project's judgment budget this month", callsLeft, textutil.EUR(eurLeft))
 	return b.String()
 }
 

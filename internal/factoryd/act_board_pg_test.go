@@ -113,7 +113,7 @@ func TestApproveMergeAtRung3WithGreenChecksRunsAndResolves(t *testing.T) {
 			own = &s
 		}
 	}
-	if own == nil || own.Outcome != StepResolved || own.Grounds != "reads well" || len(own.Did) != 1 || own.Did[0].Result != "approve_merge" {
+	if own == nil || own.Outcome != StepResolved || own.Grounds != "reads well" || len(own.Did) != 1 || own.Did[0].Result != "“Merge it”" {
 		t.Fatalf("steps = %+v, want a resolved step that decided approve_merge with the console's result", g.steps(t, c.ID))
 	}
 }
@@ -415,7 +415,7 @@ func TestAnUnreadablePinnedPolicyRefusesRung2ApproveAndLeavesTheHumanTheirs(t *t
 		}
 		_, err = stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: ChatUser, Via: ViaFactoryd, Rung: 2, Res: Resolution{Action: ActApproveMerge}})
 		want := "the classes that keep a human on a merge could not be read (" + strings.TrimPrefix(entry, "human_classes: ") +
-			"), so rung 2 cannot tell whether class standard keeps one: hand_up with approve_merge as the recommendation"
+			"), so the factory agent cannot tell whether class standard keeps one: `hand_up` with `approve_merge` as the recommendation"
 		var refused ErrActRefused
 		if !errors.As(err, &refused) || !strings.Contains(err.Error(), want) || strings.Count(err.Error(), "policy version") != 1 {
 			t.Fatalf("rung 2 Act = %v, want a refusal holding %q, naming the version once", err, want)

@@ -261,11 +261,11 @@ func TestAlertIntakeFilesABugIssueThatStartsATask(t *testing.T) {
 	}
 	head := "Why: The alert 5xx rate above 5 % fires on demo-staging and may point at a fault there.\n\nSummary: The agent reads the alert, finds the cause and fixes it, or shows that the alert is noise. The alert resolves once the fault is gone.\n\n---\n\n"
 	want := "Look into the alert 5xx rate above 5 % on demo-staging\n\n" + head +
-		"factoryd: SigNoz fires the alert 5xx rate above 5 % in namespace demo-staging of project demo-app.\n\n" +
+		"SigNoz fires the alert 5xx rate above 5 % in namespace demo-staging of project demo-app.\n\n" +
 		"Firing since 2026-09-28T20:01:29Z. SigNoz: hxxps://signoz[.]example/alerts/overview?ruleId=r-1\n\n" +
 		"Value and annotations:\n\n```\nvalue=14.29\nsummary=5xx share of the requests over 5 minutes\n```\n\n" +
 		"Labels:\n\n```\nalertname=5xx rate above 5 %\nnamespace=demo-staging\nproject=demo-app\nruleId=r-1\nseverity=critical\nthreshold.name=critical\n```\n\n" +
-		"filed by factoryd from SigNoz alert fp1"
+		"Filed by the factory from the SigNoz alert fp1."
 	if r.fj.issues[0] != want {
 		t.Fatalf("issue\n%s\nwant\n%s", r.fj.issues[0], want)
 	}
@@ -353,7 +353,7 @@ func TestAlertIntakeRetryAfterAFailedFilingFilesOneTask(t *testing.T) {
 		t.Fatalf("row's issue %v, want 2", got)
 	}
 	r.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp1", "demo-staging", firedAt, resolvedAt))
-	if want := []string{"#2 factoryd: resolved at " + resolvedAt}; !slices.Equal(r.fj.comments, want) {
+	if want := []string{"#2 Resolved at " + resolvedAt}; !slices.Equal(r.fj.comments, want) {
 		t.Fatalf("comments %q, want %q", r.fj.comments, want)
 	}
 }
@@ -374,7 +374,7 @@ func TestAlertIntakeDedupesByFingerprint(t *testing.T) {
 		t.Fatalf("second issue %q", r.fj.issues[1])
 	}
 	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", "2026-09-28T21:00:00Z", neverEnds))
-	if want := []string{"#1 factoryd: the alert fired again at 2026-09-28T21:00:00Z.\n\n```\nvalue=14.29\n```"}; !slices.Equal(r.fj.comments, want) {
+	if want := []string{"#1 The alert fired again at 2026-09-28T21:00:00Z.\n\n```\nvalue=14.29\n```"}; !slices.Equal(r.fj.comments, want) {
 		t.Fatalf("comments %q, want %q", r.fj.comments, want)
 	}
 	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", "2026-09-28T21:00:00Z", neverEnds))
@@ -404,7 +404,7 @@ func TestAlertCommentNeutralised(t *testing.T) {
 	again := sigAlert("firing", "fp1", "demo-staging", "2026-09-28T21:00:00Z", neverEnds)
 	again["annotations"] = map[string]string{"value": "@root"}
 	r.post(t, "signoz", "hook-pw", again)
-	want := []string{"#1 factoryd: the alert fired again at 2026-09-28T21:00:00Z.\n\n```\nvalue=＠root\n```"}
+	want := []string{"#1 The alert fired again at 2026-09-28T21:00:00Z.\n\n```\nvalue=＠root\n```"}
 	if !slices.Equal(r.fj.comments, want) {
 		t.Fatalf("comments %q, want %q", r.fj.comments, want)
 	}
@@ -419,7 +419,7 @@ func TestAlertIntakeCommentsTheResolve(t *testing.T) {
 	r.store.tasks[first] = task
 	r.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp1", "demo-staging", firedAt, resolvedAt))
 	r.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp1", "demo-staging", firedAt, resolvedAt))
-	if want := []string{"#1 factoryd: resolved at 2026-09-28T20:40:29Z"}; !slices.Equal(r.fj.comments, want) {
+	if want := []string{"#1 Resolved at 2026-09-28T20:40:29Z"}; !slices.Equal(r.fj.comments, want) {
 		t.Fatalf("comments %q, want %q (once, on the issue although its task ended)", r.fj.comments, want)
 	}
 	if got := r.store.alertRows()[0].Detail["resolved_at"]; got != resolvedAt {
@@ -542,7 +542,7 @@ func TestSweepSigNozResolvesWhatSigNozNoLongerLists(t *testing.T) {
 	if err := r.in.SweepSigNoz(ctx, sweptAt); err == nil || !strings.Contains(err.Error(), "without a fingerprint") {
 		t.Fatalf("a list without fingerprints: %v, want its refusal", err)
 	}
-	if want := []string{"#4 factoryd: resolved at " + resolvedAt}; !slices.Equal(r.fj.comments, want) {
+	if want := []string{"#4 Resolved at " + resolvedAt}; !slices.Equal(r.fj.comments, want) {
 		t.Fatalf("a list without fingerprints resolved rows: comments %q", r.fj.comments)
 	}
 
@@ -556,8 +556,8 @@ func TestSweepSigNozResolvesWhatSigNozNoLongerLists(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	want := []string{"#4 factoryd: resolved at " + resolvedAt,
-		"#2 factoryd: resolved at 2026-09-28T21:00:00Z", "#3 factoryd: resolved at 2026-09-28T21:00:00Z"}
+	want := []string{"#4 Resolved at " + resolvedAt,
+		"#2 Resolved at 2026-09-28T21:00:00Z", "#3 Resolved at 2026-09-28T21:00:00Z"}
 	if !slices.Equal(r.fj.comments, want) {
 		t.Fatalf("comments %q, want %q", r.fj.comments, want)
 	}
@@ -591,7 +591,7 @@ func TestSweepSigNozResolvesFinishedCardsQuietly(t *testing.T) {
 	if err := r.in.SweepSigNoz(ctx, at("2026-09-28T21:00:00Z")); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"#4 factoryd: resolved at 2026-09-28T21:00:00Z"}; !slices.Equal(r.fj.comments, want) {
+	if want := []string{"#4 Resolved at 2026-09-28T21:00:00Z"}; !slices.Equal(r.fj.comments, want) {
 		t.Fatalf("comments %q, want only the running card's %q", r.fj.comments, want)
 	}
 	for _, row := range r.store.alertRows() {
@@ -677,7 +677,7 @@ func TestAlertIntakeRefilesAFiringItsTaskDidNotEnd(t *testing.T) {
 	task.FinishedAt = &ended
 	r.store.tasks[first] = task
 	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
-	if len(r.fj.issues) != 2 || !strings.Contains(r.fj.issues[1], "\n\nfactoryd: the alert still fires from the same start 30m0s after the fix of its last issue merged.\n\nfactoryd: SigNoz fires") {
+	if len(r.fj.issues) != 2 || !strings.Contains(r.fj.issues[1], "\n\nThe alert still fires from the same start 30m0s after the fix of its last issue merged.\n\nSigNoz fires") {
 		t.Fatalf("31 minutes after: issues %q", r.fj.issues)
 	}
 	rows := r.store.alertRows()
@@ -744,11 +744,11 @@ func TestAlertIntakeOnTheFactorysOwnNamespaces(t *testing.T) {
 	gwTitle, gwBody, _ := strings.Cut(r.fj.issues[0], "\n\n")
 	chTitle, chBody, _ := strings.Cut(r.fj.issues[1], "\n\n")
 	if gwTitle != "Look into the alert 5xx rate above 5 % on factory-gateway" ||
-		!strings.HasPrefix(gwBody, "Why: The alert 5xx rate above 5 % fires on factory-gateway and may point at a fault there.\n\nSummary: The agent reads the alert, finds the cause and fixes it, or shows that the alert is noise. The alert resolves once the fault is gone.\n\n---\n\nfactoryd: SigNoz fires the alert 5xx rate above 5 % on service factory-gateway in namespace factory of project ai-software-factory-code.\n\n"+
+		!strings.HasPrefix(gwBody, "Why: The alert 5xx rate above 5 % fires on factory-gateway and may point at a fault there.\n\nSummary: The agent reads the alert, finds the cause and fixes it, or shows that the alert is noise. The alert resolves once the fault is gone.\n\n---\n\nSigNoz fires the alert 5xx rate above 5 % on service factory-gateway in namespace factory of project ai-software-factory-code.\n\n"+
 			"Firing since 2026-09-28T20:01:29Z. SigNoz: hxxps://signoz[.]example/alerts/overview?ruleId=r-1\n\n") ||
 		chTitle != "SigNoz fires the alert “ClickHouse disk above 80 %” on clickhouse" ||
 		!strings.HasPrefix(chBody, "Why: It may point at a fault on clickhouse, and the project runs no agents.\n\n---\n\n") ||
-		!strings.Contains(chBody, "\n\nInfo: factoryd: SigNoz fires the alert ClickHouse disk above 80 % on service clickhouse in namespace platform of project ai-software-factory-infra.") {
+		!strings.Contains(chBody, "\n\nInfo: SigNoz fires the alert ClickHouse disk above 80 % on service clickhouse in namespace platform of project ai-software-factory-infra.") {
 		t.Fatalf("issues\n%s\n---\n%s", r.fj.issues[0], r.fj.issues[1])
 	}
 	if !slices.Equal(r.fj.labels[1], []string{"bug", "state/queued"}) || !slices.Equal(r.fj.labels[2], []string{"human", "bug", "state/waiting-human"}) {
@@ -911,8 +911,8 @@ func TestAlertInsideRollWindowIsHeld(t *testing.T) {
 	}
 	want := "Look into the alert 5xx rate above 5 % on factory\n\n" +
 		"Why: The alert 5xx rate above 5 % fires on factory and may point at a fault there.\n\nSummary: The agent reads the alert, finds the cause and fixes it, or shows that the alert is noise. The alert resolves once the fault is gone.\n\n---\n\n" +
-		"factoryd: the alert fired while Deployment factory/factory-gateway rolled out and still fires 10m0s after the rollouts settled.\n\n" +
-		"factoryd: SigNoz fires the alert 5xx rate above 5 % in namespace factory of project ai-software-factory-code.\n\nFiring since 2026-09-28T12:02:00Z."
+		"The alert fired while Deployment factory/factory-gateway rolled out and still fires 10m0s after the rollouts settled.\n\n" +
+		"SigNoz fires the alert 5xx rate above 5 % in namespace factory of project ai-software-factory-code.\n\nFiring since 2026-09-28T12:02:00Z."
 	rows = r.store.alertRows()
 	if len(r.fj.issues) != 3 || !strings.HasPrefix(r.fj.issues[2], want) || len(rows) != 4 {
 		t.Fatalf("the window closed: %d issues, last %q, %d rows; want 3 issues, the last beginning %q", len(r.fj.issues), r.fj.issues[len(r.fj.issues)-1], len(rows), want)
@@ -1202,8 +1202,8 @@ func TestAlertInsidePlatformRolloutWaitsForItsWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	ask := "SigNoz fires the alert “Forgejo 5xx rate above 5 %” on forgejo"
-	want := "Info: factoryd: the alert fired while HelmRelease forgejo/forgejo rolled out and still fires 10m0s after the rollouts settled.\n\n" +
-		"factoryd: SigNoz fires the alert Forgejo 5xx rate above 5 % on service forgejo in namespace forgejo of project ai-software-factory-infra.\n\n" +
+	want := "Info: The alert fired while HelmRelease forgejo/forgejo rolled out and still fires 10m0s after the rollouts settled.\n\n" +
+		"SigNoz fires the alert Forgejo 5xx rate above 5 % on service forgejo in namespace forgejo of project ai-software-factory-infra.\n\n" +
 		"Firing since 2026-10-15T10:48:00Z."
 	if len(r.fj.issues) != 2 || !strings.HasPrefix(r.fj.issues[1], ask+"\n\n") || !strings.Contains(r.fj.issues[1], want) || r.fj.repos[1] != "sf/ai-software-factory-infra" ||
 		len(r.store.tasks) != 2 || len(r.flows.started) != 0 {
@@ -1260,16 +1260,16 @@ func TestRolloutNotSettledAtTheCapReleasesItsAlertsAndRaisesItsOwn(t *testing.T)
 	}
 	ask := "Flux fires the alert “HelmRelease signoz not settled” on platform"
 	want := ask + "\n\nWhy: It may point at a fault on platform, and the project runs no agents.\n\n---\n\n```\n" + ask + "\n```\n\n" +
-		"Info: factoryd: Flux fires the alert HelmRelease signoz not settled in namespace platform of project ai-software-factory-infra.\n\n" +
+		"Info: Flux fires the alert HelmRelease signoz not settled in namespace platform of project ai-software-factory-infra.\n\n" +
 		"Firing since 2026-10-15T12:30:00Z.\n\n" +
 		"Value and annotations:\n\n```\nvalue=Running 'upgrade' action with timeout of 5m0s\n" +
 		"action=find why Flux has not settled HelmRelease platform/signoz 30m0s after applying it, from its status and events; " +
 		"its window holds no alert any more. A cause outside the repository is a question for a human.\n" +
 		"applied=2026-10-15T12:00:00Z\n```\n\n" +
 		"Labels:\n\n```\nalertname=HelmRelease signoz not settled\nkind=HelmRelease\nname=signoz\nnamespace=platform\n```\n\n" +
-		"filed by factoryd from Flux alert rollout/HelmRelease/platform/signoz\n\n" +
+		"Filed by the factory from the Flux alert rollout/HelmRelease/platform/signoz.\n\n" +
 		"Choices:\n- Noted\n- Not now\n\n" +
-		"factoryd asks (factoryd). Answer on the card in the console or in the chat's inbox, or close this issue once decided.\n\nfiled by factoryd"
+		"The factory asks. Answer on the card in the console or in the chat's inbox, or close this issue once decided.\n\nFiled by the factory."
 	if len(r.fj.issues) != 2 || r.fj.issues[1] != want || r.fj.repos[1] != "sf/ai-software-factory-infra" ||
 		!slices.Equal(r.fj.labels[2], []string{"human", "bug", "state/waiting-human"}) {
 		t.Fatalf("the stuck rollout's alert: issues %q on %v, labels %v; want one human card on the infra repository:\n%s",
@@ -1285,7 +1285,7 @@ func TestRolloutNotSettledAtTheCapReleasesItsAlertsAndRaisesItsOwn(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	if want := []string{"#2 factoryd: resolved at 2026-10-15T12:36:00Z"}; !slices.Equal(r.fj.comments, want) || len(r.fj.issues) != 2 {
+	if want := []string{"#2 Resolved at 2026-10-15T12:36:00Z"}; !slices.Equal(r.fj.comments, want) || len(r.fj.issues) != 2 {
 		t.Fatalf("settled: comments %q, %d issues; want %q, 2", r.fj.comments, len(r.fj.issues), want)
 	}
 }
@@ -1324,7 +1324,7 @@ func TestProjectEnvironmentRolloutHoldsItsOwnNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(r.fj.issues) != 2 || !strings.HasPrefix(r.fj.issues[1], "Look into the alert 5xx rate above 5 % on demo-staging\n\nWhy: The alert 5xx rate above 5 % fires on demo-staging and may point at a fault there.\n\nSummary: The agent reads the alert, finds the cause and fixes it, or shows that the alert is noise. The alert resolves once the fault is gone.\n\n---\n\n"+
-		"factoryd: the alert fired while Kustomization demo-staging/demo-app rolled out and still fires 10m0s after the rollouts settled.\n\n") {
+		"The alert fired while Kustomization demo-staging/demo-app rolled out and still fires 10m0s after the rollouts settled.\n\n") {
 		t.Fatalf("the window closed: issues %q, want demo-staging's filed second", r.fj.issues)
 	}
 }
@@ -1446,14 +1446,14 @@ func TestFluxAlertFiresAfterTheGraceAndResolves(t *testing.T) {
 	r.in.FluxPass(ctx, p, t0.Add(fluxGrace))
 	head := "Why: The alert Kustomization not Ready fires on demo-staging and may point at a fault there.\n\nSummary: The agent reads the alert, finds the cause and fixes it, or shows that the alert is noise. The alert resolves once the fault is gone.\n\n---\n\n"
 	want := "Look into the alert Kustomization not Ready on demo-staging\n\n" + head +
-		"factoryd: Flux fires the alert Kustomization not Ready in namespace demo-staging of project demo-app.\n\n" +
+		"Flux fires the alert Kustomization not Ready in namespace demo-staging of project demo-app.\n\n" +
 		"Firing since 2026-10-15T09:00:00Z.\n\n" +
 		"Value and annotations:\n\n```\nvalue=Secret/demo-staging/db dry-run failed: secrets \"db\" not found\n" +
 		"action=fix on main what Flux's message names: main's green builds write deploy/staging to the deploy branch, which Flux applies to demo-staging. " +
 		"A cause outside the repository is a question for a human.\n" +
 		"applied=deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456\n```\n\n" +
 		"Labels:\n\n```\nalertname=Kustomization not Ready\nkustomization=demo-app\nnamespace=demo-staging\npath=deploy/staging\n```\n\n" +
-		"filed by factoryd from Flux alert flux/demo-staging/demo-app"
+		"Filed by the factory from the Flux alert flux/demo-staging/demo-app."
 	if len(r.fj.issues) != 1 || r.fj.issues[0] != want || r.fj.repos[0] != "demo-app/demo-app" {
 		t.Fatalf("issues %q on %v, want one on demo-app/demo-app:\n%s", r.fj.issues, r.fj.repos, want)
 	}
@@ -1476,7 +1476,7 @@ func TestFluxAlertFiresAfterTheGraceAndResolves(t *testing.T) {
 	flux["demo-staging/demo-app"] = fluxReady
 	r.in.FluxPass(ctx, p, t0.Add(12*time.Minute))
 	r.in.FluxPass(ctx, p, t0.Add(13*time.Minute))
-	if want := []string{"#1 factoryd: resolved at 2026-10-15T09:12:00Z"}; !slices.Equal(r.fj.comments, want) || len(r.fj.issues) != 1 {
+	if want := []string{"#1 Resolved at 2026-10-15T09:12:00Z"}; !slices.Equal(r.fj.comments, want) || len(r.fj.issues) != 1 {
 		t.Fatalf("Ready again: comments %q, %d issues; want %q, 1", r.fj.comments, len(r.fj.issues), want)
 	}
 }
@@ -1580,12 +1580,12 @@ func TestFluxAlertKeepsItsStartAcrossARestart(t *testing.T) {
 	flux["demo-staging/demo-app"] = fluxBroken
 	restarted.FluxPass(ctx, p, t0.Add(30*time.Minute))
 	restarted.FluxPass(ctx, p, t0.Add(39*time.Minute))
-	if want := []string{"#1 factoryd: resolved at 2026-10-15T09:21:00Z"}; !slices.Equal(r.fj.comments, want) {
+	if want := []string{"#1 Resolved at 2026-10-15T09:21:00Z"}; !slices.Equal(r.fj.comments, want) {
 		t.Fatalf("resolved, then failing again inside the grace: comments %q, want %q", r.fj.comments, want)
 	}
 	restarted.FluxPass(ctx, p, t0.Add(40*time.Minute))
-	if want := []string{"#1 factoryd: resolved at 2026-10-15T09:21:00Z",
-		"#1 factoryd: the alert fired again at 2026-10-15T09:30:00Z.\n\n```\nvalue=Secret/demo-staging/db dry-run failed: secrets \"db\" not found\n```"}; !slices.Equal(r.fj.comments, want) || len(r.fj.issues) != 1 {
+	if want := []string{"#1 Resolved at 2026-10-15T09:21:00Z",
+		"#1 The alert fired again at 2026-10-15T09:30:00Z.\n\n```\nvalue=Secret/demo-staging/db dry-run failed: secrets \"db\" not found\n```"}; !slices.Equal(r.fj.comments, want) || len(r.fj.issues) != 1 {
 		t.Fatalf("failing again past the grace: comments %q, %d issues; want %q, 1", r.fj.comments, len(r.fj.issues), want)
 	}
 }
@@ -1617,8 +1617,8 @@ func TestAClearedAlertClosesItsUntouchedHumanCard(t *testing.T) {
 	if got := r.store.tasks[task.ID].Status; got != "closed" {
 		t.Fatalf("task %s, want closed", got)
 	}
-	want := []string{"#1 factoryd: resolved at " + resolvedAt,
-		"#1 factoryd: the alert cleared at " + resolvedAt + "; nobody touched the card, so it closes."}
+	want := []string{"#1 Resolved at " + resolvedAt,
+		"#1 The alert cleared at " + resolvedAt + ". Nobody touched the card, so it closes."}
 	if !slices.Equal(r.fj.comments, want) || !slices.Equal(r.fj.closed, []int64{1}) {
 		t.Fatalf("comments %q, closed %v, want %q and [1]", r.fj.comments, r.fj.closed, want)
 	}
@@ -1705,7 +1705,7 @@ func TestAnAlertsHumanCardSaysWhatHappened(t *testing.T) {
 	head := func(ask, why string) {
 		t.Helper()
 		card := r.store.tasks[task.ID]
-		if CardTitle(card) != ask || card.Why != why || !strings.HasSuffix(card.Objective, "filed by factoryd") {
+		if CardTitle(card) != ask || card.Why != why || !strings.HasSuffix(card.Objective, "Filed by the factory.") {
 			t.Fatalf("the card's title %q, why %q, text %q; want %q, %q and the text as filed", CardTitle(card), card.Why, card.Objective, ask, why)
 		}
 		// the board reads the card's newest ask row, whose face is stored again
@@ -1842,8 +1842,8 @@ func TestAClearedAlertWhoseCloseFailsIsHealed(t *testing.T) {
 	if err := intake.HealFactoryCloses(ctx); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"#1 factoryd: resolved at " + resolvedAt,
-		"#1 factoryd: the alert cleared at " + resolvedAt + "; nobody touched the card, so it closes."}
+	want := []string{"#1 Resolved at " + resolvedAt,
+		"#1 The alert cleared at " + resolvedAt + ". Nobody touched the card, so it closes."}
 	if !slices.Equal(r.fj.closed, []int64{1}) || !slices.Equal(r.fj.comments, want) || !r.store.confirmedCloses[[2]any{task.ID, task.IssueNumber}] {
 		t.Fatalf("closed %v, comments %q, confirmed %v; want [1], %q, confirmed", r.fj.closed, r.fj.comments, r.store.confirmedCloses, want)
 	}
@@ -1894,7 +1894,7 @@ func TestAResolvedAlertsCardSaysItResolved(t *testing.T) {
 	r.store.caseFactsFails = 1
 	r.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp1", "demo-staging", firedAt, resolvedAt))
 	r.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp1", "demo-staging", firedAt, resolvedAt))
-	if want := []string{"#1 factoryd: resolved at " + resolvedAt}; !slices.Equal(r.fj.comments, want) {
+	if want := []string{"#1 Resolved at " + resolvedAt}; !slices.Equal(r.fj.comments, want) {
 		t.Fatalf("comments %q, want the resolve's once", r.fj.comments)
 	}
 	k := slices.IndexFunc(r.store.cases, func(k Case) bool { return k.ID == 3 })
@@ -1910,7 +1910,7 @@ func TestAResolvedAlertsCardSaysItResolved(t *testing.T) {
 	r.store.caseFactsFails = 1
 	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", "2026-09-28T21:00:00Z", neverEnds))
 	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", "2026-09-28T21:00:00Z", neverEnds))
-	if len(r.fj.comments) != 2 || !strings.HasPrefix(r.fj.comments[1], "#1 factoryd: the alert fired again at 2026-09-28T21:00:00Z.") {
+	if len(r.fj.comments) != 2 || !strings.HasPrefix(r.fj.comments[1], "#1 The alert fired again at 2026-09-28T21:00:00Z.") {
 		t.Fatalf("comments %q, want the new firing's once after the resolve's", r.fj.comments)
 	}
 	face = r.store.faces[3]
@@ -2019,9 +2019,9 @@ func TestAnEventAlertKeepsItsCardPastTheResolve(t *testing.T) {
 	info := "Info: The Job `forgejo-dump-29885910` in namespace `demo-staging` failed: read its pods' logs " +
 		"(`kubectl -n demo-staging logs job/forgejo-dump-29885910 --all-containers`). " +
 		"The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card closes when the CronJob `forgejo-dump` completes a run, or when a human closes it.\n\n" +
-		"factoryd: SigNoz fires the alert Job failed in namespace demo-staging of project demo-app."
+		"SigNoz fires the alert Job failed in namespace demo-staging of project demo-app."
 	if len(r.fj.issues) != 1 || !strings.HasPrefix(r.fj.issues[0], ask+"\n\n") || !strings.Contains(r.fj.issues[0], info) ||
-		!strings.Contains(r.fj.issues[0], "\n\nChoices:\n- Noted\n- Not now\n\nfactoryd asks") {
+		!strings.Contains(r.fj.issues[0], "\n\nChoices:\n- Noted\n- Not now\n\nThe factory asks") {
 		t.Fatalf("issues %q, want one opening %q, with %q and its choices Noted and Not now", r.fj.issues, ask, info)
 	}
 	if err := r.in.CloseCleared(context.Background()); err != nil {
@@ -2038,7 +2038,7 @@ func TestAnEventAlertKeepsItsCardPastTheResolve(t *testing.T) {
 	if rr := r.post(t, "signoz", "hook-pw", again); rr.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rr.Code, rr.Body)
 	}
-	want := []string{"#1 factoryd: the alert fired again at 2026-10-28T17:10:00Z.\n\n```\nvalue=14.29\n```"}
+	want := []string{"#1 The alert fired again at 2026-10-28T17:10:00Z.\n\n```\nvalue=14.29\n```"}
 	if len(r.fj.issues) != 1 || len(r.store.tasks) != 1 || !slices.Equal(r.fj.comments, want) {
 		t.Fatalf("the same Job again: %d issues, %d tasks, comments %q; want the one card and %q", len(r.fj.issues), len(r.store.tasks), r.fj.comments, want)
 	}
@@ -2048,7 +2048,7 @@ func TestAnEventAlertKeepsItsCardPastTheResolve(t *testing.T) {
 // factoryd read it, or the one line that says it could not; a rig without a
 // health reader files the body as before.
 func TestAlertCardCarriesTheDeploymentsHealth(t *testing.T) {
-	const filed = "filed by factoryd from SigNoz alert fp1"
+	const filed = "Filed by the factory from the SigNoz alert fp1."
 	withService := func() map[string]any {
 		a := sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds)
 		a["labels"].(map[string]string)["service"] = "api"
@@ -2059,10 +2059,10 @@ func TestAlertCardCarriesTheDeploymentsHealth(t *testing.T) {
 		health *fakeHealth
 		want   string
 	}{
-		{"read", &fakeHealth{}, "\n\nThe Deployment `api` in `demo-staging` as factoryd read it when it filed this card:\n\n```\n" +
+		{"read", &fakeHealth{}, "\n\nThe Deployment `api` in `demo-staging` as the factory read it when it filed this card:\n\n```\n" +
 			"Deployment api in namespace demo-staging: 1 of 1 ready (1 updated, 1 available)\nReplicaSets: none\nPods: none\nEvents of the last hour: none\n```"},
 		{"failed", &fakeHealth{byNS: map[string]error{"demo-staging": errors.New("boom")}},
-			"\n\nfactoryd could not read the Deployment `api` in `demo-staging`: the cluster did not answer the read of Deployment api in namespace demo-staging: try again shortly"},
+			"\n\nThe factory could not read the Deployment `api` in `demo-staging`: the cluster did not answer the read of Deployment api in namespace demo-staging: try again shortly"},
 		{"nil reader", nil, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -2153,7 +2153,7 @@ func TestAJobFailedCardClosesWhenItsCronJobRunsAgain(t *testing.T) {
 	if !reflect.DeepEqual(status, want) {
 		t.Fatalf("task states %v, want %v", status, want)
 	}
-	note := "#1 factoryd: the CronJob forgejo-dump ran again after the failed Job forgejo-dump-29885910: Job forgejo-dump-29887350 completed at 2026-10-29T02:31:00Z; the card closes."
+	note := "#1 The CronJob forgejo-dump ran again after the failed Job forgejo-dump-29885910: Job forgejo-dump-29887350 completed at 2026-10-29T02:31:00Z. The card closes."
 	if !slices.Contains(r.fj.comments, note) || !slices.Equal(r.fj.closed, []int64{1}) {
 		t.Fatalf("comments %q, closed %v; want the note %q and issue 1 closed", r.fj.comments, r.fj.closed, note)
 	}
@@ -2205,7 +2205,7 @@ func TestAJobFailedCardWhoseJobIsGoneClosesOnALaterRun(t *testing.T) {
 	if !reflect.DeepEqual(status, want) {
 		t.Fatalf("task states %v, want %v", status, want)
 	}
-	note := "#1 factoryd: the CronJob cleanup ran again after the failed Job cleanup-29885910: Job cleanup-29887350 completed at 2026-10-29T02:31:00Z; the card closes."
+	note := "#1 The CronJob cleanup ran again after the failed Job cleanup-29885910: Job cleanup-29887350 completed at 2026-10-29T02:31:00Z. The card closes."
 	if !slices.Contains(r.fj.comments, note) {
 		t.Fatalf("comments %q, want %q", r.fj.comments, note)
 	}

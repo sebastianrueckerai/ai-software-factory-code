@@ -143,7 +143,7 @@ func (c *SchemaCopier) sync(ctx context.Context) error {
 			older = append(older, pr)
 		}
 	}
-	why := "the copies on main equal the schemas of factoryd " + c.Build
+	why := "the copies on main equal the factory's schemas of build " + ShortSHA(c.Build)
 	if len(diffs) > 0 {
 		if own == nil {
 			if own, err = c.open(ctx, fork, branch, diffs); err != nil {
@@ -159,7 +159,7 @@ func (c *SchemaCopier) sync(ctx context.Context) error {
 		if err := c.Forgejo.ClosePullRequest(ctx, repo.Owner, repo.Name, pr.Number); err != nil {
 			return fmt.Errorf("close #%d: %w", pr.Number, err)
 		}
-		if _, err := c.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr.Number, "Closed by factoryd: "+why+"."); err != nil {
+		if _, err := c.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr.Number, "Closed by the factory: "+why+"."); err != nil {
 			return fmt.Errorf("comment on #%d: %w", pr.Number, err)
 		}
 		log.Printf("schema copies: closed pull request #%d: %s", pr.Number, why)

@@ -110,7 +110,7 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 		return fmt.Errorf("%w: temporal down", factoryd.ErrAnswerUnsignalled)
 	}
 	if rec := answer("2", "1", "5 minutes"); rec.Code != http.StatusBadGateway || rec.Body.String() !=
-		"The answer is recorded, but factoryd could not pass it to the plan; request_changes sends the plan to the planner with the answers.\n" ||
+		"The answer is recorded, but the factory could not pass it to the plan. “Ask for changes” sends the plan to the planner with the answers.\n" ||
 		r.fg.comments[comments] != "Answer 2: 30 days" {
 		t.Errorf("an unsignalled answer: %d %q, comment %q", rec.Code, rec.Body, r.fg.comments[comments])
 	}
@@ -873,7 +873,7 @@ func humanTurn(t *testing.T, r *rig, trn *turn, absorbed bool) {
 // at full auto as below it, in a wake and on the human's own line alike,
 // and nothing is posted.
 func TestTheAgentsCommentOnAPlanIsAChangeRequest(t *testing.T) {
-	const want = "Refused: A comment on plan #20 is a change request its planner reads: ask for one with request_changes, or send the plan back with replan."
+	const want = "Refused: A comment on plan #20 is a change request its planner reads: ask for one with `request_changes`, or send the plan back with `replan`."
 	for _, c := range []struct {
 		name, level string
 		wake        bool

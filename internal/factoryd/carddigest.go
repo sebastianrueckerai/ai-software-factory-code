@@ -392,9 +392,9 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 		case EventSessionGranted:
 			s.Kind, s.Outcome = "granted", "one more session"
 		case EventCardFunded:
-			s.Kind, s.Outcome = "funded", fmt.Sprintf("%.2f EUR", amount)
+			s.Kind, s.Outcome = "funded", fmt.Sprintf("%s EUR", textutil.EUR(amount))
 			if ceiling, ok := e.Detail["ceiling_eur"].(float64); ok {
-				s.Kind, s.Outcome = "ceiling", fmt.Sprintf("raised to %.2f EUR", ceiling)
+				s.Kind, s.Outcome = "ceiling", fmt.Sprintf("raised to %s EUR", textutil.EUR(ceiling))
 			}
 		case EventCardExtended:
 			parts := []string{textutil.Plural(number("sessions"), "session", "sessions")}
@@ -404,12 +404,12 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 			parts = append(parts, textutil.Plural(number("lines"), "line", "lines"))
 			if from := word("inherited_from"); from != "" {
 				if ceiling, ok := e.Detail["ceiling_eur"].(float64); ok && ceiling > 0 {
-					parts = append(parts, fmt.Sprintf("ceiling %.2f EUR", ceiling))
+					parts = append(parts, fmt.Sprintf("ceiling %s EUR", textutil.EUR(ceiling)))
 				}
 				s.Kind, s.Outcome = "extended", fmt.Sprintf("inherited from #%d: %s", number("inherited_issue"), strings.Join(parts, ", "))
 				break
 			}
-			s.Kind, s.Outcome = "extended", strings.Join(append(parts, fmt.Sprintf("%.2f EUR", amount)), ", ")
+			s.Kind, s.Outcome = "extended", strings.Join(append(parts, fmt.Sprintf("%s EUR", textutil.EUR(amount))), ", ")
 		case EventCardRetried:
 			s.Kind, s.Outcome = "retried", fmt.Sprintf("as #%d", number("replacement"))
 		case EventCardReplanned:
@@ -481,7 +481,7 @@ func helperSteps(scrub *redact.Scrubber, helpers []Task) []DigestStep {
 	for _, h := range helpers {
 		outcome := statusText(h.Status, h.Gate)
 		if h.SpentEUR > 0 {
-			outcome += fmt.Sprintf(", %.2f EUR", h.SpentEUR)
+			outcome += fmt.Sprintf(", %s EUR", textutil.EUR(h.SpentEUR))
 		}
 		if result := helperResult(h); Final(h.Status) && result != "" {
 			outcome += ": " + result
@@ -519,7 +519,7 @@ func openedStep(s DigestStep, e Event) DigestStep {
 		outcome = "red"
 	}
 	s.Kind, s.Actor = "opened", "gate"
-	s.Outcome = fmt.Sprintf("%s: %s at %s", word("criterion"), outcome, word("head")[:min(7, len(word("head")))])
+	s.Outcome = fmt.Sprintf("%s: %s at %s", word("criterion"), outcome, ShortSHA(word("head")))
 	if line := failureLine(word("message")); line != "" {
 		s.Outcome += ": " + line
 	}

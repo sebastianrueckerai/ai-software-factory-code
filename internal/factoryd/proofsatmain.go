@@ -104,7 +104,7 @@ func (r *Runner) ProofsAtMain(ctx context.Context, taskID string) (ProofsAtMain,
 		}
 	}
 	r.record(ctx, t.ID, "proofs_at_main", map[string]any{"head": head, "criteria": line})
-	at := head[:min(7, len(head))]
+	at := ShortSHA(head)
 	switch len(unmet) {
 	case 0:
 		return ProofsAtMain{Head: head, Met: true, Reason: "proofs met at " + at + ": " + strings.Join(ids, ", ")}, nil

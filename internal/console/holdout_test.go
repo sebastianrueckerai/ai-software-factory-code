@@ -171,7 +171,7 @@ func TestPlanCardHoldoutsSettleWithTheConfirmation(t *testing.T) {
 	}
 	rec := r.do(post("/tasks/t-plan/plan/holdout", url.Values{"csrf": {s.csrf}, "revision": {"2"}, "index": {"2"}, "verb": {"okay"},
 		"project": {"linkshort"}}), ck)
-	if rec.Code != http.StatusConflict || rec.Body.String() != "The confirmation of plan #1 is answered already; its hold-outs are settled.\n" {
+	if rec.Code != http.StatusConflict || rec.Body.String() != "The confirmation of plan #1 is answered already, and its extra promises are settled.\n" {
 		t.Fatalf("okay after the confirmation = %d %q", rec.Code, rec.Body)
 	}
 }

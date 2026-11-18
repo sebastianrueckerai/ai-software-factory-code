@@ -67,7 +67,7 @@ func (c *Console) checkForgejoToken(ctx context.Context, login string, p factory
 		var ae *apiError
 		switch {
 		case err == nil:
-			return refuse(http.StatusBadRequest, "this Forgejo token reaches more than read:user, write:repository and write:issue; make one with only those three scopes")
+			return refuse(http.StatusBadRequest, "This Forgejo token reaches more than read:user, write:repository and write:issue. Make one with only those three scopes.")
 		case !errors.As(err, &ae) || ae.status != http.StatusUnauthorized && ae.status != http.StatusForbidden:
 			log.Printf("console: the Forgejo token of %s: %v", login, err)
 			return refuse(http.StatusBadRequest, "Forgejo refused this token")
@@ -84,11 +84,11 @@ func (c *Console) checkForgejoToken(ctx context.Context, login string, p factory
 		switch {
 		case err == nil:
 		case errors.As(err, &ae) && ae.status == http.StatusForbidden:
-			return refuse(http.StatusBadRequest, "this Forgejo token lacks "+probe.scope+"; make one with read:user, write:repository and write:issue")
+			return refuse(http.StatusBadRequest, "This Forgejo token lacks "+probe.scope+". Make one with read:user, write:repository and write:issue.")
 		case errors.As(err, &ae) && ae.status >= 200 && ae.status < 300:
 			log.Printf("console: the Forgejo token probe of %s on %s answered %d: %s", login, p.Repository, ae.status, ae.body)
 			return refuse(http.StatusBadGateway, "Forgejo accepted an empty probe on "+p.Name+
-				"; check the project for a stray issue or pull request and tell the factory's owner")
+				". Check the project for a stray issue or pull request, and tell the factory's owner.")
 		default:
 			log.Printf("console: the Forgejo token of %s: %v", login, err)
 			return refuse(http.StatusBadRequest, "Forgejo refused this token")

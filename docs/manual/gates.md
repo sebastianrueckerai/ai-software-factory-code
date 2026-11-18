@@ -74,8 +74,8 @@ activities, each with a timeline step and a comment on the pull request:
    month cannot hold is priced on `big`, where the gateway serves it. When
    the card's free headroom cannot pay the estimate the review makes no
    call, and the note names the calls, the estimate and the headroom, and
-   what the approval card offers: read the diff, then Approve the merge or
-   Deny it (Close on a pull request factoryd opened). A call the gateway refuses for
+   what the approval card offers: read the diff, then “Merge it” or “Send
+   it back” (“Reject and close it” on a pull request the factory opened). A call the gateway refuses for
    headroom (the task's budget, the day's, the month's or the project's
    cap) is made again after the others, one at a time. An answer that does
    not parse — the model's JSON cut at its output bound, say — is asked
@@ -240,7 +240,7 @@ decides (in a wake, or unconfirmed in a human's turn at full auto) is the
 factory's own, whoever is online: the console posts no review, and every
 approval request, plan answer and signal it decides names `factory-chat`.
 A merge card of a plan's integration or delta card holds a row per
-criterion, and Approve opens once every human row stands (`console.md`).
+criterion, and “Merge it” opens once every human row stands (`console.md`).
 `Merge` treats approver `factory-chat` as the merge gate's own
 decision: on the merge rule `auto` it approves the head as `factory-gate`
 with `factoryd: the project agent approved <head> on the project's merge

@@ -13,6 +13,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // run is one run of a stage in a card's life (C10): when it started, how
@@ -259,7 +260,7 @@ func lifeLine(runs []run, spent float64) string {
 		parts = append(parts, minutes(time.Duration(waiting)*time.Minute)+" waiting")
 	}
 	if spent > 0 {
-		parts = append(parts, fmt.Sprintf("\u20ac%.2f", spent))
+		parts = append(parts, textutil.EUR(spent)+" EUR")
 	}
 	return strings.Join(parts, " · ")
 }

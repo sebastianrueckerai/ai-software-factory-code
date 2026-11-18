@@ -144,7 +144,7 @@ func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, 
 	case errors.Is(err, factoryd.ErrUsedProposal):
 		// the press's own words, not fail's plain 404: the plan pins the
 		// used binding's answer on the ask row's button
-		http.Error(w, "There is no such proposal or undo; it may have expired.", http.StatusNotFound)
+		http.Error(w, "There is no such proposal or undo. It may have expired.", http.StatusNotFound)
 		return
 	case !gone:
 		c.fail(w, r, err)
@@ -313,7 +313,7 @@ func (t *turn) askBinding(name string, args json.RawMessage, choice string, choi
 		return "", "", refuse(http.StatusBadRequest, "tool: there is no tool "+name)
 	}
 	if !tool.write {
-		return "", "", refuse(http.StatusBadRequest, "tool: "+name+" reads; a bound tool writes")
+		return "", "", refuse(http.StatusBadRequest, "`tool`: "+name+" reads, and a bound tool writes")
 	}
 	var in toolInput
 	raw := cmp.Or(string(args), "{}")
@@ -341,7 +341,7 @@ func (t *turn) askBinding(name string, args json.RawMessage, choice string, choi
 		Tool: name, Args: json.RawMessage(raw), Description: desc, Conversation: t.conv, Pool: t.pool})
 	t.pool = nil
 	if token == "" {
-		return "", "", refuse(http.StatusInternalServerError, "The binding could not be stored; nothing runs.")
+		return "", "", refuse(http.StatusInternalServerError, "The binding could not be stored, so nothing runs.")
 	}
 	// the park covers the tool at once: a later call of this same answer
 	// meets the refusal, not only the next turn's
@@ -377,7 +377,7 @@ func (t *turn) escalate(ask, why, info, recommendation, choice string, choices [
 	case repeats(choices):
 		return "", refuse(http.StatusBadRequest, "choices: each answer once")
 	case choice != "" && !slices.Contains(choices, choice):
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choice: the one of choices you would pick, as written there; %q is none of them", choice))
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("`choice`: the one of `choices` you would pick, as written there. %q is none of them.", choice))
 	}
 	for _, c := range choices {
 		if faults := writingguide.ChoiceFaults(c); len(faults) > 0 {

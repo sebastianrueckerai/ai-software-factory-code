@@ -20,7 +20,7 @@ import (
 
 // budgetReason is the gateway's refused_budget reason as it read live: the
 // call it shrinks to the crumbs left fits no output token.
-const budgetReason = "free headroom 0.038793 EUR (task 0.038793 of 15.000000) fits 0 output tokens after a request of 117558 bytes " +
+const budgetReason = "free headroom 0.04 EUR (task 0.038793 of 15.000000) fits 0 output tokens after a request of 117558 bytes " +
 	"(measured 29390 prompt tokens), below the minimum call of 1024"
 
 // crumbsChat files the project's chat task of this month with 14.96 of its
@@ -101,7 +101,7 @@ func TestChatBudgetStopIsARowAndOneAsk(t *testing.T) {
 	task := crumbsChat(t, r)
 	g.replies = [][]string{{refuseFor(policy.RefusedBudget, budgetReason)}, {refuseFor(policy.RefusedBudget, budgetReason)}}
 	stop := "The judgment budget for " + time.Now().UTC().Format("January") +
-		" is used up: €14.96 of €15.00 spent, and the next call does not fit what is left.\n" + budgetReason
+		" is used up: 14.96 of 15.00 EUR spent, and the next call does not fit what is left.\n" + budgetReason
 	fund := &chatBudget{BudgetEUR: 15, SpentEUR: 14.96, SuggestEUR: 1, CanFund: true}
 	for _, message := range []string{"what is open?", "and now?"} {
 		_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {message}})
@@ -150,7 +150,7 @@ func TestChatBudgetNetsHolds(t *testing.T) {
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is open?"}})
 	got, _ := stopOf(t, events)
 	stop := "The judgment budget for " + time.Now().UTC().Format("January") +
-		" is used up: €9.90 of €10.00 spent, and the next call does not fit what is left.\n" + budgetReason
+		" is used up: 9.90 of 10.00 EUR spent, and the next call does not fit what is left.\n" + budgetReason
 	fund := &chatBudget{BudgetEUR: 10, SpentEUR: 9.9, SuggestEUR: 1, CanFund: true}
 	if got.Message.Content != stop || !reflect.DeepEqual(got.Budget, fund) {
 		t.Fatalf("the stop = %q, budget %+v; want %q and the fund %+v", got.Message.Content, got.Budget, stop, fund)
@@ -165,7 +165,7 @@ func TestChatBudgetNetsHolds(t *testing.T) {
 // cap and what raises it, the gateway's reason the next line; it asks for
 // no fund of the chat and offers none.
 func TestChatCapStopNamesTheCap(t *testing.T) {
-	const reason = "free headroom 0.000000 EUR (month 0.000000 of 300.000000); the month cap budget.month_eur in policy.yaml is spent, and only a human raises it, by a commit"
+	const reason = "free headroom 0.00 EUR (month 0.000000 of 300.000000); the month cap budget.month_eur in policy.yaml is spent, and only a human raises it, by a commit"
 	for _, tc := range []struct{ decision, first string }{
 		{policy.RefusedDayCap, "The factory's day cap is used up: the chat goes on when the UTC day turns, or once a commit raises budget.day_eur in policy.yaml."},
 		{policy.RefusedMonthCap, "The factory's month cap is used up: the chat goes on when the UTC month turns, or once a commit raises budget.month_eur in policy.yaml."},
@@ -307,7 +307,7 @@ func TestChatFundRefusesWhatIsNoRaise(t *testing.T) {
 		{"no amount", url.Values{"csrf": {s.csrf}, "eur": {"0"}, "reason": {"no"}}, http.StatusBadRequest,
 			"an amount in EUR above zero is required"},
 		{"no reason", url.Values{"csrf": {s.csrf}, "eur": {"1.5"}, "reason": {""}}, http.StatusBadRequest,
-			"an answer of 1 to"},
+			"An answer of 1 to"},
 		{"no chat task", url.Values{"csrf": {s.csrf}, "eur": {"1.5"}, "reason": {"no"}}, http.StatusConflict,
 			"the project's chat has spent no budget: its task starts with the chat's first turn of the month"},
 	} {
@@ -380,7 +380,7 @@ func TestChatFundAndGoResumesTheStoppedTurns(t *testing.T) {
 		chatPost(t, r, ck, s, chatPath, url.Values{"message": {message}})
 	}
 	_, events, _ := chatPost(t, r, ck, s, chatPath+"/budget", url.Values{"eur": {"3"}, "conversation": {"3"}})
-	equal(t, "Fund and go on", events, []string{`applied {"result":"Raised the judgment budget from €15.00 to €18.00.","tool":"fund the chat"}`,
+	equal(t, "Fund and go on", events, []string{`applied {"result":"Raised the judgment budget from 15.00 to 18.00 EUR.","tool":"fund the chat"}`,
 		`text {"text":"Going on."}`, `done {}`})
 	if !waitFor(t, 2*time.Second, func() bool {
 		rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 2, 1)
@@ -414,7 +414,7 @@ func TestChatFundAndGoResumesTheStoppedTurns(t *testing.T) {
 		t.Fatalf("the fund's event rows = %+v", funds)
 	}
 	_, events, _ = chatPost(t, r, ck, s, chatPath+"/budget", url.Values{"eur": {"1"}, "conversation": {"1"}})
-	equal(t, "a fund where no turn stopped", events, []string{`applied {"result":"Raised the judgment budget from €18.00 to €19.00.","tool":"fund the chat"}`, `done {}`})
+	equal(t, "a fund where no turn stopped", events, []string{`applied {"result":"Raised the judgment budget from 18.00 to 19.00 EUR.","tool":"fund the chat"}`, `done {}`})
 	if n := len(g.calls()); n != 5 {
 		t.Fatalf("%d model calls after a fund where no turn stopped, want 5", n)
 	}

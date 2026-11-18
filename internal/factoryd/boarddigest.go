@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"math"
 	"slices"
 	"strings"
@@ -254,7 +255,7 @@ func (b BoardDigest) Render() string {
 	}
 	caps := make([]string, len(b.Caps))
 	for i, c := range b.Caps {
-		caps[i] = fmt.Sprintf("%s %.2f of %.2f EUR", c.Name, c.SpentEUR, c.CapEUR)
+		caps[i] = fmt.Sprintf("%s %s of %s EUR", c.Name, textutil.EUR(c.SpentEUR), textutil.EUR(c.CapEUR))
 	}
 	s.WriteString("caps:\n" + strings.Join(caps, " · ") + "\n")
 	return s.String()

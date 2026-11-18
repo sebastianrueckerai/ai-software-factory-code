@@ -75,6 +75,11 @@ func (e *refusal) Error() string { return e.msg }
 
 func refuse(status int, msg string) error { return &refusal{status, msg} }
 
+// refuseAgent is the refusal of what an agent alone sends, a chat tool's
+// parameter that no human's form holds or a turn of an agent's: it names
+// the keys the agent types.
+func refuseAgent(status int, msg string) error { return &refusal{status, msg} }
+
 // briefRefusal is the filing door's refusal of a writer's brief, a 400
 // whose lines the writer corrects, or the read of a reference that
 // failed; its writer's tries count it.
@@ -234,7 +239,8 @@ func (e *forgejoRefusal) Error() string { return "Forgejo refused to " + e.what 
 
 func (e *forgejoRefusal) Unwrap() error { return e.err }
 
-// fail answers a button whose action failed with err.
+// fail answers a button whose action failed with err, a refusal as a
+// human reads it (factoryd.ForHuman).
 func (c *Console) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var no *refusal
 	var fj *forgejoRefusal
@@ -244,7 +250,7 @@ func (c *Console) fail(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.As(err, &no) && no.status == http.StatusNotFound:
 		http.NotFound(w, r)
 	case errors.As(err, &no):
-		http.Error(w, no.msg, no.status)
+		http.Error(w, factoryd.ForHuman(no.msg), no.status)
 	default:
 		log.Printf("console: %s: %v", current(r).user, err)
 		http.Error(w, "The action failed: "+errText(err)+". Try again in a moment.", http.StatusInternalServerError)
@@ -421,11 +427,11 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project string, b fac
 	case size != "" && !slices.Contains(policy.CardSizes, size):
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "size must be small, medium or large")
 	case rung != "" && rung != factoryd.RungCheap && rung != factoryd.RungFrontier:
-		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "rung must be cheap or frontier")
+		return factoryd.Repo{}, 0, refuseAgent(http.StatusBadRequest, "`rung` must be `cheap` or `frontier`")
 	case refileOf > 0 && roadmapItem == 0:
-		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "refile_of needs roadmap_item: it frees that item from the card it names")
+		return factoryd.Repo{}, 0, refuseAgent(http.StatusBadRequest, "`refile_of` needs `roadmap_item`: it frees that item from the card it names")
 	case rung != "" && strings.TrimSpace(rungReason) == "":
-		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "a rung needs its one-line reason")
+		return factoryd.Repo{}, 0, refuseAgent(http.StatusBadRequest, "`rung` needs its one-line reason")
 	}
 	ps, err := c.coderProjects(ctx)
 	if err != nil {
@@ -487,7 +493,7 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project string, b fac
 		holder, held, err := c.cfg.Tasks.RoadmapHolder(ctx, ps[i].Repository, roadmapItem, refile)
 		if err != nil {
 			log.Printf("console: the roadmap items of %s: %v", ps[i].Name, err)
-			return factoryd.Repo{}, 0, refuse(http.StatusInternalServerError, "cannot read the roadmap items of "+ps[i].Name+"; try again")
+			return factoryd.Repo{}, 0, refuse(http.StatusInternalServerError, "The roadmap items of "+ps[i].Name+" could not be read. Try again.")
 		}
 		if held {
 			return factoryd.Repo{}, 0, refuse(http.StatusConflict, roadmapRefusal(holder, roadmapItem))
@@ -549,7 +555,7 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project string, b fac
 			log.Printf("console: close the unrecorded filing %s#%d: %v", repo, issue.Number, err)
 		}
 		return repo, 0, refuse(http.StatusInternalServerError, fmt.Sprintf(
-			"The factory could not record the filing of %s#%d, so it is no card; the issue is closed. File the card again.", repo, issue.Number))
+			"The factory could not record the filing of %s#%d, so it is no card. The issue is closed. File the card again.", repo, issue.Number))
 	}
 	c.markChatFiled(ctx, a, repo, issue.Number, b.Why)
 	return repo, issue.Number, nil
@@ -608,10 +614,10 @@ func (c *Console) chatFiling(ctx context.Context, a actor, p factoryd.Project, r
 		closed, err := c.cfg.Chat.ChatIntakeClosed(ctx, p.Repository)
 		if err != nil {
 			log.Printf("console: the intake of %s: %v", p.Name, err)
-			return refuse(http.StatusServiceUnavailable, "cannot read the intake of "+p.Name+"; try again")
+			return refuse(http.StatusServiceUnavailable, "The intake of "+p.Name+" could not be read. Try again.")
 		}
 		if closed {
-			return refuse(http.StatusForbidden, "The intake of "+p.Name+" is closed: the roadmap is not pulled. Tell the human what needs filing; an ask or a need still files.")
+			return refuse(http.StatusForbidden, "The intake of "+p.Name+" is closed: the roadmap is not pulled. Tell the human what needs filing. An ask or a need still files.")
 		}
 	}
 	if v, ok := c.inForce(ctx); ok && check != nil {
@@ -633,9 +639,9 @@ func pinnedImage(p factoryd.Project, image string) (string, error) {
 		return image, nil
 	}
 	if len(p.Images) == 0 {
-		return "", refuse(http.StatusConflict, "Project "+p.Name+" pins no sandbox images. Leave image out for the default, or add the image with request_image.")
+		return "", refuseAgent(http.StatusConflict, "Project "+p.Name+" pins no sandbox images. Leave `image` out for the default, or add the image with `request_image`.")
 	}
-	return "", refuse(http.StatusConflict, fmt.Sprintf("Project %s pins no image %s: its images are %s. Name one of them, leave image out for the default, or add the image with request_image.",
+	return "", refuseAgent(http.StatusConflict, fmt.Sprintf("Project %s pins no image %s: its images are %s. Name one of them, leave `image` out for the default, or add the image with `request_image`.",
 		p.Name, image, strings.Join(slices.Sorted(maps.Keys(p.Images)), ", ")))
 }
 
@@ -719,7 +725,7 @@ func (c *Console) waitsOnRetry(ctx context.Context, t factoryd.Task) ([]waitingC
 		open, err := c.cfg.OpenCasesOf(ctx, d.TaskID)
 		if err != nil {
 			log.Printf("console: the cases of %s: %v", d.TaskID, err)
-			return nil, refuse(http.StatusInternalServerError, "The cases of the cards that wait on this one could not be read, so nothing was retried. Try again.")
+			return nil, refuse(http.StatusInternalServerError, "The asks of the cards that wait on this one could not be read, so nothing was retried. Try again.")
 		}
 		i := slices.IndexFunc(open, func(k factoryd.Case) bool { return k.Kind == factoryd.CaseDependencyFailed && k.StateKey == t.ID })
 		if i < 0 {
@@ -845,7 +851,7 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 		return "", refuse(http.StatusConflict, c.holdoutsWait(ctx, t, revision))
 	case errors.Is(err, factoryd.ErrAnswerUnsignalled):
 		log.Printf("console: %s answered question %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
-		return "", refuse(http.StatusBadGateway, "The answer is recorded, but factoryd could not pass it to the plan; request_changes sends the plan to the planner with the answers.")
+		return "", refuse(http.StatusBadGateway, "The answer is recorded, but the factory could not pass it to the plan. “Ask for changes” sends the plan to the planner with the answers.")
 	case err != nil:
 		log.Printf("console: %s answers question %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
 		return "", refuse(http.StatusConflict, fmt.Sprintf("The answer could not be recorded: %s. Read the plan again and answer the open questions of its newest revision.", errText(err)))
@@ -1001,7 +1007,7 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 		return "", refuse(http.StatusConflict, c.holdoutsWait(ctx, t, revision))
 	case errors.Is(err, factoryd.ErrAnswerUnsignalled):
 		log.Printf("console: %s answered %d questions of revision %d of plan %s: %v", a.s.user, len(batch), revision, t.ID, err)
-		return "", refuse(http.StatusBadGateway, "The answers are recorded, but factoryd could not pass them to the plan; request_changes sends the plan to the planner with the answers.")
+		return "", refuse(http.StatusBadGateway, "The answers are recorded, but the factory could not pass them to the plan. “Ask for changes” sends the plan to the planner with the answers.")
 	case err != nil:
 		log.Printf("console: %s answers %d questions of revision %d of plan %s: %v", a.s.user, len(batch), revision, t.ID, err)
 		return "", refuse(http.StatusConflict, fmt.Sprintf("The answers could not be recorded: %s. Read the plan again and answer the open questions of its newest revision.", errText(err)))
@@ -1044,7 +1050,7 @@ func (c *Console) doDecideHoldout(ctx context.Context, a actor, id string, revis
 	case errors.As(err, &stale):
 		return refuse(http.StatusConflict, stale.Error())
 	case errors.Is(err, factoryd.ErrAnswered):
-		return refuse(http.StatusConflict, fmt.Sprintf("The confirmation of plan #%d is answered already; its hold-outs are settled.", t.IssueNumber))
+		return refuse(http.StatusConflict, fmt.Sprintf("The confirmation of plan #%d is answered already, and its extra promises are settled.", t.IssueNumber))
 	case errors.Is(err, factoryd.ErrHoldoutClick), errors.Is(err, factoryd.ErrNoHoldout):
 		return refuse(http.StatusConflict, err.Error())
 	case err != nil:
@@ -1165,7 +1171,7 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, h
 		if q := bt.Question; q != nil && q.ChoiceLabel(value) != "" {
 			what = "the answer “" + q.ChoiceLabel(value) + "”"
 		}
-		return "", refuse(http.StatusConflict, fmt.Sprintf("The question of card #%d no longer offers %s. Open the card and press one of the answers it shows.", t.IssueNumber, what))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The question of card #%d no longer asks for %s. Open the card and press one of the answers it shows.", t.IssueNumber, what))
 	}
 	out, err := c.actOn(ctx, a, t, k.ID, res, c.posting(a, t, res))
 	if err != nil {
@@ -1333,7 +1339,7 @@ func (c *Console) answerCase(ctx context.Context, a actor, id string, caseID int
 	open, err := c.cfg.OpenCasesOf(ctx, t.ID)
 	if err != nil {
 		log.Printf("console: the cases of %s: %v", t.ID, err)
-		return "", refuse(http.StatusServiceUnavailable, "The card's cases could not be read, so nothing was answered. Try again.")
+		return "", refuse(http.StatusServiceUnavailable, "The card's asks could not be read, so nothing was answered. Try again.")
 	}
 	i := slices.IndexFunc(open, func(k factoryd.Case) bool { return k.ID == caseID })
 	if i < 0 {
@@ -1344,8 +1350,8 @@ func (c *Console) answerCase(ctx context.Context, a actor, id string, caseID int
 	case factoryd.CasePlanQuestion, factoryd.CasePlanConfirmation:
 		revision, _ := k.Facts["revision"].(float64)
 		index, _ := k.Facts["index"].(float64)
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Case %d is %s's %s: answer revision %d, question %d without a case number.",
-			caseID, ref, strings.ReplaceAll(string(k.Kind), "_", " "), int(revision), int(index)))
+		return "", refuseAgent(http.StatusConflict, fmt.Sprintf("`case_id` %d is the %s of %s: answer it with `revision` %d and `question` %d, and no `case_id`.",
+			caseID, strings.ReplaceAll(string(k.Kind), "_", " "), ref, int(revision), int(index)))
 	}
 	res, err := resolve(factoryd.Facts{CaseFacts: factoryd.FactsOf(open[i]), Card: t})
 	if err != nil {
@@ -1379,27 +1385,27 @@ func (c *Console) answerCase(ctx context.Context, a actor, id string, caseID int
 // kinds.
 func (c *Console) noLiveCase(ctx context.Context, t factoryd.Task, id int64, open []factoryd.Case) error {
 	ref := issueRef(t.ID, t.IssueNumber)
-	why := "Card " + ref + " has no case by that number."
+	why := "Card " + ref + " has no ask by that number."
 	k, err := c.cfg.CaseByID(ctx, id)
 	switch {
 	case errors.Is(err, factoryd.ErrNotFound):
 	case err != nil:
 		log.Printf("console: case %d: %v", id, err)
-		return refuse(http.StatusServiceUnavailable, "The case could not be read, so nothing was answered. Try again.")
+		return refuse(http.StatusServiceUnavailable, "The ask could not be read, so nothing was answered. Try again.")
 	case k.TaskID == t.ID:
-		why = "That case ended."
+		why = "That ask ended."
 	case k.Repository == t.Repository:
 		other, _, _ := c.cfg.Tasks.Task(ctx, k.TaskID)
-		why = "That case is " + issueRef(k.TaskID, other.IssueNumber) + "'s."
+		why = "That ask is " + issueRef(k.TaskID, other.IssueNumber) + "'s."
 	}
 	if len(open) == 0 {
-		return refuse(http.StatusConflict, why+" Card "+ref+" has no live case.")
+		return refuse(http.StatusConflict, why+" Card "+ref+" asks nothing now.")
 	}
 	live := make([]string, len(open))
 	for i, k := range open {
-		live[i] = fmt.Sprintf("%d (%s)", k.ID, k.Kind)
+		live[i] = fmt.Sprintf("%d (%s)", k.ID, strings.ReplaceAll(string(k.Kind), "_", " "))
 	}
-	return refuse(http.StatusConflict, why+" Card "+ref+"'s live cases: "+strings.Join(live, ", ")+".")
+	return refuseAgent(http.StatusConflict, why+" Card "+ref+"'s open asks, by `case_id`: "+strings.Join(live, ", ")+".")
 }
 
 // typedAnswer is the chat's typed answer: action with its args, continue
@@ -1423,7 +1429,7 @@ func typedAnswer(text, action string, args json.RawMessage, eur float64) (factor
 	}
 	switch {
 	case eur < 0 || math.IsNaN(eur) || math.IsInf(eur, 0):
-		return res, refuse(http.StatusBadRequest, "fund_eur is an amount in EUR above zero")
+		return res, refuse(http.StatusBadRequest, "Name an amount above zero (`fund_eur`).")
 	case eur == 0:
 	case res.Action == factoryd.ActFund || res.Action == factoryd.ActRaiseCeiling:
 		if res.Args == nil {
@@ -1504,7 +1510,7 @@ func extendable(t factoryd.Task) bool {
 // raiseLine names an extend's raise: the sessions, minutes of agent time,
 // lines and EUR it adds.
 func raiseLine(sessions, lines, minutes int, eur float64) string {
-	return fmt.Sprintf("+%d %s, +%d %s of agent time, +%d %s, +%.2f EUR", sessions, plural(sessions, "session"), minutes, plural(minutes, "minute"), lines, plural(lines, "line"), eur)
+	return fmt.Sprintf("+%d %s, +%d %s of agent time, +%d %s, +%s EUR", sessions, plural(sessions, "session"), minutes, plural(minutes, "minute"), lines, plural(lines, "line"), textutil.EUR(eur))
 }
 
 // choiceCard tells a human card factoryd asks on whose choices act: the
@@ -1616,7 +1622,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 				return 0, refuse(http.StatusConflict, "Forgejo re-runs no action run of "+t.Repository+
 					": it has no rerun API (that came with Forgejo 17), or the project's actions token lacks the right. Check again or dismiss.")
 			case errors.Is(err, factoryd.ErrNothingToRerun):
-				return 0, refuse(http.StatusConflict, "No run of the head is pending: a skipped run concluded, and a pending required status is its deployer's; neither is re-run. Check again or dismiss.")
+				return 0, refuse(http.StatusConflict, "No run of the head is pending: a skipped run concluded, and a pending required status is its deployer's. Neither runs again. Look again, or end the card.")
 			case err != nil:
 				log.Printf("console: %s re-runs the stall of %s: %v", a.s.user, t.Repository, err)
 				return 0, refuse(http.StatusInternalServerError, "The re-run failed: "+errText(err)+". Try again in a moment.")
@@ -1807,7 +1813,7 @@ func (c *Console) newestCase(ctx context.Context, t factoryd.Task) (factoryd.Cas
 	k, err := c.cfg.NewestAskCase(ctx, t.ID)
 	if err != nil {
 		log.Printf("console: the cases of %s: %v", t.ID, err)
-		return factoryd.Case{}, refuse(http.StatusServiceUnavailable, "The card's cases could not be read, so nothing was answered. Try again.")
+		return factoryd.Case{}, refuse(http.StatusServiceUnavailable, "The card's asks could not be read, so nothing was answered. Try again.")
 	}
 	return k, nil
 }
@@ -1997,7 +2003,7 @@ func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) 
 // than the sessions read.
 func answerFits(text string) error {
 	if text == "" || len(text) > factoryd.MaxAnswer {
-		return refuse(http.StatusBadRequest, fmt.Sprintf("an answer of 1 to %d bytes is required; this one has %d", factoryd.MaxAnswer, len(text)))
+		return refuse(http.StatusBadRequest, fmt.Sprintf("An answer of 1 to %d bytes is required, and this one has %d.", factoryd.MaxAnswer, len(text)))
 	}
 	return nil
 }
@@ -2015,7 +2021,7 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, n
 	case !(raise >= 0) || math.IsInf(raise, 0):
 		return "", refuse(http.StatusBadRequest, "the ceiling's raise is an amount in EUR, 0 for none")
 	}
-	note = cmp.Or(strings.TrimSpace(note), fmt.Sprintf("Funded the card: +%.2f EUR.", eur))
+	note = cmp.Or(strings.TrimSpace(note), fmt.Sprintf("Funded the card: +%s EUR.", textutil.EUR(eur)))
 	if err := answerFits(note); err != nil {
 		return "", err
 	}
@@ -2071,7 +2077,7 @@ func (c *Console) doChatFund(ctx context.Context, a actor, name string, eur floa
 		log.Printf("console: %s funds the chat of %s: %v", a.s.user, p.Repository, err)
 		return 0, 0, refuse(http.StatusInternalServerError, "The budget could not be raised: "+errText(err)+". Try again in a moment.")
 	}
-	log.Printf("console: %s raised the chat of %s's budget by %.2f EUR (%.2f to %.2f) via %s: %s", a.s.user, p.Repository, eur, from, to, a.via, note)
+	log.Printf("console: %s raised the chat of %s's budget by %s EUR (%s to %s) via %s: %s", a.s.user, p.Repository, textutil.EUR(eur), textutil.EUR(from), textutil.EUR(to), a.via, note)
 	c.record(ctx, a, p.Repository, t.ID, 0, factoryd.EventChatFunded,
 		map[string]any{"from_eur": from, "to_eur": to, "amount_eur": eur, "reason": note})
 	c.resumeStopped(context.WithoutCancel(ctx), p, skip)
@@ -2574,7 +2580,7 @@ func (c *Console) doEdit(ctx context.Context, a actor, id string, edit factoryd.
 		if _, _, text = factoryd.ParseIssueText(issue.Body); onIssue {
 			if err := c.cfg.Tasks.SetObjective(ctx, t.ID, factoryd.IssueObjective(issue.Title, text)); err != nil {
 				log.Printf("console: %s edited %s, its objective: %v", a.s.user, t.ID, err)
-				return "", refuse(http.StatusInternalServerError, "The issue is edited, but the card's objective could not be stored; edit it again.")
+				return "", refuse(http.StatusInternalServerError, "The issue is edited, but the card's objective could not be stored. Edit it again.")
 			}
 		}
 	}
@@ -2685,7 +2691,7 @@ func (c *Console) setDependency(ctx context.Context, a actor, id, dependsOn stri
 	}
 	if err := store(ctx, t.ID, []string{d.ID}); err != nil {
 		log.Printf("console: %s the dependency of %s on %s: %v", verb, t.ID, d.ID, err)
-		return "", refuse(http.StatusInternalServerError, "The issue's dependency is set, but the card's could not be stored; set it again.")
+		return "", refuse(http.StatusInternalServerError, "The issue's dependency is set, but the card's could not be stored. Set it again.")
 	}
 	log.Printf("console: %s set %s on %s (removed %t) via %s", a.s.user, t.ID, d.ID, remove, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventDependencySet, map[string]any{"depends_on": d.ID, "removed": remove})
@@ -2775,7 +2781,7 @@ func (c *Console) doComment(ctx context.Context, a actor, id, text string) (post
 		return 0, "", refuse(http.StatusConflict, "The card has no issue yet.")
 	}
 	if t.Track == policy.TrackPlan && a.decider == "agent" {
-		return 0, "", refuse(http.StatusConflict, fmt.Sprintf("A comment on plan #%d is a change request its planner reads: ask for one with request_changes, or send the plan back with replan.", t.IssueNumber))
+		return 0, "", refuseAgent(http.StatusConflict, fmt.Sprintf("A comment on plan #%d is a change request its planner reads: ask for one with `request_changes`, or send the plan back with `replan`.", t.IssueNumber))
 	}
 	if waitsOnAnswer(t) {
 		if err := answerFits(text); err != nil {
@@ -2887,7 +2893,7 @@ func (c *Console) pendingRequest(ctx context.Context, a actor, id int64) (factor
 	i := slices.IndexFunc(all, func(q factoryd.ApprovalRequest) bool { return q.ID == id })
 	switch {
 	case i < 0:
-		return factoryd.ApprovalRequest{}, refuse(http.StatusConflict, fmt.Sprintf("approval request %d is not pending (any more); reload the board", id))
+		return factoryd.ApprovalRequest{}, refuse(http.StatusConflict, fmt.Sprintf("Approval request %d waits for no answer any more. Reload the board.", id))
 	case a.repository != "" && all[i].Project != a.repository:
 		return factoryd.ApprovalRequest{}, refuse(http.StatusNotFound, fmt.Sprintf("There is no approval request %d in this project.", id))
 	}
@@ -2999,10 +3005,10 @@ func (c *Console) approveMerge(ctx context.Context, a actor, q factoryd.Approval
 		drops, newest, err := c.revisionDrops(ctx, t)
 		if err != nil {
 			log.Printf("console: the plan revisions of %s: %v", t.ID, err)
-			return "", refuse(http.StatusInternalServerError, "Cannot read the plan's revisions. Approve again; if it fails again, replan the plan.")
+			return "", refuse(http.StatusInternalServerError, "The plan's revisions could not be read. Press the answer again, and if it fails again, send the plan back to the planner.")
 		}
 		if drops {
-			return "", refuse(http.StatusConflict, fmt.Sprintf("The plan's revision %d drops the card %s, so it cannot merge: deny the merge (deny_merge).", newest, t.PlanKey))
+			return "", refuse(http.StatusConflict, fmt.Sprintf("The plan's revision %d drops the card %s, so it cannot merge, and `deny_merge` is its answer.", newest, t.PlanKey))
 		}
 	}
 	_, open, _, _, err := c.planVerdicts(ctx, t)
@@ -3156,7 +3162,7 @@ func (c *Console) denyMerge(ctx context.Context, a actor, q factoryd.ApprovalReq
 	if spec.Factory {
 		if err := c.cfg.CloseFactoryPR(ctx, q.TaskID, q.PRNumber, a.approver(), note); err != nil {
 			log.Printf("console: %s closed PR #%d of %s, the signal failed: %v", a.s.user, q.PRNumber, q.TaskID, err)
-			return "", refuse(http.StatusBadGateway, "the task's workflow could not be signalled; close it again")
+			return "", refuse(http.StatusBadGateway, "The card's run could not be told. End the card again.")
 		}
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeDenied, map[string]any{"pr": q.PRNumber, "action": "close"})
 		return fmt.Sprintf("Closing pull request #%d and its card with your words: no agent works on a pull request factoryd opened.", q.PRNumber), nil
@@ -3222,9 +3228,9 @@ func (c *Console) doDecide(ctx context.Context, a actor, id int64, cid, verb, re
 	reason = strings.TrimSpace(reason)
 	switch {
 	case verb != "met" && verb != "not_met" && verb != "waived":
-		return "", refuse(http.StatusBadRequest, "Choose Met, Not met or Waive: the verb is met, not_met or waived.")
+		return "", refuse(http.StatusBadRequest, "Choose “It is met”, “It is not met” or “Drop this promise” (`met`, `not_met` or `waived`).")
 	case verb != "met" && (reason == "" || len(reason) > maxCriterionReason):
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("a one-line reason of up to %d characters is required for Not met and Waive", maxCriterionReason))
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("“It is not met” and “Drop this promise” need a one-line reason of up to %d characters.", maxCriterionReason))
 	}
 	q, err := c.pendingRequest(ctx, a, id)
 	switch {
@@ -3281,11 +3287,11 @@ func (c *Console) criterionVerdict(ctx context.Context, a actor, q factoryd.Appr
 	if verb == "met" {
 		seen := "the criterion's evidence"
 		if row.Artifact != nil {
-			seen = row.Artifact.Name + " at " + row.Artifact.Head[:min(7, len(row.Artifact.Head))]
+			seen = row.Artifact.Name + " at " + factoryd.ShortSHA(row.Artifact.Head)
 		}
 		reason = fmt.Sprintf("%s (%s)", cmp.Or(reason, "met"), seen)
 		if len(reason) > maxCriterionReason {
-			return "", refuse(http.StatusBadRequest, fmt.Sprintf("Met takes up to %d characters of words beside what you saw.", maxCriterionReason-len(seen)-3))
+			return "", refuse(http.StatusBadRequest, fmt.Sprintf("“It is met” takes up to %d characters of words beside what you saw.", maxCriterionReason-len(seen)-3))
 		}
 	}
 	if verb == "not_met" {
@@ -3373,11 +3379,11 @@ func (c *Console) doRerun(ctx context.Context, a actor, id int64) (string, error
 		return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is no merge request of a pull request factoryd opened: "+
 			"its checks run again by a push to its branch, and approve and deny decide it", q.ID))
 	case !spec.RedChecks:
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks are green: approve it to merge (approve_merge) or close it (deny_merge).", q.PRNumber))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks are green, so nothing runs again: `approve_merge` merges it, and `deny_merge` with `reject` closes it.", q.PRNumber))
 	}
 	if err := c.cfg.RerunChecks(ctx, q.TaskID, q.PRNumber, a.approver()); err != nil {
 		log.Printf("console: %s re-ran the checks of PR #%d of %s, the signal failed: %v", a.s.user, q.PRNumber, q.TaskID, err)
-		return "", refuse(http.StatusBadGateway, "the task's workflow could not be signalled; run the checks again once more")
+		return "", refuse(http.StatusBadGateway, "The card's run could not be told. Run the checks again once more.")
 	}
 	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeDenied, map[string]any{"pr": q.PRNumber, "action": "rerun_checks"})
 	return fmt.Sprintf("Running the checks of pull request #%d again; the card asks again once they settle.", q.PRNumber), nil
@@ -3430,10 +3436,10 @@ func (c *Console) doDeployNow(ctx context.Context, a actor, name string) (string
 		return "", refuse(http.StatusConflict, "Production of "+name+" is not held: every merge goes to production on its own.")
 	case errors.As(err, &red):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Main of %s at %s is red: Deploy now waits for a green run on main. Press it again once main is green.",
-			name, red.Commit[:min(7, len(red.Commit))]))
+			name, factoryd.ShortSHA(red.Commit)))
 	case err != nil:
 		log.Printf("console: %s deploys %s now: %v", a.s.user, p.Repository, err)
 		return "", refuse(http.StatusInternalServerError, "Production of "+name+" could not be released: "+errText(err)+". Try again in a moment, then press Deploy now again.")
 	}
-	return fmt.Sprintf("Deploy now: main of %s at %s goes to production. A merge after it waits for the open plans again.", name, commit[:min(7, len(commit))]), nil
+	return fmt.Sprintf("Deploy now: main of %s at %s goes to production. A merge after it waits for the open plans again.", name, factoryd.ShortSHA(commit)), nil
 }

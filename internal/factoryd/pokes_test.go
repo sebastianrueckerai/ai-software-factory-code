@@ -416,7 +416,7 @@ func TestFinishRecordsTheIssueCommentsReason(t *testing.T) {
 	if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", reason); err != nil {
 		t.Fatal(err)
 	}
-	if want := "factoryd: task t1 failed: " + reason; len(fj.comments) != 1 || fj.comments[0] != want {
+	if want := "This card failed: " + reason; len(fj.comments) != 1 || fj.comments[0] != want {
 		t.Fatalf("the issue's comments = %q, want %q", fj.comments, want)
 	}
 	b, err := objects.Get(t.Context(), "sessions/t1/timeline.jsonl")
@@ -739,5 +739,24 @@ func TestAnAsksMessageDropsAWhyPastItsBound(t *testing.T) {
 	}
 	if got := askMessage("#7 (Pages)", "Merge “Pages”?", why, "The model review suggests “Merge it”."); got != "#7 (Pages) needs you. Merge “Pages”? The model review suggests “Merge it”." {
 		t.Errorf("a why past the bound: %q", got)
+	}
+}
+
+// A refusal names each answer by the key an agent types, and a human
+// reads the answer's label: a key with its variant reads the variant's
+// label, a key no answer has stays as it is, and the name of a field an
+// agent passes, in brackets, goes.
+func TestForHumanNamesTheAnswersByTheirLabels(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"the human may take `extend`, `close` and `note`", "the human may take “Allow more sessions”, “End the card” and “Not now”"},
+		{"send it back (`deny_merge` with `request_changes`) or close it (`deny_merge` with `reject`)", "send it back (“Send it back”) or close it (“Reject and close it”)"},
+		{"`withdraw` ends a monitor flag's ask", "`withdraw` ends a monitor flag's ask"},
+		{"`set_dependency` names the card to wait for (`depends_on`)", "“Make it wait for a card” names the card to wait for"},
+		{"Choose “It is met” or “It is not met” (`met` or `not_met`).", "Choose “It is met” or “It is not met”."},
+		{"no key here", "no key here"},
+	} {
+		if got := ForHuman(tc.in); got != tc.want {
+			t.Errorf("ForHuman(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }

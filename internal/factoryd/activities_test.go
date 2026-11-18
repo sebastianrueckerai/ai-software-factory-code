@@ -1399,10 +1399,10 @@ func TestFinishDoneClosesTheIssueOfAnEndedCard(t *testing.T) {
 		closed                      []int64
 	}{
 		{"a revert, its issue open", "pull request merged by factory-merge", SourceRevert, "direct", 12, false,
-			[]string{"factoryd: pull request #12 merged; this card ends with it."}, []int64{4}},
+			[]string{"Pull request #12 merged, and this card ends with it."}, []int64{4}},
 		{"an agent card whose merge closed its issue", "pull request merged by factory-merge", "api", "direct", 12, true, nil, nil},
 		{"a covered card without a pull request", covered, SourcePlan, "direct", 0, false,
-			[]string{"factoryd: " + covered + "; this card ends with it."}, []int64{4}},
+			[]string{"Live: covered by run 5. This card ends with it."}, []int64{4}},
 		{"a plan card", "the plan's revision 2 filed its cards", "webhook", policy.TrackPlan, 0, false, nil, nil},
 	} {
 		fj := &prForgejo{issueOff: tc.issueOff, pulls: map[int64]string{12: merged}, labels: map[int64][]string{4: {"state/in-review"}}}
@@ -2548,7 +2548,7 @@ func TestRerunChecksPushesOneEmptyCommit(t *testing.T) {
 		}
 	}
 	if len(fj.contents) != 1 || fj.contents[0]["branch"] != "factory/t1" || fmt.Sprint(fj.contents[0]["files"]) != "[]" ||
-		fj.contents[0]["message"] != "factoryd: run the checks of c1 again\n\nFactory-Role: checks\nFactory-Task: t1\n" {
+		fj.contents[0]["message"] != "Run the checks of c1 again\n\nFactory-Role: checks\nFactory-Task: t1\n" {
 		t.Fatalf("commits = %v, want one empty commit on factory/t1", fj.contents)
 	}
 }
@@ -2662,7 +2662,7 @@ func TestFaceAsksAHumanOnTheIssue(t *testing.T) {
 	if labels := fj.labels[4]; !slices.Equal(labels, []string{"agent", "state/waiting-human"}) {
 		t.Fatalf("labels = %v", labels)
 	}
-	if id != 701 || len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "the check cannot pass") || !strings.Contains(fj.comments[0], "Reply on this issue") {
+	if id != 701 || len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "The check cannot pass.") || !strings.Contains(fj.comments[0], "Reply on this issue") {
 		t.Fatalf("id = %d, comments = %q", id, fj.comments)
 	}
 	timeline, _ := objects.Get(context.Background(), "sessions/t1/timeline.jsonl")
@@ -3507,19 +3507,19 @@ func TestMonthTurn(t *testing.T) {
 // characters, for a project of a realistic name.
 func TestCapWaitReason(t *testing.T) {
 	nov1 := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
-	day := "free headroom -23.439417 EUR (task 2.000000, day -23.439417, month 54.546612)"
+	day := "free headroom -23.44 EUR (task 2.00, day -23.44, month 54.55)"
 	if got := CapWaitReason(policy.RefusedDayCap, capGateway(policy.RefusedDayCap), day, oct(15, 0, 0)); got != dayReason {
 		t.Errorf("day reason = %q, want %q", got, dayReason)
 	}
 	const month = "the month cap is reached: the card resumes on its own once the month's free headroom funds a session, " +
-		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise budget.month_eur in policy.yaml to resume it sooner, or close the card.\n" +
+		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise the month cap in policy.yaml to resume it sooner, or close the card.\n" +
 		"the gateway refused this task's spend (refused_month_cap): spent"
 	if got := CapWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), "spent", nov1); got != month {
 		t.Errorf("month reason = %q, want %q", got, month)
 	}
-	state := "0.010000 EUR of the project's 3.00 EUR month (budget.month_eur in projects/linkshort.yaml) is free"
+	state := "0.01 EUR of the project's 3.00 EUR month in projects/linkshort.yaml is free"
 	const project = "the project's month cap is reached: the card resumes on its own once the project's free month headroom funds a session, " +
-		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise budget.month_eur in projects/linkshort.yaml to resume it sooner, or close the card.\n" +
+		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise the project's month cap in projects/linkshort.yaml to resume it sooner, or close the card.\n" +
 		"the attempt's floor refused the attempt before it started (refused_project_cap): "
 	got := CapWaitReason(policy.RefusedProjectCap, capFloor(policy.RefusedProjectCap), state, nov1)
 	if got != project+state {
@@ -3529,7 +3529,7 @@ func TestCapWaitReason(t *testing.T) {
 		t.Errorf("project question row = %q (%d), want the actions within 300 characters", q, len(q))
 	}
 	noFile := CapWaitReason(policy.RefusedProjectCap, capGateway(policy.RefusedProjectCap), "spent", nov1)
-	if want := "Raise budget.month_eur in the project's file to resume it sooner"; !strings.Contains(noFile, want) {
+	if want := "Raise the project's month cap in the project's file to resume it sooner"; !strings.Contains(noFile, want) {
 		t.Errorf("project reason without a file = %q, want %q", noFile, want)
 	}
 }
@@ -3653,7 +3653,7 @@ func TestSessionFundedPricesASessionsOpening(t *testing.T) {
 	why, err := r.SessionFunded(ctx, "t-704", "factory/big")
 	if want := BudgetRefused + ": Raise the budget and answer, or close the card.\n" +
 		"The card spent 4.89 EUR of its 5.00 EUR budget; 0.11 EUR is held for the review and the audit, which need 0.40 EUR, " +
-		"and a session's opening on factory/big needs 0.607001 EUR " +
+		"and a session's opening on factory/big needs 0.61 EUR " +
 		"(2 calls at once: 44342 bytes on big asking 24576 output tokens, 7031 bytes on small asking 24576 output tokens; " +
 		"the largest of the newest 2 sessions' openings on it, as the holds take them); " +
 		"a session started now could not make its opening calls."; err != nil || why != want || !BudgetRefusal(why) {
@@ -3685,14 +3685,14 @@ func TestSessionFundedPricesASessionsOpening(t *testing.T) {
 	store.tasks["t-704"] = raised
 	store.openings["big"] = policy.Opening{Sessions: [][]policy.OpeningCall{s2}, AnyRef: true}
 	if why, err := r.SessionFunded(ctx, "t-704", "factory/big"); err != nil ||
-		!strings.Contains(why, "needs 0.499689 EUR (43683 bytes on big asking 24576 output tokens; the largest of the newest 1 sessions' openings on any model, none on it being recorded") {
+		!strings.Contains(why, "needs 0.50 EUR (43683 bytes on big asking 24576 output tokens; the largest of the newest 1 sessions' openings on any model, none on it being recorded") {
 		t.Fatalf("measured on any alias: (%q, %v)", why, err)
 	}
 	store.openings["big"] = policy.Opening{AnyRef: true}
 	raised.SpentEUR = 4.995
 	store.tasks["t-704"] = raised
 	if why, err := r.SessionFunded(ctx, "t-704", "factory/big"); err != nil ||
-		!strings.Contains(why, "needs 0.015360 EUR (no session's opening is recorded: 1024 output tokens at the hold machinery's minimum)") {
+		!strings.Contains(why, "needs 0.02 EUR (no session's opening is recorded: 1024 output tokens at the hold machinery's minimum)") {
 		t.Fatalf("nothing measured: (%q, %v)", why, err)
 	}
 }
@@ -3719,13 +3719,13 @@ func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
 	ctx := context.Background()
 
 	why, err := r.SessionFunded(ctx, "t-1", "factory/big")
-	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "The card spent 4.50 EUR of its 5.00 EUR budget; 0.10 EUR is held for the review and the audit, which need 0.10 EUR, and a session on factory/big needs 0.600000 EUR "+
+	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "The card spent 4.50 EUR of its 5.00 EUR budget; 0.10 EUR is held for the review and the audit, which need 0.10 EUR, and a session on factory/big needs 0.60 EUR "+
 		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); a session started now would run out of money before its work is done.") {
-		t.Fatalf("frontier at 0.40 under the ceiling = (%q, %v), want the 0.600000 EUR floor named", why, err)
+		t.Fatalf("frontier at 0.40 under the ceiling = (%q, %v), want the 0.60 EUR floor named", why, err)
 	}
 	if why, err := r.SessionFunded(ctx, "t-1", "big"); err != nil || !BudgetRefusal(why) ||
-		!strings.Contains(why, "a session on big needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
-		t.Fatalf("unprefixed frontier at 0.50 free = (%q, %v), want the 0.600000 EUR floor named", why, err)
+		!strings.Contains(why, "a session on big needs 0.60 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
+		t.Fatalf("unprefixed frontier at 0.50 free = (%q, %v), want the 0.60 EUR floor named", why, err)
 	}
 	if why, err := r.SessionFunded(ctx, "t-1", "factory/small"); err != nil || why != "" {
 		t.Fatalf("cheap at 0.40 under the ceiling = (%q, %v), want funded", why, err)
@@ -3734,12 +3734,12 @@ func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
 	raised.SpentEUR = 4.8
 	store.tasks["t-1"] = raised
 	if why, err := r.SessionFunded(ctx, "t-1", "factory/small"); err != nil ||
-		!strings.Contains(why, "a session on factory/small needs 0.300000 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml)") {
-		t.Fatalf("cheap at 0.20 free = (%q, %v), want the 0.300000 EUR floor named", why, err)
+		!strings.Contains(why, "a session on factory/small needs 0.30 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml)") {
+		t.Fatalf("cheap at 0.20 free = (%q, %v), want the 0.30 EUR floor named", why, err)
 	}
 	v.Tree.Document.Budget.SessionFloorCheapEUR = 0
 	if why, err := r.SessionFunded(ctx, "t-1", "factory/small"); err != nil || why != "" {
-		t.Fatalf("cheap without a floor at 0.10 under the ceiling = (%q, %v), want the opening alone to decide (0.01536 EUR)", why, err)
+		t.Fatalf("cheap without a floor at 0.10 under the ceiling = (%q, %v), want the opening alone to decide (0.02 EUR)", why, err)
 	}
 }
 
@@ -3764,7 +3764,7 @@ func TestSessionFundedPricesTheClassSessionModel(t *testing.T) {
 		Policy: func() policy.Version { return v },
 		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
 	why, err := r.SessionFunded(context.Background(), "t-2", "factory/big")
-	if err != nil || !strings.Contains(why, "a session on factory/premium needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
+	if err != nil || !strings.Contains(why, "a session on factory/premium needs 0.60 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
 		t.Fatalf("premium plan session at 0.50 free = (%q, %v), want the frontier floor on factory/premium", why, err)
 	}
 	if got := sessionModel(v.Document, Task{RequiredCapabilities: []string{"coder"}}, "factory/small"); got != "factory/small" {
@@ -3841,9 +3841,9 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 	why, err := r.SessionFunded(ctx, "t-2", "factory/big")
 	if want := BudgetRefused + ": Wait for the holds to settle and answer (a released hold books its call's cost, " +
 		"an expired one is booked in full), or raise the budget and answer.\n" +
-		"The card spent 4.50 EUR of its 5.00 EUR budget; 0.400 EUR is held by calls in flight (1, the earliest expiring 2026-10-14T19:35:03Z); " +
+		"The card spent 4.50 EUR of its 5.00 EUR budget; 0.40 EUR is held by calls in flight (1, the earliest expiring 2026-10-14T19:35:03Z); " +
 		"0.10 EUR is held for the review and the audit, which need 0.40 EUR, " +
-		"and a session on factory/premium needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); " +
+		"and a session on factory/premium needs 0.60 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); " +
 		"a session started now would run out of money before its work is done."; err != nil || why != want {
 		t.Errorf("the held refusal = (%q, %v), want %q", why, err, want)
 	}
@@ -3936,7 +3936,7 @@ func TestFundedPassesACardWhoseClassHasNoSessionModel(t *testing.T) {
 		t.Fatalf("coder card with no model = (%q, %v), prices read %q; want not judged, nothing read", why, err, asked.aliases)
 	}
 	why, err := r.SessionFunded(ctx, "t-plan", "")
-	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "The card spent 4.50 EUR of its 5.00 EUR budget; 0.40 EUR is held for the review and the audit, which need 0.40 EUR, and a session on premium needs 0.600000 EUR "+
+	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "The card spent 4.50 EUR of its 5.00 EUR budget; 0.40 EUR is held for the review and the audit, which need 0.40 EUR, and a session on premium needs 0.60 EUR "+
 		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); a session started now") {
 		t.Fatalf("plan card with no model at 0.10 under the ceiling = (%q, %v), want the frontier floor on premium", why, err)
 	}
@@ -3960,18 +3960,18 @@ func TestSessionFundedChecksTheCaps(t *testing.T) {
 	v.Projects = map[string]policy.ProjectConfig{"app": {Repository: "sf/app", Budget: &policy.ProjectBudget{MonthEUR: 3}}}
 	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: frontier}, Policy: func() policy.Version { return v }}}
 	inf := math.Inf(1)
-	const fundTail = ", and a session's opening on factory/big needs 0.015360 EUR (no session's opening is recorded: " +
+	const fundTail = ", and a session's opening on factory/big needs 0.02 EUR (no session's opening is recorded: " +
 		"1024 output tokens at the hold machinery's minimum); a session started now could not make its opening calls."
 	for _, tc := range []struct {
 		decision, opening string
 		free              policy.Free
 	}{
-		{policy.RefusedDayCap, "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit.\n" +
-			"0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free", policy.Free{Day: 0.01, Month: inf, Project: inf}},
-		{policy.RefusedMonthCap, "the month cap cannot fund a call: Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
-			"0.010000 EUR of the month's 50.00 EUR (budget.month_eur) is free", policy.Free{Day: inf, Month: 0.01, Project: inf}},
-		{policy.RefusedProjectCap, "the project's month cap cannot fund a call: Raise budget.month_eur in projects/app.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
-			"0.010000 EUR of the project's 3.00 EUR month (budget.month_eur in projects/app.yaml) is free", policy.Free{Day: inf, Month: inf, Project: 0.01}},
+		{policy.RefusedDayCap, "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise the day cap in policy.yaml by a commit.\n" +
+			"0.01 EUR of the day's 20.00 EUR is free", policy.Free{Day: 0.01, Month: inf, Project: inf}},
+		{policy.RefusedMonthCap, "the month cap cannot fund a call: Raise the month cap in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+			"0.01 EUR of the month's 50.00 EUR is free", policy.Free{Day: inf, Month: 0.01, Project: inf}},
+		{policy.RefusedProjectCap, "the project's month cap cannot fund a call: Raise the project's month cap in projects/app.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+			"0.01 EUR of the project's 3.00 EUR month in projects/app.yaml is free", policy.Free{Day: inf, Month: inf, Project: 0.01}},
 	} {
 		t.Run(tc.decision, func(t *testing.T) {
 			store.capsFree = &tc.free
@@ -4268,7 +4268,7 @@ func TestTheFloorIsRoundedUpWhereItIsRead(t *testing.T) {
 		t.Fatalf("need = %v, %v; want 0.300001", n.eur, err)
 	}
 	why, err := r.SessionFunded(ctx, "t-1", "factory/small")
-	if err != nil || !strings.Contains(why, "needs 0.300001 EUR") || strings.Contains(why, "a fund of") {
+	if err != nil || !strings.Contains(why, "needs 0.30 EUR") || strings.Contains(why, "a fund of") {
 		t.Fatalf("stop = (%q, %v), want the need 0.300001 and no fund", why, err)
 	}
 	f := CaseFacts{LeftEUR: store.tasks["t-1"].Left(), ReserveEUR: 0.4, FloorEUR: n.eur}

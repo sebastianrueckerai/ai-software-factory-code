@@ -473,7 +473,7 @@ func (r *Runner) commentImpasse(ctx context.Context, t Task, answer ReplanChildR
 	if serr != nil {
 		return terminalError("%v", serr)
 	}
-	body := "factoryd: this card failed and its dependents wait on it. " + note
+	body := "This card failed and its dependents wait on it. " + note
 	return r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, r.untrusted(t, body))
 }
 
@@ -1522,7 +1522,7 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 	case step.Origin == ReplanCut && i >= 0:
 		note += fmt.Sprintf("\nThe cut of #%d: %s", cards[i].IssueNumber, sanitize.Inbound(step.Work))
 	}
-	if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, p.IssueNumber, "factoryd: "+r.untrusted(p, note)); err != nil {
+	if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, p.IssueNumber, capitalize(r.untrusted(p, note))); err != nil {
 		return fmt.Errorf("comment the replan on #%d: %w", p.IssueNumber, err)
 	}
 	if step.Origin == ReplanCut && i >= 0 {
@@ -1535,7 +1535,7 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 		for j, n := range cutInto {
 			refs[j] = fmt.Sprintf("#%d", n)
 		}
-		body := fmt.Sprintf("factoryd: cut into %s at session %d, %.2f EUR spent.", strings.Join(refs, ", "), session, spent)
+		body := fmt.Sprintf("Cut into %s at session %d, %s EUR spent.", strings.Join(refs, ", "), session, textutil.EUR(spent))
 		if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, cut.IssueNumber, body); err != nil {
 			return fmt.Errorf("comment the cut on #%d: %w", cut.IssueNumber, err)
 		}
@@ -1651,7 +1651,7 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 		if err != nil {
 			return replanRecord{}, false, err
 		}
-		rec.work = append(rec.work, fmt.Sprintf("This is the cut of #%d at session %d, %.2f EUR spent: %s", cards[i].IssueNumber, session, spent, sanitize.Inbound(step.Work)))
+		rec.work = append(rec.work, fmt.Sprintf("This is the cut of #%d at session %d, %s EUR spent: %s", cards[i].IssueNumber, session, textutil.EUR(spent), sanitize.Inbound(step.Work)))
 	}
 	roles, settled := map[string]string{}, map[string]bool{}
 	var criteria []PlanCriterion
@@ -1734,7 +1734,7 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 				}
 			}
 			role = cmp.Or(role, RoleFeature)
-			spend = fmt.Sprintf("; spent %.2f of %.2f EUR in %d sessions", k.SpentEUR, k.BudgetEUR, k.Usage.Attempts)
+			spend = fmt.Sprintf("; spent %s of %s EUR in %d sessions", textutil.EUR(k.SpentEUR), textutil.EUR(k.BudgetEUR), k.Usage.Attempts)
 			rec.findings = append(rec.findings, fmt.Sprintf("#%d %s (%s, key %s): %s%s; its record is %s", k.IssueNumber, title, role, k.PlanKey, state, spend, name))
 		}
 		// its last session is one from before the replan: a direct card's

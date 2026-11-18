@@ -489,7 +489,7 @@ func SuccessorObjective(old Task, findings string, pr int64, mask func(string) s
 	if old.Size != "" {
 		lines = append(lines, "Size: "+old.Size)
 	}
-	lines = append(lines, fmt.Sprintf("Budget: %.2f EUR", old.BudgetEUR))
+	lines = append(lines, fmt.Sprintf("Budget: %s EUR", textutil.EUR(old.BudgetEUR)))
 	return IssueObjective(CardTitle(old), ContinuesBody(old)) + "\n\n" + mask(strings.Join(lines, "\n"))
 }
 
@@ -820,28 +820,28 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 	// stop names (fundFor) covers that part too
 	ceiling := policy.SessionHeadroom(own.Free(), req.ReserveEUR)
 	left := math.Floor(ceiling*1000+1e-6) / 1000
-	opens, state := BudgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", max(left, 0), t.BudgetEUR)
+	opens, state := BudgetRefused, fmt.Sprintf("%s EUR of the %s EUR budget remains", textutil.EUR(max(left, 0)), textutil.EUR(t.BudgetEUR))
 	if free.Reserve > 0 {
-		state = fmt.Sprintf("The card spent %.2f EUR of its %.2f EUR budget", own.Spent, t.BudgetEUR)
+		state = fmt.Sprintf("The card spent %s EUR of its %s EUR budget", textutil.EUR(own.Spent), textutil.EUR(t.BudgetEUR))
 	}
 	act := "Raise the budget and answer, or close the card."
 	switch refused.Decision {
 	case policy.RefusedDayCap:
-		state = fmt.Sprintf("%.6f EUR of the day's %.2f EUR (budget.day_eur) is free", max(free.Day, 0), req.DayEUR)
-		act = "Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit."
+		state = fmt.Sprintf("%s EUR of the day's %s EUR is free", textutil.EUR(max(free.Day, 0)), textutil.EUR(req.DayEUR))
+		act = "Answer, and the attempt waits on its own for the UTC day's headroom, or raise the day cap in policy.yaml by a commit."
 	case policy.RefusedMonthCap:
-		state = fmt.Sprintf("%.6f EUR of the month's %.2f EUR (budget.month_eur) is free", max(free.Month, 0), req.MonthEUR)
-		act = "Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer."
+		state = fmt.Sprintf("%s EUR of the month's %s EUR is free", textutil.EUR(max(free.Month, 0)), textutil.EUR(req.MonthEUR))
+		act = "Raise the month cap in policy.yaml by a commit and answer, or wait for the next UTC month and answer."
 	case policy.RefusedProjectCap:
 		file := "projects/" + req.Project + ".yaml"
-		state = fmt.Sprintf("%.6f EUR of the project's %.2f EUR month (budget.month_eur in %s) is free", max(free.Project, 0), req.ProjectEUR, file)
-		act = "Raise budget.month_eur in " + file + " by a commit and answer, or wait for the next UTC month and answer."
+		state = fmt.Sprintf("%s EUR of the project's %s EUR month in %s is free", textutil.EUR(max(free.Project, 0)), textutil.EUR(req.ProjectEUR), file)
+		act = "Raise the project's month cap in " + file + " by a commit and answer, or wait for the next UTC month and answer."
 	default:
 		if own.Holds > 0 {
 			if free.Reserve > 0 {
-				state += fmt.Sprintf("; %.3f EUR is held by calls in flight (%d, the earliest expiring %s)", own.Held, own.Holds, stamp(own.Expires))
+				state += fmt.Sprintf("; %s EUR is held by calls in flight (%d, the earliest expiring %s)", textutil.EUR(own.Held), own.Holds, stamp(own.Expires))
 			} else {
-				state += fmt.Sprintf(" after outstanding holds of %.3f EUR (%d, the earliest expiring %s)", own.Held, own.Holds, stamp(own.Expires))
+				state += fmt.Sprintf(" after outstanding holds of %s EUR (%d, the earliest expiring %s)", textutil.EUR(own.Held), own.Holds, stamp(own.Expires))
 			}
 			act = "Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget and answer."
 		}
@@ -850,7 +850,7 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 			// what the card spent, and what the review and the audit
 			// still keep of the reserve the ceiling held out and what
 			// they need; the board's ask names the amount to add
-			state += fmt.Sprintf("; %.2f EUR is held for the review and the audit, which need %.2f EUR", free.Kept(), free.Reserve)
+			state += fmt.Sprintf("; %s EUR is held for the review and the audit, which need %s EUR", textutil.EUR(free.Kept()), textutil.EUR(free.Reserve))
 		}
 	}
 	if o, ok := capRefusals[refused.Decision]; ok {
@@ -858,7 +858,7 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 	}
 	// the first line is the card's question row (escalationQuestion), cut
 	// at 300 characters: it carries the actions, the state follows
-	return fmt.Sprintf("%s: %s\n%s, and %s needs %.6f EUR (%s); %s.", opens, act, state, n.call, need, n.measure, n.then), nil
+	return fmt.Sprintf("%s: %s\n%s, and %s needs %s EUR (%s); %s.", opens, act, state, n.call, textutil.EUR(need), n.measure, n.then), nil
 }
 
 // attemptNeed is what an attempt of card t on model needs free to start,
@@ -1656,8 +1656,8 @@ type OverHoldCall struct {
 // an output that ran to its limit wants a shorter one; below it, the
 // prompt cost more than its hold, and a smaller context fits.
 func (c OverHoldCall) state() string {
-	s := fmt.Sprintf("a model call on %s crossed its cost hold: %d prompt tokens (%d cached) and %d output tokens cost %.6f EUR against a hold of %.6f EUR; ",
-		c.Alias, c.PromptTokens, c.CachedTokens, c.OutputTokens, c.CostEUR, c.HoldEUR)
+	s := fmt.Sprintf("a model call on %s crossed its cost hold: %d prompt tokens (%d cached) and %d output tokens cost %s EUR against a hold of %s EUR; ",
+		c.Alias, c.PromptTokens, c.CachedTokens, c.OutputTokens, textutil.EUR(c.CostEUR), textutil.EUR(c.HoldEUR))
 	if c.OutputLimit > 0 && c.OutputTokens >= c.OutputLimit {
 		return s + fmt.Sprintf("its output ran to the limit of %d tokens, so a shorter output fits: write the change in smaller pieces", c.OutputLimit)
 	}
@@ -1844,9 +1844,9 @@ func infoRequestComment(t Task, reason string, notify []string) string {
 			mentions = append(mentions, m)
 		}
 	}
-	return fmt.Sprintf("factoryd: task %s could not reproduce this issue and found no fault. It needs more information from the issue's author.\n\n%s\n\n"+
-		"Reply on this issue with what is asked; the task resumes with your comment. Without an answer in 14 days the issue closes as not reproducible.\n\ncc %s",
-		t.ID, fenced(strings.TrimPrefix(reason, agentAsksAuthor)), strings.Join(mentions, " "))
+	return fmt.Sprintf("The agent could not reproduce this issue and found no fault. It needs more information from the issue's author.\n\n%s\n\n"+
+		"Reply on this issue with what is asked, and the card goes on with your comment. Without an answer in 14 days the issue closes as not reproducible.\n\ncc %s",
+		fenced(strings.TrimPrefix(reason, agentAsksAuthor)), strings.Join(mentions, " "))
 }
 
 // CloseNotReproduced closes the task's issue, unanswered for 14 days, as
@@ -1859,8 +1859,8 @@ func (r *Runner) CloseNotReproduced(ctx context.Context, taskID string) error {
 	if closed, err := r.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil || closed {
 		return err
 	}
-	if err := closeIssueAsFactory(ctx, r.store, r.forgejo, t, "factoryd: "+notReproducedClose+
-		". Closing this issue; a new issue with more detail starts a new task."); err != nil {
+	if err := closeIssueAsFactory(ctx, r.store, r.forgejo, t, capitalize(notReproducedClose)+
+		". Closing this issue. A new issue with more detail starts a new task."); err != nil {
 		return err
 	}
 	r.record(ctx, taskID, "closed_not_reproduced", map[string]any{"issue": t.IssueNumber})
@@ -1965,7 +1965,7 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 	}
 	if err := r.refuseWorkflowDirChange(ctx, t, repo, commit); err != nil {
 		if existing != nil && isTerminal(err) {
-			msg := "factoryd: closing this pull request: " + errMessage(err)
+			msg := "Closing this pull request: " + errMessage(err)
 			if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, existing.Number, msg); err != nil {
 				return PullRequest{}, err
 			}
@@ -1980,7 +1980,7 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 		ref = *existing
 	} else {
 		objective := r.untrusted(t, t.Objective)
-		body := fmt.Sprintf("%s\n\nCloses #%d\n\nOpened by factoryd for task %s.", objective, t.IssueNumber, t.ID)
+		body := fmt.Sprintf("%s\n\nCloses #%d\n\nOpened by the factory for card #%d.", objective, t.IssueNumber, t.IssueNumber)
 		if ref, err = r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, FirstLine(objective), body); err != nil {
 			return PullRequest{}, err
 		}
@@ -2783,7 +2783,7 @@ func (r *Runner) RerunChecks(ctx context.Context, taskID, sha string) (string, e
 	}
 	if head == sha {
 		if head, err = f.CommitFiles(ctx, fork.Owner, fork.Name, branch, "",
-			Attribution{Role: "checks", Task: t.ID, Human: t.Author}, "factoryd: run the checks of "+sha+" again", nil); err != nil {
+			Attribution{Role: "checks", Task: t.ID, Human: t.Author}, "Run the checks of "+sha+" again", nil); err != nil {
 			return "", fmt.Errorf("empty commit: %w", err)
 		}
 	}
@@ -3113,11 +3113,11 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	}
 	r.forgetNamespace(ctx, taskID)
 	why := r.untrusted(t, reason)
-	msg := "factoryd: task " + taskID + " failed: " + why
+	msg := "This card failed: " + why
 	if repoErr == nil {
 		if final != "done" {
 			if final == "closed" {
-				msg = "factoryd: task " + taskID + " closed: " + why
+				msg = "This card closed: " + why
 			}
 			if err := cleanup(taskID, "close its pull request", r.closeTaskPullRequest(ctx, repo, t, msg)); err != nil {
 				return err
@@ -3127,9 +3127,9 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 			closing := msg
 			switch {
 			case final == "done" && merged:
-				closing = fmt.Sprintf("factoryd: pull request #%d merged; this card ends with it.", t.PRNumber)
+				closing = fmt.Sprintf("Pull request #%d merged, and this card ends with it.", t.PRNumber)
 			case final == "done":
-				closing = "factoryd: " + why + "; this card ends with it."
+				closing = capitalize(why) + ". This card ends with it."
 			}
 			if err := cleanup(taskID, "close its issue", r.closeTaskIssue(ctx, repo, t, closing)); err != nil {
 				return err

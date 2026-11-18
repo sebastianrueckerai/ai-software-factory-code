@@ -202,7 +202,7 @@ func TestPlanSlotMasksModelText(t *testing.T) {
 	}
 	for _, pick := range []string{"3", "-1"} {
 		rec = r.do(post("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "project": {"linkshort"}, "revision": {"2"}, "index": {"2"}, "choice": {pick}}), ck)
-		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Question 2 of plan #1 has 2 choices; there is no choice "+pick+".") {
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Question 2 of plan #1 has 2 choices, and there is no choice "+pick+".") {
 			t.Errorf("choice %s: %d %q", pick, rec.Code, rec.Body)
 		}
 	}

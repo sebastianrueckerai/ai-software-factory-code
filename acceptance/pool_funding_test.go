@@ -160,7 +160,7 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 	args := `{"action":"set","eur":12,"reason":"the review findings cost money"}`
 	token := proposePool(t, r, path, ck, csrf, args)
 	r.OnReload(func() { r.SetLoadedPool(12) })
-	answer := "The pool of " + accProjectName + " is €12.00 now, was €10.00: sf/infra#101 carries the change and the policy in force holds it."
+	answer := "The pool of " + accProjectName + " is 12.00 EUR now, was 10.00 EUR: sf/infra#101 carries the change and the policy in force holds it."
 	code, body := pressPoolRaw(t, r, path, ck, csrf, token, "")
 	if code != http.StatusOK {
 		t.Fatalf("Do it = %d:\n%s", code, body)
@@ -192,7 +192,7 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 	card, _, _ := r.Task(t.Context(), "t-e")
 	equal(t, "the card's budget", card.BudgetEUR, 3.0)
 	equal(t, "the pool line after the agent's fund", poolLineOf(t, r, now), []any{12.0, 4.0, true, false,
-		"0 of 30 sessions, 0 h of 30 h agent time and €4.00 of €12.00 drawn this UTC month"})
+		"0 of 30 sessions, 0 h of 30 h agent time and 4.00 of 12.00 EUR drawn this UTC month"})
 
 	// anna's confirmed fund of 2 EUR: the same answer on rung 3, a pool
 	// draw as well
@@ -313,7 +313,7 @@ func TestPoolReadouts(t *testing.T) {
 			}
 		}
 	}
-	policys := "0 of 30 sessions, 0 h of 30 h agent time and €0.00 of €60.00 drawn this UTC month"
+	policys := "0 of 30 sessions, 0 h of 30 h agent time and 0.00 of 60.00 EUR drawn this UTC month"
 	readAll("the policy's pool", policys)
 	for _, tool := range []string{"settings", "policy"} {
 		if read := chatRead(t, r, path, ck, csrf, "sebastian", tool); !strings.Contains(read, policys) {
@@ -337,7 +337,7 @@ func TestPoolReadouts(t *testing.T) {
 	seedRow(t, r, "sf/code", factoryd.EventCardFunded, map[string]any{"amount_eur": 4.0}, now)                // no pool draw
 	seedFundRow(t, r, 9, lastMonth)                                                                           // another month
 	r.SetProjectSpend(factoryd.ProjectSpend{EUR: 42, ChatEUR: 41})                                            // the model spend, never a draw
-	drawn := "2 of 30 sessions, 1 h 20 min of 30 h agent time and €3.00 of €10.00 drawn this UTC month"
+	drawn := "2 of 30 sessions, 1 h 20 min of 30 h agent time and 3.00 of 10.00 EUR drawn this UTC month"
 	readAll("the file's pool", drawn)
 	if face := pageGET(t, r, ck, pages["the project face"]); !strings.Contains(face, "pool: "+drawn) {
 		t.Fatalf("the face's pool cell:\n%s", face)
@@ -354,10 +354,10 @@ func TestPoolReadouts(t *testing.T) {
 
 	// the read's failure never becomes a zero
 	r.FailPoolReads(errors.New("the spine is down"))
-	unreadable := "the pool is 30 sessions, 30 h of agent time and €10.00 this UTC month, but what its cards drew could not be read"
+	unreadable := "the pool is 30 sessions, 30 h of agent time and 10.00 EUR this UTC month, but what its cards drew could not be read"
 	readAll("the unreadable draws", unreadable)
 	for name, p := range pages {
-		if body := pageGET(t, r, ck, p); strings.Contains(body, "€0.00 of €10.00") {
+		if body := pageGET(t, r, ck, p); strings.Contains(body, "0.00 of 10.00 EUR") {
 			t.Fatalf("%s reads the failed read as zero:\n%s", name, body)
 		}
 	}
@@ -389,7 +389,7 @@ func TestPoolReadouts(t *testing.T) {
 		return []any{pl.Pool.EUR, pl.Drawn.EUR, pl.Month, pl.Words}
 	}
 	equal(t, "November's readout", readout(nov), []any{10.0, 2.0, "2026-11",
-		"0 of 30 sessions, 0 h of 30 h agent time and €2.00 of €10.00 drawn this UTC month"})
+		"0 of 30 sessions, 0 h of 30 h agent time and 2.00 of 10.00 EUR drawn this UTC month"})
 	equal(t, "December's readout", readout(dec), []any{10.0, 0.0, "2026-12",
-		"0 of 30 sessions, 0 h of 30 h agent time and €0.00 of €10.00 drawn this UTC month"})
+		"0 of 30 sessions, 0 h of 30 h agent time and 0.00 of 10.00 EUR drawn this UTC month"})
 }

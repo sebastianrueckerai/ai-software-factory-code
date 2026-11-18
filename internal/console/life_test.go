@@ -61,7 +61,7 @@ func TestRunsOfACardsLife(t *testing.T) {
 	if runs[1].Attempt != 1 || runs[1].Model != "small" || runs[3].Attempt != 2 || runs[3].Model != "big" {
 		t.Errorf("the building runs' attempts: %+v, %+v", runs[1], runs[3])
 	}
-	if got, want := lifeLine(runs, task.SpentEUR), "52 min factory in 2 attempts · 38 min waiting · €0.70"; got != want {
+	if got, want := lifeLine(runs, task.SpentEUR), "52 min factory in 2 attempts · 38 min waiting · 0.70 EUR"; got != want {
 		t.Errorf("the line is %q, want %q", got, want)
 	}
 	// a card without a session or an event is one queued run from its filing

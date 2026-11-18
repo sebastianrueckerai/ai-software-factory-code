@@ -40,9 +40,9 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		want string
 	}{
 		{"rung 1's close with no case", ActInput{By: "factory-checkin", Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
-			"rung 1 may not pick close: rung 2 and the human may, and rung 1 may take replan"},
+			"the check-in may not pick `close`: the factory agent and the human may, and the check-in may take `replan`"},
 		{"a successor with no case", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActSuccessor}},
-			"no case is open on card #12, so successor has nothing to answer, and the human may take confirm_audit, raise_ceiling, replan and close"},
+			"no ask is open on card #12, so `successor` has nothing to answer, and the human may take `confirm_audit`, `raise_ceiling`, `replan` and `close`"},
 	} {
 		c.in.TaskID = "t1"
 		var refused ErrActRefused
@@ -57,13 +57,13 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		want string
 	}{
 		{"rung 1's close", ActInput{CaseID: 7, By: "factory-checkin", Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
-			"rung 1 may not pick close: rung 2 and the human may, and rung 1 may take route_approval, reverify, successor and replan"},
+			"the check-in may not pick `close`: the factory agent and the human may, and the check-in may take `route_approval`, `reverify`, `successor` and `replan`"},
 		{"the human's approve", ActInput{CaseID: 7, By: "sebastian", Rung: 3, Res: Resolution{Action: "approve"}},
-			"there is no action approve, and the human may take reverify, confirm_audit, raise_ceiling, successor, replan, close and note"},
+			"there is no action `approve`, and the human may take `reverify`, `confirm_audit`, `raise_ceiling`, `successor`, `replan`, `close` and `note`"},
 		{"a fund with no case while case 7 waits", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},
-			"card #12 waits on the session cap: answer that case, not the card"},
+			"Card #12 waits on the session cap: answer that ask, not the card."},
 		{"a fund with no case via the chat while case 7 waits", ActInput{By: "sebastian", Via: ViaChat, Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},
-			"card #12 waits on the session cap (case 7): answer that case, not the card"},
+			"Card #12 waits on the session cap (`case_id` 7): answer that ask, not the card."},
 	} {
 		c.in.TaskID = "t1"
 		var refused ErrActRefused
@@ -91,7 +91,7 @@ func TestActWithNoCaseFundsTheCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Case.ID != 0 || got.Drawn != (policy.Draw{EUR: 1}) || got.Comment != 0 || got.Text != "Card #12 took fund: 1.00 EUR from the pool." {
+	if got.Case.ID != 0 || got.Drawn != (policy.Draw{EUR: 1}) || got.Comment != 0 || got.Text != "Card #12 took “Add money”: 1.00 EUR from the pool." {
 		t.Fatalf("result = %+v, want no case, 1 EUR drawn, no comment", got)
 	}
 	if b := g.store.tasks["t1"].BudgetEUR; b != 4.5 {
@@ -128,7 +128,7 @@ func TestActRetriesTheFailedDependency(t *testing.T) {
 	}
 	want := []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": "t-a", "replacement": int64(9)}, Result: "Filed #9 in place of #5."}}
 	if !reflect.DeepEqual(got.Did, want) || got.Case.Status != CaseResolved || got.Case.Resolution.Action != ActRetry ||
-		got.Text != "The failed dependency on #6 is resolved with retry. Filed #9 in place of #5." {
+		got.Text != "The failed dependency on #6 is resolved with “Try the failed card again”. Filed #9 in place of #5." {
 		t.Fatalf("result = %+v, want case 3 resolved with the retry that filed #9", got)
 	}
 	if steps := store.caseSteps[3]; len(steps) != 1 || !reflect.DeepEqual(steps[0].Did, want) || steps[0].Outcome != StepResolved {
@@ -213,7 +213,7 @@ func TestHandBackReturnsTheCardToItsPlanner(t *testing.T) {
 	store.cases = []Case{{ID: 9, TaskID: "h", Repository: "sf/repo", Kind: CaseHumanCard, Status: CaseAtHuman}}
 	var refused ErrActRefused
 	_, err := r.Act(ctx, ActInput{TaskID: "h", CaseID: 9, By: "ana", Rung: 3, Res: Resolution{Action: ActHandBack}})
-	if want := "hand_back carries what stops you, for the planner: the note"; !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
+	if want := "`hand_back` carries what stops you, for the planner: the note, and the human may take `fund`, `replan`, `close`, `restart_plan` and `note`"; !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("a hand-back with no words = %v, want the refusal %q", err, want)
 	}
 	if steps := replanSteps(t, r, "p"); len(steps) != 0 || store.cases[0].Status != CaseAtHuman {
@@ -326,7 +326,7 @@ func TestIDidItWaitsForTheCardBeforeIt(t *testing.T) {
 		t.Fatalf("case %s, resolved %v; want nothing moved", g.store.cases[0].Status, g.store.resolved)
 	}
 	_, err = g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: 2, Res: Resolution{Action: ActHandBack, Note: "not mine"}})
-	if want := "rung 2 may not pick hand_back: the human may"; !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
+	if want := "the factory agent may not pick `hand_back`: the human may, and the factory agent may take `fund`, `replan`, `close` and `note`"; !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
 		t.Fatalf("the chat's hand-back = %v, want the refusal %q", err, want)
 	}
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: 3, Res: Resolution{Action: ActClose, Note: "Done another way."}}); err != nil {
@@ -464,7 +464,7 @@ func TestActHumanCardRefusals(t *testing.T) {
 	g.store.tasks["h1"] = Task{ID: "h1", Kind: "human", Repository: "demo-app/demo-app", IssueNumber: 14, Status: "waiting-human"}
 	g.store.cases = []Case{{ID: 9, TaskID: "h1", Kind: CaseHumanCard, Status: CaseAtHuman}}
 	for rung, want := range map[int]string{
-		1: "rung 1 may not answer a human card: rung 2 and the human may",
+		1: "the check-in may not answer a human card: rung 2 and the human may",
 		3: "card #14 asks no question with choices: answer it with a note",
 	} {
 		_, err := g.r.Act(context.Background(), ActInput{TaskID: "h1", CaseID: 9, By: "sebastian", Rung: rung, Res: Resolution{Action: AnswerDismiss}})
@@ -491,8 +491,8 @@ func TestActKeysRungZeroOnFactoryd(t *testing.T) {
 		in   ActInput
 		want string
 	}{
-		{ActInput{By: "sebastian", Rung: 0}, "rung 0 is factoryd's own: answer on rung 1, 2 or 3"},
-		{ActInput{By: FactoryDecider, Rung: 2}, "rung 0 is factoryd's own, and factoryd answers on rung 0 alone: answer on rung 0, not rung 2"},
+		{ActInput{By: "sebastian", Rung: 0}, "Only the factory answers for itself. Answer as the check-in, the factory agent or a human."},
+		{ActInput{By: FactoryDecider, Rung: 2}, "The factory answers for itself alone, not as the factory agent."},
 	} {
 		c.in.TaskID, c.in.CaseID, c.in.Res = "t1", 7, Resolution{Action: ActWithdraw}
 		var refused ErrActRefused
@@ -619,7 +619,7 @@ func TestAnExtendOnAQuestionAtTheCapLeavesTheQuestionOpen(t *testing.T) {
 	g.store.cases[at].Status = CaseOpen
 	var refused ErrActRefused
 	if _, err := g.r.Act(ctx, extend); !errors.As(err, &refused) ||
-		!strings.HasPrefix(err.Error(), "this case is the agent's question, which a draw does not answer: hand it up with the draw as your recommendation") {
+		!strings.HasPrefix(err.Error(), "this ask is the agent's question, which a draw does not answer: hand it up with the draw as your recommendation") {
 		t.Fatalf("rung 2's extend on the question on its rung = %v, want it refused, to be handed up", err)
 	}
 	g.store.cases[at].Status = CaseAtHuman
@@ -956,7 +956,7 @@ func TestASettleEndsTheCaseAndAHumanCardsParkKeepsIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Case.Status != CaseResolved || got.Comment != 5 || !slices.Equal(g.store.resolved, []int64{7}) || !strings.Contains(got.Text, "resolved with settle") {
+	if got.Case.Status != CaseResolved || got.Comment != 5 || !slices.Equal(g.store.resolved, []int64{7}) || !strings.Contains(got.Text, "resolved with “It is fine, go on”") {
 		t.Fatalf("result = %+v, resolved %v; want case 7 settled by the park, the member's comment its own", got, g.store.resolved)
 	}
 	answered := 0
@@ -1048,7 +1048,7 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 		{"without a reason", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
 			Res: Resolution{Action: ActConfirmAudit}}, "a one-line reason is required"},
 		{"by the project agent", ActInput{TaskID: "t1", CaseID: 9, By: ChatUser, Rung: 2,
-			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures"}}, "rung 2 may not pick confirm_audit: the human may"},
+			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures"}}, "the factory agent may not pick `confirm_audit`: the human may, and the factory agent may take `route_approval`, `reverify`, `raise_ceiling`, `successor`, `replan`, `close` and `note`"},
 		{"naming an unknown finding", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
 			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures",
 				Args: map[string]any{"findings": FindingID("secrets at acceptance/rig_test.go:118")}}},

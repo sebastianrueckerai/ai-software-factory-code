@@ -803,7 +803,7 @@ func (c *Console) auth(next http.HandlerFunc) http.Handler {
 				got = r.PostFormValue("csrf")
 			}
 			if subtle.ConstantTimeCompare([]byte(got), []byte(s.csrf)) != 1 {
-				http.Error(w, "missing or stale form token; reload the page", http.StatusForbidden)
+				http.Error(w, "The form's token is missing or stale. Reload the page.", http.StatusForbidden)
 				return
 			}
 		}

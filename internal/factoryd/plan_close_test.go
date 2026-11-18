@@ -90,7 +90,7 @@ func TestRoundCheckHoldsAPlanWhoseOpenCriteriaAWriterClosed(t *testing.T) {
 		comments     []string
 	}{
 		{name: "a writer's close, criteria open", closer: "sebastian", after: "done", reopened: 1, comments: []string{
-			"factoryd: this plan still holds production with 3 open criteria. Closing its issue waives nothing: an approver's Close with a note on the console waives them and ends the plan."}},
+			"This plan still holds production with 3 open criteria. Closing its issue waives nothing: an approver's Close with a note on the console waives them and ends the plan."}},
 		{name: "a writer's close, criteria waived", closer: "sebastian", waived: true, after: "closed"},
 		{name: "the bot's recorded close, criteria waived", closer: "factory-agent", botRecorded: true, waived: true, after: "done"},
 		{name: "an open issue", after: "done"},
@@ -152,7 +152,7 @@ func TestCloseHeldPlanWaitsForRunningCards(t *testing.T) {
 		}
 		setStatus(s, "card-2", "done")
 		r.planCloseCheck(ctx, "t-plan")
-		want := []string{"#1 factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main."}
+		want := []string{"#1 The plan card was closed, so the plan is closed. Its merged cards stay on main."}
 		if got := commentBodies(fj); closeRows(s) != 1 || !slices.Equal(got, want) {
 			t.Errorf("comments %q, plan_closed rows %d; want %q and 1", got, closeRows(s), want)
 		}
@@ -200,7 +200,7 @@ func TestCloseHeldPlanInTheLastRoundWithoutAnIntegrationCard(t *testing.T) {
 // the Close ends the ask as its drop.
 func TestClosedPlanWithOpenCriteriaKeepsItsHold(t *testing.T) {
 	ctx := context.Background()
-	words := "factoryd: Close this plan and drop its 10 open promises? Until it closes, the plan holds production deploys.\n\n" +
+	words := "Close this plan and drop its 10 open promises? Until it closes, the plan holds production deploys.\n\n" +
 		"A human closed the plan's card while these promises were open:\n" + strings.Repeat("- The tests in ./... stay green.\n", 10) + "\n" +
 		"The answers on the board:\n" +
 		"- Drop them and close: Drops the open promises with your reason and closes the plan, so production deploys go on.\n" +

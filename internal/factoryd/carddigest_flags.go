@@ -249,7 +249,7 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 		add("proofs_missing", textutil.Plural(int(since/time.Hour), "hour", "hours"))
 	}
 	if defaultKind(t.Kind) == "agent" && Cents(t.BudgetEUR) != Cents(budget) {
-		add("budget_moved_no_event", fmt.Sprintf("%.2f EUR not %.2f EUR", t.BudgetEUR, budget))
+		add("budget_moved_no_event", fmt.Sprintf("%s EUR not %s EUR", textutil.EUR(t.BudgetEUR), textutil.EUR(budget)))
 	}
 	// a rung's step is past its bound once its wait holds: it carries its
 	// own due_at

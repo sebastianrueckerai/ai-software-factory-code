@@ -104,7 +104,7 @@ var caseKindWords = map[CaseKind]string{
 func caseWords(card string, c Case) string {
 	kind, ok := caseKindWords[c.Kind]
 	if !ok {
-		kind = cmp.Or(strings.ReplaceAll(string(c.Kind), "_", " "), "case")
+		kind = cmp.Or(strings.ReplaceAll(string(c.Kind), "_", " "), "ask")
 	}
 	words := "the " + kind
 	if card != "" {

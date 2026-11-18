@@ -81,11 +81,11 @@ func TestSalvageRefusals(t *testing.T) {
 	store.cases = []Case{quietFlag(), {ID: 4, TaskID: "t-b", Kind: CaseSessionCap, Status: CaseAtHuman}}
 	var refused ErrActRefused
 	_, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "factory-agent", Rung: 2, Res: Resolution{Action: ActSalvage}})
-	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), "rung 2 may not pick salvage: the human may") {
+	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), "the factory agent may not pick `salvage`: the human may") {
 		t.Errorf("rung 2's salvage = %v, want the rung's refusal", err)
 	}
 	_, err = r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 4, By: "alice", Rung: 3, Res: Resolution{Action: ActSalvage}})
-	want := "salvage ends a run that neither moves nor answers, or one the review keeps failing on the same finding: the monitor's run_quiet and finding_confirmed_twice flags, or a live card whose workflow is gone, open it"
+	want := "`salvage` answers only a run that neither moves nor answers, or one the review keeps failing on the same finding: the monitor's flag of a quiet run or of a finding confirmed twice, or a live card whose run is gone, and the human may take "
 	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("salvage on a session cap = %v, want %q", err, want)
 	}

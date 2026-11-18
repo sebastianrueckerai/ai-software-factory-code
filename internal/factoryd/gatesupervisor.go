@@ -269,7 +269,7 @@ func (r *Runner) withdrawQuestion(ctx context.Context, taskID, reason string, co
 	}
 	var id int64
 	if t.IssueNumber != 0 {
-		body := fmt.Sprintf("factoryd: task %s withdraws its question above because %s. It needs no answer.", taskID, why)
+		body := fmt.Sprintf("This card withdraws its question above because %s. It needs no answer.", why)
 		if id, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body); err != nil {
 			return 0, err
 		}

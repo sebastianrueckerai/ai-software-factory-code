@@ -25,7 +25,7 @@ func TestGithubPullRequestMode(t *testing.T) {
 	export := func(mode string) *httptest.ResponseRecorder {
 		return r.do(post("/projects/demo-app/export", url.Values{"csrf": {s.csrf}, "remote": {"acme/app"}, "username": {"u"}, "token": {ghToken}, "mode": {mode}}), ck)
 	}
-	if rec := export("pulls"); rec.Code != http.StatusBadRequest || strings.TrimSpace(rec.Body.String()) != "mode must be mirror or pull_requests" {
+	if rec := export("pulls"); rec.Code != http.StatusBadRequest || strings.TrimSpace(rec.Body.String()) != "Pick a mode: mirror, or pull requests." {
 		t.Fatalf("mode pulls = %d %q, want 400", rec.Code, rec.Body)
 	}
 	if rec := export(factoryd.ModePullRequests); rec.Code != http.StatusSeeOther {

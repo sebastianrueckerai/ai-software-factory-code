@@ -291,7 +291,7 @@ func TestRollerRetryWhileHeldSaysWhen(t *testing.T) {
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	want := "31 factoryd: retry ordered: the failed attempts' bound is reset and one roll task of main's newest green images starts once no plan is open on main. Closing this issue."
+	want := "31 A human pressed “Try the roll again”. The failed attempts no longer count, and one roll of main's newest green images starts once no plan is open on main. This issue closes."
 	if !slices.Equal(f.closed, []string{"31"}) || !slices.Equal(f.comments, []string{want}) {
 		t.Fatalf("closed %v, comments %q; want #31 closed with %q", f.closed, f.comments, want)
 	}
@@ -757,7 +757,7 @@ func TestRollerFilesNoRollWhenItsResumeFails(t *testing.T) {
 	}
 }
 
-const fluxRefusedComment = "77 factoryd: the factory's Kustomization flux-system/factory could not be suspended, so a change under k8s/ goes live at its merge while production is held. The roller's log names the error."
+const fluxRefusedComment = "77 The factory's Kustomization flux-system/factory could not be suspended, so a change under k8s/ goes live at its merge while production is held. The roller's log names the error."
 
 // heldAsk files the hold's ask as the keeper does, issue #77, in status.
 func heldAsk(store *fakeStore, status string) {

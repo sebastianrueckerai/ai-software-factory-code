@@ -760,7 +760,7 @@ func (s *Server) runPaid(ctx context.Context, c *toolCaller, tool string, toolCa
 	up.status = toolStatus(callErr)
 	decision, note := "allowed", ""
 	if cost == nil {
-		note = fmt.Sprintf("; cost not reported, booked the hold %.6f EUR", hold.EUR)
+		note = fmt.Sprintf("; cost not reported, booked the hold %s EUR", textutil.EUR(hold.EUR))
 	}
 	// the provider billed whether or not the agent is still listening; a
 	// cost past the hold (the arguments were bounded to it) is booked in
@@ -860,14 +860,14 @@ func (s *Server) handleChatTool(w http.ResponseWriter, r *http.Request) {
 	case policy.ToolWebSearch:
 		var in SearchIn
 		if json.Unmarshal(body, &in) != nil {
-			refuseArgs(`the body is not a web_search call: {"query": string, "limit": 1 to 10}`)
+			refuseArgs("the body is not a `web_search` call: `{\"query\": string, \"limit\": 1 to 10}`")
 			return
 		}
 		p = s.search(c, in)
 	case policy.ToolWebScrape:
 		var in ScrapeIn
 		if json.Unmarshal(body, &in) != nil {
-			refuseArgs(`the body is not a web_scrape call: {"url": string}`)
+			refuseArgs("the body is not a `web_scrape` call: `{\"url\": string}`")
 			return
 		}
 		p = s.scrape(c, in)
@@ -904,7 +904,7 @@ func toolError(msg string) *mcp.CallToolResult {
 func (s *Server) refuseTool(c *toolCaller, tool, decision, reason string) *mcp.CallToolResult {
 	s.auditTool(c, tool, decision, reason, &c.task.SpentEUR, nil)
 	return toolError("refused by the factory policy (" + decision + "): " + reason +
-		". The tool did not run; do not retry this call.")
+		". The tool did not run. Do not retry this call.")
 }
 
 // refuseBrief audits factoryd's refusal of a brief and hands its lines to
@@ -1287,7 +1287,7 @@ func (s *Server) taskCosts(ctx context.Context, c *toolCaller, in TaskCostsIn) *
 			return ok && class.Session == policy.SessionPlan
 		}) {
 			return s.refuseTool(c, tool, "refused_capability",
-				"task_id is a read of the classes that supervise (a plan session): leave it out for the caller's own figures")
+				"`task_id` is a read of the classes that supervise (a plan session): leave it out for the caller's own figures")
 		}
 		named, ok, err := s.opts.Store.Task(ctx, id)
 		switch {
@@ -1368,11 +1368,11 @@ func (s *Server) analyzeImage(ctx context.Context, c *toolCaller, in AnalyzeImag
 	in.Path, in.CardImage, in.Ask = strings.TrimSpace(in.Path), strings.TrimSpace(in.CardImage), strings.TrimSpace(in.Ask)
 	switch {
 	case (in.Path == "") == (in.CardImage == ""):
-		return s.refuseTool(c, tool, "refused_arguments", "name exactly one of path (a workspace file) and card_image (an image on the card's issue)")
+		return s.refuseTool(c, tool, "refused_arguments", "name exactly one of `path` (a workspace file) and `card_image` (an image on the card's issue)")
 	case len(in.Path) > maxImagePath:
 		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("path is longer than %d bytes", maxImagePath))
 	case len(in.CardImage) > maxCardImage:
-		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("card_image is longer than %d bytes: name the image or paste its /attachments/ link", maxCardImage))
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("`card_image` is longer than %d bytes: name the image or paste its /attachments/ link", maxCardImage))
 	case utf8.RuneCountInString(in.Ask) > maxImageAsk:
 		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("ask is longer than %d characters", maxImageAsk))
 	}
@@ -1478,7 +1478,7 @@ func (s *Server) fileProofs(ctx context.Context, c *toolCaller, in ProofsIn) *mc
 	case len(in.Proofs) == 0:
 		return s.refuseTool(c, tool, "refused_arguments", "proofs is required: one entry per criterion and hold-out your brief lists")
 	case code > maxProofsCall:
-		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("the proofs carry %d bytes of code; one call carries at most %d", code, maxProofsCall))
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("the proofs carry %d bytes of code, and one call carries at most %d", code, maxProofsCall))
 	case s.opts.ProofsFiler == nil:
 		return s.refuseTool(c, tool, "refused_capability", "no proofs hand-over is wired")
 	}

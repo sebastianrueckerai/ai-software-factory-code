@@ -481,7 +481,7 @@ func (r *Registrar) githubSync(ctx context.Context, name string, m Mirror, by st
 	if err != nil {
 		return "", "", err
 	}
-	short, of := sha[:7], "GitHub's default branch of "+m.Remote
+	short, of := ShortSHA(sha), "GitHub's default branch of "+m.Remote
 	if sha == m.Synced {
 		return sha, of + " is still at " + short + ", which the last sync brought back: nothing to sync.", nil
 	}

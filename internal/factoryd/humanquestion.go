@@ -3,6 +3,7 @@ package factoryd
 import (
 	"cmp"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"strings"
 	"time"
 
@@ -21,13 +22,13 @@ func StallQuestion(repository, sha string, since time.Time, pending []string, ca
 	return HumanQuestion{
 		Ask: b.Title,
 		Why: b.Why,
-		Info: fmt.Sprintf("The chain of %s has been pending at %s since %s UTC, past the stall bound: %s.",
-			repository, sha[:min(7, len(sha))], since.UTC().Format("2006-01-02 15:04"), strings.Join(pending, "; ")) +
-			"\n\n" + held + "\n\nRun the chain again runs the pending run and keeps this card. Look again closes it and lets the watch run on: " +
-			"a head still pending a stall bound later asks again. End the card resolves the stall alert and asks nothing more until the head changes. " +
-			"A head that concludes, green or red, closes this card by itself.",
+		Info: fmt.Sprintf("The chain of %s has been pending at %s since %s UTC, past the stall bound. It waits on %s.",
+			repository, ShortSHA(sha), since.UTC().Format("2006-01-02 15:04"), textutil.AndList(pending)) +
+			"\n\n" + held + "\n\n“" + LabelOf(AnswerRerunAgain) + "” runs the pending run and keeps this card. “" + LabelOf(AnswerCheckAgain) +
+			"” closes it and lets the watch run on. A head still pending a stall bound later asks again. “" + LabelOf(ActClose+"/"+variantDismiss) +
+			"” resolves the stall alert and asks nothing more until the head changes. A head that concludes, green or red, closes this card by itself.",
 		Choices:  choices(AnswerRerunAgain, AnswerCheckAgain, ActClose+"/"+variantDismiss),
-		Happened: fmt.Sprintf("The chain at %s has been pending since %s, waiting on %s.", sha[:min(7, len(sha))], timeWords(since), plural(len(pending), "check")),
+		Happened: fmt.Sprintf("The chain at %s has been pending since %s, waiting on %s.", ShortSHA(sha), timeWords(since), plural(len(pending), "check")),
 	}
 }
 
@@ -36,10 +37,10 @@ func StallQuestion(repository, sha string, since time.Time, pending []string, ca
 // required context, runURL is the failing run's page ("" without one),
 // cards the issues of the cards whose change the head carried.
 func RepairQuestion(repository, sha string, findings []string, runURL string, cards []int64) HumanQuestion {
-	short := sha[:min(7, len(sha))]
-	carried := "No card's change rides this head; the chain alone is the work."
+	short := ShortSHA(sha)
+	carried := "No card's change rides this head. The chain alone is the work."
 	if len(cards) > 0 {
-		carried = "The head carries " + issueRefs(cards) + ": merged, they wait for a green chain to cover them; this card is their repair."
+		carried = "The head carries " + issueRefs(cards) + ": merged, they wait for a green chain to cover them. This card is their repair."
 	}
 	if runURL != "" {
 		carried = "The run: " + runURL + "\n\n" + carried
@@ -48,7 +49,7 @@ func RepairQuestion(repository, sha string, findings []string, runURL string, ca
 	return HumanQuestion{
 		Ask: b.Title,
 		Why: b.Why,
-		Info: fmt.Sprintf("The chain of %s is red at %s: %s. The project runs no agents, so a human repairs it.", repository, sha, strings.Join(findings, "; ")) +
+		Info: fmt.Sprintf("The chain of %s is red at %s: %s. The project runs no agents, so a human repairs it.", repository, short, textutil.AndList(findings)) +
 			"\n\n" + carried + "\n\nRead the run's log or the red status, find the cause, fix it from main's head, and push: the fix rides the chain again, and a green chain ends every wait. " +
 			"A green head closes this card by itself, and so does a head that moves on. Closing it yourself dismisses the red at " + short + ": no new card asks until the head changes.",
 		Choices:  humanDoneChoices,
@@ -66,7 +67,7 @@ func FactoryPRQuestion(b BriefText, number int64, url string) HumanQuestion {
 	return HumanQuestion{
 		Ask: b.Title,
 		Why: b.Why,
-		Info: "factoryd opened the pull request, and the project runs no agents: no card's gates check it, so a human merges it. " +
+		Info: "The factory opened the pull request, and the project runs no agents: no card's gates check it, so a human merges it. " +
 			"The pull request: " + url + "\n\nRead its change, then merge it or close it, on the card or in Forgejo: either ends this card.",
 		Choices:  choices(ActApproveMerge, ActDenyMerge+"/reject"),
 		Happened: fmt.Sprintf("The factory opened pull request #%d, and with no agents on the project, no gate checks it.", number),
@@ -137,11 +138,11 @@ func RollRefusedQuestion(short string, names, lines []string, runURL string) Hum
 	return HumanQuestion{
 		Ask: b.Title,
 		Why: b.Why,
-		Info: "Main CI's run is green at " + short + ", and factoryd rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not." +
+		Info: "Main CI's run is green at " + short + ", and the factory rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not." +
 			"\n\nThe run: " + runURL + "\n\n- " + strings.Join(lines, "\n- ") + "\n\n" +
-			"Main CI's image jobs sign each image they push. No signature means a job did not sign it or the tag was pushed outside main CI; " +
-			"a signature by another key means the code repository's Actions secret COSIGN_PRIVATE_KEY is not the key k8s/cosign.pub holds. " +
-			"Find which, fix it, and close this issue. The next green push run of main is judged again; an empty commit on main starts one.",
+			"Main CI's image jobs sign each image they push. No signature means a job did not sign it or the tag was pushed outside main CI. " +
+			"A signature by another key means the code repository's Actions secret `COSIGN_PRIVATE_KEY` is not the key k8s/cosign.pub holds. " +
+			"Find which, fix it, and close this issue. The next green push run of main is judged again, and an empty commit on main starts one.",
 		Choices:  humanDoneChoices,
 		Happened: fmt.Sprintf("Main's run is green at %s, and %s of it %s no signature by the factory's key.", short, plural(len(names), "image"), carry(len(names))),
 		Waits:    "The new images stay off the cluster until they are signed.",
@@ -159,10 +160,10 @@ func RerunQuestion(index int64, sha, failed string, lost []string, why string) H
 		Ask: b.Title,
 		Why: b.Why,
 		Info: fmt.Sprintf("Main CI's push run %d of %s failed, but none of its steps did: each failed job lost its runner while it ran "+
-			"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card. %s", index, sha, why) +
+			"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card. %s", index, ShortSHA(sha), why) +
 			"\n\n" + strings.Join(lost, "\n\n") + "\n\n" +
 			"Re-run each job from its page. The project's merge queue is paused until a push run of main is green: the re-run's green " +
-			"result ends the pause, and factoryd closes this issue.",
+			"result ends the pause, and the factory closes this issue.",
 		Choices:  humanDoneChoices,
 		Happened: fmt.Sprintf("Main's push run %d failed in %s, and each failed job lost its runner while it ran.", index, failed),
 		Waits:    queuePaused,
@@ -177,12 +178,12 @@ func StillRedQuestion(index int64, sha, remedy, link string) HumanQuestion {
 	return HumanQuestion{
 		Ask: b.Title,
 		Why: b.Why,
-		Info: fmt.Sprintf("Main CI's push run %d of %s failed after %s merged. factoryd files one automatic remedy for a red main, "+
-			"the fix-forward card or the revert after it, and main stayed red after it, so a human decides.", index, sha, remedy) +
+		Info: fmt.Sprintf("Main CI's push run %d of %s failed after %s merged. The factory files one automatic remedy for a red main, "+
+			"the fix-forward card or the revert after it, and main stayed red after it, so a human decides.", index, ShortSHA(sha), remedy) +
 			"\n\nThe run: " + link + "\n\nRead its log, then fix main or revert by hand. The project's merge queue is paused until a push run of " +
-			"main is green: that run ends the pause, and factoryd closes this issue.",
+			"main is green: that run ends the pause, and the factory closes this issue.",
 		Choices:  humanDoneChoices,
-		Happened: fmt.Sprintf("Main's push run %d failed at %s after %s merged.", index, sha[:min(7, len(sha))], remedy),
+		Happened: fmt.Sprintf("Main's push run %d failed at %s after %s merged.", index, ShortSHA(sha), remedy),
 		Waits:    queuePaused,
 		Check:    mainRunChecked,
 	}
@@ -197,7 +198,7 @@ func ConfigRejectedQuestion(dir, short, link, stays, reasons string) HumanQuesti
 		Ask: b.Title,
 		Why: b.Why,
 		Info: fmt.Sprintf("The commit %s of %s/ was rejected. ", short, dir) + stays + "\n\nReasons (`factoryd config check " + dir + "` shows the same):\n\n" + fenced(reasons) + "\n\n" +
-			"Fix the files and push; the next valid commit on main becomes current within 30 s and closes this issue. The tree: " + link,
+			"Fix the files and push. The next valid commit on main becomes current within 30 s and closes this issue. The tree: " + link,
 		Choices:  humanDoneChoices,
 		Happened: fmt.Sprintf("The factory refused commit %s of %s/. %s", short, dir, stays),
 		Waits:    "The configuration before it stays in force.",
@@ -211,35 +212,35 @@ func ConfigRejectedQuestion(dir, short, link, stays, reasons string) HumanQuesti
 // fired under the cap and link is the file that sets it.
 func MonthCapCardQuestion(limit float64, month string, eur float64, link, refusal string) HumanQuestion {
 	if outerGuardRefused(refusal, eur, limit) {
-		b := SourceBriefs[SourceMonthCap](BriefFacts{Name: fmt.Sprintf("%.2f EUR", limit), Of: fmt.Sprintf("%.2f EUR", eur)})
+		b := SourceBriefs[SourceMonthCap](BriefFacts{Name: fmt.Sprintf("%s EUR", textutil.EUR(limit)), Of: fmt.Sprintf("%s EUR", textutil.EUR(eur))})
 		return HumanQuestion{
 			Ask: b.Title,
 			Why: b.Why,
-			Info: fmt.Sprintf("The factory's variable spend this month (%s, UTC) is %.2f EUR, below the cap of %.2f EUR (`budget.month_eur`), "+
+			Info: fmt.Sprintf("The factory's variable spend this month (%s, UTC) is %s EUR, below the cap of %s EUR (`budget.month_eur`), "+
 				"yet LiteLLM's proxy-wide `max_budget`, the outer guard behind the cap, refused a call. Either `max_budget` sits under 1.25 times the cap, "+
-				"or LiteLLM's USD counter ran ahead of the ledger in EUR. scripts/budget-backstop-check tells them apart: it fails when `max_budget` is under 1.25 times `budget.month_eur`; "+
-				"if it passes, the counter ran ahead and `max_budget` needs the raise all the same.", month, eur, limit) +
+				"or LiteLLM's USD counter ran ahead of the ledger in EUR. scripts/budget-backstop-check tells them apart: it fails when `max_budget` is under 1.25 times `budget.month_eur`. "+
+				"If it passes, the counter ran ahead and `max_budget` needs the raise all the same.", month, textutil.EUR(eur), textutil.EUR(limit)) +
 				"\n\nRaise `max_budget` in k8s/platform/litellm/helmrelease.yaml, the LiteLLM helmrelease, which stays at 1.25 times the cap or more: " + link +
 				"\n\nThe policy cap needs no change. Close this issue once decided.\n\nThe newest refusal:\n\n" + fenced(refusal),
 			Choices:  choices(ActClose+"/"+variantNoted, ActNote+"/"+variantPark),
-			Happened: fmt.Sprintf("LiteLLM refused a model call at %.2f EUR of spend this month, below the cap of %.2f EUR.", eur, limit),
+			Happened: fmt.Sprintf("LiteLLM refused a model call at %s EUR of spend this month, below the cap of %s EUR.", textutil.EUR(eur), textutil.EUR(limit)),
 			Waits:    "Model calls fail until the guard's limit is raised.",
 		}
 	}
-	info := "The gateway refuses every further call with `refused_month_cap` until the month ends or the cap is raised; " +
-		"a task it refused waits on its card and resumes on its own once the cap is raised or the month turns. Raising the cap is a commit to the `month_eur` line, " +
+	info := "The gateway refuses every further call with `refused_month_cap` until the month ends or the cap is raised. " +
+		"A task it refused waits on its card and resumes on its own once the cap is raised or the month turns. Raising the cap is a commit to the `month_eur` line, " +
 		"like any setting: " + link + "\n\nClose this issue once decided."
 	if refusal != "" {
 		info += "\n\nThe newest refusal:\n\n" + fenced(refusal)
 	}
-	b := SourceBriefs[SourceMonthCap](BriefFacts{Name: fmt.Sprintf("%.2f EUR", limit)})
+	b := SourceBriefs[SourceMonthCap](BriefFacts{Name: fmt.Sprintf("%s EUR", textutil.EUR(limit))})
 	return HumanQuestion{
 		Ask: b.Title,
 		Why: b.Why,
-		Info: fmt.Sprintf("The factory's variable spend in %s (UTC, over the cost ledger: model calls, paid tools, commissioned servers) is %.2f EUR of the cap of %.2f EUR (`budget.month_eur`). ", month, eur, limit) +
+		Info: fmt.Sprintf("The factory's variable spend in %s (UTC, over the cost ledger: model calls, paid tools, commissioned servers) is %s EUR of the cap of %s EUR (`budget.month_eur`). ", month, textutil.EUR(eur), textutil.EUR(limit)) +
 			info,
 		Choices:  choices(ActClose+"/"+variantNoted, ActNote+"/"+variantPark),
-		Happened: fmt.Sprintf("The factory spent %.2f EUR of its %.2f EUR limit in %s.", eur, limit, monthWords(month)),
+		Happened: fmt.Sprintf("The factory spent %s EUR of its %s EUR limit in %s.", textutil.EUR(eur), textutil.EUR(limit), monthWords(month)),
 		Waits:    "Every model call waits until the limit is raised or the month ends.",
 	}
 }

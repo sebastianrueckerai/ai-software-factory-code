@@ -173,7 +173,7 @@ func TestPolicyClassFacesWithRung2sAnalysisOnly(t *testing.T) {
 	}
 	ctx := context.Background()
 	_, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActClose}})
-	want := "this case is the human's by its kind (the merge gate marks the policy class human): record your analysis and recommended option with attach_analysis"
+	want := "This ask is the human's by its kind (the merge gate marks the policy class human): record your analysis and the answer you suggest with `attach_analysis`."
 	if err == nil || err.Error() != want {
 		t.Fatalf("Act close = %v, want %q", err, want)
 	}
@@ -318,7 +318,7 @@ func TestSkippedRung1KindsMeetTheSpentJudgmentBudget(t *testing.T) {
 			for _, a := range g.asks(t) {
 				info += fmt.Sprint(a.Detail["info"])
 			}
-			if strings.Contains(info, noJudgmentLine) != tc.judged || strings.Contains(info, "The factory found: "+markJudgmentSpent) == tc.judged {
+			if !strings.Contains(info, noJudgmentLine) || strings.Contains(info, "The project's judgment budget has 0.00 of 10.00 EUR left this month.") == tc.judged || strings.Contains(info, "not judged") || strings.Contains(info, "t-chat") {
 				t.Errorf("info %q, want the no-judgment line for a judged case and the mark for one no rung judged", info)
 			}
 		})

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"io"
 	"log"
 	"net/http"
@@ -418,7 +419,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// class (a subagent's, roadmap 222, item 6) runs on the session's key
 	if purpose == "" && chatReq.Model != task.ModelAlias && !s.cheaperThan(ctx, chatReq.Model, task.ModelAlias) {
 		s.refuse(w, pid, id.TaskID, purpose, "refused_capability",
-			fmt.Sprintf("model %q is not the model %q of the task's session (tasks.model_alias); a stronger model comes only by the climb", chatReq.Model, task.ModelAlias),
+			fmt.Sprintf("model %q is not the model %q of the task's session (`tasks.model_alias`). A stronger model comes only by the climb", chatReq.Model, task.ModelAlias),
 			chatReq.Model, http.StatusForbidden, "permission_error")
 		return
 	}
@@ -438,7 +439,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	if chatReq.Stream {
 		if err := withStreamUsage(chatReq.fields); err != nil {
-			s.refuse(w, pid, id.TaskID, purpose, "refused_body", "stream_options is not a JSON object", chatReq.Model, http.StatusBadRequest, "invalid_request_error")
+			s.refuse(w, pid, id.TaskID, purpose, "refused_body", "`stream_options` is not a JSON object", chatReq.Model, http.StatusBadRequest, "invalid_request_error")
 			return
 		}
 	}
@@ -1097,7 +1098,7 @@ func (s *Server) finish(c *modelCall, cost *float64, decision string) {
 	c.callCost, c.duration = cost, s.now().Sub(c.started)
 	reason := c.note
 	if cost == nil {
-		reason = fmt.Sprintf("cost not reported, booked the hold %.6f EUR", c.hold.EUR)
+		reason = fmt.Sprintf("cost not reported, booked the hold %s EUR", textutil.EUR(c.hold.EUR))
 		if c.note != "" {
 			reason = c.note + ": " + reason
 		}
@@ -1142,7 +1143,7 @@ func (s *Server) settleCanceled(c *modelCall) {
 			readErr = err
 			if found {
 				cost = &v
-				c.addNote(fmt.Sprintf("caller left; priced from LiteLLM's spend log: %.6f EUR", v))
+				c.addNote(fmt.Sprintf("caller left; priced from LiteLLM's spend log: %s EUR", textutil.EUR(v)))
 				break
 			}
 			if time.Now().After(deadline) {

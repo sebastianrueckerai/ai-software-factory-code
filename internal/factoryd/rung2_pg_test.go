@@ -125,7 +125,7 @@ func TestRung2AnalysisFacesTheHumanWithItsRecommendation(t *testing.T) {
 	}
 	asks := g.asks(t)
 	if len(g.forge.comments) != 1 || len(asks) != 1 || asks[0].Detail["recommendation"] != "nothing is left to build" || asks[0].Detail["recommended_by"] != "the factory agent" ||
-		!strings.Contains(asks[0].Detail["info"].(string), "The factory agent found: the pull request is merged on main") {
+		!strings.Contains(asks[0].Detail["info"].(string), "The factory agent found:\n\n> the pull request is merged on main") {
 		t.Fatalf("comments %q, asks %+v; want one face recommending close with the grounds", g.forge.comments, asks)
 	}
 	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseAtHuman || c.OwnerRung != 3 {
@@ -254,7 +254,7 @@ func TestRung2ExpiryFacesTheHumanOnce(t *testing.T) {
 	}
 	info, rec := asks[0].Detail["info"].(string), asks[0].Detail["recommendation"]
 	if !strings.Contains(info, "The factory agent did not answer within 35m.") || strings.Contains(info, "The factory agent found") ||
-		!strings.Contains(info, "The check-in found: ") || rec != "the card's work is done on main" || asks[0].Detail["recommended_by"] != "the check-in" {
+		!strings.Contains(info, "The check-in found:\n\n> ") || rec != "the card's work is done on main" || asks[0].Detail["recommended_by"] != "the check-in" {
 		t.Fatalf("info %q, recommendation %v; want the expiry in words, rung 1's finding and its recommendation", info, rec)
 	}
 }
@@ -563,7 +563,7 @@ func TestHandUpRung2RefusesAnotherCardsCase(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = g.r.HandUpRung2(ctx, "t1", other.ID, "found", RungTwoRecommendation{Action: ActClose}, nil)
-	want := fmt.Sprintf("case %d is not a case of this card: its open cases are %d", other.ID, out.CaseID)
+	want := fmt.Sprintf("`case_id` %d is no ask of this card. Its open asks, by `case_id`: %d.", other.ID, out.CaseID)
 	if err == nil || err.Error() != want {
 		t.Fatalf("err = %v, want %q", err, want)
 	}
@@ -728,7 +728,7 @@ func TestRung1ThatDidNotJudgeLeavesTheMark(t *testing.T) {
 		if got := caseByID(t, g.s, c.ID); got.Problem != "stuck" {
 			t.Fatalf("%q: problem %q, want it unmarked", found, got.Problem)
 		}
-		if info := g.infoOf(t, c.ID); !strings.Contains(info, "The factory found: "+markJudgmentSpent) || strings.Contains(info, noJudgmentLine) {
+		if info := g.infoOf(t, c.ID); !strings.Contains(info, "The project's judgment budget has") || strings.Contains(info, "not judged") || strings.Contains(info, "t-chat") {
 			t.Fatalf("%q: info %q, want the mark", found, info)
 		}
 	}
@@ -792,7 +792,7 @@ func TestFaceAfterRung2ExpiryKeepsTheMomentsReasonAndRungOnesExpiry(t *testing.T
 		t.Fatal(err)
 	}
 	g.afterRung2(t, out.CaseID)
-	if info := g.infoOf(t, out.CaseID); !strings.Contains(info, "The factory agent did not answer within 35m.") || !strings.Contains(info, "The check-in found: the check-in sends this to a human: "+CheckSpend) {
+	if info := g.infoOf(t, out.CaseID); !strings.Contains(info, "The factory agent did not answer within 35m.") || !strings.Contains(info, "The check-in found:\n\n> the check-in sends this to a human: "+CheckSpend) {
 		t.Fatalf("info = %q, want the moment's reason kept", info)
 	}
 

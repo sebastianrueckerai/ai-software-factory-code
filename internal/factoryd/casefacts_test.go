@@ -537,7 +537,7 @@ func TestTripFactsWeighTheCapThatBindsFirst(t *testing.T) {
 				}
 				return
 			}
-			if !strings.HasPrefix(f.CapWait, dayCapResumes) || !strings.Contains(f.CapWait, "turns at 2026-11-04T00:00:00Z") || !strings.Contains(f.CapWait, "budget.day_eur in policy.yaml") {
+			if !strings.HasPrefix(f.CapWait, dayCapResumes) || !strings.Contains(f.CapWait, "turns at 2026-11-04T00:00:00Z") || !strings.Contains(f.CapWait, "the day cap in policy.yaml") {
 				t.Fatalf("cap wait %q, want the day cap's, lifting at the day's turn", f.CapWait)
 			}
 			if !strings.HasPrefix(face, "The day cap is reached") || !strings.Contains(face, "Once it lifts, the task asks the budget floor") || strings.Contains(face, "Reply on this issue to start") {

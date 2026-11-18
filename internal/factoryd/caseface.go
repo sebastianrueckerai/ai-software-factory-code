@@ -44,7 +44,7 @@ func CaseFace(c Case, t Task, ask CaseAsk) Face {
 		Source: af.SuggestedBy, Recommendation: af.Grounds, Findings: af.Findings}
 	face.Info, _ = ask.Detail["info"].(string)
 	if ask.Analysis != "" {
-		face.Info = strings.TrimSpace(face.Info + "\n\n" + ask.Analysis)
+		face.Info = strings.TrimSpace(face.Info + "\n\n" + Quoted(ask.Analysis))
 	}
 	return face
 }

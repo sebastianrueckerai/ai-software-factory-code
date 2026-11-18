@@ -44,7 +44,7 @@ func (c *Console) planChoiceOf(ctx context.Context, a actor, id string, revision
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan #%d revision %d has no question %d.", t.IssueNumber, revision, idx))
 	}
 	if n := len(qs[idx-1].Choices); pick < 1 || pick > n {
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Question %d of plan #%d has %d choices; there is no choice %d.", idx, t.IssueNumber, n, pick))
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Question %d of plan #%d has %d choices, and there is no choice %d.", idx, t.IssueNumber, n, pick))
 	}
 	return qs[idx-1].Choices[pick-1], nil
 }

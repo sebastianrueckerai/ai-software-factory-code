@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"log"
 	"math"
 	"slices"
@@ -203,15 +204,15 @@ func Fit(f Free, r HoldRequest) (Hold, error) {
 	maxOut := min(outFit, full)
 	if maxOut <= 0 || maxOut < MinCallTokens && maxOut != r.WantOut {
 		return Hold{}, refusal(decision, KindModel, r.Project, f.stop(decision, fmt.Sprintf(
-			"free headroom %.6f EUR (%s) fits %d output tokens after a request of %d bytes (%s %.0f prompt tokens), below the minimum call of %d",
-			free, f.figures(), max(outFit, 0), r.Bytes, measure, tokens, MinCallTokens)))
+			"free headroom %s EUR (%s) fits %d output tokens after a request of %d bytes (%s %.0f prompt tokens), below the minimum call of %d",
+			textutil.EUR(free), f.figures(), max(outFit, 0), r.Bytes, measure, tokens, MinCallTokens)))
 	}
 	// a premium call keeps its whole output or runs on big: a reasoning
 	// model at max effort can spend a clamped limit before it answers
 	if decision == RefusedPremiumCap && maxOut < full {
 		return Hold{}, refusal(decision, KindModel, r.Project, fmt.Sprintf(
-			"free headroom %.6f EUR (%s) fits %d of the call's %d output tokens after a request of %d bytes (%s %.0f prompt tokens)",
-			free, f.figures(), maxOut, full, r.Bytes, measure, tokens))
+			"free headroom %s EUR (%s) fits %d of the call's %d output tokens after a request of %d bytes (%s %.0f prompt tokens)",
+			textutil.EUR(free), f.figures(), maxOut, full, r.Bytes, measure, tokens))
 	}
 	return Hold{TaskID: r.TaskID, Kind: r.Kind, Ref: r.Ref, Session: r.Session, MaxOut: maxOut, WantOut: r.WantOut,
 		EUR: inEUR + float64(maxOut)*r.Price.Out}, nil
@@ -227,7 +228,8 @@ func FitTool(f Free, requests int, usedEUR float64, r HoldRequest) (Hold, error)
 	}
 	if usedEUR+r.EUR > r.Cap.MaxEUR+1e-12 {
 		return Hold{}, &Refusal{Decision: "refused_tool_eur", Reason: fmt.Sprintf(
-			"%s: %.6f EUR used and a worst case of %.6f EUR exceed the task's cap of %.6f EUR on it", r.Ref, usedEUR, r.EUR, r.Cap.MaxEUR)}
+			"%s: %s EUR used and a worst case of %s EUR exceed the task's cap of %s EUR on it by %s EUR", r.Ref, textutil.EUR(usedEUR), textutil.EUR(r.EUR), textutil.EUR(r.Cap.MaxEUR),
+			textutil.EUR(usedEUR+r.EUR-r.Cap.MaxEUR))}
 	}
 	return FitResource(f, r)
 }
@@ -239,7 +241,7 @@ func FitResource(f Free, r HoldRequest) (Hold, error) {
 	free, decision := f.bound()
 	if r.EUR > free {
 		return Hold{}, refusal(decision, r.Kind, r.Project, f.stop(decision, fmt.Sprintf(
-			"%s: worst case %.6f EUR exceeds the free headroom %.6f EUR (%s)", r.Ref, r.EUR, free, f.figures())))
+			"%s: worst case %s EUR exceeds the free headroom %s EUR by %s EUR (%s)", r.Ref, textutil.EUR(r.EUR), textutil.EUR(free), textutil.EUR(r.EUR-free), f.figures())))
 	}
 	return Hold{TaskID: r.TaskID, Kind: r.Kind, Ref: r.Ref, Session: r.Session, EUR: r.EUR}, nil
 }
@@ -515,12 +517,12 @@ func (f Free) bound() (float64, string) {
 // figures are the free headroom a refusal quotes; the project's only under
 // a cap, the premium's only on a premium call under its cap.
 func (f Free) figures() string {
-	s := fmt.Sprintf("task %.6f, day %.6f, month %.6f", f.Task, f.Day, f.Month)
+	s := fmt.Sprintf("task %s, day %s, month %s", textutil.EUR(f.Task), textutil.EUR(f.Day), textutil.EUR(f.Month))
 	if !math.IsInf(f.Project, 1) {
-		s += fmt.Sprintf(", project %.6f", f.Project)
+		s += ", project " + textutil.EUR(f.Project)
 	}
 	if f.Premium != nil {
-		s += fmt.Sprintf(", premium %.6f", *f.Premium)
+		s += ", premium " + textutil.EUR(*f.Premium)
 	}
 	return s
 }
@@ -533,7 +535,7 @@ func (f Free) figures() string {
 // reads as before.
 func (f Free) stop(decision, reason string) string {
 	if decision == RefusedBudget && f.Reserve > 0 {
-		return reason + fmt.Sprintf("; the card spent %.2f EUR, and %.2f EUR is held for the review and the audit", f.Spent, f.Kept())
+		return reason + fmt.Sprintf("; the card spent %s EUR, and %s EUR is held for the review and the audit", textutil.EUR(f.Spent), textutil.EUR(f.Kept()))
 	}
 	return reason
 }
@@ -761,7 +763,7 @@ func OverHold(taskID, what string, eur, held float64) string {
 	if eur <= held+1e-12 {
 		return ""
 	}
-	reason := fmt.Sprintf("COST OVER HOLD: %s cost %.6f EUR against a hold of %.6f EUR; booked in full", what, eur, held)
+	reason := fmt.Sprintf("COST OVER HOLD: %s cost %s EUR against a hold of %s EUR; booked in full", what, textutil.EUR(eur), textutil.EUR(held))
 	log.Printf("task %s: %s", taskID, reason) // #nosec G706 -- the task id is a stored row's; what is a kind and a policy alias, tool or resource id
 	return reason
 }

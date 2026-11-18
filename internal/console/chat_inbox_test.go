@@ -172,8 +172,8 @@ func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 		{"a press of Not now", nil, "answered by sebastian · 09:50"},
 		{"a retry from the drawer", moved(factoryd.EventCardRetried, "sebastian", 10), "moved on by sebastian · 09:40"},
 		{"a close", moved(factoryd.EventCardClosed, "sebastian", 15), "answered by sebastian · 09:45"},
-		{"a status change", moved(factoryd.EventTaskStatus, factoryd.FactoryDecider, 20), "moved on by factoryd · 09:50"},
-		{"the task's end", moved(factoryd.EventTaskEnded, factoryd.FactoryDecider, 25), "moved on by factoryd · 09:55"},
+		{"a status change", moved(factoryd.EventTaskStatus, factoryd.FactoryDecider, 20), "moved on · 09:50"},
+		{"the task's end", moved(factoryd.EventTaskEnded, factoryd.FactoryDecider, 25), "moved on · 09:55"},
 	} {
 		r, chat, g := newChatRig(t)
 		ck, s := r.loggedIn(t)

@@ -315,7 +315,7 @@ func (e ErrStallGone) Error() string {
 	if e.Verdict != "" {
 		return "the head concluded " + e.Verdict + "; this stall no longer stands"
 	}
-	return "the head moved on to " + e.Head[:min(7, len(e.Head))] + "; this stall no longer stands"
+	return "the head moved on to " + ShortSHA(e.Head) + "; this stall no longer stands"
 }
 
 // verdictWord is a concluded head verdict as a person reads it.
@@ -1529,7 +1529,7 @@ func (p *ChainPoller) settleChainCards(ctx context.Context, repository, sha, ver
 		case repair && verdict == "success", !repair && card.SHA == sha && verdict != "pending":
 			p.closeChainCard(ctx, repository, card, fmt.Sprintf("the chain of %s concluded %s at %s", repository, verdictWord(verdict), sha))
 		case card.SHA != sha && (!repair || card.Kind == "human"):
-			p.closeChainCard(ctx, repository, card, fmt.Sprintf("the head of %s moved on to %s", repository, sha[:min(7, len(sha))]))
+			p.closeChainCard(ctx, repository, card, fmt.Sprintf("the head of %s moved on to %s", repository, ShortSHA(sha)))
 		}
 	}
 }
@@ -1541,7 +1541,7 @@ func (p *ChainPoller) closeChainCard(ctx context.Context, repository string, car
 	if card.Source == SourceChainRepair {
 		what = "the red this card was filed for"
 	}
-	if err := closeIssueAsFactory(ctx, p.Store, p.Forgejo, card, "factoryd: "+why+"; "+what+" no longer stands. Closing this issue."); err != nil {
+	if err := closeIssueAsFactory(ctx, p.Store, p.Forgejo, card, capitalize(why)+", so "+what+" no longer stands. Closing this issue."); err != nil {
 		log.Printf("chain poller: %s: close #%d: %v", repository, card.IssueNumber, err)
 	}
 }
@@ -1723,7 +1723,7 @@ func RepairCard(repository, sha string, findings []string, runURL string, cards 
 	} else {
 		b.WriteString("\nNo card's change rides this head; the chain alone is the work.\n")
 	}
-	b.WriteString("\nRead the run's log or the red status, find the cause, fix it on this card's branch from main's head, and push: the fix rides the chain again, and a green chain ends every wait.\n\nfiled by factoryd")
+	b.WriteString("\nRead the run's log or the red status, find the cause, fix it on this card's branch from main's head, and push: the fix rides the chain again, and a green chain ends every wait.\n\nFiled by the factory.")
 	brief := SourceBriefs[SourceChainRepair](BriefFacts{Name: repository})
 	brief.Body = b.String()
 	return brief

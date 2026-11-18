@@ -745,7 +745,7 @@ func (g *accGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if reply.status != 0 {
 		w.Header().Set(gwhdr.HeaderDecision, reply.decision)
 		w.WriteHeader(reply.status)
-		_, _ = io.WriteString(w, `{"error":{"message":"task headroom 0.000000 EUR","type":"budget_exceeded"}}`)
+		_, _ = io.WriteString(w, `{"error":{"message":"task headroom 0.00 EUR","type":"budget_exceeded"}}`)
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": reply.content}}}})

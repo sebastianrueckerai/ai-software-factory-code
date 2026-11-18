@@ -1010,7 +1010,7 @@ func commentBodies(fj *planForgejo) []string {
 func TestPlanCloseCheckClosesAPlanWithoutCriteria(t *testing.T) {
 	ctx := context.Background()
 	r, _, objs, fj := planWithoutCriteria(t, "done", "done", "closed")
-	want := []string{"#1 factoryd: every card of this plan is done or closed; the plan is closed."}
+	want := []string{"#1 Every card of this plan is done or closed, so the plan is closed."}
 	r.planCloseCheck(ctx, "t-plan")
 	if n := planCloses(t, objs); n != 1 {
 		t.Fatalf("plan_closed with criteria 0 recorded %d times, want 1", n)
@@ -1071,7 +1071,7 @@ func TestClosePlanClosesItsOpenIssue(t *testing.T) {
 	ctx := context.Background()
 	r, s, objs, fj := planWithoutCriteria(t, "done", "done")
 	r.planCloseCheck(ctx, "t-plan")
-	want := []string{"#1 factoryd: every card of this plan is done or closed; the plan is closed."}
+	want := []string{"#1 Every card of this plan is done or closed, so the plan is closed."}
 	if got := commentBodies(fj); fj.issues[1].state != "closed" || !slices.Equal(got, want) || planCloses(t, objs) != 1 {
 		t.Fatalf("#1 %s, comments %q, plan_closed %d times; want closed, %q, once", fj.issues[1].state, got, planCloses(t, objs), want)
 	}
@@ -1087,7 +1087,7 @@ func TestClosePlanCommentsOnAClosedIssue(t *testing.T) {
 	r, _, objs, fj := planWithoutCriteria(t, "done", "done")
 	fj.issues[1].state = "closed"
 	r.planCloseCheck(ctx, "t-plan")
-	want := []string{"#1 factoryd: every card of this plan is done or closed; the plan is closed."}
+	want := []string{"#1 Every card of this plan is done or closed, so the plan is closed."}
 	if got := commentBodies(fj); slices.Contains(fj.calls, "PATCH issues/1") || !slices.Equal(got, want) || planCloses(t, objs) != 1 {
 		t.Fatalf("calls %q, comments %q, plan_closed %d times; want no close, %q, once", fj.calls, got, planCloses(t, objs), want)
 	}
@@ -1157,7 +1157,7 @@ func TestCriteriaPassVisitsOpenGroups(t *testing.T) {
 	if got := openPlans(t, s); !slices.Equal(got, []string{"t-plan"}) {
 		t.Fatalf("open groups = %v, want t-plan", got)
 	}
-	want := []string{"#1 factoryd: every card of this plan is done or closed; the plan is closed."}
+	want := []string{"#1 Every card of this plan is done or closed, so the plan is closed."}
 	for pass := 1; pass <= 2; pass++ {
 		r.CriteriaPass(ctx)
 		if n, rows := planCloses(t, objs), closeRows(s); n != 1 || rows != 1 {
@@ -1189,7 +1189,7 @@ func TestCriteriaPassRetriesALostCloseRow(t *testing.T) {
 			t.Fatalf("pass %d: rows %d, open groups %v; want 1 and none", pass, rows, open)
 		}
 	}
-	if want := []string{"#1 factoryd: every card of this plan is done or closed; the plan is closed."}; !slices.Equal(commentBodies(fj), want) {
+	if want := []string{"#1 Every card of this plan is done or closed, so the plan is closed."}; !slices.Equal(commentBodies(fj), want) {
 		t.Errorf("comments = %q, want %q", commentBodies(fj), want)
 	}
 }
@@ -1472,7 +1472,7 @@ func TestPlanCloseCheckWaitsForTheLastRound(t *testing.T) {
 // round, unless a criterion is open on a plan with a merged card.
 func TestClosedPlanCardClosesItsGroup(t *testing.T) {
 	ctx := context.Background()
-	want := []string{"#1 factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main."}
+	want := []string{"#1 The plan card was closed, so the plan is closed. Its merged cards stay on main."}
 	for second, closes := range map[string]int{"closed": 1, "failed": 1, "running": 0} {
 		r, s, objs, fj := planWithoutCriteria(t, "done", second)
 		newRevision(t, s, "t-plan", Plan{Summary: "the plan", Round: 1, Outline: []string{"more"}})

@@ -20,6 +20,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"go.temporal.io/sdk/activity"
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/testsuite"
@@ -180,11 +181,11 @@ func TestReceiptCommentOnTheMergedPullRequest(t *testing.T) {
 		}
 		facts = append(facts, strings.Join(append(parts, g.Verdict), ": "))
 	}
-	facts = append(facts, fmt.Sprintf("Cost: EUR %.2f", f.CostEUR))
+	facts = append(facts, "Cost: "+textutil.EUR(f.CostEUR)+" EUR")
 	for _, d := range f.Decisions {
 		facts = append(facts, fmt.Sprintf("Decision: %s %s by %s", d.Kind, d.Decision, d.By))
 	}
-	const section = "Assessments — the model's own, apart from the facts above:"
+	const section = "Assessments, the model's own, apart from the facts above:"
 	at := strings.Index(body, section)
 	if at < 0 {
 		t.Fatalf("the receipt comment holds no assessments section:\n%s", body)
@@ -388,11 +389,11 @@ func TestReceiptCommentOnTheWebhookMergedPullRequest(t *testing.T) {
 		}
 		facts = append(facts, strings.Join(append(parts, g.Verdict), ": "))
 	}
-	facts = append(facts, fmt.Sprintf("Cost: EUR %.2f", f.CostEUR))
+	facts = append(facts, "Cost: "+textutil.EUR(f.CostEUR)+" EUR")
 	for _, d := range f.Decisions {
 		facts = append(facts, fmt.Sprintf("Decision: %s %s by %s", d.Kind, d.Decision, d.By))
 	}
-	const section = "Assessments — the model's own, apart from the facts above:"
+	const section = "Assessments, the model's own, apart from the facts above:"
 	at := strings.Index(body, section)
 	if at < 0 {
 		t.Fatalf("the receipt comment holds no assessments section:\n%s", body)

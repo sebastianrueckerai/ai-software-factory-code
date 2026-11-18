@@ -42,7 +42,7 @@ func TestAutoMerge(t *testing.T) {
 		"checks not green":         {func(g *GateResults, _ *Review) { g.ChecksPassed = false }, false, "the checks did not run green"},
 		"merge rule human":         {func(g *GateResults, _ *Review) { g.Policy.MergeRule = policy.MergeHuman }, false, "the project's merge rule is human"},
 		"no project row":           {func(g *GateResults, _ *Review) { g.Policy.MergeRule = "" }, false, "the project's merge rule is human"},
-		"normal requires approval": {func(g *GateResults, _ *Review) { g.Policy.Outcome = policy.OutcomeRequiresApproval }, false, "risk class normal is requires_approval"},
+		"normal requires approval": {func(g *GateResults, _ *Review) { g.Policy.Outcome = policy.OutcomeRequiresApproval }, false, "risk class normal needs a human's approval"},
 		"class high, no audit": {func(g *GateResults, _ *Review) {
 			g.Policy.Class, g.Policy.Outcome = "high", policy.OutcomeRequiresApproval
 		}, false, "risk class high: the audit must pass for a merge without a human"},
@@ -51,7 +51,7 @@ func TestAutoMerge(t *testing.T) {
 		}, false, "large change: 1200 lines over 1000; approve it, or deny it (requesting changes sends it back to the agent)"},
 		"class migration": {func(g *GateResults, _ *Review) {
 			g.Policy.Class, g.Policy.Outcome = "migration", policy.OutcomeRequiresApproval
-		}, false, "risk class migration is requires_approval"},
+		}, false, "risk class migration needs a human's approval"},
 		"no command, no note": {func(g *GateResults, _ *Review) { g.Reproduction = ReproResult{} }, false, "no reproduction command and no fault the agent recorded"},
 		"head exit 1":         {func(g *GateResults, _ *Review) { g.Reproduction.Exit = 1 }, false, "the reproduction exited 1 at the head"},
 		"head exit 1, strict note": {func(g *GateResults, rv *Review) {
@@ -68,7 +68,7 @@ func TestAutoMerge(t *testing.T) {
 		"review concerns":                {func(_ *GateResults, rv *Review) { rv.Verdict = "concerns" }, false, "the model review's verdict is concerns"},
 		"no review":                      {func(_ *GateResults, rv *Review) { *rv = Review{Note: "model review failed: 502"} }, false, "no model review verdict: model review failed: 502"},
 		"reproduced, note, strict false": {func(g *GateResults, rv *Review) { g.Reproduction.NotReproduced, rv.StrictImprovement = "x", &no }, false, "did not find the change a strict improvement"},
-		"reproduced, strict false":       {func(_ *GateResults, rv *Review) { rv.StrictImprovement = &no }, false, "did not find the change a strict improvement with no drawback: fixes the slug check"},
+		"reproduced, strict false":       {func(_ *GateResults, rv *Review) { rv.StrictImprovement = &no }, false, "did not find the change a strict improvement with no drawback"},
 		"reproduced, strict missing":     {func(_ *GateResults, rv *Review) { rv.StrictImprovement = nil }, false, "did not find the change a strict improvement"},
 		"no command, note, strict true": {func(g *GateResults, rv *Review) {
 			g.Reproduction, rv.StrictImprovement = ReproResult{NotReproduced: "x"}, &yes
@@ -508,9 +508,9 @@ func TestRequestInfo(t *testing.T) {
 			if got := store.tasks["t1"].Status; got != "waiting-poster" || !slices.Contains(fj.labels, "state/waiting-poster") {
 				t.Fatalf("status %s, labels %v", got, fj.labels)
 			}
-			want := "factoryd: task t1 could not reproduce this issue and found no fault. It needs more information from the issue's author.\n\n" +
+			want := "The agent could not reproduce this issue and found no fault. It needs more information from the issue's author.\n\n" +
 				"```\nWhich browser?\nTried: the steps\nNeeds: the version\n```\n\n" +
-				"Reply on this issue with what is asked; the task resumes with your comment. Without an answer in 14 days the issue closes as not reproducible.\n\n" + tc.mentions
+				"Reply on this issue with what is asked, and the card goes on with your comment. Without an answer in 14 days the issue closes as not reproducible.\n\n" + tc.mentions
 			if len(fj.comments) != 1 || fj.comments[0] != want {
 				t.Fatalf("comment =\n%q\nwant\n%q", fj.comments, want)
 			}
@@ -538,7 +538,7 @@ func TestCloseNotReproduced(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(fj.comments) != 1 || !strings.HasPrefix(fj.comments[0], "factoryd: not reproducible, no answer in 14 days.") ||
+	if len(fj.comments) != 1 || !strings.HasPrefix(fj.comments[0], "Not reproducible, no answer in 14 days.") ||
 		!slices.Equal(fj.patched, []string{`{"state":"closed"}`}) {
 		t.Fatalf("comments %q, patches %q", fj.comments, fj.patched)
 	}
@@ -585,7 +585,7 @@ func TestFinishClosed(t *testing.T) {
 	if got.Status != "closed" || got.FinishedAt == nil {
 		t.Fatalf("task = %+v, want closed and finished", got)
 	}
-	if !slices.Equal(fj.closed, []int64{12}) || len(fj.comments) != 1 || fj.comments[0] != "factoryd: task t1 closed: "+notReproducedClose {
+	if !slices.Equal(fj.closed, []int64{12}) || len(fj.comments) != 1 || fj.comments[0] != "This card closed: "+notReproducedClose {
 		t.Fatalf("closed %v, comments %q: want the PR closed with the reason, nothing on the issue", fj.closed, fj.comments)
 	}
 	if labels := fj.labels[4]; !slices.Equal(labels, []string{"bug", "state/closed"}) {
@@ -607,7 +607,7 @@ func TestFinishClosedClosesAnOpenIssue(t *testing.T) {
 	if _, err := execActivity(t, r, ActivityFinish, "t1", "closed", reason); err != nil {
 		t.Fatal(err)
 	}
-	msg := "factoryd: task t1 closed: " + reason
+	msg := "This card closed: " + reason
 	if !slices.Equal(fj.closed, []int64{12}) || !slices.Equal(fj.issuesClosed, []int64{4}) || !slices.Equal(fj.comments, []string{msg, msg}) {
 		t.Fatalf("pulls closed %v, issues closed %v, comments %q: want #12 and #4 closed, each with %q", fj.closed, fj.issuesClosed, fj.comments, msg)
 	}
@@ -647,7 +647,7 @@ func TestGatesOnAnAutoProject(t *testing.T) {
 		}
 	}
 	// the second gate run says nothing new (review M6)
-	if len(fj.comments) != 2 || !strings.Contains(fj.comments[1], "not_reproduced") || !strings.Contains(fj.comments[1], "the check refused every dash") {
+	if len(fj.comments) != 2 || !strings.Contains(fj.comments[1], "The agent fixed a fault it did not reproduce exactly") || !strings.Contains(fj.comments[1], "the check refused every dash") {
 		t.Fatalf("comments = %q", fj.comments)
 	}
 	if step := timelineStep(t, objects, "t1", "gate_reproduction"); step["not_reproduced"] == nil || step["skipped"] != nil {
@@ -731,7 +731,7 @@ func TestCardRecommendationAndAutoMergeNote(t *testing.T) {
 		t.Fatalf("auto %v, merge %+v %v", ok, res, fj.merges)
 	}
 	body, _ := fj.reviews[0]["body"].(string)
-	for _, want := range []string{"the merge gate passed c1 on the project's merge rule auto", "risk class normal, whose outcome is auto (policy version 7)",
+	for _, want := range []string{"The merge gate passed c1 on the project's merge rule auto", "risk class normal, whose outcome is auto (policy version 7)",
 		"the reproduction failed at the base (exit 1) and passes at the head",
 		"the model review approves and finds the change a strict improvement with no drawback"} {
 		if !strings.Contains(body, want) {

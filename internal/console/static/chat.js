@@ -212,7 +212,7 @@ var chatView = (function () {
     var v = typeof eur === "number" ? eur : Number(eur);
     if (!isFinite(v)) v = Number(pool.eur);
     var to = pool.action === "top_up" ? Number(pool.from_eur) + v : v;
-    return "the pool would stand at €" + to.toFixed(2);
+    return "the pool would stand at " + to.toFixed(2) + " EUR";
   }
   // poolFormHTML is a set_pool proposal's own half: the operation, the
   // cent-precision amount the member may correct, the reason fixed at the

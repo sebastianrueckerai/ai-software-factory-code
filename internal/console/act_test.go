@@ -199,12 +199,12 @@ func TestBoardShowsThePoolInThreeParts(t *testing.T) {
 		}
 		return rec.Body.String()
 	}
-	const within = "3 of 10 sessions, 1 h 20 min of 5 h agent time and €12.50 of €20.00 drawn this UTC month"
+	const within = "3 of 10 sessions, 1 h 20 min of 5 h agent time and 12.50 of 20.00 EUR drawn this UTC month"
 	if page := board(); !strings.Contains(page, within) || strings.Contains(page, "overdrawn") {
 		t.Fatalf("the board lacks %q or says overdrawn:\n%s", within, page)
 	}
 	r.drawn.Sessions = 11
-	const over = "11 of 10 sessions, 1 h 20 min of 5 h agent time and €12.50 of €20.00 drawn this UTC month, overdrawn in sessions: only the human draws more until the month turns"
+	const over = "11 of 10 sessions, 1 h 20 min of 5 h agent time and 12.50 of 20.00 EUR drawn this UTC month, overdrawn in sessions: only the human draws more until the month turns"
 	if page := board(); !strings.Contains(page, over) {
 		t.Fatalf("the board lacks %q:\n%s", over, page)
 	}
@@ -292,7 +292,7 @@ func TestAnActionMeetsTheAnswersGates(t *testing.T) {
 	// as a continue, which it refuses
 	ck, s := r.loggedIn(t)
 	rec := r.do(post("/tasks/t-rev/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck)
-	if want := "no case is open on card #12, so continue has nothing to answer"; rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) {
+	if want := "no ask is open on card #12, so “Go on with my note” has nothing to answer"; rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) {
 		t.Errorf("words on a card with no case = %d %q; want 409 naming %q", rec.Code, rec.Body, want)
 	}
 }
@@ -481,8 +481,8 @@ func TestCloseOfAHumanCardResolvesItsCase(t *testing.T) {
 // raise_ceiling in the chat.
 func TestCeilingRefusalNamesTheActorsControl(t *testing.T) {
 	for via, want := range map[string]string{
-		factoryd.ViaButton: "Card #13 holds €4.50 now, and €0.90 more passes its ceiling of €5.00: press Raise the spend limit on the opened card, which funds beside it.",
-		factoryd.ViaChat:   "Card #13 holds €4.50 now, and €0.90 more passes its ceiling of €5.00: raise the ceiling first (answer with action raise_ceiling), then fund.",
+		factoryd.ViaButton: "Card #13 holds 4.50 EUR now, and 0.90 EUR more passes its spend limit of 5.00 EUR: press “Raise the spend limit” on the opened card, which adds the money beside it.",
+		factoryd.ViaChat:   "Card #13 holds 4.50 EUR now, and 0.90 EUR more passes its spend limit of 5.00 EUR: raise the spend limit first (answer with the action `raise_ceiling`), then add the money.",
 	} {
 		r := needRig(t)
 		_, s := r.loggedIn(t)
@@ -804,8 +804,8 @@ func TestChatAnswerOffersNoWithdraw(t *testing.T) {
 // A typed answer with no words posts its resolution's sentence as the
 // human's own comment, the comment a run from before the cases gate wakes
 // on, where factoryd's record of it wakes nothing: the chat's extend of one
-// session with no text posts "extend: 1 session from the pool" as
-// sebastian.
+// session with no text posts "“Allow more sessions”: 1 session from the
+// pool" as sebastian.
 func TestATypedAnswerWithNoWordsPostsItsSentence(t *testing.T) {
 	r := newRig(t)
 	caseCard(r)
@@ -819,7 +819,7 @@ func TestATypedAnswerWithNoWordsPostsItsSentence(t *testing.T) {
 	r.fg.mu.Lock()
 	defer r.fg.mu.Unlock()
 	if !slices.Contains(r.fg.calls, "POST /api/v1/repos/sf/code/issues/13/comments Bearer access-1") ||
-		r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"] != "extend: 1 session from the pool" {
+		r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"] != "“Allow more sessions”: 1 session from the pool" {
 		t.Fatalf("Forgejo calls %q, comments %q; want the sentence posted on #13 as sebastian", r.fg.calls, r.fg.comments)
 	}
 }
@@ -866,12 +866,12 @@ func TestTheChatAnswersAMonitorCaseByItsNumber(t *testing.T) {
 			t.Fatalf("an answer on case %d = %v, Act calls %d; want %q and no call", id, err, len(r.acted)-calls, want)
 		}
 	}
-	const live = " Card #11's live cases: 7 (monitor_flag)."
-	refused("t-run", 8, "Card #11 has no case by that number."+live)
-	refused("t-run", 3, "Card #11 has no case by that number."+live)
-	refused("t-run", 6, "That case ended."+live)
-	refused("t-run", 5, "That case is #14's."+live)
-	refused("t-idle", 7, "That case is #11's. Card #15 has no live case.")
+	const live = " Card #11's open asks, by `case_id`: 7 (monitor flag)."
+	refused("t-run", 8, "Card #11 has no ask by that number."+live)
+	refused("t-run", 3, "Card #11 has no ask by that number."+live)
+	refused("t-run", 6, "That ask ended."+live)
+	refused("t-run", 5, "That ask is #14's."+live)
+	refused("t-idle", 7, "That ask is #11's. Card #15 asks nothing now.")
 	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-run", CaseID: 7, Action: factoryd.ActClose}); err != nil {
 		t.Fatal(err)
 	}
@@ -901,11 +901,11 @@ func TestTheChatAnswersAMonitorCaseByItsNumber(t *testing.T) {
 	calls := len(r.acted)
 	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-e", CaseID: 9, Action: factoryd.ActApproveMerge})
 	var no *refusal
-	if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != "approval request 0 is not pending (any more); reload the board" ||
+	if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != "Approval request 0 waits for no answer any more. Reload the board." ||
 		len(r.acted) != calls+1 || r.acted[calls].CaseID != 9 || r.acted[calls].Res.Action != factoryd.ActApproveMerge {
 		t.Fatalf("approve_merge on case 9 = %v, Act calls %+v; want one call on case 9 whose work finds no request", err, r.acted[calls:])
 	}
-	refused("t-e", 10, "Case 10 is #13's plan question: answer revision 2, question 1 without a case number.")
+	refused("t-e", 10, "`case_id` 10 is the plan question of #13: answer it with `revision` 2 and `question` 1, and no `case_id`.")
 }
 
 // A card with a live case closes through Act, which removes its dependencies

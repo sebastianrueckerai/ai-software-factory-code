@@ -1299,7 +1299,7 @@ func TestChildrenFiledInTopologicalOrder(t *testing.T) {
 			onPlan = append(onPlan, c.body)
 		}
 	}
-	if len(onPlan) != 1 || !strings.HasPrefix(onPlan[0], "factoryd: plan revision 1 of task t-plan, written by the planner. It asks no question, so its cards are filed") ||
+	if len(onPlan) != 1 || !strings.HasPrefix(onPlan[0], "Plan revision 1, written by the planner. It asks no question, so its cards are filed") ||
 		!strings.Contains(onPlan[0], "| 3 | redirects | feature | Redirects and clicks | small | foundation, links-api | #4 |") {
 		t.Fatalf("the plan's comments %q, want one naming the issues", onPlan)
 	}
@@ -1477,7 +1477,7 @@ func TestPlanCommentMarker(t *testing.T) {
 	}
 	body := fj.comments[0].body
 	for _, want := range []string{
-		"factoryd: plan revision 1 of task t-plan, written by the planner. Its open questions wait for the humans' answers on the factory console",
+		"Plan revision 1, written by the planner. Its open questions wait for the humans' answers on the factory console, and each answer sends it back to the planner.",
 		"Links first.  ＠sebastian",
 		"Spec: A link shortener: links with slugs that redirect and count clicks.\nGlossary:\n- slug: the short key a link gets\n- click: one redirect served",
 		"| # | key | role | title | size | depends on | issue |",
@@ -2242,7 +2242,7 @@ func TestFileRevisionRefusesACycle(t *testing.T) {
 		}
 	}
 	if fj.next != 1 || len(store.tasks) != 1 || len(fj.comments) != 1 || len(wf.started) != 0 ||
-		fj.comments[0].body != "factoryd: revision 1 files no cards: "+cycle {
+		fj.comments[0].body != "Revision 1 files no cards: "+cycle {
 		t.Fatalf("issues up to #%d, rows %d, started %v, comments %v", fj.next, len(store.tasks), wf.started, fj.comments)
 	}
 	if got, _, _ := store.Task(context.Background(), "t-plan"); len(store.approvals) != 0 || got.Status != "running" {
@@ -2854,7 +2854,7 @@ func TestAllChildrenDoneEvent(t *testing.T) {
 			said = append(said, c.body)
 		}
 	}
-	if !slices.Equal(said, []string{fj.comments[0].body, "factoryd: all 4 cards of this plan are done."}) {
+	if !slices.Equal(said, []string{fj.comments[0].body, "All 4 cards of this plan are done."}) {
 		t.Fatalf("plan issue comments %q", said)
 	}
 }
@@ -3404,7 +3404,7 @@ func TestReportSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	}
 	want := "the remaining budget cannot fund a call: Raise the budget and answer, or close the card.\n" +
 		"The card spent 1.90 EUR of its 2.00 EUR budget; 0.10 EUR is held for the review and the audit, which need 0.40 EUR" +
-		", and a session on factory/big needs 0.600000 EUR " +
+		", and a session on factory/big needs 0.60 EUR " +
 		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); a session started now would run out of money before its work is done."
 	if res.Escalate != want || !strings.Contains(res.Escalate, "Raise the budget and answer") || !res.StartFailed || len(res.Findings) != 0 || res.Revision != 0 {
 		t.Fatalf("result %+v, want the money ask %q", res, want)
@@ -4370,7 +4370,7 @@ func TestFileRevisionRefusesAPlanWithoutDeployOwner(t *testing.T) {
 		t.Fatalf("ref %+v", ref)
 	}
 	if fj.next != 1 || len(store.tasks) != 1 || len(fj.comments) != 1 || len(store.approvals) != 0 ||
-		fj.comments[0].body != "factoryd: revision 1 files no cards: "+noDeployOwner {
+		fj.comments[0].body != "Revision 1 files no cards: "+noDeployOwner {
 		t.Fatalf("issues up to #%d, rows %d, comments %v, approvals %+v", fj.next, len(store.tasks), fj.comments, store.approvals)
 	}
 	if steps := planSteps(t, objects, "t-plan"); !slices.Equal(steps, []string{"plan_refused [" + noDeployOwner + "]"}) {
@@ -4424,7 +4424,7 @@ func TestPlanWithoutDeployOwnerThePlannerRevises(t *testing.T) {
 	if len(h.plans) != 2 || h.plans[0] != nil || !slices.Equal(h.plans[1], []string{noDeployOwner}) || !slices.Equal(h.requests, []int{1, 2}) {
 		t.Fatalf("plans %q requests %v", h.plans, h.requests)
 	}
-	if fj.next != 5 || len(cardsByKey(t, store)) != 4 || !strings.HasPrefix(fj.comments[0].body, "factoryd: revision 1 files no cards: "+noDeployOwner) {
+	if fj.next != 5 || len(cardsByKey(t, store)) != 4 || !strings.HasPrefix(fj.comments[0].body, "Revision 1 files no cards: "+noDeployOwner) {
 		t.Fatalf("issues up to #%d, cards %v, comments %v", fj.next, cardsByKey(t, store), fj.comments)
 	}
 }
@@ -4521,7 +4521,7 @@ func TestRunPlanNamesACostHoldCrossing(t *testing.T) {
 	}
 	want := []string{"plan: the session ended without filing a plan through the file_plan tool",
 		"plan: the session ended without a last message: " + said + "; a model call on big crossed its cost hold: " +
-			"22680 prompt tokens (8896 cached) and 24576 output tokens cost 0.129745 EUR against a hold of 0.122078 EUR; " +
+			"22680 prompt tokens (8896 cached) and 24576 output tokens cost 0.13 EUR against a hold of 0.12 EUR; " +
 			"its output ran to the limit of 24576 tokens, so a shorter output fits: write the change in smaller pieces"}
 	if !slices.Equal(res.Findings, want) {
 		t.Fatalf("findings = %q, want %q", res.Findings, want)
@@ -5157,7 +5157,7 @@ func TestFilingDropsMergedCardsUnderAPause(t *testing.T) {
 	if p := store.pauses["linkshort/linkshort"]; len(*calls) != 0 || !reflect.DeepEqual(p, red) || store.tasks[api.ID].RevertedAt != nil {
 		t.Fatalf("merges %q, pause %+v; want no revert and the pause as it stood", *calls, p)
 	}
-	want := fmt.Sprintf("factoryd: revision 2 drops 1 merged card (#%d: its work breaks the redirects), and it stays on main. The merge queue of linkshort/linkshort is paused: "+
+	want := fmt.Sprintf("Revision 2 drops 1 merged card (#%d: its work breaks the redirects), and it stays on main. The merge queue of linkshort/linkshort is paused: "+
 		"main is red since 2026-11-07T10:00:00Z. Replan without taking work off main, or wait until the queue goes on.", api.IssueNumber)
 	if !slices.Contains(commentsOn(fj, 1), want) {
 		t.Fatalf("the plan's comments %q, want %q", commentsOn(fj, 1), want)

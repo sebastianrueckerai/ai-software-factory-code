@@ -47,7 +47,7 @@ func TestStaleCardMergeApprovalRefuses(t *testing.T) {
 	}
 	ck, s := r.loggedIn(t)
 	rec := r.do(post("/approvals/31/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
-	want := "The plan's revision 2 drops the card links-api, so it cannot merge: deny the merge (deny_merge)."
+	want := "The plan's revision 2 drops the card links-api, so it cannot merge, and “Send it back” is its answer."
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) {
 		t.Fatalf("a dropped card's approve = %d %q", rec.Code, rec.Body.String())
 	}
@@ -68,7 +68,7 @@ func TestStaleCardMergeApprovalRefuses(t *testing.T) {
 	// a revision that cannot be read refuses, and names what to do
 	r.tasks.plans["t-plan"][0].Plan = json.RawMessage(`{"cards":`)
 	rec = r.do(post("/approvals/31/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
-	if want := "Cannot read the plan's revisions. Approve again; if it fails again, replan the plan."; rec.Code != http.StatusInternalServerError ||
+	if want := "The plan's revisions could not be read. Press the answer again, and if it fails again, send the plan back to the planner."; rec.Code != http.StatusInternalServerError ||
 		!strings.Contains(rec.Body.String(), want) {
 		t.Fatalf("an unreadable revision's approve = %d %q", rec.Code, rec.Body.String())
 	}

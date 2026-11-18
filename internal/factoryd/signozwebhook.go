@@ -355,7 +355,7 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 			}
 		}
 		if filed && ok && !(a.swept && Final(t.Status)) && row.Detail["event"] != true {
-			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: resolved at "+at); err != nil {
+			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "Resolved at "+at); err != nil {
 				return err
 			}
 		}
@@ -411,7 +411,7 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 				return err
 			}
 		}
-		msg := "factoryd: the alert fired again at " + at + ".\n\n" + fenced(sanitize.Outbound("value="+oneLine(a.Annotations["value"]), in.hostsFor(p)))
+		msg := "The alert fired again at " + at + ".\n\n" + fenced(sanitize.Outbound("value="+oneLine(a.Annotations["value"]), in.hostsFor(p)))
 		if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
 			return err
 		}
@@ -622,7 +622,7 @@ func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) e
 	case touched:
 		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"touched": true})
 	}
-	return in.endCard(ctx, row, t, "the alert cleared at "+at, "factoryd: the alert cleared at "+at+"; nobody touched the card, so it closes.")
+	return in.endCard(ctx, row, t, "the alert cleared at "+at, "The alert cleared at "+at+". Nobody touched the card, so it closes.")
 }
 
 // endCard judges row unjudged by factoryd and closes its human card t,
@@ -729,7 +729,7 @@ func (in *AlertIntake) closeCompletedJob(ctx context.Context, row Alert, jobsOf 
 	if next.Name == "" {
 		return nil
 	}
-	note := fmt.Sprintf("factoryd: the CronJob %s ran again after the failed Job %s: Job %s completed at %s; the card closes.",
+	note := fmt.Sprintf("The CronJob %s ran again after the failed Job %s: Job %s completed at %s. The card closes.",
 		owner.Name, failedName, next.Name, stamp(next.Completed))
 	return in.endCard(ctx, row, t, "the CronJob "+owner.Name+" completed Job "+next.Name, note)
 }
@@ -954,10 +954,10 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 	b := AlertIssue(a, p.Name, ns, in.hostsFor(p))
 	body := b.Body + in.healthSection(ctx, a, p, ns)
 	if row.Detail["refiled"] == true {
-		body = "factoryd: the alert still fires from the same start " + refileAfter.String() + " after the fix of its last issue merged.\n\n" + body
+		body = "The alert still fires from the same start " + refileAfter.String() + " after the fix of its last issue merged.\n\n" + body
 	}
 	if w, ok := row.Detail["roll_window"].(string); ok {
-		body = "factoryd: the alert fired while " + w + " rolled out and still fires " + rolloutSettle.String() + " after the rollouts settled.\n\n" + body
+		body = "The alert fired while " + w + " rolled out and still fires " + rolloutSettle.String() + " after the rollouts settled.\n\n" + body
 	}
 	b.Body = body
 	t := Task{ID: row.TaskID, RiskClass: "standard", BudgetEUR: policy.CardBudget(in.Budget(), p.Budget, "", false, 0),
@@ -1073,9 +1073,9 @@ func (in *AlertIntake) healthSection(ctx context.Context, a SigNozAlert, p Proje
 	defer cancel()
 	text, err := DeploymentHealthText(ctx, in.Health, p, dep, ns, time.Now())
 	if err != nil {
-		text = fmt.Sprintf("factoryd could not read the Deployment `%s` in `%s`: %s", dep, ns, oneLine(err.Error()))
+		text = fmt.Sprintf("The factory could not read the Deployment `%s` in `%s`: %s", dep, ns, oneLine(err.Error()))
 	} else {
-		text = fmt.Sprintf("The Deployment `%s` in `%s` as factoryd read it when it filed this card:\n\n%s", dep, ns, fenced(text))
+		text = fmt.Sprintf("The Deployment `%s` in `%s` as the factory read it when it filed this card:\n\n%s", dep, ns, fenced(text))
 	}
 	return "\n\n" + sanitize.Outbound(text, in.hostsFor(p))
 }
@@ -1107,7 +1107,7 @@ func alertParts(a SigNozAlert) (name, on, source string) {
 func AlertIssue(a SigNozAlert, project, ns string, hosts []string) BriefText {
 	name, on, source := alertParts(a)
 	var b strings.Builder
-	fmt.Fprintf(&b, "factoryd: %s fires the alert %s%s in namespace %s of project %s.\n\nFiring since %s.", source, name, on, ns, project, stamp(a.StartsAt))
+	fmt.Fprintf(&b, "%s fires the alert %s%s in namespace %s of project %s.\n\nFiring since %s.", source, name, on, ns, project, stamp(a.StartsAt))
 	if safeLink(a.GeneratorURL) {
 		b.WriteString(" SigNoz: " + a.GeneratorURL)
 	}
@@ -1123,7 +1123,7 @@ func AlertIssue(a SigNozAlert, project, ns string, hosts []string) BriefText {
 			labels = append(labels, oneLine(k)+"="+oneLine(a.Labels[k]))
 		}
 	}
-	fmt.Fprintf(&b, "\n\nValue and annotations:\n\n%s\n\nLabels:\n\n%s\n\nfiled by factoryd from %s alert %s",
+	fmt.Fprintf(&b, "\n\nValue and annotations:\n\n%s\n\nLabels:\n\n%s\n\nFiled by the factory from the %s alert %s.",
 		fenced(strings.Join(notes, "\n")), fenced(strings.Join(labels, "\n")), source, oneLine(a.Fingerprint))
 	brief := alertBrief(a, ns)
 	return BriefText{Title: sanitize.Outbound(brief.Title, hosts), Why: sanitize.Outbound(brief.Why, hosts), Summary: brief.Summary,

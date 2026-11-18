@@ -429,8 +429,8 @@ func (s *Supervisor) Spent(spent, budget float64) *Trip {
 		return nil
 	}
 	s.spendTripped = true
-	return s.trip(&Trip{Kind: TripSpendNoPush, Detail: fmt.Sprintf("this session spent %.2f EUR of the %.2f EUR the card had left at its start (%.0f percent, the line is %.0f) and no work is pushed",
-		own, left, 100*own/left, 100*s.cfg.NoPushSpend)})
+	return s.trip(&Trip{Kind: TripSpendNoPush, Detail: fmt.Sprintf("this session spent %s EUR of the %s EUR the card had left at its start (%.0f percent, the line is %.0f) and no work is pushed",
+		textutil.EUR(own), textutil.EUR(left), 100*own/left, 100*s.cfg.NoPushSpend)})
 }
 
 // Climbed: the session switched to the stronger rung in place; the cheap

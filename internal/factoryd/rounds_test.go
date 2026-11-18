@@ -1209,7 +1209,7 @@ func TestRoundCheckEndsAPlanWhoseIssueIsClosed(t *testing.T) {
 		}
 		r.planCloseCheck(ctx, "p")
 		r.planCloseCheck(ctx, "p")
-		want := []string{"factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main."}
+		want := []string{"The plan card was closed, so the plan is closed. Its merged cards stay on main."}
 		if n := len(stepsNamed(t, r, "p", "plan_closed")); n != 1 || !slices.Equal(fj.comments, want) {
 			t.Fatalf("step written %t: plan_closed %d times, comments %q; want 1 and %q", written, n, fj.comments, want)
 		}
@@ -1289,7 +1289,7 @@ func TestCriteriaPassClosesAClosedPlanBetweenRounds(t *testing.T) {
 		store.tasks[id] = k
 	}
 	setStatus(store, "p", "closed")
-	want := []string{"factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main."}
+	want := []string{"The plan card was closed, so the plan is closed. Its merged cards stay on main."}
 	r.CriteriaPass(context.Background())
 	r.CriteriaPass(context.Background())
 	if n := len(stepsNamed(t, r, "p", "plan_closed")); n != 1 || !slices.Equal(fj.comments, want) {
@@ -1506,9 +1506,9 @@ func TestRecordReplanOfARound(t *testing.T) {
 		cards   []int64
 	}{
 		{"the last round", twoRounds(), map[string]int64{"stats": 21, "integration": 22},
-			"factoryd: round 2 planned at revision 3, 2 cards: #21, #22. It is the last round.", []int64{21, 22}},
+			"Round 2 planned at revision 3, 2 cards: #21, #22. It is the last round.", []int64{21, 22}},
 		{"the console still to plan", console, map[string]int64{"stats": 21, "extra-1": 22, "extra-0": 23},
-			"factoryd: round 2 planned at revision 3, 3 cards: #21, #22, #23. Still to plan: the console.", []int64{21, 22, 23}},
+			"Round 2 planned at revision 3, 3 cards: #21, #22, #23. Still to plan: the console.", []int64{21, 22, 23}},
 	} {
 		r, store, fj := roundRig(t)
 		if err := r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanRound, "revision": 1, "round": 2}); err != nil {

@@ -443,7 +443,7 @@ func TestRecordReceiptPostsTheCommentOnce(t *testing.T) {
 		"Base: " + rec.Facts.Base, "Head: " + rec.Facts.Head, "Merge commit: " + rec.Facts.MergeCommit,
 		"Diff sha256: " + hex.EncodeToString(sum[:]), "Policy version: 7",
 		"Gate policy: auto", "Gate reproduction: not run", "Gate reproduction: bash check (exit 0): passed",
-		"Cost: EUR 3.50",
+		"Cost: 3.50 EUR",
 		"Decision: merge approved by sebastian — the strict improvement holds",
 		"Decision: case extend by sebastian, drew 2 sessions and 60 minutes of agent time — the flaky checkout needs two more sessions",
 	} {

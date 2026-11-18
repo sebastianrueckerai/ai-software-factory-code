@@ -37,7 +37,7 @@ func TestEscalateToHuman(t *testing.T) {
 		"Info: item 12's section stops at the goal sentence; the options below both satisfy it\n\n" +
 		"Recommendation: Write the criteria, read off the roadmap's section\n\n" +
 		"Choices:\n- Write the criteria\n- Park\n\n" +
-		"The project agent asked in sebastian's chat. Answer in the chat's inbox, or close this issue once decided.\n\nfiled by factoryd"
+		"The project agent asked in sebastian's chat. Answer in the chat's inbox, or close this issue once decided.\n\nFiled by the factory."
 	got, err := EscalateToHuman(ctx, store, f, Repo{Owner: "sf", Name: "r"}, HumanQuestion{
 		Ask:            "Nothing on the roadmap is ready.\nItem 12: no acceptance criteria. Write them?",
 		Why:            "the plan needs its acceptance criteria before the build can start",
@@ -118,7 +118,7 @@ func TestEscalateToHumanOfFactoryd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Source != SourceChainStall || got.SHA != "c2c2" || !strings.Contains(got.Objective, "\nfactoryd asks (the chain poller). ") ||
+	if got.Source != SourceChainStall || got.SHA != "c2c2" || !strings.Contains(got.Objective, "\nThe factory asks. ") ||
 		strings.Contains(got.Objective, "agent asked") {
 		t.Fatalf("the card = %+v", got)
 	}

@@ -752,8 +752,8 @@ func TestImagerPinsReadyImagesThroughOnePullRequest(t *testing.T) {
 	if got := r.fj.file("factory-pins/demo-app", demoProjectFile); got != before+block {
 		t.Fatalf("the branch's project file:\n%s\nwant:\n%s", got, before+block)
 	}
-	body := "factoryd pins the sandbox images factory/images.yaml of demo-app/demo-app declares: this pull request changes only the images block of factory/projects/demo-app.yaml.\n\n" +
-		"factoryd merges it itself once it has checked that, and that the tree at its head passes factoryd's config check; otherwise it stays open and factoryd raises an alert naming why.\n"
+	body := "The factory pins the sandbox images that factory/images.yaml of demo-app/demo-app declares. This pull request changes only the images block of factory/projects/demo-app.yaml.\n\n" +
+		"The factory merges it itself once it has checked that, and once the tree at its head passes the factory's config check. Otherwise it stays open, and the factory raises an alert that names why.\n"
 	writes := []string{"POST sf/ai-software-factory-infra/forks by bot", "POST factory-agent/ai-software-factory-infra/contents by bot", "POST sf/ai-software-factory-infra/pulls by bot"}
 	prs, dispatches, got := r.fj.state()
 	if want := []imagerPR{{number: 1, head: "factory-pins/demo-app", title: "Image pins for demo-app", body: body, base: "main", state: "open"}}; !reflect.DeepEqual(prs, want) {
@@ -1240,7 +1240,7 @@ func TestImagerAutoMergeRefusals(t *testing.T) {
 			}
 			switch c.code {
 			case "check":
-				if !strings.HasPrefix(reason, "the tree at the head of pull request #1 fails factoryd's config check: processes/maintenance.yaml: ") {
+				if !strings.HasPrefix(reason, "the tree at the head of pull request #1 fails the factory's config check: processes/maintenance.yaml: ") {
 					t.Fatalf("reason %q", reason)
 				}
 			case "merge":
@@ -1307,7 +1307,7 @@ func TestImagerRecutsAPullRequestMainMovedPast(t *testing.T) {
 		r.fj.mu.Lock()
 		comments := slicesClone(r.fj.comments)
 		r.fj.mu.Unlock()
-		if len(comments) != 1 || !strings.HasPrefix(comments[0], "#1: Closed by factoryd: its branch was cut from c2, main is at c4 now, and the tree at the head of pull request #1 fails factoryd's config check: processes/maintenance.yaml: ") ||
+		if len(comments) != 1 || !strings.HasPrefix(comments[0], "#1: Closed by the factory: its branch was cut from c2, main is at c4 now, and the tree at the head of pull request #1 fails the factory's config check: processes/maintenance.yaml: ") ||
 			!strings.HasSuffix(comments[0], "; the next pass cuts it afresh from main.") {
 			t.Fatalf("comments %q", comments)
 		}
@@ -1355,7 +1355,7 @@ func TestImagerClosesAnOutdatedPullRequest(t *testing.T) {
 	r.fj.mu.Lock()
 	comments := slicesClone(r.fj.comments)
 	r.fj.mu.Unlock()
-	if !reflect.DeepEqual(writes, want) || !reflect.DeepEqual(comments, []string{"#1: Closed by factoryd: main's factory/projects/demo-app.yaml is already what it would make it."}) {
+	if !reflect.DeepEqual(writes, want) || !reflect.DeepEqual(comments, []string{"#1: Closed by the factory: main's factory/projects/demo-app.yaml is already what it would make it."}) {
 		t.Fatalf("writes %q, comments %q", writes, comments)
 	}
 }

@@ -41,7 +41,7 @@ var ErrNotHeld = errors.New("production is not held")
 type ErrMainRed struct{ Commit string }
 
 func (e ErrMainRed) Error() string {
-	return "main's newest push run at " + e.Commit[:min(7, len(e.Commit))] + " is red"
+	return "main's newest push run at " + ShortSHA(e.Commit) + " is red"
 }
 
 // promoteJob is the job of a project's main run that asks /release and
@@ -144,7 +144,7 @@ func (k *ReleaseKeeper) keep(ctx context.Context, row Release, groups []Group) e
 	case len(groups) > 0:
 		err = k.hold(ctx, row, groups, now)
 	case !row.HeldSince.IsZero():
-		if err := k.closeAsk(ctx, repository, "factoryd: no plan is open on main any more, so production goes ahead. Closing this issue."); forgejoTerminal(err) {
+		if err := k.closeAsk(ctx, repository, "No plan is open on main any more, so production goes ahead. Closing this issue."); forgejoTerminal(err) {
 			log.Printf("release keeper: %s: Forgejo refused the ask's close for good: %v; the hold ends without it", repository, err)
 		} else if err != nil {
 			return err
@@ -224,9 +224,9 @@ func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, n
 		return err
 	}
 	if standing {
-		comment := "factoryd: fixes " + fixRefs(fixes) + " merged too and wait for production."
+		comment := "Fixes " + fixRefs(fixes) + " merged too and wait for production."
 		if len(fixes) == 1 {
-			comment = "factoryd: fix " + fixRefs(fixes) + " merged too and waits for production."
+			comment = "Fix " + fixRefs(fixes) + " merged too and waits for production."
 		}
 		err = k.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, card.IssueNumber, comment)
 	} else {
@@ -253,9 +253,9 @@ func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, n
 	}
 	sent := "main"
 	if fresh.DeployNow != "" {
-		sent = "main at " + fresh.DeployNow[:min(7, len(fresh.DeployNow))]
+		sent = "main at " + ShortSHA(fresh.DeployNow)
 	}
-	return k.closeAsk(ctx, repository, "factoryd: Deploy now sent "+sent+" to production while this ask was filed. Closing this issue.")
+	return k.closeAsk(ctx, repository, "Deploy now sent "+sent+" to production while this ask was filed. Closing this issue.")
 }
 
 // refreshFacts writes the hold as it stands now on the facts of the standing
@@ -527,9 +527,9 @@ func (k *ReleaseKeeper) DeployNow(ctx context.Context, repository, by, via, deci
 	}
 	who := by
 	if decider == "agent" {
-		who = "the factory agent"
+		who = "The factory agent"
 	}
-	note := fmt.Sprintf("factoryd: %s chose Deploy now: main at %s goes to production. Closing this issue.", who, commit[:min(7, len(commit))])
+	note := fmt.Sprintf("%s chose Deploy now: main at %s goes to production. Closing this issue.", who, ShortSHA(commit))
 	if err := k.closeAsk(ctx, repository, note); err != nil {
 		log.Printf("release keeper: %s: close the ask after Deploy now: %v", repository, err)
 	}

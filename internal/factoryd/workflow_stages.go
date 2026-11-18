@@ -43,7 +43,7 @@ type ReportResult struct {
 
 // screenedLine is all the issue of a suspect screening shows: its reasons
 // would teach the author what to change (review M3).
-const screenedLine = "factoryd: screened: a human looks at this report first."
+const screenedLine = "The factory screened this report. A human looks at it first."
 
 // screeningAsks opens the escalation of a suspect screening verdict.
 const screeningAsks = "The screening finds this issue suspect: "

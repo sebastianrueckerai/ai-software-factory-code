@@ -219,7 +219,7 @@ func TestDrawWithinByRung(t *testing.T) {
 	if got := drawWithin(f, 3, policy.Draw{EUR: 3}, true); got != "" {
 		t.Errorf("rung 3 up to the ceiling = %q, want none", got)
 	}
-	if got, want := drawWithin(f, 4, one, false), "there is no rung 4"; got != want {
+	if got, want := drawWithin(f, 4, one, false), "there is no decider 4"; got != want {
 		t.Errorf("rung 4 = %q, want %q", got, want)
 	}
 }
@@ -238,15 +238,15 @@ func TestFundIsNeverRungZeros(t *testing.T) {
 	if names := offeredNames(room, 1); !slices.Contains(names, ActFund) {
 		t.Errorf("rung 1 is offered %v, want fund", names)
 	}
-	if got, want := fund.refusal(room, 0, Resolution{Action: ActFund, Args: map[string]any{"eur": 1.0}}), "rung 0 may not pick fund: rungs 1, 2 and the human may"; got != want {
+	if got, want := fund.refusal(room, 0, Resolution{Action: ActFund, Args: map[string]any{"eur": 1.0}}), "the factory may not pick `fund`: the check-in, the factory agent and the human may"; got != want {
 		t.Errorf("rung 0's fund = %q, want %q", got, want)
 	}
 	note, _ := ActionByName(ActNote)
-	if got, want := note.refusal(room, 0, Resolution{Action: ActNote, Note: "x"}), "rung 0 may not pick note: rung 2 and the human may"; got != want {
+	if got, want := note.refusal(room, 0, Resolution{Action: ActNote, Note: "x"}), "the factory may not pick `note`: the factory agent and the human may"; got != want {
 		t.Errorf("rung 0's note = %q, want %q", got, want)
 	}
 	withdraw, _ := ActionByName(ActWithdraw)
-	if got, want := withdraw.refusal(room, 0, Resolution{Action: ActWithdraw, Fund: &policy.Draw{EUR: 1}}), "rung 0 may not draw money: rungs 1, 2 and the human may"; got != want {
+	if got, want := withdraw.refusal(room, 0, Resolution{Action: ActWithdraw, Fund: &policy.Draw{EUR: 1}}), "the factory may not draw money: the check-in, the factory agent and the human may"; got != want {
 		t.Errorf("rung 0's withdraw with money beside it = %q, want %q", got, want)
 	}
 	if got := withdraw.refusal(room, 0, Resolution{Action: ActWithdraw, Fund: &policy.Draw{Sessions: 1}}); got != "" {
@@ -257,10 +257,10 @@ func TestFundIsNeverRungZeros(t *testing.T) {
 	if got := withdraw.refusal(flag, 1, Resolution{Action: ActWithdraw, Fund: &policy.Draw{EUR: 1}}); got != "" {
 		t.Errorf("rung 1's withdraw of a monitor flag's case with money beside it = %q, want none", got)
 	}
-	if got := withdraw.refusal(room, 1, Resolution{Action: ActWithdraw}); !strings.Contains(got, "withdraw ends a monitor flag's case alone") {
+	if got := withdraw.refusal(room, 1, Resolution{Action: ActWithdraw}); !strings.Contains(got, "`withdraw` ends a monitor flag's ask alone") {
 		t.Errorf("rung 1's withdraw of a case the run waits on = %q, want it refused: the run would wait for good", got)
 	}
-	if got := note.refusal(room, 1, Resolution{Action: ActNote, Note: "x"}); got != "rung 1 may not pick note: rung 2 and the human may" {
+	if got := note.refusal(room, 1, Resolution{Action: ActNote, Note: "x"}); got != "the check-in may not pick `note`: the factory agent and the human may" {
 		t.Errorf("rung 1's note = %q, want it refused: a note resolves nothing", got)
 	}
 }
@@ -365,15 +365,15 @@ func TestRefusalBoundsEveryMoneyPart(t *testing.T) {
 			t.Errorf("%s unread: extend = %q, want %q", reader, got, want)
 		}
 	}
-	if got, want := extend.refusal(f, 7, Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}}), "there is no rung 7"; got != want {
+	if got, want := extend.refusal(f, 7, Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}}), "there is no decider 7"; got != want {
 		t.Errorf("rung 7: extend = %q, want %q", got, want)
 	}
 	closing, _ := ActionByName(ActClose)
-	if got, want := closing.refusal(f, 1, Resolution{Action: ActClose}), "rung 1 may not pick close: rung 2 and the human may"; got != want {
+	if got, want := closing.refusal(f, 1, Resolution{Action: ActClose}), "the check-in may not pick `close`: the factory agent and the human may"; got != want {
 		t.Errorf("rung 1's close = %q, want %q", got, want)
 	}
 	withdraw, _ := ActionByName(ActWithdraw)
-	if got, want := withdraw.refusal(f, 3, Resolution{Action: ActWithdraw}), "the human may not pick withdraw: rungs 0 and 1 may"; got != want {
+	if got, want := withdraw.refusal(f, 3, Resolution{Action: ActWithdraw}), "the human may not pick `withdraw`: the factory and the check-in may"; got != want {
 		t.Errorf("the human's withdraw = %q, want %q", got, want)
 	}
 }
@@ -478,7 +478,7 @@ func TestExtendAnswersACapAlone(t *testing.T) {
 		CaseSessionCap: "", CaseCheckinShare: "", CaseGateStop: "", CaseFindingsRepeated: "", "": "",
 		CaseAgentEscalate: asked, CaseAgentRequestInfo: asked, CaseOther: asked, CaseCheckinHuman: asked,
 		CaseBudgetFloor: "this card waits on money, not a session: fund it",
-		CaseMonthCap:    "this card waits on the month cap, not a session: raise budget.month_eur or wait for the month to turn, then fund or retry",
+		CaseMonthCap:    "this card waits on the month cap, not a session: raise the month cap in policy.yaml or wait for the month to turn, then `fund` or `retry`",
 	} {
 		if got := applies(t, ActExtend, CaseFacts{Kind: kind}, one); got != want {
 			t.Errorf("an extend on %q = %q, want %q", kind, got, want)
@@ -555,7 +555,7 @@ func TestEndedCardTakesNoExtendOrRaise(t *testing.T) {
 func TestExtendOnAMoneyStopNamesTheFund(t *testing.T) {
 	for kind, want := range map[CaseKind]string{
 		CaseBudgetFloor: "this card waits on money, not a session: fund it",
-		CaseMonthCap:    "this card waits on the month cap, not a session: raise budget.month_eur or wait for the month to turn, then fund or retry",
+		CaseMonthCap:    "this card waits on the month cap, not a session: raise the month cap in policy.yaml or wait for the month to turn, then `fund` or `retry`",
 	} {
 		if got := applies(t, ActExtend, CaseFacts{Kind: kind}, Resolution{Args: map[string]any{"sessions": 1}}); got != want {
 			t.Errorf("an extend on %s = %q, want %q", kind, got, want)
@@ -593,9 +593,10 @@ func TestRungZeroClosesOnlyAnEndedCard(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		rung  int
+		who   string
 		facts CaseFacts
-	}{{0, CaseFacts{}}, {1, CaseFacts{Final: "done"}}} {
-		if got, want := closing.refusal(tc.facts, tc.rung, res), fmt.Sprintf("rung %d may not pick close: rung 2 and the human may", tc.rung); got != want {
+	}{{0, "the factory", CaseFacts{}}, {1, "the check-in", CaseFacts{Final: "done"}}} {
+		if got, want := closing.refusal(tc.facts, tc.rung, res), tc.who+" may not pick `close`: the factory agent and the human may"; got != want {
 			t.Errorf("rung %d's close of %+v = %q, want %q", tc.rung, tc.facts, got, want)
 		}
 	}
@@ -617,12 +618,12 @@ func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 		t.Errorf("rung 3 on a monitor case is offered %v, want %v", got, want)
 	}
 	resume, _ := ActionByName(ActResume)
-	if got, want := resume.refusal(f, 3, Resolution{Action: ActResume}), "resume would do nothing on a monitor flag's case: the card's run waits on none"; got != want {
+	if got, want := resume.refusal(f, 3, Resolution{Action: ActResume}), "`resume` would do nothing on a monitor flag's ask: the card's run waits on none"; got != want {
 		t.Errorf("a resume of a monitor case = %q, want %q", got, want)
 	}
 	closing, _ := ActionByName(ActClose)
 	if got, want := closing.refusal(f, 3, Resolution{Action: ActClose}),
-		"close ends the card, not the flag's case: settle it with settle, which ends the case and the card goes on"; got != want {
+		"`close` ends the card, not the flag's ask: answer it with `settle`, which ends the ask, and the card goes on"; got != want {
 		t.Errorf("a close of a live card's monitor case = %q, want %q", got, want)
 	}
 	ended := f
@@ -631,7 +632,7 @@ func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 		t.Errorf("a close of an ended card's monitor case = %q, want it taken", got)
 	}
 	if got, want := applies(t, ActSettle, CaseFacts{Kind: CaseSessionCap}, Resolution{}),
-		"settle ends a monitor flag's case alone, a held plan's ask, or the ask a park settles, and this case is none of them"; got != want {
+		"settle ends a monitor flag's ask alone, a held plan's ask, or the ask a park settles, and this ask is none of them"; got != want {
 		t.Errorf("a settle of a cap case = %q, want %q", got, want)
 	}
 }
@@ -771,16 +772,16 @@ func TestWaitChecksAppliesToAChecksWaitStop(t *testing.T) {
 		want string
 	}{
 		{"checks wait at the agent time cap", stop, ""},
-		{"merge stop", merge, "wait_checks runs a stopped checks wait again, and this case is no checks wait's stop"},
-		{"other case", quiet, "wait_checks runs a stopped checks wait again, and this case is no checks wait's stop"},
+		{"merge stop", merge, "`wait_checks` runs a stopped checks wait again, and this ask is no checks wait's stop"},
+		{"other case", quiet, "`wait_checks` runs a stopped checks wait again, and this ask is no checks wait's stop"},
 		{"no pull request", noPR, "no pull request is open"},
 	} {
 		if got := applies(t, ActWaitChecks, c.f, Resolution{}); got != c.want {
-			t.Errorf("%s: wait_checks applies = %q, want %q", c.name, got, c.want)
+			t.Errorf("%s: `wait_checks` applies = %q, want %q", c.name, got, c.want)
 		}
 	}
 	if !slices.Contains(offeredNames(stop, 2), ActWaitChecks) || slices.Contains(offeredNames(stop, 2), ActResume) {
-		t.Errorf("rung 2 is offered %v at the cap, want wait_checks and no resume", offeredNames(stop, 2))
+		t.Errorf("rung 2 is offered %v at the cap, want `wait_checks` and no resume", offeredNames(stop, 2))
 	}
 }
 
@@ -812,7 +813,7 @@ func TestRouteApprovalRefusesAChecksWaitStop(t *testing.T) {
 	green := CaseFacts{Kind: CaseGateStop, Gate: ActivityWaitChecks, PROpen: true, Checks: "green", ReviewApproved: true}
 	merge := green
 	merge.Gate = ActivityMerge
-	if got, want := applies(t, ActRouteApproval, green, Resolution{}), "a checks wait's stop goes on with wait_checks, not route_approval"; got != want {
+	if got, want := applies(t, ActRouteApproval, green, Resolution{}), "a checks wait's stop goes on with `wait_checks`, not `route_approval`"; got != want {
 		t.Errorf("checks wait: route_approval applies = %q, want %q", got, want)
 	}
 	if got := applies(t, ActRouteApproval, merge, Resolution{}); got != "" {
@@ -827,7 +828,7 @@ func TestWaitChecksRefusalNamesTheStopBeforeTheLimit(t *testing.T) {
 	capped := CaseFacts{Kind: CaseAgentTimeCap, PROpen: true, WaitedOnHead: true}
 	a, _ := ActionByName(ActWaitChecks)
 	for name, f := range map[string]CaseFacts{"merge": merge, "cap": capped} {
-		if got, want := a.refusal(f, 2, Resolution{Action: ActWaitChecks}), "wait_checks runs a stopped checks wait again, and this case is no checks wait's stop"; got != want {
+		if got, want := a.refusal(f, 2, Resolution{Action: ActWaitChecks}), "`wait_checks` runs a stopped checks wait again, and this ask is no checks wait's stop"; got != want {
 			t.Errorf("%s: refusal = %q, want %q", name, got, want)
 		}
 	}
@@ -845,20 +846,20 @@ func TestApproveMergeApplies(t *testing.T) {
 		want string
 	}{
 		{"ready", ready, ""},
-		{"pending", pending, "the checks on abcdef1 are pending, not green: approve_merge waits for green checks on the head"},
+		{"pending", pending, "the checks on abcdef1 are pending, not green: `approve_merge` waits for green checks on the head"},
 		{"closed", closed, "the pull request is not open, so there is nothing to approve"},
-		{"a gate stop", gate, "approve_merge decides a merge request, and this case is no merge approval"},
+		{"a gate stop", gate, "`approve_merge` decides a merge request, and this ask is no merge approval"},
 	} {
 		if got := applies(t, ActApproveMerge, c.f, Resolution{}); got != c.want {
-			t.Errorf("%s: approve_merge applies = %q, want %q", c.name, got, c.want)
+			t.Errorf("%s: `approve_merge` applies = %q, want %q", c.name, got, c.want)
 		}
 	}
 	a, _ := ActionByName(ActApproveMerge)
-	if got, want := a.refusal(ready, 1, Resolution{Action: ActApproveMerge}), "rung 1 may not pick approve_merge: rung 2 and the human may"; got != want {
-		t.Errorf("rung 1's approve_merge = %q, want %q", got, want)
+	if got, want := a.refusal(ready, 1, Resolution{Action: ActApproveMerge}), "the check-in may not pick `approve_merge`: the factory agent and the human may"; got != want {
+		t.Errorf("rung 1's `approve_merge` = %q, want %q", got, want)
 	}
-	if got := a.refusal(ready, 3, Resolution{Action: ActApproveMerge, Fund: &policy.Draw{EUR: 1}}); got != "approve_merge decides the merge request alone: it draws nothing" {
-		t.Errorf("approve_merge with a fund = %q", got)
+	if got := a.refusal(ready, 3, Resolution{Action: ActApproveMerge, Fund: &policy.Draw{EUR: 1}}); got != "`approve_merge` decides the merge request alone: it draws nothing" {
+		t.Errorf("`approve_merge` with a fund = %q", got)
 	}
 }
 
@@ -1048,16 +1049,16 @@ func TestApproveMergeOfAHumanClassIsTheHumansAlone(t *testing.T) {
 		r.atCaseOf(context.Background(), &f, Task{}, Case{Kind: CaseMergeApproval, Facts: map[string]any{"class": class}})
 		want := ""
 		if refused {
-			want = "risk class " + class + " keeps a human on its merge, whatever the autonomy: approve_merge is the human's alone, so hand_up with approve_merge as the recommendation"
+			want = "risk class " + class + " keeps a human on its merge, whatever the autonomy: `approve_merge` is the human's alone, so `hand_up` with `approve_merge` as the recommendation"
 		}
 		if got := a.refusal(f, 2, Resolution{Action: ActApproveMerge}); got != want {
-			t.Errorf("class %q: rung 2's approve_merge = %q, want %q", class, got, want)
+			t.Errorf("class %q: rung 2's `approve_merge` = %q, want %q", class, got, want)
 		}
 		if got := slices.ContainsFunc(Offered(f, 2), func(o Action) bool { return o.Name == ActApproveMerge }); got == refused {
-			t.Errorf("class %q: approve_merge offered to rung 2 = %v, want %v", class, got, !refused)
+			t.Errorf("class %q: `approve_merge` offered to rung 2 = %v, want %v", class, got, !refused)
 		}
 		if got := a.refusal(f, 3, Resolution{Action: ActApproveMerge}); got != "" {
-			t.Errorf("class %q: the human's approve_merge = %q, want none", class, got)
+			t.Errorf("class %q: the human's `approve_merge` = %q, want none", class, got)
 		}
 	}
 }
@@ -1171,9 +1172,9 @@ func TestADrawOnAWaitingQuestionIsWeighedAtItsCap(t *testing.T) {
 			t.Errorf("%s: the human's press = %q, the chat's = %q; want both %q", c.name, human, chat, c.want)
 		}
 	}
-	waits := "; a human's draw waits until the question reaches the human"
-	hand := "this case is the agent's question, which a draw does not answer: hand it up with the draw as your recommendation" + waits
-	answer := "this case is the agent's question, which a draw does not answer: answer it, or hand it up" + waits
+	waits := ". A human's draw waits until the question reaches the human"
+	hand := "this ask is the agent's question, which a draw does not answer: hand it up with the draw as your recommendation" + waits
+	answer := "this ask is the agent's question, which a draw does not answer: answer it, or hand it up" + waits
 	for _, c := range []struct {
 		name string
 		at   func(*CaseFacts)

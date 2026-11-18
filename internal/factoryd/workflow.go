@@ -2618,10 +2618,7 @@ func RepeatAsk(prev, mark CheckinStopMark) string {
 		return ""
 	}
 	same := prev.ExtraLines == mark.ExtraLines && prev.RaisedSessions == mark.RaisedSessions
-	sha := mark.Tip
-	if len(sha) > 7 {
-		sha = sha[:7]
-	}
+	sha := ShortSHA(mark.Tip)
 	label := CheckinSpendAsk
 	if checkinFailedKind(mark.Kind) {
 		label = "check-in: " + mark.Kind + ": "

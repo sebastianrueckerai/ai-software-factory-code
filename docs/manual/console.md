@@ -109,7 +109,7 @@ decimals: a task's model calls cost fractions of a cent.
   planner, and its next revision with no open question files the cards,
   `queued` on the direct track, and the plan card ends done. A stale
   revision shows `the plan changed to revision <m>; reload` on the card.
-  "Request changes" posts a comment as the human, which the planner
+  “Ask for changes” posts a comment as the human, which the planner
   revises the plan with. A done plan lists its cards by issue and state. A
   done plan with rounds shows `round <k>: <n> cards, <d> done.` and what
   is still to plan in place of its rollup, on its card; its drawer and
@@ -145,20 +145,21 @@ decimals: a task's model calls cost fractions of a cent.
   checks, run a stopped checks wait again (no agent time), give it more
   sessions, agent time or lines, fund it, raise its ceiling,
   file a successor, retry or replan a failed dependency, close it, or note
-  a step and keep waiting. An extend answers a cap, or the owner exits
+  a step while the card waits (“Not now”). An extend answers a cap, or the owner exits
   of a gate stop and of findings that repeat, never a question, and a
   stop on money takes a fund. At the month cap a fund waits for a raise
   of budget.month_eur or the month's turn. An extend grants one more
   check-in share at a time, and an extend of lines or a share draws
-  nothing. The Grant button buys what the stop asks for: one session at
+  nothing. “Allow more sessions” buys what the stop asks for: one session at
   a session cap, the card draw's agent time at an agent time cap, one
   more check-in share at the check-in's share stop, one session at its
   call or time cap, and at a stop that asked a question it goes on. A
   fund can also go beside another action and draws its money with it. A
   fund, an extend or a raise of the ceiling on a card that ended is
-  refused. The Fund form's ceiling field raises the card's ceiling
-  first, for a fund that would pass it. Words on a card at its session
-  or agent time cap grant. Once the answer passes, its words are posted
+  refused. “Raise the spend limit” raises the card's spend limit first
+  and adds the money beside it, for an “Add money” that would pass the
+  limit. Words on a card at its session or agent time cap allow one more
+  session. Once the answer passes, its words are posted
   on the issue as the human. A human card's choice does its own work
   first, and its case takes the comment that work posted. A card that
   waits with no open case refuses the answer until the heal pass opens
@@ -182,22 +183,23 @@ decimals: a task's model calls cost fractions of a cent.
   of a plan's integration or delta card holds a row per criterion under
   them, its legend `<id> (<kind>): <verdict>`, and on a gate row blind or
   open beside the verdict. A human row shows its artifact, or its
-  evidence, and the buttons Met, Not met and Waive (`POST
-  /approvals/{id}/criterion`, verbs `met`, `not_met`, `waived`), a gate
-  row Waive alone. Not met sends the card back with the human's words.
-  Approve stays off until every human row stands. The drawer shows an
-  opened proof's original beside the pull request's version. Approve submits
-  an APPROVED review at the gated head as the human, and only once Forgejo
-  took it calls `factoryd.ApproveMerge`; deny with a reason submits a
-  REQUEST_CHANGES review (the changes-requested path sends the task back)
-  or rejects: the reason is commented and the pull request closed as the
-  human, which fails the task. A merge Forgejo refuses (or that fails and
+  evidence, and the buttons “It is met”, “It is not met” and “Drop this
+  promise” (`POST /approvals/{id}/criterion`, verbs `met`, `not_met`,
+  `waived`), a gate row “Drop this promise” alone. “It is not met” sends
+  the card back with the human's words. “Merge it” stays off until every
+  human row stands. The drawer shows an
+  opened proof's original beside the pull request's version. “Merge it”
+  submits an APPROVED review at the gated head as the human, and only once
+  Forgejo took it calls `factoryd.ApproveMerge`. “Send it back” with a
+  reason submits a REQUEST_CHANGES review (the changes-requested path
+  sends the task back). “Reject and close it” comments the reason and
+  closes the pull request as the human, which fails the task. A merge Forgejo refuses (or that fails and
   is retried) notes why on the pending request, and the card shows it. A
   pull request factoryd opened has no agent (roadmap 264): its card offers
-  Approve on green checks and Re-run the checks on red ones
+  “Merge it” on green checks and “Run the failed checks again” on red ones
   (`POST /approvals/{id}/rerun`, an empty commit on its head, and the card
-  asks again once they settle), with Close beside either, the deny box
-  without a choice: the reason goes to its workflow as a change request,
+  asks again once they settle), with “Reject and close it” beside either:
+  the reason goes to its workflow as a change request,
   which closes the card and its pull request and issue with it.
 - `/resources`: the agent project's commissions by project and task (open,
   or closed in the last 7 days) with type, IPv4, lease end, EUR/h, cost
@@ -382,8 +384,8 @@ decimals: a task's model calls cost fractions of a cent.
   card's open case ends with the close as the human's answer), `edit` its brief: its title or body, which make the task's objective, and its why
   line and summary, which the next session's brief reads; the brief passes
   `factoryd.CheckBrief` first and its refusals come back whole (the drawer's Edit the brief form too), `grant_session` grants a card at a cap what
-  the cap asks for, is refused on a card at no cap (the Extend form raises
-  a running card), and the action table refuses it on a card that asked a
+  the cap asks for, is refused on a card at no cap (“Allow more sessions”
+  among the opened card's other actions raises a running card), and the action table refuses it on a card that asked a
   question, and `set_dependency` adds or removes a dependency of a card that has
   not started, in the store and on the issues as the bot. An added
   dependency joins two cards of one plan; a card of no plan is a group of

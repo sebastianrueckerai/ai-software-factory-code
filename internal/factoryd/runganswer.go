@@ -418,7 +418,7 @@ func ParseRungAnswer(f CaseFacts, rung int, text string) (RungAnswer, error) {
 		return RungAnswer{}, errors.New("a handover leaves model out; it names the model of the next session: " + textutil.AndList(handoverModels))
 	}
 	if j.Draw != nil && (j.Draw.Sessions < 0 || j.Draw.AgentTimeS < 0 || j.Draw.EUR < 0) {
-		return RungAnswer{}, fmt.Errorf("a draw does not go below zero: sessions %d, agent_time_s %d, eur %.2f", j.Draw.Sessions, j.Draw.AgentTimeS, j.Draw.EUR)
+		return RungAnswer{}, fmt.Errorf("a draw does not go below zero: sessions %d, agent_time_s %d, eur %s", j.Draw.Sessions, j.Draw.AgentTimeS, textutil.EUR(j.Draw.EUR))
 	}
 	out := RungAnswer{
 		Decision:       *j.Decision,

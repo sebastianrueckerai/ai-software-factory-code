@@ -43,3 +43,13 @@ func SpecAnswers(c Case, f Facts) []Answer {
 func TripNext(c Case, reason string) string { return tripNext(c, reason) }
 
 var PokeKinds = pokeKinds
+
+// ActRefusal is why Act refuses in on facts f of card, the words every
+// door shows, "" when it takes it.
+func ActRefusal(f CaseFacts, in ActInput, card string) string { return actRefusal(f, in, card) }
+
+// AnswerComment is the comment the factory posts on t's issue for by's
+// answer res without a note.
+func AnswerComment(t Task, by string, res Resolution) string {
+	return (&Runner{}).answerComment(t, by, res, "", "")
+}

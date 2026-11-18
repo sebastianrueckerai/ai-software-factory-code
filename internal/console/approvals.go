@@ -571,7 +571,7 @@ func (c *Console) planTable(ctx context.Context, id string, n int) (factoryd.Pla
 func (c *Console) approve(w http.ResponseWriter, r *http.Request) {
 	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
 		if action := r.PostFormValue("action"); action != "" && action != "approve" {
-			return "", refuse(http.StatusBadRequest, "the action "+action+" is not one the face offers")
+			return "", refuse(http.StatusBadRequest, "The answer "+action+" is not one the card shows.")
 		}
 		return c.doApprove(ctx, a, id)
 	})

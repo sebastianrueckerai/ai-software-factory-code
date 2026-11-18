@@ -315,7 +315,7 @@ func TestHolds(t *testing.T) {
 	swept := Hold{ID: -1, TaskID: "b", Kind: KindModel, Ref: "y", EUR: 0.001}
 	over := 0.004
 	b, err = ReleaseHold(ctx, db, swept, &over, Usage{})
-	if err != nil || !near(b.Spent, 0.006) || !near(b.Booked, 0.003) || b.OverHold != "COST OVER HOLD: model y cost 0.004000 EUR against a hold of 0.001000 EUR; booked in full" {
+	if err != nil || !near(b.Spent, 0.006) || !near(b.Booked, 0.003) || b.OverHold != "COST OVER HOLD: model y cost less than 0.01 EUR against a hold of less than 0.01 EUR; booked in full" {
 		t.Fatalf("late release above the swept hold = (%+v, %v), want b's spent 0.006, flagged", b, err)
 	}
 	// a cost that is not a finite non-negative number books the hold
@@ -847,7 +847,7 @@ func TestProjectCapBoundsHeadroom(t *testing.T) {
 	}
 	var r *Refusal
 	if _, err := TakeHold(ctx, db, tool); !errors.As(err, &r) || r.Decision != RefusedProjectCap ||
-		r.Reason != "web_scrape: worst case 0.200000 EUR exceeds the free headroom 0.100000 EUR (task 2.000000, day 19.100000, month 49.100000, project 0.100000); "+
+		r.Reason != "web_scrape: worst case 0.20 EUR exceeds the free headroom 0.10 EUR by 0.10 EUR (task 2.00, day 19.10, month 49.10, project 0.10); "+
 			"the tool call's worst case exceeds the project's remaining month headroom (budget.month_eur in projects/p.yaml), and only a human raises it, by a commit" {
 		t.Fatalf("a's call with a worst case of 0.20 = %v, want refused_project_cap", err)
 	}

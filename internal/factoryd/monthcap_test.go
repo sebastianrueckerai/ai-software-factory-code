@@ -209,7 +209,7 @@ func TestFileHumanTaskRecordsTheAsk(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(fj.issues) != 1 || !strings.HasPrefix(fj.issues[0], "Raise the cap?\n\nWhy: the cap is reached\n\n---\n\n```\nRaise the cap?\n```\n\nInfo: a raise is a commit\n\nChoices:\n- Raise it\n- Park\n\nfactoryd asks (month_cap). ") {
+		if len(fj.issues) != 1 || !strings.HasPrefix(fj.issues[0], "Raise the cap?\n\nWhy: the cap is reached\n\n---\n\n```\nRaise the cap?\n```\n\nInfo: a raise is a commit\n\nChoices:\n- Raise it\n- Park\n\nThe factory asks. ") {
 			t.Fatalf("adopt=%v issues = %q", adopt, fj.issues)
 		}
 		events := store.askedRows(task.ID)

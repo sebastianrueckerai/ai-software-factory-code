@@ -22,7 +22,7 @@
 {{with .MergeCommit}}<dt>Merge commit</dt><dd class="mono">{{.}}</dd>{{end}}
 <dt>diff_sha256</dt><dd class="mono">{{if .DiffSHA256}}{{.DiffSHA256}}{{else}}—{{end}}</dd>
 <dt>Policy version</dt><dd class="mono">{{if .PolicyVersion}}{{.PolicyVersion}}{{else}}—{{end}}</dd>
-<dt>Cost</dt><dd class="mono">{{eur2 .CostEUR}}</dd>
+<dt>Cost</dt><dd class="mono">{{eur .CostEUR}} EUR</dd>
 </dl>
 {{if .Gates}}<table class="files"><caption>The gates' runs</caption>
 <thead><tr><th scope="col">Gate</th><th scope="col">Command</th><th scope="col">Exit</th><th scope="col">Verdict</th></tr></thead>
@@ -46,8 +46,8 @@
 {{end}}{{end}}</div>
 </div>
 
-{{define "card-life"}}<pre class="digest">{{.Life}}</pre>
-{{range .Cases}}<h4>Open case: {{words .Kind}}</h4>{{with .Steps}}<ul>{{range .}}<li>rung {{.Rung}} by {{.Actor}} → {{words .Outcome}}{{with .Found}}: {{.}}{{end}}</li>{{end}}</ul>{{else}}<p class="meta">No step yet.</p>{{end}}
+{{define "card-life"}}<ol class="life-log">{{range .Life}}<li><time>{{.At.UTC.Format "2 Jan 15:04"}}</time> {{.Text}}{{with .Quote}} <span class="quote">{{.}}</span>{{end}}</li>{{end}}</ol>
+{{range .Asks}}<h4>The open ask: {{.Ask}}</h4>{{with .Steps}}<ul>{{range .}}<li>{{.Lead}}{{with .Found}}<span class="quote">{{.}}</span>{{end}}</li>{{end}}</ul>{{else}}<p class="meta">Nobody has weighed this ask yet.</p>{{end}}
 {{end}}{{end}}
 
 {{define "glosses"}}{{with .}}<details class="fold glosses"><summary>What these words mean</summary><dl>{{range .}}<dt>{{.Term}}</dt><dd>{{.Sentence}}</dd>{{end}}</dl></details>{{end}}{{end}}

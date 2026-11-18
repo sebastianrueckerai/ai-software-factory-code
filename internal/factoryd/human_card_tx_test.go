@@ -393,8 +393,8 @@ func TestFileHumanCardRefusesTheIdOfACardThatStands(t *testing.T) {
 	if err == nil || err.Error() != why {
 		t.Fatalf("FileHumanCard = %v, want %q", err, why)
 	}
-	if len(f.issues) != 1 || !slices.Equal(f.closed, []string{"sf/r#31"}) || !slices.Equal(f.comments, []string{"sf/r#31 factoryd: " + why}) {
-		t.Fatalf("issues %d, closed %q, comments %q; want #31 closed with the comment naming t-h", len(f.issues), f.closed, f.comments)
+	if len(f.issues) != 1 || !slices.Equal(f.closed, []string{"sf/r#31"}) || !slices.Equal(f.comments, []string{"sf/r#31 This card stands already as #7, so this second filing of it is refused and this issue is closed. The card's ask is on #7."}) {
+		t.Fatalf("issues %d, closed %q, comments %q; want #31 closed with the comment naming #7", len(f.issues), f.closed, f.comments)
 	}
 	if got := store.tasks["t-h"]; got.IssueNumber != 7 || len(store.askedRows("t-h")) != 0 {
 		t.Fatalf("the card that stands %+v, asks %+v; want it on #7 with no second ask", got, store.askedRows("t-h"))
@@ -423,8 +423,8 @@ func TestFileHumanTaskRefusesTheIdOfACardThatStandsOnTheIssueItTakesOn(t *testin
 	if err == nil || err.Error() != why {
 		t.Fatalf("fileHumanTask = %v, want %q", err, why)
 	}
-	if len(fj.issues) != 1 || !slices.Equal(fj.closed, []int64{41}) || !slices.Equal(fj.comments, []string{"#41 factoryd: " + why}) {
-		t.Fatalf("issues %d, closed %v, comments %q; want #41 taken on, then closed with the comment naming t-1", len(fj.issues), fj.closed, fj.comments)
+	if len(fj.issues) != 1 || !slices.Equal(fj.closed, []int64{41}) || !slices.Equal(fj.comments, []string{"#41 This card stands already as #7, so this second filing of it is refused and this issue is closed. The card's ask is on #7."}) {
+		t.Fatalf("issues %d, closed %v, comments %q; want #41 taken on, then closed with the comment naming #7", len(fj.issues), fj.closed, fj.comments)
 	}
 	for _, e := range rows.rows {
 		if e.Kind == EventCardCreated {

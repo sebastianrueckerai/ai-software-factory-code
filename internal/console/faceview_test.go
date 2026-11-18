@@ -24,16 +24,6 @@ import (
 
 // The words no face shows: a task id, a hash, a branch, the factory's
 // own nouns, a snake_case name and a gate's step name.
-var faceForbidden = []*regexp.Regexp{
-	regexp.MustCompile(`\bt-[0-9a-f]{6,}`),
-	regexp.MustCompile(`\b[0-9a-f]{12,}\b`),
-	regexp.MustCompile(`\bcard/\d+`),
-	regexp.MustCompile(`(?i)\b(rungs?|cases?|offers?|premade|slots?)\b`),
-	regexp.MustCompile(`\b[a-z]+_[a-z_]+\b`),
-	regexp.MustCompile(`\b(` + strings.Join([]string{factoryd.ActivityRunSession, factoryd.ActivityWaitChecks, factoryd.ActivityGateReproduction,
-		factoryd.ActivityGateCriteria, factoryd.ActivityModelReview, factoryd.ActivityGateAudit}, "|") + `)\b`),
-}
-
 var refNumber = regexp.MustCompile(`#\d+`)
 
 // smallItem is one board item as a column shows it: the article, the
@@ -318,7 +308,7 @@ func checkSmallCard(t *testing.T, it smallItem) {
 		texts = slices.DeleteFunc(texts, func(s string) bool { return strings.Contains(s, title) })
 	}
 	for _, s := range texts {
-		for _, re := range faceForbidden {
+		for _, re := range facefixtures.Forbidden {
 			if m := re.FindString(s); m != "" {
 				t.Errorf("%q names %q", s, m)
 			}

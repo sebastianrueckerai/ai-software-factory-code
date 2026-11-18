@@ -393,7 +393,7 @@ func (t *turn) thread(r *http.Request, writable bool) (factoryd.ChatConversation
 // delete its owner's.
 func (t *turn) mine() error {
 	if t.owner != t.a.s.user {
-		return refuse(http.StatusForbidden, fmt.Sprintf("%s's thread: read it and talk in it; its controls stay %s's.", t.owner, t.owner))
+		return refuse(http.StatusForbidden, fmt.Sprintf("%s's thread: read it and talk in it. Its controls stay %s's.", t.owner, t.owner))
 	}
 	return nil
 }

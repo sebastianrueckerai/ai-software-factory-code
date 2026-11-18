@@ -86,7 +86,7 @@ func TestSpentJudgmentBudgetFacesTheHumanUnjudged(t *testing.T) {
 			if q, ask := g.askedOf(t, c.ID, "question"), g.askOf(t, c.ID); strings.Contains(q, "not judged") || strings.Contains(ask, "not judged") || ask != c.Problem {
 				t.Errorf("the question %q and the ask %q of case %d, want the case's problem %q with no mark", q, ask, c.ID, c.Problem)
 			}
-			if info := g.infoOf(t, c.ID); !strings.Contains(info, "The factory found: not judged, judgment budget spent") || strings.Contains(info, "The check-in found") {
+			if info := g.infoOf(t, c.ID); !strings.Contains(info, noJudgmentLine+" The project's judgment budget has 0.00 of 10.00 EUR left this month.") || strings.Contains(info, "The check-in found") || strings.Contains(info, "t-chat") {
 				t.Errorf("the info of case %d = %q, want it led by the factory", c.ID, info)
 			}
 		}
@@ -239,7 +239,7 @@ func TestJudgedCaseIsNotMarkedUnjudged(t *testing.T) {
 			t.Fatalf("rung 0's step reads %q, want the missing rung worded, no \"not judged\"", st.Found)
 		}
 	}
-	if rec != "done on main" || by != "the check-in" || !strings.Contains(info, "The check-in found: the stop reads as gate_stop") ||
+	if rec != "done on main" || by != "the check-in" || !strings.Contains(info, "The check-in found:\n\n> the stop reads as gate_stop") ||
 		!strings.Contains(info, "The factory agent did not judge it: the judgment budget is spent.") || strings.Contains(ask, "not judged") || money != 1 || g.chat.calls != 0 {
 		t.Fatalf("recommendation %q, info %q, ask %q, %d money cases, %d conversations; want rung 1's judgment with the missing line and one money case", rec, info, ask, money, g.chat.calls)
 	}
@@ -433,7 +433,7 @@ func TestUnreadJudgmentBudgetEndToEnd(t *testing.T) {
 	}
 	ask, _ := asks[0].Detail["ask"].(string)
 	info, _ := asks[0].Detail["info"].(string)
-	if strings.Contains(ask, "not judged") || !strings.Contains(info, "The factory found: "+markJudgmentUnread) {
+	if strings.Contains(ask, "not judged") || strings.Contains(info, "not judged") || !strings.Contains(info, "The factory agent did not judge it: other/unknown names no project, so the factory cannot read its judgment budget.") {
 		t.Fatalf("ask %q, info %q; want the unreadable mark in the agent's view, not in the ask", ask, info)
 	}
 }

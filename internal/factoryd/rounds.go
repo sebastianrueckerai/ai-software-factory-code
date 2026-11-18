@@ -145,7 +145,7 @@ func (r *Runner) recordRound(ctx context.Context, p Task, repo Repo, revision in
 	} else {
 		note += " It is the last round."
 	}
-	if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, p.IssueNumber, "factoryd: "+r.untrusted(p, note)); err != nil {
+	if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, p.IssueNumber, capitalize(r.untrusted(p, note))); err != nil {
 		return fmt.Errorf("comment round %d on #%d: %w", next.Round, p.IssueNumber, err)
 	}
 	detail := map[string]any{"revision": revision, "origin": ReplanRound, "round": next.Round, "cards": cards}
@@ -396,7 +396,7 @@ func holdDonePlan(ctx context.Context, f *Forgejo, t Task, n int) error {
 // holdComment is what a plan's issue hears when the plan still holds
 // production with n open criteria.
 func holdComment(n int) string {
-	return fmt.Sprintf("factoryd: this plan still holds production with %s. Closing its issue waives nothing: an approver's Close with a note on the console waives them and ends the plan.",
+	return fmt.Sprintf("This plan still holds production with %s. Closing its issue waives nothing: an approver's Close with a note on the console waives them and ends the plan.",
 		OpenCriteriaPhrase(n))
 }
 

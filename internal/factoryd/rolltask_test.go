@@ -1150,16 +1150,16 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 	ask := "Fix the signing of the images factoryd, gateway, worker, then close this card"
 	why := "Why: The factory deploys only images signed with its key, so these images stay off the cluster.\n\n---\n\n"
 	body := "```\n" + ask + "\n```\n\n" +
-		"Info: Main CI's run is green at c1c1c1c, and factoryd rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not.\n\n" +
+		"Info: Main CI's run is green at c1c1c1c, and the factory rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not.\n\n" +
 		"The run: https://git.example/sf/ai-software-factory-code/actions/runs/412\n\n" +
 		"- factoryd: " + gw + " carries no signature by this key over this digest (1 by another key or over another digest)\n" +
 		"- gateway: " + gw + " carries no signature by this key over this digest (1 by another key or over another digest)\n" +
 		"- worker: " + worker + " carries no signature\n\n" +
-		"Main CI's image jobs sign each image they push. No signature means a job did not sign it or the tag was pushed outside main CI; " +
-		"a signature by another key means the code repository's Actions secret COSIGN_PRIVATE_KEY is not the key k8s/cosign.pub holds. " +
-		"Find which, fix it, and close this issue. The next green push run of main is judged again; an empty commit on main starts one.\n\n" +
+		"Main CI's image jobs sign each image they push. No signature means a job did not sign it or the tag was pushed outside main CI. " +
+		"A signature by another key means the code repository's Actions secret `COSIGN_PRIVATE_KEY` is not the key k8s/cosign.pub holds. " +
+		"Find which, fix it, and close this issue. The next green push run of main is judged again, and an empty commit on main starts one.\n\n" +
 		"Choices:\n- I did it\n- Not now\n\n" +
-		"factoryd asks (factoryd). Answer on the card in the console or in the chat's inbox, or close this issue once decided.\n\nfiled by factoryd"
+		"The factory asks. Answer on the card in the console or in the chat's inbox, or close this issue once decided.\n\nFiled by the factory."
 	want := ask + "\n\n" + body
 	if len(f.issues) != 1 || f.issues[0] != ask+"\n\n"+why+body {
 		t.Fatalf("issues %q, want one:\n%s", f.issues, ask+"\n\n"+why+body)
@@ -1293,7 +1293,7 @@ func TestRollerFoldsNewImagesIntoTheOpenRoll(t *testing.T) {
 	if len(f.issues) != 0 || len(wf.started) != 0 {
 		t.Fatalf("a second task: issues %v, starts %v", f.issues, wf.started)
 	}
-	if len(f.comments) != 1 || !strings.HasPrefix(f.comments[0], "21 factoryd: folded into this roll:\n\nroll c2c2c2c: factoryd, gateway, worker") {
+	if len(f.comments) != 1 || !strings.HasPrefix(f.comments[0], "21 Folded into this roll:\n\nroll c2c2c2c: factoryd, gateway, worker") {
 		t.Fatalf("comments %q", f.comments)
 	}
 	if !slices.Equal(wf.signals, []string{"t-open roll_folded factory-agent #21: roll c2c2c2c: factoryd, gateway, worker folded in"}) {
@@ -1410,7 +1410,7 @@ func TestRollEndsWithNothingToRollWhenTheCutBuildsMainsImages(t *testing.T) {
 	if len(f.cuts) != 0 || len(f.commits) != 0 || len(f.pulls) != 0 {
 		t.Fatalf("cuts %v, commits %v, pulls %q: want nothing written", f.cuts, f.commits, f.pulls)
 	}
-	if !slices.Equal(f.closedPRs, []int64{21}) || !slices.Contains(f.comments, "21 factoryd: closing this roll: "+why) {
+	if !slices.Equal(f.closedPRs, []int64{21}) || !slices.Contains(f.comments, "21 Closing this roll: "+why) {
 		t.Fatalf("closed %v, comments %q: want the roll's pull request closed with the reason", f.closedPRs, f.comments)
 	}
 	for _, r := range store.rolls {
@@ -1588,8 +1588,8 @@ func TestRollCommitCutsTheBranchAtTheRolledCommit(t *testing.T) {
 	if body := f.pullBodies[0]; strings.Contains(body, "body one") || !strings.HasPrefix(body, "roll c2c2c2c: factoryd, gateway, worker\n\nbody two") || !strings.Contains(body, "Closes #31") {
 		t.Fatalf("pull request body %q, want the cut's summary alone", body)
 	}
-	if len(f.comments) != 2 || !strings.HasPrefix(f.comments[0], "847 factoryd: closing this roll: a newer run joined this roll") ||
-		!strings.Contains(f.comments[1], "31 factoryd: a newer run joined this roll and its branch is cut again at "+commitC2+"; pull request #847 is superseded by #71") {
+	if len(f.comments) != 2 || !strings.HasPrefix(f.comments[0], "847 Closing this roll: a newer run joined this roll") ||
+		!strings.Contains(f.comments[1], "31 A newer run joined this roll and its branch is cut again at "+commitC2+". Pull request #847 is superseded by #71") {
 		t.Fatalf("comments %q", f.comments)
 	}
 	for i, r := range store.rolls {
@@ -2997,7 +2997,7 @@ func TestRollEscalatesAfterAttempts(t *testing.T) {
 	// factoryd's ask, never the chat agent's: its row wakes the project
 	// agent, which attaches its analysis
 	if asks[0].Source != SourceRollFailed || strings.Contains(asks[0].Objective, "agent asked") ||
-		!strings.Contains(asks[0].Objective, "factoryd asks (the roller)") {
+		!strings.Contains(asks[0].Objective, "The factory asks. ") {
 		t.Fatalf("the card %+v, want factoryd's roll-failed ask", asks[0])
 	}
 	var asked []Event
@@ -3079,7 +3079,7 @@ func TestRollRetryAnswerStartsAFreshRoll(t *testing.T) {
 	if !slices.Equal(f.closed, []string{"31"}) || len(store.rolls) != 0 {
 		t.Fatalf("closed %v, roll requests %+v; want the question's issue closed and no request left", f.closed, store.rolls)
 	}
-	want := "31 factoryd: retry ordered: the failed attempts' bound is reset and one roll task of main's newest green images starts. Closing this issue."
+	want := "31 A human pressed “Try the roll again”. The failed attempts no longer count, and one roll of main's newest green images starts. This issue closes."
 	if !slices.Equal(f.comments, []string{want}) {
 		t.Fatalf("comments %q, want %q", f.comments, want)
 	}

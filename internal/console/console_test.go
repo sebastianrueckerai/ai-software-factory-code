@@ -2195,10 +2195,10 @@ func TestBoardRendersColumnsFromTheStore(t *testing.T) {
 	// percent, the request's money and the answers live in the drawer
 	for id, wants := range map[string][]string{
 		"t-q":   {`href="https://git.example/sf/code/issues/11"`, `href="/tasks/t-q/timeline"`},
-		"t-r":   {"€1.23 of €5.00", `href="https://git.example/sf/code/pulls/12"`},
+		"t-r":   {"1.23 of 5.00 EUR", `href="https://git.example/sf/code/pulls/12"`},
 		"t-e":   {`action="/tasks/t-e/resolve"`},
 		"t-h":   {`action="/tasks/t-h/answer"`},
-		"t-res": {"8.9900 EUR a month"},
+		"t-res": {"8.99 EUR a month"},
 	} {
 		drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+"/drawer?tab=overview", nil), ck).Body.String()
 		for _, want := range wants {
@@ -2612,7 +2612,7 @@ func TestAnswerRefusedOverMaxAnswer(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	r.tasks.set("cannot reach the database", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13})
 	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {strings.Repeat("ä", 2000) + "a"}}), ck)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "an answer of 1 to 4000 bytes is required; this one has 4001") {
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "An answer of 1 to 4000 bytes is required, and this one has 4001.") {
 		t.Fatalf("an answer of 4001 bytes = %d: %s", rec.Code, rec.Body)
 	}
 	if len(r.fg.comments) != 0 {
@@ -2635,8 +2635,8 @@ func TestAnswerTakenAtTheDayCap(t *testing.T) {
 		{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/small"},
 	}...)
 	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) {
-		return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit.\n" +
-			"0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free", nil
+		return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise the day cap in policy.yaml by a commit.\n" +
+			"0.01 EUR of the day's 20.00 EUR (budget.day_eur) is free", nil
 	}
 	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck); rec.Code != http.StatusSeeOther || len(r.fg.comments) != 1 {
 		t.Fatalf("answer at the day cap = %d %s, %d comments; want it taken", rec.Code, rec.Body, len(r.fg.comments))
@@ -2647,10 +2647,10 @@ func TestAnswerTakenAtTheDayCap(t *testing.T) {
 // the project's, is taken the same way: the cap resets on its own.
 func TestAnswerTakenAtAMonthCap(t *testing.T) {
 	for _, why := range []string{
-		"the month cap cannot fund a call: Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
-			"0.010000 EUR of the month's 50.00 EUR (budget.month_eur) is free",
-		"the project's month cap cannot fund a call: Raise budget.month_eur in projects/app.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
-			"0.010000 EUR of the project's 3.00 EUR month (budget.month_eur in projects/app.yaml) is free",
+		"the month cap cannot fund a call: Raise the month cap in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+			"0.01 EUR of the month's 50.00 EUR (budget.month_eur) is free",
+		"the project's month cap cannot fund a call: Raise the project's month cap in projects/app.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+			"0.01 EUR of the project's 3.00 EUR month (budget.month_eur in projects/app.yaml) is free",
 	} {
 		r := newRig(t)
 		ck, s := r.loggedIn(t)
@@ -2805,13 +2805,13 @@ func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"<strong>€3.7500</strong> of the €20.0000 day cap",
-		"<th scope=\"row\">" + today + "</th><td class=\"num\">1.2500</td><td class=\"num\">0.0000</td><td class=\"num\">2.0000</td><td class=\"num\">0.5000</td><td class=\"num\">3.7500</td>",
-		"<th scope=\"row\">2026-09-20</th><td class=\"num\">0.5000</td>",
-		`<a href="/tasks/t-big/timeline">t-big</a></th><td class="num">3.2500</td>`,
-		`<tr class="line"><td>model small</td><td class="num">3.1250</td></tr>`,
-		`<tr class="line"><td>model review/big</td><td class="num">0.1250</td></tr>`,
-		`<a href="/tasks/t-tiny/timeline">t-tiny</a></th><td class="num">0.0005</td>`,
+		"<strong>3.75 EUR</strong> of the 20.00 EUR day cap",
+		"<th scope=\"row\">" + today + "</th><td class=\"num\">1.25</td><td class=\"num\">0.00</td><td class=\"num\">2.00</td><td class=\"num\">0.50</td><td class=\"num\">3.75</td>",
+		"<th scope=\"row\">2026-09-20</th><td class=\"num\">0.50</td>",
+		`<a href="/tasks/t-big/timeline">t-big</a></th><td class="num">3.25</td>`,
+		`<tr class="line"><td>model small</td><td class="num">3.12</td></tr>`,
+		`<tr class="line"><td>model review/big</td><td class="num">0.12</td></tr>`,
+		`<a href="/tasks/t-tiny/timeline">t-tiny</a></th><td class="num">less than 0.01</td>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/costs lacks %q", want)
@@ -2893,7 +2893,7 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		`<span class="effect">Rents a cx33 server for 5 hours at about 0.07 EUR.</span>`,
 		`<span class="effect">The card goes on without the resource.</span>`,
 		`action="/approvals/3/approve"`,
-		`<h4>The server</h4><p>cx33, for load test. 5 h, 8.9900 EUR a month, 0.0720 EUR for this lease.</p>`,
+		`<h4>The server</h4><p>cx33, for load test. 5 h, 8.99 EUR a month, 0.07 EUR for this lease.</p>`,
 		"a lease of 300 minutes exceeds the envelope&#39;s 4 h",
 	} {
 		if !strings.Contains(res, want) {
@@ -2911,9 +2911,9 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		`<span class="effect">Returns the pull request to its agent with your note.</span>`,
 		`name="csrf" value="` + s.csrf + `"`, `action="/approvals/4/approve"`,
 		`<dt>Migration</dt><dd>yes, human review required: <code>internal/factoryd/migrations/0018_x.sql</code></dd>`,
-		`<dt>Model review</dt><dd>approve: adds the column safely`,
+		`<dt>Model review</dt><dd>It approves the change. <span class="quote">adds the column safely</span>`,
 		`<dt>Agent's recommendation</dt><dd class="reason">Adds the column; merge it.</dd>`,
-		`<dt>Why a human</dt><dd>the project&#39;s merge rule is human; risk class high is requires_approval</dd>`,
+		`<dt>Why a human</dt><dd><ul><li>the project&#39;s merge rule is human</li><li>risk class high is requires_approval</li></ul></dd>`,
 		`<p class="failed-test">Red in the log: TestA (p/q): failed (job test)</p>`,
 	} {
 		if !strings.Contains(merge, want) {
@@ -3104,7 +3104,7 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	}
 	r.fg.calls = nil
 	rec := r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Pull request #9's checks are green: approve it to merge (approve_merge) or close it (deny_merge).") ||
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Pull request #9's checks are green, so nothing runs again: “Merge it” merges it, and “Reject and close it” closes it.") ||
 		len(r.fg.calls) != 0 {
 		t.Fatalf("re-run on green = %d %q, calls %q", rec.Code, rec.Body, r.fg.calls)
 	}
@@ -3394,19 +3394,19 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 	for _, want := range []string{
 		`<h3 id="project-sf/code">sf/code</h3>`, `<h3 id="project-demo-app/demo-app">demo-app/demo-app</h3>`, `<h3 id="project-sf/infra">sf/infra</h3>`,
 		"<td>cx33</td>", "<td>203.0.113.9</td>", `<td title="` + at + `">in 1 h</td>`, `<tr class="closed">`, `<tr class="standing">`,
-		`<td title="` + atEnded + ` · released by sebastian">2 h ago</td>`, "<td class=\"num\">0.0144</td>", "<td class=\"num\">0.0288</td>", "<td><i class=\"lamp on\" aria-hidden=\"true\"></i>live</td>",
+		`<td title="` + atEnded + ` · released by sebastian">2 h ago</td>`, "<td class=\"num\">0.0144</td>", "<td class=\"num\">0.03</td>", "<td><i class=\"lamp on\" aria-hidden=\"true\"></i>live</td>",
 		"none: standing (made standing by alice)", "released by sebastian", "<td><i class=\"lamp\" aria-hidden=\"true\"></i>deleted</td>", `href="/tasks/t-res/timeline"`,
 		// the commission's catalogue month: cx33 8.49 + IPv4 0.50 + 20 GB x 0.0572 = 10.134, the firewall free
-		`<span id="promote-11" class="meta">standing, about €10.1340 a month against the standing block&#39;s €0.00 (€0.0000 standing now)</span>`,
+		`<span id="promote-11" class="meta">standing, about 10.13 EUR a month against the standing block&#39;s 0.00 EUR (0.00 EUR standing now)</span>`,
 		// sf/code is in no file of this configuration: the policy's default
 		"No project file names this repository: the policy's envelope_default applies.",
-		"task block €10.00 a month, types cx23, 2 servers at once, leases up to 4 h, volumes up to 20 GB · this month €0.0000 used or reserved, 0 servers open",
+		"task block 10.00 EUR a month, types cx23, 2 servers at once, leases up to 4 h, volumes up to 20 GB · this month 0.00 EUR used or reserved, 0 servers open",
 		// demo-app's file, read-only, linked at the version's commit
 		`The project's file sets it: <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory/projects/demo-app.yaml" target="_blank" rel="noopener">change it in Git</a>.`,
-		"task block €30.00 a month, types cx23, cx33, 3 servers at once, leases up to 8 h, volumes up to 0 GB",
-		"this month €1.5000 used or reserved, 1 server open",
+		"task block 30.00 EUR a month, types cx23, cx33, 3 servers at once, leases up to 8 h, volumes up to 0 GB",
+		"this month 1.50 EUR used or reserved, 1 server open",
 		// the standing monthly line
-		"standing block €12.00 a month, types cx23, 2 servers · standing now 1 server, €5.9900 a month",
+		"standing block 12.00 EUR a month, types cx23, 2 servers · standing now 1 server, 5.99 EUR a month",
 		`name="csrf" value="` + s.csrf + `"`, `<a href="/resources" aria-current="page">Resources</a>`,
 	} {
 		if !strings.Contains(body, want) {
@@ -3533,7 +3533,7 @@ func TestStoreErrorRefusalNamesTheErrorAndMasksTokens(t *testing.T) {
 	}
 	// beyond the standing block: the human sees which bound and raises it first
 	rec = r.do(post("/resources/420/promote", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "server type cx53 is not in the standing types [cx23]; raise the standing block in the project's file first") {
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "server type cx53 is not in the standing types [cx23]. Raise the standing block in the project's file first.") {
 		t.Fatalf("promote beyond the standing block = %d: %s", rec.Code, rec.Body)
 	}
 	rec = r.do(post("/resources/500/promote", url.Values{"csrf": {s.csrf}}), ck)
@@ -4017,7 +4017,7 @@ func TestPoolReadContract(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("board = %d", rec.Code)
 	}
-	const words = "2 of 30 sessions, 30 min of 30 h agent time and €3.00 of €60.00 drawn this UTC month"
+	const words = "2 of 30 sessions, 30 min of 30 h agent time and 3.00 of 60.00 EUR drawn this UTC month"
 	if body := rec.Body.String(); !strings.Contains(body, "pool: "+words) {
 		t.Errorf("board HTML lacks %q", words)
 	}
@@ -4057,7 +4057,7 @@ func TestPoolReadMonth(t *testing.T) {
 	}
 	r.drawnErr = errors.New("the store is down")
 	pl = r.c.ProjectPool(t.Context(), v, p, nov)
-	if want := "the pool is 30 sessions, 30 h of agent time and €60.00 this UTC month, but what its cards drew could not be read"; pl.Readable || pl.Words != want {
+	if want := "the pool is 30 sessions, 30 h of agent time and 60.00 EUR this UTC month, but what its cards drew could not be read"; pl.Readable || pl.Words != want {
 		t.Errorf("unreadable = %+v; want %q", pl, want)
 	}
 }

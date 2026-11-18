@@ -18,7 +18,7 @@ import (
 
 // budgetRefusal is what the floor answers for a card whose remaining
 // budget cannot fund a call (factoryd's Runner.SessionFunded).
-const budgetRefusal = "the remaining budget cannot fund a call: 0.170 EUR of the 2.000 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card."
+const budgetRefusal = "the remaining budget cannot fund a call: 0.17 EUR of the 2.00 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card."
 
 // cappedCard is a waiting card of sf/code whose remaining budget of 2 EUR
 // cannot fund a call, with both floors refusing it until a raise.
@@ -58,7 +58,7 @@ func TestFundOpensWhereASessionCannotStart(t *testing.T) {
 	}
 	got, posts := actedOnce(t, r)
 	equal(t, "the fund", []any{got, posts}, []any{fundOf(0.5, "", 3, factoryd.ViaButton), true})
-	if got, want := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"], "fund: 0.50 EUR from the pool"; got != want {
+	if got, want := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"], "“Add money”: 0.50 EUR from the pool"; got != want {
 		t.Fatalf("the fund posted %q on the issue, want the answer in its words %q", got, want)
 	}
 }

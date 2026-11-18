@@ -234,7 +234,7 @@ func TestActRefusesARungsDrawPastThePool(t *testing.T) {
 	_, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: ChatUser, Rung: 2, Res: oneSession})
 	var refused ErrActRefused
 	const pool = "the escalation pool leaves 0 sessions, 0 seconds of agent time and 0.00 EUR this month: only the human draws more"
-	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), pool+", and rung 2 may take ") {
+	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), pool+", and the factory agent may take ") {
 		t.Fatalf("rung 2's extend = %v, want the pool's refusal", err)
 	}
 	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseAtHuman {
@@ -273,7 +273,7 @@ func TestActSignalsTheRunAndPostsTheComment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"factoryd: sebastian answered with extend: 1 session from the pool."}; got.Comment != 501 || !reflect.DeepEqual(g.forge.comments, want) {
+	if want := []string{"sebastian answered with “Allow more sessions”: 1 session from the pool."}; got.Comment != 501 || !reflect.DeepEqual(g.forge.comments, want) {
 		t.Fatalf("comment %d, forgejo holds %q; want 501 and %q", got.Comment, g.forge.comments, want)
 	}
 	want := []reopenCall{
@@ -449,7 +449,7 @@ func TestActClosesTheIssueAsFactory(t *testing.T) {
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: ActClose, Note: "not worth it"}}); err != nil {
 		t.Fatal(err)
 	}
-	if !g.forge.closed || len(g.forge.comments) != 1 || !strings.HasPrefix(g.forge.comments[0], "factoryd: sebastian answered with close.") ||
+	if !g.forge.closed || len(g.forge.comments) != 1 || !strings.HasPrefix(g.forge.comments[0], "sebastian answered with “End the card”.") ||
 		!strings.Contains(g.forge.comments[0], "not worth it") {
 		t.Fatalf("closed %v, comments %q; want the issue closed after one comment naming sebastian and the note", g.forge.closed, g.forge.comments)
 	}
@@ -933,7 +933,7 @@ func TestActStepNamesEveryPartOfAnExtend(t *testing.T) {
 	if !reflect.DeepEqual(got.Did, want) {
 		t.Fatalf("did = %+v, want %+v", got.Did, want)
 	}
-	if text := `The session cap on #12 ("Card #12 used its sessions") is resolved with extend: 1 session from the pool and 100 lines to its line bound.`; got.Text != text {
+	if text := `The session cap on #12 ("Card #12 used its sessions") is resolved with “Allow more sessions”: 1 session from the pool and 100 lines to its line bound.`; got.Text != text {
 		t.Fatalf("text = %q, want %q", got.Text, text)
 	}
 }

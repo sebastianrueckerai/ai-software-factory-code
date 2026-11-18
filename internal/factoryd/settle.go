@@ -243,10 +243,44 @@ func caseEnds(ask Event, events []Event) func(Event) bool {
 // ReasonLine is a settled ask's line, the decider line's pattern: word,
 // actor, time (the ruling of 2026-10-17).
 func ReasonLine(s PokeSettle) string {
-	if s.By != "" {
-		return s.Word + " by " + s.By + " · " + s.At.UTC().Format("15:04")
+	word, by := s.Word, DeciderWords(s.By)
+	if s.By == FactoryDecider {
+		// the factory answers no ask: it withdraws one that no longer holds
+		if word == "answered" {
+			word = "withdrawn"
+		}
+		by = ""
 	}
-	return s.Word + " · " + s.At.UTC().Format("15:04")
+	if by != "" {
+		return word + " by " + by + " · " + s.At.UTC().Format("15:04")
+	}
+	return word + " · " + s.At.UTC().Format("15:04")
+}
+
+// deciderLead is DeciderWords at the start of a sentence: a decider's
+// words capitalised, a human's login as it is.
+func deciderLead(actor string) string {
+	if who := DeciderWords(actor); who != actor {
+		return capitalize(who)
+	}
+	return actor
+}
+
+// DeciderWords is who decided as a human reads it: the factory, the
+// check-in, the factory agent or the planner by name, a human by their
+// login, "" for none.
+func DeciderWords(actor string) string {
+	switch actor {
+	case FactoryDecider:
+		return "the factory"
+	case CheckinDecider:
+		return "the check-in"
+	case ChatUser:
+		return "the factory agent"
+	case FinderPlanner:
+		return "the planner"
+	}
+	return actor
 }
 
 // ApprovalWaits reports whether a pending approval request names id.

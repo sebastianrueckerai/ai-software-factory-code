@@ -600,7 +600,7 @@ func TestRunSessionParksAtTheMonthCap(t *testing.T) {
 func TestRunSessionWaitsForTheDayCap(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "fix main", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
-	refusal := "free headroom -23.439417 EUR (task 2.000000, day -23.439417, month 54.546612) fits 0 output tokens after a request of 61234 bytes (at most 61234 prompt tokens), below the minimum call of 1024"
+	refusal := "free headroom -23.44 EUR (task 2.00, day -23.44, month 54.55) fits 0 output tokens after a request of 61234 bytes (at most 61234 prompt tokens), below the minimum call of 1024"
 	capped := CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedDayCap, Reason: refusal}, At: time.Date(2026, 10, 14, 20, 43, 31, 0, time.UTC), Allowed: true}
 	store.capRefusals = map[string]CapRefusal{"t1": capped}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
@@ -612,7 +612,7 @@ func TestRunSessionWaitsForTheDayCap(t *testing.T) {
 		t.Fatalf("result = %+v, want day_cap with the refusal", res)
 	}
 	question := "the day cap is reached: the card resumes on its own once the day's free headroom " +
-		"funds a session, at the latest when the UTC day turns at 2026-10-15T00:00:00Z. Raise budget.day_eur in policy.yaml to resume it sooner, or close the card."
+		"funds a session, at the latest when the UTC day turns at 2026-10-15T00:00:00Z. Raise the day cap in policy.yaml to resume it sooner, or close the card."
 	run := &taskRun{}
 	reason, until := CapRefusalReason(*res.Capped), run.capUntil(*res.Capped)
 	if want := question + "\nthe gateway refused this task's spend (refused_day_cap): " + refusal; reason != want || !until.Equal(time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)) {
@@ -756,10 +756,10 @@ func TestRunSessionNamesACostHoldCrossing(t *testing.T) {
 		want string
 	}{
 		"the output at its limit": {&OverHoldCall{Alias: "big", PromptTokens: 22680, CachedTokens: 8896, OutputTokens: 24576, OutputLimit: 24576, HoldEUR: 0.122078, CostEUR: 0.129745},
-			said + "; a model call on big crossed its cost hold: 22680 prompt tokens (8896 cached) and 24576 output tokens cost 0.129745 EUR against a hold of 0.122078 EUR; " +
+			said + "; a model call on big crossed its cost hold: 22680 prompt tokens (8896 cached) and 24576 output tokens cost 0.13 EUR against a hold of 0.12 EUR; " +
 				"its output ran to the limit of 24576 tokens, so a shorter output fits: write the change in smaller pieces"},
 		"the prompt over its price": {&OverHoldCall{Alias: "big", PromptTokens: 90000, OutputTokens: 3000, OutputLimit: 24576, HoldEUR: 0.131, CostEUR: 0.1392},
-			said + "; a model call on big crossed its cost hold: 90000 prompt tokens (0 cached) and 3000 output tokens cost 0.139200 EUR against a hold of 0.131000 EUR; " +
+			said + "; a model call on big crossed its cost hold: 90000 prompt tokens (0 cached) and 3000 output tokens cost 0.14 EUR against a hold of 0.13 EUR; " +
 				"its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"},
 		"no call crossed its hold": {nil, said},
 	} {
@@ -818,7 +818,7 @@ func TestProjectCapRefusalEscalates(t *testing.T) {
 func TestCloseIssueAsFactory(t *testing.T) {
 	ctx := context.Background()
 	card := Task{ID: "t-a", Repository: "linkshort/linkshort", IssueNumber: 5, Track: "direct"}
-	const comment = "factoryd: closing this issue."
+	const comment = "Closing this issue."
 	rig := func(failCall string) (*fakeStore, *planForgejo, *Forgejo) {
 		fj := &planForgejo{issues: map[int64]*planIssue{5: {state: "open"}}, failCall: failCall}
 		return newFakeStore(), fj, &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
@@ -892,7 +892,7 @@ func TestCloseIssueAsFactory(t *testing.T) {
 	}
 	check("comment failed", store, fj, nil, "open", false, "GET issues/5/dependencies", "POST issues/5/comments")
 	fj.calls = nil
-	if err := closeIssueAsFactory(ctx, store, f, card, "factoryd: closing this issue for another reason."); err != nil {
+	if err := closeIssueAsFactory(ctx, store, f, card, "Closing this issue for another reason."); err != nil {
 		t.Fatal(err)
 	}
 	check("comment retried", store, fj, []string{comment}, "closed", true, "GET issues/5/dependencies", "GET issues/5/comments", "POST issues/5/comments", "PATCH issues/5")

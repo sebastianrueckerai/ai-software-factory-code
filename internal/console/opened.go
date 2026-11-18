@@ -467,7 +467,7 @@ func (c *Console) askOf(ctx context.Context, v *boardView, k card, face factoryd
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		if lead, words, ok := quotedLine(line); ok {
+		if lead, words, ok := factoryd.QuotedLine(line); ok {
 			if utf8.RuneCountInString(words) > factoryd.StoryMax {
 				writer, _, view := strings.Cut(lead, "'s view: ")
 				if !view {
@@ -483,19 +483,6 @@ func (c *Console) askOf(ctx context.Context, v *boardView, k card, face factoryd
 		a.Story = append(a.Story, storyLine{Lead: c.factoryText(ctx, v, k.Repository, line, seen)})
 	}
 	return a
-}
-
-// quotedLead are the leads of a story line that quotes a writer's words.
-var quotedLead = regexp.MustCompile(`^(The agent asks: |(?:The |)[A-Z][\w -]*'s view: )`)
-
-// quotedLine splits a story line that quotes a writer into its lead and
-// the words.
-func quotedLine(line string) (lead, words string, ok bool) {
-	m := quotedLead.FindString(line)
-	if m == "" {
-		return "", "", false
-	}
-	return m, line[len(m):], true
 }
 
 // presser is the form that sends answer a by key, and the name each of its
@@ -934,7 +921,7 @@ func (c *Console) evidenceOf(ctx context.Context, v *boardView, k card, face fac
 	if n := len(face.Findings); n > 0 {
 		var b strings.Builder
 		for _, f := range face.Findings {
-			b.WriteString("<li>" + string(c.linkRefs(ctx, v, k.Repository, f)) + "</li>")
+			b.WriteString(`<li class="quote">` + string(c.linkRefs(ctx, v, k.Repository, f)) + "</li>")
 		}
 		out = append(out, evidence{Label: fmt.Sprintf("The %d %s", n, plural(n, "open finding")), Text: template.HTML("<ul>" + b.String() + "</ul>"), Findings: n}) // #nosec G203 -- each item is linkRefs's escaped HTML
 	}

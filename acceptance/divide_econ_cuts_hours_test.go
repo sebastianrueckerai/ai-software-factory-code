@@ -48,7 +48,7 @@ func TestDivideConquerEconomics(t *testing.T) {
 		rig := newDivideRig(t, &accFigures{report: accPanelsReport()})
 		body := rig.page()
 		holds(t, body, []string{
-			"€0.0200",
+			"0.0200 EUR",
 			"small 2.00 / medium 3.00",
 			"4 cards",
 			"TestDivideConquerEconomics in acceptance",
@@ -61,7 +61,7 @@ func TestDivideConquerEconomics(t *testing.T) {
 	t.Run("store", func(t *testing.T) {
 		s, db := divideStore(t)
 		// e1 and e2 small, e3 and e4 medium, el large: 22 EUR over 1100
-		// merged changed lines is €0.0200; the small fit through (100, 3)
+		// merged changed lines is 0.0200 EUR; the small fit through (100, 3)
 		// and (300, 5) meets the euros axis at 2.00, the medium through
 		// (200, 5) and (400, 7) at 3.00, and one large card holds no fit
 		accEconCard(t, s, db, "t-econ-1", "small", 100, 9, []float64{1}, 3, 401, accDay(3))
@@ -110,8 +110,8 @@ func TestDivideConquerEconomics(t *testing.T) {
 		})
 		same(t, "economics_coverage", dc.EconomicsCoverage, factoryd.EconomicsCoverage{Cards: 7, MissingCost: 1, MissingLines: 1})
 		body := rig.page()
-		holds(t, panel(t, body, "EUR per merged line"), []string{"€0.0200", "7 cards · 1 missing cost · 1 missing lines",
-			"TestDivideConquerEconomics in acceptance"}, []string{"€0.0182", "€0.0354"})
+		holds(t, panel(t, body, "EUR per merged line"), []string{"0.0200 EUR", "7 cards · 1 missing cost · 1 missing lines",
+			"TestDivideConquerEconomics in acceptance"}, []string{"0.0182 EUR", "0.0354 EUR"})
 		holds(t, panel(t, body, "fixed EUR per card"), []string{"large unavailable / medium 3.00 / small 2.00",
 			"TestDivideConquerEconomics in acceptance"}, []string{"large 0.00"})
 
@@ -124,7 +124,7 @@ func TestDivideConquerEconomics(t *testing.T) {
 		same(t, "zero-line eur_per_merged_line has", zero.EurPerMergedLine.Has, false)
 		same(t, "zero-line fits", zero.FixedEurPerCard, []factoryd.SizeIntercept{{Size: "small", Cards: 2}})
 		page := rig.pageQuery(accSpan(accDay(21), accDay(27)))
-		holds(t, panel(t, page, "EUR per merged line"), []string{">—<", "2 cards"}, []string{"€0.0000"})
+		holds(t, panel(t, page, "EUR per merged line"), []string{">—<", "2 cards"}, []string{"0.0000 EUR"})
 		holds(t, panel(t, page, "fixed EUR per card"), []string{"small unavailable"}, []string{"small 0.00"})
 		// a window with no merged card at all
 		empty := rig.pageQuery(accSpan(accDay(100), accDay(106)))

@@ -641,7 +641,7 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 	}
 	signalDependents(ctx, r.store, r.cfg.Workflows, t.ID)
 	r.showTakeOver(ctx, old, t)
-	if err := closeIssueAsFactory(ctx, r.store, r.forgejo, old, fmt.Sprintf("factoryd: Retried as #%d.", t.IssueNumber)); err != nil {
+	if err := closeIssueAsFactory(ctx, r.store, r.forgejo, old, fmt.Sprintf("Retried as #%d.", t.IssueNumber)); err != nil {
 		return 0, stopped("closing the failed card's issue", err)
 	}
 	r.record(ctx, old.ID, "retried", map[string]any{"by": by, "as": t.ID, "issue": t.IssueNumber})

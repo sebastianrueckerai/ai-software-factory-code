@@ -133,7 +133,7 @@ func (r *Runner) judgeArtifacts(ctx context.Context, t Task, home string, p Plan
 		row, detail := judge(c, of[i], model, results[i])
 		detail["cost"] = cost
 		r.record(ctx, t.ID, "judgement", detail)
-		at := of[i].Head[:min(7, len(of[i].Head))]
+		at := ShortSHA(of[i].Head)
 		if row.Verdict == "" {
 			if err := r.store.DeleteVerdictsButApprover(ctx, home, c.ID); err != nil {
 				return nil, nil, 0, err

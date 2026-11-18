@@ -28,7 +28,7 @@ const (
 	holdWhy      = "While a plan is open on main, no merge goes to production, so a half-built feature never goes live."
 	holdSince    = "Merged is not live: while a plan is open on main, no merge of sf-demo-app goes to production. Production has waited since 2026-10-29 10:00 UTC."
 	holdPlanLine = "- plan #12: 2 of 4 cards merged; waits on #45 (failed), #46 (queued)."
-	holdEndNote  = "factoryd: no plan is open on main any more, so production goes ahead. Closing this issue."
+	holdEndNote  = "No plan is open on main any more, so production goes ahead. Closing this issue."
 )
 
 var holdChoices = []QuestionChoice{
@@ -220,7 +220,7 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 	fix("t-fix2", SourceMainFix, 41, keeperAtPtr(11, 10))
 	*clock = keeperAt(11, 15)
 	keeperPass(t, k)
-	wantComments := []string{demoRepo + "#31 factoryd: fix #41 merged too and waits for production."}
+	wantComments := []string{demoRepo + "#31 Fix #41 merged too and waits for production."}
 	if len(f.issues) != 1 || !slices.Equal(f.comments, wantComments) {
 		t.Fatalf("issues %d, comments %q; want one issue and %q", len(f.issues), f.comments, wantComments)
 	}
@@ -258,7 +258,7 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 	fix("t-fix6", SourceMainFix, 50, keeperAtPtr(11, 51))
 	*clock = keeperAt(11, 55)
 	keeperPass(t, k)
-	if got := f.comments[len(f.comments)-1]; got != demoRepo+"#32 factoryd: fixes #49 and #50 merged too and wait for production." {
+	if got := f.comments[len(f.comments)-1]; got != demoRepo+"#32 Fixes #49 and #50 merged too and wait for production." {
 		t.Errorf("comment %q", got)
 	}
 }
@@ -500,7 +500,7 @@ func TestReleaseKeeperClosesAnAskADeployNowOvertook(t *testing.T) {
 	k.Store = &deployNowAfterAsk{store}
 	*clock = keeperAt(16, 0)
 	keeperPass(t, k)
-	note := demoRepo + "#31 factoryd: Deploy now sent main at 9d9d9d9 to production while this ask was filed. Closing this issue."
+	note := demoRepo + "#31 Deploy now sent main at 9d9d9d9 to production while this ask was filed. Closing this issue."
 	if len(f.issues) != 1 || !slices.Equal(f.closed, []string{demoRepo + "#31"}) || !slices.Equal(f.comments, []string{note}) {
 		t.Errorf("issues %d, closed %q, comments %q; want #31 filed and closed with %q", len(f.issues), f.closed, f.comments, note)
 	}
@@ -769,7 +769,7 @@ func TestReleaseKeeperDeployNowByTheAgentSaysSo(t *testing.T) {
 	if _, err := k.DeployNow(context.Background(), demoRepo, "sebastian", ViaChat, "agent"); err != nil {
 		t.Fatal(err)
 	}
-	note := demoRepo + "#77 factoryd: the factory agent chose Deploy now: main at 9d9d9d9 goes to production. Closing this issue."
+	note := demoRepo + "#77 The factory agent chose Deploy now: main at 9d9d9d9 goes to production. Closing this issue."
 	if !slices.Equal(f.comments, []string{note}) {
 		t.Errorf("comments %q, want %q", f.comments, note)
 	}
@@ -787,7 +787,7 @@ func TestReleaseKeeperDeployNow(t *testing.T) {
 	if got, want := releaseRow(store, demoRepo), (Release{Repository: demoRepo, AsksAt: keeperAt(9, 0), HeldSince: keeperAt(12, 0), ToldHeld: demoCommit, DeployNow: demoCommit}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row %+v, want %+v", got, want)
 	}
-	note := demoRepo + "#77 factoryd: sebastian chose Deploy now: main at 9d9d9d9 goes to production. Closing this issue."
+	note := demoRepo + "#77 sebastian chose Deploy now: main at 9d9d9d9 goes to production. Closing this issue."
 	if !slices.Equal(f.closed, []string{demoRepo + "#77"}) || !slices.Equal(f.comments, []string{note}) {
 		t.Errorf("closed %q, comments %q; want #77 closed with %q", f.closed, f.comments, note)
 	}

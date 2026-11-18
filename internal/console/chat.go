@@ -113,7 +113,7 @@ func (t *turn) proposalRefusal(err error) error {
 	case errors.Is(err, factoryd.ErrOthersProposal):
 		return refuse(http.StatusForbidden, "It is another human's.")
 	case errors.Is(err, factoryd.ErrNoProposal), errors.Is(err, factoryd.ErrUsedProposal):
-		return refuse(http.StatusNotFound, "There is no such proposal or undo; it may have expired.")
+		return refuse(http.StatusNotFound, "There is no such proposal or undo. It may have expired.")
 	}
 	return err
 }
@@ -784,12 +784,12 @@ func (c *Console) settleCounts(ctx context.Context, repository, login string, li
 // named img1.. and doc1.. by arrival.
 func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "multipart/form-data" {
-		http.Error(w, "the chat's message form changed; reload the page", http.StatusBadRequest)
+		http.Error(w, "The chat's message form changed. Reload the page.", http.StatusBadRequest)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, chatPostRoom)
 	if err := r.ParseMultipartForm(chatImageBytes); err != nil {
-		http.Error(w, "the message form did not read; it holds at most 4 images of 8 MiB and 4 documents of 32 MiB each beside the text", http.StatusBadRequest)
+		http.Error(w, "The message form did not read. It holds at most 4 images of 8 MiB and 4 documents of 32 MiB each beside the text.", http.StatusBadRequest)
 		return
 	}
 	images, refusal := chatImages(r)
@@ -1859,10 +1859,10 @@ const correctionBytes = 8 << 10
 func readPoolCorrection(r *http.Request) (*poolCorrection, error) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, correctionBytes+1))
 	if err != nil {
-		return nil, refuse(http.StatusBadRequest, "The correction's body does not read; press the proposal again.")
+		return nil, refuse(http.StatusBadRequest, "The correction's body does not read. Press the proposal again.")
 	}
 	if len(body) > correctionBytes {
-		return nil, refuse(http.StatusBadRequest, fmt.Sprintf("The correction's body is over %d bytes; press the proposal again.", correctionBytes))
+		return nil, refuse(http.StatusBadRequest, fmt.Sprintf("The correction's body is over %d bytes. Press the proposal again.", correctionBytes))
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
 		return nil, nil

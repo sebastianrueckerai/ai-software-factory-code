@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"log"
 	"regexp"
 	"strconv"
@@ -142,7 +143,7 @@ func (c *Cloud) accrue(ctx context.Context) error {
 	for _, o := range acc.Overruns {
 		spend := o.EUR
 		if aerr := c.Audit.InsertAudit(context.WithoutCancel(ctx), AuditRow{TaskID: o.TaskID, Decision: "accrued",
-			Reason: fmt.Sprintf("resource %d: %.6f EUR booked", o.ResourceID, o.EUR), Tool: policy.ToolCommission,
+			Reason: fmt.Sprintf("resource %d: %s EUR booked", o.ResourceID, textutil.EUR(o.EUR)), Tool: policy.ToolCommission,
 			HoldEUR: &o.HeldEUR, SpendEUR: &spend, OverHold: o.Reason}); aerr != nil {
 			err = errors.Join(err, aerr)
 		}
@@ -266,14 +267,14 @@ func (s *Server) cloudPrices(ctx context.Context, c *toolCaller) *mcp.CallToolRe
 			fmt.Fprintf(&b, "- %s: no price (%v)\n", typ, err)
 			continue
 		}
-		fmt.Fprintf(&b, "- %s: %.4f EUR/h, %.2f EUR/month\n", typ, q.ServerHourly, q.MonthlyEUR)
+		fmt.Fprintf(&b, "- %s: %s EUR/h, %s EUR a month\n", typ, textutil.Rate(q.ServerHourly), textutil.EUR(q.MonthlyEUR))
 	}
 	if gb, err := p.VolumeGBMonthNet(); err == nil {
-		fmt.Fprintf(&b, "Volumes: %.4f EUR per GB and month, prorated per started hour, %d to %d GB.\n", gb, policy.MinVolumeGB, env.VolumeMaxGB)
+		fmt.Fprintf(&b, "Volumes: %s EUR per GB and month, prorated per started hour, %d to %d GB.\n", textutil.Rate(gb), policy.MinVolumeGB, env.VolumeMaxGB)
 	}
-	fmt.Fprintf(&b, "Envelope (%s): %.2f EUR a month (%.6f used or reserved this month), at most %d servers at once (%d open), leases up to %d h.\n"+
+	fmt.Fprintf(&b, "Envelope (%s): %s EUR a month (%s EUR used or reserved this month), at most %d servers at once (%d open), leases up to %d h.\n"+
 		"A lease is billed per started hour and reserved against the task budget up front. Beyond the envelope, commission_server files a human approval request.",
-		which, env.MonthlyEUR, use.MonthEUR, env.MaxCount, use.OpenServers, env.MaxLeaseHours)
+		which, textutil.EUR(env.MonthlyEUR), textutil.EUR(use.MonthEUR), env.MaxCount, use.OpenServers, env.MaxLeaseHours)
 	s.auditTool(c, tool, "allowed", "", &c.task.SpentEUR, nil)
 	return textResult(b.String())
 }
@@ -364,7 +365,7 @@ func (s *Server) commission(ctx context.Context, c *toolCaller, in CommissionIn)
 			com.ApprovalID, strings.Join(com.Violations, "; "), com.ApprovalID))
 	case cloudres.Denied:
 		s.auditTool(c, tool, "refused_denied", fmt.Sprintf("approval request %d denied: %s", com.ApprovalID, com.Note), &c.task.SpentEUR, nil)
-		return toolError(fmt.Sprintf("a human denied this request (approval request %d): %s. Do not ask for it again; work within the envelope (%s).",
+		return toolError(fmt.Sprintf("a human denied this request (approval request %d): %s. Do not ask for it again. Work within the envelope (%s).",
 			com.ApprovalID, com.Note, strings.Join(com.Violations, "; ")))
 	}
 
@@ -375,16 +376,16 @@ func (s *Server) commission(ctx context.Context, c *toolCaller, in CommissionIn)
 	if err != nil {
 		note := s.abandon(cctx, com)
 		s.auditTool(c, tool, "error_tool", err.Error()+note, &c.task.SpentEUR, &com.Hold.EUR)
-		return toolError("commissioning failed: " + err.Error() + ". Nothing is left running; the reservation returns to the task.")
+		return toolError("commissioning failed: " + err.Error() + ". Nothing is left running, and the reservation returns to the task.")
 	}
 	row := com.Rows[1]
 	lease := row.LeaseExpires.UTC().Format(time.RFC3339)
 	var b strings.Builder
 	fmt.Fprintf(&b, "commissioned resource %d: %s server %s at %s, login %s; lease until %s (billed per started hour; your access ends and it is deleted up to %s before then, at the collector's last pass, or when the task ends).\n",
 		row.ID, in.ServerType, row.Name, srv.IPv4(), loginUser, lease, cloudres.LeaseCutoff)
-	fmt.Fprintf(&b, "Reserved %.6f EUR against the task budget (%.4f EUR/h incl. the IPv4", q.ReservationEUR, q.ServerHourly)
+	fmt.Fprintf(&b, "Reserved %s EUR against the task budget (%s EUR/h incl. the IPv4", textutil.EUR(q.ReservationEUR), textutil.Rate(q.ServerHourly))
 	if vol.ID != 0 {
-		fmt.Fprintf(&b, ", plus %.6f EUR/h for the %d GB volume mounted at /mnt/HC_Volume_%d", q.VolumeHourly, in.VolumeGB, vol.ID)
+		fmt.Fprintf(&b, ", plus %s EUR/h for the %d GB volume mounted at /mnt/HC_Volume_%d", textutil.Rate(q.VolumeHourly), in.VolumeGB, vol.ID)
 	}
 	b.WriteString("). Release it with release_resource as soon as you are done.\n")
 	b.WriteString("SSH accepts only certificates from the factory CA (no passwords, no keys), from this sandbox only, about a minute after creation. " +
@@ -563,8 +564,8 @@ func (s *Server) listResources(ctx context.Context, c *toolCaller) *mcp.CallTool
 		if r.Address != "" {
 			fmt.Fprintf(&b, ", %s", r.Address)
 		}
-		fmt.Fprintf(&b, ", lease until %s, %.4f EUR/h, %.6f EUR so far (%d h), purpose %q\n",
-			r.LeaseExpires.UTC().Format(time.RFC3339), r.PricePerHourEUR, r.AccruedEUR, r.AccruedHours, r.Purpose)
+		fmt.Fprintf(&b, ", lease until %s, %s EUR/h, %s EUR so far (%d h), purpose %q\n",
+			r.LeaseExpires.UTC().Format(time.RFC3339), textutil.Rate(r.PricePerHourEUR), textutil.EUR(r.AccruedEUR), r.AccruedHours, r.Purpose)
 	}
 	if b.Len() == 0 {
 		b.WriteString("no commissioned resources")
@@ -617,7 +618,7 @@ func (s *Server) sshCertificate(ctx context.Context, c *toolCaller, in Certifica
 	}
 	key := strings.TrimSpace(in.PublicKey)
 	if !sshPublicKey.MatchString(key) {
-		return s.refuseTool(c, tool, "refused_arguments", "public_key must be one OpenSSH public key line (ssh-ed25519, ecdsa-sha2-nistp* or ssh-rsa)")
+		return s.refuseTool(c, tool, "refused_arguments", "`public_key` must be one OpenSSH public key line (ssh-ed25519, ecdsa-sha2-nistp* or ssh-rsa)")
 	}
 	row, ok, err := s.owned(ctx, c, in.ResourceID)
 	if err != nil {

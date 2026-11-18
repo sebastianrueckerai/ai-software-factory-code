@@ -54,7 +54,7 @@ func TestHumanCardQuestions(t *testing.T) {
 		"roll refused": {RollRefusedQuestion("abc1234", []string{"gateway", "worker"}, []string{"gateway: x", "worker: y"}, "https://git/run/1"),
 			"Fix the signing of the images gateway, worker, then close this card", []QuestionChoice{did, notNow},
 			"Main's run is green at abc1234, and 2 images of it carry no signature by the factory's key."},
-		"rerun": {RerunQuestion(1208, "abc1234def5678", "ci / test", []string{"ci / test: lost"}, "factoryd re-ran it once."),
+		"rerun": {RerunQuestion(1208, "abc1234def5678", "ci / test", []string{"ci / test: lost"}, "The factory re-ran it once."),
 			"Re-run the check ci / test on main after a lost runner", []QuestionChoice{did, notNow},
 			"Main's push run 1208 failed in ci / test, and each failed job lost its runner while it ran."},
 		"config": {ConfigRejectedQuestion("factory", "c9c9c9c9c9", "https://git/tree", "Version 1 stays current.", "bad key"),
@@ -100,9 +100,9 @@ func TestHumanCardQuestions(t *testing.T) {
 			}
 		})
 	}
-	const lostWhy = "Main CI's push run 1208 of abc1234def5678 failed, but none of its steps did: each failed job lost its runner while it ran " +
-		"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card. factoryd re-ran it once."
-	if info := RerunQuestion(1208, "abc1234def5678", "ci / test", nil, "factoryd re-ran it once.").Info; !strings.HasPrefix(info, lostWhy+"\n\n") {
+	const lostWhy = "Main CI's push run 1208 of abc1234 failed, but none of its steps did: each failed job lost its runner while it ran " +
+		"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card. The factory re-ran it once."
+	if info := RerunQuestion(1208, "abc1234def5678", "ci / test", nil, "The factory re-ran it once.").Info; !strings.HasPrefix(info, lostWhy+"\n\n") {
 		t.Errorf("rerun info = %q, want it to open with %q", info, lostWhy)
 	}
 }

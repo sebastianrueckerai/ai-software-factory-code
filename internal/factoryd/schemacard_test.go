@@ -412,7 +412,7 @@ func TestSchemaCopierWithdrawsTheHumanCardOfAPullRequestItCloses(t *testing.T) {
 	if err := c.SyncOnce(ctx, 1, 0); err != nil {
 		t.Fatal(err)
 	}
-	const reason = "factoryd closed pull request #1: the copies on main equal the schemas of factoryd 0123456789ab"
+	const reason = "the factory closed pull request #1: the copies on main equal the factory's schemas of build 0123456"
 	if got := store.tasks[card.ID]; got.Status != "closed" {
 		t.Fatalf("card %+v, want closed", got)
 	}
@@ -438,7 +438,7 @@ func TestSchemaCopierWithdrawsTheHumanCardOfAPullRequestItCloses(t *testing.T) {
 	}
 	fj.mu.Lock()
 	defer fj.mu.Unlock()
-	if !slices.Equal(fj.closedIssues, []int64{1}) || !slices.Contains(fj.comments, "1: factoryd: "+reason+"; this card ends with it.") {
+	if !slices.Equal(fj.closedIssues, []int64{1}) || !slices.Contains(fj.comments, "1: The "+strings.TrimPrefix(reason, "the ")+". This card ends with it.") {
 		t.Fatalf("closed issues %v, comments %q; want the card's #1 closed with its comment", fj.closedIssues, fj.comments)
 	}
 }

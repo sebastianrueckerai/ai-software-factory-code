@@ -158,7 +158,7 @@ func TestAttachAnalysisShowsOnTheCard(t *testing.T) {
 		t.Fatalf("the card's analysis = %q, want %q", got, want)
 	}
 	ask := CaseAsk{Detail: map[string]any{"info": "the metrics say so"}, Analysis: want}
-	if got := CaseFace(c, Task{ID: "t-1"}, ask).Info; got != "the metrics say so\n\n"+want {
+	if got := CaseFace(c, Task{ID: "t-1"}, ask).Info; got != "the metrics say so\n\n"+Quoted(want) {
 		t.Fatalf("the face's info = %q", got)
 	}
 	if got := askRow(t, s, "sf/wake", "t-1"); got != seededRow {

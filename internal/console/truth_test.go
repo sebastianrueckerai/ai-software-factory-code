@@ -157,10 +157,10 @@ func TestReviewsSectionShowsTheFindingsTheAskCites(t *testing.T) {
 		t.Fatalf("the full brief has no list of the %d findings the ask counts:\n%s", n, body)
 	}
 	fold, _, _ = strings.Cut(fold, "</ul>")
-	if got := strings.Count(fold, "<li>"); n != 8 || got != n {
+	if got := strings.Count(fold, `<li class="quote">`); n != 8 || got != n {
 		t.Errorf("the ask counts %d findings and the fold lists %d, want 8 and 8:\n%s", n, got, fold)
 	}
-	if !strings.Contains(fold, "<li>test-only credential at acceptance/pool_gateway_rig_test.go:41</li>") {
+	if !strings.Contains(fold, `<li class="quote">test-only credential at acceptance/pool_gateway_rig_test.go:41</li>`) {
 		t.Errorf("the fold lacks the eighth audit finding:\n%s", fold)
 	}
 	if !strings.Contains(body, `<summary>The full brief<span class="hint">8 open findings, the evidence</span>`) {
@@ -437,5 +437,24 @@ func TestAHelperAtWorkKeepsItsCardFresh(t *testing.T) {
 	r.tasks.mu.Unlock()
 	if face := smallCard(t, r, ck, "t-c"); !strings.Contains(face, "stale") {
 		t.Errorf("the card whose sizing is quiet for two hours does not read stale:\n%s", face)
+	}
+}
+
+// A queued card whose screening runs shows one state: the screening's
+// step, and no turn among the queued cards beside it.
+func TestAHelpersStepIsTheFacesOneState(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	now := time.Now()
+	card := factoryd.Task{ID: facefixtures.TaskID(2410), Kind: "agent", Status: "queued", Track: policy.TrackDirect, Repository: facefixtures.Repository,
+		IssueNumber: 2410, Source: factoryd.SourceWebhook, Author: "alice", CreatedAt: now.Add(-time.Hour), Objective: "Export the board as CSV\n\nOne row per card."}
+	screening := factoryd.Task{ID: facefixtures.TaskID(2411), Kind: "agent", Status: "running", Track: policy.TrackDirect, Repository: facefixtures.Repository,
+		Source: factoryd.SourceScreening, Parent: card.ID, CreatedAt: now.Add(-time.Minute), Objective: "Screen #2410"}
+	s := galleryScene()
+	s.drawer, s.tasks = card.ID, []factoryd.BoardTask{{Task: card, SlotWait: "waits for its turn to start, 2 ahead (3 running)"}, {Task: screening}}
+	r.seedScene(s)
+	face := smallCard(t, r, ck, card.ID)
+	if !strings.Contains(face, "screening") || strings.Contains(face, "waits for its turn") {
+		t.Fatalf("the face names its screening and its turn, want the screening alone:\n%s", face)
 	}
 }

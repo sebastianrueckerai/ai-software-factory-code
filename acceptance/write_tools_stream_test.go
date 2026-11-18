@@ -196,7 +196,7 @@ var writeCases = []writeCase{
 			r.PutInfraFile(accInfraFile, accPoolHead)
 			r.OnReload(func() { r.SetLoadedPool(12) })
 		},
-		result: "The pool of " + accProjectName + " is €12.00 now, was €10.00: sf/infra#101 carries the change and the policy in force holds it.",
+		result: "The pool of " + accProjectName + " is 12.00 EUR now, was 10.00 EUR: sf/infra#101 carries the change and the policy in force holds it.",
 		check: func(t *testing.T, r *AcceptanceRig, _ *AccDocs) {
 			equal(t, "the pool file after the change", r.InfraFiles()[accInfraFile], accPoolLanded)
 		}},

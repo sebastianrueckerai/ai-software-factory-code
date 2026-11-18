@@ -619,7 +619,7 @@ func TestFalUnboundedUnitRefusedBeforeTheCall(t *testing.T) {
 func TestToolRefusedByClass(t *testing.T) {
 	e := newToolEnv(t, running("odd"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
 	text, isErr := e.call(t, policy.ToolWebScrape, map[string]any{"url": "https://example.com"})
-	if !isErr || !strings.Contains(text, "refused_capability") || !strings.Contains(text, "do not retry") {
+	if !isErr || !strings.Contains(text, "refused_capability") || !strings.Contains(text, "Do not retry") {
 		t.Fatalf("result = %q", text)
 	}
 	if a := e.lastAudit(t); a.Decision != "refused_capability" || a.Tool != policy.ToolWebScrape || *a.PolicyVersion != 7 {
@@ -977,7 +977,7 @@ func TestRequestTool(t *testing.T) {
 	e.escalator.err = &providerError{status: http.StatusUnprocessableEntity, body: "this session cannot wait for a new image: finish with what the sandbox has\n"}
 	text, isErr = e.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "cut"})
 	if want := "refused by the factory policy (refused_session): this session cannot wait for a new image: finish with what the sandbox has. " +
-		"The tool did not run; do not retry this call."; !isErr || text != want {
+		"The tool did not run. Do not retry this call."; !isErr || text != want {
 		t.Fatalf("a refused ask = %q, want %q", text, want)
 	}
 	if a := e.lastAudit(t); a.Decision != "refused_session" || a.Reason != "this session cannot wait for a new image: finish with what the sandbox has" {
@@ -1097,7 +1097,7 @@ func TestRequestCut(t *testing.T) {
 	e.escalator.err = &providerError{status: http.StatusUnprocessableEntity, body: "this card cannot be cut: finish it as it is, or escalate\n"}
 	text, isErr = e.call(t, policy.ToolRequestCut, map[string]any{"reason": "r", "parts": []string{"a", "b"}})
 	if want := "refused by the factory policy (refused_session): this card cannot be cut: finish it as it is, or escalate. " +
-		"The tool did not run; do not retry this call."; !isErr || text != want {
+		"The tool did not run. Do not retry this call."; !isErr || text != want {
 		t.Fatalf("a refused cut = %q, want %q", text, want)
 	}
 }
@@ -1455,7 +1455,7 @@ func TestFalOverBoundResponseBooksTheRealCost(t *testing.T) {
 		t.Fatalf("ledger = %+v, want the real 0.25", l)
 	}
 	a := e.lastAudit(t)
-	if a.Decision != "allowed" || a.OverHold != "COST OVER HOLD: tool fal_run cost 0.250000 EUR against a hold of 0.100000 EUR; booked in full" ||
+	if a.Decision != "allowed" || a.OverHold != "COST OVER HOLD: tool fal_run cost 0.25 EUR against a hold of 0.10 EUR; booked in full" ||
 		!near6(*a.HoldEUR, 0.1) || !near6(*a.SpendEUR, 0.25) {
 		t.Fatalf("audit = %+v", a)
 	}
@@ -1685,7 +1685,7 @@ func TestTaskCostsTaskIDClass(t *testing.T) {
 	e.store.addTask(Task{ID: "43", BudgetEUR: 2, Status: "running", Classes: []string{"coder"}, Repository: "sf/code"})
 	text, isErr := e.call(t, policy.ToolTaskCosts, map[string]any{"task_id": "43"})
 	if !isErr || !strings.Contains(text, "refused_capability") ||
-		!strings.Contains(text, "task_id is a read of the classes that supervise (a plan session)") {
+		!strings.Contains(text, "`task_id` is a read of the classes that supervise (a plan session)") {
 		t.Fatalf("coder with task_id = %q, want the refusal naming the parameter", text)
 	}
 	text, isErr = e.call(t, policy.ToolTaskCosts, nil)
@@ -2081,7 +2081,7 @@ func TestDigestToolRefusesBadArguments(t *testing.T) {
 		{map[string]any{"path": strings.Repeat("a", 4097)}, "path is longer than 4096 bytes"},
 		{map[string]any{"path": "a.md", "ask": strings.Repeat("a", 2001)}, "ask is longer than 2000 characters: ask for the one thing you need from the file"},
 	} {
-		want := "refused by the factory policy (refused_arguments): " + tc.want + ". The tool did not run; do not retry this call."
+		want := "refused by the factory policy (refused_arguments): " + tc.want + ". The tool did not run. Do not retry this call."
 		if text, isErr := e.call(t, policy.ToolDigest, tc.args); !isErr || text != want {
 			t.Errorf("%.60v = %q, want %q", tc.args, text, want)
 		}

@@ -48,7 +48,7 @@ func TestMergeDrawerRendersTheAskAndItsActions(t *testing.T) {
 	r.openCases = map[string][]factoryd.Case{"t-red": {k}}
 	ck, _ := r.loggedIn(t)
 	body := drawer(t, r, ck, "t-red", "overview")
-	if !strings.Contains(body, "<dt>Why a human</dt><dd>checks round 1 failed; review round 2 said the same</dd>") {
+	if !strings.Contains(body, "<dt>Why a human</dt><dd><ul><li>checks round 1 failed</li><li>review round 2 said the same</li></ul></dd>") {
 		t.Errorf("the full brief lacks the why-a-human entries:\n%s", body)
 	}
 	for _, key := range []string{factoryd.ActDenyMerge, factoryd.ActDenyMerge + "/reject"} {

@@ -109,7 +109,7 @@ func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, f
 			for i, k := range open {
 				ids[i] = strconv.FormatInt(k.ID, 10)
 			}
-			return 0, ErrActRefused(fmt.Sprintf("case %d is not a case of this card: its open cases are %s", caseID, cmp.Or(textutil.AndList(ids), "none")))
+			return 0, agentRefused(fmt.Sprintf("`case_id` %d is no ask of this card. Its open asks, by `case_id`: %s.", caseID, cmp.Or(textutil.AndList(ids), "none")))
 		}
 		steps, err := r.store.CaseSteps(ctx, c.ID)
 		if err != nil {

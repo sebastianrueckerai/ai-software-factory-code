@@ -109,7 +109,7 @@ func (r *Runner) BecomePlan(ctx context.Context, taskID string, sw PlanSwitch) (
 	if err := r.store.ResetTaskUsage(ctx, taskID); err != nil {
 		return PlanSwitchResult{}, err
 	}
-	note := fmt.Sprintf("factoryd: card #%d went back to the planner; its branch stays.", t.IssueNumber)
+	note := fmt.Sprintf("Card #%d went back to the planner. Its branch stays.", t.IssueNumber)
 	if err := cleanup(taskID, "close its pull request", r.closeTaskPullRequest(ctx, repo, t, note)); err != nil {
 		return PlanSwitchResult{}, err
 	}

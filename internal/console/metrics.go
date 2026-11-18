@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"html/template"
 	"log"
 	"maps"
@@ -103,7 +104,7 @@ func mDec(v float64) string       { return fmt.Sprintf("%.1f", v) }
 func mDecMove(d float64) string   { return msign(d) + mDec(math.Abs(d)) }
 func mPct(ratio float64) string   { return mCount(ratio*100) + " %" }
 func mPctMove(d float64) string   { return msign(d) + mCount(math.Abs(d)*100) }
-func mEur(v float64) string       { return fmt.Sprintf("€%.2f", v) }
+func mEur(v float64) string       { return textutil.EUR(v) + " EUR" }
 func mEurMove(d float64) string   { return msign(d) + mEur(math.Abs(d)) }
 
 // mK reads token counts: whole thousands as k, whole millions as M,
@@ -216,8 +217,8 @@ func msub(a, b float64) float64 { return a - b }
 // mInt is an integer count as the coverage notes read it.
 func mInt(n int) string { return strconv.FormatInt(int64(n), 10) }
 
-// mEur4 is money to four digits, the EUR-per-line panel's own precision.
-func mEur4(v float64) string { return "€" + fmt.Sprintf("%.4f", v) }
+// mEur4 is the EUR-per-line panel's rate.
+func mEur4(v float64) string { return textutil.Rate(v) + " EUR" }
 
 func mEur4Move(d float64) string { return msign(d) + mEur4(math.Abs(d)) }
 
@@ -274,7 +275,7 @@ func mIntercepts(fits []factoryd.SizeIntercept) string {
 	parts := make([]string, 0, len(fits))
 	for _, f := range fits {
 		if f.Available {
-			parts = append(parts, f.Size+" "+fmt.Sprintf("%.2f", f.EUR))
+			parts = append(parts, f.Size+" "+textutil.EUR(f.EUR))
 		} else {
 			parts = append(parts, f.Size+" unavailable")
 		}

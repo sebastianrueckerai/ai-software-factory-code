@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"log"
 	"maps"
 	"math"
@@ -2037,7 +2038,7 @@ type CardCapError struct{ Budget float64 }
 // Error is CardCapError's message, the ceiling's refusal of a raise; the
 // console's fund answer prints it whole.
 func (e *CardCapError) Error() string {
-	return fmt.Sprintf("the card holds %.2f EUR and the raise passes its cap", e.Budget)
+	return fmt.Sprintf("the card holds %s EUR and the raise passes its cap", textutil.EUR(e.Budget))
 }
 
 // commitRows runs write in one transaction and publishes the rows it

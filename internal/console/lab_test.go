@@ -113,7 +113,7 @@ func TestLab(t *testing.T) {
 	r.c.cfg.SessionFunded = func(_ context.Context, id, _ string) (string, error) {
 		if id == labID(610) {
 			return "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
-				"0.520 EUR of the 2.000 EUR budget remains, and a session's first call on factory/big needs 0.600000 EUR", nil
+				"0.52 EUR of the 2.00 EUR budget remains, and a session's first call on factory/big needs 0.60 EUR", nil
 		}
 		return "", nil
 	}
@@ -1342,7 +1342,7 @@ func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.
 		{Role: "user", Content: "What is #606 stuck on, and can it finish under its budget?", At: ago(14 * time.Minute)},
 		{Role: "assistant", At: ago(14*time.Minute - 4*time.Second), ToolCalls: []factoryd.ChatToolCall{{ID: "call_1", Name: "card",
 			Arguments: fmt.Sprintf(`{"task_id":%q}`, running.ID), ReadAt: ago(14*time.Minute - 4*time.Second),
-			Result: ref(running) + ": running, gate session for 23 min, session 2 on big\nspent €1.72 of €2.00\n" +
+			Result: ref(running) + ": running, gate session for 23 min, session 2 on big\nspent 1.72 of 2.00 EUR\n" +
 				"PR #609: checks 3/4, acceptance failed (TestDrawerObjective)"}}},
 		{Role: "assistant", At: ago(14*time.Minute - 9*time.Second), Content: "#606 is in its second session. The first pushed PR #609, then the " +
 			"**acceptance** job failed: the clamp cuts the objective at two lines and `TestDrawerObjective` reads three.\n\n" +
@@ -1641,7 +1641,7 @@ func fireScene(now time.Time) labScene {
 	s.objects["sessions/"+near.ID+"/timeline.jsonl"] = jsonl(tl...)
 	s.objects["sessions/"+near.ID+"/s-2.jsonl"] = jsonl(
 		map[string]any{"time": stamp(ago(13 * time.Minute)), "kind": "model_call", "detail": map[string]any{"text": "The test job failed on TestPulseOrder: the failed card comes second. Sorting the bullets by state first."}},
-		map[string]any{"time": stamp(ago(5 * time.Minute)), "kind": "model_call", "detail": map[string]any{"text": "€1.95 of €2.00 spent; I push this fix and stop here."}},
+		map[string]any{"time": stamp(ago(5 * time.Minute)), "kind": "model_call", "detail": map[string]any{"text": "1.95 of 2.00 EUR spent; I push this fix and stop here."}},
 	)
 
 	refused := func(d time.Duration) string {

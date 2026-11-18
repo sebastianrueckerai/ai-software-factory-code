@@ -196,8 +196,8 @@ func TestMakeChatTokenRefuses(t *testing.T) {
 		want   string
 	}{
 		{"another login", func(f *fakeForgejo, _ url.Values) { f.tokens["fj"] = "mallory" }, http.StatusBadRequest, "this Forgejo token belongs to mallory, not to you"},
-		{"admin reach", func(f *fakeForgejo, _ url.Values) { f.adminReach = true }, http.StatusBadRequest, "this Forgejo token reaches more than read:user, write:repository and write:issue; make one with only those three scopes"},
-		{"notification reach", func(f *fakeForgejo, _ url.Values) { f.notificationReach = true }, http.StatusBadRequest, "this Forgejo token reaches more than read:user, write:repository and write:issue; make one with only those three scopes"},
+		{"admin reach", func(f *fakeForgejo, _ url.Values) { f.adminReach = true }, http.StatusBadRequest, "This Forgejo token reaches more than read:user, write:repository and write:issue. Make one with only those three scopes."},
+		{"notification reach", func(f *fakeForgejo, _ url.Values) { f.notificationReach = true }, http.StatusBadRequest, "This Forgejo token reaches more than read:user, write:repository and write:issue. Make one with only those three scopes."},
 		{"unknown token", func(f *fakeForgejo, form url.Values) { form.Set("forgejo", "nope") }, http.StatusBadRequest, "Forgejo refused this token"},
 		{"project not written", func(_ *fakeForgejo, form url.Values) { form.Set("project", "other/repo") }, http.StatusForbidden, "you do not write other/repo"},
 		{"no project", func(_ *fakeForgejo, form url.Values) { form.Set("project", " ") }, http.StatusBadRequest, "choose a project you write"},
@@ -205,11 +205,11 @@ func TestMakeChatTokenRefuses(t *testing.T) {
 		{"no life", func(_ *fakeForgejo, form url.Values) { form.Del("life") }, http.StatusBadRequest, "choose 7, 30 or 90 days"},
 		{"probe 500", func(f *fakeForgejo, _ url.Values) { f.probeStatus = http.StatusInternalServerError }, http.StatusBadRequest, "Forgejo refused this token"},
 		{"no write:issue", func(f *fakeForgejo, _ url.Values) { f.lacks = "write:issue" }, http.StatusBadRequest,
-			"this Forgejo token lacks write:issue; make one with read:user, write:repository and write:issue"},
+			"This Forgejo token lacks write:issue. Make one with read:user, write:repository and write:issue."},
 		{"no write:repository", func(f *fakeForgejo, _ url.Values) { f.lacks = "write:repository" }, http.StatusBadRequest,
-			"this Forgejo token lacks write:repository; make one with read:user, write:repository and write:issue"},
+			"This Forgejo token lacks write:repository. Make one with read:user, write:repository and write:issue."},
 		{"probe filed", func(f *fakeForgejo, _ url.Values) { f.probeFiles = true }, http.StatusBadGateway,
-			"Forgejo accepted an empty probe on ai-software-factory-code; check the project for a stray issue or pull request and tell the factory's owner"},
+			"Forgejo accepted an empty probe on ai-software-factory-code. Check the project for a stray issue or pull request, and tell the factory's owner."},
 		{"empty name", func(_ *fakeForgejo, form url.Values) { form.Set("name", "  ") }, http.StatusBadRequest, "the name needs 1 to 64 characters"},
 		{"long name", func(_ *fakeForgejo, form url.Values) { form.Set("name", strings.Repeat("ä", 65)) }, http.StatusBadRequest, "the name needs 1 to 64 characters"},
 	}

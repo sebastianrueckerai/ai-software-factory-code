@@ -52,9 +52,9 @@ var fixtureTasks = []policy.TaskCost{
 		{Kind: policy.KindTool, Ref: "search 2026-10-11", EUR: 0.2}}},
 }
 
-const daySumCard = "By card 2026-10-11 to 2026-10-11, EUR:\n  t-r 1.5000\n  t-m 0.8000\ntotal: 2.3000 EUR"
+const daySumCard = "By card 2026-10-11 to 2026-10-11, EUR:\n  t-r 1.50\n  t-m 0.80\ntotal: 2.30 EUR"
 
-const windowSumDay = "By day 2026-10-10 to 2026-10-11, EUR:\n  2026-10-11 1.7000 (model 1.5000, tool 0.2000)\n  2026-10-10 0.6000 (model 0.5000, tool 0.1000)\ntotal: 2.3000 EUR"
+const windowSumDay = "By day 2026-10-10 to 2026-10-11, EUR:\n  2026-10-11 1.70 (model 1.50, tool 0.20)\n  2026-10-10 0.60 (model 0.50, tool 0.10)\ntotal: 2.30 EUR"
 
 const badWindowRefusal = "Refused: from and to must be dates YYYY-MM-DD, from not after to"
 
@@ -1348,13 +1348,13 @@ func equal(t *testing.T, what string, got, want any) {
 
 // TestCostsSpendPerCardToday asks the agent, through the chat, for the
 // spend per card today; the costs tool answers with that day's card sum
-// matching the fixture's hand-derived total for 2026-10-11: t-r 1.5000
-// and t-m 0.8000, total 2.3000 EUR.
+// matching the fixture's hand-derived total for 2026-10-11: t-r 1.50
+// and t-m 0.80, total 2.30 EUR.
 func TestCostsSpendPerCardToday(t *testing.T) {
 	r := newRig(t)
 	r.gateway.replies = [][]string{
 		{call(1, "costs", `{"by":"card","from_date":"2026-10-11","to_date":"2026-10-11"}`)},
-		{say("Today: t-r 1.5000, t-m 0.8000, 2.3000 EUR.")},
+		{say("Today: t-r 1.50, t-m 0.80, 2.30 EUR.")},
 	}
 	code, events := r.post("spend per card today")
 	if code != http.StatusOK {
@@ -1368,12 +1368,12 @@ func TestCostsSpendPerCardToday(t *testing.T) {
 
 // TestCostsCustomWindowSums asks the costs tool with from='2026-10-10',
 // to='2026-10-11': the aggregated sum matches the hand-derived total
-// 2.3000 EUR (0.6 + 1.7), and the ledger was asked exactly that window.
+// 2.30 EUR (0.6 + 1.7), and the ledger was asked exactly that window.
 func TestCostsCustomWindowSums(t *testing.T) {
 	r := newRig(t)
 	r.gateway.replies = [][]string{
 		{call(1, "costs", `{"by":"day","from_date":"2026-10-10","to_date":"2026-10-11"}`)},
-		{say("Both days together: 2.3000 EUR.")},
+		{say("Both days together: 2.30 EUR.")},
 	}
 	code, events := r.post("spend 2026-10-10 to 2026-10-11")
 	if code != http.StatusOK {

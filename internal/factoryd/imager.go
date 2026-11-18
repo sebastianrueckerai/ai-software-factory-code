@@ -844,7 +844,7 @@ func (i *Imager) closePin(ctx context.Context, pr PullRequestRef, why string) er
 	if err := i.Forgejo.ClosePullRequest(ctx, infra.Owner, infra.Name, pr.Number); err != nil {
 		return err
 	}
-	if _, err := i.Forgejo.CreateIssueComment(ctx, infra.Owner, infra.Name, pr.Number, "Closed by factoryd: "+why+"."); err != nil {
+	if _, err := i.Forgejo.CreateIssueComment(ctx, infra.Owner, infra.Name, pr.Number, "Closed by the factory: "+why+"."); err != nil {
 		return err
 	}
 	log.Printf("imager: closed pull request #%d: %s", pr.Number, why)
@@ -877,8 +877,8 @@ func (i *Imager) open(ctx context.Context, project, repository string, fork Repo
 		[]FileChange{{Path: path, Content: want, Blob: blob}}); err != nil {
 		return err
 	}
-	body := fmt.Sprintf("factoryd pins the sandbox images %s of %s declares: this pull request changes only the images block of %s.\n\n"+
-		"factoryd merges it itself once it has checked that, and that the tree at its head passes factoryd's config check; otherwise it stays open and factoryd raises an alert naming why.\n",
+	body := fmt.Sprintf("The factory pins the sandbox images that %s of %s declares. This pull request changes only the images block of %s.\n\n"+
+		"The factory merges it itself once it has checked that, and once the tree at its head passes the factory's config check. Otherwise it stays open, and the factory raises an alert that names why.\n",
 		imagesPath, repository, path)
 	ref, err := i.Forgejo.CreatePullRequest(ctx, infra.Owner, infra.Name, fork.Owner+":"+branch, "main", title, body)
 	if err != nil {
@@ -979,7 +979,7 @@ func (i *Imager) judge(ctx context.Context, project string, pr PullRequestRef) (
 		return "", "", err
 	}
 	if _, err := CheckTree(tree, i.Ladder); err != nil {
-		return "check", fmt.Sprintf("the tree at the head of pull request #%d fails factoryd's config check: %v", pr.Number, err), nil
+		return "check", fmt.Sprintf("the tree at the head of pull request #%d fails the factory's config check: %v", pr.Number, err), nil
 	}
 	return "", "", nil
 }

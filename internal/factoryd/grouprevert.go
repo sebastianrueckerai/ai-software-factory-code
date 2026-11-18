@@ -208,7 +208,7 @@ func (r *Runner) revertUnstarted(ctx context.Context, p Task, cause error) {
 		log.Printf("plan %s: %v", p.ID, err)
 		return
 	}
-	r.commentOnce(ctx, p, repo, p.IssueNumber, fmt.Sprintf("factoryd: the revert of plan #%d could not start: %v. Its cards stay on main; replan again.", p.IssueNumber, cause))
+	r.commentOnce(ctx, p, repo, p.IssueNumber, fmt.Sprintf("The revert of plan #%d could not start: %v. Its cards stay on main. Replan the plan again.", p.IssueNumber, cause))
 }
 
 // unfiled tells that card id has no row, read past ctx's end: a call that
@@ -452,7 +452,7 @@ func (r *Runner) endGroupRevert(ctx context.Context, t Task, pause QueuePause, f
 		}
 	} else {
 		step, detail = stepGroupRevertEnded, map[string]any{"card": t.ID, "state": final, "cards": pause.Reverts}
-		msg := fmt.Sprintf("factoryd: the revert of plan #%d did not land (card #%d ended %s): its cards stay on main.", p.IssueNumber, t.IssueNumber, final)
+		msg := fmt.Sprintf("The revert of plan #%d did not land (card #%d ended %s): its cards stay on main.", p.IssueNumber, t.IssueNumber, final)
 		if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, p.IssueNumber, msg); forgejoTerminal(err) {
 			log.Printf("plan %s: Forgejo refused the comment that its revert did not land: %v", p.ID, err)
 		} else if err != nil {

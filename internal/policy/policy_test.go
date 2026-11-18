@@ -342,13 +342,13 @@ func TestFitPremium(t *testing.T) {
 	premium := func(eur float64) *float64 { return &eur }
 	var ref *Refusal
 	_, err := Fit(Free{Task: 1, Day: 1, Month: 1, Project: inf, Premium: premium(0.005)}, r)
-	if !errors.As(err, &ref) || ref.Decision != RefusedPremiumCap || ref.Reason != "free headroom 0.005000 EUR (task 1.000000, day 1.000000, month 1.000000, premium 0.005000) "+
+	if !errors.As(err, &ref) || ref.Decision != RefusedPremiumCap || ref.Reason != "free headroom 0.01 EUR (task 1.00, day 1.00, month 1.00, premium 0.01) "+
 		"fits 1000 output tokens after a request of 1000 bytes (at most 1000 prompt tokens), below the minimum call of 1024; "+
 		"the premium cap budget.premium_month_eur in policy.yaml cannot pay for it" {
 		t.Fatalf("premium headroom 0.005 = %v, want refused_premium_cap", err)
 	}
 	_, err = Fit(Free{Task: 1, Day: 1, Month: 1, Project: inf, Premium: premium(0.05)}, r)
-	if !errors.As(err, &ref) || ref.Decision != RefusedPremiumCap || ref.Reason != "free headroom 0.050000 EUR (task 1.000000, day 1.000000, month 1.000000, premium 0.050000) "+
+	if !errors.As(err, &ref) || ref.Decision != RefusedPremiumCap || ref.Reason != "free headroom 0.05 EUR (task 1.00, day 1.00, month 1.00, premium 0.05) "+
 		"fits 12250 of the call's 24576 output tokens after a request of 1000 bytes (at most 1000 prompt tokens); "+
 		"the premium cap budget.premium_month_eur in policy.yaml cannot pay for it" {
 		t.Fatalf("premium headroom 0.05 = %v, want refused_premium_cap for the clamped output", err)
@@ -403,7 +403,7 @@ func TestFitResource(t *testing.T) {
 	// under a cap
 	project := HoldRequest{TaskID: "t", Kind: KindResource, Ref: "server", EUR: 0.0384, Project: "linkshort"}
 	if _, err := FitResource(Free{Task: 1, Day: 1, Month: 1, Project: 0.0383}, project); !errors.As(err, &ref) || ref.Decision != RefusedProjectCap ||
-		ref.Reason != "server: worst case 0.038400 EUR exceeds the free headroom 0.038300 EUR (task 1.000000, day 1.000000, month 1.000000, project 0.038300); "+
+		ref.Reason != "server: worst case 0.04 EUR exceeds the free headroom 0.04 EUR by less than 0.01 EUR (task 1.00, day 1.00, month 1.00, project 0.04); "+
 			"the reservation exceeds the project's remaining month headroom (budget.month_eur in projects/linkshort.yaml), and only a human raises it, by a commit" {
 		t.Fatalf("reservation past the project's month = %v", err)
 	}
@@ -413,12 +413,12 @@ func TestFitResource(t *testing.T) {
 		t.Fatalf("tool call past the project's month = %v", err)
 	}
 	if _, err := Fit(Free{Task: 1, Day: 1, Month: 1, Project: 0.001}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6, MaxOutput: unbound}, Project: "linkshort"}); !errors.As(err, &ref) ||
-		ref.Reason != "free headroom 0.001000 EUR (task 1.000000, day 1.000000, month 1.000000, project 0.001000) fits 250 output tokens after a request of 0 bytes (at most 0 prompt tokens), below the minimum call of 1024; "+
+		ref.Reason != "free headroom less than 0.01 EUR (task 1.00, day 1.00, month 1.00, project less than 0.01) fits 250 output tokens after a request of 0 bytes (at most 0 prompt tokens), below the minimum call of 1024; "+
 			"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit" {
 		t.Fatalf("model call past the project's month = %v", err)
 	}
 	if _, err := Fit(Free{Task: 0.001, Day: 1, Month: 1, Project: inf}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6, MaxOutput: unbound}}); !errors.As(err, &ref) ||
-		ref.Reason != "free headroom 0.001000 EUR (task 0.001000, day 1.000000, month 1.000000) fits 250 output tokens after a request of 0 bytes (at most 0 prompt tokens), below the minimum call of 1024" {
+		ref.Reason != "free headroom less than 0.01 EUR (task less than 0.01, day 1.00, month 1.00) fits 250 output tokens after a request of 0 bytes (at most 0 prompt tokens), below the minimum call of 1024" {
 		t.Fatalf("model call past the task's budget without a project cap = %v", err)
 	}
 }
@@ -629,11 +629,11 @@ func TestFitCalibrated(t *testing.T) {
 	var r *Refusal
 	free.Task = 0.015
 	if _, err := Fit(free, HoldRequest{Bytes: 495000, Earlier: earlier, Price: p, WantOut: 4096}); !errors.As(err, &r) ||
-		r.Reason != "free headroom 0.015000 EUR (task 0.015000, day 5.000000, month 5.000000) fits 0 output tokens after a request of 495000 bytes (about 139219 prompt tokens), below the minimum call of 1024" {
+		r.Reason != "free headroom 0.01 EUR (task 0.01, day 5.00, month 5.00) fits 0 output tokens after a request of 495000 bytes (about 139219 prompt tokens), below the minimum call of 1024" {
 		t.Errorf("calibrated refusal = %v", err)
 	}
 	if _, err := Fit(free, HoldRequest{Bytes: 495000, Price: p, WantOut: 4096}); !errors.As(err, &r) ||
-		r.Reason != "free headroom 0.015000 EUR (task 0.015000, day 5.000000, month 5.000000) fits 0 output tokens after a request of 495000 bytes (at most 495000 prompt tokens), below the minimum call of 1024" {
+		r.Reason != "free headroom 0.01 EUR (task 0.01, day 5.00, month 5.00) fits 0 output tokens after a request of 495000 bytes (at most 495000 prompt tokens), below the minimum call of 1024" {
 		t.Errorf("first-call refusal = %v", err)
 	}
 }

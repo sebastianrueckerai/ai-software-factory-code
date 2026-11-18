@@ -33,7 +33,7 @@ func TestBoardShowsThePremiumMeterUnderItsCap(t *testing.T) {
 			t.Errorf("the board lacks %s", want)
 		}
 	}
-	if text, err := r.c.policyText(context.Background(), actor{}); err != nil || !strings.Contains(text, "  premium month cap: €50.00 (past it, premium calls run on big)\n") {
+	if text, err := r.c.policyText(context.Background(), actor{}); err != nil || !strings.Contains(text, "  premium month cap: 50.00 EUR (past it, premium calls run on big)\n") {
 		t.Errorf("policy read = (%q, %v), want the premium cap", text, err)
 	}
 	r.ledger.premiumCap = 0
@@ -61,7 +61,7 @@ func TestMonthMeterReadsTheEnforcedSpend(t *testing.T) {
 	if d.Status.Spend.EUR != 48.5 || d.Status.CapEUR != 50 || !d.Status.FactoryCap {
 		t.Errorf("month %.2f of %.2f, factory cap %v, want 48.50 of 50 under the factory's cap", d.Status.Spend.EUR, d.Status.CapEUR, d.Status.FactoryCap)
 	}
-	if words := spendWords(d.Status.Spend, d.Status.CapEUR, d.Status.FactoryCap); !strings.Contains(words, "€48.50 of €50.00") || strings.Contains(words, "the cards") {
+	if words := spendWords(d.Status.Spend, d.Status.CapEUR, d.Status.FactoryCap); !strings.Contains(words, "48.50 of 50.00 EUR") || strings.Contains(words, "the cards") {
 		t.Errorf("spend words %q, want the factory's ledger without the project's split", words)
 	}
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code"}}

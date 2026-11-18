@@ -298,7 +298,7 @@ func TestOneSendCarriesDecisionFundAndNote(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Act took %+v, want %+v", got, want)
 	}
-	if c := r.fg.comments["/api/v1/repos/sf/code/issues/21/comments"]; c != "handover" {
+	if c := r.fg.comments["/api/v1/repos/sf/code/issues/21/comments"]; c != "“Switch the model”" {
 		t.Fatalf("comment = %q, want the answer's sentence", c)
 	}
 }

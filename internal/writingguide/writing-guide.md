@@ -1,6 +1,6 @@
 # The writing guide
 
-The one guide for any text a person reads: check-in questions, chat answers, notifications, pokes, report lines. It rides in the context of every step that writes such text, by default. Not for progress lines, which stay very short. Not for output meant for other agents.
+The one guide for any text a person reads: check-in questions, chat answers, notifications, pokes, report lines. Each step that writes such text carries the form of its job (`writingguide.For`). Not for progress lines, which stay very short. Not for output meant for other agents.
 
 **Changes to this guide need the owner's OK.**
 

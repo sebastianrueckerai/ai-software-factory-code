@@ -377,7 +377,7 @@ func refuseTrack(in toolInput) error {
 	case trackLabels[in.Track] == "":
 		return refuse(http.StatusBadRequest, "track: direct builds at once, plan plans first, human is a person's card")
 	case strings.TrimSpace(in.TrackReason) == "":
-		return refuse(http.StatusBadRequest, "track_reason: why the card takes track "+in.Track+", one line")
+		return refuse(http.StatusBadRequest, "`track_reason`: why the card takes track "+in.Track+", one line")
 	}
 	return nil
 }
@@ -391,7 +391,7 @@ func refuseCarry(title, body string, carry int64) error {
 	if carry > 0 || !carryAsk.MatchString(title+"\n"+body) {
 		return nil
 	}
-	return refuse(http.StatusBadRequest, "The sandbox holds no git credential, so its agent cannot fetch a pull request's commits mid-session: name carry_pr as the pull request's number, which supplies its head in the clone.")
+	return refuseAgent(http.StatusBadRequest, "The sandbox holds no git credential, so its agent cannot fetch a pull request's commits mid-session: name `carry_pr` as the pull request's number, which supplies its head in the clone.")
 }
 
 // refuseCard is new_card's judgement of the card with in's title and
@@ -488,10 +488,10 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		parts = append(parts, fmt.Sprintf("%s #%d %s %q", edge, d.IssueNumber, d.ID, factoryd.CardTitle(d)))
 	}
 	if in.EUR > 0 {
-		parts = append(parts, fmt.Sprintf("%.2f EUR", in.EUR))
+		parts = append(parts, fmt.Sprintf("%s EUR", textutil.EUR(in.EUR)))
 	}
 	if in.FundEUR > 0 {
-		parts = append(parts, fmt.Sprintf("fund_eur %.2f EUR", in.FundEUR))
+		parts = append(parts, fmt.Sprintf("fund_eur %s EUR", textutil.EUR(in.FundEUR)))
 	}
 	if in.CaseID > 0 {
 		parts = append(parts, fmt.Sprintf("case %d", in.CaseID))
@@ -811,7 +811,7 @@ func cardLine(t factoryd.Task) string {
 		s += fmt.Sprintf(", gate %s (%s)", t.Gate, factoryd.GateMeaning(t.Gate))
 	}
 	if t.BudgetEUR > 0 {
-		s += fmt.Sprintf(", €%.2f of €%.2f", t.EnforcedSpent(), t.BudgetEUR)
+		s += fmt.Sprintf(", %s of %s EUR", textutil.EUR(t.EnforcedSpent()), textutil.EUR(t.BudgetEUR))
 	}
 	return s
 }
@@ -1685,7 +1685,7 @@ func init() {
 					return "", nil, err
 				}
 				if !ok {
-					return "", nil, refuse(http.StatusConflict, "This turn runs on no line the human typed, so their word decides no criteria: give them choices with ask, or let them answer on the board's card, and answer_criteria runs on their word.")
+					return "", nil, refuse(http.StatusConflict, "This turn runs on no line the human typed, so their word decides no promise: give them choices with `ask`, or let them answer on the board's card, and `answer_criteria` runs on their word.")
 				}
 				var q factoryd.ApprovalRequest
 				switch in.Action {
@@ -1714,7 +1714,7 @@ func init() {
 					note, err := t.c.doConfirmCriteria(t.r.Context(), t.a, q.ID, line)
 					return note, nil, err
 				}
-				return "", nil, refuse(http.StatusBadRequest, "The action must be waive, grant, confirm, met or not_met.")
+				return "", nil, refuse(http.StatusBadRequest, "The action must be `waive`, `grant`, `confirm`, `met` or `not_met`.")
 			}},
 		{name: "set_accent", title: "Set a card's accent", write: true,
 			params:   map[string]any{"task_id": taskParam, "accent": enum("the colour, empty removes it", append([]string{""}, factoryd.Accents...)...)},
@@ -1830,8 +1830,8 @@ func init() {
 				if err != nil {
 					return "", nil, err
 				}
-				return fmt.Sprintf("The pool of %s is €%.2f now, was €%.2f: %s#%d carries the change and the policy in force holds it.",
-					t.p.Name, res.to, res.from, t.c.cfg.InfraRepo, res.pr), nil, nil
+				return fmt.Sprintf("The pool of %s is %s EUR now, was %s EUR: %s#%d carries the change and the policy in force holds it.",
+					t.p.Name, textutil.EUR(res.to), textutil.EUR(res.from), t.c.cfg.InfraRepo, res.pr), nil, nil
 			}},
 		{name: "read_doc", title: "Read a document",
 			params: map[string]any{"path": docPath, "find": str("the lines holding this text, case-insensitive"),
@@ -2275,7 +2275,7 @@ func (t *turn) systemText() (string, error) {
 	}
 	fmt.Fprintf(&b, "  approvers: %s\n", strings.Join(v.ApproversOf(t.p.Repository), ", "))
 	if _, eur := v.ProjectCap(t.p.Repository); !math.IsInf(eur, 1) {
-		fmt.Fprintf(&b, "  project month cap: €%.2f\n", eur)
+		fmt.Fprintf(&b, "  project month cap: %s EUR\n", textutil.EUR(eur))
 	}
 	b.WriteString(limitLines(v.Tree.Document))
 	fmt.Fprintf(&b, "\nChat bounds:\n  message size: %d KiB\n  model calls: as many as the task's budget holds\n", chatMessageMax>>10)
@@ -2292,7 +2292,7 @@ func (t *turn) fund(in toolInput) (string, error) {
 // capSpent is the refusal of money res draws past card issue's ceiling,
 // held the budget it met: it names the raise that makes room by the
 // control the human has where they are, the answer's raise_ceiling in the
-// chat, the opened card's Raise the spend limit elsewhere.
+// chat, the opened card's raise of the spend limit elsewhere.
 func capSpent(issue int64, held float64, res factoryd.Resolution, ceiling float64, via string) string {
 	eur, _ := res.Args["eur"].(float64)
 	if res.Action != factoryd.ActFund {
@@ -2301,11 +2301,11 @@ func capSpent(issue int64, held float64, res factoryd.Resolution, ceiling float6
 	if res.Fund != nil {
 		eur += res.Fund.EUR
 	}
-	raise := "press Raise the spend limit on the opened card, which funds beside it"
+	raise := "press “" + factoryd.LabelOf(factoryd.ActRaiseCeiling) + "” on the opened card, which adds the money beside it"
 	if via == factoryd.ViaChat {
-		raise = "raise the ceiling first (answer with action raise_ceiling), then fund"
+		raise = "raise the spend limit first (answer with the action `" + factoryd.ActRaiseCeiling + "`), then add the money"
 	}
-	return fmt.Sprintf("Card #%d holds €%.2f now, and €%.2f more passes its ceiling of €%.2f: %s.", issue, held, eur, ceiling, raise)
+	return fmt.Sprintf("Card #%d holds %s EUR now, and %s EUR more passes its spend limit of %s EUR: %s.", issue, textutil.EUR(held), textutil.EUR(eur), textutil.EUR(ceiling), raise)
 }
 
 // limitLines are the policy's task budget and limits, one indented line
@@ -2317,9 +2317,9 @@ func limitLines(d policy.Document) string {
 		checkIn = l.CheckIn.String()
 	}
 	after, nudges := l.Nudge()
-	return fmt.Sprintf("  task budget: €%.2f default, €%.2f maximum\n  sessions per card: %d\n  agent time: %s\n  check-in: %s\n"+
+	return fmt.Sprintf("  task budget: %s EUR default, %s EUR maximum\n  sessions per card: %d\n  agent time: %s\n  check-in: %s\n"+
 		"  supervisor calls per session: %d\n  supervisor timeout: %s\n  returns before the stronger model: %d\n  steps per session: %d\n"+
 		"  identical calls before a nudge: %d, nudges: %d\n  identical calls that trip the supervisor: %d\n",
-		d.Budget.TaskDefaultEUR, d.Budget.TaskMaxEUR, l.Sessions, l.AgentTime, checkIn,
+		textutil.EUR(d.Budget.TaskDefaultEUR), textutil.EUR(d.Budget.TaskMaxEUR), l.Sessions, l.AgentTime, checkIn,
 		l.SupervisorCalls, l.SupervisorTimeout, l.StrongerAfter, l.StepCap(), after, nudges, l.SameCallAfter())
 }

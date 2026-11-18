@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"log"
 	"net/http"
 	"slices"
@@ -54,7 +55,7 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 	if stop, err := c.chatStopOf(ctx, task); err != nil {
 		return fmt.Errorf("the chat's stop: %w", err)
 	} else if stop.stopped {
-		return fmt.Errorf("the chat of %s stands at its judgment budget of €%.2f: %w", p.Name, task.BudgetEUR, factoryd.ErrChatUnfunded)
+		return fmt.Errorf("the chat of %s stands at its judgment budget of %s EUR: %w", p.Name, textutil.EUR(task.BudgetEUR), factoryd.ErrChatUnfunded)
 	}
 	pos, wait := c.turns.enter(t.key())
 	defer c.turns.leave(t.key())

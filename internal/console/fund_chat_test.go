@@ -60,7 +60,7 @@ func TestFundAtAWakeAnswersAsTheChatBot(t *testing.T) {
 	}
 }
 
-const needRefusal = "the remaining budget cannot fund a call: 0.170 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.900000 EUR. Raise the budget (Fund on the board) and answer, or close the card."
+const needRefusal = "the remaining budget cannot fund a call: 0.17 EUR of the 2.00 EUR budget remains, and a session on factory/small needs 0.90 EUR. Raise the budget (Fund on the board) and answer, or close the card."
 
 // needRig is the fund rig over card t-e held by needRefusal, which names
 // a need of 0.90 EUR against the card's 2.00 - 1.83 = 0.17 EUR left: a raise

@@ -177,8 +177,8 @@ func TestTheRedChecksRefusalNamesTheCardsOwnRemedies(t *testing.T) {
 		factory bool
 		want    string
 	}{
-		{false, "the checks on h2 are red, not green: approve_merge waits for green checks on the head, and the human may return it to the agent with what to change (deny_merge with request_changes) or close it (deny_merge with reject)"},
-		{true, "the checks on h2 are red, not green: approve_merge waits for green checks on the head, and the human may run them again (rerun_checks) or close it with your words (deny_merge)"},
+		{false, "the checks on h2 are red, not green: `approve_merge` waits for green checks on the head, and the human may return it to the agent with what to change (`deny_merge` with `request_changes`) or close it (`deny_merge` with `reject`)"},
+		{true, "the checks on h2 are red, not green: `approve_merge` waits for green checks on the head, and the human may run them again (`rerun_checks`) or close it with your words (`deny_merge` with `reject`)"},
 	} {
 		g := newRungRig(t, "failure")
 		ctx := context.Background()
@@ -283,7 +283,7 @@ func TestThePendingChecksRefusalSaysToWait(t *testing.T) {
 	stub := &boardStub{s: g.s, approval: id}
 	c := g.liveCase(t, CaseMergeApproval)
 	_, err = stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActApproveMerge}})
-	const want = "the checks on h2 are pending, not green: approve_merge waits for green checks on the head, and the human may wait for them to settle or close it (deny_merge)"
+	const want = "the checks on h2 are pending, not green: `approve_merge` waits for green checks on the head, and the human may wait for them to settle or close it (`deny_merge` with `reject`)"
 	if err == nil || err.Error() != want {
 		t.Fatalf("approve on pending checks = %v, want %q", err, want)
 	}

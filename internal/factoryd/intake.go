@@ -1325,8 +1325,9 @@ func strandedIssue(ctx context.Context, store humanCardStore, forgejo *Forgejo, 
 }
 
 // cardStands refuses a second filing of human card got, which stands, on
-// issue: when issue is not the card's own, it says so there and closes it,
-// the card keeping its issue; an issue the card holds is left as it is.
+// issue: when issue is not the card's own, it says so there in words and
+// closes it, the card keeping its issue; an issue the card holds is left
+// as it is.
 func cardStands(ctx context.Context, forgejo *Forgejo, repo Repo, got Task, issue int64) error {
 	if got.IssueNumber == issue {
 		return fmt.Errorf("card %s stands already (#%d, %s), so this second filing of it is refused: the card's ask is on #%d",
@@ -1334,7 +1335,8 @@ func cardStands(ctx context.Context, forgejo *Forgejo, repo Repo, got Task, issu
 	}
 	why := fmt.Sprintf("card %s stands already (#%d, %s), so this second filing of it is refused and its issue #%d closed: the card's ask is on #%d",
 		got.ID, got.IssueNumber, got.Status, issue, got.IssueNumber)
-	if _, err := forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, issue, "factoryd: "+why); err != nil {
+	said := fmt.Sprintf("This card stands already as #%d, so this second filing of it is refused and this issue is closed. The card's ask is on #%d.", got.IssueNumber, got.IssueNumber)
+	if _, err := forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, issue, said); err != nil {
 		log.Printf("task %s: comment on the duplicate issue #%d of %s: %v", got.ID, issue, repo, err)
 	}
 	if err := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, issue); err != nil {
@@ -1656,7 +1658,7 @@ func (in *Intake) prDecided(ctx context.Context, t Task, pr int64, merged bool, 
 // itself for why: no person decided, so its ask is withdrawn, and the card
 // ends closed.
 func (in *Intake) WithdrawPRCard(ctx context.Context, t Task, pr int64, why string) error {
-	reason := fmt.Sprintf("factoryd closed pull request #%d: %s", pr, why)
+	reason := fmt.Sprintf("the factory closed pull request #%d: %s", pr, why)
 	return in.endPRCard(ctx, t, "closed", reason, &Event{Kind: EventQuestionWithdrawn, Actor: FactoryDecider, Via: ViaFactoryd,
 		Detail: map[string]any{"reason": reason}})
 }
@@ -1670,7 +1672,7 @@ func (in *Intake) endPRCard(ctx context.Context, t Task, final, why string, sett
 	if t.Status != "waiting-human" {
 		return nil
 	}
-	if err := closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, "factoryd: "+why+"; this card ends with it."); err != nil {
+	if err := closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, capitalize(why)+". This card ends with it."); err != nil {
 		return err
 	}
 	return in.finishHumanTask(ctx, t, final, why, settle.Actor, settle)
@@ -1695,7 +1697,7 @@ func (in *Intake) resyncPRCard(ctx context.Context, t Task, repo Repo) (done boo
 	case err != nil:
 		return false, err
 	case closer == in.BotUser:
-		return true, in.WithdrawPRCard(ctx, t, t.PRNumber, "the heal pass found it closed by factoryd")
+		return true, in.WithdrawPRCard(ctx, t, t.PRNumber, "the heal pass found it closed by the factory")
 	}
 	return true, in.prDecided(ctx, t, t.PRNumber, false, closer, ViaFactoryd)
 }

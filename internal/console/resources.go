@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"log"
 	"net/http"
 	"slices"
@@ -139,8 +140,8 @@ func (c *Console) resources(w http.ResponseWriter, r *http.Request) {
 		}
 		for i := range pv.Rows {
 			if pv.Rows[i].Actions {
-				pv.Rows[i].PromoteNote = fmt.Sprintf("standing, about €%.4f a month against the standing block's €%.2f (€%.4f standing now)",
-					monthly[pv.Rows[i].HoldID], pv.Envelope.Standing.MonthlyEUR, pv.Envelope.StandingUse.MonthlyEUR)
+				pv.Rows[i].PromoteNote = fmt.Sprintf("standing, about %s EUR a month against the standing block's %s EUR (%s EUR standing now)",
+					textutil.EUR(monthly[pv.Rows[i].HoldID]), textutil.EUR(pv.Envelope.Standing.MonthlyEUR), textutil.EUR(pv.Envelope.StandingUse.MonthlyEUR))
 			}
 		}
 		projects = append(projects, pv)

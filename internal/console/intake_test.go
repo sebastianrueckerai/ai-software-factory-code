@@ -72,7 +72,7 @@ func TestClosedIntakeRefusesTheRoadmapPullsFilings(t *testing.T) {
 		"The queue of ai-software-factory-code is below 6: read docs/roadmap.md of the project's doc repository, then end."); err != nil {
 		t.Fatalf("StartWake: %v", err)
 	}
-	refused := "Refused: The intake of ai-software-factory-code is closed: the roadmap is not pulled. Tell the human what needs filing; an ask or a need still files."
+	refused := "Refused: The intake of ai-software-factory-code is closed: the roadmap is not pulled. Tell the human what needs filing. An ask or a need still files."
 	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -223,7 +223,7 @@ func TestNewCardRefileOf(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	g.replies = [][]string{{call(1, "new_card", `{"title":"Refile 66","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The plan again.\n\nAcceptance:\n- The pull files it","track":"direct","track_reason":"the pull","refile_of":1547}`)}, {say("Refused.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"refile"}})
-	if !strings.Contains(events[0], "refile_of needs roadmap_item") || len(r.fg.issues) != 0 {
+	if !strings.Contains(events[0], "`refile_of` needs `roadmap_item`") || len(r.fg.issues) != 0 {
 		t.Errorf("refile_of alone = %v, issues %v", events, r.fg.issues)
 	}
 	g.replies = [][]string{{call(1, "new_card", `{"title":"Refile 66","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The plan again.\n\nAcceptance:\n- The pull files it","track":"direct","track_reason":"the pull","roadmap_item":66,"refile_of":1547}`)}, {say("Filed.")}}

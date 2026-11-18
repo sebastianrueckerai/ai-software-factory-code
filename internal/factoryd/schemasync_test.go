@@ -307,7 +307,7 @@ func TestSchemaCopierClosesOlderPullRequest(t *testing.T) {
 	if prs[0].state != "closed" || prs[1].state != "open" || len(prs) != 3 || prs[2].title != "Schema copies for 0123456789ab" || prs[2].state != "open" {
 		t.Fatalf("pull requests %+v", prs)
 	}
-	if want := []string{"#1 by bot: Closed by factoryd: #3 replaces it."}; !reflect.DeepEqual(comments, want) {
+	if want := []string{"#1 by bot: Closed by the factory: #3 replaces it."}; !reflect.DeepEqual(comments, want) {
 		t.Errorf("comments %q, want %q", comments, want)
 	}
 	if want := []string{"POST " + schemaFork + "/contents by bot", "POST " + schemaUp + "/pulls by bot",
@@ -327,7 +327,7 @@ func TestSchemaCopierEqualCopies(t *testing.T) {
 	if len(prs) != 1 || prs[0].state != "closed" || fj.branch("main") != nil {
 		t.Fatalf("pull requests %+v; want #1 closed, and no fork made", prs)
 	}
-	if want := []string{"#1 by bot: Closed by factoryd: the copies on main equal the schemas of factoryd 0123456789ab."}; !reflect.DeepEqual(comments, want) {
+	if want := []string{"#1 by bot: Closed by the factory: the copies on main equal the factory's schemas of build 0123456."}; !reflect.DeepEqual(comments, want) {
 		t.Errorf("comments %q, want %q", comments, want)
 	}
 	if want := []string{"PATCH " + schemaUp + "/pulls/1 by bot", "POST " + schemaUp + "/issues/1/comments by bot"}; !reflect.DeepEqual(writes, want) {

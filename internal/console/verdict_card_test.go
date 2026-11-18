@@ -588,7 +588,7 @@ func TestTheHumanRowsPresses(t *testing.T) {
 			t.Errorf("the merge request = %+v, want it denied with %q", q, words)
 		}
 		_, err := press(t, r, 31, "pages_ok", "met", "")
-		refusedAs(t, err, http.StatusConflict, "approval request 31 is not pending (any more); reload the board")
+		refusedAs(t, err, http.StatusConflict, "Approval request 31 waits for no answer any more. Reload the board.")
 		if len(*calls) != 0 || len(decided(r)) != 1 {
 			t.Errorf("a press on the decided request took calls %q and events %v", *calls, decided(r))
 		}
@@ -613,10 +613,10 @@ func TestTheHumanRowsPresses(t *testing.T) {
 		}{
 			{31, "all_green", "met", "", http.StatusConflict, "Criterion all_green is the gate's to judge."},
 			{31, "all_green", "not_met", "It is red on main.", http.StatusConflict, "Criterion all_green is the gate's to judge."},
-			{31, "pages_ok", "not_met", "", http.StatusBadRequest, "a one-line reason of up to 2000 characters is required for Not met and Waive"},
-			{31, "pages_ok", "waived", " ", http.StatusBadRequest, "a one-line reason of up to 2000 characters is required for Not met and Waive"},
-			{31, "pages_ok", "maybe", "", http.StatusBadRequest, "Choose Met, Not met or Waive: the verb is met, not_met or waived."},
-			{31, "pages_ok", "met", strings.Repeat("x", 2001), http.StatusBadRequest, "Met takes up to 1974 characters of words beside what you saw."},
+			{31, "pages_ok", "not_met", "", http.StatusBadRequest, "“It is not met” and “Drop this promise” need a one-line reason of up to 2000 characters."},
+			{31, "pages_ok", "waived", " ", http.StatusBadRequest, "“It is not met” and “Drop this promise” need a one-line reason of up to 2000 characters."},
+			{31, "pages_ok", "maybe", "", http.StatusBadRequest, "Choose “It is met”, “It is not met” or “Drop this promise” (`met`, `not_met` or `waived`)."},
+			{31, "pages_ok", "met", strings.Repeat("x", 2001), http.StatusBadRequest, "“It is met” takes up to 1974 characters of words beside what you saw."},
 			{31, "c9", "waived", "no such one", http.StatusConflict, "The plan holds no criterion c9. Reload the board."},
 			{32, "pages_ok", "waived", "x", http.StatusConflict, "This card has no criterion rows."},
 			{3, "pages_ok", "waived", "x", http.StatusConflict, "This card has no criterion rows."},

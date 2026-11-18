@@ -1,21 +1,21 @@
 {{template "head" .}}
 <div class="page">
 <h2>Costs</h2>
-<p class="daycap">Today (UTC): <strong>€{{eur4 .Today}}</strong> of the €{{eur4 .DayCap}} day cap (policy version {{.PolicyID}}).</p>
+<p class="daycap">Today (UTC): <strong>{{eur .Today}} EUR</strong> of the {{eur .DayCap}} EUR day cap (policy version {{.PolicyID}}).</p>
 <div class="tscroll"><table>
-<caption>Per day, {{.From}} to {{.To}}, €</caption>
+<caption>Per day, {{.From}} to {{.To}}, EUR</caption>
 <thead><tr><th scope="col">Day</th>{{range .Kinds}}<th scope="col" class="num">{{.}}</th>{{end}}<th scope="col" class="num">Total</th></tr></thead>
 <tbody>
-{{range .Days}}<tr><th scope="row">{{.Day}}</th>{{range .Kinds}}<td class="num">{{eur4 .}}</td>{{end}}<td class="num">{{eur4 .Total}}</td></tr>
+{{range .Days}}<tr><th scope="row">{{.Day}}</th>{{range .Kinds}}<td class="num">{{eur .}}</td>{{end}}<td class="num">{{eur .Total}}</td></tr>
 {{else}}<tr><td colspan="6">No spend recorded.</td></tr>{{end}}
 </tbody>
 </table></div>
 <div class="tscroll"><table>
-<caption>Per task and line (kind and ref: a model, a factoryd purpose such as review with its model, a tool), {{.From}} to {{.To}}, €</caption>
-<thead><tr><th scope="col">Task, line</th><th scope="col" class="num">€</th></tr></thead>
+<caption>Per task and line (kind and ref: a model, a factoryd purpose such as review with its model, a tool), {{.From}} to {{.To}}, EUR</caption>
+<thead><tr><th scope="col">Task, line</th><th scope="col" class="num">EUR</th></tr></thead>
 <tbody>
-{{range .Tasks}}<tr><th scope="row"><a href="/tasks/{{.TaskID}}/timeline">{{.TaskID}}</a></th><td class="num">{{eur4 .EUR}}</td></tr>
-{{range .Lines}}<tr class="line"><td>{{.Kind}} {{.Ref}}</td><td class="num">{{eur4 .EUR}}</td></tr>
+{{range .Tasks}}<tr><th scope="row"><a href="/tasks/{{.TaskID}}/timeline">{{.TaskID}}</a></th><td class="num">{{eur .EUR}}</td></tr>
+{{range .Lines}}<tr class="line"><td>{{.Kind}} {{.Ref}}</td><td class="num">{{eur .EUR}}</td></tr>
 {{end}}{{else}}<tr><td colspan="2">No spend recorded.</td></tr>{{end}}
 </tbody>
 </table></div>

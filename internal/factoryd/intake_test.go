@@ -769,7 +769,7 @@ func TestIntakeIgnoresTheGatesApproval(t *testing.T) {
 	m, reader := testMetrics(t)
 	in.Metrics = m
 	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", PRNumber: 5}
-	body := reviewBody("factory/t1", GateUser, "pull_request_review_approved", "factoryd: the merge gate passed c1 on the project's merge rule auto")
+	body := reviewBody("factory/t1", GateUser, "pull_request_review_approved", "The merge gate passed c1 on the project's merge rule auto")
 	if rr := postWebhook(in, "pull_request_review_approved", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
 	}
@@ -1871,7 +1871,7 @@ func TestAFailedCommentOfAPullRequestsCardIsPostedAgain(t *testing.T) {
 	}
 	g.post("pull_request", body, http.StatusOK)
 	g.ended("done", "pull request #5 merged by sebastian", EventQuestionAnswered, "sebastian", ViaWebhook)
-	if !slices.Equal(g.posted, []string{"factoryd: pull request #5 merged by sebastian; this card ends with it."}) {
+	if !slices.Equal(g.posted, []string{"Pull request #5 merged by sebastian. This card ends with it."}) {
 		t.Fatalf("comments %q, want the one", g.posted)
 	}
 }
@@ -1904,7 +1904,7 @@ func TestResyncEndsAPullRequestsHumanCard(t *testing.T) {
 	if err := g.in.Resync(ctx, g.store.tasks["t-pr"]); err != nil {
 		t.Fatal(err)
 	}
-	g.ended("closed", "factoryd closed pull request #5: the heal pass found it closed by factoryd", EventQuestionWithdrawn, FactoryDecider, ViaFactoryd)
+	g.ended("closed", "the factory closed pull request #5: the heal pass found it closed by the factory", EventQuestionWithdrawn, FactoryDecider, ViaFactoryd)
 
 	g = newPRCardRig(t, `{"number":5,"state":"open","merged":false}`)
 	if err := g.in.Resync(ctx, g.store.tasks["t-pr"]); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"log"
 	"math"
 	"sync"
@@ -67,11 +68,11 @@ func ChatBudgetQuestion(chat Task) HumanQuestion {
 	return HumanQuestion{
 		Ask: b.Title,
 		Why: b.Why,
-		Info: fmt.Sprintf("The project spent %.2f EUR of the chat's budget of %.2f EUR in %s. The budget pays the chat and the judgment of stopped cards. Until it is raised or the UTC month turns, no stopped card is judged, so every stop comes to Needs you.",
-			chat.EnforcedSpent(), chat.BudgetEUR, month) + "\n\nAdd money to the chat raises it here, and so does Fund and go on in the chat thread that hit the stop. " +
+		Info: fmt.Sprintf("The project spent %s EUR of the chat's budget of %s EUR in %s. The budget pays the chat and the judgment of stopped cards. Until it is raised or the UTC month turns, no stopped card is judged, so every stop comes to Needs you.",
+			textutil.EUR(chat.EnforcedSpent()), textutil.EUR(chat.BudgetEUR), month) + "\n\nAdd money to the chat raises it here, and so does Fund and go on in the chat thread that hit the stop. " +
 			"Only a human who approves the project can do either. The raise ends this card.",
 		Choices:  choices(AnswerFundChat, ActNote+"/"+variantPark, ActClose+"/"+variantNoted),
-		Happened: fmt.Sprintf("The chat spent %.2f EUR of its %.2f EUR for %s.", chat.EnforcedSpent(), chat.BudgetEUR, monthWords(month)),
+		Happened: fmt.Sprintf("The chat spent %s EUR of its %s EUR for %s.", textutil.EUR(chat.EnforcedSpent()), textutil.EUR(chat.BudgetEUR), monthWords(month)),
 		Waits:    "Every stopped card comes to you until the budget is raised or the month ends.",
 	}
 }
@@ -162,7 +163,7 @@ func (c *ChatBudgetCards) Check(ctx context.Context, now time.Time) error {
 		case month < now.UTC().Format("2006-01"):
 			msg = fmt.Sprintf("The UTC month %s ended: the card closes.", month)
 		case ok && chat.BudgetEUR > t.BudgetEUR:
-			msg = fmt.Sprintf("The judgment budget is %.2f EUR for %s: the card closes.", chat.BudgetEUR, month)
+			msg = fmt.Sprintf("The judgment budget is %s EUR for %s: the card closes.", textutil.EUR(chat.BudgetEUR), month)
 		default:
 			continue
 		}

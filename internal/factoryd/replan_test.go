@@ -1552,7 +1552,7 @@ func TestRecordReplanCounts(t *testing.T) {
 	if err := r.recordReplan(ctx, p, repo, 3, next, step, map[string]int64{"api": 21, "ui2": 24, "cli": 25}); err != nil {
 		t.Fatal(err)
 	}
-	if got := commentsOn(fj, 1); !slices.Equal(got, []string{"factoryd: replanned at revision 3: kept 1, changed 1, dropped 1, added 1.\nAsked by ana: too wide"}) {
+	if got := commentsOn(fj, 1); !slices.Equal(got, []string{"Replanned at revision 3: kept 1, changed 1, dropped 1, added 1.\nAsked by ana: too wide"}) {
 		t.Fatalf("the plan's comments %q", got)
 	}
 	for id, want := range map[string][]cardVerdict{
@@ -1619,10 +1619,10 @@ func TestRecordReplanCounts(t *testing.T) {
 	if cutRows != 1 {
 		t.Fatalf("%d plan_replanned rows, want the retried filing's revision recorded once", cutRows)
 	}
-	if got := commentsOn(fj, 50); !slices.Equal(got, []string{"factoryd: cut into #51, #52 at session 3, 4.20 EUR spent."}) {
+	if got := commentsOn(fj, 50); !slices.Equal(got, []string{"Cut into #51, #52 at session 3, 4.20 EUR spent."}) {
 		t.Fatalf("the cut card's comments %q", got)
 	}
-	if got := commentsOn(fj, 1); !slices.Equal(got, []string{"factoryd: replanned at revision 3: kept 0, changed 1, dropped 0, added 1.\nThe cut of #50: the list endpoint"}) {
+	if got := commentsOn(fj, 1); !slices.Equal(got, []string{"Replanned at revision 3: kept 0, changed 1, dropped 0, added 1.\nThe cut of #50: the list endpoint"}) {
 		t.Fatalf("the plan's comments %q", got)
 	}
 	var cutStep struct {
@@ -1650,8 +1650,8 @@ func TestRecordReplanCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := commentsOn(fj, 1); !slices.Equal(got, []string{
-		"factoryd: replanned at revision 1: kept 0, changed 1, dropped 0, added 0.\nThe cut of #1: the rest",
-		"factoryd: cut into #61 at session 2, 1.50 EUR spent.",
+		"Replanned at revision 1: kept 0, changed 1, dropped 0, added 0.\nThe cut of #1: the rest",
+		"Cut into #61 at session 2, 1.50 EUR spent.",
 	}) {
 		t.Fatalf("the direct card's comments %q", got)
 	}
@@ -1728,7 +1728,7 @@ func TestRecordReplanFailureFailsTheFiling(t *testing.T) {
 	if _, pending, err := r.pendingReplan(ctx, store.tasks["t-plan"]); err != nil || pending {
 		t.Fatalf("after the retry: pending %t, %v; want ended", pending, err)
 	}
-	want := "factoryd: replanned at revision 1: kept 0, changed 0, dropped 0, added 4.\nAsked by ana: too wide"
+	want := "Replanned at revision 1: kept 0, changed 0, dropped 0, added 4.\nAsked by ana: too wide"
 	if got := commentsOn(fj, 1); len(slices.DeleteFunc(slices.Clone(got), func(c string) bool { return c != want })) != 1 {
 		t.Fatalf("the plan's comments %q, want the record once", got)
 	}
@@ -2211,7 +2211,7 @@ func TestOffMainRevertThatCannotStart(t *testing.T) {
 		if _, pending, err := g.r.pendingReplan(ctx, g.store.tasks["p"]); err != nil || pending {
 			t.Fatalf("the replan pending %t, %v; want it ended", pending, err)
 		}
-		want := []string{"factoryd: the revert of plan #10 could not start: " + cause + ". Its cards stay on main; replan again."}
+		want := []string{"The revert of plan #10 could not start: " + cause + ". Its cards stay on main. Replan the plan again."}
 		if c := g.fj.commentsOn(10); !slices.Equal(c, want) {
 			t.Fatalf("plan comments %q, want %q", c, want)
 		}
@@ -2479,12 +2479,12 @@ func TestRecordReplanOffMain(t *testing.T) {
 		reverted      *time.Time
 		want          string
 	}{
-		{"landed", "the api is wrong.", finishedAgo(time.Minute), "factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong. Its merged cards came off main."},
+		{"landed", "the api is wrong.", finishedAgo(time.Minute), "Replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong. Its merged cards came off main."},
 		{"landed, a comment without a period", "the api is wrong", finishedAgo(time.Minute),
-			"factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong. Its merged cards came off main."},
+			"Replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong. Its merged cards came off main."},
 		{"landed, a question", "is the api wrong?", finishedAgo(time.Minute),
-			"factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: is the api wrong? Its merged cards came off main."},
-		{"not landed", "the api is wrong", nil, "factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong"},
+			"Replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: is the api wrong? Its merged cards came off main."},
+		{"not landed", "the api is wrong", nil, "Replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _, fj, step := recordRig(t, at, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": tc.comment, "off_main": true, "revision": 1},
@@ -2520,7 +2520,7 @@ func TestRecordReplanTakesOffMain(t *testing.T) {
 	if err := r.recordReplan(ctx, p, repo, 2, next, step, map[string]int64{"api2": 22}); err != nil {
 		t.Fatal(err)
 	}
-	want := "factoryd: replanned at revision 2: kept 0, changed 0, dropped 2, added 1. It takes #21 (api); #23 (cli) off main.\nAsked by ana: the api is wrong."
+	want := "Replanned at revision 2: kept 0, changed 0, dropped 2, added 1. It takes #21 (api); #23 (cli) off main.\nAsked by ana: the api is wrong."
 	if got := commentsOn(fj, 1); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the plan's comments %q, want %q", got, want)
 	}

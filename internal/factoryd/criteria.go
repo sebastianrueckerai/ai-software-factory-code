@@ -308,7 +308,7 @@ func criteriaReport(p Plan, head string, runs []criterionRun, results map[string
 			g.Line = c.label() + ": its proof was flagged " + c.stored.Flag + " by its dry run, so it had no blind try"
 			open(proofFlagged, "")
 		case res.absent:
-			g.Line = fmt.Sprintf("%s: its open proof is not at %s in %s", c.label(), c.stored.Path, head[:min(7, len(head))])
+			g.Line = fmt.Sprintf("%s: its open proof is not at %s in %s", c.label(), c.stored.Path, ShortSHA(head))
 			rep.findings = append(rep.findings, g.Line+": commit the test below there.\n"+c.name+" in "+c.suite+":\n"+fenced(c.stored.Code))
 		default:
 			o := res.outcome
@@ -324,7 +324,7 @@ func criteriaReport(p Plan, head string, runs []criterionRun, results map[string
 			}
 			switch {
 			case c.kind == CriterionJudgement || c.kind == CriterionHuman:
-				name, at := c.stored.Artifact, head[:min(7, len(head))]
+				name, at := c.stored.Artifact, ShortSHA(head)
 				content, wrote := res.artifacts[name]
 				g.Met = false
 				switch {
@@ -399,7 +399,7 @@ func claimText(p Plan, c criterionRun) string {
 // why, where to commit its test and what to do, its claim, its code and
 // the output of its run.
 func openedFinding(o openedProof, head string) string {
-	at := head[:min(7, len(head))]
+	at := ShortSHA(head)
 	why := map[string]string{
 		proofFailed:     "its blind proof ran red at " + at,
 		proofMissing:    "its blind proof ran no test of its name at " + at,

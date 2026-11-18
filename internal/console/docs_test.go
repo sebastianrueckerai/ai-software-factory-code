@@ -266,7 +266,7 @@ func TestDocsReadAndEdit(t *testing.T) {
 		want string
 	}{
 		{"content over an existing file", "docs/plans/cache.md", docEdit{Content: "x"}, "docs/plans/cache.md exists: edit a passage of it with old and new, base_sha256 " + now},
-		{"a passage not there", "docs/plans/cache.md", docEdit{Old: "SQLite", New: "x", Base: now}, "the passage old is not in docs/plans/cache.md: read_doc it with find and copy the passage exactly"},
+		{"a passage not there", "docs/plans/cache.md", docEdit{Old: "SQLite", New: "x", Base: now}, "the passage `old` is not in docs/plans/cache.md: read it with `read_doc` and `find`, and copy the passage exactly"},
 		{"a passage twice", "docs/plans/cache.md", docEdit{Old: "The ", New: "x", Base: now}, "the passage old is in docs/plans/cache.md 3 times: widen it until it is there once"},
 		{"an edit of no file", "docs/plans/none.md", docEdit{Old: "a", New: "b"}, "docs/plans/none.md does not exist on master: a new file takes content"},
 		{"both", "docs/plans/cache.md", docEdit{Old: "a", Content: "b"}, "content writes a new file and old and new edit an existing one: send one of the two"},
@@ -472,7 +472,7 @@ func TestDocsReadWithoutRepo(t *testing.T) {
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/docs/docs/roadmap.md", nil), ck)
 	equal(t, "the status", rec.Code, http.StatusConflict)
 	equal(t, "the refusal", strings.TrimSpace(rec.Body.String()),
-		"the project names no document repository (chat.doc_repo); there are no documents")
+		"The project names no document repository, so there are no documents.")
 	page := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck)
 	if strings.Contains(page.Body.String(), `id="documents"`) {
 		t.Errorf("the board carries no Documents button without a doc repo")
@@ -693,7 +693,7 @@ func TestDocsSaveRefusals(t *testing.T) {
 		"docs/plans/new.md does not exist on master: save it without a base hash"})
 	code, ans = save("docs/plans/cache.md", docSave{Text: "  ", Base: factoryd.ContentHash(docsPlan)})
 	equal(t, "the empty refusal", []any{code, ans.Reason}, []any{http.StatusBadRequest,
-		"the document would be empty; the editor does not delete documents"})
+		"The document would be empty, and the editor deletes no document."})
 	f.failCommits = true
 	code, ans = save("docs/plans/cache.md", docSave{Text: docsPlan + "More.", Base: factoryd.ContentHash(docsPlan)})
 	equal(t, "the Forgejo refusal", []any{code, ans.Reason}, []any{http.StatusBadGateway,

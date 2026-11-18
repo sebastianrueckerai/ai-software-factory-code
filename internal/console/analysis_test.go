@@ -61,13 +61,13 @@ func TestAttachAnalysisTool(t *testing.T) {
 		want   string
 	}{
 		{&factoryd.AskSettledError{Kind: "question", Word: "answered", By: "sebastian"}, http.StatusConflict,
-			"The question of #13 is answered by sebastian. A settled ask is done; escalate files a new one when you need a person."},
+			"The question of #13 is answered by sebastian. A settled ask is done. `escalate` files a new one when you need a human."},
 		{&factoryd.AskSettledError{Kind: "criteria", Word: "superseded"}, http.StatusConflict,
-			"The criteria request of #13 is superseded. A settled ask is done; escalate files a new one when you need a person."},
+			"The criteria request of #13 is superseded. A settled ask is done. `escalate` files a new one when you need a human."},
 		{factoryd.ErrNoAsk, http.StatusNotFound,
-			"Card #13 asks nothing in the chat; escalate files an ask when you need a person."},
+			"Card #13 asks nothing in the chat. `escalate` files an ask when you need a human."},
 		{&factoryd.AskUnshownError{Kind: "question"}, http.StatusConflict,
-			"The question of #13 holds no case, so no card shows an analysis of it. Tell the human in the chat, or escalate when a person must decide."},
+			"The question of #13 holds no open ask, so no card shows an analysis of it. Tell the human in the chat, or `escalate` when a human must decide."},
 		{errors.New("the store is down"), http.StatusBadGateway,
 			"The analysis could not be recorded: the store is down. Attach the analysis again."},
 	} {

@@ -158,12 +158,12 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 // is one pointer line, so the card stays a decision, not a transcript.
 func TestNeedsYouCardShowsTheQuestionNotTheHistory(t *testing.T) {
 	body := "the session cap is reached: every finding sent to the agent so far goes to a human\n" +
-		"last: APIError: free headroom 0.000003 EUR, below the minimum call (status 402)\n" +
+		"last: APIError: free headroom 0.00 EUR, below the minimum call (status 402)\n" +
 		"- (15 earlier findings left out)\n" +
 		"- session, attempt 15: ran a grep in workflow_stages.go (exit 0)\n" +
 		"- session, attempt 15: ran a python splice on attempt2.diff (exit 0)"
 	want := "the session cap is reached: every finding sent to the agent so far goes to a human\n" +
-		"last: APIError: free headroom 0.000003 EUR, below the minimum call (status 402)\n" +
+		"last: APIError: free headroom 0.00 EUR, below the minimum call (status 402)\n" +
 		"- the findings history is on the issue"
 	if got := cardReason(body); got != want {
 		t.Errorf("cardReason = %q, want the question and state lines with the pointer", got)
@@ -187,7 +187,7 @@ func TestNeedsYouCardShowsTheQuestionNotTheHistory(t *testing.T) {
 		Track: "direct", Repository: "sf/code", Objective: "the card", CreatedAt: now, IssueNumber: 13},
 		Escalation: body, EscalatedAt: now.Add(-2 * time.Hour)}}
 	page := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-cap/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{"last: APIError: free headroom 0.000003 EUR, below the minimum call (status 402)",
+	for _, want := range []string{"last: APIError: free headroom 0.00 EUR, below the minimum call (status 402)",
 		"- the findings history is on the issue"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the drawer lacks %q", want)
@@ -234,7 +234,7 @@ func TestStatusLineFigures(t *testing.T) {
 <span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>
 <span class="cell"><span><b class="n">2</b> working</span></span>
 <a href="#needs-you" class="cell needs on"><span><b class="n">6</b> need you</span></a>
-<span class="cell spend" ` + title + `><a href="/costs"><span><b class="n">€5.50</b> <span class="of">/ €50.00</span></span>` + gauge(11) + `</a><span class="pct">11%</span></span>
+<span class="cell spend" ` + title + `><a href="/costs"><span><b class="n">5.50 EUR</b> <span class="of">/ 50.00 EUR</span></span>` + gauge(11) + `</a><span class="pct">11%</span></span>
 ` + pool
 	if got := line(""); got != code {
 		t.Errorf("board: status line\n%s\nwant\n%s", got, code)
@@ -247,7 +247,7 @@ func TestStatusLineFigures(t *testing.T) {
 <span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>
 <span class="cell"><span><b class="n">0</b> working</span></span>
 <a href="#needs-you" class="cell needs on"><span><b class="n">1</b> need you</span></a>
-<span class="cell spend" `+title+`><a href="/costs"><span><b class="n">€3.00</b> <span class="of">/ €12.00</span></span>`+gauge(25)+`</a><span class="pct">25%</span></span>
+<span class="cell spend" `+title+`><a href="/costs"><span><b class="n">3.00 EUR</b> <span class="of">/ 12.00 EUR</span></span>`+gauge(25)+`</a><span class="pct">25%</span></span>
 `+pool; got != want {
 		t.Errorf("demo-app: status line\n%s\nwant\n%s", got, want)
 	}
@@ -255,7 +255,7 @@ func TestStatusLineFigures(t *testing.T) {
 <span class="cell state" data-state="idle"><i class="dot" aria-hidden="true"></i>idle</span>
 <span class="cell"><span><b class="n">0</b> working</span></span>
 <a href="#needs-you" class="cell needs"><span><b class="n">0</b> need you</span></a>
-<span class="cell spend" `+title+`><a href="/costs"><span><b class="n">€5.50</b> <span class="of">/ €50.00</span></span>`+gauge(11)+`</a><span class="pct">11%</span></span>
+<span class="cell spend" `+title+`><a href="/costs"><span><b class="n">5.50 EUR</b> <span class="of">/ 50.00 EUR</span></span>`+gauge(11)+`</a><span class="pct">11%</span></span>
 `+pool; got != want {
 		t.Errorf("linkshort: status line\n%s\nwant\n%s", got, want)
 	}
@@ -634,9 +634,9 @@ func TestDrawerOverview(t *testing.T) {
 
 	merge := drawer(t, r, ck, "t-m", "overview")
 	for _, want := range []string{
-		"<dt>Model review</dt><dd>approve: adds the column safely<br>- remark: a follow-up files the docs<br>- dropped (grep finds the client closed in handler.go:40): internal/api.go: the handler leaks the client</dd>",
-		"<dt>Earlier review 1</dt><dd>concerns: the column lacks a default<br>- 0018_x.sql: add a default<br>- dropped (main already held the default): 0018_x.sql: add a default</dd>",
-		"<dt>Security audit</dt><dd>findings (big, zai/glm-5.3)<br>- secret in the diff: private key: <code>internal/x/x_test.go:14</code>"} {
+		`<dt>Model review</dt><dd>It approves the change. <span class="quote">adds the column safely</span><br>- a remark: <span class="quote">a follow-up files the docs</span><br>- dropped (grep finds the client closed in handler.go:40): <span class="quote">internal/api.go: the handler leaks the client</span></dd>`,
+		`<dt>Earlier review 1</dt><dd>It has concerns. <span class="quote">the column lacks a default</span><br>- <span class="quote">0018_x.sql: add a default</span><br>- dropped (main already held the default): <span class="quote">0018_x.sql: add a default</span></dd>`,
+		`<dt>Security audit</dt><dd>It found problems. The audit ran on <span class="mono">big</span>, <span class="mono">zai/glm-5.3</span>.<br>- <span class="quote">secret in the diff: private key</span>: <code>internal/x/x_test.go:14</code>`} {
 		if !strings.Contains(merge, want) {
 			t.Errorf("t-m's overview lacks %s:\n%s", want, merge)
 		}
@@ -984,7 +984,7 @@ func TestApprovalFormsKeepTheBoard(t *testing.T) {
 	}
 	before := r.events.count()
 	if rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {"deny"}}), ck); rec.Code != http.StatusBadRequest ||
-		!strings.Contains(rec.Body.String(), "the action deny is not one the face offers") || r.approvals.get(4).Status != "pending" {
+		!strings.Contains(rec.Body.String(), "The answer deny is not one the card shows.") || r.approvals.get(4).Status != "pending" {
 		t.Errorf("an approve naming deny = %d %q, request %q", rec.Code, rec.Body, r.approvals.get(4).Status)
 	}
 	for _, tc := range []struct {
@@ -1058,9 +1058,9 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 	}
 	for _, want := range []string{`<dt>Risk class</dt><dd>high</dd>`,
 		`<dt>Migration</dt><dd>yes, human review required: <code>internal/factoryd/migrations/0018_x.sql</code></dd>`,
-		`<dt>Model review</dt><dd>approve: adds the column safely<br>`,
+		`<dt>Model review</dt><dd>It approves the change. <span class="quote">adds the column safely</span><br>`,
 		`<dt>Agent's recommendation</dt><dd class="reason">Adds the column; merge it.</dd>`,
-		`<dt>Why a human</dt><dd>the project&#39;s merge rule is human; risk class high is requires_approval</dd>`} {
+		`<dt>Why a human</dt><dd><ul><li>the project&#39;s merge rule is human</li><li>risk class high is requires_approval</li></ul></dd>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the merge card's brief lacks %s:\n%s", want, body)
 		}
@@ -1181,7 +1181,7 @@ func TestFindNarrowsTheColumns(t *testing.T) {
 	}
 	// the panel keeps spend, provider, GitHub and the configuration
 	// version (C9), under a find as without one
-	for _, want := range []string{`<h3>Spend</h3>`, `<span class="fig">€0.00 of €20.00 day cap</span>`,
+	for _, want := range []string{`<h3>Spend</h3>`, `<span class="fig">0.00 of 20.00 EUR day cap</span>`,
 		`<h3>Factory</h3>`, `<p class="none">unknown</p>`,
 		`<a class="lchip" href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory" target="_blank" rel="noopener" data-tip="version 4 · c9d98bb0aa11">config</a>`} {
 		if !strings.Contains(body, want) {

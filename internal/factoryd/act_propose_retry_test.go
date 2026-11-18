@@ -177,7 +177,7 @@ func TestASecondProposalOnTheSameCaseIsRefused(t *testing.T) {
 		t.Errorf("the proposal's face = %+v, want its recommendation by the factory agent", face)
 	}
 	err := propose()
-	want := "case 3 already carries your proposal of retry: the human decides it on the card"
+	want := "`case_id` 3 already carries your proposal of “Try the failed card again”: the human decides it on the card."
 	if err == nil || err.Error() != want {
 		t.Fatalf("second proposal = %v, want %q", err, want)
 	}
@@ -256,7 +256,7 @@ func TestAProposalAfterAnAnalysisIsRefused(t *testing.T) {
 	}
 	_, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Via: ViaChat, Rung: 2,
 		Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}})
-	want := "case 3 already carries your recommendation of replan: the human decides it on the card"
+	want := "`case_id` 3 already carries your recommendation of “Send back to the planner”: the human decides it on the card."
 	if err == nil || err.Error() != want {
 		t.Fatalf("proposal after an analysis = %v, want %q", err, want)
 	}

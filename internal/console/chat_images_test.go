@@ -22,7 +22,7 @@ import (
 // request_image.
 func TestChatContextNamesTheSandboxImages(t *testing.T) {
 	today := time.Now().UTC().Format("2006-01-02")
-	status := "\n\nThe project now:\nToday is " + today + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00, the factory's whole ledger; pool: " + noDraws
+	status := "\n\nThe project now:\nToday is " + today + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month 0.00 of 50.00 EUR, the factory's whole ledger; pool: " + noDraws
 	for _, tc := range []struct {
 		agents string
 		pins   map[string]policy.ImagePin
@@ -40,7 +40,7 @@ func TestChatContextNamesTheSandboxImages(t *testing.T) {
 		if tc.agents == policy.AgentsNone {
 			r.ledger.enforced = policy.Enforced{Month: 3.75}
 			want = "\n\nThe project now:\nToday is " + today + " UTC.\nStatus: agents none, every issue goes to the human lane; " +
-				"spend this month €3.75 of €50.00, the factory's whole ledger"
+				"spend this month 3.75 of 50.00 EUR, the factory's whole ledger"
 		}
 		r.projects.rows[0].Agents, r.projects.rows[0].Images = tc.agents, tc.pins
 		ck, s := r.loggedIn(t)
@@ -72,7 +72,7 @@ func TestChatStatusOfAProjectFactorydDoesNotWorkOn(t *testing.T) {
 	g.replies = [][]string{{say("ok")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"how is it?"}})
 	system, _ := messages(t, g.calls()[0])[0]["content"].(string)
-	want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: no board, factoryd does not work on its repository; spend this month €0.00 of €50.00, the factory's whole ledger\n" +
+	want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: no board, factoryd does not work on its repository; spend this month 0.00 of 50.00 EUR, the factory's whole ledger\n" +
 		"Sandbox images: none; every card runs the factory image."
 	if !strings.HasSuffix(system, want) {
 		t.Errorf("the system message does not end with %q:\n%s", want, system)
@@ -149,7 +149,7 @@ func TestChatNewCardImage(t *testing.T) {
 	equal(t, "Do it on default", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
 	equal(t, "the issue's body on default", r.fg.issues[0]["body"], briefHead+"Screenshot the landing page.\n\nAcceptance:\n- The page is shot\n\nSize: small")
 
-	unpinned := "Project ai-software-factory-code pins no image video: its images are chromium, default. Name one of them, leave image out for the default, or add the image with request_image."
+	unpinned := "Project ai-software-factory-code pins no image video: its images are chromium, default. Name one of them, leave `image` out for the default, or add the image with `request_image`."
 	code, msg := refused(t, r, "new_card", toolInput{Title: "Shoot the page", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Track: policy.TrackDirect, TrackReason: "one screenshot", Image: "video"})
 	equal(t, "an unpinned image", []any{code, msg}, []any{http.StatusConflict, unpinned})
 	// the proposal judges the image, so the agent corrects it before Do it
@@ -162,7 +162,7 @@ func TestChatNewCardImage(t *testing.T) {
 	r.projects.rows[0].Images = nil
 	code, msg = refused(t, r, "new_card", toolInput{Title: "Shoot the page", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Track: policy.TrackDirect, TrackReason: "one screenshot", Image: "video"})
 	equal(t, "a project without images", []any{code, msg}, []any{http.StatusConflict,
-		"Project ai-software-factory-code pins no sandbox images. Leave image out for the default, or add the image with request_image."})
+		"Project ai-software-factory-code pins no sandbox images. Leave `image` out for the default, or add the image with `request_image`."})
 }
 
 // request_image is the member's ask for a tool, confirmed as new_card is:

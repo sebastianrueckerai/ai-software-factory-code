@@ -428,7 +428,7 @@ func TestRunReportNamesACostHoldCrossing(t *testing.T) {
 	awaitPod(t, kube, done)
 	kube.scriptPods(0, resultLine(false, said))
 	want := "the report session ended without a report: " + said + "; a model call on small crossed its cost hold: " +
-		"90000 prompt tokens (0 cached) and 3000 output tokens cost 0.139200 EUR against a hold of 0.131000 EUR; " +
+		"90000 prompt tokens (0 cached) and 3000 output tokens cost 0.14 EUR against a hold of 0.13 EUR; " +
 		"its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"
 	if err := <-done; err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("RunReport = %v, want %q", err, want)

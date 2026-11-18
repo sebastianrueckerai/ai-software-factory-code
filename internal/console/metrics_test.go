@@ -379,7 +379,7 @@ func TestDivideConquerMetricPanels(t *testing.T) {
 		"small 2.0 · medium 2.0",                      // panel 2's per-size averages
 		"5 cards · 1 unknown size · 1 missing starts", // panel 2's cohort and holes
 		"pushed 2 · wall_clock 1",                     // panel 3's causes
-		"€0.0200",                                     // panel 4's euros per merged line
+		"0.0200 EUR",                                  // panel 4's euros per merged line
 		"7 cards · 1 missing cost · 1 missing lines · 1 missing size",
 		"small 2.00 / medium 3.00 / large unavailable", // panel 5's fits, unavailable never zero
 		">2 / 1<",                                // panel 6's cuts and closed cut groups
@@ -674,10 +674,10 @@ func TestMetricsFormatters(t *testing.T) {
 		{"mK fractional", mK(84500), "84.5 k"},
 		{"mK millions", mK(2249900), "2.2 M"},
 		{"mK whole millions", mK(3000000), "3 M"},
-		{"mEur", mEur(87.4), "€87.40"},
-		{"mEur two sixty", mEur(2.6), "€2.60"},
-		{"mEurMove up", mEurMove(9.1), "+€9.10"},
-		{"mEurMove down", mEurMove(-0.3), "−€0.30"},
+		{"mEur", mEur(87.4), "87.40 EUR"},
+		{"mEur two sixty", mEur(2.6), "2.60 EUR"},
+		{"mEurMove up", mEurMove(9.1), "+9.10 EUR"},
+		{"mEurMove down", mEurMove(-0.3), "−0.30 EUR"},
 		{"mDec", mDec(1.4), "1.4"},
 		{"mDecMove", mDecMove(-0.3), "−0.3"},
 		{"mShare", mShare(71.4), "71 %"},
@@ -795,7 +795,7 @@ func TestProjectMetricsCaseRow(t *testing.T) {
 		t.Errorf("cases row has %d sparks, want 3: %s", n, row)
 	}
 	for _, want := range []string{`<span>per card</span><span class="mshare">2.0</span>`, `<span>rung 3</span><span class="mshare">38 %</span>`, `<span>withdrawn</span><span class="mshare">13 %</span>`,
-		`<span>human wait</span><span class="mshare">` + mDur(1800000) + `</span>`, `<span>spend after</span><span class="mshare">€0.84</span><span>resolution cost</span><span class="mshare">€1.92</span>`} {
+		`<span>human wait</span><span class="mshare">` + mDur(1800000) + `</span>`, `<span>spend after</span><span class="mshare">0.84 EUR</span><span>resolution cost</span><span class="mshare">1.92 EUR</span>`} {
 		if !strings.Contains(row, want) {
 			t.Errorf("cases row lacks %q: %s", want, row)
 		}

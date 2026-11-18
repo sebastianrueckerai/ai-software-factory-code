@@ -177,8 +177,8 @@ func (r *Runner) unfunded(ctx context.Context, taskID, model, purpose string, ca
 		need += cost
 	}
 	if free := own.Free(); need > free {
-		return fmt.Sprintf("its %s would cost about %.2f EUR, and the card has %.2f EUR free.",
-			textutil.Plural(len(calls), "call", "calls"), need, max(free, 0)), nil
+		return fmt.Sprintf("its %s would cost about %s EUR, and the card has %s EUR free.",
+			textutil.Plural(len(calls), "call", "calls"), textutil.EUR(need), textutil.EUR(max(free, 0))), nil
 	}
 	return "", nil
 }

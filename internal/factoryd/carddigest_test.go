@@ -155,6 +155,22 @@ func TestCardDigestRendersTheSkeleton(t *testing.T) {
 	if got := d.Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
 	}
+	life := []LifeLine{
+		{Text: "Filed by the planner: revision 2, depends on #1402 (done)."},
+		{Text: "Session 1 on small: pushed its work, 0.41 EUR in 23 calls."},
+		{Text: "The model review: concerns, 2 findings."},
+		{Text: "The check-in at the gate: confirmed 2, handover."},
+		{Text: "It asked: Card 1410 asks: grant one more session?"},
+		{Text: "Answered by sebastian:", Quote: "Grant one session"},
+		{Text: "Session 4 on small: no push, 2 times."},
+	}
+	got := d.Life()
+	for i := range got {
+		got[i].At = time.Time{}
+	}
+	if !slices.Equal(got, life) {
+		t.Fatalf("Life =\n%+v\nwant\n%+v", got, life)
+	}
 	if got := FindingID("  MetricDivideReplans\tLACKS   e.repository = $1 "); got != idA {
 		t.Fatalf("findingID of the spaced, upper-case text = %s, want %s", got, idA)
 	}
@@ -414,8 +430,21 @@ func TestCardDigestWithoutATimelineRendersTheEventsAlone(t *testing.T) {
 		"   1 +0:00   filed by webhook       → direct card\n" +
 		"   2 +0:30   ask                    → agent_escalate: Which file should change?\n" +
 		"flags: none\n"
-	if got := g.digest(t).Render(); got != want {
+	d := g.digest(t)
+	if got := d.Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
+	}
+	// the same log as a human reads it: the ask's kind gone
+	life := []LifeLine{
+		{Text: "Filed by webhook: direct card."},
+		{Text: "It asked: Which file should change?"},
+	}
+	got := d.Life()
+	for i := range got {
+		got[i].At = time.Time{}
+	}
+	if !slices.Equal(got, life) {
+		t.Fatalf("Life =\n%+v\nwant\n%+v", got, life)
 	}
 }
 
@@ -505,8 +534,39 @@ func TestCardDigestReadsEveryStepKind(t *testing.T) {
 		"  18 +0:19   criteria by review     → C1 met, C2 undecided\n" +
 		"  19 +0:20   criteria by sebastian  → C2 met\n" +
 		"flags: none\n"
-	if got := g.digest(t).Render(); got != want {
+	d := g.digest(t)
+	if got := d.Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
+	}
+	// the same log as a human reads it: words, a count for the finding
+	// ids, no hash, a writer's words apart
+	life := []LifeLine{
+		{Text: "Filed by webhook: depends on #1409 (done)."},
+		{Text: "Made to wait by sebastian: depends on #1409."},
+		{Text: "Status: queued, intake."},
+		{Text: "Status: running, session."},
+		{Text: "Money added by sebastian: 1.00 EUR."},
+		{Text: "More allowed by sebastian: 2 sessions, 100 lines, 0.50 EUR."},
+		{Text: "The checks: failure, 1 finding."},
+		{Text: "The security audit: 1 finding."},
+		{Text: "Handed over:", Quote: "Fix the vet finding first."},
+		{Text: "Asked to approve: merge, pull request #12."},
+		{Text: "Tried again by sebastian: as #1411."},
+		{Text: "Sent back to the planner by sebastian: asked for a new plan."},
+		{Text: "Cut into cards by the factory: revision 3 into #1412, #1413 at session 2."},
+		{Text: "Granted by sebastian: one more session."},
+		{Text: "Answered by sebastian:", Quote: "Keep the table"},
+		{Text: "Merged: pull request #12."},
+		{Text: "Ended: done."},
+		{Text: "The promises by review: C1 met, C2 undecided."},
+		{Text: "The promises by sebastian: C2 met."},
+	}
+	got := d.Life()
+	for i := range got {
+		got[i].At = time.Time{}
+	}
+	if !slices.Equal(got, life) {
+		t.Fatalf("Life =\n%+v\nwant\n%+v", got, life)
 	}
 }
 

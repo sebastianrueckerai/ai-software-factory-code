@@ -554,7 +554,7 @@ func (c *Console) caseFragment(w http.ResponseWriter, r *http.Request) {
 	cs, cerr := c.caseSetOf(ctx, shown.Repository, bt)
 	if cerr != nil {
 		log.Printf("console: the cases of %s: %v", shown.Name, cerr)
-		http.Error(w, "cannot read the cases", http.StatusInternalServerError)
+		http.Error(w, "The card's asks could not be read. Reload the board.", http.StatusInternalServerError)
 		return
 	}
 	if len(pagesOf(v, cs, id)) == 0 {

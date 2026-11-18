@@ -680,7 +680,7 @@ func TestRetryCardKeepsThePlanPath(t *testing.T) {
 					onA = append(onA, c.body)
 				}
 			}
-			if !slices.Equal(onA, []string{"factoryd: Retried as #9."}) || fj.issues[5].state != "closed" {
+			if !slices.Equal(onA, []string{"Retried as #9."}) || fj.issues[5].state != "closed" {
 				t.Fatalf("#5: comments %q, state %q; want the retry's comment and closed", onA, fj.issues[5].state)
 			}
 			if !slices.ContainsFunc(store.intakeEvents, func(e IntakeEvent) bool {
@@ -1001,7 +1001,7 @@ func TestRetryResumesAfterAFailedStep(t *testing.T) {
 				}
 			}
 			if fj.next != 9 || !slices.Equal(fj.issues[9].labels, []string{"agent", "state/queued"}) ||
-				fj.branches["factory/"+replacement] != wantHead || fj.issues[5].state != "closed" || !slices.Equal(onA, []string{"factoryd: Retried as #9."}) {
+				fj.branches["factory/"+replacement] != wantHead || fj.issues[5].state != "closed" || !slices.Equal(onA, []string{"Retried as #9."}) {
 				t.Fatalf("after the second retry: %d issues, #9 labels %v, branch %q, #5 %s with %q",
 					fj.next, fj.issues[9].labels, fj.branches["factory/"+replacement], fj.issues[5].state, onA)
 			}

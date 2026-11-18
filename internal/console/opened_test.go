@@ -319,7 +319,7 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 		if faults := writingguide.Lint(s); len(faults) > 0 {
 			t.Errorf("%q: %v", s, faults)
 		}
-		for _, re := range faceForbidden {
+		for _, re := range facefixtures.Forbidden {
 			if m := re.FindString(s); m != "" {
 				t.Errorf("%q names %q", s, m)
 			}

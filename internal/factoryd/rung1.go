@@ -52,7 +52,7 @@ func humanOnly(c Case, f CaseFacts) (bool, string) {
 		}
 		// the board's ask on the live facts, whatever the case stored
 		if need := shortfall(f); Cents(need) > Cents(f.PoolLeft.EUR) {
-			return true, fmt.Sprintf("the card needs %.2f EUR and the pool holds %.2f EUR", need, f.PoolLeft.EUR)
+			return true, fmt.Sprintf("the card needs %s EUR and the pool holds %s EUR", textutil.EUR(need), textutil.EUR(f.PoolLeft.EUR))
 		}
 	}
 	return false, ""
@@ -85,10 +85,10 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 	var need string
 	if eur := shortfall(f); eur > 0 {
 		// the board's ask: a session like the last one, past what the card may spend
-		need = fmt.Sprintf("; the next session needs %.2f EUR more", eur)
+		need = fmt.Sprintf("; the next session needs %s EUR more", textutil.EUR(eur))
 	}
-	line("Money: budget %.2f, spent %.2f, left %.2f EUR, ceiling %.2f EUR; card draw left %s; pool left %s%s.",
-		f.BudgetEUR, f.SpentEUR, f.LeftEUR, f.CeilingEUR, drawText(f.CardDrawLeft), drawText(f.PoolLeft), need)
+	line("Money: budget %s, spent %s, left %s EUR, ceiling %s EUR; card draw left %s; pool left %s%s.",
+		textutil.EUR(f.BudgetEUR), textutil.EUR(f.SpentEUR), textutil.EUR(f.LeftEUR), textutil.EUR(f.CeilingEUR), drawText(f.CardDrawLeft), drawText(f.PoolLeft), need)
 	line("%s", r.Scrub.String(digest))
 	if f.Killed != nil {
 		line("The sandbox killed the last session for its memory (%s, exit code %d) while it ran: %s", cut(f.Killed.Reason), f.Killed.ExitCode, cut(f.Killed.Command))

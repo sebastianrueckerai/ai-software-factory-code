@@ -1099,14 +1099,14 @@ func (b *builder) card2004(group, name string) Fixture {
 	_ = json.Unmarshal(raw, &m)
 	c := b.atHuman(factoryd.Case{TaskID: t.ID, Repository: t.Repository, Kind: factoryd.CaseBudgetFloor, Problem: problem, Facts: m,
 		Money: &factoryd.CaseMoney{Kind: "budget", BudgetEUR: 5.7, SpentEUR: 5.364522, Buys: "one session on factory/big"}}, 5847, 70*time.Minute)
+	analysis := "What it set out to do: card #2004 (floor-acceptance), third of plan #1990 (price, ask, guard fixes), was to turn three money-fault fixes into end-to-end acceptance tests under acceptance/, on the pool_funding rigs: " +
+		"(1) a fresh default-budget card whose task has no ledger rows affords its first session even with another task's expensive openings on the same model alias; (2) a budget-floor case asks exactly the printed price, and a fund of exactly that amount clears it; " +
+		"(3) a never-ran card accepts a second fund press — the guard never weighs a fund press as bought-nothing. One further criterion is human-only: after deploy the 9 stuck live floor cases unblock and cards #1947/#1955 accept a fund again. " +
+		"What it did: session 1 pushed ea6d065 — scenario 1 (TestFreshCardAffordsFirstSession) green on PR #2085, checks success. " +
+		"The controller then funded €0.70 as a session floor for the six then-open findings. Session 2 pushed 4d03448 adding scenario 2 (TestFloorCaseAsksThePrintedPrice). Review approved (+22:47). " +
+		"Checks failed at 4d03448 and again after factoryd's rerun on head 7eaf7c7: CI shows scenario 2's test genuinely failing (job 'test' after 14m42s) — real unfinished work, not a flake. " +
+		"The audit still lists 8 findings on acceptance/price_floor_acceptance_test.go:71-107 (secret/token literals, secrets, loopback endpoints) — the same fake-rig fixture class rung 0 already adjudicated on case 5631."
 	row := map[string]any{
-		"info": "What it set out to do: card #2004 (floor-acceptance), third of plan #1990 (price, ask, guard fixes), was to turn three money-fault fixes into end-to-end acceptance tests under acceptance/, on the pool_funding rigs: " +
-			"(1) a fresh default-budget card whose task has no ledger rows affords its first session even with another task's expensive openings on the same model alias; (2) a budget-floor case asks exactly the printed price, and a fund of exactly that amount clears it; " +
-			"(3) a never-ran card accepts a second fund press — the guard never weighs a fund press as bought-nothing. One further criterion is human-only: after deploy the 9 stuck live floor cases unblock and cards #1947/#1955 accept a fund again. " +
-			"What it did: session 1 pushed ea6d065 — scenario 1 (TestFreshCardAffordsFirstSession) green on PR #2085, checks success. " +
-			"The controller then funded €0.70 as a session floor for the six then-open findings. Session 2 pushed 4d03448 adding scenario 2 (TestFloorCaseAsksThePrintedPrice). Review approved (+22:47). " +
-			"Checks failed at 4d03448 and again after factoryd's rerun on head 7eaf7c7: CI shows scenario 2's test genuinely failing (job 'test' after 14m42s) — real unfinished work, not a flake. " +
-			"The audit still lists 8 findings on acceptance/price_floor_acceptance_test.go:71-107 (secret/token literals, secrets, loopback endpoints) — the same fake-rig fixture class rung 0 already adjudicated on case 5631.",
 		"recommendation": "Scenario 1 is green and pushed on pull request #2085. Scenario 2's CI failure (TestFloorCaseAsksThePrintedPrice) is real unfinished work, one small session's worth. " +
 			"The 8 audit findings are the same fake-rig fixture class judged before. The card's €0.34 cannot pay the €0.40 the gates need, and closing the gap costs about €1.30 of your money " +
 			"for work a successor finishes on its own fresh budget, as #2006 did with #2097 this morning. Parking buys nothing the successor does not.",
@@ -1114,7 +1114,7 @@ func (b *builder) card2004(group, name string) Fixture {
 		"preselected":    map[string]any{"action": factoryd.ActSuccessor},
 	}
 	maps.Copy(row, factoryd.FaceKeys(factoryd.FaceOf(*c, factoryd.Facts{CaseFacts: factoryd.FactsOf(*c), Card: t, Recommend: factoryd.RecommendationOf(row)})))
-	return Fixture{Group: group, Kind: name, Task: t, Facts: factoryd.FactsOf(*c), Case: c, Ask: &factoryd.CaseAsk{At: c.OpenedAt, Detail: roundTrip(row)}}
+	return Fixture{Group: group, Kind: name, Task: t, Facts: factoryd.FactsOf(*c), Case: c, Ask: &factoryd.CaseAsk{At: c.OpenedAt, Detail: roundTrip(row), Analysis: analysis}}
 }
 
 // card2091 is #2091 as the board read it, its ask as captured: the weekly

@@ -297,7 +297,7 @@ func TestCreateTaskHandlerIssueBodyIsObjectivePlusFiledByFactoryd(t *testing.T) 
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
-	want := "Add X\n\nfiled by factoryd intake"
+	want := "Add X\n\nFiled by the factory's intake."
 	if *issueBody != want {
 		t.Fatalf("issue body = %q, want %q", *issueBody, want)
 	}

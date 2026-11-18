@@ -462,14 +462,14 @@ func TestWorkflowFilesAResolutionWithNoNoteUnderItsComment(t *testing.T) {
 	h.env.RegisterDelayedCallback(func() {
 		h.rowUsage.RaisedSessions = 1
 		h.env.SignalWorkflow(SignalCaseResolved, caseResolved(701, extend, 7))
-		h.env.SignalWorkflow(SignalHumanComment, TaskSignal{Author: "sebastian", Body: "factoryd: sebastian answered with extend: 1 session from the pool.", Comment: 7})
+		h.env.SignalWorkflow(SignalHumanComment, TaskSignal{Author: "sebastian", Body: "sebastian answered with “Allow more sessions”: 1 session from the pool.", Comment: 7})
 	}, time.Hour)
 	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
 	}
-	want := []string{`sebastian, to "` + CapReachedLadder + `": extend: 1 session from the pool`}
+	want := []string{`sebastian, to "` + CapReachedLadder + `": “Allow more sessions”: 1 session from the pool`}
 	if len(h.sessions) != 1 || !slices.Equal(h.sessions[0].Answers, want) {
 		t.Fatalf("sessions = %+v, want the fourth with the one answer %q", h.sessions, want)
 	}

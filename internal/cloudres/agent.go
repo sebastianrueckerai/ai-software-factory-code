@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"net"
 	"slices"
 	"strconv"
@@ -130,8 +131,8 @@ func EnvelopeViolations(env policy.Envelope, use EnvelopeUse, serverType string,
 		add("count", "the project already holds %d of its %d servers", use.OpenServers, env.MaxCount)
 	}
 	if use.MonthEUR+reservation > env.MonthlyEUR+1e-12 {
-		add("month", "the reservation of %.6f EUR on top of %.6f EUR this month exceeds the envelope's %.2f EUR a month",
-			reservation, use.MonthEUR, env.MonthlyEUR)
+		add("month", "the reservation of %s EUR on top of %s EUR this month exceeds the envelope's %s EUR a month by %s EUR",
+			textutil.EUR(reservation), textutil.EUR(use.MonthEUR), textutil.EUR(env.MonthlyEUR), textutil.EUR(use.MonthEUR+reservation-env.MonthlyEUR))
 	}
 	return out
 }
@@ -695,7 +696,7 @@ func (a AgentStore) Promote(ctx context.Context, id int64, by string, standing f
 		beyond = append(beyond, fmt.Sprintf("%d standing servers on top of %d exceed the standing count %d", servers, use.Count, block.MaxCount))
 	}
 	if use.MonthlyEUR+monthly > block.MonthlyEUR+1e-9 {
-		beyond = append(beyond, fmt.Sprintf("%.4f EUR a month on top of %.4f EUR exceeds the standing %.2f EUR", monthly, use.MonthlyEUR, block.MonthlyEUR))
+		beyond = append(beyond, fmt.Sprintf("%s EUR a month on top of %s EUR exceeds the standing %s EUR", textutil.EUR(monthly), textutil.EUR(use.MonthlyEUR), textutil.EUR(block.MonthlyEUR)))
 	}
 	if len(beyond) > 0 {
 		return fmt.Errorf("resource %d: %w: %s", id, ErrBeyondStanding, strings.Join(beyond, "; "))

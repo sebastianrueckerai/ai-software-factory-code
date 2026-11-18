@@ -27,11 +27,11 @@ func (c *Console) answerRequest(ctx context.Context, a actor, q factoryd.Approva
 	t.ID, t.Repository = q.TaskID, cmpOr(t.Repository, q.Project)
 	open, err := c.cfg.OpenCasesOf(ctx, t.ID)
 	if err != nil {
-		return "", refuse(http.StatusServiceUnavailable, "The card's cases could not be read, so nothing was answered. Try again.")
+		return "", refuse(http.StatusServiceUnavailable, "The card's asks could not be read, so nothing was answered. Try again.")
 	}
 	i := slices.IndexFunc(open, func(k factoryd.Case) bool { return approvalOf(q, k) })
 	if i < 0 {
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Approval request %d has no live case yet: reload the board.", q.ID))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Approval request %d has no live ask yet. Reload the board.", q.ID))
 	}
 	if !factoryd.IsBoardAction(res.Action) {
 		out, err := c.actOn(ctx, a, t, open[i].ID, res, nil)

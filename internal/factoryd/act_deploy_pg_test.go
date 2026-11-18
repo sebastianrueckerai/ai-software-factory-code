@@ -301,7 +301,7 @@ func TestHumanDeployNowRunsTheSameAction(t *testing.T) {
 	}
 }
 
-const notRollHeld = "deploy_now releases a held production, and this case is no roll hold's"
+const notRollHeld = "`deploy_now` releases a held production, and this ask is no roll hold's"
 
 // deploy_now on a case that is no roll hold's is refused with the table's
 // words: on an agent card's session cap, and on a human card of another
@@ -356,7 +356,7 @@ func TestNoAnswerRunsOnAnEndedCard(t *testing.T) {
 						t.Fatal(err)
 					}
 					_, err := h.deployAct(rung, "sebastian")
-					if want := "ended " + status + ", so its case takes no deploy_now"; err == nil || !strings.Contains(err.Error(), want) {
+					if want := "ended " + status + ", so its ask takes no `deploy_now`"; err == nil || !strings.Contains(err.Error(), want) {
 						t.Fatalf("Act = %v, want a refusal with %q", err, want)
 					}
 					if len(h.stub.calls) != 0 {
@@ -389,7 +389,7 @@ func TestEndedCardTakesNoReplanButStillCloses(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := h.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActReplan}})
-	if want := "ended closed, so its case takes no replan"; err == nil || !strings.Contains(err.Error(), want) {
+	if want := "card #12 ended closed, so its ask takes no `replan`: an ended card does no more work, and a new card carries the work on"; err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("replan on a closed card = %v, want %q", err, want)
 	}
 	if card, _, _ := h.s.Task(ctx, "t1"); card.Status != "closed" {
@@ -433,7 +433,7 @@ func TestDeployNowFailures(t *testing.T) {
 		want string
 	}{
 		{"not held", ErrNotHeld, "production of demo-app/demo-app is not held: every merge goes to production on its own"},
-		{"main red", ErrMainRed{Commit: "abcdef0123456789"}, "main of demo-app/demo-app at abcdef0 is red: deploy_now waits for a green run on main"},
+		{"main red", ErrMainRed{Commit: "abcdef0123456789"}, "main of demo-app/demo-app at abcdef0 is red: `deploy_now` waits for a green run on main"},
 		{"unknown", errors.New("forgejo: " + leaky), "production of demo-app/demo-app could not be released: forgejo: see https://[redacted]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -467,7 +467,7 @@ func TestAChoiceAfterTheCardEndedNamesTheEnd(t *testing.T) {
 	}
 	for _, rung := range []int{2, 3} {
 		_, err := h.r.Act(context.Background(), ActInput{TaskID: h.cardID, CaseID: h.caseID, By: "sebastian", Via: ViaChat, Rung: rung, Res: Resolution{Action: AnswerHoldWait, Note: "Wait"}})
-		if want := "ended done, so hold_wait changes nothing: an ended card does no more work, and a new card carries the work on"; err == nil || !strings.Contains(err.Error(), want) {
+		if want := "card #31 ended done, so `hold_wait` changes nothing: an ended card does no more work, and a new card carries the work on"; err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("rung %d: Act = %v, want a refusal with %q", rung, err, want)
 		}
 	}

@@ -1261,12 +1261,12 @@ func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 	edges := planEdges(p)
 	needed, owner := deployOwner(t.Objective, p)
 	var b strings.Builder
-	next := "Its open questions wait for the humans' answers on the factory console, which send it back to the planner; " +
-		"a comment here asks the planner for a new revision; closing the issue ends the plan."
+	next := "Its open questions wait for the humans' answers on the factory console, and each answer sends it back to the planner. " +
+		"A comment here asks the planner for a new revision. Closing the issue ends the plan."
 	if issues != nil {
 		next = "It asks no question, so its cards are filed: the table names their issues."
 	}
-	fmt.Fprintf(&b, "factoryd: plan revision %d of task %s, written by the planner. %s\n\n%s\n\n", revision, t.ID, next, strings.TrimSpace(p.Summary))
+	fmt.Fprintf(&b, "Plan revision %d, written by the planner. %s\n\n%s\n\n", revision, next, strings.TrimSpace(p.Summary))
 	if s := specBlock(p); s != "" {
 		b.WriteString(s + "\n\n")
 	}
@@ -3905,7 +3905,7 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 	}
 	if len(findings) > 0 {
 		note := fmt.Sprintf("revision %d files no cards: %s", revision, strings.Join(findings, "; "))
-		r.commentOnce(ctx, t, repo, t.IssueNumber, "factoryd: "+r.untrusted(t, note))
+		r.commentOnce(ctx, t, repo, t.IssueNumber, capitalize(r.untrusted(t, note)))
 		r.record(ctx, t.ID, "plan_refused", map[string]any{"revision": revision, "findings": findings})
 		return ChildrenResult{Refused: findings}, nil
 	}
@@ -3988,7 +3988,7 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 	if len(dropped) == 1 {
 		stay = "it stays"
 	}
-	r.commentOnce(ctx, t, repo, t.IssueNumber, fmt.Sprintf("factoryd: revision %d drops %s (%s), and %s on main. %s",
+	r.commentOnce(ctx, t, repo, t.IssueNumber, fmt.Sprintf("Revision %d drops %s (%s), and %s on main. %s",
 		n, plural(len(dropped), "merged card"), strings.Join(refs, "; "), stay, no))
 	return nil
 }

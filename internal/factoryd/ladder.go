@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -409,7 +410,8 @@ func (r *Runner) spentJudgment(ctx context.Context, t Task, c Case) (*HandUp, er
 	}
 	if _, _, ok := r.cfg.Policy().ProjectOf(t.Repository); !ok {
 		found := r.scrub(fmt.Sprintf("%s: repository %s names no project, so its judgment budget cannot be read", markJudgmentUnread, t.Repository))
-		return &HandUp{Found: found, Mark: markJudgmentUnread}, r.stepOnce(ctx, c, steps, markJudgmentUnread, found)
+		seen := r.scrub(fmt.Sprintf("The factory agent did not judge it: %s names no project, so the factory cannot read its judgment budget.", t.Repository))
+		return &HandUp{Found: seen, Mark: markJudgmentUnread}, r.stepOnce(ctx, c, steps, markJudgmentUnread, found)
 	}
 	return r.judgmentSpent(ctx, t, c, r.callModel(t, policy.PurposeCheckin))
 }
@@ -443,12 +445,13 @@ func (r *Runner) judgmentSpent(ctx context.Context, t Task, c Case, model string
 	}
 	r.FileJudgmentCard(ctx, t, chat)
 	judged := slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 1 && s.Outcome == StepHandedUp && s.Decision != "" })
-	found := fmt.Sprintf("%s: the chat task %s has %.2f of %.2f EUR left", markJudgmentSpent, chat.ID, left, chat.BudgetEUR)
+	found := fmt.Sprintf("%s: the chat task %s has %s of %s EUR left", markJudgmentSpent, chat.ID, textutil.EUR(left), textutil.EUR(chat.BudgetEUR))
 	if judged {
-		stepFound := fmt.Sprintf("%s The chat task %s has %.2f of %.2f EUR left.", noJudgmentLine, chat.ID, left, chat.BudgetEUR)
+		stepFound := fmt.Sprintf("%s The chat task %s has %s of %s EUR left.", noJudgmentLine, chat.ID, textutil.EUR(left), textutil.EUR(chat.BudgetEUR))
 		return &HandUp{Note: noJudgmentLine}, r.stepOnce(ctx, c, steps, noJudgmentLine, stepFound)
 	}
-	return &HandUp{Found: found, Mark: markJudgmentSpent}, r.stepOnce(ctx, c, steps, markJudgmentSpent, found)
+	seen := fmt.Sprintf("%s The project's judgment budget has %s of %s EUR left this month.", noJudgmentLine, textutil.EUR(left), textutil.EUR(chat.BudgetEUR))
+	return &HandUp{Found: seen, Mark: markJudgmentSpent}, r.stepOnce(ctx, c, steps, markJudgmentSpent, found)
 }
 
 // stepOnce appends found as a step of rung 0 on case c unless one of steps
@@ -505,7 +508,8 @@ func (r *Runner) CountReached(ctx context.Context, c Case, limit int) (*HandUp, 
 		return nil, err
 	}
 	found := fmt.Sprintf("rung 1 reached its per-card count of %d on this card", limit)
-	return &HandUp{Found: found, Mark: found}, r.stepOnce(ctx, c, steps, found, found)
+	seen := fmt.Sprintf("The check-in did not look at this ask: it already ran %d times on this card, the most it may.", limit)
+	return &HandUp{Found: seen, Mark: found}, r.stepOnce(ctx, c, steps, found, found)
 }
 
 const (
@@ -790,11 +794,35 @@ func foundLine(up *HandUp) string {
 	}
 	switch {
 	case up.Mark != "":
-		return "The factory found: " + up.Found
+		return up.Found
 	case up.Rung == 2:
-		return "The factory agent found: " + up.Found
+		return "The factory agent found:\n\n" + Quoted(up.Found)
 	}
-	return "The check-in found: " + up.Found
+	return "The check-in found:\n\n" + Quoted(up.Found)
+}
+
+// Quoted is a writer's text as a quote in markup, so a reader tells it
+// from the factory's words.
+func Quoted(s string) string {
+	return "> " + strings.ReplaceAll(strings.TrimSpace(s), "\n", "\n> ")
+}
+
+// StepWords is case step s as the card's life names it: who took it and
+// what came of it, and the words it found, which are its writer's; an
+// expired step says its decider did not answer.
+func StepWords(s CaseStep) (lead, found string) {
+	who := cmp.Or(deciderLead(s.Actor), "A human")
+	if _, bound, ok := strings.Cut(s.Found, expiredMark); ok {
+		return who + " did not answer within " + bound + ".", ""
+	}
+	next := []string{"the check-in", "the factory agent", "a human"}[min(max(s.Rung, 0), 2)]
+	did := map[string]string{StepInProgress: "is weighing it", StepResolved: "answered it", StepHandedUp: "passed it to " + next,
+		StepWithdrawn: "stopped when the ask was withdrawn"}[s.Outcome]
+	lead = who + " " + cmp.Or(did, "took a step")
+	if s.Found = strings.TrimSpace(s.Found); s.Found != "" {
+		return lead + ", and found: ", s.Found
+	}
+	return lead + ".", ""
 }
 
 // beforeLine is what rung 1 found under rung 2's expiry: its finding, or that
@@ -803,7 +831,7 @@ func beforeLine(found string) string {
 	if _, bound, ok := strings.Cut(found, expiredMark); ok {
 		return "The check-in did not answer within " + bound + "."
 	}
-	return "The check-in found: " + found
+	return "The check-in found:\n\n" + Quoted(found)
 }
 
 // errNoWait refuses a face of a card in status, which cannot wait for a
@@ -1240,7 +1268,7 @@ func boardAnswers(c Case, actions ...string) string {
 			if field.Kind != FieldMoney || field.Default == nil {
 				continue
 			}
-			if eur := field.Default(f); eur != "" && eur != money(0) {
+			if eur := field.Default(f); eur != "" && eur != textutil.EUR(0) {
 				name += " (" + field.Label + ": " + eur + ")"
 			}
 		}
@@ -1362,6 +1390,42 @@ func tripNext(c Case, reason string) string {
 	return replyNext(reason)
 }
 
+// healedLine opens the comment of an ask the factory puts again after a
+// restart: its face stands on the board as it was.
+const healedLine = "The factory restarted while this card waited for a human. Its question on the board still stands."
+
+// IssueAsk opens the comment of ask row face on its card's issue with the
+// face as the board shows it: the ask, the why line and the story, each
+// in its paragraph, a writer's words quoted.
+func IssueAsk(face map[string]any) string {
+	ask, _ := face["ask"].(string)
+	why, _ := face["why"].(string)
+	story, _ := face["story"].(Story)
+	var paras []string
+	for _, l := range []string{ask, why, story.Planned, story.Happened, story.Left} {
+		switch lead, words, ok := QuotedLine(l); {
+		case ok:
+			paras = append(paras, strings.TrimSpace(lead), Quoted(words))
+		case l != "":
+			paras = append(paras, l)
+		}
+	}
+	return strings.Join(paras, "\n\n")
+}
+
+// quotedLead are the leads of a story line that quotes a writer's words.
+var quotedLead = regexp.MustCompile(`^(The agent asks: |(?:The |)[A-Z][\w -]*'s view: )`)
+
+// QuotedLine splits a story line that quotes a writer into its lead and
+// the words.
+func QuotedLine(line string) (lead, words string, ok bool) {
+	m := quotedLead.FindString(line)
+	if m == "" {
+		return "", "", false
+	}
+	return m, line[len(m):], true
+}
+
 // PlanWaitCase says case c is the case of plan t's wait on its failed card
 // (ownFailedCard): it sits beside the plan, which no run holds.
 func PlanWaitCase(c Case, t Task) bool {
@@ -1402,13 +1466,7 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 			return 0, errNoWait{cur.Status}
 		}
 	}
-	// the reason in a code block: a mention the agent wrote rings no bell
-	safe := r.untrusted(t, reason)
-	body := "factoryd: task " + t.ID + " needs a human.\n\n" + fenced(safe)
-	if links := sanitize.Links(safe, r.linkHosts(t)); len(links) > 0 {
-		// the fence renders no link: the ones the sanitiser keeps follow it
-		body += "\n\nLinks:\n- " + strings.Join(links, "\n- ")
-	}
+	body := healedLine
 	stop := reason
 	if reason == HealedReason {
 		stop, _ = c.Facts["reason"].(string)
@@ -1431,6 +1489,19 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		fence := func(s string) string { return r.untrusted(t, s) }
 		face = FaceRow(r.fencedChoices(t, c), t, f, note, up, fence, r.scrub)
 		question, _ = face["ask"].(string)
+		// the face carries the agent's own words (a why line read from the
+		// stop's reason): the comment is sanitised as every outbound text
+		body = r.untrusted(t, IssueAsk(face))
+		// the stop's evidence follows the face as the agent wrote it, fenced
+		// so a mention rings no bell; the fence renders no link, so the
+		// links the sanitiser keeps follow it
+		safe := r.untrusted(t, reason)
+		if _, details, ok := strings.Cut(safe, "\n\n"); ok && strings.TrimSpace(details) != "" {
+			body += "\n\nWhat the factory saw:\n\n" + fenced(strings.TrimSpace(details))
+		}
+		if links := sanitize.Links(safe, r.linkHosts(t)); len(links) > 0 {
+			body += "\n\nLinks:\n- " + strings.Join(links, "\n- ")
+		}
 		// the refusal the newest session ended on rides with the ask,
 		// verbatim: the blocker reaches the human with no agent-side
 		// reporting to lose it (card #1345). A prover's refusals name its

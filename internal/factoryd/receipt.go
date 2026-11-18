@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"log"
 	"slices"
 	"strings"
@@ -280,7 +281,7 @@ func receiptComment(rec MergeReceipt) string {
 			fmt.Fprintf(&b, "\nGate %s: %s (exit %d): %s", g.Gate, g.Command, *g.Exit, g.Verdict)
 		}
 	}
-	fmt.Fprintf(&b, "\nCost: EUR %.2f", f.CostEUR)
+	fmt.Fprintf(&b, "\nCost: %s EUR", textutil.EUR(f.CostEUR))
 	for _, d := range f.Decisions {
 		fmt.Fprintf(&b, "\nDecision: %s %s by %s", d.Kind, d.Decision, d.By)
 		if d.Draw != "" {
@@ -290,7 +291,7 @@ func receiptComment(rec MergeReceipt) string {
 			fmt.Fprintf(&b, " — %s", d.Note)
 		}
 	}
-	b.WriteString("\n\nAssessments — the model's own, apart from the facts above:")
+	b.WriteString("\n\nAssessments, the model's own, apart from the facts above:")
 	for _, a := range rec.Assessments {
 		fmt.Fprintf(&b, "\n%s", a.Source)
 		if a.Criterion != "" {

@@ -188,8 +188,8 @@ func TestAnswerFormsSitOnTheLiveAsksCaseOnly(t *testing.T) {
 		t.Errorf("the older ask's page holds a press of its case:\n%s", frag)
 	}
 	rec := r.do(post("/tasks/t-a/resolve", url.Values{"csrf": {s.csrf}, "project": {casesProject}, "action": {factoryd.ActClose}, "case_id": {"3"}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Case 3 is not the card's live ask: the card's live ask is case 7") {
-		t.Errorf("an answer from another case = %d %q, want 409 naming case 7", rec.Code, rec.Body)
+	if rec.Code != http.StatusConflict || rec.Body.String() != "This ask is no longer open, and the card asks something else now, so nothing was answered. Reload the board to see it.\n" {
+		t.Errorf("an answer from another case = %d %q, want 409 saying the card asks something else now", rec.Code, rec.Body)
 	}
 }
 
@@ -546,8 +546,8 @@ func TestAnAnswerNamingACaseWithNoLiveAskSaysSo(t *testing.T) {
 	r.openCases = map[string][]factoryd.Case{}
 	ck, s := r.loggedIn(t)
 	rec := r.do(post("/tasks/t-a/answer", url.Values{"csrf": {s.csrf}, "project": {casesProject}, "answer": {"x"}, "case": {"7"}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "the card has no live ask") {
-		t.Errorf("an answer naming case 7 = %d %q, want 409 saying the card has no live ask", rec.Code, rec.Body)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "the card asks nothing now") {
+		t.Errorf("an answer naming case 7 = %d %q, want 409 saying the card asks nothing now", rec.Code, rec.Body)
 	}
 }
 

@@ -51,10 +51,10 @@ type humanCardStore interface {
 
 // HumanCardText is the brief of the human card that asks q: the ask on
 // one line as its title, the question's why as its why line, and as its
-// text the question's other parts and the footer naming who asks, by, in
-// the chat when chat is set, else for factoryd.
+// text the question's other parts and the footer naming who asks: the
+// project agent in by's chat when chat is set, else the factory.
 func HumanCardText(q HumanQuestion, by string, chat bool) BriefText {
-	footer := fmt.Sprintf("factoryd asks (%s). Answer on the card in the console or in the chat's inbox, or close this issue once decided.", by)
+	footer := "The factory asks. Answer on the card in the console or in the chat's inbox, or close this issue once decided."
 	if chat {
 		footer = fmt.Sprintf("The project agent asked in %s's chat. Answer in the chat's inbox, or close this issue once decided.", by)
 	}
@@ -96,7 +96,7 @@ func questionBody(q HumanQuestion, footer string) string {
 			fmt.Fprintf(&b, "- %s\n", c.Label)
 		}
 	}
-	return b.String() + "\n" + footer + "\n\nfiled by factoryd"
+	return b.String() + "\n" + footer + "\n\nFiled by the factory."
 }
 
 // HumanAsk is the ask a human card is born with: the question_asked row the

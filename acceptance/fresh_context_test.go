@@ -34,10 +34,10 @@ const (
 	// and after the accent is set, its digest's head first; the fixture
 	// files it with a budget of 3 EUR.
 	oldCardHead = "#5 · budget 3.00 spent 0.00 holds 0.00 EUR · queued\nflags: none\n\n" +
-		`#5 t-m "Fix the cache." queued (waits for a free work slot, in filing order), €0.00 of €3.00` +
+		`#5 t-m "Fix the cache." queued (waits for a free work slot, in filing order), 0.00 of 3.00 EUR` +
 		"\ntrack direct of process maintenance\nissue"
 	newCardHead = "#5 · budget 3.00 spent 0.00 holds 0.00 EUR · queued\nflags: none\n\n" +
-		`#5 t-m "Fix the cache." queued (waits for a free work slot, in filing order), €0.00 of €3.00` +
+		`#5 t-m "Fix the cache." queued (waits for a free work slot, in filing order), 0.00 of 3.00 EUR` +
 		"\ntrack direct of process maintenance, accent blue\nissue"
 	// statusHead and statusTail end every turn's system message around
 	// today's date, built at use time — a const holds no runtime value —:
@@ -46,8 +46,8 @@ const (
 	// the policy's escalation pool with nothing drawn, and its sandbox
 	// images, none pinned.
 	statusHead = "\n\nThe project now:\nToday is "
-	statusTail = " UTC.\nStatus: working; 1 working; 0 need you; spend this month €0.00 of €50.00, the factory's whole ledger" +
-		"; pool: 0 of 30 sessions, 0 h of 30 h agent time and €0.00 of €60.00 drawn this UTC month\n" +
+	statusTail = " UTC.\nStatus: working; 1 working; 0 need you; spend this month 0.00 of 50.00 EUR, the factory's whole ledger" +
+		"; pool: 0 of 30 sessions, 0 h of 30 h agent time and 0.00 of 60.00 EUR drawn this UTC month\n" +
 		"Sandbox images: none; every card runs the factory image."
 )
 

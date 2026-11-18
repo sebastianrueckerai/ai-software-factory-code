@@ -871,7 +871,7 @@ func (c *Console) doGithubExport(ctx context.Context, a actor, p factoryd.Projec
 	case !githubToken.MatchString(token):
 		return "", refuse(http.StatusBadRequest, "token must be a GitHub token: 8 to 255 letters, digits, _ or -")
 	case mode != factoryd.ModeMirror && mode != factoryd.ModePullRequests:
-		return "", refuse(http.StatusBadRequest, "mode must be mirror or pull_requests")
+		return "", refuse(http.StatusBadRequest, "Pick a mode: mirror, or pull requests (`mirror` or `pull_requests`).")
 	}
 	old, _, err := c.cfg.Mirrors.Mirror(ctx, p.Name, factoryd.MirrorExport)
 	if err != nil {

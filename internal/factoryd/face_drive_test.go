@@ -530,7 +530,7 @@ func TestReplyWhileADayCapBindsBeforeTheBudget(t *testing.T) {
 			case len(h.escalated) == 0:
 				return "", nil
 			case h.env.Now().Before(dayTurn(h.escalatedAt[0])):
-				return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit.\n" + state, nil
+				return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise the day cap in policy.yaml by a commit.\n" + state, nil
 			}
 			return shortFloor, nil
 		})

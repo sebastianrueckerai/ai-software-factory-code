@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -104,7 +103,7 @@ func proofRunner(t *testing.T, s *factoryd.PGStore, fj string, objects *accObjec
 	cfg := factoryd.RunnerConfig{
 		AgentNamespacePrefix: "factory-agents-", WorkerImage: "reg/worker@sha256:abc",
 		SandboxBaseImage: "reg/sandbox-base@sha256:bcd", RegistryHost: "store.test", FactoryNamespace: "factory",
-		GatewayURL: "http://gateway.factory.svc.cluster.local:8081", GitBaseURL: "http://forgejo.forgejo.svc.cluster.local:3000",
+		GatewayURL: "http://gateway.factory.svc.cluster.local:8081", GitBaseURL: proofGitBase,
 		Models:       factoryd.ModelLadder{Start: "factory/small", Stronger: "factory/big"},
 		AnswerTokens: 8192, HeadroomTokens: 16384, ChecksPoll: time.Millisecond,
 		EgressCanary: "example.com:443", EgressDirectIP: "192.0.2.7:443",
@@ -195,12 +194,18 @@ type proofWorker struct {
 	auth  []string
 }
 
-func (w *proofWorker) start(t *testing.T) {
+// proofGitBase is the forge the proof runner clones from.
+const proofGitBase = "http://forgejo.forgejo.svc.cluster.local:3000"
+
+// start serves w on a free port, which the runner r posts to, so two runs
+// at once take two ports.
+func (w *proofWorker) start(t *testing.T, r *factoryd.Runner) {
 	t.Helper()
-	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(workerharness.MessagePort)))
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("listen on the worker's message port: %v", err)
+		t.Fatalf("listen on a port for the worker's messages: %v", err)
 	}
+	r.SetTestEndpoints(ln.Addr().(*net.TCPAddr).Port, proofGitBase)
 	srv := &http.Server{Handler: http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		w.mu.Lock()
@@ -343,7 +348,7 @@ func TestGateRunsCarriedTest(t *testing.T) {
 			fj := &proofForgejo{}
 			r := proofRunner(t, s, serve(t, fj), &accObjects{files: map[string][]byte{}}, kube)
 			worker := &proofWorker{}
-			worker.start(t)
+			worker.start(t, r)
 			res, err := r.GateCriteria(ctx, "t-int", 9, "c1")
 			if err != nil {
 				t.Fatal(err)

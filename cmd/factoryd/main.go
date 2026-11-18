@@ -917,7 +917,7 @@ type taskCreator interface {
 // createTaskHandler is the API task-filing path (task 42 brief item 3):
 // every task is a Forgejo issue, whatever its source, so this files the
 // issue — as the bot, title from the objective's first line, body the
-// objective plus "filed by factoryd intake", the brief a human's issue's
+// objective plus "Filed by the factory's intake.", the brief a human's issue's
 // that the filing door refuses with 400 — and labels it agent and
 // state/queued before the task row ever exists; a row is created only once
 // the issue exists to back it. A repository no active project names, and a
@@ -976,7 +976,7 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 			return
 		}
 		id := factoryd.NewTaskID()
-		issueBody := in.Objective + "\n\nfiled by factoryd intake"
+		issueBody := in.Objective + "\n\nFiled by the factory's intake."
 		if in.ReproCommand != "" {
 			issueBody += "\n\nReproduction, run against the pull request head before approval:\n\n```repro\n" + in.ReproCommand + "\n```"
 		}

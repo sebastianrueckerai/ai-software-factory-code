@@ -39,11 +39,11 @@ func bumpRuns() []factoryd.RoutineRun {
 // that filed nothing shows no duration.
 var bumpRows = []string{
 	`<span class="mono">Mon 12 Oct 06:00</span><span class="mono"><a href="#card=t-790">#790</a></span><span class="k st-running">filed</span><span class="mono num">open</span><span class="mono num"></span><span class="tnote"></span>`,
-	`<span class="mono">Mon 5 Oct 06:00</span><span class="mono"><a href="#card=t-781">#781</a></span><span class="k st-done">merged</span><span class="mono num">2 d 2 h</span><span class="mono num">€0.42</span><span class="tnote"></span>`,
+	`<span class="mono">Mon 5 Oct 06:00</span><span class="mono"><a href="#card=t-781">#781</a></span><span class="k st-done">merged</span><span class="mono num">2 d 2 h</span><span class="mono num">0.42 EUR</span><span class="tnote"></span>`,
 	`<span class="mono">Mon 28 Sep 06:00</span><span class="mono"></span><span class="k st-closed">skipped</span><span class="mono num"></span><span class="mono num"></span><span class="tnote">skipped once by sebastian</span>`,
 	`<span class="mono">Mon 21 Sep 06:00</span><span class="mono"></span><span class="k st-waiting">held</span><span class="mono num"></span><span class="mono num"></span><span class="tnote">held: #770 is still open</span>`,
-	`<span class="mono">Mon 14 Sep 06:00</span><span class="mono"><a href="#card=t-770">#770</a></span><span class="k st-failed">failed</span><span class="mono num">8 d 4 h</span><span class="mono num">€1.10</span><span class="tnote"></span>`,
-	`<span class="mono">Mon 7 Sep 06:00</span><span class="mono"><a href="#card=t-762">#762</a></span><span class="k st-done">done</span><span class="mono num">3 h 0 min</span><span class="mono num">€0.30</span><span class="tnote"></span>`,
+	`<span class="mono">Mon 14 Sep 06:00</span><span class="mono"><a href="#card=t-770">#770</a></span><span class="k st-failed">failed</span><span class="mono num">8 d 4 h</span><span class="mono num">1.10 EUR</span><span class="tnote"></span>`,
+	`<span class="mono">Mon 7 Sep 06:00</span><span class="mono"><a href="#card=t-762">#762</a></span><span class="k st-done">done</span><span class="mono num">3 h 0 min</span><span class="mono num">0.30 EUR</span><span class="tnote"></span>`,
 }
 
 func getPage(r *rig, ck *http.Cookie, path string) *httptest.ResponseRecorder {

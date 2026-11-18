@@ -217,7 +217,7 @@ func (c *Console) autonomyButton(w http.ResponseWriter, r *http.Request) {
 	if s := r.PostFormValue("queue_cap"); s != "" {
 		n, err := strconv.Atoi(s)
 		if err != nil || n < 1 {
-			http.Error(w, "queue_cap must be a positive count", http.StatusBadRequest)
+			http.Error(w, "The queue cap must be a whole number above zero.", http.StatusBadRequest)
 			return
 		}
 		cap = n
@@ -400,9 +400,9 @@ const docFinds = 12
 func (c *Console) docRepoOf(docRepo, path string) (factoryd.Repo, error) {
 	switch {
 	case docRepo == "":
-		return factoryd.Repo{}, refuse(http.StatusConflict, "the project names no document repository (chat.doc_repo); there are no documents")
+		return factoryd.Repo{}, refuse(http.StatusConflict, "The project names no document repository, so there are no documents (`chat.doc_repo`).")
 	case c.cfg.DocsToken == "":
-		return factoryd.Repo{}, refuse(http.StatusConflict, "no docs writer token is seated (FORGEJO_DOCS_TOKEN); the documents cannot be reached")
+		return factoryd.Repo{}, refuse(http.StatusConflict, "No docs writer token is set, so the documents cannot be reached (`FORGEJO_DOCS_TOKEN`).")
 	case !docPathOK(path):
 		return factoryd.Repo{}, refuse(http.StatusBadRequest, path+" is no file path: name a path from the repository's root, with no . or .. segments")
 	}
@@ -648,7 +648,7 @@ func (c *Console) doWriteDoc(ctx context.Context, a actor, docRepo, project, pat
 	case edit.Content != "" && edit.Old != "":
 		return "", refuse(http.StatusBadRequest, "content writes a new file and old and new edit an existing one: send one of the two")
 	case edit.Content == "" && edit.Old == "":
-		return "", refuse(http.StatusBadRequest, "an edit names the passage old and its replacement new; a new file takes content")
+		return "", refuseAgent(http.StatusBadRequest, "An edit names the passage `old` and its replacement `new`. A new file takes `content`.")
 	}
 	l := docLock(docRepo)
 	l.Lock()
@@ -666,7 +666,7 @@ func (c *Console) doWriteDoc(ctx context.Context, a actor, docRepo, project, pat
 	case changed && strings.Count(current, edit.Old) != 1:
 		return "", refuse(http.StatusConflict, docCurrent(path, current, "it changed since it was read and the passage old is no longer there once"))
 	case present && strings.Count(current, edit.Old) == 0:
-		return "", refuse(http.StatusUnprocessableEntity, "the passage old is not in "+path+": read_doc it with find and copy the passage exactly")
+		return "", refuseAgent(http.StatusUnprocessableEntity, "the passage `old` is not in "+path+": read it with `read_doc` and `find`, and copy the passage exactly")
 	case present && strings.Count(current, edit.Old) > 1:
 		return "", refuse(http.StatusUnprocessableEntity, fmt.Sprintf("the passage old is in %s %d times: widen it until it is there once", path, strings.Count(current, edit.Old)))
 	case present:
@@ -678,7 +678,7 @@ func (c *Console) doWriteDoc(ctx context.Context, a actor, docRepo, project, pat
 	}
 	switch {
 	case strings.TrimSpace(next) == "":
-		return "", refuse(http.StatusBadRequest, "the document would be empty; delete is not a chat's to do")
+		return "", refuse(http.StatusBadRequest, "The document would be empty, and a chat deletes no document.")
 	case len(next) > docMax:
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("the document would be %d bytes, over the cap of %d", len(next), docMax))
 	}

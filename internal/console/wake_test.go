@@ -566,7 +566,7 @@ func TestWakeApproveMergeAfterAHumanApprovedAnswers409(t *testing.T) {
 		{name: "approve_merge", status: http.StatusConflict,
 			result: "Refused: Card #5 passes the gates after its session, not a pending merge request: its gates run; nothing to do until they end."},
 		{name: "attach_analysis", status: http.StatusConflict,
-			result: "Refused: The merge request of #5 is approved by sebastian. A settled ask is done; escalate files a new one when you need a person."}})
+			result: "Refused: The merge request of #5 is approved by sebastian. A settled ask is done. `escalate` files a new one when you need a human."}})
 }
 
 // By hand: a card the agent files in a human's turn goes out as its
@@ -641,7 +641,7 @@ func TestAWakesFilingIsTheWokenMembers(t *testing.T) {
 		r.events.fail = errors.New("the database is down")
 		n, err := file(t, r)
 		var no *refusal
-		if !errors.As(err, &no) || no.msg != "The factory could not record the filing of sf/code#41, so it is no card; the issue is closed. File the card again." || n != 0 {
+		if !errors.As(err, &no) || no.msg != "The factory could not record the filing of sf/code#41, so it is no card. The issue is closed. File the card again." || n != 0 {
 			t.Fatalf("file = #%d, %v", n, err)
 		}
 		if got := r.fg.commentBodies("/api/v1/repos/sf/code/issues/41/comments"); !slices.Equal(got, []string{"factoryd could not record this filing, so it is no card: the project agent closed it."}) {

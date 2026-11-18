@@ -9,8 +9,9 @@ import (
 )
 
 // cardLife answers GET /tasks/{id}/digest to whoever may read the card's
-// project's board, 404 to anyone else: the fold of the card's life, its digest and then each
-// open case under its kind with its steps, oldest first. The fold asks for
+// project's board, 404 to anyone else: the fold of the card's life, its
+// digest as a human reads it (CardDigest.Life), then each open case under
+// its ask with who weighed it and what came of it, oldest first. The fold asks for
 // it the first time the human opens it, so neither the board's render nor
 // the drawer's reads the digest.
 func (c *Console) cardLife(w http.ResponseWriter, r *http.Request) {
@@ -22,30 +23,42 @@ func (c *Console) cardLife(w http.ResponseWriter, r *http.Request) {
 	d, err := c.cfg.CardDigest(ctx, id)
 	if err != nil {
 		log.Printf("console: the card digest of %s: %v", id, err)
-		http.Error(w, "cannot read the card's life", http.StatusInternalServerError)
+		http.Error(w, "The card's life could not be read. Open the fold again.", http.StatusInternalServerError)
 		return
 	}
 	cases, err := c.cfg.OpenCasesOf(ctx, id)
 	if err != nil {
 		log.Printf("console: the open cases of %s: %v", id, err)
-		http.Error(w, "cannot read the card's cases", http.StatusInternalServerError)
+		http.Error(w, "The card's open asks could not be read. Open the fold again.", http.StatusInternalServerError)
 		return
 	}
-	type openCase struct {
-		Kind  string
-		Steps []factoryd.CaseStep
+	t, _, err := c.cfg.Tasks.Task(ctx, id)
+	if err != nil {
+		log.Printf("console: the card %s: %v", id, err)
+		http.Error(w, "The card could not be read. Open the fold again.", http.StatusInternalServerError)
+		return
 	}
-	var open []openCase
+	type step struct{ Lead, Found string }
+	type openAsk struct {
+		Ask   string
+		Steps []step
+	}
+	var open []openAsk
 	for _, k := range cases {
 		steps, err := c.cfg.CaseSteps(ctx, k.ID)
 		if err != nil {
 			log.Printf("console: the steps of case %d: %v", k.ID, err)
-			http.Error(w, "cannot read the card's cases", http.StatusInternalServerError)
+			http.Error(w, "The card's open asks could not be read. Open the fold again.", http.StatusInternalServerError)
 			return
 		}
-		open = append(open, openCase{Kind: string(k.Kind), Steps: steps})
+		a := openAsk{Ask: factoryd.FaceOf(k, factoryd.Facts{CaseFacts: factoryd.FactsOf(k), Card: t, Case: k}).Ask}
+		for _, s := range steps {
+			lead, found := factoryd.StepWords(s)
+			a.Steps = append(a.Steps, step{lead, found})
+		}
+		open = append(open, a)
 	}
-	c.render(w, "card-life", map[string]any{"Life": d.Render(), "Cases": open})
+	c.render(w, "card-life", map[string]any{"Life": d.Life(), "Asks": open})
 }
 
 // mayReadCard says whether the viewer may read card id's project's board:

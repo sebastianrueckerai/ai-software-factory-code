@@ -462,7 +462,7 @@ func TestCommissionRegistersBeforeEachCreate(t *testing.T) {
 	if e.cs.addresses[2] != "203.0.113.102" {
 		t.Fatalf("address = %v", e.cs.addresses)
 	}
-	for _, want := range []string{"commissioned resource 2", "203.0.113.102", "lease until 2026-09-28T13:30:00Z", "Reserved 0.022334",
+	for _, want := range []string{"commissioned resource 2", "203.0.113.102", "lease until 2026-09-28T13:30:00Z", "Reserved 0.02 EUR",
 		"/mnt/HC_Volume_103", "ssh-ed25519-cert-v01@openssh.com AAAACERT"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("answer lacks %q:\n%s", want, text)
@@ -614,8 +614,8 @@ func TestReleaseAndCertificates(t *testing.T) {
 func TestCloudPrices(t *testing.T) {
 	e := newCloudEnv(t, coderTask())
 	text, isErr := e.call(t, policy.ToolCloudPrices, map[string]any{})
-	for _, want := range []string{"- cx23: 0.0096 EUR/h, 5.99 EUR/month", "- cx33: 0.0144 EUR/h, 8.99 EUR/month", "0.0572 EUR per GB",
-		"the standard envelope (policy version 7)", "10.00 EUR a month (0.500000 used", "at most 2 servers at once (1 open), leases up to 4 h"} {
+	for _, want := range []string{"- cx23: 0.0096 EUR/h, 5.99 EUR a month", "- cx33: 0.0144 EUR/h, 8.99 EUR a month", "0.0572 EUR per GB",
+		"the standard envelope (policy version 7)", "10.00 EUR a month (0.50 EUR used", "at most 2 servers at once (1 open), leases up to 4 h"} {
 		if isErr || !strings.Contains(text, want) {
 			t.Fatalf("prices lack %q:\n%s", want, text)
 		}

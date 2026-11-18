@@ -173,7 +173,7 @@ func TestChatEscalate(t *testing.T) {
 		{"a fault of the guide", "Which?", "why", "info", "rec", "", []string{"a", "Use MIT; it fits"}, `choices: "Use MIT; it fits": The text holds a semicolon. Write two sentences.`},
 		{"twice", "Which?", "why", "info", "rec", "", []string{"a", " a"}, "choices: each answer once"},
 		{"twice by case and end punctuation", "Which?", "why", "info", "rec", "", []string{"Close it", "close IT."}, "choices: each answer once"},
-		{"a choice of none of them", "Which?", "why", "info", "rec", "c", two, `choice: the one of choices you would pick, as written there; "c" is none of them`},
+		{"a choice of none of them", "Which?", "why", "info", "rec", "c", two, "`choice`: the one of `choices` you would pick, as written there. \"c\" is none of them."},
 	} {
 		if _, err := trn.escalate(in.ask, in.why, in.info, in.recommendation, in.choice, in.choices); err == nil || err.Error() != in.want {
 			t.Errorf("%s: escalate = %v, want %q", in.name, err, in.want)

@@ -483,10 +483,12 @@ func (c *Console) stateOf(ctx context.Context, v *boardView, f *faceView, k card
 // waitsOf is why card k does not go on, in words, each card it waits for
 // a link with its title and state: the cards it depends on, its image,
 // its turn among the queued cards, or the cards ahead of it in the merge
-// queue.
+// queue; nothing while its helper runs, whose step its state names.
 func (c *Console) waitsOf(ctx context.Context, v *boardView, k card) template.HTML {
 	var words string
 	switch {
+	case k.helperRuns():
+		// the state names the helper's step, the one thing the card waits on
 	case k.WaitingOn != "":
 		words = "waits for " + k.WaitingOn
 	case k.Blocked > 0 && k.Status == "queued":

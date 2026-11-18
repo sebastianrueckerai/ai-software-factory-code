@@ -1639,7 +1639,7 @@ func TestWorkflowPressAskAgainKeepsWhyAHuman(t *testing.T) {
 	if final := g.run(t); final != "closed" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	const rule, class = "the project's merge rule is human", "risk class normal is requires_approval"
+	const rule, class = "the project's merge rule is human", "risk class normal needs a human's approval"
 	if len(g.approvals) != 2 || !slices.Contains(g.approvals[0].WhyHuman, rule) {
 		t.Fatalf("approvals %+v: want two, the first naming the merge rule", g.approvals)
 	}

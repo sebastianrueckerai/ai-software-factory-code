@@ -134,7 +134,7 @@ func TestCardFaceSpend(t *testing.T) {
 			t.Errorf("%s shows money on its face:\n%s", id, face)
 		}
 	}
-	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-low/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, `<span class="mono">€7.99 of €10.00, 80 percent</span></p>`) {
+	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-low/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, `<span class="mono">7.99 of 10.00 EUR, 80 percent</span></p>`) {
 		t.Errorf("the card's life lacks the spend under 80 percent:\n%s", drawer)
 	}
 }
@@ -168,7 +168,7 @@ func TestBoardLeftNetsHolds(t *testing.T) {
 		t.Errorf("the face lacks %s:\n%s", want, face)
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-e/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{`<span class="it flag">⚠ near its budget</span>`, `<span class="mono">€4.90 of €5.00, 98 percent</span> ⚠ near its budget`} {
+	for _, want := range []string{`<span class="it flag">⚠ near its budget</span>`, `<span class="mono">4.90 of 5.00 EUR, 98 percent</span> ⚠ near its budget`} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the opened card lacks %s:\n%s", want, drawer)
 		}
@@ -195,7 +195,7 @@ func TestCardFaceCalls(t *testing.T) {
 	if face := faceOf(t, body, "t-calls"); strings.Contains(face, "modeled") {
 		t.Errorf("the face shows the calls:\n%s", face)
 	}
-	want := `<span class="mono">€1.20 of €5.00, 24 percent</span> <span class="mono" title="the task's model calls to date: the tokens its providers reported and the modeled pay-as-you-go cost of them, never money billed">· 100,000 prompt · 66,000 cached · 2,000 output tokens · €0.0420 modeled</span></p>`
+	want := `<span class="mono">1.20 of 5.00 EUR, 24 percent</span> <span class="mono" title="the task's model calls to date: the tokens its providers reported and the modeled pay-as-you-go cost of them, never money billed">· 100,000 prompt · 66,000 cached · 2,000 output tokens · 0.04 EUR modeled</span></p>`
 	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-calls/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, want) {
 		t.Errorf("the drawer lacks its calls beside the budget:\n%s", drawer)
 	}
@@ -1309,7 +1309,7 @@ func TestNeedsYouCardAnswersAChoiceWithoutText(t *testing.T) {
 	r, ev, ck, s := setup(t)
 	before := ev.count()
 	rec := r.do(post("/tasks/t-q/answer", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "value": {"fund"}}), ck)
-	if want := "The question of card #15 no longer offers the answer “Fund the card”. Open the card and press one of the answers it shows."; rec.Code != http.StatusConflict ||
+	if want := "The question of card #15 no longer asks for the answer “Fund the card”. Open the card and press one of the answers it shows."; rec.Code != http.StatusConflict ||
 		!strings.Contains(rec.Body.String(), want) || r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"] != "" || ev.count() != before {
 		t.Fatalf("the fund click = %d %q with %d rows, want 409 with %q and nothing posted", rec.Code, rec.Body.String(), ev.count()-before, want)
 	}
@@ -1446,8 +1446,8 @@ func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m2/drawer?tab=overview", nil), ck).Body.String()
 	for _, want := range []string{
-		`<dt>Why a human</dt><dd>first why; second why</dd>`,
-		`<dt>Model review</dt><dd>approve: adds the column<br>- 0018_x.sql: add a default</dd>`,
+		`<dt>Why a human</dt><dd><ul><li>first why</li><li>second why</li></ul></dd>`,
+		`<dt>Model review</dt><dd>It approves the change. <span class="quote">adds the column</span><br>- <span class="quote">0018_x.sql: add a default</span></dd>`,
 		`<dt>Agent's recommendation</dt><dd class="reason">` + long + `</dd>`,
 	} {
 		if !strings.Contains(drawer, want) {
@@ -1796,7 +1796,7 @@ func TestMergeAndResourceRequestsAskOnTheOpenedCard(t *testing.T) {
 		answers                   map[string]string
 	}{
 		{"board-merge.json", factoryd.ApprovalMerge, "Merge “Shard the feed cache”?",
-			`<dt>Model review</dt><dd>adds the shard without changing a read</dd>`,
+			`<dt>Model review</dt><dd><span class="quote">adds the shard without changing a read</span></dd>`,
 			map[string]string{factoryd.ActApproveMerge: "/approvals/41/approve", factoryd.ActDenyMerge: "/approvals/41/deny", factoryd.ActDenyMerge + "/reject": "/approvals/41/deny"}},
 		{"board-resource.json", factoryd.ApprovalResource, "Rent a cx33 server for 5 hours at about 0.07 EUR?",
 			`<h4>The server</h4><p>cx33, for load-test the feed cache.`,
