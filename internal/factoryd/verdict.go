@@ -297,10 +297,11 @@ func planOfStore(ctx context.Context, store Store, parent, child string) (Plan, 
 }
 
 // DecideCriterion records a person's decision on one criterion of plan
-// task id that does not stand met already: waived, with their one-line
-// reason, for any criterion; met, for a human criterion, whose proof is
-// this recording. The row lands on the plan's integration card, where the
-// gate's rows stand. Anyone but a person is refused (ErrNotPerson).
+// task id that does not stand met already on the rows that settle it
+// (planGate): waived, with their one-line reason, for any criterion; met,
+// for a human criterion, whose proof is this recording. The row lands on
+// the plan's integration card, where the gate's rows stand. Anyone but a
+// person is refused (ErrNotPerson).
 func DecideCriterion(ctx context.Context, store Store, id, cid, verdict, by, reason string) error {
 	if verdict != "waived" && verdict != "met" {
 		return fmt.Errorf("no such verdict %q", verdict)
@@ -340,7 +341,11 @@ func DecideCriterion(ctx context.Context, store Store, id, cid, verdict, by, rea
 	if err != nil {
 		return fmt.Errorf("verdicts of %s: %w", integration.ID, err)
 	}
-	if effectiveVerdict(rows, c) == "met" {
+	g, err := planGateOf(ctx, store, id, integration)
+	if err != nil {
+		return err
+	}
+	if effectiveVerdict(g.settling(rows), c) == "met" {
 		return ErrCriterionMet
 	}
 	return store.PutCriteriaVerdicts(ctx, integration.ID, CriteriaSourceApprover, by,

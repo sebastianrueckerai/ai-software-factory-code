@@ -1938,6 +1938,57 @@ func TestConfirmDeliveredCriteriaOverAClosedIntegrationCard(t *testing.T) {
 	}
 }
 
+// offMainPlan is seedVerdictPlan's plan, c2 a test criterion, whose
+// integration card ended closed off main: the gate met c1 and c3 at the
+// card's head, and no run of the gate on main is on record.
+func offMainPlan(t *testing.T) *fakeStore {
+	t.Helper()
+	s := seedVerdictPlan(t, "t-plan", "t-int", "closed")
+	p := criteriaPlan()
+	p.Criteria[1] = PlanCriterion{ID: "c2", Kind: CriterionTest, Claim: "a parked card heals", Inputs: "a card parked with no ask", Expected: "one ask"}
+	newRevision(t, s, "t-plan", p)
+	if err := gateMet(context.Background(), s, "t-int"); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// The gate's met rows on a head that never reached main settle nothing:
+// beside the human's waiver of c2, their confirmation meets c1 and c3 over
+// the gate's rows, and the sweep approves the criteria request and closes
+// the plan.
+func TestConfirmOverGateRowsOffMainClosesThePlan(t *testing.T) {
+	ctx := context.Background()
+	s := offMainPlan(t)
+	if _, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t-plan", Project: "sf/code", Reason: "criteria not met once every card of the plan ended: c1, c2, c3"}); err != nil {
+		t.Fatal(err)
+	}
+	const reason, line = "the suite moved to ./internal/factoryd/pg", "main at 0e6fe22: c1 and c3 hold"
+	if err := DecideCriterion(ctx, s, "t-plan", "c2", "waived", "sebastian", reason); err != nil {
+		t.Fatalf("waive c2: %v", err)
+	}
+	if n, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", "sebastian", line); err != nil || n != 2 {
+		t.Fatalf("confirm = %d, %v; want 2, nil", n, err)
+	}
+	want := []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest, Source: CriteriaSourceGate, DecidedBy: FactoryDecider},
+		{Criterion: "c3", Verdict: "met", Kind: CriterionInvariant, Source: CriteriaSourceGate, DecidedBy: FactoryDecider},
+		{Criterion: "c2", Verdict: "waived", Evidence: reason, Kind: CriterionTest, Source: CriteriaSourceApprover, DecidedBy: "sebastian"},
+		{Criterion: "c1", Verdict: "met", Evidence: line, Kind: CriterionTest, Source: CriteriaSourceApprover, DecidedBy: "sebastian"},
+		{Criterion: "c3", Verdict: "met", Evidence: line, Kind: CriterionInvariant, Source: CriteriaSourceApprover, DecidedBy: "sebastian"},
+	}
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); !slices.Equal(rows, want) {
+		t.Fatalf("rows =\n%v\nwant\n%v", rows, want)
+	}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r.CriteriaPass(ctx)
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	approved, _ := s.ApprovalRequests(ctx, "approved")
+	if len(pending) != 0 || len(approved) != 1 || approved[0].DecisionNote != "every criterion is met or waived" || closeRows(s) != 1 {
+		t.Fatalf("after the sweep: pending %+v, approved %+v, plan_closed %d; want the request approved and the plan closed once", pending, approved, closeRows(s))
+	}
+}
+
 // The store guards a stale board: a criterion that stands met takes no
 // waiver, whichever source met it, while an open criterion still does.
 func TestDecideCriterionRefusesAWaiverOfAMetOne(t *testing.T) {
@@ -1959,6 +2010,25 @@ func TestDecideCriterionRefusesAWaiverOfAMetOne(t *testing.T) {
 	}
 	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(rows) != 2 || rows[1].Verdict != "waived" || rows[1].Criterion != "c3" {
 		t.Errorf("the open criterion's waiver rows = %v", rows)
+	}
+}
+
+// Off main the gate's met row on c1 settles nothing (planGate), so an
+// approver's waiver of c1 stands beside it.
+func TestDecideCriterionWaivesAGateRowOffMain(t *testing.T) {
+	ctx := context.Background()
+	s := offMainPlan(t)
+	const reason = "superseded: #2161 landed the work"
+	if err := DecideCriterion(ctx, s, "t-plan", "c1", "waived", "sebastian", reason); err != nil {
+		t.Fatalf("a waiver of c1 met off main = %v, want nil", err)
+	}
+	want := []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest, Source: CriteriaSourceGate, DecidedBy: FactoryDecider},
+		{Criterion: "c3", Verdict: "met", Kind: CriterionInvariant, Source: CriteriaSourceGate, DecidedBy: FactoryDecider},
+		{Criterion: "c1", Verdict: "waived", Evidence: reason, Kind: CriterionTest, Source: CriteriaSourceApprover, DecidedBy: "sebastian"},
+	}
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); !slices.Equal(rows, want) {
+		t.Fatalf("rows =\n%v\nwant\n%v", rows, want)
 	}
 }
 
