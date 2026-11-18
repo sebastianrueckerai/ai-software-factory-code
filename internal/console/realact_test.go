@@ -497,7 +497,7 @@ func TestIDidItWaitsAndEndTheCardTakesTheHumansWords(t *testing.T) {
 // human's Merge it merges as the human.
 func TestTheFactorysPullRequestWaitsForAHumansPress(t *testing.T) {
 	q := factoryd.FactoryPRQuestion(factoryd.BriefText{Title: "Update the project from its template go-service"}, 14, "https://git.example/sf/code/pulls/14")
-	const why = "Pull request #14 of card #51 was opened by the factory, and no gate checked it: a human must press Merge it or Reject and close it on the card. Record your analysis and recommended option with attach_analysis."
+	const why = "Pull request #14 of card #51 was opened by the factory, and no gate checked it: a human must press Merge it or Reject and close it on the card. Record your analysis and the option you recommend (`attach_analysis`)."
 	const merge = "POST /api/v1/repos/sf/code/pulls/14/merge Bearer access-1"
 	newCard := func(t *testing.T, level string) (*rig, *realAct) {
 		r := newRig(t)

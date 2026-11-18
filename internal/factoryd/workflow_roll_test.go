@@ -300,7 +300,7 @@ func TestWorkflowRollConcernsWithoutFindingsIsARemark(t *testing.T) {
 // branch's diff against its merge base is over the card's line bound even
 // after the merge of main, so the card cannot fit its patch.
 func overBound(session string) SessionResult {
-	refusal := "push failed: push refused: over the card's line bound: the branch's diff against its merge base is 340 lines over the card's 300-line bound; merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor"
+	refusal := "push failed: push refused: over the card's line bound: the branch's diff against its merge base is 340 lines over the card's 300-line bound. Merge main, run the checks, and push again. If the merge cannot fit, the card closes into a successor"
 	return SessionResult{Outcome: OutcomeNoPush, SessionID: session, Summary: refusal,
 		Findings: []string{"previous session ended without a pushed commit: " + refusal}}
 }
@@ -347,7 +347,7 @@ func TestSecondOverBoundEndFilesNoSuccessor(t *testing.T) {
 	again := overBound("s1")
 	again.Outcome = OutcomeEscalate
 	again.Reason = "This card continues work an earlier card left over its line bound, and its session ended over the bound again: " +
-		"640 changed lines against the card's 300-line bound, on factory/t1 at c7. Cut the work into cards that each fit the bound; no further successor is filed."
+		"640 changed lines against the card's 300-line bound, on factory/t1 at c7. Cut the work into cards that each fit the bound. No further successor is filed."
 	var steps []string
 	h.onVerify(&steps, []SessionResult{again})
 	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})

@@ -564,7 +564,7 @@ func TestWakeApproveMergeAfterAHumanApprovedAnswers409(t *testing.T) {
 		[]string{say("A human approved #5 already.")})
 	equal(t, "the wake's calls after the human's approval", calls, []wakeCall{
 		{name: "approve_merge", status: http.StatusConflict,
-			result: "Refused: Card #5 passes the gates after its session, not a pending merge request: its gates run; nothing to do until they end."},
+			result: "Refused: Card #5 passes the gates after its session, not a pending merge request: its gates run, and there is nothing to do until they end."},
 		{name: "attach_analysis", status: http.StatusConflict,
 			result: "Refused: The merge request of #5 is approved by sebastian. A settled ask is done. `escalate` files a new one when you need a human."}})
 }

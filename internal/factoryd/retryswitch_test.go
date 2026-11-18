@@ -654,7 +654,7 @@ func TestActRetryOnAFrozenCaseRunsTheRetrySwitch(t *testing.T) {
 	}
 	var refused ErrActRefused
 	if _, err := r.Act(ctx, ActInput{TaskID: "t-z", By: FactoryDecider, Rung: 0, Res: Resolution{Action: ActRetry}}); !errors.As(err, &refused) ||
-		!strings.HasPrefix(err.Error(), "rung 0 ends no provider freeze, which a human's press or the factory agent's ends: `hand_up` with `retry` as the recommendation") {
+		!strings.HasPrefix(err.Error(), "the factory ends no provider freeze, which a human's press or the factory agent's ends: hand it up (`hand_up`) with `retry` as the recommendation") {
 		t.Fatalf("rung 0's retry = %v, want the refusal naming who presses", err)
 	}
 	for _, id := range []string{"t-y", "t-x"} {

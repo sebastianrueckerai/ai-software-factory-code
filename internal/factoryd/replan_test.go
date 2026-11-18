@@ -1328,11 +1328,11 @@ func TestReplanFindings(t *testing.T) {
 	}{
 		{"a clean revision", func(*replanState, *Plan) {}, nil},
 		{"R1 a from of no old card", func(_ *replanState, p *Plan) { p.Cards = append(p.Cards, fromCard("web", "nope")) },
-			[]string{"card web: from nope names no card of this plan's record; name an old card's key, or #<issue> of a card the findings list without a key"}},
+			[]string{"card web: from nope names no card of this plan's record. Name an old card's key, or #<issue> of a card the findings list without a key"}},
 		{"R2 a from of a merged card", func(_ *replanState, p *Plan) { p.Cards = append(p.Cards, fromCard("api2", "api")) },
 			[]string{"card api2: from api, which merged: its work is on main, so start from main and leave from out"}},
 		{"R3 two cards from one", func(_ *replanState, p *Plan) { p.Cards = append(p.Cards, fromCard("cli3", "cli")) },
-			[]string{"cards cli2 and cli3: both start from cli; one card carries an old card's work: keep the from on cli2 and start cli3 from main"}},
+			[]string{"cards cli2 and cli3: both start from cli. One card carries an old card's work: keep the from on cli2 and start cli3 from main"}},
 		{"R4 a closed card kept", func(st *replanState, p *Plan) { p.Cards = append(p.Cards, st.prev.Cards[3]) },
 			[]string{`card cli ended closed: leave its key out, and add a card with "from": "cli" to go on from its work`}},
 		{"R4 a card closed before it started kept", func(st *replanState, p *Plan) {
@@ -1347,27 +1347,27 @@ func TestReplanFindings(t *testing.T) {
 		{"R2 a from of a card the revision takes off main", func(_ *replanState, p *Plan) {
 			p.Cards = append(p.Cards[1:], fromCard("api2", "api"))
 			p.TakeOffMain = []string{"api"}
-		}, []string{"card api2: from api, which this revision takes off main: its work leaves main only after this filing, so no card can land it yet; " +
-			"leave api out of take_off_main and start api2 from main to change it there, or leave from out"}},
+		}, []string{"card api2: from api, which this revision takes off main: its work leaves main only after this filing, so no card can land it yet. " +
+			"Leave api out of `take_off_main` and start api2 from main to change it there, or leave from out"}},
 		{"take_off_main names no card", func(_ *replanState, p *Plan) { p.TakeOffMain = []string{"nope"} },
-			[]string{"take_off_main names nope, which is no card of this plan's record; name the key of a merged card"}},
+			[]string{"`take_off_main` names nope, which is no card of this plan's record. Name the key of a merged card"}},
 		{"take_off_main names a card that did not merge", func(_ *replanState, p *Plan) { p.TakeOffMain = []string{"ui"} },
-			[]string{"take_off_main names ui, which has not merged: its work is not on main; leave it out of take_off_main"}},
+			[]string{"`take_off_main` names ui, which has not merged: its work is not on main. Leave it out of `take_off_main`"}},
 		{"take_off_main names a card taken off main already", func(st *replanState, p *Plan) {
 			st.reverted = map[string]bool{"t-api": true}
 			p.Cards = p.Cards[1:]
 			p.TakeOffMain = []string{"api"}
-		}, []string{"take_off_main names api, which was taken off main already; leave it out of take_off_main"}},
+		}, []string{"`take_off_main` names api, which was taken off main already. Leave it out of `take_off_main`"}},
 		{"take_off_main names the integration card", func(_ *replanState, p *Plan) { p.TakeOffMain = []string{"int"} },
-			[]string{"take_off_main names int, the integration card, whose code stays on main; leave it out of take_off_main"}},
+			[]string{"`take_off_main` names int, the integration card, whose code stays on main. Leave it out of `take_off_main`"}},
 		{"take_off_main names a card the revision keeps", func(_ *replanState, p *Plan) { p.TakeOffMain = []string{"api"} },
-			[]string{"take_off_main names api, which this revision keeps; leave its key out to take its work off main, or leave it out of take_off_main"}},
+			[]string{"`take_off_main` names api, which this revision keeps. Leave its key out to take its work off main, or leave it out of `take_off_main`"}},
 		{"take_off_main names a card whose criterion the criteria still cite", func(st *replanState, p *Plan) {
 			st.met = map[string][]string{"api": {"queue_resolves", "all_green"}}
 			p.Cards = p.Cards[1:]
 			p.TakeOffMain = []string{"api"}
 			p.Criteria = []PlanCriterion{{ID: "queue_resolves", Kind: CriterionTest}, {ID: "all_green", Kind: CriterionInvariant}, {ID: "other", Kind: CriterionTest}}
-		}, []string{"take_off_main names api, which met queue_resolves that this revision's criteria still cite: its work leaves main, so the criteria lose their proof; keep api's key and leave it out of take_off_main, or file queue_resolves again, each under a new id with replaces"}},
+		}, []string{"`take_off_main` names api, which met queue_resolves that this revision's criteria still cite: its work leaves main, so the criteria lose their proof. Keep api's key and leave it out of `take_off_main`, or file queue_resolves again, each under a new id with replaces"}},
 		{"take_off_main names a card whose criterion the revision re-filed under a new id", func(st *replanState, p *Plan) {
 			st.met = map[string][]string{"api": {"queue_resolves"}}
 			p.Cards = p.Cards[1:]
@@ -1391,7 +1391,7 @@ func TestReplanFindings(t *testing.T) {
 			p.Cards = append(p.Cards, st.prev.Cards[4])
 		}, []string{`card int was taken off main: leave its key out, and add a card with "from": "int" to land it again from salvage`}},
 		{"R6 the merged integration card kept", func(st *replanState, p *Plan) { p.Cards = append(p.Cards, st.prev.Cards[4]) },
-			[]string{"card int is the integration card and merged: leave its key out; the revision's new integration card checks the whole feature again"}},
+			[]string{"card int is the integration card and merged: leave its key out. The revision's new integration card checks the whole feature again"}},
 		{"R7 a started card changed", func(_ *replanState, p *Plan) { p.Cards[1].Brief = "the ui, wider" },
 			[]string{"card ui started against revision 1: keep its entry as revision 1 has it, or leave its key out to stop it"}},
 		{"R8 the cut card's work unnamed", func(st *replanState, _ *Plan) { st.cut, st.cutWork = "t-ui", true },
@@ -1404,17 +1404,17 @@ func TestReplanFindings(t *testing.T) {
 		{"R9 a kept key names from", func(st *replanState, p *Plan) {
 			p.Cards[2] = st.prev.Cards[2]
 			p.Cards[2].From = "cli"
-		}, []string{"card docs: keeps an old key and names from; give docs a new key, since a card that starts from another card's work takes a new key"}},
+		}, []string{"card docs: keeps an old key and names from. Give docs a new key, since a card that starts from another card's work takes a new key"}},
 		{"R9 a delta card's key names from", func(st *replanState, p *Plan) {
 			st.old = append(st.old, Task{ID: "t-fix", PlanKey: "fix", IssueNumber: 18, Status: "running", PlanRevision: 2})
 			p.Cards = append(p.Cards, fromCard("fix", "docs"))
-		}, []string{"card fix: keeps an old key and names from; give fix a new key, since a card that starts from another card's work takes a new key"}},
+		}, []string{"card fix: keeps an old key and names from. Give fix a new key, since a card that starts from another card's work takes a new key"}},
 		{"a key of the revision before with no card row is no old key", func(st *replanState, p *Plan) {
 			st.prev.Cards = append(st.prev.Cards, fromCard("web", "cli"))
 			p.Cards = append(p.Cards, fromCard("web", "docs"))
 		}, nil},
 		{"R10 a kept card's work carried by a new card", func(_ *replanState, p *Plan) { p.Cards = append(p.Cards, fromCard("ui2", "ui")) },
-			[]string{"card ui2: starts from ui, which this revision keeps; drop ui's key or start ui2 from main"}},
+			[]string{"card ui2: starts from ui, which this revision keeps. Drop ui's key or start ui2 from main"}},
 		{"the plan card's own work named by its issue", func(st *replanState, p *Plan) {
 			ownWork(st)
 			p.Cards = append(p.Cards, fromCard("web", "#10"))
@@ -1436,7 +1436,7 @@ func TestReplanFindings(t *testing.T) {
 		{"R9 a kept key's from changed", func(st *replanState, p *Plan) {
 			filed(st, p)
 			p.Cards[2].From = "docs"
-		}, []string{"card cli2: keeps an old key and names from; give cli2 a new key, since a card that starts from another card's work takes a new key"}},
+		}, []string{"card cli2: keeps an old key and names from. Give cli2 a new key, since a card that starts from another card's work takes a new key"}},
 		{"a kept from whose card left the record", func(st *replanState, p *Plan) {
 			p.Cards = append(p.Cards, fromCard("web", "#10"))
 			filed(st, p)
@@ -2742,7 +2742,7 @@ func TestReplanWhileARevertsEndIsPending(t *testing.T) {
 		PlanKey: "ui", IssueNumber: 16, Status: "running", PlanRevision: 1}); err != nil {
 		t.Fatal(err)
 	}
-	want := "Plan #10's revert, card #20, has ended, and factoryd is still recording its end: replan again in two minutes."
+	want := "Plan #10's revert, card #20, has ended, and the factory is still recording its end: replan again in two minutes."
 	for _, offMain := range []bool{false, true} {
 		if _, err := g.r.Replan(ctx, "p", ReplanAsk{By: "bo", Comment: "smaller", OffMain: offMain}); err != ErrNoReplan(want) {
 			t.Fatalf("a press with off main %t: %v, want %q", offMain, err, want)

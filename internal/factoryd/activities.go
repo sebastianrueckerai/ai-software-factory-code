@@ -526,7 +526,7 @@ func overBoundAgain(t Task, res SessionResult, overBound string) string {
 		where += " at " + res.Commit
 	}
 	return fmt.Sprintf("This card continues work an earlier card left over its line bound, and its session ended over the bound again: %s, %s. "+
-		"Cut the work into cards that each fit the bound; no further successor is filed.", measure, where)
+		"Cut the work into cards that each fit the bound. No further successor is filed.", measure, where)
 }
 
 // SuccessorID is the id of card id's successor, so a filing that stopped
@@ -854,7 +854,7 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 	default:
 		if own.Holds > 0 {
 			if free.Reserve > 0 {
-				state += fmt.Sprintf("; %s EUR is held by calls in flight (%d, the earliest expiring %s)", textutil.EUR(own.Held), own.Holds, stamp(own.Expires))
+				state += fmt.Sprintf(", %s EUR is held by calls in flight (%d, the earliest expiring %s)", textutil.EUR(own.Held), own.Holds, stamp(own.Expires))
 			} else {
 				state += fmt.Sprintf(" after outstanding holds of %s EUR (%d, the earliest expiring %s)", textutil.EUR(own.Held), own.Holds, stamp(own.Expires))
 			}
@@ -865,7 +865,7 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 			// what the card spent, and what the review and the audit
 			// still keep of the reserve the ceiling held out and what
 			// they need; the board's ask names the amount to add
-			state += fmt.Sprintf("; %s EUR is held for the review and the audit, which need %s EUR", textutil.EUR(free.Kept()), textutil.EUR(free.Reserve))
+			state += fmt.Sprintf(", %s EUR is held for the review and the audit, which need %s EUR", textutil.EUR(free.Kept()), textutil.EUR(free.Reserve))
 		}
 	}
 	if o, ok := capRefusals[refused.Decision]; ok {
@@ -873,7 +873,7 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 	}
 	// the first line is the card's question row (escalationQuestion), cut
 	// at 300 characters: it carries the actions, the state follows
-	return fmt.Sprintf("%s: %s\n%s, and %s needs %s EUR (%s); %s.", opens, act, state, n.call, textutil.EUR(need), n.measure, n.then), nil
+	return fmt.Sprintf("%s: %s\n%s, and %s needs %s EUR (%s). %s.", opens, act, state, n.call, textutil.EUR(need), n.measure, capitalize(n.then)), nil
 }
 
 // attemptNeed is what an attempt of card t on model needs free to start,
@@ -946,7 +946,7 @@ func (r *Runner) needOf(ctx context.Context, v policy.Version, t Task, model str
 			if len(calls) > 1 {
 				what = fmt.Sprintf("%d calls at once: %s", len(calls), strings.Join(asked, ", "))
 			}
-			need, measure = eur, fmt.Sprintf("%s; the largest of the newest %d sessions' openings on %s, as the holds take them", what, len(o.Sessions), on)
+			need, measure = eur, fmt.Sprintf("%s, the largest of the newest %d sessions' openings on %s, as the holds take them", what, len(o.Sessions), on)
 		}
 		frontier := r.frontier(model)
 		if floor := v.Document.Budget.SessionFloor(frontier); floor > need {
@@ -954,7 +954,7 @@ func (r *Runner) needOf(ctx context.Context, v policy.Version, t Task, model str
 			if frontier {
 				key = "budget.session_floor_frontier_eur"
 			}
-			need, call, measure, then = floor, "a session on "+model, "the floor of its rung, "+key+" in policy.yaml",
+			need, call, measure, then = floor, "a session on "+model, "the session floor of its model, "+key+" in policy.yaml",
 				"a session started now would run out of money before its work is done"
 		}
 	}
@@ -1538,7 +1538,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 	// a session that finished with nothing new on top of the work in
 	// progress an earlier stop pushed: that work is its result
 	if out.result != nil && out.result.Success && out.commit == "" && out.wip == "" && s.startRef != "" && s.startRef != s.base && !s.startWip {
-		res.Outcome, res.Commit, res.Summary = OutcomePushed, s.startRef, out.result.Summary+"; the branch already held "+s.startRef
+		res.Outcome, res.Commit, res.Summary = OutcomePushed, s.startRef, andSentence(out.result.Summary, "The branch already held "+s.startRef+".")
 		return res
 	}
 	res.LastMessage = textutil.Truncate(out.agentText, maxHandoverMessage)
@@ -1611,13 +1611,13 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 		res.Summary = out.noResult
 	}
 	if out.overHold != nil {
-		res.Summary = strings.TrimPrefix(res.Summary+"; "+out.overHold.state(), "; ")
+		res.Summary = andSentence(res.Summary, capitalize(out.overHold.state()))
 	}
 	res.Commit = cmp.Or(out.commit, out.wip)
 	if out.result != nil && out.result.Success && out.commit == "" && out.wip != "" && out.wip != s.startRef {
 		// the end carries nothing past the start, yet an interim push put
 		// work on the branch that the end no longer holds
-		res.Summary += "; the branch still holds the interim push " + out.wip + ", which the session's final tree no longer carries"
+		res.Summary = andSentence(res.Summary, "The branch still holds the interim push "+out.wip+", which the session's final tree no longer carries.")
 	}
 	ended := "previous session ended without a pushed commit: "
 	if res.Commit != "" {
@@ -1672,12 +1672,12 @@ type OverHoldCall struct {
 // an output that ran to its limit wants a shorter one; below it, the
 // prompt cost more than its hold, and a smaller context fits.
 func (c OverHoldCall) state() string {
-	s := fmt.Sprintf("a model call on %s crossed its cost hold: %d prompt tokens (%d cached) and %d output tokens cost %s EUR against a hold of %s EUR; ",
+	s := fmt.Sprintf("a model call on %s crossed its cost hold: %d prompt tokens (%d cached) and %d output tokens cost %s EUR against a hold of %s EUR. ",
 		c.Alias, c.PromptTokens, c.CachedTokens, c.OutputTokens, textutil.EUR(c.CostEUR), textutil.EUR(c.HoldEUR))
 	if c.OutputLimit > 0 && c.OutputTokens >= c.OutputLimit {
-		return s + fmt.Sprintf("its output ran to the limit of %d tokens, so a shorter output fits: write the change in smaller pieces", c.OutputLimit)
+		return s + fmt.Sprintf("Its output ran to the limit of %d tokens, so a shorter output fits: write the change in smaller pieces", c.OutputLimit)
 	}
-	return s + "its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"
+	return s + "Its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"
 }
 
 // loopFinding is the next session's brief line on a loop: how the session
@@ -3314,4 +3314,17 @@ func (r *Runner) closeTaskPullRequest(ctx context.Context, repo Repo, t Task, ms
 		log.Printf("task %s: comment failure reason on pull request #%d: %v", t.ID, pr.Number, err)
 	}
 	return nil
+}
+
+// andSentence is text with sentence after it, text ended as a sentence
+// first, and sentence alone for no text.
+func andSentence(text, sentence string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return sentence
+	}
+	if !strings.ContainsAny(text[len(text)-1:], ".!?") {
+		text += "."
+	}
+	return text + " " + sentence
 }

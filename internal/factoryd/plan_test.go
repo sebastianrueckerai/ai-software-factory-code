@@ -207,22 +207,22 @@ func TestValidatePlan(t *testing.T) {
 		"size":               {change(func(p *Plan) { p.Cards[2].Size = "huge" }), []string{"plan: card redirects: size huge: split it; a card is one package, one page or one set of endpoints"}},
 		"no size":            {change(func(p *Plan) { p.Cards[2].Size = "" }), []string{`plan: card redirects: size "": want small, medium or large`}},
 		"no brief":           {change(func(p *Plan) { p.Cards[2].Brief = "" }), []string{"plan: card redirects: brief empty"}},
-		"many directories":   {change(func(p *Plan) { p.Cards[2].Directories = dirs }), []string{"plan: card redirects: 11 directories; want 0 to 10", "plan: criterion redirect_302: its test TestRedirect in internal/links is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test"}},
+		"many directories":   {change(func(p *Plan) { p.Cards[2].Directories = dirs }), []string{"plan: card redirects: 11 directories, want 0 to 10", "plan: criterion redirect_302: its test TestRedirect in internal/links is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test"}},
 		"outside":            {change(func(p *Plan) { p.Cards[2].Directories = []string{"../x", "/etc", "web/../../y"} }), []string{`plan: card redirects: directory "../x": a relative path inside the repository`, `plan: card redirects: directory "/etc": a relative path inside the repository`, `plan: card redirects: directory "web/../../y": a relative path inside the repository`, "plan: criterion redirect_302: its test TestRedirect in internal/links is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test"}},
 		"workflow dir":       {change(func(p *Plan) { p.Cards[2].Directories = []string{".forgejo/workflows", "./.github", ".Gitea"} }), []string{"plan: criterion redirect_302: its test TestRedirect in internal/links is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test"}},
 		"workflow and other": {change(func(p *Plan) { p.Cards[2].Directories = []string{".forgejo/workflows", "internal/links"} }), []string{"plan: card redirects: directories mix workflow paths (.forgejo, .gitea, .github) with others: put the workflow paths in a card of their own, which a human does"}},
-		"no acceptance":      {change(func(p *Plan) { p.Cards[0].Acceptance = nil }), []string{"plan: card foundation: 0 acceptance tests; want 1 to 10"}},
+		"no acceptance":      {change(func(p *Plan) { p.Cards[0].Acceptance = nil }), []string{"plan: card foundation: 0 acceptance tests, want 1 to 10"}},
 		"empty acceptance":   {change(func(p *Plan) { p.Cards[0].Acceptance = []PlanItem{{}} }), []string{"plan: card foundation: acceptance test 1 is empty"}},
-		"eleven acceptance":  {change(func(p *Plan) { p.Cards[0].Acceptance = slices.Repeat([]PlanItem{{Text: "a"}}, 11) }), []string{"plan: card foundation: 11 acceptance tests; want 1 to 10"}},
+		"eleven acceptance":  {change(func(p *Plan) { p.Cards[0].Acceptance = slices.Repeat([]PlanItem{{Text: "a"}}, 11) }), []string{"plan: card foundation: 11 acceptance tests, want 1 to 10"}},
 		// A spec plan (piece 5) drafts the spec the members confirm; the
 		// finding is the same for none and for a blank outcome.
-		"no spec":       {change(func(p *Plan) { p.Spec = nil }), []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}; the humans confirm it before the criteria are fixed`}},
-		"blank outcome": {change(func(p *Plan) { p.Spec.Outcome = "  " }), []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}; the humans confirm it before the criteria are fixed`}},
+		"no spec":       {change(func(p *Plan) { p.Spec = nil }), []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}. The humans confirm it before the criteria are fixed`}},
+		"blank outcome": {change(func(p *Plan) { p.Spec.Outcome = "  " }), []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}. The humans confirm it before the criteria are fixed`}},
 		// The criteria cases edit one field of the criteria block or one
 		// citation; a broken criterion stays properly cited and a broken
 		// citation changes no criterion, so each case yields only the
 		// findings listed.
-		"no criteria": {change(func(p *Plan) { p.Criteria = nil }), []string{"plan: 0 criteria; want 1 to 10"}},
+		"no criteria": {change(func(p *Plan) { p.Criteria = nil }), []string{"plan: 0 criteria, want 1 to 10"}},
 		"criterion id": {change(func(p *Plan) {
 			p.Criteria = append(p.Criteria, PlanCriterion{ID: "Links API", Kind: CriterionInvariant, Suite: "./..."})
 			p.Cards[1].Acceptance = append(p.Cards[1].Acceptance, PlanItem{Criterion: "Links API", Text: "x"})
@@ -275,7 +275,7 @@ func TestValidatePlan(t *testing.T) {
 		}), []string{"plan: criterion member_ok is cited by no card", "plan: card integration: criterion member_ok is cited by no item"}},
 		"card cites none": {change(func(p *Plan) { p.Cards[2].Acceptance[0].Criterion = "" }), []string{"plan: criterion redirect_302: its test TestRedirect in internal/links is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test", "plan: card redirects: no acceptance item cites a criterion"}},
 		"misses one":      {change(func(p *Plan) { p.Cards[3].Acceptance = p.Cards[3].Acceptance[:2] }), []string{"plan: card integration: criterion redirect_302 is cited by no item"}},
-		"cites twice":     {change(func(p *Plan) { p.Cards[3].Acceptance[2].Criterion = "links_crud" }), []string{"plan: card integration: criterion links_crud is cited by 2 items; want one", "plan: card integration: criterion redirect_302 is cited by no item"}},
+		"cites twice":     {change(func(p *Plan) { p.Cards[3].Acceptance[2].Criterion = "links_crud" }), []string{"plan: card integration: criterion links_crud is cited by 2 items, want one", "plan: card integration: criterion redirect_302 is cited by no item"}},
 		"item uncited":    {change(func(p *Plan) { p.Cards[3].Acceptance = append(p.Cards[3].Acceptance, PlanItem{Text: "an extra check"}) }), []string{"plan: card integration: acceptance item 4 cites no criterion"}},
 		"empty item text": {change(func(p *Plan) { p.Cards[1].Acceptance[0].Text = "" }), []string{"plan: card links-api: acceptance test 1 is empty"}},
 	} {
@@ -341,14 +341,14 @@ func TestValidatePlanRounds(t *testing.T) {
 			[]string{`plan: card stats: depends on "gone-card", which is no card of the plan`}},
 		"before rounds": {testPlan(), nil},
 		"an outline before rounds": {change(testPlan(), func(p *Plan) { p.Outline = []string{"dashboards"} }),
-			[]string{"plan: outline: this plan was filed before planning rounds and files every card at once; leave the outline out"}},
+			[]string{"plan: outline: this plan was filed before planning rounds and files every card at once. Leave the outline out"}},
 		"an outline before rounds, a criterion uncited": {change(testPlan(), func(p *Plan) {
 			p.Outline = []string{"dashboards"}
 			p.Criteria = append(p.Criteria, statsPage)
 		}), []string{"plan: criterion stats_page is cited by no card",
 			"plan: criterion stats_page: its test TestStatsPage in internal/stats is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test",
 			"plan: card integration: criterion stats_page is cited by no item",
-			"plan: outline: this plan was filed before planning rounds and files every card at once; leave the outline out"}},
+			"plan: outline: this plan was filed before planning rounds and files every card at once. Leave the outline out"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := validatePlan(fencePlan(tc.plan), testShape, testLimits, nil); !slices.Equal(got, tc.want) {
@@ -395,7 +395,7 @@ func TestValidatePlanOutline(t *testing.T) {
 		outline []string
 		want    []string
 	}{
-		"eleven parts":  {slices.Repeat([]string{"a part"}, 11), []string{"plan: outline: 11 parts; want at most 10"}},
+		"eleven parts":  {slices.Repeat([]string{"a part"}, 11), []string{"plan: outline: 11 parts, want at most 10"}},
 		"empty part":    {[]string{"a", ""}, []string{"plan: outline part 2 is empty"}},
 		"long part":     {[]string{strings.Repeat("x", 101)}, []string{"plan: outline part 1: one line of at most 100 characters"}},
 		"two lines":     {[]string{"a\nb"}, []string{"plan: outline part 1: one line of at most 100 characters"}},
@@ -438,13 +438,13 @@ func TestValidatePlanCapsCriteriaAtTen(t *testing.T) {
 		}
 		return p
 	}
-	if got := validatePlan(fencePlan(at(11)), testShape, testLimits, nil); len(got) == 0 || got[0] != "plan: 11 criteria; want 1 to 10" {
+	if got := validatePlan(fencePlan(at(11)), testShape, testLimits, nil); len(got) == 0 || got[0] != "plan: 11 criteria, want 1 to 10" {
 		t.Fatalf("readPlan's first finding = %q, want the criteria count", got)
 	}
 	p := at(11)
 	p.Cards = p.Cards[:2] // the foundation and links-api, no integration card
 	p.Spec = nil          // a plan this process gives no integration card carries no spec to confirm
-	if got := validatePlan(fencePlan(p), policy.PlanShape{MaxCards: 3}, testLimits, nil); len(got) == 0 || got[0] != "plan: 11 criteria; want at most 10" {
+	if got := validatePlan(fencePlan(p), policy.PlanShape{MaxCards: 3}, testLimits, nil); len(got) == 0 || got[0] != "plan: 11 criteria, want at most 10" {
 		t.Fatalf("readPlan's first finding = %q, want the criteria count", got)
 	}
 }
@@ -2242,7 +2242,7 @@ func TestFileRevisionRefusesACycle(t *testing.T) {
 		}
 	}
 	if fj.next != 1 || len(store.tasks) != 1 || len(fj.comments) != 1 || len(wf.started) != 0 ||
-		fj.comments[0].body != "Revision 1 files no cards: "+cycle {
+		fj.comments[0].body != "Revision 1 files no cards. The planner was told:\n\n> - "+cycle {
 		t.Fatalf("issues up to #%d, rows %d, started %v, comments %v", fj.next, len(store.tasks), wf.started, fj.comments)
 	}
 	if got, _, _ := store.Task(context.Background(), "t-plan"); len(store.approvals) != 0 || got.Status != "running" {
@@ -3590,9 +3590,9 @@ func TestReportSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 		t.Fatal("RunPlan opened a session the budget cannot pay")
 	}
 	want := "the remaining budget cannot fund a call: Raise the budget and answer, or close the card.\n" +
-		"The card spent 1.90 EUR of its 2.00 EUR budget; 0.10 EUR is held for the review and the audit, which need 0.40 EUR" +
+		"The card spent 1.90 EUR of its 2.00 EUR budget, 0.10 EUR is held for the review and the audit, which need 0.40 EUR" +
 		", and a session on factory/big needs 0.60 EUR " +
-		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); a session started now would run out of money before its work is done."
+		"(the session floor of its model, budget.session_floor_frontier_eur in policy.yaml). A session started now would run out of money before its work is done."
 	if res.Escalate != want || !strings.Contains(res.Escalate, "Raise the budget and answer") || !res.StartFailed || len(res.Findings) != 0 || res.Revision != 0 {
 		t.Fatalf("result %+v, want the money ask %q", res, want)
 	}
@@ -4557,7 +4557,7 @@ func TestFileRevisionRefusesAPlanWithoutDeployOwner(t *testing.T) {
 		t.Fatalf("ref %+v", ref)
 	}
 	if fj.next != 1 || len(store.tasks) != 1 || len(fj.comments) != 1 || len(store.approvals) != 0 ||
-		fj.comments[0].body != "Revision 1 files no cards: "+noDeployOwner {
+		fj.comments[0].body != "Revision 1 files no cards. The planner was told:\n\n> - "+noDeployOwner {
 		t.Fatalf("issues up to #%d, rows %d, comments %v, approvals %+v", fj.next, len(store.tasks), fj.comments, store.approvals)
 	}
 	if steps := planSteps(t, objects, "t-plan"); !slices.Equal(steps, []string{"plan_refused [" + noDeployOwner + "]"}) {
@@ -4611,7 +4611,7 @@ func TestPlanWithoutDeployOwnerThePlannerRevises(t *testing.T) {
 	if len(h.plans) != 2 || h.plans[0] != nil || !slices.Equal(h.plans[1], []string{noDeployOwner}) || !slices.Equal(h.requests, []int{1, 2}) {
 		t.Fatalf("plans %q requests %v", h.plans, h.requests)
 	}
-	if fj.next != 5 || len(cardsByKey(t, store)) != 4 || !strings.HasPrefix(fj.comments[0].body, "Revision 1 files no cards: "+noDeployOwner) {
+	if fj.next != 5 || len(cardsByKey(t, store)) != 4 || !strings.HasPrefix(fj.comments[0].body, "Revision 1 files no cards. The planner was told:\n\n> - "+noDeployOwner) {
 		t.Fatalf("issues up to #%d, cards %v, comments %v", fj.next, cardsByKey(t, store), fj.comments)
 	}
 }
@@ -4707,9 +4707,9 @@ func TestRunPlanNamesACostHoldCrossing(t *testing.T) {
 		t.Fatalf("RunPlan: %v", err)
 	}
 	want := []string{"plan: the session ended without filing a plan through the file_plan tool",
-		"plan: the session ended without a last message: " + said + "; a model call on big crossed its cost hold: " +
-			"22680 prompt tokens (8896 cached) and 24576 output tokens cost 0.13 EUR against a hold of 0.12 EUR; " +
-			"its output ran to the limit of 24576 tokens, so a shorter output fits: write the change in smaller pieces"}
+		"plan: the session ended without a last message: " + said + ". A model call on big crossed its cost hold: " +
+			"22680 prompt tokens (8896 cached) and 24576 output tokens cost 0.13 EUR against a hold of 0.12 EUR. " +
+			"Its output ran to the limit of 24576 tokens, so a shorter output fits: write the change in smaller pieces"}
 	if !slices.Equal(res.Findings, want) {
 		t.Fatalf("findings = %q, want %q", res.Findings, want)
 	}
@@ -5220,7 +5220,7 @@ func dropRigCiting(t *testing.T, cites bool, takeOff ...string) (*Runner, *fakeS
 // finding.
 func TestFilingRefusesTakeOffOfWhatTheRevisionRelies(t *testing.T) {
 	_, _, _, _, res := dropRigCiting(t, true, "links-api")
-	want := []string{"take_off_main names links-api, which met links_crud that this revision's criteria still cite: its work leaves main, so the criteria lose their proof; keep links-api's key and leave it out of take_off_main, or file links_crud again, each under a new id with replaces"}
+	want := []string{"`take_off_main` names links-api, which met links_crud that this revision's criteria still cite: its work leaves main, so the criteria lose their proof. Keep links-api's key and leave it out of `take_off_main`, or file links_crud again, each under a new id with replaces"}
 	if res.Revision != 0 || !slices.Equal(res.Findings, want) {
 		t.Fatalf("the filing: %+v, want it refused with %q", res, want)
 	}
@@ -5231,8 +5231,8 @@ func TestFilingRefusesTakeOffOfWhatTheRevisionRelies(t *testing.T) {
 func TestTakeOffReasonFindings(t *testing.T) {
 	p := Plan{TakeOffMain: []string{"api", "ui", "docs"}, TakeOffReasons: map[string]string{"ui": " \n", "docs": "the schema rejects notes"}}
 	want := []string{
-		"take_off_main names api with no reason: say in take_off_reasons what breaks if its work stays on main, or leave api out of take_off_main",
-		"take_off_main names ui with no reason: say in take_off_reasons what breaks if its work stays on main, or leave ui out of take_off_main",
+		"`take_off_main` names api with no reason: say in `take_off_reasons` what breaks if its work stays on main, or leave api out of `take_off_main`",
+		"`take_off_main` names ui with no reason: say in `take_off_reasons` what breaks if its work stays on main, or leave ui out of `take_off_main`",
 	}
 	if got := takeOffReasonFindings(p); !slices.Equal(got, want) {
 		t.Fatalf("findings %q, want %q", got, want)

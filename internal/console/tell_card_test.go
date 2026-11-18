@@ -195,7 +195,7 @@ func TestTellCardGateWithoutARequest(t *testing.T) {
 		t.Fatalf("a tell at an in-review card without a request = %q, %d %q, want a 409 refusal", out, status, msg)
 	}
 	want := "Card #15 t-g is in-review (passes the gates after its session), not " +
-		"a card running a session, at its approval gate or waiting on a human: its gates run; nothing to do until they end."
+		"a card running a session, at its approval gate or waiting on a human: its gates run, and there is nothing to do until they end."
 	equal(t, "the refusal", msg, want)
 }
 

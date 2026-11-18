@@ -377,7 +377,7 @@ func TestAnUnreadablePinnedPolicyRefusesRung2ApproveAndLeavesTheHumanTheirs(t *t
 		}
 		_, err = stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: ChatUser, Via: ViaFactoryd, Rung: 2, Res: Resolution{Action: ActApproveMerge}})
 		want := "the classes that keep a human on a merge could not be read (" + strings.TrimPrefix(entry, "human_classes: ") +
-			"), so the factory agent cannot tell whether class standard keeps one: `hand_up` with `approve_merge` as the recommendation"
+			"), so the factory agent cannot tell whether class standard keeps one: hand it up (`hand_up`) with `approve_merge` as the recommendation"
 		var refused ErrActRefused
 		if !errors.As(err, &refused) || !strings.Contains(err.Error(), want) || strings.Count(err.Error(), "policy version") != 1 {
 			t.Fatalf("rung 2 Act = %v, want a refusal holding %q, naming the version once", err, want)

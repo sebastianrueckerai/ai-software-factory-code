@@ -37,7 +37,7 @@ func TestReadyFindings(t *testing.T) {
 		t.Errorf("a large card: findings %v, want none", got)
 	}
 	got := ReadyFindings(key, "a body", "", nil)
-	if want := "card t-key: 0 acceptance tests; want 1 to 10"; len(got) != 1 || got[0] != want {
+	if want := "card t-key: 0 acceptance tests, want 1 to 10"; len(got) != 1 || got[0] != want {
 		t.Errorf("findings = %v, want [%q]", got, want)
 	}
 	got = ReadyFindings(key, "b", "huge", []string{"x"})
@@ -74,7 +74,7 @@ func TestFileRefusal(t *testing.T) {
 		t.Errorf("under the cap: refusal %q, want none", got)
 	}
 	got = FileRefusal(ctx, fakeCounts{queue: 0}, tree, "o/r", "t-new", "Title", "a body without criteria", "small")
-	if got != "card t-new: 0 acceptance tests; want 1 to 10" {
+	if got != "card t-new: 0 acceptance tests, want 1 to 10" {
 		t.Errorf("without criteria: refusal %q, want the acceptance line", got)
 	}
 }

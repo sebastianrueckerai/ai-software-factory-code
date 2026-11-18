@@ -240,7 +240,7 @@ func TestExtendRefusesWhenTheLastDrawBoughtNothing(t *testing.T) {
 func TestDrawWithinByRung(t *testing.T) {
 	f := CaseFacts{PoolLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 60 - 59.7}, BudgetEUR: 5, CeilingEUR: 8}
 	one := policy.Draw{Sessions: 1}
-	if got, want := drawWithin(f, 1, one, policy.Draw{}, 0, false), "the card's draw bound leaves 0 sessions, 0 seconds of agent time and 0.00 EUR: rung 2 or the human may draw more. "+
+	if got, want := drawWithin(f, 1, one, policy.Draw{}, 0, false), "the card's draw bound leaves 0 sessions, 0 seconds of agent time and 0.00 EUR: the factory agent or the human may draw more. "+
 		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation"; got != want {
 		t.Errorf("rung 1 = %q, want %q", got, want)
 	}
@@ -306,7 +306,7 @@ func TestDrawBoundNamesThePartAndTheFit(t *testing.T) {
 		// the card's bound fails first, on minutes; the fit takes its minutes
 		// from the card's 90 and its sessions from the pool's 0
 		{"rung 1 past the card's minutes", timeCap, 1, policy.Draw{Sessions: 1, AgentTime: 120 * time.Minute}, 0,
-			"the card's draw bound leaves 3 sessions, 90 minutes of agent time and 6.00 EUR: rung 2 or the human may draw more. " +
+			"the card's draw bound leaves 3 sessions, 90 minutes of agent time and 6.00 EUR: the factory agent or the human may draw more. " +
 				"This draw does not fit in agent time (asked 2 hours, left 90 minutes). The largest draw that fits is 0 sessions, 90 minutes of agent time and 0.00 EUR: ask for that"},
 		{"an empty pool", empty, 2, policy.Draw{AgentTime: 30 * time.Minute}, 0,
 			"the escalation pool leaves 0 sessions, 0 seconds of agent time and 0.00 EUR this month: only the human draws more. " +
@@ -445,7 +445,7 @@ func TestFundIsNeverRungZeros(t *testing.T) {
 	if got := withdraw.refusal(flag, 1, Resolution{Action: ActWithdraw, Fund: &policy.Draw{EUR: 1}}); got != "" {
 		t.Errorf("rung 1's withdraw of a monitor flag's case with money beside it = %q, want none", got)
 	}
-	if got := withdraw.refusal(room, 1, Resolution{Action: ActWithdraw}); !strings.Contains(got, "`withdraw` ends a monitor flag's ask alone") {
+	if got := withdraw.refusal(room, 1, Resolution{Action: ActWithdraw}); !strings.Contains(got, "A withdrawal (`withdraw`) ends a monitor flag's ask alone") {
 		t.Errorf("rung 1's withdraw of a case the run waits on = %q, want it refused: the run would wait for good", got)
 	}
 	if got := note.refusal(room, 1, Resolution{Action: ActNote, Note: "x"}); got != "the check-in may not pick `note`: the factory agent and the human may" {
@@ -507,7 +507,7 @@ func TestRetryTakesARetryableFailedDependency(t *testing.T) {
 	// the freeze's end is a human's or the project agent's: rungs 0 and 1
 	// are refused it, and so it is on offer to rungs 2 and 3 alone
 	retry, _ := ActionByName(ActRetry)
-	if got, want := retry.refusal(frozen, 1, Resolution{}), "rung 1 ends no provider freeze, which a human's press or the factory agent's ends: `hand_up` with `retry` as the recommendation"; got != want {
+	if got, want := retry.refusal(frozen, 1, Resolution{}), "the check-in ends no provider freeze, which a human's press or the factory agent's ends: hand it up (`hand_up`) with `retry` as the recommendation"; got != want {
 		t.Errorf("rung 1's retry of a frozen case = %q, want %q", got, want)
 	}
 	for rung, want := range []bool{false, false, true, true} {
@@ -1440,7 +1440,7 @@ func TestApproveMergeOfAHumanClassIsTheHumansAlone(t *testing.T) {
 		r.atCaseOf(context.Background(), &f, Task{}, Case{Kind: CaseMergeApproval, Facts: map[string]any{"class": class}})
 		want := ""
 		if refused {
-			want = "risk class " + class + " keeps a human on its merge, whatever the autonomy: `approve_merge` is the human's alone, so `hand_up` with `approve_merge` as the recommendation"
+			want = "risk class " + class + " keeps a human on its merge, whatever the autonomy: `approve_merge` is the human's alone, so hand it up (`hand_up`) with `approve_merge` as the recommendation"
 		}
 		if got := a.refusal(f, 2, Resolution{Action: ActApproveMerge}); got != want {
 			t.Errorf("class %q: rung 2's `approve_merge` = %q, want %q", class, got, want)
@@ -1627,7 +1627,7 @@ func TestTheAuthorsAnswerBuysItsSession(t *testing.T) {
 // and a plan with none open stays rung 2's.
 func TestRestartPlanOverOpenCriteriaIsTheHumansAlone(t *testing.T) {
 	a, _ := ActionByName(ActRestartPlan)
-	const why = ", which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: `hand_up` with `restart_plan` as the recommendation"
+	const why = ", which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: hand it up (`hand_up`) with `restart_plan` as the recommendation"
 	for _, c := range []struct {
 		name    string
 		open    int
@@ -1638,7 +1638,7 @@ func TestRestartPlanOverOpenCriteriaIsTheHumansAlone(t *testing.T) {
 		{"one open", 1, nil, "the plan holds 1 open criterion" + why},
 		{"three open", 3, nil, "the plan holds 3 open criteria" + why},
 		{"the count unread", 0, []string{"open criteria"},
-			"the plan's open criteria could not be read, so the factory agent cannot tell whether a restart's close waives any, and a waiver is the human's: `hand_up` with `restart_plan` as the recommendation"},
+			"the plan's open criteria could not be read, so the factory agent cannot tell whether a restart's close waives any, and a waiver is the human's: hand it up (`hand_up`) with `restart_plan` as the recommendation"},
 	} {
 		f := CaseFacts{Kind: CaseDependencyFailed, Plan: "p", PlanStatus: "done", OpenCriteria: c.open, Partial: c.partial}
 		if got := a.refusal(f, 2, Resolution{Action: ActRestartPlan, Note: "one card"}); got != c.want {
@@ -1686,7 +1686,7 @@ func TestCaseFactsCountThePlansOpenCriteria(t *testing.T) {
 	}
 	s.cases = []Case{{ID: 9, TaskID: "t-plan", Kind: CaseDependencyFailed, Status: CaseOpen}}
 	_, err := r.Act(ctx, ActInput{TaskID: "t-plan", CaseID: 9, By: "sebastian", Rung: 2, Res: Resolution{Action: ActRestartPlan, Note: "one card"}})
-	want := "the plan holds 10 open criteria, which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: `hand_up` with `restart_plan` as the recommendation"
+	want := "the plan holds 10 open criteria, which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: hand it up (`hand_up`) with `restart_plan` as the recommendation"
 	var refused ErrActRefused
 	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
 		t.Fatalf("rung 2's restart_plan = %v, want the refusal %q", err, want)

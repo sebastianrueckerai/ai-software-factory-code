@@ -586,7 +586,7 @@ func TestLadderReplaysTheCheckinMoments(t *testing.T) {
 			t.Fatalf("sessions = %d, conversations = %d; want the dead session without a conversation and the reader with one", len(l.sessions), l.chat.calls)
 		}
 		dead := l.results[0]
-		stop := "check-in: retry_stronger after cheap_cap: the cheap rung's 150ms passed without a push"
+		stop := "check-in: retry_stronger after cheap_cap: the cheap model's cap of 150ms passed without a push"
 		if dead.Outcome != OutcomeRetryStronger || dead.Trip != string(TripCheapCap) || dead.CheckIn != nil ||
 			dead.Commit != "" || dead.Summary != stop {
 			t.Fatalf("the dead session = %+v, want the cheap cap's stop with no check-in", dead)

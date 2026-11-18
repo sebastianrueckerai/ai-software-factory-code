@@ -285,7 +285,7 @@ func (g ProgressDigest) Summary() string {
 	s := fmt.Sprintf("%d commands (%d failed), %d files changed %d times, %s, diff %d files +%d/-%d",
 		len(g.Commands), failed, len(g.Files), edits, calls, g.Diff.Files, g.Diff.Insertions, g.Diff.Deletions)
 	if n := len(g.Errors); n > 0 {
-		s += fmt.Sprintf("; last error: `%s` ×%d", g.Errors[n-1].Command, g.Errors[n-1].Count)
+		s += fmt.Sprintf(", last error: `%s` ×%d", g.Errors[n-1].Command, g.Errors[n-1].Count)
 	}
 	return s
 }

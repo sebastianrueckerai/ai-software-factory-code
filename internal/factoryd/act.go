@@ -1572,7 +1572,7 @@ func (r *Runner) answerComment(t Task, by string, res Resolution, note, added st
 func caseRef(via, card string, c Case) string {
 	words := caseWords(card, c)
 	if via == ViaChat {
-		words += fmt.Sprintf(" (`case_id` %d)", c.ID)
+		words += fmt.Sprintf(" (`case_id %d`)", c.ID)
 	}
 	return words
 }

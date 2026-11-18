@@ -1294,7 +1294,7 @@ func TestFileProofsTool(t *testing.T) {
 	args := map[string]any{"proofs": []any{proofIn("size_bound", "package size_bound")}}
 	e.proofs.res = ProofsFiled{Filing: 1, Left: 2, Findings: []string{"file_proofs: no proof for size_bound"}}
 	text, isErr := e.call(t, policy.ToolFileProofs, args)
-	if want := "the filing was refused:\n- file_proofs: no proof for size_bound\ncorrect it and file again in this session; filings left: 2"; !isErr || text != want {
+	if want := "the filing was refused:\n- file_proofs: no proof for size_bound\ncorrect it and file again in this session. Filings left: 2"; !isErr || text != want {
 		t.Fatalf("refused = %q (%v), want %q", text, isErr, want)
 	}
 	if a := e.lastAudit(t); a.Decision != "proofs_refused" || a.Tool != policy.ToolFileProofs || a.Reason != "filing 1, 1 findings" {

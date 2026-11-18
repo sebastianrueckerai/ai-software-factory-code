@@ -135,7 +135,7 @@ func TestPushFitsTheCardLineBound(t *testing.T) {
 				if err == nil || !errors.Is(err, errPushOverBound) {
 					t.Fatalf("commitAndPush = %q, %v; want the over-bound refusal", commit, err)
 				}
-				if !strings.Contains(err.Error(), "merge main") {
+				if !strings.Contains(err.Error(), "Merge main") {
 					t.Fatalf("refusal %q does not say to merge main", err)
 				}
 				if head := run("-C", fork, "rev-parse", "--verify", "-q", "refs/heads/"+branch); head != p1 {

@@ -421,7 +421,7 @@ func TestEveryRefusalKeepsADraft(t *testing.T) {
 			off.Cards[1].Brief = "Create and list links."
 			off.TakeOffMain = []string{"links-api"}
 			return r, store, planJSON(t, off)
-		}, "take_off_main names links-api with no reason"},
+		}, "`take_off_main` names links-api with no reason"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, store, plan := tc.rig(t)

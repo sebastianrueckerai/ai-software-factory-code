@@ -756,11 +756,11 @@ func TestRunSessionNamesACostHoldCrossing(t *testing.T) {
 		want string
 	}{
 		"the output at its limit": {&OverHoldCall{Alias: "big", PromptTokens: 22680, CachedTokens: 8896, OutputTokens: 24576, OutputLimit: 24576, HoldEUR: 0.122078, CostEUR: 0.129745},
-			said + "; a model call on big crossed its cost hold: 22680 prompt tokens (8896 cached) and 24576 output tokens cost 0.13 EUR against a hold of 0.12 EUR; " +
-				"its output ran to the limit of 24576 tokens, so a shorter output fits: write the change in smaller pieces"},
+			said + ". A model call on big crossed its cost hold: 22680 prompt tokens (8896 cached) and 24576 output tokens cost 0.13 EUR against a hold of 0.12 EUR. " +
+				"Its output ran to the limit of 24576 tokens, so a shorter output fits: write the change in smaller pieces"},
 		"the prompt over its price": {&OverHoldCall{Alias: "big", PromptTokens: 90000, OutputTokens: 3000, OutputLimit: 24576, HoldEUR: 0.131, CostEUR: 0.1392},
-			said + "; a model call on big crossed its cost hold: 90000 prompt tokens (0 cached) and 3000 output tokens cost 0.14 EUR against a hold of 0.13 EUR; " +
-				"its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"},
+			said + ". A model call on big crossed its cost hold: 90000 prompt tokens (0 cached) and 3000 output tokens cost 0.14 EUR against a hold of 0.13 EUR. " +
+				"Its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"},
 		"no call crossed its hold": {nil, said},
 	} {
 		t.Run(name, func(t *testing.T) {

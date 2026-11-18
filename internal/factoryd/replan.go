@@ -950,7 +950,7 @@ func (r *Runner) revertCard(ctx context.Context, p Task) (string, error) {
 	if lastStep(tl, stepGroupReverted)["card"] == card.ID || lastStep(tl, stepGroupRevertEnded)["card"] == card.ID {
 		return "", nil
 	}
-	return fmt.Sprintf("Plan #%d's revert, card #%d, has ended, and factoryd is still recording its end: replan again in two minutes.", p.IssueNumber, card.IssueNumber), nil
+	return fmt.Sprintf("Plan #%d's revert, card #%d, has ended, and the factory is still recording its end: replan again in two minutes.", p.IssueNumber, card.IssueNumber), nil
 }
 
 // awaitOffMain answers a press on plan p while its pending replan step
@@ -1341,7 +1341,7 @@ func replanFindings(st replanState, next Plan) []string {
 			continue
 		}
 		if a, ok := first[c.From]; ok {
-			found = append(found, fmt.Sprintf("cards %s and %s: both start from %s; one card carries an old card's work: keep the from on %s and start %s from main",
+			found = append(found, fmt.Sprintf("cards %s and %s: both start from %s. One card carries an old card's work: keep the from on %s and start %s from main",
 				a, c.Key, c.From, a, c.Key))
 		} else {
 			first[c.From] = c.Key
@@ -1349,20 +1349,20 @@ func replanFindings(st replanState, next Plan) []string {
 		k, known := old[c.From]
 		// a kept card that ended or merged has its own finding
 		if _, keeps := kept[c.From]; known && keeps && !st.merged[k.ID] && k.Status != "closed" && k.Status != "failed" {
-			found = append(found, fmt.Sprintf("card %s: starts from %s, which this revision keeps; drop %s's key or start %s from main", c.Key, c.From, c.From, c.Key))
+			found = append(found, fmt.Sprintf("card %s: starts from %s, which this revision keeps. Drop %s's key or start %s from main", c.Key, c.From, c.From, c.Key))
 		}
 		if was, held := prev[c.Key]; held && was.From == c.From {
 			continue
 		}
 		if _, row := old[c.Key]; row {
-			found = append(found, fmt.Sprintf("card %s: keeps an old key and names from; give %s a new key, since a card that starts from another card's work takes a new key", c.Key, c.Key))
+			found = append(found, fmt.Sprintf("card %s: keeps an old key and names from. Give %s a new key, since a card that starts from another card's work takes a new key", c.Key, c.Key))
 		}
 		switch {
 		case !known:
-			found = append(found, fmt.Sprintf("card %s: from %s names no card of this plan's record; name an old card's key, or #<issue> of a card the findings list without a key", c.Key, c.From))
+			found = append(found, fmt.Sprintf("card %s: from %s names no card of this plan's record. Name an old card's key, or #<issue> of a card the findings list without a key", c.Key, c.From))
 		case off[c.From]:
-			found = append(found, fmt.Sprintf("card %s: from %s, which this revision takes off main: its work leaves main only after this filing, so no card can land it yet; "+
-				"leave %s out of take_off_main and start %s from main to change it there, or leave from out", c.Key, c.From, c.From, c.Key))
+			found = append(found, fmt.Sprintf("card %s: from %s, which this revision takes off main: its work leaves main only after this filing, so no card can land it yet. "+
+				"Leave %s out of `take_off_main` and start %s from main to change it there, or leave from out", c.Key, c.From, c.From, c.Key))
 		case st.merged[k.ID] && !st.reverted[k.ID]:
 			found = append(found, fmt.Sprintf("card %s: from %s, which merged: its work is on main, so start from main and leave from out", c.Key, c.From))
 		}
@@ -1377,18 +1377,18 @@ func replanFindings(st replanState, next Plan) []string {
 		_, keeps := kept[x]
 		switch {
 		case !known || k.PlanKey == "":
-			found = append(found, fmt.Sprintf("take_off_main names %s, which is no card of this plan's record; name the key of a merged card", x))
+			found = append(found, fmt.Sprintf("`take_off_main` names %s, which is no card of this plan's record. Name the key of a merged card", x))
 		case !st.merged[k.ID]:
-			found = append(found, fmt.Sprintf("take_off_main names %s, which has not merged: its work is not on main; leave it out of take_off_main", x))
+			found = append(found, fmt.Sprintf("`take_off_main` names %s, which has not merged: its work is not on main. Leave it out of `take_off_main`", x))
 		case st.reverted[k.ID]:
-			found = append(found, fmt.Sprintf("take_off_main names %s, which was taken off main already; leave it out of take_off_main", x))
+			found = append(found, fmt.Sprintf("`take_off_main` names %s, which was taken off main already. Leave it out of `take_off_main`", x))
 		case st.integration[k.ID]:
-			found = append(found, fmt.Sprintf("take_off_main names %s, the integration card, whose code stays on main; leave it out of take_off_main", x))
+			found = append(found, fmt.Sprintf("`take_off_main` names %s, the integration card, whose code stays on main. Leave it out of `take_off_main`", x))
 		case keeps:
-			found = append(found, fmt.Sprintf("take_off_main names %s, which this revision keeps; leave its key out to take its work off main, or leave it out of take_off_main", x))
+			found = append(found, fmt.Sprintf("`take_off_main` names %s, which this revision keeps. Leave its key out to take its work off main, or leave it out of `take_off_main`", x))
 		default:
 			if still := metStill(next, st.met[x]); len(still) > 0 {
-				found = append(found, fmt.Sprintf("take_off_main names %s, which met %s that this revision's criteria still cite: its work leaves main, so the criteria lose their proof; keep %s's key and leave it out of take_off_main, or file %s again, each under a new id with replaces", x, strings.Join(still, ", "), x, strings.Join(still, ", ")))
+				found = append(found, fmt.Sprintf("`take_off_main` names %s, which met %s that this revision's criteria still cite: its work leaves main, so the criteria lose their proof. Keep %s's key and leave it out of `take_off_main`, or file %s again, each under a new id with replaces", x, strings.Join(still, ", "), x, strings.Join(still, ", ")))
 			}
 		}
 	}
@@ -1408,7 +1408,7 @@ func replanFindings(st replanState, next Plan) []string {
 		case keeps && st.reverted[k.ID]:
 			found = append(found, fmt.Sprintf(`card %s was taken off main: leave its key out, and add a card with "from": "%s" to land it again from salvage`, k.PlanKey, k.PlanKey))
 		case st.merged[k.ID] && integration && keeps && adds:
-			found = append(found, "card "+k.PlanKey+" is the integration card and merged: leave its key out; the revision's new integration card checks the whole feature again")
+			found = append(found, "card "+k.PlanKey+" is the integration card and merged: leave its key out. The revision's new integration card checks the whole feature again")
 		}
 		if entry, ok := st.started[k.PlanKey]; ok && keeps && !sameEntry(c, entry) {
 			found = append(found, fmt.Sprintf("card %s started against revision %d: keep its entry as revision %d has it, or leave its key out to stop it",

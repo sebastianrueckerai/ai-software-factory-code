@@ -2054,11 +2054,11 @@ func TestDeliverOnAnInterimHeadLandsOnlyAFinishedSession(t *testing.T) {
 		{name: "finished and stopped", res: harness.Result{Success: true, Summary: "done"}, stopped: true, summary: "no changes to push"},
 		{name: "finished", res: harness.Result{Success: true, Summary: "done"}, landed: true},
 		{name: "finished over the line bound", res: harness.Result{Success: true, Summary: "done"}, bound: 10,
-			summary: "no changes to push; " + errPushOverBound.Error() + ": the branch's diff against its merge base is 10 lines over the card's 10-line bound; " +
-				"merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor"},
+			summary: "no changes to push; " + errPushOverBound.Error() + ": the branch's diff against its merge base is 10 lines over the card's 10-line bound. " +
+				"Merge main, run the checks, and push again. If the merge cannot fit, the card closes into a successor"},
 		{name: "own work over the line bound", res: harness.Result{Success: true, Summary: "done"}, bound: 10, change: true, refused: true,
-			summary: "push failed: " + errPushOverBound.Error() + ": the branch's diff against its merge base is 13 lines over the card's 10-line bound; " +
-				"merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor"},
+			summary: "push failed: " + errPushOverBound.Error() + ": the branch's diff against its merge base is 13 lines over the card's 10-line bound. " +
+				"Merge main, run the checks, and push again. If the merge cannot fit, the card closes into a successor"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")

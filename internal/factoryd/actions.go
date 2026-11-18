@@ -774,7 +774,7 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	// stands in for the case's kind; a press with no case is the card's own
 	onCase, planWait := f.Kind != "", f.Kind == CaseDependencyFailed && f.Planner
 	if rung == 1 && a.Name == ActWithdraw && f.Kind != CaseMonitorFlag {
-		return "`withdraw` ends a monitor flag's ask alone: the card's run waits on this ask, so the check-in answers it or hands it up"
+		return "A withdrawal (`withdraw`) ends a monitor flag's ask alone: the card's run waits on this ask, so the check-in answers it or hands it up"
 	}
 	if f.Kind == CaseMonitorFlag {
 		switch {
@@ -810,23 +810,23 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 		return "the card " + why
 	}
 	if a.Name == ActRetry && rung < 2 && endsFreeze(f, r) {
-		return fmt.Sprintf("rung %d ends no provider freeze, which a human's press or the factory agent's ends: `hand_up` with `retry` as the recommendation", rung)
+		return who(rung) + " ends no provider freeze, which a human's press or the factory agent's ends: hand it up (`hand_up`) with `retry` as the recommendation"
 	}
 	if i := slices.IndexFunc(f.Partial, func(p string) bool { return strings.HasPrefix(p, partialHumanClasses) }); rung == 2 && a.Name == ActApproveMerge && i >= 0 {
-		return fmt.Sprintf("the classes that keep a human on a merge could not be read (%s), so the factory agent cannot tell whether class %s keeps one: `hand_up` with `approve_merge` as the recommendation",
+		return fmt.Sprintf("the classes that keep a human on a merge could not be read (%s), so the factory agent cannot tell whether class %s keeps one: hand it up (`hand_up`) with `approve_merge` as the recommendation",
 			strings.TrimPrefix(f.Partial[i], partialHumanClasses+": "), f.RiskClass)
 	}
 	if rung == 2 && a.Name == ActApproveMerge && slices.Contains(f.HumanClasses, f.RiskClass) {
-		return fmt.Sprintf("risk class %s keeps a human on its merge, whatever the autonomy: `approve_merge` is the human's alone, so `hand_up` with `approve_merge` as the recommendation", f.RiskClass)
+		return fmt.Sprintf("risk class %s keeps a human on its merge, whatever the autonomy: `approve_merge` is the human's alone, so hand it up (`hand_up`) with `approve_merge` as the recommendation", f.RiskClass)
 	}
 	if rung == 2 && a.Name == ActApproveMerge && len(f.UnreadGates) > 0 {
 		return (&UnreviewedMergeError{Stages: f.UnreadGates}).Error()
 	}
 	if rung == 2 && a.Name == ActRestartPlan && slices.Contains(f.Partial, "open criteria") {
-		return "the plan's open criteria could not be read, so the factory agent cannot tell whether a restart's close waives any, and a waiver is the human's: `hand_up` with `restart_plan` as the recommendation"
+		return "the plan's open criteria could not be read, so the factory agent cannot tell whether a restart's close waives any, and a waiver is the human's: hand it up (`hand_up`) with `restart_plan` as the recommendation"
 	}
 	if rung == 2 && a.Name == ActRestartPlan && f.OpenCriteria > 0 {
-		return fmt.Sprintf("the plan holds %s, which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: `hand_up` with `restart_plan` as the recommendation",
+		return fmt.Sprintf("the plan holds %s, which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: hand it up (`hand_up`) with `restart_plan` as the recommendation",
 			OpenCriteriaPhrase(f.OpenCriteria))
 	}
 	if slices.Contains(mergeDecisions, a.Name) && (r.Fund != nil || !r.drawIsZero()) {

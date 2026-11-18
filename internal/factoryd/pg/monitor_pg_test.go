@@ -773,7 +773,7 @@ func TestMonitorRungZeroEndsAStepPastItsBound(t *testing.T) {
 	g.filed(t, "t1", 12)
 	g.pass(t)
 
-	const ended = "ended the overdue step: rung 1 did not answer within 35m"
+	const ended = "ended the overdue step: the check-in did not answer within 35m"
 	cases := g.flagCases(t, "t1")
 	c, ok := cases["wait_over_bound|rung_answer|2026-11-04T11:20:00Z"]
 	if len(cases) != 1 || !ok || c.Problem != "This card has waited more than 35 minutes for the factory to decide how it goes on. Is that fine?" ||

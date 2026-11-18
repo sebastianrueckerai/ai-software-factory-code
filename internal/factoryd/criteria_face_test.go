@@ -59,7 +59,7 @@ func TestPromiseIsChecked(t *testing.T) {
 			Recommended: "One week", Grounds: "A week holds the rows a human looks back on.",
 			Changes: []string{"The feed reads a day.", "The feed reads a week.", "The feed reads a month.", "The feed reads every row."}}}
 	})
-	if want := []string{"plan: question 1: 4 choices; want 2 to 3, as the human's own words are the fourth answer"}; !slices.Equal(four, want) {
+	if want := []string{"plan: question 1: 4 choices, want 2 to 3, as the human's own words are the fourth answer"}; !slices.Equal(four, want) {
 		t.Errorf("four choices: findings %q, want %q", four, want)
 	}
 }

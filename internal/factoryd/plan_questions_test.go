@@ -52,9 +52,9 @@ func TestPlanQuestionsFormat(t *testing.T) {
 		want []string
 	}{
 		"five questions":    {change(func(p *Plan) { p.Questions = slices.Repeat(p.Questions[:1], 5) }), nil},
-		"six questions":     {change(func(p *Plan) { p.Questions = slices.Repeat(p.Questions[:1], 6) }), []string{"plan: 6 questions; want 0 to 5"}},
-		"one choice":        {change(func(p *Plan) { p.Questions[0].Choices = []string{"60 seconds"} }), []string{"plan: question 1: 1 choices; want 2 to 5"}},
-		"six choices":       {change(func(p *Plan) { p.Questions[1].Choices = []string{"a", "b", "c", "d", "e", "f"} }), []string{"plan: question 2: 6 choices; want 2 to 5"}},
+		"six questions":     {change(func(p *Plan) { p.Questions = slices.Repeat(p.Questions[:1], 6) }), []string{"plan: 6 questions, want 0 to 5"}},
+		"one choice":        {change(func(p *Plan) { p.Questions[0].Choices = []string{"60 seconds"} }), []string{"plan: question 1: 1 choices, want 2 to 5"}},
+		"six choices":       {change(func(p *Plan) { p.Questions[1].Choices = []string{"a", "b", "c", "d", "e", "f"} }), []string{"plan: question 2: 6 choices, want 2 to 5"}},
 		"choice at the cap": {change(func(p *Plan) { p.Questions[1].Choices[1] = strings.Repeat("c", 60) }), nil},
 		"long choice":       {change(func(p *Plan) { p.Questions[1].Choices[1] = strings.Repeat("c", 61) }), []string{"plan: question 2: choice 2 is over 60 characters"}},
 		"empty choice":      {change(func(p *Plan) { p.Questions[0].Choices[0] = "" }), []string{"plan: question 1: choice 1 is empty"}},

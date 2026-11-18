@@ -1291,7 +1291,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			stopPush()
 			out.wip = cmp.Or(wip.head, out.wip)
 			if trip.Kind == TripSize && wip.head != "" {
-				trip.Detail += "; the work is pushed as the branch's work in progress"
+				trip.Detail += ", and the work is pushed as the branch's work in progress"
 				if text := wip.parts.text(); text != "" {
 					trip.Detail += ", " + text
 				}

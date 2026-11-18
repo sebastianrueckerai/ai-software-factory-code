@@ -64,7 +64,7 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		{"a fund with no case while case 7 waits", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},
 			"Card #12 waits on the session cap: answer that ask, not the card."},
 		{"a fund with no case via the chat while case 7 waits", ActInput{By: "sebastian", Via: ViaChat, Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},
-			"Card #12 waits on the session cap (`case_id` 7): answer that ask, not the card."},
+			"Card #12 waits on the session cap (`case_id 7`): answer that ask, not the card."},
 	} {
 		c.in.TaskID = "t1"
 		var refused ErrActRefused
@@ -447,7 +447,7 @@ func TestAFactoryPullRequestWaitsForAHuman(t *testing.T) {
 		in := ActInput{TaskID: "pr", CaseID: 10, By: "sebastian", Rung: 2, Res: Resolution{Action: action, Note: "Looks right."},
 			Work: func(context.Context) (int64, error) { work++; return 0, nil }}
 		_, err := g.r.Act(ctx, in)
-		const want = "Pull request #21 of card #15 was opened by the factory, and no gate checked it: a human must press Merge it or Reject and close it on the card. Record your analysis and recommended option with attach_analysis."
+		const want = "Pull request #21 of card #15 was opened by the factory, and no gate checked it: a human must press Merge it or Reject and close it on the card. Record your analysis and the option you recommend (`attach_analysis`)."
 		var refused ErrActRefused
 		if !errors.As(err, &refused) || err.Error() != want || work != 0 || g.store.cases[1].Status != CaseAtHuman {
 			t.Fatalf("the project agent's %s = %v, work %d, case %s; want %q and nothing done", action, err, work, g.store.cases[1].Status, want)

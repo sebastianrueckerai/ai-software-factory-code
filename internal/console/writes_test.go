@@ -453,7 +453,7 @@ func TestChatSetDependency(t *testing.T) {
 	}{
 		{toolInput{TaskID: "t-k2", DependsOn: "t-k1"}, http.StatusConflict, "#31 already waits on #32, through its dependencies or a hold, so #32 cannot depend on #31."},
 		{toolInput{TaskID: "t-r", DependsOn: "t-a"}, http.StatusConflict,
-			"Card #11 runs an agent session, not a card that has not started: steer sends its session a message; its pull request comes when the session ends."},
+			"Card #11 runs an agent session, not a card that has not started: steer sends its session a message, and its pull request comes when the session ends."},
 		{toolInput{TaskID: "t-m", DependsOn: "t-a"}, http.StatusConflict, "Process maintenance has no dependencies block: its cards do not wait on others."},
 		{toolInput{TaskID: "t-a", DependsOn: "t-b"}, http.StatusConflict, "#22 already waits on #21, through its dependencies or a hold, so #21 cannot depend on #22."},
 		{toolInput{TaskID: "t-b", DependsOn: "t-a"}, http.StatusConflict, "#22 already depends on #21."},
@@ -1441,9 +1441,9 @@ func TestCloseADonePlan(t *testing.T) {
 		}
 	}
 	equal(t, "the action that fits a done plan", fitting(factoryd.Task{Status: "done", Track: policy.TrackPlan}, capFacts{}),
-		"`close` with a note ends a plan that still holds production; a new card continues the work")
+		"`close` with a note ends a plan that still holds production, and a new card continues the work")
 	equal(t, "the same as a human reads it", factoryd.ForHuman(fitting(factoryd.Task{Status: "done", Track: policy.TrackPlan}, capFacts{})),
-		"“End the card” with a note ends a plan that still holds production; a new card continues the work")
+		"“End the card” with a note ends a plan that still holds production, and a new card continues the work")
 	if strings.Contains(body, `role="alert"`) && strings.Contains(body, "the criteria of") {
 		t.Errorf("the board shows a problem for a plan's criteria")
 	}

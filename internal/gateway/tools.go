@@ -1491,7 +1491,7 @@ func (s *Server) fileProofs(ctx context.Context, c *toolCaller, in ProofsIn) *mc
 	}
 	if len(res.Findings) > 0 {
 		s.auditTool(c, tool, "proofs_refused", fmt.Sprintf("filing %d, %d findings", res.Filing, len(res.Findings)), &c.task.SpentEUR, nil)
-		next := fmt.Sprintf("correct it and file again in this session; filings left: %d", res.Left)
+		next := fmt.Sprintf("correct it and file again in this session. Filings left: %d", res.Left)
 		if res.Left == 0 {
 			next = "no filing is left: end the session"
 		}

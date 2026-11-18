@@ -350,6 +350,10 @@ var (
 	writtenCalls = []string{"CreateIssueComment", "CommentOnce", "comment", "commentOnce", "closeIssueAsFactory", "closeAsk", "Error"}
 	// agentDoors are the calls of doorCalls an agent alone meets
 	agentDoors = []string{"refuseAgent", "agentRefused"}
+	// exactCalls are the functions that mark their text as exact or as a
+	// writer's words, in a code fence or as a quote of markup, which the
+	// guide's checks pass as written
+	exactCalls = []string{"fenced", "Quoted"}
 	// agentTypes are the types of the chat's tools: code that takes one
 	// answers the chat's agent
 	agentTypes = []string{"turn", "toolInput"}
@@ -359,12 +363,14 @@ var (
 // as written (facefixtures.HumanFaults), a refusal an agent alone reads,
 // with the keys it types (facefixtures.TextFaults), and any other refusal
 // as the human's door renders it (factoryd.ForHuman), where a value in a
-// code span is an answer's key, which reads as its label. The gateway's tools,
+// code span is an answer's key, which reads as its label. A value in a code
+// span of a written text is exact text, a command or a name, and no key
+// the code holds. The gateway's tools,
 // the chat's tools and agentDoors answer an agent alone.
 func doorFaults(pkg, fn string, agent bool, text string) []string {
 	switch {
 	case slices.Contains(writtenCalls, fn):
-		return facefixtures.HumanFaults(text)
+		return facefixtures.HumanFaults(strings.ReplaceAll(text, "`X`", "“X”"))
 	case pkg == "gateway" || agent || slices.Contains(agentDoors, fn):
 		return facefixtures.TextFaults(text)
 	}
@@ -428,6 +434,26 @@ func literalText(e ast.Expr) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// filling are the values that fill the words literalText reads of e: the
+// parts of a concatenation that are no literal and the values of a format.
+func filling(e ast.Expr) []ast.Expr {
+	switch x := e.(type) {
+	case *ast.BasicLit:
+		return nil
+	case *ast.ParenExpr:
+		return filling(x.X)
+	case *ast.BinaryExpr:
+		if x.Op == token.ADD {
+			return append(filling(x.X), filling(x.Y)...)
+		}
+	case *ast.CallExpr:
+		if _, ok := literalText(x); ok {
+			return x.Args[1:]
+		}
+	}
+	return []ast.Expr{e}
 }
 
 // scoped is an expression as a door's text reaches it: i is the result it
@@ -516,6 +542,20 @@ func (p *doorSource) object(e ast.Expr) types.Object {
 	return nil
 }
 
+// textual says whether e can hold a text: a string, a list of strings, or
+// an expression the check gave no type.
+func (p *doorSource) textual(e ast.Expr) bool {
+	typ := p.info.TypeOf(e)
+	if typ == nil {
+		return true
+	}
+	if list, ok := typ.Underlying().(*types.Slice); ok {
+		typ = list.Elem()
+	}
+	basic, ok := typ.Underlying().(*types.Basic)
+	return ok && basic.Info()&types.IsString != 0
+}
+
 // returned is what the function of type ft and body returns as result i,
 // called with args.
 func (p *doorSource) returned(ft *ast.FuncType, body *ast.BlockStmt, args []scoped, i int) []scoped {
@@ -548,7 +588,8 @@ func (p *doorSource) returned(ft *ast.FuncType, body *ast.BlockStmt, args []scop
 }
 
 // texts is the literal texts expression s can write, each value in them as
-// "X": its own literal or constant; of a variable or a struct field, what
+// "X", and the texts behind each such value (filling): its own literal or
+// constant; of a variable or a struct field, what
 // the package sets it to; of a parameter, the argument of the call that
 // led to it; of a call of the package's own function, what that returns;
 // of any other call, a conversion, an index or a list, what its parts
@@ -578,6 +619,9 @@ func (p *doorSource) texts(s scoped, seen map[ast.Expr]bool) []string {
 	if lit && strings.ContainsFunc(text, unicode.IsLetter) && strings.Contains(strings.TrimSpace(text), " ") {
 		out = append(out, text)
 	}
+	if lit {
+		parts(filling(e))
+	}
 	switch x := e.(type) {
 	case *ast.Ident, *ast.SelectorExpr:
 		obj := p.object(x)
@@ -602,6 +646,9 @@ func (p *doorSource) texts(s scoped, seen map[ast.Expr]bool) []string {
 			args[i] = scoped{a, 0, s.env}
 		}
 		callee := p.object(x.Fun)
+		if callee != nil && slices.Contains(exactCalls, callee.Name()) {
+			break
+		}
 		own := false
 		if decl := p.decls[callee]; decl != nil && decl.Body != nil {
 			own = true
@@ -618,7 +665,8 @@ func (p *doorSource) texts(s scoped, seen map[ast.Expr]bool) []string {
 			from(p.returned(fl.Type, fl.Body, args, s.i)...)
 		}
 		if !own && !lit {
-			parts(x.Args)
+			// a function of another package writes the texts it is given
+			parts(slices.DeleteFunc(slices.Clone(x.Args), func(a ast.Expr) bool { return !p.textual(a) }))
 		}
 	}
 	return out
@@ -717,8 +765,10 @@ func doorTexts(fs *token.FileSet, files []*ast.File, imp types.Importer, calls m
 // A door's text is found where the door's argument is a variable the
 // function adds to, a package's constant, a struct field, in a keyed and
 // in a plain literal, a function's result, one of two, and a parameter a
-// function passes on. A value that fills a text reads "X", and one word
-// is no text.
+// function passes on. A value that fills a text reads "X" in it, and the
+// text behind the value is found too: a part of a concatenation and a
+// value of a format. One word is no text, and neither is what stands in a
+// code fence (exactCalls).
 func TestDoorTextsFollowAFieldAndAFunction(t *testing.T) {
 	const src = `package doors
 
@@ -740,18 +790,36 @@ func wait(name string) (int, string) {
 	return 409, "Wait for card " + name + " to merge."
 }
 
-func fenced(s string) string { return s }
+func passed(s string) string { return s }
+
+type printer struct{}
+
+func (printer) Sprintf(format string, a ...any) string { return "" }
+
+var fmt printer
+
+func fenced(s string) string { return "` + "```" + `\n" + s + "\n` + "```" + `" }
+
+func cause(n int) string {
+	if n > 1 {
+		return "its checks are red"
+	}
+	return "red"
+}
 
 func press(no refusal, name string) {
 	_ = refuse(no.status, no.msg)
 	_, why := wait(name)
 	_ = refuse(409, why)
 	_ = refuse(409, held)
-	_ = refuse(409, fenced("Close the plan first."))
+	_ = refuse(409, passed("Close the plan first."))
 	line := "red"
 	line += "The plan is closed already."
 	_ = refuse(409, line)
 	_ = refuse(409, name)
+	_ = refuse(409, "The card waits: "+cause(2)+".")
+	_ = refuse(409, fmt.Sprintf("Card %d waits, and %s.", 3, cause(1)))
+	_ = refuse(409, "The run's log:\n\n"+fenced("exit 1; the run ended"))
 }
 `
 	fs := token.NewFileSet()
@@ -770,6 +838,9 @@ func press(no refusal, name string) {
 		{"Close the plan first."},
 		{"The plan is closed already."},
 		nil,
+		{"The card waits: X.", "its checks are red"},
+		{"Card X waits, and X.", "its checks are red"},
+		{"The run's log:\n\nX"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("the doors' texts are\n%q\nwant\n%q", got, want)

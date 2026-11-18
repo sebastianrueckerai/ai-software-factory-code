@@ -148,7 +148,7 @@ func takeOffReasonFindings(p Plan) []string {
 	var found []string
 	for _, x := range p.TakeOffMain {
 		if p.TakeOffReason(x) == "" {
-			found = append(found, fmt.Sprintf("take_off_main names %s with no reason: say in take_off_reasons what breaks if its work stays on main, or leave %s out of take_off_main", x, x))
+			found = append(found, fmt.Sprintf("`take_off_main` names %s with no reason: say in `take_off_reasons` what breaks if its work stays on main, or leave %s out of `take_off_main`", x, x))
 		}
 	}
 	return slices.Compact(found)
@@ -527,7 +527,7 @@ func judgePlanWith(p Plan, shape policy.PlanShape, limits policy.Limits, pins ma
 	out = append(out, criteriaFindings(p, shape)...)
 	out = append(out, questionFindings(p.Questions)...)
 	if p.Round == 0 && len(p.Outline) > 0 {
-		return p, append(out, "plan: outline: this plan was filed before planning rounds and files every card at once; leave the outline out")
+		return p, append(out, "plan: outline: this plan was filed before planning rounds and files every card at once. Leave the outline out")
 	}
 	return p, append(out, outlineFindings(p.Outline)...)
 }
@@ -555,7 +555,7 @@ func roundCards(p Plan) []PlanCard {
 func outlineFindings(outline []string) []string {
 	var out []string
 	if len(outline) > maxOutline {
-		out = append(out, fmt.Sprintf("plan: outline: %d parts; want at most %d", len(outline), maxOutline))
+		out = append(out, fmt.Sprintf("plan: outline: %d parts, want at most %d", len(outline), maxOutline))
 	}
 	for i, part := range outline {
 		switch {
@@ -574,7 +574,7 @@ func outlineFindings(outline []string) []string {
 func questionFindings(qs []PlanQuestion) []string {
 	var out []string
 	if len(qs) > maxQuestions {
-		out = append(out, fmt.Sprintf("plan: %d questions; want 0 to %d", len(qs), maxQuestions))
+		out = append(out, fmt.Sprintf("plan: %d questions, want 0 to %d", len(qs), maxQuestions))
 	}
 	for i, q := range qs {
 		add := func(format string, args ...any) {
@@ -587,7 +587,7 @@ func questionFindings(qs []PlanQuestion) []string {
 			add("text empty")
 		}
 		if n := len(q.Choices); n < 2 || n > MaxChoices {
-			add("%d choices; want 2 to %d", n, MaxChoices)
+			add("%d choices, want 2 to %d", n, MaxChoices)
 		}
 		seen := map[string]int{}
 		for j, c := range q.Choices {
@@ -629,7 +629,7 @@ func questionBounds(qs []PlanQuestion) []string {
 			}
 		}
 		if n := len(q.Choices); n > maxPlanChoices {
-			add("%d choices; want 2 to %d, as the human's own words are the fourth answer", n, maxPlanChoices)
+			add("%d choices, want 2 to %d, as the human's own words are the fourth answer", n, maxPlanChoices)
 		}
 		if len(q.Changes) != len(q.Choices) {
 			add("changes: %d lines for %d choices; write one short line per choice, in its order, saying what the choice changes in the plan", len(q.Changes), len(q.Choices))
@@ -744,7 +744,7 @@ func sizeFindings(size string) []string {
 func acceptanceFindings(acceptance []string) []string {
 	var out []string
 	if n := len(acceptance); n < 1 || n > MaxCardAcceptance {
-		out = append(out, fmt.Sprintf("%d acceptance tests; want 1 to %d", n, MaxCardAcceptance))
+		out = append(out, fmt.Sprintf("%d acceptance tests, want 1 to %d", n, MaxCardAcceptance))
 	}
 	for i, a := range acceptance {
 		if utf8.RuneCountInString(a) == 0 {
@@ -829,7 +829,7 @@ func specFindings(p Plan, shape policy.PlanShape) []string {
 	if !shape.Integration || (p.Spec != nil && strings.TrimSpace(p.Spec.Outcome) != "") {
 		return nil
 	}
-	return []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}; the humans confirm it before the criteria are fixed`}
+	return []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}. The humans confirm it before the criteria are fixed`}
 }
 
 // criteriaFindings are a plan's criteria's findings (the spec-intake
@@ -855,7 +855,7 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 		if shape.Integration {
 			want = "1 to " + strconv.Itoa(MaxCardAcceptance)
 		}
-		out = append(out, fmt.Sprintf("plan: %d criteria; want %s", n, want))
+		out = append(out, fmt.Sprintf("plan: %d criteria, want %s", n, want))
 	}
 	if !shape.Integration && len(p.Criteria) > 0 {
 		out = append(out, "plan: criteria want an integration card: no card of this plan runs the criteria gate")
@@ -963,7 +963,7 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 			case n == 0:
 				out = append(out, fmt.Sprintf("plan: card %s: criterion %s is cited by no item", c.Key, k.ID))
 			case n > 1:
-				out = append(out, fmt.Sprintf("plan: card %s: criterion %s is cited by %d items; want one", c.Key, k.ID, n))
+				out = append(out, fmt.Sprintf("plan: card %s: criterion %s is cited by %d items, want one", c.Key, k.ID, n))
 			}
 		}
 	}
@@ -986,7 +986,7 @@ func cardFindings(c PlanCard, limits policy.Limits) []string {
 		add("brief empty")
 	}
 	if len(c.Directories) > maxCardDirs {
-		add("%d directories; want 0 to %d", len(c.Directories), maxCardDirs)
+		add("%d directories, want 0 to %d", len(c.Directories), maxCardDirs)
 	}
 	for _, d := range c.Directories {
 		clean := path.Clean(d)
@@ -3956,7 +3956,7 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 		findings = append(findings, replanFindings(st, p)...)
 	}
 	if len(findings) > 0 {
-		note := fmt.Sprintf("revision %d files no cards: %s", revision, strings.Join(findings, "; "))
+		note := fmt.Sprintf("revision %d files no cards. The planner was told:\n\n%s", revision, Quoted("- "+strings.Join(findings, "\n- ")))
 		r.commentOnce(ctx, t, repo, t.IssueNumber, capitalize(r.untrusted(t, note)))
 		r.record(ctx, t.ID, "plan_refused", map[string]any{"revision": revision, "findings": findings})
 		return ChildrenResult{Refused: findings}, nil

@@ -2271,7 +2271,7 @@ func newDrawBound(rung int, want, need policy.Draw, lines int, cardLeft, poolLef
 func (e *DrawBoundError) Error() string {
 	bound := fmt.Sprintf("the escalation pool leaves %s this month: only the human draws more", drawText(e.Left))
 	if e.Card {
-		bound = fmt.Sprintf("the card's draw bound leaves %s: rung 2 or the human may draw more", drawText(e.Left))
+		bound = fmt.Sprintf("the card's draw bound leaves %s: the factory agent or the human may draw more", drawText(e.Left))
 	}
 	var over []string
 	if e.Want.Sessions > e.Left.Sessions {

@@ -2349,7 +2349,7 @@ func (in *Intake) refusalText(r *Refusal) string {
 	}
 	holder := fmt.Sprintf("#%d", r.HolderIssue)
 	state := strings.ReplaceAll(r.Status, "-", " ")
-	line := fmt.Sprintf("Add the line \"Refile of #%d\" to this issue's description; a comment does not count.", r.HolderIssue)
+	line := fmt.Sprintf("Add the line \"Refile of #%d\" to this issue's description. A comment does not count.", r.HolderIssue)
 	var text string
 	switch RoadmapHold(r.Status) {
 	case "open":

@@ -288,7 +288,7 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 			return reportEnd{}, err
 		}
 		if over != nil {
-			end.why = strings.TrimPrefix(end.why+"; "+over.state(), "; ")
+			end.why = andSentence(end.why, capitalize(over.state()))
 		}
 		if end.capped, err = r.store.CapRefusal(ctx, t.ID, startedAt); err != nil {
 			return reportEnd{}, err

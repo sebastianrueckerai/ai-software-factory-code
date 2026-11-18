@@ -2172,7 +2172,7 @@ func TestWorkflowHoldoutSettlementRealGapRoutesTheCardToASession(t *testing.T) {
 // goes back, and the card continues when the agent brings the head
 // under the bound (or a human extends it).
 func TestWorkflowOverTheCardLineBoundIsFindingsNotApproval(t *testing.T) {
-	over := "the pull request's diff is 20 lines over the card's 300-line bound; merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor"
+	over := "the pull request's diff is 20 lines over the card's 300-line bound. Merge main, run the checks, and push again. If the merge cannot fit, the card closes into a successor"
 	g := newGateHarness(t)
 	g.gateSeq = []PolicyGate{
 		{Class: "normal", Outcome: policy.OutcomeRequiresApproval, PolicyVersion: 7, OverBound: over},

@@ -431,7 +431,7 @@ func TestGatePolicyOfADiffPastTheBoundRequiresApproval(t *testing.T) {
 	r.cfg.Policy = func() policy.Version { return v }
 	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 	g := getInto[PolicyGate](t, val, err)
-	want := "the diff of 210000 changed lines is longer than 8 MiB, the most factoryd reads: no anti-cheat scan, model review or audit reads it. Review the change yourself, or replan the card."
+	want := "the diff of 210000 changed lines is longer than 8 MiB, the most the factory reads: no anti-cheat scan, model review or audit reads it. Review the change yourself, or replan the card."
 	if g.Class != policy.ClassNormal || g.Outcome != policy.OutcomeRequiresApproval || g.Unread != want || g.Cheats != nil {
 		t.Fatalf("gate = %+v, want class normal requiring approval for the unread diff", g)
 	}
@@ -4277,7 +4277,7 @@ func TestGatePolicyRefusesOverTheCardLineBound(t *testing.T) {
 		val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 		return getInto[PolicyGate](t, val, err), fj
 	}
-	want := "the pull request's diff is 20 lines over the card's 300-line bound; merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor"
+	want := "the pull request's diff is 20 lines over the card's 300-line bound. Merge main, run the checks, and push again. If the merge cannot fit, the card closes into a successor"
 	g, fj := run("small", 0, 320)
 	if g.OverBound != want {
 		t.Fatalf("OverBound = %q, want %q", g.OverBound, want)
@@ -4322,7 +4322,7 @@ func TestSessionsStopAtTheReserveAndTheGatesRun(t *testing.T) {
 
 	why, err := r.SessionFunded(context.Background(), "t1", "factory/big")
 	if err != nil || !strings.HasPrefix(why, BudgetRefused) ||
-		!strings.Contains(why, "The card spent 4.60 EUR of its 5.00 EUR budget; 0.40 EUR is held for the review and the audit, which need 0.40 EUR") ||
+		!strings.Contains(why, "The card spent 4.60 EUR of its 5.00 EUR budget, 0.40 EUR is held for the review and the audit, which need 0.40 EUR") ||
 		strings.Contains(why, "a fund of") {
 		t.Fatalf("session floor = (%q, %v), want the money stop naming 4.60 spent and 0.40 held, and no fund: the board's ask names it", why, err)
 	}

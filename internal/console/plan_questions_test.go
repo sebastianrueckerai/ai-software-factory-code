@@ -166,7 +166,7 @@ func TestChatAnswersAPlanQuestion(t *testing.T) {
 	for _, in := range []toolInput{{TaskID: "t-p", Revision: 1, Question: 2, Text: "7 days"}, {TaskID: "t-p", Decision: factoryd.DecisionConfirm, Text: "fine"}} {
 		status, msg := refused(t, r, "answer", in)
 		equal(t, "an answer with no question open", []any{status, msg}, []any{http.StatusConflict,
-			"Card #20 waits on a human: an answer, an approval or a decision, not an open plan question: answer its open questions (answer). Its next revision with none files the cards, request_changes sends it back to the planner."})
+			"Card #20 waits on a human: an answer, an approval or a decision, not an open plan question: answer its open questions (answer). Its next revision with none files the cards, and a change request sends it back to the planner (`request_changes`)."})
 	}
 }
 
@@ -632,7 +632,7 @@ const (
 	refusedOffMain = "Refused: This revision takes merged work off main, or its reverts could not be read, so its confirmation is the human's, made with Confirm the plan on the plan's card."
 	refusedBelowC  = "Refused: A plan confirmation below full auto is the human's, made with Confirm the plan on the plan's card."
 	refusedBelowA  = "Refused: A plan's answer below full auto is the human's, made on the plan's card with its choices or its Ask for changes."
-	agentStep      = " Record your analysis and recommended option with attach_analysis."
+	agentStep      = " Record your analysis and the option you recommend (`attach_analysis`)."
 )
 
 // By hand: with answer off the confirm list a wake's answer runs at once

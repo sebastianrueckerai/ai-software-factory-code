@@ -1104,7 +1104,7 @@ func (b *builder) card2004(group, name string) Fixture {
 	// old money format included: words the face must not show
 	problem := "The review or the audit left 8 findings unresolved on the head 7eaf7c73121dd332c52b95bb5b024a08b3757146: \"" + strings.Join(audit[:5], "\"; \"") +
 		"\"; and 3 more. The card spent €5.36 of its €5.70 budget, €0.34 is held for the review and the audit, which need €0.40, and one more session on factory/big needs €0.600000. Fund it, or park it?"
-	m := map[string]any{"face": "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\nThe card spent 5.36 EUR of its 5.70 EUR budget; 0.34 EUR is held for the review and the audit, which need 0.40 EUR, and a session on factory/big needs 0.600000 EUR",
+	m := map[string]any{"face": "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\nThe card spent 5.36 EUR of its 5.70 EUR budget, 0.34 EUR is held for the review and the audit, which need 0.40 EUR, and a session on factory/big needs 0.600000 EUR",
 		"choices": []string{"Fund 0.67 EUR and go on", "Fund 2.00 EUR and go on", "Park it"}}
 	raw, _ := json.Marshal(f)
 	_ = json.Unmarshal(raw, &m)

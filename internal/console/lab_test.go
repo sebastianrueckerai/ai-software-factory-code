@@ -1335,7 +1335,7 @@ func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.
 		// fed: the filing again, now with its acceptance tests
 		{Role: "assistant", At: ago(16*time.Minute - 20*time.Second), ToolCalls: []factoryd.ChatToolCall{
 			{ID: "do-" + used[0].Token[:12], Name: "new_card", Arguments: noTests, ReadAt: ago(16*time.Minute - 20*time.Second),
-				Result: "Refused: The ready check refuses the filing: card " + fileTitle + ": 0 acceptance tests; want 1 to 10"}}},
+				Result: "Refused: The ready check refuses the filing: card " + fileTitle + ": 0 acceptance tests, want 1 to 10"}}},
 		{Role: "assistant", At: ago(15*time.Minute - 50*time.Second), Content: "The ready check wants acceptance tests on a plan card. " +
 			"This filing carries two; it waits for your click.",
 			ToolCalls: []factoryd.ChatToolCall{call(filed, "call_300c", ago(15*time.Minute-50*time.Second))}},

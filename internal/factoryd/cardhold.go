@@ -198,7 +198,7 @@ func holdFit(f CaseFacts, rung int) string {
 		return "ask the human instead"
 	}
 	var fits []string
-	for _, fit := range []struct{ action, words string }{{ActNote, "note the case"}, {ActSettle, "settle it"}} {
+	for _, fit := range []struct{ action, words string }{{ActNote, "note the ask"}, {ActSettle, "settle it"}} {
 		if a, _ := ActionByName(fit.action); a.offerRefusal(f, rung) == "" {
 			fits = append(fits, fit.words)
 		}

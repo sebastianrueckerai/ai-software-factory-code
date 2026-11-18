@@ -2393,7 +2393,7 @@ func TestWorkflowDayCapWaitsForTheDayToTurn(t *testing.T) {
 func TestWorkflowDayCapAtTheGateWaitsForTheDay(t *testing.T) {
 	h, run := capHarness(t, 0, pushed("s1", "c1"))
 	const state = "0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free, and the cheapest call on factory/small needs 0.015360 EUR " +
-		"(1024 output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run."
+		"(1024 output tokens at the hold machinery's minimum). An answer would start an attempt whose first call cannot run."
 	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, model string) (string, error) {
 			if h.env.Now().Before(oct(15, 0, 0)) {
@@ -2627,7 +2627,7 @@ func TestWorkflowMonthCapAtTheGateWaitsOnItsOwn(t *testing.T) {
 	h.signalAfter(time.Minute, SignalPolicyLoaded, TaskSignal{Author: "factoryd"})
 	run.funded = oct31(22, 30, 0)
 	const state = "0.000001 EUR of the month's 544.00 EUR (budget.month_eur) is free, and the cheapest call on factory/small needs 0.015360 EUR " +
-		"(1024 output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run."
+		"(1024 output tokens at the hold machinery's minimum). An answer would start an attempt whose first call cannot run."
 	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, model string) (string, error) {
 			if h.env.Now().Before(run.funded) {

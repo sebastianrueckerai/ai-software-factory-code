@@ -254,7 +254,7 @@ func TestFilePlanRefusesAnEarlierRoundsKey(t *testing.T) {
 // replanFindings' which asks to drop a kept key the planner cannot drop.
 func TestFilePlanRefusesASettledKeyInTakeOffMain(t *testing.T) {
 	r, store, _, _ := roundTwoRig(t, nil)
-	want := []string{"plan: take_off_main names card links-api, settled in round 1: it stays on main as it is; a person's off-main replan can take it off main"}
+	want := []string{"plan: `take_off_main` names card links-api, settled in round 1: it stays on main as it is. A human's off-main replan can take it off main"}
 	for _, off := range [][]string{{"links-api"}, {"links-api", "links-api"}} {
 		answer := roundTwoAnswer()
 		answer.TakeOffMain = off

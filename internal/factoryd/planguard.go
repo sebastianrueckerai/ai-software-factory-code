@@ -8,7 +8,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-const planAgentStep = " Record your analysis and recommended option with attach_analysis."
+const planAgentStep = " Record your analysis and the option you recommend (`attach_analysis`)."
 
 // PlanAnswerRefusal is the one rule for who answers a plan's questions and
 // confirms its revision. rung is who decides: 3 the human, who always

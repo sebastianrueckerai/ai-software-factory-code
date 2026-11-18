@@ -719,7 +719,7 @@ func TestResolveCaseWeighsTheCardsDrawBoundUnderTheLock(t *testing.T) {
 	res := CaseResolution{By: FactoryDecider, Rung: 1, Action: ActExtend}
 	var bound *DrawBoundError
 	err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, nil, nil)
-	if !errors.As(err, &bound) || !bound.Card || err.Error() != "the card's draw bound leaves 0 sessions, 90 minutes of agent time and 6.00 EUR: rung 2 or the human may draw more. "+
+	if !errors.As(err, &bound) || !bound.Card || err.Error() != "the card's draw bound leaves 0 sessions, 90 minutes of agent time and 6.00 EUR: the factory agent or the human may draw more. "+
 		"This draw does not fit in sessions (asked 1, left 0), and nothing of it fits: hand the draw up (`hand_up`) with it as the recommendation" {
 		t.Fatalf("ResolveCase past the card's bound = %v, want the card's DrawBoundError", err)
 	}

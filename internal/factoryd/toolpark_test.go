@@ -766,7 +766,7 @@ func TestPGStoreImageParks(t *testing.T) {
 
 // missingTool is a session the agent ended with request_tool.
 func missingTool(session, tool, need string) SessionResult {
-	return SessionResult{Outcome: OutcomeMissingTool, SessionID: session, Summary: "check-in: escalate after agent_tool_request: the agent called request_tool",
+	return SessionResult{Outcome: OutcomeMissingTool, SessionID: session, Summary: "check-in: escalate after agent_tool_request: the agent asked for a tool",
 		Reason: AgentAsks + "a sandbox with " + tool + "\nWhy: " + need, Tool: tool, Need: need}
 }
 

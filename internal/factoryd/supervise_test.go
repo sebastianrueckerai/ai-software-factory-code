@@ -1315,7 +1315,7 @@ func TestEventsBeforeTheMessageDoNotCount(t *testing.T) {
 	s3.Event(podAt(1, toolEvent("read", map[string]any{"filePath": "b"})), minute(1))
 	s3.Messaged(minute(2))
 	trip = s3.Event(podAt(1.5, toolEvent("read", map[string]any{"filePath": "a"})), minute(8))
-	if trip == nil || trip.Kind != TripCheapCap || trip.Detail != "the cheap rung's 8m0s passed without a push" ||
+	if trip == nil || trip.Kind != TripCheapCap || trip.Detail != "the cheap model's cap of 8m0s passed without a push" ||
 		trip.decided == nil || trip.decided.Action != ActionRetryStronger {
 		t.Fatalf("stale read at the cheap cap = %+v, want cheap_cap with the climb decided", trip)
 	}

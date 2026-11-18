@@ -168,11 +168,11 @@ func wrongState(t factoryd.Task, f capFacts, needs string) error {
 
 // factoryRedFits is what decides a factory pull request's merge request on
 // red checks (roadmap 264).
-const factoryRedFits = "rerun_checks runs its red checks again, or deny_merge closes it with your words"
+const factoryRedFits = "`rerun_checks` runs its red checks again, or `deny_merge` closes it with your words"
 
 // agentRedFits is what decides an agent pull request's merge request on
 // red checks.
-const agentRedFits = "deny_merge with request_changes returns it to the agent, or with reject closes it"
+const agentRedFits = "`deny_merge` with `request_changes` returns it to the agent, or `deny_merge` with `reject` closes it"
 
 // fitting is the action that fits t's state.
 func fitting(t factoryd.Task, f capFacts) string {
@@ -192,22 +192,22 @@ func fitting(t factoryd.Task, f capFacts) string {
 		case f.returns:
 			return agentRedFits
 		case f.merge:
-			return "approve_merge or deny_merge decide its merge request"
+			return "`approve_merge` or `deny_merge` decides its merge request"
 		case f.plan:
-			return "answer its open questions (answer). Its next revision with none files the cards, request_changes sends it back to the planner"
+			return "answer its open questions (answer). Its next revision with none files the cards, and a change request sends it back to the planner (`request_changes`)"
 		}
 		return "answer it (answer)"
 	case "waiting-poster":
 		return "the poster must answer on the issue"
 	case "running":
-		return "steer sends its session a message; its pull request comes when the session ends"
+		return "steer sends its session a message, and its pull request comes when the session ends"
 	case "queued", "waiting-deps":
 		if t.Held() {
 			return "it is on hold until a human releases it with `release_hold`"
 		}
 		return "nothing to do until it starts"
 	case "waiting-image":
-		return "nothing to do until its image is pinned and it restarts; close ends it"
+		return "nothing to do until its image is pinned and it restarts. Close ends it"
 	case "in-review":
 		if f.rerun {
 			return factoryRedFits
@@ -216,14 +216,14 @@ func fitting(t factoryd.Task, f capFacts) string {
 			return agentRedFits
 		}
 		if f.merge {
-			return "approve_merge or deny_merge decide its merge request"
+			return "`approve_merge` or `deny_merge` decides its merge request"
 		}
-		return "its gates run; nothing to do until they end"
+		return "its gates run, and there is nothing to do until they end"
 	case "failed":
 		return "close ends it (close)"
 	case "done", "closed":
 		if t.Track == policy.TrackPlan && t.Status == "done" {
-			return "`close` with a note ends a plan that still holds production; a new card continues the work"
+			return "`close` with a note ends a plan that still holds production, and a new card continues the work"
 		}
 		return "a new card continues the work"
 	}
@@ -1977,7 +1977,7 @@ func (c *Console) actErr(ctx context.Context, a actor, t factoryd.Task, res fact
 	case errors.As(err, &ended):
 		next := "Reload the board: the card shows what it waits on now."
 		if t.Kind == "human" {
-			next = fmt.Sprintf("Card #%d has no live case, so a new answer goes on the issue or on a new card.", t.IssueNumber)
+			next = fmt.Sprintf("Card #%d has no open ask, so a new answer goes on the issue or on a new card.", t.IssueNumber)
 		}
 		return refuse(http.StatusConflict, err.Error()+". "+next)
 	case errors.As(err, &refused), errors.As(err, &noRetry):

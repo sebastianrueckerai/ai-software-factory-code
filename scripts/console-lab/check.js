@@ -85,7 +85,7 @@ const mustHave = {
     "#531", "#596", "#600", "#597", "failed", "#590", "closed", "#535", "Retry",
     "project agent", "Start a new thread", "What is #606 stuck on", "Do it", "Skip", "Send",
     "File roadmap 300 as a card", "One card, or one per deliverable", "One card",
-    "Refused: The ready check refuses the filing", "0 acceptance tests; want 1 to 10",
+    "Refused: The ready check refuses the filing", "0 acceptance tests, want 1 to 10",
     "acceptance the chat shows the documents a member sends; the agent reads them by tool",
     "The failing run is img1", "analyze_image", "In #606's session", "A fresh session",
     "?", "Find on the board", "Find: a word, #612, plan:558",

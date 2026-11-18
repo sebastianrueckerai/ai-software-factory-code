@@ -192,7 +192,7 @@ func (r *Runner) expireCardSteps(ctx context.Context, taskID string) ([]string, 
 			}
 			st.Found = stepExpired(st.Found, st.StartedAt, *st.DueAt)
 			expired = append(expired, st)
-			ended = append(ended, fmt.Sprintf("rung %d did not answer within %s", st.Rung, DurationText(st.DueAt.Sub(st.StartedAt).Round(time.Minute))))
+			ended = append(ended, fmt.Sprintf("%s did not answer within %s", who(st.Rung), DurationText(st.DueAt.Sub(st.StartedAt).Round(time.Minute))))
 		}
 	}
 	return ended, r.ClimbExpired(ctx, expired)

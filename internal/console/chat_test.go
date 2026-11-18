@@ -2524,7 +2524,7 @@ func TestChatUndoOfAnEdgeTheCardStarted(t *testing.T) {
 	before := r.events.count()
 	_, events, _ := chatPost(t, r, ck, s, chatPath+"/undo/"+undo[0], nil)
 	equal(t, "undo", events, []string{`tool {"arguments":{},"duration_ms":0,"name":"undo set_dependency","result":"Refused: Card #22 runs an agent session, ` +
-		`not a card that has not started: steer sends its session a message; its pull request comes when the session ends."}`, `done {}`})
+		`not a card that has not started: steer sends its session a message, and its pull request comes when the session ends."}`, `done {}`})
 	chatRows(t, r.events, before, "sebastian")
 	equal(t, "the issue dependencies", r.issueDeps, []string{"sf/code#22 on #21"})
 }
@@ -3106,7 +3106,7 @@ func TestChatApplyRefusalFeedsTurn(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	noTests := `{"title":"Documents in the chat","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The agent reads what the human sends.","track":"direct","track_reason":"one feature","size":"small"}`
 	withTests := `{"title":"Documents in the chat","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The agent reads what the human sends.","track":"direct","track_reason":"one feature","size":"small","acceptance":["The agent reads a document the human sends","The chat shows what was read"]}`
-	refusal := "Refused: The ready check refuses the filing: card Documents in the chat: 0 acceptance tests; want 1 to 10"
+	refusal := "Refused: The ready check refuses the filing: card Documents in the chat: 0 acceptance tests, want 1 to 10"
 	g.replies = [][]string{{call(1, "new_card", noTests)}, {call(1, "new_card", withTests)}}
 	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file roadmap 300 as a card"}})
 	if len(tokens) != 1 {
@@ -4931,7 +4931,7 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 		refused("answer", `{"task_id":"t-r","text":"yes"}`, "The session of #11 has your message."),
 		`applied {"result":"The session of #11 has your message.","tool":"answer"}`,
 		refused("steer", `{"task_id":"t-mr","text":"go"}`,
-			"Refused: Card #15 "+human+", not a running session: approve_merge or deny_merge decide its merge request."),
+			"Refused: Card #15 "+human+", not a running session: `approve_merge` or `deny_merge` decides its merge request."),
 	})
 	for i, wantPrefix := range []string{
 		`#14 · budget 0.00 spent 0.00 holds 0.00 EUR · waiting-human\nflags: none\n\n#14 t-cap \"Trim the logs.\" waiting-human (` + human + `)`,
@@ -4982,16 +4982,16 @@ func TestWrongState(t *testing.T) {
 			"Card #1 waits on a human: an answer, an approval or a decision, not a running session: one of its choices answers it (answer). Close ends it."},
 		{factoryd.Task{Kind: "agent", Status: "waiting-human", Track: policy.TrackPlan, IssueNumber: 2}, capFacts{plan: true},
 			"Card #2 waits on a human: an answer, an approval or a decision, not a running session: " +
-				"answer its open questions (answer). Its next revision with none files the cards, request_changes sends it back to the planner."},
+				"answer its open questions (answer). Its next revision with none files the cards, and a change request sends it back to the planner (`request_changes`)."},
 		{factoryd.Task{Status: "waiting-poster", IssueNumber: 3}, capFacts{},
 			"Card #3 waits on its poster's information, not a running session: the poster must answer on the issue."},
 		{factoryd.Task{Status: "queued", IssueNumber: 4}, capFacts{}, "Card #4 waits for a free work slot, in filing order, not a running session: nothing to do until it starts."},
 		{factoryd.Task{Status: "waiting-deps", IssueNumber: 5}, capFacts{},
 			"Card #5 waits for the cards it depends on, not a running session: nothing to do until it starts."},
 		{factoryd.Task{Status: "in-review", IssueNumber: 6}, capFacts{},
-			"Card #6 passes the gates after its session, not a running session: its gates run; nothing to do until they end."},
+			"Card #6 passes the gates after its session, not a running session: its gates run, and there is nothing to do until they end."},
 		{factoryd.Task{Status: "in-review", IssueNumber: 11}, capFacts{merge: true},
-			"Card #11 waits at its approval gate, where a human approves the merge, not a running session: approve_merge or deny_merge decide its merge request."},
+			"Card #11 waits at its approval gate, where a human approves the merge, not a running session: `approve_merge` or `deny_merge` decides its merge request."},
 		{factoryd.Task{Status: "done", IssueNumber: 7}, capFacts{}, "Card #7 is done, not a running session: a new card continues the work."},
 		{factoryd.Task{Status: "failed", IssueNumber: 8}, capFacts{}, "Card #8 has failed, not a running session: close ends it (close)."},
 		{factoryd.Task{Status: "closed", IssueNumber: 9}, capFacts{}, "Card #9 was closed, not a running session: a new card continues the work."},
@@ -5103,7 +5103,7 @@ func TestApproveMergeProposalWarns(t *testing.T) {
 		return "proposal " + string(b)
 	}
 	refused := `tool {"arguments":{"task_id":"t-c1"},"duration_ms":0,"name":"approve_merge","result":"Refused: Card #21 runs an agent session, ` +
-		`not a pending merge request: steer sends its session a message; its pull request comes when the session ends."}`
+		`not a pending merge request: steer sends its session a message, and its pull request comes when the session ends."}`
 	equal(t, "stream", events, []string{proposal("t-r", r11), proposal("t-m", r5), proposal("t-e", r13), refused, `done {}`})
 	stored, _ := r.chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
 	equal(t, "what the agent reads of the first", stored[0].ToolCalls[0].Result, "Proposed to sebastian: "+r11+" Nothing runs until they press Do it.")

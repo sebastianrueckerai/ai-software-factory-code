@@ -632,11 +632,11 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 		g.Outcome, g.Factory = policy.OutcomeRequiresApproval, true
 	}
 	if over := lines - EffectiveLineBound(t.Size, v.Document.Risk.LargeLines, t.Usage); over > 0 {
-		g.OverBound = fmt.Sprintf("the pull request's diff is %d lines over the card's %d-line bound; merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor",
+		g.OverBound = fmt.Sprintf("the pull request's diff is %d lines over the card's %d-line bound. Merge main, run the checks, and push again. If the merge cannot fit, the card closes into a successor",
 			over, lines-over)
 	}
 	if unread {
-		g.Unread = fmt.Sprintf("the diff of %d changed lines is longer than %d MiB, the most factoryd reads: no anti-cheat scan, model review or audit reads it. Review the change yourself, or replan the card.", lines, maxDiffRead>>20)
+		g.Unread = fmt.Sprintf("the diff of %d changed lines is longer than %d MiB, the most the factory reads: no anti-cheat scan, model review or audit reads it. Review the change yourself, or replan the card.", lines, maxDiffRead>>20)
 		if g.Outcome == policy.OutcomeAuto {
 			g.Outcome = policy.OutcomeRequiresApproval
 		}
@@ -747,7 +747,7 @@ func notARepository(res ReproResult) bool {
 
 // notARepositoryRule is the sandbox rule a not-a-repository failure names,
 // so no session spends itself discovering it.
-const notARepositoryRule = "exit 128 with \"not a git repository\" is the sandbox's not-a-repository signature: the sandbox has one checkout and the reproduction runs in place in the checked-out worktree; a cd the command does not undo, or a git worktree, finds no repository where it lands."
+const notARepositoryRule = "exit 128 with \"not a git repository\" is the sandbox's not-a-repository signature: the sandbox has one checkout and the reproduction runs in place in the checked-out worktree. A cd the command does not undo, or a git worktree, finds no repository where it lands."
 
 // GateReproduction runs the task's reproduction command against the pull
 // request head in a fresh sandbox with no agent: the worker image in its
@@ -833,7 +833,7 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 		verdict += fmt.Sprintf(", reproduced at base (exit %d at %s)", at.Exit, reproBase)
 	}
 	if byAgent {
-		verdict += "; the command is the agent's own reproduction, the issue carried none"
+		verdict += ", and the command is the agent's own reproduction, since the issue carried none"
 	}
 	// the rule beside the failing command when the failure is the
 	// sandbox's not-a-repository signature, not the bug
@@ -2851,7 +2851,7 @@ func (r *Runner) holdMerge(ctx context.Context, t Task, repo Repo, pr int64, com
 func (r *Runner) movedHead(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, head string) MergeResult {
 	why := fmt.Sprintf("a head that moved after its gates: the pull request's head is %s, not the gated %s", head, commit)
 	res := MergeResult{MovedHead: true, Refusal: textutil.Truncate(why, 500)}
-	note := fmt.Sprintf("withdrawn: the head moved to %s after its gates; the new head is judged again, and a green head gets a new request", head)
+	note := fmt.Sprintf("withdrawn: the head moved to %s after its gates. The new head is judged again, and a green head gets a new request", head)
 	r.comment(ctx, t, repo, pr, fmt.Sprintf("The merge of %s after %s's approval was refused: %s\n\nThe approval request is %s.",
 		commit, approver, res.Refusal, note))
 	if err := r.store.ResolveApprovals(ctx, t.ID, ApprovalMerge, "denied", FactoryDecider, note); err != nil {

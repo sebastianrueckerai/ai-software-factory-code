@@ -2316,9 +2316,9 @@ func TestRunSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	runner.cfg.Prices = stubPrices{price: policy.Price{In: 4e-6, CacheRead: 4e-7, Out: 4e-6, MaxOutput: 32768}}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4k", Attempt: 1, Model: "factory/small"}, nil, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
 	why := "the remaining budget cannot fund a call: Raise the budget and answer, or close the card.\n" +
-		"The card spent 1.90 EUR of its 2.00 EUR budget; 0.10 EUR is held for the review and the audit, which need 0.40 EUR" +
+		"The card spent 1.90 EUR of its 2.00 EUR budget, 0.10 EUR is held for the review and the audit, which need 0.40 EUR" +
 		", and a session on factory/small needs 0.30 EUR " +
-		"(the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would run out of money before its work is done."
+		"(the session floor of its model, budget.session_floor_cheap_eur in policy.yaml). A session started now would run out of money before its work is done."
 	if err != nil || res.Outcome != OutcomeEscalate || !res.StartFailed || res.Summary != why || res.Reason != why || res.Model != "factory/small" {
 		t.Fatalf("result = (%+v, %v), want the money ask:\n%s", res, err, why)
 	}
@@ -3320,7 +3320,7 @@ func TestSessionResultTakesTheBranchAsPushedWhenASessionAddsNothing(t *testing.T
 	done := &harness.Result{Success: true, Summary: "no changes to push"}
 	// resumed from the work in progress a stop pushed: that work is the result
 	res := sessionResult(sessionSpec{id: "s1", startRef: "wip", base: "main"}, sessionOutcome{result: done})
-	if res.Outcome != OutcomePushed || res.Commit != "wip" || res.Summary != "no changes to push; the branch already held wip" {
+	if res.Outcome != OutcomePushed || res.Commit != "wip" || res.Summary != "no changes to push. The branch already held wip." {
 		t.Fatalf("resumed session without new changes: %+v", res)
 	}
 	// resumed from an interim commit and changed nothing: the interim push is no finished work
@@ -4013,7 +4013,7 @@ func TestRunSessionClimbsInPlace(t *testing.T) {
 	worker.mu.Lock()
 	texts := slices.Clone(worker.texts)
 	worker.mu.Unlock()
-	if len(texts) != 2 || texts[0] != "POST /brief " || !strings.HasPrefix(texts[1], "POST /message factoryd: this session continues on the stronger model, big: the cheap rung's 50ms passed without a push.") {
+	if len(texts) != 2 || texts[0] != "POST /brief " || !strings.HasPrefix(texts[1], "POST /message factoryd: this session continues on the stronger model, big: the cheap model's cap of 50ms passed without a push.") {
 		t.Fatalf("worker got %q, want the brief and the climb's message", texts)
 	}
 	if store.tasks["t2"].ModelAlias != "big" {

@@ -3345,14 +3345,14 @@ func TestFittingAFactoryPullRequest(t *testing.T) {
 			Spec: json.RawMessage(fmt.Sprintf(`{"head_sha":"c1","factory":true,"red_checks":%t}`, red))}}
 	}
 	equal(t, "on red checks", fitting(card, capFactsFrom(card, 0, "", request(true))),
-		"rerun_checks runs its red checks again, or deny_merge closes it with your words")
-	equal(t, "on green checks", fitting(card, capFactsFrom(card, 0, "", request(false))), "approve_merge or deny_merge decide its merge request")
+		"`rerun_checks` runs its red checks again, or `deny_merge` closes it with your words")
+	equal(t, "on green checks", fitting(card, capFactsFrom(card, 0, "", request(false))), "`approve_merge` or `deny_merge` decides its merge request")
 }
 
 // An agent pull request's merge request on red checks fits its return and
 // its close, not an approval.
 func TestFittingAnAgentPullRequestOnRedChecks(t *testing.T) {
-	const want = "deny_merge with request_changes returns it to the agent, or with reject closes it"
+	const want = "`deny_merge` with `request_changes` returns it to the agent, or `deny_merge` with `reject` closes it"
 	req := []factoryd.ApprovalRequest{{TaskID: "t-a", Kind: factoryd.ApprovalMerge, Spec: json.RawMessage(`{"head_sha":"c1","red_checks":true}`)}}
 	for _, status := range []string{"in-review", "waiting-human"} {
 		card := factoryd.Task{ID: "t-a", Status: status, IssueNumber: 37}

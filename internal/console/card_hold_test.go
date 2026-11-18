@@ -130,7 +130,7 @@ func TestHoldButtonsAndTheirRefusals(t *testing.T) {
 		want                string
 	}{
 		{"t-r", "", "x", http.StatusConflict,
-			"Card #11 runs an agent session, not a card that has not started: steer sends its session a message; its pull request comes when the session ends."},
+			"Card #11 runs an agent session, not a card that has not started: steer sends its session a message, and its pull request comes when the session ends."},
 		{"t-adm", "", "x", http.StatusConflict, "Card #35 took its turn and starts now, not a card that has not started: close it, or steer it once it runs."},
 		{"t-k2", "", "  ", http.StatusBadRequest, "a reason of up to 300 characters is required: the board shows it on the held card"},
 		{"t-k2", "", strings.Repeat("ü", 301), http.StatusBadRequest, "a reason of up to 300 characters is required: the board shows it on the held card"},
