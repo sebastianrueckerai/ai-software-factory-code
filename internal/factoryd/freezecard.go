@@ -332,13 +332,17 @@ func (w *FreezeCard) event(ctx context.Context, ev FreezeEvent) error {
 // refused gives up on st's card, whose issue Forgejo refuses for good — a
 // deleted issue, a 4xx no retry fixes — so that one card does not stop
 // the watcher for every class: the refusal is logged and recorded on the
-// card, its face no longer names the press, so no arm adopts it again,
-// and the memory forgets it, so the class's next arm files a new card.
+// card, its face no longer names the press, so no arm adopts it again, an
+// open card ends, and the memory forgets it, so the class's next arm files
+// a new card.
 func (w *FreezeCard) refused(ctx context.Context, st *freezeClass, cause error) error {
 	why := textutil.Truncate(maskedErr(cause), 300)
 	log.Printf("freeze card: Forgejo refuses %s's %s card #%d for good, the class's next arm files a new card: %s", st.repo, st.class, st.issue, why)
 	if st.taskID != "" {
 		if err := w.Store.SetObjective(ctx, st.taskID, freezeRefusedBody(st.class, st.issue, why)); err != nil {
+			return err
+		}
+		if _, err := closeRow(ctx, w.Store, st.taskID); err != nil {
 			return err
 		}
 		w.Timeline.RecordRow(ctx, st.taskID, EventFreezeIssueRefused, FactoryDecider, ViaFactoryd, map[string]any{"class": st.class, "issue": st.issue, "error": why})
@@ -647,7 +651,11 @@ func (w *FreezeCard) tick(ctx context.Context) error {
 		}
 		switch {
 		case !st.resumedAt.IsZero() && !now.Before(st.resumedAt.Add(freezeResumeHold)):
-			if err := w.close(ctx, st); err != nil {
+			err := w.close(ctx, st)
+			if forgejoTerminal(err) {
+				err = w.refused(ctx, st, err)
+			}
+			if err != nil {
 				return err
 			}
 			delete(w.classes, key)
@@ -657,7 +665,12 @@ func (w *FreezeCard) tick(ctx context.Context) error {
 			if now.Before(st.frozenAt.Add(limit)) {
 				continue
 			}
-			if err := w.speak(ctx, st, limit); err != nil {
+			if err := w.speak(ctx, st, limit); forgejoTerminal(err) {
+				if err := w.refused(ctx, st, err); err != nil {
+					return err
+				}
+				continue
+			} else if err != nil {
 				return err
 			}
 			st.spoke = true
