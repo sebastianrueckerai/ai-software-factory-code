@@ -1032,14 +1032,19 @@ func TestWaitChecksIsOncePerHeadBelowTheHuman(t *testing.T) {
 	}
 }
 
-// route_approval refuses a checks-wait stop and names wait_checks, whose
-// once-per-head limit it would bypass.
+// route_approval refuses a checks-wait stop, says that it is the wrong action
+// and names wait_checks, whose once-per-head limit it would bypass. A human
+// reads the answer's label and no key.
 func TestRouteApprovalRefusesAChecksWaitStop(t *testing.T) {
 	green := CaseFacts{Kind: CaseGateStop, Gate: ActivityWaitChecks, PROpen: true, Checks: "green", ReviewApproved: true}
 	merge := green
 	merge.Gate = ActivityMerge
-	if got, want := applies(t, ActRouteApproval, green, Resolution{}), "a checks wait's stop goes on with `wait_checks` alone"; got != want {
+	got := applies(t, ActRouteApproval, green, Resolution{})
+	if want := "a checks wait's stop does not go to the approval (`route_approval`): it goes on with `wait_checks`"; got != want {
 		t.Errorf("checks wait: route_approval applies = %q, want %q", got, want)
+	}
+	if got, want := ForHuman(got), "a checks wait's stop does not go to the approval: it goes on with “Wait for the checks”"; got != want {
+		t.Errorf("a human reads %q, want %q", got, want)
 	}
 	if got := applies(t, ActRouteApproval, merge, Resolution{}); got != "" {
 		t.Errorf("merge stop: route_approval applies = %q, want it to apply", got)

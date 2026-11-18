@@ -181,7 +181,7 @@ var Actions = []Action{
 		case f.MergeConflict != "":
 			return conflictRefusal(f, ActRouteApproval)
 		case f.Kind == CaseGateStop && f.Gate == ActivityWaitChecks:
-			return "a checks wait's stop goes on with `wait_checks` alone"
+			return "a checks wait's stop does not go to the approval (`route_approval`): it goes on with `wait_checks`"
 		case !f.PROpen:
 			return "no pull request is open"
 		case f.Checks != "green":
