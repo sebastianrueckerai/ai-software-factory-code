@@ -548,6 +548,9 @@ type RunState struct {
 	// 3.12): an alert card checks its alert still fires before its first
 	// model call.
 	Source string
+	// PlanCard: the task is its key's card in its parent plan
+	// (Task.PlanCard), a successor's too, so its cut goes to that plan.
+	PlanCard bool
 	// Park is the task's latest park on an image (image_parks), nil for
 	// none: a healed run of a card in waiting-image waits on in it.
 	Park *ImagePark `json:",omitempty"`
@@ -917,6 +920,12 @@ const (
 	// escalation. A run from before the change replays the ladder as it
 	// was, and a refusal with no reset keeps it.
 	versionProviderFreeze workflow.Version = 1
+	// versionSuccessorReplansItsPlan (change id
+	// "successor-replans-its-plan", read at the cut of a plan card's
+	// successor): the successor goes back to its plan through ReplanChild,
+	// as the plan card it carries on would, and ends closed. A run from
+	// before turns the successor plan-track.
+	versionSuccessorReplansItsPlan workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1037,6 +1046,7 @@ type taskRun struct {
 	history           []string       // every finding sent to the agent, tagged with its stage and round
 	reviews           []Review       // the model reviews so far, oldest first
 	source            string         // the task row's arrival
+	planCard          bool           // the task is its key's card in its parent plan (RunState.PlanCard)
 	rolling           bool           // a roll task's run: a fold wakes the approval wait
 	orphanPR          bool           // the card of a pull request factoryd opened outside a card's workflow: verify opens none
 	redHead           string         // the last head whose checks failed
@@ -1398,7 +1408,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	t.sizeAgentTime(st.Size)
 	t.answers = st.Answers
 	t.posterInfo, t.infoRequest = st.PosterInfo, st.InfoRequest
-	t.standing, t.source = st.Standing, st.Source
+	t.standing, t.source, t.planCard = st.Standing, st.Source, st.PlanCard
 	t.orphanPR = st.FactoryPR && st.PR.Number != 0
 	if st.PR.Number != 0 && (t.wipStart < versionWipStart || !st.Unfinished) {
 		t.judged = append(t.judged, st.Head)

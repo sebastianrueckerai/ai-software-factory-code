@@ -4357,6 +4357,23 @@ func TestCheckinReplanClosesAPlansChild(t *testing.T) {
 	}
 }
 
+// A plan card's successor is its key's card in its plan: the check-in's
+// replan of it goes to that plan as a plan card's does, and it turns no
+// plan-track.
+func TestCheckinReplanOfAPlanCardsSuccessorGoesToItsPlan(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state.Source, h.state.PlanCard = SourceSuccessor, true
+	became := h.onBecomePlan(PlanSwitchResult{Switched: true})
+	works := h.onReplanChild(ReplanChildResult{Reason: "cut: plan #10 replans its work"})
+	h.onSessions(SessionResult{Outcome: OutcomeReplan, SessionID: "s1", Trip: "size", Reason: "two packages", Replan: "R"})
+	if final := h.run(t); final != "closed" || h.finals[0][1] != "cut: plan #10 replans its work" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if !slices.Equal(*works, []string{"R"}) || *became != 0 || len(h.sessions) != 1 {
+		t.Fatalf("ReplanChild works %q, BecomePlan calls %d, sessions %d; want [R], 0, 1", *works, *became, len(h.sessions))
+	}
+}
+
 // onRequestApproval records the head of each RequestApproval call.
 func (h *workflowHarness) onRequestApproval() *[]string {
 	var heads []string

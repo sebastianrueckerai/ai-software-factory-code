@@ -2159,7 +2159,8 @@ func TestAutoMergeCompanionLines(t *testing.T) {
 
 // GateCompanion reads the plan card's companion pins live through the
 // factory-config token: met, behind, or unread, a verdict that holds the
-// card. A task with no plan card carries no pins.
+// card. A task with no plan card carries no pins; a plan card's successor
+// carries its key's.
 func TestGateCompanion(t *testing.T) {
 	pin, head := "82ab246"+strings.Repeat("0", 33), "fee3ff16"+strings.Repeat("1", 32)
 	var auth []string
@@ -2227,6 +2228,14 @@ func TestGateCompanion(t *testing.T) {
 	cs = getInto[[]CompanionGate](t, val, err)
 	if len(cs) != 0 {
 		t.Fatalf("a direct card's companions = %+v, want none", cs)
+	}
+
+	succ := card
+	succ.ID, succ.Source = "t-succ", SourceSuccessor
+	store.tasks["t-succ"] = succ
+	val, err = execActivity(t, r, ActivityGateCompanion, "t-succ")
+	if cs = getInto[[]CompanionGate](t, val, err); !slices.Equal(cs, want) {
+		t.Fatalf("the successor's verdicts = %+v, want its key's card's %+v", cs, want)
 	}
 }
 

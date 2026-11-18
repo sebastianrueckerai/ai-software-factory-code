@@ -1223,18 +1223,18 @@ func InsertTask(ctx context.Context, db interface {
 	// (roadmap 271): the tasks_final_finished_at check refuses one without
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, repro_base, kind, issue_number, source, repro_command, created_at, gate, gate_since,
-		                    author, author_writer, parent_task, track, process, plan_key, alert_fingerprint, rung, size, pr_number, carry_pr, ships_ruling, ships_clauses, image, finished_at, roadmap_item, raised_sessions, raised_time_s, extra_lines, ceiling_eur)
+		                    author, author_writer, parent_task, track, process, plan_key, alert_fingerprint, rung, size, pr_number, carry_pr, ships_ruling, ships_clauses, image, finished_at, roadmap_item, raised_sessions, raised_time_s, extra_lines, ceiling_eur, plan_revision)
 	 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14, $15, COALESCE($16, now()),
          CASE WHEN $12 = 'agent' THEN $17 ELSE '' END,
          CASE WHEN $12 = 'agent' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
          NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27, $31, $28, $29::jsonb, $30,
-         CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END, $32, $33, $34, $35, NULLIF($36::numeric, 0))
+         CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END, $32, $33, $34, $35, NULLIF($36::numeric, 0), $37)
 	 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, t.ReproBase, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
 		t.Author, t.AuthorWriter, t.Parent, t.Track, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships, t.Image, t.CarryPR, t.RoadmapItem,
-		t.Usage.RaisedSessions, int64(t.Usage.RaisedTime/time.Second), t.Usage.ExtraLines, t.CeilingEUR)
+		t.Usage.RaisedSessions, int64(t.Usage.RaisedTime/time.Second), t.Usage.ExtraLines, t.CeilingEUR, t.PlanRevision)
 	if err != nil || t.RoadmapItem == 0 || refile == 0 {
 		return err
 	}
@@ -1312,10 +1312,12 @@ func (s *PGStore) PlanDelivered(ctx context.Context, plan string) (bool, Task, e
 }
 
 // HeldPlanCards are the repository's plan cards waiting on a human's
-// approval, the cards a landed companion pin can wake.
+// approval, a successor that carries a plan card's key among them, the
+// cards a landed companion pin can wake.
 func (s *PGStore) HeldPlanCards(ctx context.Context, repository string) ([]Task, error) {
-	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND source = $2 AND status = $3 AND gate = $4 ORDER BY id`,
-		repository, SourcePlan, "waiting-human", GateApproval)
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND parent_task IS NOT NULL
+		AND (source = $2 OR source = $3 AND plan_key IS NOT NULL) AND status = $4 AND gate = $5 ORDER BY id`,
+		repository, SourcePlan, SourceSuccessor, "waiting-human", GateApproval)
 }
 
 // SetPlanName records plan id's short name; the naming pass is its sole
@@ -1839,17 +1841,18 @@ func (s *PGStore) SetTaskSizeBudget(ctx context.Context, id, size string, heldCe
 	return nil
 }
 
-// SwitchToPlan moves a still-startable direct card (not of a plan,
-// unmerged) to the plan track — capabilities set, pr_number cleared —
-// and answers whether it moved. BecomePlan, at the to-plan gate, is its
-// sole caller; a card the guard refuses stays direct, false, no error.
+// SwitchToPlan moves a still-startable direct card (not of a plan, nor
+// the successor that carries a plan card's key, unmerged) to the plan
+// track — capabilities set, pr_number cleared — and answers whether it
+// moved. BecomePlan, at the to-plan gate, is its sole caller; a card the
+// guard refuses stays direct, false, no error.
 func (s *PGStore) SwitchToPlan(ctx context.Context, id string, capabilities []string) (bool, error) {
 	caps, err := toJSON(capabilities)
 	if err != nil {
 		return false, err
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET track = 'plan', required_capabilities = $2::jsonb, pr_number = 0
-		WHERE id = $1 AND track = 'direct' AND source <> 'plan' AND merge_commit = '' AND status IN ('queued', 'waiting-deps', 'running')`, id, caps)
+		WHERE id = $1 AND track = 'direct' AND source <> 'plan' AND plan_key IS NULL AND merge_commit = '' AND status IN ('queued', 'waiting-deps', 'running')`, id, caps)
 	if err != nil {
 		return false, err
 	}

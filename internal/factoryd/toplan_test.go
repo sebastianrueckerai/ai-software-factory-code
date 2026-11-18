@@ -187,7 +187,8 @@ func TestBecomePlanCompletesAnEarlierAttempt(t *testing.T) {
 }
 
 // A card that may not turn plan-track is refused with its reason and left
-// exactly as it was.
+// exactly as it was. A plan card's successor is its key's card in plan #3,
+// whose planner its work goes back to.
 func TestBecomePlanRefuses(t *testing.T) {
 	for name, tc := range map[string]struct {
 		change func(*Task)
@@ -196,6 +197,8 @@ func TestBecomePlanRefuses(t *testing.T) {
 	}{
 		"merged": {change: func(c *Task) { c.PRNumber, c.MergeCommit = 12, "abc" }, tracks: specTracks,
 			want: "Card #7 merged, so its work is on main: file a new card for what is still missing."},
+		"a plan card's successor": {change: func(c *Task) { c.Source, c.Parent, c.PlanKey = SourceSuccessor, "t-plan", "api" }, tracks: specTracks,
+			want: "Card #7 carries plan #3's card api: its work goes back to plan #3's planner: replan plan #3."},
 		"a plan's child":     {change: func(c *Task) { c.Source, c.Parent, c.PlanKey = SourcePlan, "t-plan", "api" }, tracks: specTracks},
 		"a roll":             {change: func(c *Task) { c.Source = SourceRoll }, tracks: specTracks},
 		"a human card":       {change: func(c *Task) { c.Kind, c.Status, c.Track, c.RequiredCapabilities = "human", "waiting-human", "", nil }, tracks: specTracks},
@@ -208,6 +211,7 @@ func TestBecomePlanRefuses(t *testing.T) {
 			card := directCard()
 			tc.change(&card)
 			r, store, objects, fj := becomePlanRig(t, card, tc.tracks)
+			store.tasks["t-plan"] = Task{ID: "t-plan", Kind: "agent", Status: "done", Track: policy.TrackPlan, Repository: "sf/repo", IssueNumber: 3}
 			got := becomePlan(t, r, PlanSwitch{Reason: "too big", Work: "w"})
 			if got.Switched || got.Refused == "" || !strings.Contains(got.Refused, "#7") || (tc.want != "" && got.Refused != tc.want) {
 				t.Fatalf("BecomePlan = %+v, want refused naming #7 (%q)", got, tc.want)

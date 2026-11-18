@@ -855,11 +855,12 @@ type planCards interface {
 }
 
 // cardCompanions are the companion pins t's plan card carries: the pins
-// stamped on the card at the plan revision the card runs. A task with no
-// plan card carries none; a plan card the store cannot read, or a revision
-// without the card, is an error, for its pins are unknown, not absent.
+// stamped on the card at the plan revision the card runs, a plan card's
+// successor carrying its key's. A task with no plan card carries none; a
+// plan card the store cannot read, or a revision without the card, is an
+// error, for its pins are unknown, not absent.
 func cardCompanions(ctx context.Context, store planCards, t Task) ([]CardCompanion, error) {
-	if t.Source != SourcePlan || t.Parent == "" || t.PlanKey == "" || t.PlanRevision == 0 {
+	if !t.PlanCard() || t.PlanKey == "" || t.PlanRevision == 0 {
 		return nil, nil
 	}
 	rev, ok, err := store.PlanRevision(ctx, t.Parent, t.PlanRevision)
@@ -2462,9 +2463,9 @@ func lastAttempt(ctx context.Context) bool {
 // staleRevision names the plan's newest revision and the one the task
 // started against (piece 10): stale when the newest drops the card's key,
 // which then cannot merge. stale is false for every task that is no
-// started plan card.
+// started plan card (Task.PlanCard, a successor that carries a key too).
 func (r *Runner) staleRevision(ctx context.Context, t Task) (newest, started int, stale bool, err error) {
-	if t.Source != SourcePlan || t.Parent == "" || t.PlanRevision == 0 {
+	if !t.PlanCard() || t.PlanRevision == 0 {
 		return 0, 0, false, nil
 	}
 	last, ok, err := r.store.PlanRevision(ctx, t.Parent, 0)

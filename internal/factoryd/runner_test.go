@@ -4944,16 +4944,18 @@ func TestRunSessionRunsWhenTheProjectReadFails(t *testing.T) {
 }
 
 // Only a bound agent card's coding session can be cut, and only where a
-// planner can take its rest: a plan's child, or a direct card whose
-// project's process has a plan track.
+// planner can take its rest: a plan's child or its successor, or a direct
+// card whose project's process has a plan track.
 func TestCuttable(t *testing.T) {
-	child, direct := Task{Kind: "agent", Source: SourcePlan}, Task{Kind: "agent"}
+	child, direct := Task{Kind: "agent", Source: SourcePlan, Parent: "p", PlanKey: "api"}, Task{Kind: "agent"}
 	for name, tc := range map[string]struct {
 		t    Task
 		s    sessionSpec
 		want bool
 	}{
 		"a plan's child":                     {child, sessionSpec{}, true},
+		"a plan card's successor":            {Task{Kind: "agent", Source: SourceSuccessor, Parent: "p", PlanKey: "api"}, sessionSpec{}, true},
+		"a direct card's successor":          {Task{Kind: "agent", Source: SourceSuccessor}, sessionSpec{}, false},
 		"a direct card with a plan track":    {direct, sessionSpec{planTrack: true}, true},
 		"a direct card without a plan track": {direct, sessionSpec{}, false},
 		"a report session":                   {child, sessionSpec{report: "the guide"}, false},
