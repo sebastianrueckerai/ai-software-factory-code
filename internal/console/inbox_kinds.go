@@ -48,7 +48,7 @@ var inboxKinds = func() map[string]inboxKind {
 	}
 	for _, birth := range []string{factoryd.EventQuestionAsked, factoryd.EventQuestionWithdrawn, factoryd.EventApprovalRequested,
 		factoryd.EventTaskEnded, factoryd.EventAllChildrenDone, factoryd.EventAutonomyChanged, factoryd.EventCardFiled,
-		factoryd.EventCardRetried, factoryd.EventSessionGranted, factoryd.EventChatBudgetSpent, factoryd.EventPullRequestMerged} {
+		factoryd.EventCardRetried, factoryd.EventSessionGranted, factoryd.EventChatBudgetSpent, factoryd.EventPullRequestMerged, factoryd.EventCardHoldStranded} {
 		k[birth] = inboxKind{ForHuman: true, Render: func(r inboxRow) inboxView { return inboxView{Short: opening(r.m.Content, inboxMax)} }}
 	}
 	// a routine's report is a notice: its first line, the list below a fold

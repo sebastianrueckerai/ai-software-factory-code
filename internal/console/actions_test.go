@@ -561,8 +561,8 @@ func TestAParkedCardStillAnswers(t *testing.T) {
 
 	// the extend one session more on the same parked card: Act's, posted
 	before = ev.count()
-	if rec := r.do(post("/tasks/t-q/extend", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
-		"sessions": {"1"}, "lines": {"0"}, "eur": {"0"}, "reason": {"one more run"}}), ck); rec.Code >= 400 {
+	if rec := r.do(post("/tasks/t-q/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "action": {factoryd.ActExtend},
+		"extend.sessions": {"1"}, "extend.lines": {"0"}, "extend.note": {"one more run"}}), ck); rec.Code >= 400 {
 		t.Fatalf("the extend = %d: %s", rec.Code, rec.Body)
 	}
 	equal(t, "the extend", the(2), factoryd.ActInput{TaskID: "t-q", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
@@ -1004,7 +1004,7 @@ func TestTheBoardSendsEveryTickedFinding(t *testing.T) {
 		f.Head, f.FindingTexts = "h2", map[string]string{}
 		for _, text := range append(two, "test-only credential at rig_test.go:41") {
 			id := factoryd.FindingID(text)
-			f.Findings, f.AuditFindings, f.FindingTexts[id] = append(f.Findings, id), append(f.AuditFindings, id), text
+			f.Findings, f.AuditFindings, f.AuditConfirmable, f.FindingTexts[id] = append(f.Findings, id), append(f.AuditFindings, id), append(f.AuditConfirmable, id), text
 		}
 	}))
 	ids := []string{factoryd.FindingID(two[0]), factoryd.FindingID(two[1])}

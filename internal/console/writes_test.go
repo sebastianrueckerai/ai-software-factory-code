@@ -462,11 +462,11 @@ func TestChatSetDependency(t *testing.T) {
 		{toolInput{TaskID: "t-a", DependsOn: "t-m", Remove: true}, http.StatusConflict, "#21 does not depend on #5."},
 		{toolInput{TaskID: "t-a", DependsOn: "t-a"}, http.StatusBadRequest, "a card cannot depend on itself"},
 		{toolInput{TaskID: "t-k1", DependsOn: "t-d"}, http.StatusConflict,
-			"#31 is in plan #30 and #33 is in no plan. A dependency joins cards of one plan only: to keep #31 from starting until #33 is merged or done, hold #31 with #33 as its release card (hold_card, or Hold on its drawer)."},
+			"#31 is in plan #30 and #33 is in no plan. A dependency joins cards of one plan only: to keep #31 from starting until #33 is merged or done, `hold_card` holds #31 with #33 as its release card."},
 		{toolInput{TaskID: "t-d", DependsOn: "t-k1"}, http.StatusConflict,
-			"#33 is in no plan and #31 is in plan #30. A dependency joins cards of one plan only: to keep #33 from starting until #31 is merged or done, hold #33 with #31 as its release card (hold_card, or Hold on its drawer)."},
+			"#33 is in no plan and #31 is in plan #30. A dependency joins cards of one plan only: to keep #33 from starting until #31 is merged or done, `hold_card` holds #33 with #31 as its release card."},
 		{toolInput{TaskID: "t-d2", DependsOn: "t-d"}, http.StatusConflict,
-			"#34 is in no plan and #33 is in no plan. A dependency joins cards of one plan only: to keep #34 from starting until #33 is merged or done, hold #34 with #33 as its release card (hold_card, or Hold on its drawer)."},
+			"#34 is in no plan and #33 is in no plan. A dependency joins cards of one plan only: to keep #34 from starting until #33 is merged or done, `hold_card` holds #34 with #33 as its release card."},
 	} {
 		code, msg := refused(t, r, "set_dependency", tc.in)
 		equal(t, "set_dependency "+tc.in.TaskID+" on "+tc.in.DependsOn, []any{code, msg}, []any{tc.code, tc.want})

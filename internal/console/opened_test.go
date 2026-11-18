@@ -401,7 +401,7 @@ func TestOneSendPostsAnswerFieldsAndNote(t *testing.T) {
 		f.Head, f.FindingTexts = "h2", map[string]string{}
 		for _, text := range append(two, "test-only credential at rig_test.go:41") {
 			id := factoryd.FindingID(text)
-			f.Findings, f.AuditFindings, f.FindingTexts[id] = append(f.Findings, id), append(f.AuditFindings, id), text
+			f.Findings, f.AuditFindings, f.AuditConfirmable, f.FindingTexts[id] = append(f.Findings, id), append(f.AuditFindings, id), append(f.AuditConfirmable, id), text
 		}
 	}))
 	body := drawer(t, r, ck, "t-e", "overview")

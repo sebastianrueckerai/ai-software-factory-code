@@ -903,7 +903,7 @@ func TestTellTheRunningSession(t *testing.T) {
 	for err, want := range steerRefusals() {
 		r.c.cfg.Steer = func(context.Context, string, string, string) error { return err }
 		before = r.events.count()
-		if rec := r.do(post("/tasks/t-run/steer", url.Values{"csrf": {s.csrf}, "text": {"hello"}}), ck); rec.Code != http.StatusConflict ||
+		if rec := tell("hello"); rec.Code != http.StatusConflict ||
 			strings.TrimSpace(rec.Body.String()) != want || r.events.count() != before {
 			t.Errorf("a steer the session refuses with %v = %d, %d rows: %q, want 409 %q", err, rec.Code, r.events.count()-before, rec.Body, want)
 		}

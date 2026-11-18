@@ -1781,7 +1781,8 @@ func approvalFaceOf(t *testing.T, body, id string) string {
 		t.Fatalf("the opened card %s is missing:\n%s", id, body)
 	}
 	_, brief, _ := strings.Cut(body, `<details class="fold" data-sec="brief">`)
-	brief, _, _ = strings.Cut(brief, "</details>")
+	// the fold ends with its body: a criterion's artifact is a fold inside it
+	brief, _, _ = strings.Cut(brief, "</div></details>")
 	return askBlockOf(t, body) + brief
 }
 

@@ -182,7 +182,7 @@ func TestFindingsPassTheFaceScrubber(t *testing.T) {
 		f.Head, f.FindingTexts = "c0ffee1", map[string]string{}
 		for _, text := range texts {
 			id := factoryd.FindingID(text)
-			f.Findings, f.AuditFindings, f.FindingOrder, f.FindingTexts[id] = append(f.Findings, id), append(f.AuditFindings, id), append(f.FindingOrder, id), text
+			f.Findings, f.AuditFindings, f.AuditConfirmable, f.FindingOrder, f.FindingTexts[id] = append(f.Findings, id), append(f.AuditFindings, id), append(f.AuditConfirmable, id), append(f.FindingOrder, id), text
 		}
 	})
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-f", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 41,
@@ -219,7 +219,7 @@ func TestAuditBoxesPostEachFindingsID(t *testing.T) {
 		f.Head, f.FindingTexts = "c0ffee1", map[string]string{}
 		for _, text := range texts {
 			id := factoryd.FindingID(text)
-			f.Findings, f.AuditFindings, f.FindingOrder, f.FindingTexts[id] = append(f.Findings, id), append(f.AuditFindings, id), append(f.FindingOrder, id), text
+			f.Findings, f.AuditFindings, f.AuditConfirmable, f.FindingOrder, f.FindingTexts[id] = append(f.Findings, id), append(f.AuditFindings, id), append(f.AuditConfirmable, id), append(f.FindingOrder, id), text
 		}
 	}))
 	opened := drawer(t, r, ck, "t-f", "overview")

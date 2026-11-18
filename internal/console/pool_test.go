@@ -91,7 +91,7 @@ func TestProjectPoolStatus(t *testing.T) {
 			want: "0 of 30 sessions, 0 h of 30 h agent time and 3.00 of 10.00 EUR drawn this UTC month"},
 		{name: "overdrawn", pool: &policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 2}, drawn: policy.Draw{Sessions: 3, AgentTime: 61 * time.Minute, EUR: 2},
 			present: true, readable: true, overdrawn: true,
-			want: "3 of 2 sessions, 1 h 1 min of 1 h agent time and 2.00 of 2.00 EUR drawn this UTC month, overdrawn in sessions and agent time: only the human draws more until the month turns"},
+			want: "3 of 2 sessions, 1 h 1 min of 1 h agent time and 2.00 of 2.00 EUR drawn this UTC month, overdrawn in sessions and agent time: only the human draws more of those parts until the month turns"},
 		{name: "unreadable draws", pool: &policy.Draw{EUR: 10}, fail: errors.New("the store is down"), present: true,
 			want: "the pool is 30 sessions, 30 h of agent time and 10.00 EUR this UTC month, but what its cards drew could not be read"},
 	} {

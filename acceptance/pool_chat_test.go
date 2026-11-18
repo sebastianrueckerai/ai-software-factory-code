@@ -242,7 +242,7 @@ func TestPoolTopUp(t *testing.T) {
 		"The pool of "+accProjectName+" is 2.00 EUR now, was 14.00 EUR: sf/infra#102 carries the change and the policy in force holds it.")
 	equal(t, "main's file after the lowered set", r.InfraFiles()[accInfraFile], accPoolSet2)
 	equal(t, "the pool line the lowered set leaves", poolLineOf(t, r, now), []any{2.0, 3.0, true, true,
-		"0 of 30 sessions, 0 h of 30 h agent time and 3.00 of 2.00 EUR drawn this UTC month, overdrawn in money: only the human draws more until the month turns"})
+		"0 of 30 sessions, 0 h of 30 h agent time and 3.00 of 2.00 EUR drawn this UTC month, overdrawn in money: only the human draws more of that part until the month turns"})
 
 	// set 0 refuses at the offer, before any token: a pool of 0 is the
 	// policy's figure, which the project file leaves unset

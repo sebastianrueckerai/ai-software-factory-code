@@ -115,7 +115,7 @@ func TestASuccessorsMergeApprovalReadsItsKey(t *testing.T) {
 	approve := func() *httptest.ResponseRecorder {
 		return r.do(post("/approvals/31/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	}
-	want := "The plan's revision 2 drops the card integration, so it cannot merge: deny the merge (deny_merge)."
+	want := "The plan's revision 2 drops the card integration, so it cannot merge, and “Send it back” is its answer."
 	if rec := approve(); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) {
 		t.Fatalf("a dropped successor's approve = %d %q", rec.Code, rec.Body.String())
 	}

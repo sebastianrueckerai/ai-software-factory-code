@@ -194,7 +194,7 @@ func TestReplanCard(t *testing.T) {
 		len(r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments"))},
 		[]any{http.StatusSeeOther, "t-ch by sebastian: " + note, []string{note}, 0})
 	// so does the successor that carries a plan card's key
-	rec = r.do(post("/tasks/t-chs/replan", url.Values{"csrf": {s.csrf}, "note": {note}}), ck)
+	rec = r.do(replan("t-chs", url.Values{"replan.note": {note}}), ck)
 	equal(t, "the successor's replan", []any{rec.Code, asked[len(asked)-1], r.fg.commentBodies("/api/v1/repos/sf/code/issues/50/comments"),
 		len(r.fg.commentBodies("/api/v1/repos/sf/code/issues/52/comments"))},
 		[]any{http.StatusSeeOther, "t-chs by sebastian: " + note, []string{note, note}, 0})

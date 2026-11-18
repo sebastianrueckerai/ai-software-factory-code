@@ -426,10 +426,10 @@ func AnswerFor(key string, f Facts) (Answer, bool) {
 		}
 	}
 	if a.Action == ActConfirmAudit {
-		// a box per finding of the head's newest audit, which posts the
-		// finding's id
+		// a box per finding of the head's newest audit at a file, which
+		// posts the finding's id
 		a.Fields = slices.Clone(a.Fields)
-		for _, id := range f.AuditFindings {
+		for _, id := range f.AuditConfirmable {
 			if text := f.FindingTexts[id]; text != "" {
 				a.Fields[0].Options = append(a.Fields[0].Options, Option{id, text})
 			}
@@ -544,7 +544,7 @@ func openFindingTexts(f CaseFacts) []string {
 // live card's replan, more sessions, money, a word to its running session
 // and its end; a failed card's retry and its close; a plan at rest its
 // close, whose note waives the promises it leaves open; a held card's
-// release first, and the hold of a card that has not started; and on every
+// release first, and the hold of a card that has not started, held or not; and on every
 // card its brief, its colour and a thread.
 // The card's own replan says why it goes back, and a plan's card may take
 // the plan's merged cards off main first. Who may press which is the
@@ -560,10 +560,10 @@ func MoreOf(t Task, f Facts) []Answer {
 	case !Final(t.Status):
 		keys = []string{ActReplan, ActExtend, ActFund, AnswerSteer, ActClose}
 	}
-	switch {
-	case t.Held():
+	if t.Held() {
 		keys = append([]string{AnswerRelease}, keys...)
-	case t.Holdable():
+	}
+	if t.Holdable() {
 		keys = append(keys, AnswerHold)
 	}
 	var out []Answer
@@ -572,6 +572,8 @@ func MoreOf(t Task, f Facts) []Answer {
 		switch {
 		case !ok, a.Action == AnswerSteer && t.Status != "running":
 			continue
+		case a.Action == AnswerHold && t.Held():
+			a.Label = "Hold again"
 		case a.Action == ActReplan:
 			a.Fields = []Field{requiredNote("Why it goes back", "What the planner should do differently")}
 			if InPlan(t) {

@@ -1004,11 +1004,11 @@ func (t *turn) planActor() (actor, error) {
 // humanWord is planActor for a write on the human's word alone: a turn
 // on no line the human typed, a wake's among them, is refused, naming
 // what the tool would not do (refused) and how the human takes it: a
-// bound ask of tool, or button on the card's drawer.
+// bound ask of tool, or button on the opened card.
 func (t *turn) humanWord(refused, tool, button string) (actor, error) {
 	a, err := t.planActor()
 	if err == nil && a.decider == "agent" {
-		err = refuse(http.StatusConflict, fmt.Sprintf("This turn runs on no line the human typed, so it %s. Give them the choice with ask, its press bound to %s, or let them press %s on the card's drawer.",
+		err = refuse(http.StatusConflict, fmt.Sprintf("This turn runs on no line the human typed, so it %s. Give them the choice with ask, its press bound to %s, or let them press “%s” on the opened card.",
 			refused, tool, button))
 	}
 	return a, err
@@ -1823,7 +1823,7 @@ func init() {
 			required: []string{"task_id", "reason"},
 			about:    "Hold a card that has not started, on the human's word, until it is released.",
 			run: func(t *turn, in toolInput) (string, *inverse, error) {
-				a, err := t.humanWord("sets no hold: a hold is the human's own", "hold_card", "Hold")
+				a, err := t.humanWord("sets no hold: a hold is the human's own", "hold_card", "Put on hold")
 				if err != nil {
 					return "", nil, err
 				}
@@ -1834,7 +1834,7 @@ func init() {
 			params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
 			about: "End the hold on a card, on the human's word: it queues for a work slot again.",
 			run: func(t *turn, in toolInput) (string, *inverse, error) {
-				a, err := t.humanWord("releases no hold: only the human ends one", "release_hold", "Release")
+				a, err := t.humanWord("releases no hold: only the human ends one", "release_hold", "Release the hold")
 				if err != nil {
 					return "", nil, err
 				}

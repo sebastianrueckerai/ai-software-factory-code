@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -45,7 +46,15 @@ func verdictRig(r *rig) {
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 30, Kind: factoryd.ApprovalCriteria, TaskID: "t-plan",
 		Project: "sf/code", Status: "pending", Reason: "criteria not met once every card of the plan ended: c2, c3",
 		Spec: json.RawMessage(`{"revision":0,"task":"t-int"}`)})
+	gateRanOnMain(r, "t-plan", "t-int", "rev 1 t-found:done t-int:done")
 	seatRequestCases(r)
+}
+
+// gateRanOnMain records a run of plan's criteria gate at main's head for
+// the plan as mark names it, so the rows on card task judge main.
+func gateRanOnMain(r *rig, plan, task, mark string) {
+	r.events.rows = append(r.events.rows, factoryd.Event{TaskID: plan, Repository: "sf/code", Kind: factoryd.EventCriteriaGateRun, At: time.Now(),
+		Detail: map[string]any{"task": task, "pr": 0, "cards": mark, "outcome": "ran"}})
 }
 
 // seatRequestCases puts the case each pending request of r opens on the
@@ -817,9 +826,8 @@ func TestTheMergeCardHoldsARowPerCriterion(t *testing.T) {
 		"Every size row stays under its bound.": {`<p class="reason">TestSizeBound in ./proofs/size_bound passed</p>`},
 		"The sizes page reads calm.":            {`<p class="reason">the page names every size (model big, prompt 6b2355d78a19)</p>`},
 		"The tests in ./... stay green.":        {`<p class="reason">suite ./... failed: Failed boom</p>`},
-		"The pages read well.": {`<p class="meta">pages_ok.txt at 8e3a1b0</p>`,
-			`<pre class="artifact" tabindex="0">sizes: 3 rows` + "\n" + `doors: 2 rows</pre>`},
-		"Every page links home.": {`<p class="meta">Evidence: the links on /help</p>`},
+		"The pages read well.":                  {`<details class="fold"><summary>pages_ok.txt at 8e3a1b0, 1 KiB</summary><pre class="artifact" tabindex="0">sizes: 3 rows` + "\n" + `doors: 2 rows</pre></details>`},
+		"Every page links home.":                {`<p class="meta">Evidence: the links on /help</p>`},
 	} {
 		for _, w := range want {
 			if !strings.Contains(row[id], w) {

@@ -218,8 +218,8 @@ func TestChatPlanReadReadsEachKeysCard(t *testing.T) {
 			`api foundation "API layer" small depends on none issue #25` + "\n" +
 			`web feature "Web UI" medium depends on api issue #22` + "\n" +
 			`accept integration "Acceptance tests" small depends on api, web not filed` + "\n" +
-			`#25 ` + succ + ` "api" done (is done), €0.75 of €2.00` + "\n" +
-			`#22 t-c2 "web" waiting-deps (waits for the cards it depends on), €0.00 of €2.00`})
+			`#25 ` + succ + ` "Build the API, carried on." done (is done), 0.75 of 2.00 EUR` + "\n" +
+			`#22 t-c2 "Build the web UI." waiting-deps (waits for the cards it depends on), 0.00 of 2.00 EUR`})
 }
 
 // readsPlanRows are plan t-p's rows and its filed cards as the plan read

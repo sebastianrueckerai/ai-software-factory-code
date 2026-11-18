@@ -471,10 +471,10 @@ func (c *Console) waitsOf(ctx context.Context, v *boardView, k card) template.HT
 	case k.Status == "queued":
 		words = queueWait(k.Task, k.SlotWait)
 	case k.Status == "in-review" && k.Gate == factoryd.GateMergeQueue && k.HeldFor > 0:
-		words = fmt.Sprintf("waits to merge until plan #%d closes", k.HeldFor)
+		words = fmt.Sprintf("waits for plan #%d to close", k.HeldFor)
 	case k.Status == "in-review" && k.Gate == factoryd.GateMergeQueue && k.QueueAhead < 0:
 		words = "waits to merge after the open plan"
-	case k.Status == "in-review" && k.Gate == factoryd.GateMergeQueue && k.QueueAhead > 0 && k.MergeBehind > 0:
+	case k.Status == "in-review" && k.Gate == factoryd.GateMergeQueue && k.MergeBehind > 0:
 		words = fmt.Sprintf("waits to merge behind #%d", k.MergeBehind)
 		if more := k.QueueAhead - 1; more > 0 {
 			words += fmt.Sprintf(" and %d more %s", more, plural(more, "card"))

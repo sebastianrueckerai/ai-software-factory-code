@@ -471,10 +471,10 @@ func TestAFailedPlanCardsSuccessorShowsRetry(t *testing.T) {
 		Objective: "again", Repository: "linkshort/linkshort", Source: factoryd.SourceSuccessor, Parent: "t-plan", PlanKey: "k9"}}
 	r.tasks.tasks = append(planTasks(), succ("t-s8", 18, "k8"), succ("t-s9", 19, ""), replacement)
 	ck, _ := r.loggedIn(t)
-	failed := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Done")
 	for _, id := range []string{"t-s8", "t-s9"} {
-		if !strings.Contains(failed, `action="/tasks/`+id+`/retry"`) {
-			t.Errorf("%s lacks Retry:\n%s", id, failed)
+		opened := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+"/drawer?project=linkshort", nil), ck).Body.String()
+		if !strings.Contains(opened, `action="/tasks/`+id+`/resolve"`) || !strings.Contains(opened, `data-answer="retry"`) {
+			t.Errorf("%s lacks Retry:\n%s", id, opened)
 		}
 	}
 }

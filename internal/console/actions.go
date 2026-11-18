@@ -203,7 +203,7 @@ func fitting(t factoryd.Task, f capFacts) string {
 		return "steer sends its session a message; its pull request comes when the session ends"
 	case "queued", "waiting-deps":
 		if t.Held() {
-			return "it is on hold, and the human's release_hold, or Release on its drawer, lets it start"
+			return "it is on hold, and the human's `release_hold` lets it start"
 		}
 		return "nothing to do until it starts"
 	case "waiting-image":
@@ -2763,7 +2763,7 @@ func (c *Console) crossGroup(ctx context.Context, t, d factoryd.Task) string {
 		}
 		return fmt.Sprintf("plan #%d", n)
 	}
-	return fmt.Sprintf("#%d is in %s and #%d is in %s. A dependency joins cards of one plan only: to keep #%d from starting until #%d is merged or done, hold #%d with #%d as its release card (hold_card, or Hold on its drawer).",
+	return fmt.Sprintf("#%d is in %s and #%d is in %s. A dependency joins cards of one plan only: to keep #%d from starting until #%d is merged or done, `hold_card` holds #%d with #%d as its release card.",
 		t.IssueNumber, label(c.groupPlan(ctx, t)), d.IssueNumber, label(c.groupPlan(ctx, d)), t.IssueNumber, d.IssueNumber, t.IssueNumber, d.IssueNumber)
 }
 
@@ -2796,7 +2796,7 @@ func (c *Console) doHoldCard(ctx context.Context, a actor, id, release, reason s
 	ok, err := c.cfg.HoldCard(ctx, t.ID, rel.ID, reason, a.approver())
 	if err != nil {
 		log.Printf("console: %s holds %s: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusInternalServerError, "The hold could not be stored; hold the card again.")
+		return "", refuse(http.StatusInternalServerError, "The hold could not be stored. Hold the card again.")
 	}
 	if !ok {
 		fresh, found, err := c.cfg.Tasks.Task(ctx, t.ID)
@@ -2831,9 +2831,9 @@ func unholdable(t factoryd.Task, f capFacts) error {
 	case t.Unbound():
 		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d runs outside the work bound and starts at once, so a hold keeps nothing: close it if it must not run.", t.IssueNumber))
 	case t.Status == "queued" && t.ResumedAt != nil:
-		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d has run and waits for a slot to go on, not a card that has not started: close it, or steer it once it runs.", t.IssueNumber))
+		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d has run and waits for its turn to go on, not a card that has not started: close it, or steer it once it runs.", t.IssueNumber))
 	case t.Status == "queued":
-		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d took a work slot and starts now, not a card that has not started: close it, or steer it once it runs.", t.IssueNumber))
+		return refuse(http.StatusConflict, fmt.Sprintf("Card #%d took its turn and starts now, not a card that has not started: close it, or steer it once it runs.", t.IssueNumber))
 	}
 	return wrongState(t, f, "a card that has not started")
 }
@@ -2904,12 +2904,12 @@ func (c *Console) doReleaseHold(ctx context.Context, a actor, id string) (string
 		return "", err
 	}
 	if !t.Held() {
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is not on hold, so there is nothing to release: hold_card, or Hold on its drawer, puts a card that has not started on hold.", t.IssueNumber))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is not on hold, so there is nothing to release: `hold_card` puts a card that has not started on hold.", t.IssueNumber))
 	}
 	ok, err := c.cfg.ReleaseCardHold(ctx, t.ID)
 	if err != nil {
 		log.Printf("console: %s releases %s: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusInternalServerError, "The hold could not be released; release it again.")
+		return "", refuse(http.StatusInternalServerError, "The hold could not be released. Release it again.")
 	}
 	if !ok {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is not on hold any more: reload the board.", t.IssueNumber))
