@@ -1081,7 +1081,7 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 			return
 		}
 		if card, merged, why = judgeDelta(p, deltaKey(t.ID, revision, dues), content, shape, v.Document.Limits, projectPins(v, t.Repository)); why == "" {
-			refs, err := r.refsOf(ctx, v, t)
+			refs, err := botRefsOf(ctx, r.forgejo, v.Tree, t.Repository)
 			if err != nil {
 				r.refuseDelta(ctx, t, repo, dues, err.Error())
 				return

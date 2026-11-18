@@ -100,12 +100,7 @@ func fixtureExporterFrom(secrets map[string]string, scrub *redact.Scrubber) func
 // unset, and the object store's endpoint and bucket and the config
 // repository when getenv has none.
 func unsetConfiguration(secrets map[string]string, getenv func(string) string) []string {
-	var unset []string
-	for _, s := range daemonSecrets {
-		if s.required && secrets[s.name] == "" {
-			unset = append(unset, s.name)
-		}
-	}
+	unset := unsetSecrets(secrets)
 	for _, name := range []string{"S3_ENDPOINT", "S3_BUCKET", "CONFIG_REPO"} {
 		if getenv(name) == "" {
 			unset = append(unset, name)

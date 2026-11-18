@@ -298,18 +298,18 @@ func admitCarry(t *Task, old Task) error {
 	return admit(t, BriefText{Title: CardTitle(*t), Why: old.Why, Summary: old.Summary, Body: body}, nil, BriefTries)
 }
 
-// refsOf is the filing door's resolver of a brief on card t's repository
-// under v.
-func (r *Runner) refsOf(ctx context.Context, v policy.Version, t Task) (*botRefs, error) {
-	repo, err := SplitRepo(t.Repository)
+// botRefsOf is the filing door's resolver of the briefs of repository's
+// cards under tree, reading as f's bot.
+func botRefsOf(ctx context.Context, f *Forgejo, tree policy.Tree, repository string) (*botRefs, error) {
+	repo, err := SplitRepo(repository)
 	if err != nil {
 		return nil, err
 	}
-	docs, err := docsOf(v.Tree, t.Repository)
+	docs, err := docsOf(tree, repository)
 	if err != nil {
 		return nil, err
 	}
-	return &botRefs{ctx: ctx, f: r.forgejo, repo: repo, docs: docs}, nil
+	return &botRefs{ctx: ctx, f: f, repo: repo, docs: docs}, nil
 }
 
 func (r *Runner) task(ctx context.Context, id string) (Task, Repo, error) {

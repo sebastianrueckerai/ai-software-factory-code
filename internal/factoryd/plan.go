@@ -3121,7 +3121,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if len(unread) > 0 {
 		return refuse(unread)
 	}
-	refs, err := r.refsOf(ctx, v, t)
+	refs, err := botRefsOf(ctx, r.forgejo, v.Tree, t.Repository)
 	if err != nil {
 		return PlanResult{}, err
 	}

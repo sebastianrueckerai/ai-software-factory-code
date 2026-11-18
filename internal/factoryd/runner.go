@@ -328,7 +328,7 @@ func (r *Runner) EscalateSession(ctx context.Context, taskID string, ask AgentAs
 // line. A refusal goes back to the agent, until its BriefTries-th try,
 // which asks as it stands.
 func (r *Runner) AdmitAsk(ctx context.Context, t Task, ask AgentAsk) error {
-	refs, err := r.refsOf(ctx, r.cfg.Policy(), t)
+	refs, err := botRefsOf(ctx, r.forgejo, r.cfg.Policy().Tree, t.Repository)
 	if err != nil {
 		return err
 	}
