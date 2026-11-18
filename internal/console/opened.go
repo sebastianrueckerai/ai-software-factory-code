@@ -811,10 +811,9 @@ func requestForm(v *boardView, k card, ap approvalCard, a factoryd.Answer) (*pre
 		return p, named("text")
 	case a.Action == factoryd.AnswerDropAndEnd || a.Action == factoryd.AnswerClosePlan:
 		return planClosePress(p, k)
-	case a.Action == factoryd.ActNote:
+	case a.Key() == factoryd.KeyPark:
 		// Not now on a request no case holds: the card keeps waiting
-		p.Post, p.Values = "/tasks/"+k.ID+"/resolve", []hidden{{"action", factoryd.ActNote}}
-		return p, func(field string) string { return factoryd.ActNote + "." + field }
+		p.Post, p.Values = "/tasks/"+k.ID+"/resolve", []hidden{{"action", factoryd.KeyPark}}
 	default:
 		return nil, nil
 	}

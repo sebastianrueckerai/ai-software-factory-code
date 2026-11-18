@@ -112,7 +112,8 @@ func caseOf(fx facefixtures.Fixture) factoryd.Case {
 // fixture's case, as its card's own, on a human card that waits for
 // another card, and as a helper's under its parent's card, and of every
 // fixture's request in each state of its rows, on the card's case and
-// with no case to hold it.
+// with no case to hold it. A page no case holds offers no Not now that
+// keeps a note, for nothing keeps one there.
 func TestEveryPageOffersTwoToFourAnswers(t *testing.T) {
 	type holder struct {
 		name  string
@@ -171,6 +172,10 @@ func TestEveryPageOffersTwoToFourAnswers(t *testing.T) {
 						}
 						t.Errorf("%s/%s, %s, %s case, page %s (%s): %q offers %d answers %q, want 2 to 4",
 							fx.Group, fx.Kind, state, h.name, p.Key(), p.Case.Kind, p.Face.Ask, n, labels)
+					}
+					if p.Case.ID <= 0 && slices.ContainsFunc(p.Face.Offers, func(o factoryd.AskOffer) bool { return o.Value == factoryd.ActNote }) {
+						t.Errorf("%s/%s, %s, %s case, page %s (%s): %q offers a Not now that keeps a note, and no case holds the page",
+							fx.Group, fx.Kind, state, h.name, p.Key(), p.Case.Kind, p.Face.Ask)
 					}
 				}
 			}

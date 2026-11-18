@@ -1280,12 +1280,8 @@ func (c *Console) doCardAnswer(ctx context.Context, a actor, id, key string, fie
 	if err != nil {
 		return "", err
 	}
-	if key == factoryd.ActNote {
-		// Not now on a request no case holds: the card keeps waiting, and
-		// nothing is written, so a note has nowhere to stand
-		if strings.TrimSpace(field("note")) != "" {
-			return "", refuse(http.StatusConflict, "No ask of this card keeps a note: Not now leaves the card as it is. Talk about the card in its thread to keep the note.")
-		}
+	if key == factoryd.KeyPark {
+		// Not now on a request no case holds: the card keeps waiting
 		return "", nil
 	}
 	more := factoryd.MoreOf(t, factoryd.Facts{})

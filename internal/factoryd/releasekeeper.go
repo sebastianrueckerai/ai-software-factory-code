@@ -299,7 +299,7 @@ func HoldQuestion(name string, since, now time.Time, groups []Group, fixes []Tas
 	b := SourceBriefs[SourceProductionHeld](BriefFacts{Name: name})
 	q := HumanQuestion{
 		Ask:     b.Title,
-		Choices: []QuestionChoice{{AnswerHoldWait, choices(ActNote + "/" + variantPark)[0].Label}, choices(ActDeployNow)[0]},
+		Choices: []QuestionChoice{{AnswerHoldWait, choices(KeyPark)[0].Label}, choices(ActDeployNow)[0]},
 	}
 	why := []string{fmt.Sprintf("Production of %s has waited %s: %s.", name, hours(now.Sub(since)), HoldReason(groups))}
 	if len(fixes) > 0 {

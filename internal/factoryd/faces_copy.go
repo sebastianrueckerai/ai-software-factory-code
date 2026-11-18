@@ -41,6 +41,10 @@ const (
 	AnswerClosePlan   = "close_plan"
 )
 
+// KeyPark is the key of the Not now that writes nothing: a human card's
+// wait, and the page of a request no case holds.
+const KeyPark = ActNote + "/" + variantPark
+
 // The variants of the vocabulary: the form of an action for one class of
 // card.
 const (
@@ -312,7 +316,7 @@ var effectFills = map[string]func(Facts) string{
 		}
 		return ""
 	},
-	ActNote: waitEffect, ActNote + "/" + variantPark: waitEffect,
+	ActNote: waitEffect, KeyPark: waitEffect,
 	ActClose + "/" + variantDone: func(f Facts) string { return factString(f.Case, "check") },
 	ActApproveMerge: func(f Facts) string {
 		if ChoiceCase(f.Case, f.Card.Kind) {
@@ -2169,7 +2173,7 @@ func choiceAnswer(value string, f Facts) (Answer, bool) {
 	switch v := c.Value; {
 	case key != "":
 	case v == AnswerPark, v == AnswerKeepWaiting, v == AnswerHoldWait:
-		key = ActNote + "/" + variantPark
+		key = KeyPark
 	case v == AnswerDismiss:
 		key = ActClose + "/" + variantDismiss
 	case v == AnswerRetryRoll && f.Card.Source == SourceRollFailed:
@@ -2199,7 +2203,7 @@ var planRef = regexp.MustCompile(`#\d+`)
 // choiceValue is the value a human card's choice of answer a posts.
 func choiceValue(a Answer) string {
 	switch a.Key() {
-	case ActNote + "/" + variantPark:
+	case KeyPark:
 		return AnswerPark
 	case ActClose + "/" + variantDismiss:
 		return AnswerDismiss

@@ -100,7 +100,7 @@ func AlertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
 		Ask:     source + " fires the alert \u201c" + name + "\u201d on " + of,
 		Why:     whyLine + ".",
 		Info:    body,
-		Choices: choices(ActClose+"/"+variantNoted, ActNote+"/"+variantPark),
+		Choices: choices(ActClose+"/"+variantNoted, KeyPark),
 	}
 	q.Happened = firedLine(a)
 	return q
@@ -222,7 +222,7 @@ func MonthCapCardQuestion(limit float64, month string, eur float64, link, refusa
 				"If it passes, the counter ran ahead and `max_budget` needs the raise all the same.", month, textutil.EUR(eur), textutil.EUR(limit)) +
 				"\n\nRaise `max_budget` in k8s/platform/litellm/helmrelease.yaml, the LiteLLM helmrelease, which stays at 1.25 times the cap or more: " + link +
 				"\n\nThe policy cap needs no change. Close this issue once decided.\n\nThe newest refusal:\n\n" + fenced(refusal),
-			Choices:  choices(ActClose+"/"+variantNoted, ActNote+"/"+variantPark),
+			Choices:  choices(ActClose+"/"+variantNoted, KeyPark),
 			Happened: fmt.Sprintf("LiteLLM refused a model call at %s EUR of spend this month, below the cap of %s EUR.", textutil.EUR(eur), textutil.EUR(limit)),
 			Waits:    "Model calls fail until the guard's limit is raised.",
 		}
@@ -239,7 +239,7 @@ func MonthCapCardQuestion(limit float64, month string, eur float64, link, refusa
 		Why: b.Why,
 		Info: fmt.Sprintf("The factory's variable spend in %s (UTC, over the cost ledger: model calls, paid tools, commissioned servers) is %s EUR of the cap of %s EUR (`budget.month_eur`). ", month, textutil.EUR(eur), textutil.EUR(limit)) +
 			info,
-		Choices:  choices(ActClose+"/"+variantNoted, ActNote+"/"+variantPark),
+		Choices:  choices(ActClose+"/"+variantNoted, KeyPark),
 		Happened: fmt.Sprintf("The factory spent %s EUR of its %s EUR limit in %s.", textutil.EUR(eur), textutil.EUR(limit), monthWords(month)),
 		Waits:    "Every model call waits until the limit is raised or the month ends.",
 	}
@@ -317,7 +317,7 @@ const (
 
 // humanDoneChoices are the answers of a card whose work a human does where
 // no agent may: "I did it" and "Not now".
-var humanDoneChoices = choices(ActClose+"/"+variantDone, ActNote+"/"+variantPark)
+var humanDoneChoices = choices(ActClose+"/"+variantDone, KeyPark)
 
 // humanWorkChoices are the answers of a card a human does: "I did it", the
 // factory's hand-over only where the project runs agents, and "Not now".
@@ -326,7 +326,7 @@ func humanWorkChoices(agents bool) []QuestionChoice {
 	if agents {
 		keys = append(keys, AnswerGo)
 	}
-	return choices(append(keys, ActNote+"/"+variantPark)...)
+	return choices(append(keys, KeyPark)...)
 }
 
 // choices are the stored choices of the answers keys name.

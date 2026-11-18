@@ -660,14 +660,21 @@ func requestPage(card BoardTask, r *Request) CardPage {
 	case err != nil:
 		k = Case{TaskID: r.TaskID, Repository: r.Project, Facts: map[string]any{"approval": r.ID, "approval_kind": r.Kind}}
 	}
-	if r.Healed {
+	switch {
+	case r.Healed:
 		k = healed(k)
-		face := CaseFace(k, card.Task, CaseAsk{})
-		face.Story.Left = healedLeft
-		return CardPage{Case: k, Request: r, Owner: card, Face: face}
-	}
-	if r.Kind == ApprovalCriteria || r.Kind == ApprovalCriteriaRerun {
+	case r.Kind == ApprovalCriteria || r.Kind == ApprovalCriteriaRerun:
 		k = r.onPromises(k)
 	}
-	return CardPage{Case: k, Request: r, Owner: card, Face: CaseFace(k, card.Task, CaseAsk{})}
+	face := CaseFace(k, card.Task, CaseAsk{})
+	if r.Healed {
+		face.Story.Left = healedLeft
+	}
+	for i, o := range face.Offers {
+		if o.Value == ActNote {
+			// no case keeps a note here: Not now writes nothing
+			face.Offers[i].Value = KeyPark
+		}
+	}
+	return CardPage{Case: k, Request: r, Owner: card, Face: face}
 }

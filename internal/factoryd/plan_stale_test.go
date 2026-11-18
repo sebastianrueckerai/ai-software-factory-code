@@ -1208,7 +1208,7 @@ func TestFileChildrenFilesAWorkflowOnlyCardForAHuman(t *testing.T) {
 				t.Fatalf("card = %+v, started %q; want a human's card waiting, no start, no spend", got, wf.started)
 			}
 			want := HumanQuestion{Ask: "Fix the CI", Why: "The factory's push rule keeps agents out of workflow files, so a human does this card, and plan #1 waits for it",
-				Choices: choices(ActClose+"/"+variantDone, ActHandBack, ActNote+"/"+variantPark), Waits: "The plan waits for it.",
+				Choices: choices(ActClose+"/"+variantDone, ActHandBack, KeyPark), Waits: "The plan waits for it.",
 				Check: "The factory does not check this. The card closes, and the plan goes on."}
 			if len(asks) != 1 || !reflect.DeepEqual(asks[0], want) || !strings.Contains(got.Objective, "Change the workflow.") {
 				t.Fatalf("asks = %+v, objective %q; want %+v and the brief in the card's text", asks, got.Objective, want)

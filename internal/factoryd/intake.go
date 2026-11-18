@@ -503,7 +503,7 @@ func PlanHumanAsk(plan Task, title string) HumanAsk {
 	q.Why = fmt.Sprintf("The factory's push rule keeps agents out of workflow files, so a human does this card, and plan #%d waits for it", plan.IssueNumber)
 	q.Waits = "The plan waits for it."
 	q.Check = "The factory does not check this. The card closes, and the plan goes on."
-	q.Choices = choices(ActClose+"/"+variantDone, ActHandBack, ActNote+"/"+variantPark)
+	q.Choices = choices(ActClose+"/"+variantDone, ActHandBack, KeyPark)
 	return HumanAsk{Q: q, By: "factoryd", Asker: SourcePlan, Via: ViaFactoryd, Facts: map[string]any{"plan": plan.ID}}
 }
 

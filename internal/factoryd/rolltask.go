@@ -971,7 +971,7 @@ func RollFailedQuestion(failed []RollFailure) HumanQuestion {
 		Recommendation: "Try the roll again, after reading the newest failed card's reason",
 		Recommended:    AnswerRetryRoll,
 		Source:         "the roller",
-		Choices:        choices(ActRetry+"/"+variantRoll, ActNote+"/"+variantPark, ActClose),
+		Choices:        choices(ActRetry+"/"+variantRoll, KeyPark, ActClose),
 		Happened:       rollsOf(runs) + " failed, so main's newest images do not run live.",
 		Waits:          "Every card merged since the last roll waits for a green chain.",
 	}

@@ -134,7 +134,7 @@ func (a HumanAsk) Event(t Task) Event {
 	q := a.Q
 	if len(q.Choices) == 1 && q.Choices[0].Value != AnswerPark {
 		// no card has one button: the card's park joins a lone choice
-		park, _ := ChoiceOf(ActNote + "/" + variantPark)
+		park, _ := ChoiceOf(KeyPark)
 		q.Choices = append(slices.Clone(q.Choices), park)
 	}
 	if len(q.Choices) > 0 {
