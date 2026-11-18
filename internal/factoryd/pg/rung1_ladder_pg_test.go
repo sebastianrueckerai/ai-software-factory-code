@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"bytes"
@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"log"
 	"os"
 	"reflect"
@@ -22,73 +23,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-const rungFindingText = "TasksByPR is undefined"
-
-// rungRig is tripRig's card t1 with a check-in model: a medium card of the
-// coder class, whose head h2 on pull request 9 is green and not approved,
-// and the review's one finding, rungFindingText, on h2. The check-in's
-// model is a script that notes the task each call booked on.
-type rungRig struct {
-	tripRig
-	chat *idChat
-	id   string // the finding's id
-}
-
-type idChat struct {
-	scriptedChat
-	mu  sync.Mutex
-	ids []string
-}
-
-func (c *idChat) Call(ctx context.Context, taskID, alias string, in CheckinRequest) (CheckinResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.ids = append(c.ids, taskID)
-	return c.scriptedChat.Call(ctx, taskID, alias, in)
-}
-
-func newRungRig(t *testing.T, checks string, answers ...CheckinResponse) rungRig {
-	t.Helper()
-	ctx := context.Background()
-	g := rungRig{tripRig: newTripRig(t, checks), chat: &idChat{scriptedChat: scriptedChat{answers: answers}}, id: FindingID(rungFindingText)}
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET required_capabilities = '["coder"]'::jsonb, size = 'medium', budget_eur = 5 WHERE id = 't1'`); err != nil {
-		t.Fatal(err)
-	}
-	g.atHead(t, false)
-	if err := g.r.timeline.Append(ctx, "t1", "model_review", map[string]any{"commit": "h2", "verdict": "concerns", "findings": []string{rungFindingText}}); err != nil {
-		t.Fatal(err)
-	}
-	g.r.Checkin = g.chat
-	g.r.cfg.Prices = aliasPrices{"big": {In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}}
-	return g
-}
-
-// answer is the rung's answer call on rungFindingText, a dropped verdict
-// with its evidence, over's keys over the defaults.
-func (g rungRig) answer(t *testing.T, over map[string]any) CheckinResponse {
-	t.Helper()
-	a := map[string]any{"recommendation": map[string]any{"action": "successor", "grounds": "the finding is dropped"},
-		"verdicts": map[string]any{g.id: map[string]any{"verdict": "dropped", "evidence": "tasks.go:12 at head: TasksByPR is declared"}}}
-	for k, v := range over {
-		a[k] = v
-	}
-	return answerCall(t, a)
-}
-
-// handUp is the answer that hands the case up recommending close.
-func (g rungRig) handUp(t *testing.T) CheckinResponse {
-	return g.answer(t, map[string]any{"decision": "hand_up", "draw": nil,
-		"recommendation": map[string]any{"action": "close", "grounds": "the card's work is done on main"}})
-}
-
-// projectStore answers the project row of demo-app, which no policy stored
-// in the rig's database names.
-type projectStore struct{ *PGStore }
-
-func (projectStore) ProjectByRepository(context.Context, string) (Project, bool, error) {
-	return Project{Name: "demo-app", Repository: "demo-app/demo-app", File: true}, true, nil
-}
-
 // holdFirstCall holds the chat's first call until release closes and closes
 // entered when it starts. A later call is another case's: a sweep may
 // open a monitor flag's case, whose rung 1 asks the model too. It passes.
@@ -99,22 +33,6 @@ func (g rungRig) holdFirstCall() (entered, release chan struct{}) {
 		once.Do(func() { close(entered); <-release })
 	}
 	return entered, release
-}
-
-// settle waits for the rung 1 goroutines the trips started.
-func (g rungRig) settle() { g.r.rungs.Wait() }
-
-func (g rungRig) rows(t *testing.T, kind string) []Event { return actRig{s: g.s}.rows(t, kind) }
-
-func (g rungRig) steps(t *testing.T, id int64) []CaseStep { return caseStepsOf(t, g.s, id) }
-
-func (g rungRig) raisedSessions(t *testing.T) int {
-	t.Helper()
-	var n int
-	if err := g.s.db.QueryRowContext(context.Background(), `SELECT raised_sessions FROM tasks WHERE id = 't1'`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	return n
 }
 
 func (g rungRig) signalsOf(name string) []reopenCall {
@@ -132,7 +50,7 @@ func (g rungRig) signalsOf(name string) []reopenCall {
 // drawn books a draw of d on rung for t1 as the rungs' draws are booked.
 func (g rungRig) drawn(t *testing.T, rung int, d policy.Draw, key string) {
 	t.Helper()
-	v := g.r.cfg.Policy()
+	v := g.r.PgCfg().Policy()
 	_, project, _ := v.ProjectOf("demo-app/demo-app")
 	esc := v.EscalationOf("demo-app/demo-app")
 	if _, err := g.s.DrawCard(context.Background(), "t1", CaseDraw{Rung: rung, Extend: d, PolicyCeiling: CardCeiling(v.Document, project),
@@ -350,11 +268,11 @@ func TestRung1ExpiryClimbsOnce(t *testing.T) {
 	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
 	out := g.trip(t, tripCap)
 	ctx := context.Background()
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE case_steps SET started_at = due_at - interval '35 minutes' WHERE case_id = $1 AND rung = 1`, out.CaseID); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE case_steps SET started_at = due_at - interval '35 minutes' WHERE case_id = $1 AND rung = 1`, out.CaseID); err != nil {
 		t.Fatal(err)
 	}
 	steps := g.steps(t, out.CaseID)
-	g.r.now = func() time.Time { return steps[1].DueAt.Add(time.Minute) }
+	g.r.PgSetNow(func() time.Time { return steps[1].DueAt.Add(time.Minute) })
 	for range 2 {
 		expired, err := g.s.ExpireSteps(ctx, g.r.Clock())
 		if err != nil {
@@ -429,12 +347,12 @@ func TestRung1SkipsHumanCardsAndMergeApprovals(t *testing.T) {
 // rungs do not judge: no conversation, the face at once.
 func TestRung1DoesNotJudgeAtManualWithAutonomousJudgment(t *testing.T) {
 	g := newRungRig(t, "success")
-	v := g.r.cfg.Policy()
+	v := g.r.PgCfg().Policy()
 	p := v.Projects["demo-app"]
 	p.Autonomy = policy.AutonomyManual
 	p.Escalation = &policy.Escalation{Judgment: policy.JudgmentAutonomousAndAbove}
 	v.Projects = map[string]policy.ProjectConfig{"demo-app": p}
-	g.r.cfg.Policy = func() policy.Version { return v }
+	g.r.PgSetPolicy(func() policy.Version { return v })
 	out := g.trip(t, tripCap)
 	g.settle()
 	if out.Rung != 3 || g.chat.calls != 0 || slices.ContainsFunc(g.steps(t, out.CaseID), func(s CaseStep) bool { return s.Rung == 1 }) || len(g.forge.comments) != 1 {
@@ -446,7 +364,7 @@ func TestRung1DoesNotJudgeAtManualWithAutonomousJudgment(t *testing.T) {
 // rung 2: no step of rung 1, no face until rung 2's bound ends.
 func TestRung1NoAliasGoesToRung2(t *testing.T) {
 	g := newRungRig(t, "success")
-	if _, err := g.s.db.ExecContext(context.Background(), `UPDATE tasks SET required_capabilities = '[]'::jsonb WHERE id = 't1'`); err != nil {
+	if _, err := g.s.PgDB().ExecContext(context.Background(), `UPDATE tasks SET required_capabilities = '[]'::jsonb WHERE id = 't1'`); err != nil {
 		t.Fatal(err)
 	}
 	out := g.trip(t, tripCap)
@@ -471,11 +389,11 @@ func TestRung1ToolsAreReadOnlyAndReadTheHead(t *testing.T) {
 	g := newRungRig(t, "success")
 	g.forge.files = map[string]string{"h2:src/tasks.go": "package tasks // at the head", "main:src/tasks.go": "package tasks // at main"}
 	repo := Repo{Owner: "demo-app", Name: "demo-app"}
-	tools := &CaseTools{r: g.r, t: Task{ID: "t1"}, f: CaseFacts{Head: "h2"}, repo: repo}
+	tools := factoryd.PgCaseTools(g.r, Task{ID: "t1"}, CaseFacts{Head: "h2"}, repo)
 	if out, _, err := tools.Tool(context.Background(), "read_file", map[string]any{"path": "/workspace/src/tasks.go"}); err != nil || out != "package tasks // at the head" {
 		t.Fatalf("read_file at the head = %q, %v", out, err)
 	}
-	tools.f.Head = ""
+	tools.PgSetFacts(CaseFacts{})
 	if out, _, err := tools.Tool(context.Background(), "read_file", map[string]any{"path": "src/tasks.go"}); err != nil || out != "package tasks // at main" {
 		t.Fatalf("read_file with no head = %q, %v, want main's", out, err)
 	}
@@ -491,19 +409,19 @@ func TestRung1ToolsAreReadOnlyAndReadTheHead(t *testing.T) {
 // for a case with no pull request; every output is cut and scrubbed.
 func TestRung1GrepSearchesTheHeadAndMain(t *testing.T) {
 	dir := gitFixture(t)
-	old := CheckoutRefs
+	old := factoryd.CheckoutRefs
 	var gotPR int64
-	CheckoutRefs = func(_ context.Context, _ *Forgejo, _ Repo, pr int64, _ string) (string, []namedRef, func(), error) {
+	factoryd.CheckoutRefs = func(_ context.Context, _ *Forgejo, _ Repo, pr int64, _ string) (string, []namedRef, func(), error) {
 		gotPR = pr
 		if pr == 0 {
-			return dir, []namedRef{{"main", "main"}}, func() {}, nil
+			return dir, []namedRef{{Name: "main", Rev: "main"}}, func() {}, nil
 		}
-		return dir, []namedRef{{"head", "head"}, {"main", "main"}}, func() {}, nil
+		return dir, []namedRef{{Name: "head", Rev: "head"}, {Name: "main", Rev: "main"}}, func() {}, nil
 	}
-	t.Cleanup(func() { CheckoutRefs = old })
+	t.Cleanup(func() { factoryd.CheckoutRefs = old })
 	g := newRungRig(t, "success")
-	tools := &CaseTools{r: g.r, t: Task{ID: "t1"}, f: CaseFacts{Head: "c1", PR: 9}, repo: Repo{Owner: "demo-app", Name: "demo-app"}}
-	defer tools.close()
+	tools := factoryd.PgCaseTools(g.r, Task{ID: "t1"}, CaseFacts{Head: "c1", PR: 9}, Repo{Owner: "demo-app", Name: "demo-app"})
+	defer tools.PgClose()
 	out, _, err := tools.Tool(context.Background(), "grep", map[string]any{"pattern": "Sym", "ref": "main"})
 	if err != nil || out != "main:a.go:3:func Sym() {}" || gotPR != 9 {
 		t.Fatalf("grep main = %q, %v (pr %d), want main's one hit through the pull request's checkout", out, err, gotPR)
@@ -515,8 +433,8 @@ func TestRung1GrepSearchesTheHeadAndMain(t *testing.T) {
 	if none, _, err := tools.Tool(context.Background(), "grep", map[string]any{"pattern": "Absent"}); err != nil || none != "no match" {
 		t.Fatalf("grep no match = %q, %v", none, err)
 	}
-	bare := &CaseTools{r: g.r, t: Task{ID: "t1"}, f: CaseFacts{}, repo: Repo{Owner: "demo-app", Name: "demo-app"}}
-	defer bare.close()
+	bare := factoryd.PgCaseTools(g.r, Task{ID: "t1"}, CaseFacts{}, Repo{Owner: "demo-app", Name: "demo-app"})
+	defer bare.PgClose()
 	if out, _, err := bare.Tool(context.Background(), "grep", map[string]any{"pattern": "Sym"}); err != nil || out != "main:a.go:3:func Sym() {}" || gotPR != 0 {
 		t.Fatalf("grep with no pull request = %q, %v (pr %d), want main alone", out, err, gotPR)
 	}
@@ -527,7 +445,7 @@ func TestRung1GrepSearchesTheHeadAndMain(t *testing.T) {
 // made, a rerun's and a merge of main.
 func TestRung1StatementListsTheHeadCommits(t *testing.T) {
 	g := newRungRig(t, "success")
-	if err := g.r.timeline.Append(context.Background(), "t1", "pushed", map[string]any{"session": "s1", "branch": "factory/t1", "commit": "p1"}); err != nil {
+	if err := g.r.PgTimeline().Append(context.Background(), "t1", "pushed", map[string]any{"session": "s1", "branch": "factory/t1", "commit": "p1"}); err != nil {
 		t.Fatal(err)
 	}
 	g.forge.prCommits = `[
@@ -549,9 +467,9 @@ func TestRung1StatementListsTheHeadCommits(t *testing.T) {
 // answers carries them at its end, written by code, cut at 800 characters.
 func TestRung1RedChecksReachTheStatementAndTheNote(t *testing.T) {
 	g := newRungRig(t, "failure")
-	g.r.store = projectStore{g.s}
+	g.r.PgSetStore(projectStore{g.s})
 	g.forge.redLog = logLines("--- FAIL: TestSlugTrims (0.00s)", "FAIL\texample.com/slug\t1s")
-	if _, err := g.s.db.ExecContext(context.Background(), `UPDATE tasks SET size = 'medium' WHERE id = 't1'`); err != nil {
+	if _, err := g.s.PgDB().ExecContext(context.Background(), `UPDATE tasks SET size = 'medium' WHERE id = 't1'`); err != nil {
 		t.Fatal(err)
 	}
 	first := g.trip(t, tripCap)
@@ -586,15 +504,15 @@ func TestSessionNoteCutsTheChecksLog(t *testing.T) {
 	if len(log) > ChecksLogCut+len("…") || !strings.HasPrefix(log, "The checks on 01234567 are red:\n- TestNumber000 (example.com/long/package/path): failed\n") || !strings.HasSuffix(log, "…") {
 		t.Fatalf("log = %q (%d bytes), want the header, the first tests and a cut at 800", log, len(log))
 	}
-	note := r.sessionNote(f, ActInput{Rung: 3, Res: Resolution{Action: ActContinue, Note: "go on"}})
+	note := r.PgSessionNote(f, ActInput{Rung: 3, Res: Resolution{Action: ActContinue, Note: "go on"}})
 	if !strings.HasPrefix(note, "go on\n\nThe checks on 01234567 are red:") || len(note) > len("go on\n\n")+ChecksLogCut+len("…") {
 		t.Fatalf("note = %q, want the human's note then the cut log", note)
 	}
 	f.Checks = "green"
-	if note := r.sessionNote(f, ActInput{Rung: 3, Res: Resolution{Action: ActContinue, Note: "go on"}}); note != "go on" {
+	if note := r.PgSessionNote(f, ActInput{Rung: 3, Res: Resolution{Action: ActContinue, Note: "go on"}}); note != "go on" {
 		t.Fatalf("note on green = %q, want the note alone", note)
 	}
-	if note := r.sessionNote(CaseFacts{Checks: "red", Head: "h", FailedTests: f.FailedTests}, ActInput{Rung: 3, Res: Resolution{Action: ActClose, Note: "bye"}}); note != "bye" {
+	if note := r.PgSessionNote(CaseFacts{Checks: "red", Head: "h", FailedTests: f.FailedTests}, ActInput{Rung: 3, Res: Resolution{Action: ActClose, Note: "bye"}}); note != "bye" {
 		t.Fatalf("a close's note = %q, want it untouched: no session starts", note)
 	}
 }
@@ -609,12 +527,12 @@ func TestSessionNoteLeadsWithTheFindings(t *testing.T) {
 		FindingTexts: map[string]string{"i1": "first by id", "i2": "second by id", "i3": "raised first"}}
 	res := Resolution{Action: ActHandover, Args: map[string]any{"model": "same"}, Note: "start there",
 		Verdicts: map[string]CheckVerdict{"second by id": {State: CheckDropped}, "raised first": {State: CheckConfirmed}}}
-	got := r.sessionNote(f, ActInput{Rung: 1, Res: res})
+	got := r.PgSessionNote(f, ActInput{Rung: 1, Res: res})
 	want := "Your one job: raised first\nThen, in order:\n- first by id\n\nstart there"
 	if got != want {
 		t.Fatalf("note = %q, want %q", got, want)
 	}
-	if got := r.sessionNote(f, ActInput{Rung: 3, Res: res}); got != "start there" {
+	if got := r.PgSessionNote(f, ActInput{Rung: 3, Res: res}); got != "start there" {
 		t.Fatalf("the human's note = %q, want it untouched", got)
 	}
 }
@@ -699,7 +617,7 @@ func TestRung1MasksWhatItRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	boom := fmt.Errorf("could not write: POST %s: %s", url, bearer)
-	g2.r.rungUp(context.Background(), Task{ID: "t1", Repository: "demo-app/demo-app", IssueNumber: 12}, c, CaseFacts{}, step, RungOutcome{}, "", "", "rung 1 could not run: "+boom.Error(), nil)
+	g2.r.PgRungUp(context.Background(), Task{ID: "t1", Repository: "demo-app/demo-app", IssueNumber: 12}, c, CaseFacts{}, step, RungOutcome{}, "", "", "rung 1 could not run: "+boom.Error(), nil)
 	var got string
 	for _, s := range g2.steps(t, c.ID) {
 		if s.ID == step {
@@ -722,28 +640,6 @@ func TestRung1ResolutionCarriesTheVerdictsByText(t *testing.T) {
 	want := map[string]CheckVerdict{rungFindingText: {State: CheckDropped, Evidence: "tasks.go:12 at head: TasksByPR is declared"}}
 	if len(sig) != 1 || !reflect.DeepEqual(sig[0].sig.Case.Res.Verdicts, want) {
 		t.Fatalf("signals = %+v, want the verdicts %+v keyed by the finding's text", sig, want)
-	}
-}
-
-// A check-in whose every call was refused raises checkin_refused once no
-// check-in ran after it, keyed by the check-in's place in the card's life.
-func TestDigestFlagsARefusedCheckin(t *testing.T) {
-	g := newDigestRig(nil)
-	g.line(t, 12, "checkin", map[string]any{"moment": "gate", "decision": "handover", "reason": CheckinRefusedReason + "provider refused"})
-	d, err := g.r.CardDigest(context.Background(), "t1410")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.ContainsFunc(d.Flags, func(f DigestFlag) bool { return f.Name == "checkin_refused" }) {
-		t.Fatalf("flags = %+v, want checkin_refused", d.Flags)
-	}
-	g.line(t, 13, "checkin", map[string]any{"moment": "gate", "decision": "handover", "reason": "the findings stand", "handover": "do x"})
-	d, err = g.r.CardDigest(context.Background(), "t1410")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if slices.ContainsFunc(d.Flags, func(f DigestFlag) bool { return f.Name == "checkin_refused" }) {
-		t.Fatalf("flags = %+v, want none once a check-in ran after the refused one", d.Flags)
 	}
 }
 
@@ -820,7 +716,7 @@ func (failingResolve) ResolveCase(context.Context, int64, CaseResolution, *CaseD
 // nor the question asked unmasked, and the case is faced once.
 func TestRung1MasksAnActFailureEndToEnd(t *testing.T) {
 	g := newRungRig(t, "success")
-	g.r.store = failingResolve{g.s}
+	g.r.PgSetStore(failingResolve{g.s})
 	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
 	out := g.trip(t, tripCap)
 	g.settle()
@@ -843,14 +739,14 @@ func TestFactsReadASessionRunningOnlyFromItsLiveRow(t *testing.T) {
 	g := newRungRig(t, "success")
 	ctx := context.Background()
 	card, _, _ := g.s.Task(ctx, "t1")
-	f, err := g.r.tripFacts(ctx, card, "", "")
+	f, err := g.r.PgTripFacts(ctx, card, "", "")
 	if err != nil || f.Running {
 		t.Fatalf("running with no live row = %v, %v, want false", f.Running, err)
 	}
 	if err := g.s.PutLiveSession(ctx, LiveSession{TaskID: "t1", SessionID: "s1", Namespace: "ns", Pod: "p", MessageToken: "tok", StartedAt: time.Now(), Deadline: time.Now().Add(time.Hour), Owner: "a"}); err != nil {
 		t.Fatal(err)
 	}
-	f, err = g.r.tripFacts(ctx, card, "", "")
+	f, err = g.r.PgTripFacts(ctx, card, "", "")
 	if err != nil || !f.Running || sessionRoom(f) != "a session is running" {
 		t.Fatalf("running with a live row = %v (%v), room %q, want true and a session is running", f.Running, err, sessionRoom(f))
 	}
@@ -917,7 +813,7 @@ func TestSessionNoteKeepsItsCodeWrittenPartsWithinTheAnswerBound(t *testing.T) {
 		"a short note":  {Rung: 1, Res: Resolution{Action: ActContinue, Note: "go"}},
 		"a rung's draw": {Rung: 1, Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1.0}, Note: strings.Repeat("n", 9000)}},
 	} {
-		note := r.sessionNote(f, in)
+		note := r.PgSessionNote(f, in)
 		if len(note) > MaxAnswer || !strings.HasSuffix(note, kill) || !strings.Contains(note, log+"\n\n"+kill) {
 			t.Errorf("%s: note is %d bytes (bound %d), want it to end with the whole log and kill line", name, len(note), MaxAnswer)
 		}
@@ -925,7 +821,7 @@ func TestSessionNoteKeepsItsCodeWrittenPartsWithinTheAnswerBound(t *testing.T) {
 			t.Errorf("%s: note starts %q, want the first finding", name, note[:40])
 		}
 	}
-	long := r.sessionNote(f, ActInput{Rung: 1, Res: Resolution{Action: ActHandover, Note: strings.Repeat("n", 9000)}})
+	long := r.PgSessionNote(f, ActInput{Rung: 1, Res: Resolution{Action: ActHandover, Note: strings.Repeat("n", 9000)}})
 	if want := 1057 + 2 + 1731 + 2 + len(log) + 2 + len(kill); len(long) != want {
 		t.Errorf("worst case: %d bytes, want %d (the note takes the room that is left: 1731 less the mark's 3, plus the mark)", len(long), want)
 	}
@@ -939,18 +835,18 @@ func TestSweepExpiresRungOneBeforeItWakesItsCase(t *testing.T) {
 	var clock atomic.Int64
 	clock.Store(time.Now().UnixNano())
 	now := func() time.Time { return time.Unix(0, clock.Load()) }
-	g.r.now = now
+	g.r.PgSetNow(now)
 	release := make(chan struct{})
 	g.chat.onCall = func() { <-release }
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
 	out := g.trip(t, tripCap)
 	ctx := context.Background()
 	steps := g.steps(t, out.CaseID)
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE case_steps SET started_at = due_at - interval '35 minutes' WHERE case_id = $1 AND rung = 1`, out.CaseID); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE case_steps SET started_at = due_at - interval '35 minutes' WHERE case_id = $1 AND rung = 1`, out.CaseID); err != nil {
 		t.Fatal(err)
 	}
 	clock.Store(steps[1].DueAt.Add(time.Minute).UnixNano())
-	v := g.r.cfg.Policy()
+	v := g.r.PgCfg().Policy()
 	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: now}
 	if err := m.Sweep(ctx); err != nil {
 		t.Fatal(err)
@@ -993,11 +889,11 @@ func TestAHeldCaseIsFacedAtItsDueWhicheverPassRunsFirst(t *testing.T) {
 			`UPDATE cases SET opened_at = now() - interval '36 minutes', next_wake_at = now() - interval '20 seconds' WHERE id = $1`,
 			`UPDATE case_steps SET started_at = now() - interval '35 minutes 20 seconds', due_at = now() - interval '20 seconds' WHERE case_id = $1 AND rung = 1`,
 		} {
-			if _, err := g.s.db.ExecContext(ctx, q, out.CaseID); err != nil {
+			if _, err := g.s.PgDB().ExecContext(ctx, q, out.CaseID); err != nil {
 				t.Fatal(err)
 			}
 		}
-		v := g.r.cfg.Policy()
+		v := g.r.PgCfg().Policy()
 		m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: time.Now}
 		passes := func() {
 			var rep CaseHealReport
@@ -1021,7 +917,7 @@ func TestAHeldCaseIsFacedAtItsDueWhicheverPassRunsFirst(t *testing.T) {
 			`UPDATE cases SET next_wake_at = now() - interval '20 seconds' WHERE id = $1`,
 			`UPDATE case_steps SET started_at = now() - interval '35 minutes 20 seconds', due_at = now() - interval '20 seconds' WHERE case_id = $1 AND rung = 2`,
 		} {
-			if _, err := g.s.db.ExecContext(ctx, q, out.CaseID); err != nil {
+			if _, err := g.s.PgDB().ExecContext(ctx, q, out.CaseID); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -1056,7 +952,7 @@ func TestAFailedFaceAtTheDueKeepsTheWake(t *testing.T) {
 		`UPDATE cases SET opened_at = now() - interval '36 minutes', next_wake_at = now() - interval '20 seconds' WHERE id = $1`,
 		`UPDATE case_steps SET started_at = now() - interval '35 minutes 20 seconds', due_at = now() - interval '20 seconds' WHERE case_id = $1 AND rung = 1`,
 	} {
-		if _, err := g.s.db.ExecContext(ctx, q, out.CaseID); err != nil {
+		if _, err := g.s.PgDB().ExecContext(ctx, q, out.CaseID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1081,7 +977,7 @@ func TestAFailedFaceAtTheDueKeepsTheWake(t *testing.T) {
 		`UPDATE cases SET next_wake_at = now() - interval '20 seconds' WHERE id = $1`,
 		`UPDATE case_steps SET started_at = now() - interval '35 minutes 20 seconds', due_at = now() - interval '20 seconds' WHERE case_id = $1 AND rung = 2`,
 	} {
-		if _, err := g.s.db.ExecContext(ctx, q, out.CaseID); err != nil {
+		if _, err := g.s.PgDB().ExecContext(ctx, q, out.CaseID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1099,7 +995,7 @@ func TestAFailedFaceAtTheDueKeepsTheWake(t *testing.T) {
 	if rep, err := g.s.ReconcileCases(ctx, "demo-app/demo-app"); err != nil || rep.Moved != 0 {
 		t.Fatalf("heal %+v (%v), want nothing moved", rep, err)
 	}
-	v := g.r.cfg.Policy()
+	v := g.r.PgCfg().Policy()
 	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: time.Now}
 	if err := m.Sweep(ctx); err != nil {
 		t.Fatal(err)
@@ -1138,12 +1034,12 @@ func TestAFaceTheMonitorRecoversCarriesRungOnesFindingAndSignalsTheRun(t *testin
 	var clock atomic.Int64
 	clock.Store(time.Now().UnixNano())
 	now := func() time.Time { return time.Unix(0, clock.Load()) }
-	g.r.now = now
+	g.r.PgSetNow(now)
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
 	out := g.trip(t, tripCap)
 	g.settle()
 	g.forge.failComment = true
-	v := g.r.cfg.Policy()
+	v := g.r.PgCfg().Policy()
 	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: now}
 	own := g.stepsOfRung(t, out.CaseID, 2)
 	clock.Store(own[0].DueAt.Add(time.Minute).UnixNano())
@@ -1201,10 +1097,10 @@ func TestFactsMarkAnUnreadChecksLogPartial(t *testing.T) {
 		partial bool
 	}{{"", true}, {logLines("--- FAIL: TestSlugTrims (0.00s)", "FAIL\texample.com/slug\t1s"), false}} {
 		g := newRungRig(t, "failure")
-		g.r.store = projectStore{g.s}
+		g.r.PgSetStore(projectStore{g.s})
 		g.forge.redLog = tc.log
 		card, _, _ := g.s.Task(ctx, "t1")
-		f, err := g.r.tripFacts(ctx, card, "", "")
+		f, err := g.r.PgTripFacts(ctx, card, "", "")
 		if err != nil || f.Checks != "red" || slices.Contains(f.Partial, "checks_log") != tc.partial || (len(f.FailedTests) == 0) != tc.partial {
 			t.Fatalf("log %q: checks %q, partial %v, failed tests %+v (%v); want partial %v", tc.log, f.Checks, f.Partial, f.FailedTests, err, tc.partial)
 		}
@@ -1225,20 +1121,26 @@ func (w *flakySignals) Signal(ctx context.Context, taskID, name string, sig Task
 	return w.caseSignals.Signal(ctx, taskID, name, sig)
 }
 
+// settleStub is the store a delivered signal settles its row on, with no
+// row to settle.
+type settleStub struct{ Store }
+
+func (settleStub) SettleCaseSignal(context.Context, int64, string, bool) error { return nil }
+
 // A case_faced signal that fails is sent again, with a doubling pause, up to
 // four tries: two failures then success deliver it once; failures past the
 // bound give up; a context that ends stops it; the refusals are logged masked.
 func TestSignalFacedRetriesWithinItsBound(t *testing.T) {
-	old := FacedBackoff
-	FacedBackoff = 20 * time.Millisecond
-	t.Cleanup(func() { FacedBackoff = old })
+	old := factoryd.FacedBackoff
+	factoryd.FacedBackoff = 20 * time.Millisecond
+	t.Cleanup(func() { factoryd.FacedBackoff = old })
 	var logged bytes.Buffer
 	log.SetOutput(&logged)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
 	signals := &caseSignals{}
 	flaky := &flakySignals{caseSignals: signals, fails: 2}
-	(&Runner{store: &fakeStore{}, cfg: RunnerConfig{Workflows: flaky}}).signalFaced(context.Background(), "t1", 5, 640)
+	factoryd.PgSignalFaced(context.Background(), settleStub{}, flaky, "t1", 5, 640)
 	if len(flaky.at) != 3 || len(signals.got) != 1 || signals.got[0].signal != SignalCaseFaced || signals.got[0].sig.Case.Comment != 640 {
 		t.Fatalf("tries %d, delivered %+v; want the third try delivering once", len(flaky.at), signals.got)
 	}
@@ -1250,14 +1152,14 @@ func TestSignalFacedRetriesWithinItsBound(t *testing.T) {
 	}
 
 	never := &flakySignals{caseSignals: &caseSignals{}, fails: 100}
-	(&Runner{cfg: RunnerConfig{Workflows: never}}).signalFaced(context.Background(), "t1", 5, 640)
+	factoryd.PgSignalFaced(context.Background(), nil, never, "t1", 5, 640)
 	if len(never.at) != 4 {
 		t.Fatalf("tries %d, want 4", len(never.at))
 	}
 	ended, cancel := context.WithCancel(context.Background())
 	cancel()
 	stopped := &flakySignals{caseSignals: &caseSignals{}, fails: 100}
-	(&Runner{cfg: RunnerConfig{Workflows: stopped}}).signalFaced(ended, "t1", 5, 640)
+	factoryd.PgSignalFaced(ended, nil, stopped, "t1", 5, 640)
 	if len(stopped.at) != 1 {
 		t.Fatalf("tries %d with the context ended, want the one", len(stopped.at))
 	}
@@ -1271,16 +1173,16 @@ func TestAFaceDoesNotWaitForItsSignal(t *testing.T) {
 	var clock atomic.Int64
 	clock.Store(time.Now().UnixNano())
 	now := func() time.Time { return time.Unix(0, clock.Load()) }
-	g.r.now = now
+	g.r.PgSetNow(now)
 	held := make(chan struct{})
-	g.r.cfg.Workflows = heldSignals{Workflows: g.r.cfg.Workflows, release: held}
+	g.r.PgSetWorkflows(heldSignals{Workflows: g.r.PgCfg().Workflows, release: held})
 	release := make(chan struct{})
 	g.chat.onCall = func() { <-release }
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
 	out := g.trip(t, tripCap)
 	steps := g.steps(t, out.CaseID)
 	clock.Store(steps[1].DueAt.Add(time.Minute).UnixNano())
-	v := g.r.cfg.Policy()
+	v := g.r.PgCfg().Policy()
 	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: now}
 	// rung 1's bound ends first; rung 2 holds the case, and its own bound ends in the sweep under test
 	if err := m.Sweep(context.Background()); err != nil {
@@ -1342,7 +1244,7 @@ func (h heldSignals) Signal(ctx context.Context, taskID, name string, sig TaskSi
 // human's words and factoryd's additions apart under their own names.
 func TestAHumansNoteIsCutAtTheCapAndFactorydsAdditionsAreItsOwn(t *testing.T) {
 	g := newRungRig(t, "failure")
-	g.r.store = projectStore{g.s}
+	g.r.PgSetStore(projectStore{g.s})
 	g.forge.redLog = logLines("--- FAIL: TestSlugTrims (0.00s)", "FAIL\texample.com/slug\t1s")
 	g.trip(t, tripCap)
 	second := g.trip(t, tripCap)
@@ -1475,14 +1377,14 @@ func TestFactorydsAdditionsToANoteAreMasked(t *testing.T) {
 	masked(t, "the comment's additions", added)
 
 	f := CaseFacts{Checks: "red", Head: "h2", FailedTests: []FailedTest{{Job: "test " + url + " " + bearer, Kind: "no test named"}}}
-	_, after := g.r.sessionParts(f, ActInput{Rung: 3, Res: Resolution{Action: ActContinue}})
+	_, after := g.r.PgSessionParts(f, ActInput{Rung: 3, Res: Resolution{Action: ActContinue}})
 	if len(after) != 1 || !strings.HasPrefix(after[0], "The checks on h2 are red:") {
 		t.Fatalf("parts after the note = %q, want the checks log", after)
 	}
 	masked(t, "the checks log", after[0])
 
 	f = CaseFacts{Findings: []string{"f1"}, FindingTexts: map[string]string{"f1": "the client logs " + url + " with " + bearer}}
-	before, _ := g.r.sessionParts(f, ActInput{Rung: 1, Res: Resolution{Action: ActContinue}})
+	before, _ := g.r.PgSessionParts(f, ActInput{Rung: 1, Res: Resolution{Action: ActContinue}})
 	if len(before) != 1 || !strings.HasPrefix(before[0], "Your one job: the client logs") {
 		t.Fatalf("parts before rung 1's note = %q, want the finding as the one job", before)
 	}
@@ -1519,9 +1421,9 @@ func TestCaseStateReadsTheStore(t *testing.T) {
 // rung 1 holds the case, and a face whose four tries all failed each reach
 // the run once, with what they announce, and leave nothing pending.
 func TestCaseSignalsWaitInTheStoreUntilASendDelivers(t *testing.T) {
-	old := FacedBackoff
-	FacedBackoff = time.Millisecond
-	t.Cleanup(func() { FacedBackoff = old })
+	old := factoryd.FacedBackoff
+	factoryd.FacedBackoff = time.Millisecond
+	t.Cleanup(func() { factoryd.FacedBackoff = old })
 	ctx := context.Background()
 	later := func() time.Time { return time.Now().Add(2 * CaseSignalWait) }
 	pending := func(t *testing.T, g rungRig) []PendingSignal {
@@ -1580,7 +1482,7 @@ func TestCaseSignalsWaitInTheStoreUntilASendDelivers(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newRungRig(t, "success")
-			g.r.cfg.Workflows = &flakySignals{caseSignals: g.signals, fails: tc.fails}
+			g.r.PgSetWorkflows(&flakySignals{caseSignals: g.signals, fails: tc.fails})
 			id := tc.act(t, g)
 			if tc.fails == 0 {
 				if got, p := g.signalsOf(tc.want), pending(t, g); len(got) != 1 || len(p) != 0 {
@@ -1594,7 +1496,7 @@ func TestCaseSignalsWaitInTheStoreUntilASendDelivers(t *testing.T) {
 			if p := pending(t, g); len(p) != 1 || p[0].CaseID != id || p[0].Name != tc.want || p[0].Signal.Case == nil || p[0].Signal.Case.CaseID != id {
 				t.Fatalf("pending %+v, want case %d's %s", p, id, tc.want)
 			}
-			resendCaseSignals(ctx, g.s, g.r.cfg.Workflows, later())
+			resendCaseSignals(ctx, g.s, g.r.PgCfg().Workflows, later())
 			got := g.signalsOf(tc.want)
 			c := caseByID(t, g.s, id)
 			if len(got) != 1 || got[0].sig.Case.CaseID != id || len(pending(t, g)) != 0 {
@@ -1619,19 +1521,19 @@ func TestTheHealPassBoundsItsSendsOfACaseSignal(t *testing.T) {
 	log.SetOutput(&logged)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	g := newRungRig(t, "success")
-	g.r.cfg.Workflows = &flakySignals{caseSignals: g.signals, fails: 1000}
+	g.r.PgSetWorkflows(&flakySignals{caseSignals: g.signals, fails: 1000})
 	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
 	out := g.trip(t, tripCap)
 	g.settle()
 	later := time.Now().Add(2 * CaseSignalWait)
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE case_signals SET tries = $2 WHERE case_id = $1`, out.CaseID, CaseSignalTries-2); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE case_signals SET tries = $2 WHERE case_id = $1`, out.CaseID, CaseSignalTries-2); err != nil {
 		t.Fatal(err)
 	}
-	resendCaseSignals(ctx, g.s, g.r.cfg.Workflows, later)
+	resendCaseSignals(ctx, g.s, g.r.PgCfg().Workflows, later)
 	if p, _ := g.s.PendingCaseSignals(ctx, later, 10); len(p) != 1 || p[0].Tries != CaseSignalTries-1 {
 		t.Fatalf("pending %+v after a failed send, want the row with %d tries", p, CaseSignalTries-1)
 	}
-	resendCaseSignals(ctx, g.s, g.r.cfg.Workflows, later)
+	resendCaseSignals(ctx, g.s, g.r.PgCfg().Workflows, later)
 	if p, _ := g.s.PendingCaseSignals(ctx, later, 10); len(p) != 0 {
 		t.Fatalf("pending %+v after the last try, want none", p)
 	}
@@ -1641,14 +1543,14 @@ func TestTheHealPassBoundsItsSendsOfACaseSignal(t *testing.T) {
 	}
 
 	g2 := newRungRig(t, "success")
-	g2.r.cfg.Workflows = &flakySignals{caseSignals: g2.signals, fails: 1}
+	g2.r.PgSetWorkflows(&flakySignals{caseSignals: g2.signals, fails: 1})
 	g2.chat.answers = []CheckinResponse{g2.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
 	g2.trip(t, tripCap)
 	g2.settle()
-	if _, err := g2.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = 't1'`); err != nil {
+	if _, err := g2.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = 't1'`); err != nil {
 		t.Fatal(err)
 	}
-	resendCaseSignals(ctx, g2.s, g2.r.cfg.Workflows, later)
+	resendCaseSignals(ctx, g2.s, g2.r.PgCfg().Workflows, later)
 	if p, _ := g2.s.PendingCaseSignals(ctx, later, 10); len(p) != 0 || len(g2.signalsOf(SignalCaseResolved)) != 0 {
 		t.Fatalf("pending %+v, delivered %d; want the ended card's row gone with no send", p, len(g2.signalsOf(SignalCaseResolved)))
 	}
@@ -1678,13 +1580,13 @@ func TestRungOnesStepNeverHoldsACaseWithoutAWake(t *testing.T) {
 	release := make(chan struct{})
 	g.chat.onCall = func() { <-release }
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
-	g.r.store = &failingWake{Store: g.s, fails: 1}
+	g.r.PgSetStore(&failingWake{Store: g.s, fails: 1})
 	_, err1 := g.r.OpenTrip(ctx, TripInput{TaskID: "t1", Reason: tripCap}, tripAttempt{N: 1})
 	out, err2 := g.r.OpenTrip(ctx, TripInput{TaskID: "t1", Reason: tripCap}, tripAttempt{N: 2})
 	if err2 != nil {
 		t.Fatalf("trips: %v, %v", err1, err2)
 	}
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE cases SET opened_at = now() - interval '11 minutes' WHERE id = $1`, out.CaseID); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE cases SET opened_at = now() - interval '11 minutes' WHERE id = $1`, out.CaseID); err != nil {
 		t.Fatal(err)
 	}
 	rep, err := g.s.ReconcileCases(ctx, "demo-app/demo-app")
@@ -1712,14 +1614,14 @@ func TestNoFaceOnACardThatCannotWaitForAHuman(t *testing.T) {
 		`UPDATE cases SET opened_at = now() - interval '36 minutes', next_wake_at = now() - interval '20 seconds' WHERE id = $1`,
 		`UPDATE case_steps SET started_at = now() - interval '35 minutes 20 seconds', due_at = now() - interval '20 seconds' WHERE case_id = $1 AND rung = 1`,
 	} {
-		if _, err := g.s.db.ExecContext(ctx, q, out.CaseID); err != nil {
+		if _, err := g.s.PgDB().ExecContext(ctx, q, out.CaseID); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'merged', finished_at = now() WHERE id = 't1'`); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'merged', finished_at = now() WHERE id = 't1'`); err != nil {
 		t.Fatal(err)
 	}
-	v := g.r.cfg.Policy()
+	v := g.r.PgCfg().Policy()
 	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: time.Now}
 	for range 3 {
 		if err := m.Sweep(ctx); err != nil {
@@ -1741,7 +1643,7 @@ func TestNoFaceOnACardThatCannotWaitForAHuman(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g2.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'merged', finished_at = now() WHERE id = 't1'`); err != nil {
+	if _, err := g2.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'merged', finished_at = now() WHERE id = 't1'`); err != nil {
 		t.Fatal(err)
 	}
 	card, _, _ := g2.s.Task(ctx, "t1")
@@ -1777,7 +1679,7 @@ func TestTheHealPassNeverDropsASignalForAFrontendThatIsDown(t *testing.T) {
 	log.SetOutput(&logged)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	g := newRungRig(t, "success")
-	g.r.cfg.Workflows = downSignals{Workflows: g.signals, retryable: true}
+	g.r.PgSetWorkflows(downSignals{Workflows: g.signals, retryable: true})
 	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
 	out := g.trip(t, tripCap)
 	g.settle()
@@ -1789,11 +1691,11 @@ func TestTheHealPassNeverDropsASignalForAFrontendThatIsDown(t *testing.T) {
 		}
 		return p[0].Tries
 	}
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE case_signals SET tries = $2 WHERE case_id = $1`, out.CaseID, CaseSignalTries+1); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE case_signals SET tries = $2 WHERE case_id = $1`, out.CaseID, CaseSignalTries+1); err != nil {
 		t.Fatal(err)
 	}
 	for range CaseSignalLogEvery {
-		resendCaseSignals(ctx, g.s, g.r.cfg.Workflows, later)
+		resendCaseSignals(ctx, g.s, g.r.PgCfg().Workflows, later)
 	}
 	if n := tries(); n != CaseSignalTries+1+CaseSignalLogEvery {
 		t.Fatalf("tries %d, want every failed send counted and the row kept", n)
@@ -1812,12 +1714,12 @@ func TestTheHealPassNeverDropsASignalForAFrontendThatIsDown(t *testing.T) {
 // signal is still pending sends the newest face: the pending row holds the
 // face's newest comment.
 func TestAFacedAgainCaseSendsItsNewestFace(t *testing.T) {
-	old := FacedBackoff
-	FacedBackoff = time.Millisecond
-	t.Cleanup(func() { FacedBackoff = old })
+	old := factoryd.FacedBackoff
+	factoryd.FacedBackoff = time.Millisecond
+	t.Cleanup(func() { factoryd.FacedBackoff = old })
 	ctx := context.Background()
 	g := newRungRig(t, "success")
-	g.r.cfg.Workflows = &flakySignals{caseSignals: g.signals, fails: FacedTries}
+	g.r.PgSetWorkflows(&flakySignals{caseSignals: g.signals, fails: FacedTries})
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
 	out := g.trip(t, tripCap)
 	g.settle()
@@ -1829,7 +1731,7 @@ func TestAFacedAgainCaseSendsItsNewestFace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resendCaseSignals(ctx, g.s, g.r.cfg.Workflows, time.Now().Add(2*CaseSignalWait))
+	resendCaseSignals(ctx, g.s, g.r.PgCfg().Workflows, time.Now().Add(2*CaseSignalWait))
 	faced := g.signalsOf(SignalCaseFaced)
 	if again.Comment == first || len(faced) != 1 || faced[0].sig.Case.Comment != again.Comment {
 		t.Fatalf("faces %d then %d, delivered %+v; want the newest face's comment sent", first, again.Comment, faced)
@@ -1851,23 +1753,23 @@ func TestModelReviewOfTheSameHeadReusesTheNewestVerdict(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(got, earlier[0]) {
 		t.Fatalf("the review of h2 = %+v, %v; want the earlier one", got, err)
 	}
-	if _, ok := g.r.reviewOfTheHead(ctx, "t1", "h3", earlier); ok {
+	if _, ok := g.r.PgReviewOfTheHead(ctx, "t1", "h3", earlier); ok {
 		t.Error("a head the review did not judge reused it")
 	}
 	// a retry after a lost result on head B finds B's row and head A's review
 	// earlier: it never returns A's verdict
 	other := []Review{{Commit: "h1", Verdict: "approve", Summary: "head A's"}}
-	if _, ok := g.r.reviewOfTheHead(ctx, "t1", "h2", other); ok {
+	if _, ok := g.r.PgReviewOfTheHead(ctx, "t1", "h2", other); ok {
 		t.Error("another head's review was reused for h2")
 	}
-	if _, ok := g.r.reviewOfTheHead(ctx, "t1", "h2", []Review{{Verdict: "concerns"}}); ok {
+	if _, ok := g.r.PgReviewOfTheHead(ctx, "t1", "h2", []Review{{Verdict: "concerns"}}); ok {
 		t.Error("a review that names no head was reused")
 	}
 	dropped := []Review{{Commit: "h2", Verdict: "concerns", Verdicts: map[string]CheckVerdict{"main.go: check the flag": {State: CheckDropped, Evidence: "main.go:3"}}}}
-	if _, ok := g.r.reviewOfTheHead(ctx, "t1", "h2", dropped); ok {
+	if _, ok := g.r.PgReviewOfTheHead(ctx, "t1", "h2", dropped); ok {
 		t.Error("a review the check-in dropped a finding of was reused")
 	}
-	if _, ok := g.r.reviewOfTheHead(ctx, "t1", "h2", nil); ok {
+	if _, ok := g.r.PgReviewOfTheHead(ctx, "t1", "h2", nil); ok {
 		t.Error("a first review was reused")
 	}
 }

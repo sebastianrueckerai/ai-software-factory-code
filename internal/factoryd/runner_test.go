@@ -366,6 +366,21 @@ func (k *fakeKube) PodIP(ctx context.Context, namespace, name string) (string, e
 	return "127.0.0.1", nil
 }
 
+func (k *fakeKube) PodEnv(ctx context.Context, namespace, name, container string) (map[string]string, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	p, ok := k.pods[namespace+"/"+name]
+	if !ok || p.spec == nil {
+		return nil, ErrNotFound
+	}
+	for _, c := range p.spec["spec"].(map[string]any)["containers"].([]any) {
+		if c := c.(map[string]any); c["name"] == container {
+			return containerEnv(c), nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
 func (k *fakeKube) PodDiagnosis(ctx context.Context, namespace, name string) (PodDiagnosis, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -4072,13 +4087,13 @@ func TestPaceAndSpendWatchNetHolds(t *testing.T) {
 		BudgetEUR: 5, SpentEUR: 4.5, HeldEUR: 0.4, Track: "direct"}, kube, &fakeObjectStore{})
 	ctx := context.Background()
 	s := sessionSpec{id: "s1", attempt: 1, sessions: 3, messageToken: "tok"}
-	if p := runner.pace(ctx, Task{ID: "t1"}, s, 0, 0, time.Now(), time.Now().Add(time.Hour)); p == nil || p.SpentEUR != 4.9 {
+	if p := runner.pace(ctx, Task{ID: "t1"}, s, 0, time.Now(), time.Now().Add(time.Hour)); p == nil || p.SpentEUR != 4.9 {
 		t.Fatalf("pace = %+v, want 4.90 spent", p)
 	}
 	kube.pods["ns/pod"] = &fakePod{ns: "ns", name: "pod"}
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
-	trip := runner.watchLimits(ctx, Task{ID: "t1"}, s, "ns", "pod", newLimitWatch(policy.Limits{}, false, time.Now(), time.Hour), spendSupervisor(t, nil))
+	trip := runner.watchLimits(ctx, Task{ID: "t1"}, s, "ns", "pod", newLimitWatch(policy.Limits{}, false, time.Now(), time.Hour, 1000), spendSupervisor(t, nil))
 	worker.mu.Lock()
 	texts := slices.Clone(worker.texts)
 	worker.mu.Unlock()
@@ -4087,6 +4102,124 @@ func TestPaceAndSpendWatchNetHolds(t *testing.T) {
 	}
 	if trip == nil || trip.Kind != TripSpendNoPush || trip.Detail != "this session spent 4.90 EUR of the 5.00 EUR the card had left at its start (98 percent, the line is 60) and no work is pushed" {
 		t.Fatalf("trip = %+v, want the no-push trip at 4.90 of 5.00", trip)
+	}
+}
+
+// An extend's line raise reaches the running session at the next read of
+// the card's row: a medium card under large_lines 1000 plans 600 lines,
+// the bound its pod started with, and a raise of 600 between two ticks
+// hands the worker's push rule 600 + 600 = 1200 on POST /bound, lifts the
+// size detector to 1200, and tells the agent the new bound once, the added
+// time and session from the next session. A watch whose pod started at 600
+// while the row already holds the raise, as after a restart, hands the
+// worker 1200 on its first tick.
+func TestRaiseReachesTheRunningSession(t *testing.T) {
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base",
+		BudgetEUR: 5, Track: "direct", Size: "medium"}, kube, &fakeObjectStore{})
+	ctx := context.Background()
+	s := sessionSpec{id: "s1", attempt: 1, sessions: 3, messageToken: "tok", policy: policy.Document{Risk: policy.Risk{LargeLines: 1000}}}
+	kube.pods["ns/pod"] = &fakePod{ns: "ns", name: "pod"}
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+	start := store.tasks["t1"]
+	watch := newLimitWatch(policy.Limits{}, false, time.Now(), time.Hour, 600)
+	sup := spendSupervisor(t, func(c *SupervisorConfig) { c.SizeLines = 600 })
+	tick := func() {
+		t.Helper()
+		if trip := runner.watchLimits(ctx, start, s, "ns", "pod", watch, sup); trip != nil {
+			t.Fatalf("trip = %+v, want none", trip)
+		}
+	}
+	tick()
+	worker.mu.Lock()
+	early := slices.Clone(worker.texts)
+	worker.mu.Unlock()
+	if len(early) != 0 {
+		t.Fatalf("worker got %q before any raise, want nothing", early)
+	}
+	tk := store.tasks["t1"]
+	tk.Usage.ExtraLines = 600
+	store.tasks["t1"] = tk
+	tick()
+	tick()
+	worker.mu.Lock()
+	texts, bounds := slices.Clone(worker.texts), slices.Clone(worker.bounds)
+	worker.mu.Unlock()
+	if len(texts) != 2 || texts[0] != "POST /bound " || !slices.Equal(bounds, []string{`{"lines":1200}`}) {
+		t.Fatalf("worker got %q with bounds %q, want one POST /bound of 1200 and one message", texts, bounds)
+	}
+	if !strings.HasPrefix(texts[1], "POST /message ") || !strings.Contains(texts[1], "1200 changed lines") || !strings.Contains(texts[1], "from the next session") {
+		t.Fatalf("message = %q, want the new bound of 1200 and the added time and session from the next session", texts[1])
+	}
+	if sup.cfg.SizeLines != 1200 {
+		t.Fatalf("the size detector's bound = %d, want 1200", sup.cfg.SizeLines)
+	}
+
+	worker.mu.Lock()
+	worker.texts, worker.bounds = nil, nil
+	worker.mu.Unlock()
+	restarted := store.tasks["t1"]
+	if trip := runner.watchLimits(ctx, restarted, s, "ns", "pod", newLimitWatch(policy.Limits{}, false, time.Now(), time.Hour, 600), spendSupervisor(t, nil)); trip != nil {
+		t.Fatalf("trip = %+v, want none", trip)
+	}
+	worker.mu.Lock()
+	bounds = slices.Clone(worker.bounds)
+	worker.mu.Unlock()
+	if !slices.Equal(bounds, []string{`{"lines":1200}`}) {
+		t.Fatalf("the first tick of a watch from 600 on a row raised to 1200 posted %q, want one POST /bound of 1200", bounds)
+	}
+}
+
+// A raise that lands while factoryd is down reaches the session it
+// reattaches to: the watch starts from the LINE_BOUND the pod holds, 1000
+// for an unsized card under no large_lines, not from the row the retry
+// reads, which already holds the raise of 600, so its first tick hands the
+// worker 1000 + 600 = 1600.
+func TestRaiseDuringARestartReachesTheReattachedSession(t *testing.T) {
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 60})
+	endpoint := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	endpoint.start(t, runner)
+	stop := make(chan struct{})
+	kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); close(stop) }() }
+	if _, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, []string{hangLogs}, func(env *testsuite.TestActivityEnvironment) {
+		env.SetWorkerStopChannel(stop)
+	}); err == nil || !strings.Contains(err.Error(), "factoryd stopping") {
+		t.Fatalf("err = %v, want the detach", err)
+	}
+	if got := podEnv(kube.podAt(0))["LINE_BOUND"]; got != "1000" {
+		t.Fatalf("the pod's LINE_BOUND = %q, want 1000", got)
+	}
+	first := store.liveSessions["t2"]
+	tk := store.tasks["t2"]
+	tk.Usage.ExtraLines = 600
+	store.tasks["t2"] = tk
+	runner.tick = 20 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		defer cancel()
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			endpoint.mu.Lock()
+			n := len(endpoint.bounds)
+			endpoint.mu.Unlock()
+			if n > 0 {
+				time.Sleep(100 * time.Millisecond) // five further ticks: no second post
+				return
+			}
+		}
+	}()
+	runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, func(env *testsuite.TestActivityEnvironment) {
+		env.SetWorkerOptions(worker.Options{BackgroundActivityContext: ctx})
+		env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true})
+	})
+	endpoint.mu.Lock()
+	bounds := slices.Clone(endpoint.bounds)
+	endpoint.mu.Unlock()
+	if !slices.Equal(bounds, []string{`{"lines":1600}`}) {
+		t.Fatalf("the reattached session's worker got bounds %q, want one POST /bound of 1600", bounds)
 	}
 }
 
@@ -4944,16 +5077,18 @@ func TestRunSessionRunsWhenTheProjectReadFails(t *testing.T) {
 }
 
 // Only a bound agent card's coding session can be cut, and only where a
-// planner can take its rest: a plan's child, or a direct card whose
-// project's process has a plan track.
+// planner can take its rest: a plan's child or its successor, or a direct
+// card whose project's process has a plan track.
 func TestCuttable(t *testing.T) {
-	child, direct := Task{Kind: "agent", Source: SourcePlan}, Task{Kind: "agent"}
+	child, direct := Task{Kind: "agent", Source: SourcePlan, Parent: "p", PlanKey: "api"}, Task{Kind: "agent"}
 	for name, tc := range map[string]struct {
 		t    Task
 		s    sessionSpec
 		want bool
 	}{
 		"a plan's child":                     {child, sessionSpec{}, true},
+		"a plan card's successor":            {Task{Kind: "agent", Source: SourceSuccessor, Parent: "p", PlanKey: "api"}, sessionSpec{}, true},
+		"a direct card's successor":          {Task{Kind: "agent", Source: SourceSuccessor}, sessionSpec{}, false},
 		"a direct card with a plan track":    {direct, sessionSpec{planTrack: true}, true},
 		"a direct card without a plan track": {direct, sessionSpec{}, false},
 		"a report session":                   {child, sessionSpec{report: "the guide"}, false},
@@ -5863,6 +5998,77 @@ func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 		if !strings.Contains(chat.gots[0].Input, `Cost and state: {"budget_eur":0.3,"spent_eur":0.05,"remaining_eur":0,"reserve_eur":0.4,"calls":5,"prompt_tokens":2000,"cached_tokens":400,"output_tokens":800,"state":"running"}`) {
 			t.Fatalf("statement lacks the cost and state block:\n%s", chat.gots[0].Input)
 		}
+	})
+}
+
+// A raise that lands during the check-in reaches its answer: the first
+// answer hands up on the pace it was built with, a medium card's 600 lines
+// under large_lines 1000 at session 3 of 3, while an extend raised the
+// card's row by 600 lines and one session, and the first run spent 0.35
+// EUR of the project's judgment budget of 10. The check-in reads the row
+// before it acts, judges again on 600 + 600 = 1200 lines, 3 + 1 = 4
+// sessions and 10 - 0.35 = 9.65 EUR of judgment budget read again, and the
+// first answer opens no case: the session runs on, and the record holds
+// both runs' calls.
+func TestCheckinReadsTheRaiseBeforeItHandsUp(t *testing.T) {
+	handUp := CheckinResponse{Text: `{"decision":"hand_up","reason_kind":"spend_above_policy","reason":"the work cannot be met inside its 600-line bound, and the session allowance is spent"}`}
+	rig := func(t *testing.T, second CheckinResponse) (*Runner, *scriptedChat) {
+		runner, _, _, _, chat, store, _ := liveRig(t, handUp, second)
+		tk := store.tasks["t2"]
+		tk.Size = "medium"
+		store.tasks["t2"] = tk
+		version := testPolicyVersion()
+		version.Document.Risk.LargeLines = 1000
+		runner.cfg.Policy = func() policy.Version { return version }
+		runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil }
+		chat.onCall = func() {
+			if chat.calls == 1 {
+				tk := store.tasks["t2"]
+				tk.Usage.ExtraLines += 600
+				tk.Usage.RaisedSessions++
+				store.tasks["t2"] = tk
+				store.chatSpent = 0.35
+			}
+		}
+		return runner, chat
+	}
+	statements := func(t *testing.T, chat *scriptedChat) {
+		t.Helper()
+		if chat.calls != 2 {
+			t.Fatalf("chat = %d calls, want the hand-up and a second run", chat.calls)
+		}
+		for i, want := range [][]string{
+			{"796 changed lines so far against its bound of 600;", "session 3 of 3.", "10.00 EUR left in the project's judgment budget this month"},
+			{"796 changed lines so far against its bound of 1200;", "session 3 of 4.", "9.65 EUR left in the project's judgment budget this month"},
+		} {
+			for _, w := range want {
+				if !strings.Contains(chat.gots[i].Input, w) {
+					t.Fatalf("statement %d lacks %q:\n%s", i+1, w, chat.gots[i].Input)
+				}
+			}
+		}
+	}
+	t.Run("start", func(t *testing.T) {
+		runner, chat := rig(t, CheckinResponse{Text: `{"decision":"handover","handover":"move the rest of the files"}`})
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 3, Sessions: 3, Model: "m",
+			CheckInAsk: &CheckInAsk{Moment: CheckInGate, Gates: &GateResults{Policy: PolicyGate{Lines: 796}}}}, nil,
+			pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+		if err != nil || res.Outcome != OutcomePushed || res.CheckIn == nil || res.CheckIn.Decision != CheckHandover {
+			t.Fatalf("result = (%+v, %v), want the second run's handover and the session run", res, err)
+		}
+		statements(t, chat)
+		if rec := res.CheckIn.Record; rec == nil || len(rec.Calls) != 2 {
+			t.Fatalf("record = %+v, want both runs' calls", res.CheckIn.Record)
+		}
+	})
+	t.Run("mid-session", func(t *testing.T) {
+		runner, chat := rig(t, CheckinResponse{Text: `{"decision":"continue","reason":"the raise covers the move"}`})
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 3, Sessions: 3, Model: "factory/big"}, nil,
+			cardDiffLine(500, 296)+"\n"+pushedLine("c0ffee")+"\n"+resultLine(true, "done"))
+		if err != nil || res.Outcome != OutcomePushed || res.CheckIn != nil {
+			t.Fatalf("result = (%+v, %v), want the session run on to its push, no hand-up riding it", res, err)
+		}
+		statements(t, chat)
 	})
 }
 

@@ -249,7 +249,8 @@ func rungTwoRig(t *testing.T, judgment string) (rungRig, *Waker, *fakeWakeStarte
 // copy holds the fields they read and answers every route that empty
 // instance answers, its seeded-state branches aside: a clean forge where
 // every list is empty, every write records, every combined status is
-// green and ci.yml is the one workflow file.
+// green, ci.yml is the one workflow file and the bot's fork holds no
+// branch of a card.
 type chainForgejo struct {
 	mu       sync.Mutex
 	issues   []string // "title\n\nbody" of every issue filed
@@ -342,6 +343,8 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 			reply([]map[string]any{{"name": "ci.yml", "type": "file"}})
 		case r.Method == "GET" && p == "":
 			reply(map[string]any{"name": repo})
+		case r.Method == "GET" && owner == "factory-agent" && strings.HasPrefix(p, "/branches/"):
+			http.NotFound(w, r)
 		default:
 			t.Errorf("unexpected call %s %s", r.Method, r.URL)
 			http.NotFound(w, r)
@@ -550,6 +553,10 @@ func (k *fakeKube) PodStatus(context.Context, string, string) (string, int32, er
 
 func (k *fakeKube) PodIP(context.Context, string, string) (string, error) {
 	return "", factoryd.ErrNotFound
+}
+
+func (k *fakeKube) PodEnv(context.Context, string, string, string) (map[string]string, error) {
+	return nil, factoryd.ErrNotFound
 }
 
 func (k *fakeKube) PodInitFinished(context.Context, string, string) (time.Time, bool, error) {

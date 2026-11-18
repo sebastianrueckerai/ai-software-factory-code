@@ -473,6 +473,20 @@ func TestOfferedFollowsTheTable(t *testing.T) {
 	}
 }
 
+// A card with no open pull request, no push and no head is offered a
+// successor while its branch holds work main lacks, which the successor
+// continues; with none on its branch the successor is refused.
+func TestSuccessorOfferedOnBranchWork(t *testing.T) {
+	f := CaseFacts{BranchRead: true, BranchHead: "c9", Autonomy: policy.AutonomyFullAuto}
+	if why := applies(t, ActSuccessor, f, Resolution{}); why != "" || !slices.Contains(offeredNames(f, 3), ActSuccessor) {
+		t.Errorf("a branch at c9: successor refused %q, offered %v; want it offered", why, offeredNames(f, 3))
+	}
+	f.BranchHead = ""
+	if why, want := applies(t, ActSuccessor, f, Resolution{}), "no pull request is open and the card's branch holds no work"; why != want || slices.Contains(offeredNames(f, 3), ActSuccessor) {
+		t.Errorf("no work on the branch: successor refused %q, offered %v; want refused %q", why, offeredNames(f, 3), want)
+	}
+}
+
 // A retry takes a failed dependency nobody retried whose end a retry can
 // fix, and a named one a retry replaced already, whose answer names the
 // replacement; any other named one is refused with its state.
@@ -1508,6 +1522,25 @@ func TestRestartPlanOverOpenCriteriaIsTheHumansAlone(t *testing.T) {
 		if got := a.refusal(f, 3, Resolution{Action: ActRestartPlan, Note: "one card"}); got != "" {
 			t.Errorf("%s: the human's restart_plan = %q, want none", c.name, got)
 		}
+	}
+}
+
+// The case facts of the successor that carries a plan card's key name its
+// plan, so a replan while it runs goes to that plan, and the integration
+// key's successor answers the plan's criteria on its merge approval.
+func TestCaseFactsOfAPlanCardsSuccessorNameItsPlan(t *testing.T) {
+	ctx := context.Background()
+	r, s, _ := tenCriteriaPlan(t, "failed")
+	succ := SuccessorID("card-1")
+	s.tasks[succ] = Task{ID: succ, Kind: "agent", Repository: "linkshort/linkshort", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "card-1",
+		Status: "running", Track: policy.TrackDirect}
+	f, err := r.tripFacts(ctx, s.tasks[succ], "", "")
+	if err != nil || f.Plan != "t-plan" || !f.Criteria {
+		t.Fatalf("the successor's facts: plan %q, criteria %v, %v; want t-plan and true", f.Plan, f.Criteria, err)
+	}
+	a, _ := ActionByName(ActReplan)
+	if why := a.refusal(f, 2, Resolution{Action: ActReplan}); why != "" {
+		t.Fatalf("replan of the running successor = %q, want it offered", why)
 	}
 }
 

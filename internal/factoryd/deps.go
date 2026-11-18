@@ -201,8 +201,8 @@ func takeOverEdges(ctx context.Context, tx *sql.Tx, from, to string) error {
 
 func (s *PGStore) MoveDependents(ctx context.Context, from, to string) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `WITH moved AS (
-			DELETE FROM task_deps d USING tasks t
-			WHERE d.depends_on = $1 AND t.id = d.task_id AND t.source = 'plan' AND t.parent_task = $2
+			DELETE FROM task_deps d USING tasks c
+			WHERE d.depends_on = $1 AND c.id = d.task_id AND `+planCardRow+` AND c.parent_task = $2
 			RETURNING d.task_id),
 		added AS (INSERT INTO task_deps (task_id, depends_on) SELECT task_id, $2 FROM moved ON CONFLICT DO NOTHING)
 		SELECT task_id FROM moved ORDER BY task_id`, from, to)
@@ -488,8 +488,9 @@ func retryMarker(id string) string {
 }
 
 // RetryCard files failed work card taskID again for by (item 119): a
-// card on the direct track that a person, a routine or a plan filed, and
-// not cut into a successor, which it names in its refusal. The
+// card on the direct track that a person, a routine or a plan filed, or
+// that carries a plan card's key (Task.PlanCard), and not cut into a
+// successor, which it names in its refusal. The
 // replacement keeps the card's source, its plan and its key, if any, and
 // its size, so it is not sized again. One transaction puts the
 // replacement, by its deterministic id RetryID, in its place, once: the
@@ -521,7 +522,7 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d is a plan: ask for changes to it, or replan it.", old.IssueNumber))
 	case old.Report():
 		return 0, ErrNoRetry(fmt.Sprintf("Task %s is the %s report of task %s, not a work card: retry that card if it failed.", old.ID, old.Source, old.Parent))
-	case old.Track != policy.TrackDirect || !(old.Source == SourcePlan && old.Parent != "" || slices.Contains([]string{"webhook", "api", SourceRoutine}, old.Source)):
+	case old.Track != policy.TrackDirect || !(old.PlanCard() || slices.Contains([]string{"webhook", "api", SourceRoutine}, old.Source)):
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d is no work card of a person, a routine or a plan: file the work as a new card if it is still needed.", old.IssueNumber))
 	case old.Status != "failed":
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d did not fail: it is %s.", old.IssueNumber, old.Status))

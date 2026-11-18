@@ -251,8 +251,7 @@ func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo,
 	signalDependents(ctx, store, wf, t.ID)
 	// the freed slot goes to the oldest queued card of the same project
 	pullQueued(ctx, store, wf, t.Repository)
-	// a plan card's successor carries its key and its plan
-	if t.Source != SourcePlan && !(t.Source == SourceSuccessor && t.PlanKey != "") || t.Parent == "" || final != "done" {
+	if !t.PlanCard() || final != "done" {
 		return
 	}
 	allDoneMu.Lock()
@@ -265,7 +264,7 @@ func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo,
 			return
 		}
 	}
-	cards, err := planWaits(ctx, store, t.Parent)
+	cards, err := PlanWaits(ctx, store, t.Parent)
 	if err != nil {
 		log.Printf("task %s: the cards of plan %s: %v", t.ID, t.Parent, err)
 		return

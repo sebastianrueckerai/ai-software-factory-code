@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"context"
 	"encoding/base64"
@@ -18,6 +19,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -483,6 +485,11 @@ const (
 	// artifacts that fit, under the 1 MiB that factoryd reads of one: the
 	// rest holds the note on what was left out
 	maxProofLine = 960 << 10
+	// maxTestFile bounds a test file the search for a moved test reads; it
+	// passes over a larger one
+	maxTestFile = 4 << 20
+	// maxDeclared bounds the directories a run names that declare its test
+	maxDeclared = 8
 )
 
 // repro is the repro mode's report on ws: the fetch's failure, a bad
@@ -578,9 +585,10 @@ func runProofList(e proofsEnv, ws string, began time.Time, emit func(harness.Wor
 }
 
 // runProof runs one entry in repo: its file first (placeFile), then the
-// tree's bash check test, which runBounded ends at timeout with late,
-// then the tree as it was; own is the entry's own directory, outside the
-// tree, for the report and the artifacts.
+// tree's bash check test, in the directory its test moved to (movedTest),
+// which runBounded ends at timeout with late, then the tree as it was;
+// own is the entry's own directory, outside the tree, for the report and
+// the artifacts.
 func runProof(p harness.Proof, repo, own string, timeout time.Duration, late string) harness.ProofRun {
 	failed := func(err error) harness.ProofRun {
 		return harness.ProofRun{ID: p.ID, Exit: -1, Output: "proofs mode: " + err.Error()}
@@ -602,18 +610,87 @@ func runProof(p harness.Proof, repo, own string, timeout time.Duration, late str
 			return failed(fmt.Errorf("write %s: %w", f.Path, err))
 		}
 	}
-	args := []string{"./check", "test", p.Suite}
+	moved, declared, searchErr := movedTest(repo, p)
+	args := []string{"./check", "test", cmp.Or(moved, p.Suite)}
 	if p.Name != "" {
 		args = append(args, p.Name)
 	}
 	env := append(os.Environ(), "CHECK_REPORT="+filepath.Join(own, "report.xml"), "CHECK_ARTIFACTS="+filepath.Join(own, "artifacts"))
 	r := runBounded(repo, env, timeout, late, "/bin/bash", args...)
-	run := harness.ProofRun{ID: p.ID, Started: true, Exit: r.Exit, Output: r.Output}
+	run := harness.ProofRun{ID: p.ID, Started: true, Exit: r.Exit, Output: r.Output, Suite: moved, Declared: declared}
+	if searchErr != nil {
+		run.Output += "\nproofs mode: the search for a moved " + p.Name + ": " + searchErr.Error()
+	}
 	if err := undo(); err != nil {
 		run.Output += fmt.Sprintf("\nproofs mode: put back %s: %v", p.File.Path, err)
 	}
 	collect(&run, own)
 	return run
+}
+
+// movedTest is where p's test went when the directory p's suite names
+// declares it no more: the one directory that does, or else the
+// directories that do when two or more do. It searches only for an entry
+// with no file, a test's name and a suite of one directory.
+func movedTest(repo string, p harness.Proof) (suite string, declared []string, err error) {
+	test, _, _ := strings.Cut(p.Name, "/")
+	if p.File != nil || test == "" || !strings.HasPrefix(p.Suite, "./") || strings.Contains(p.Suite, "...") {
+		return "", nil, nil
+	}
+	tree, err := os.OpenRoot(repo)
+	if err != nil {
+		return "", nil, err
+	}
+	defer tree.Close()
+	switch dirs, err := declaringDirs(tree, test); {
+	case err != nil || len(dirs) == 0 || slices.Contains(dirs, asSuite(p.Suite)):
+		return "", nil, err
+	case len(dirs) == 1:
+		return dirs[0], nil, nil
+	default:
+		return "", dirs[:min(len(dirs), maxDeclared)], nil
+	}
+}
+
+// declaringDirs are the directories of root whose *_test.go files declare
+// func name(, each asSuite, in walk order. It passes over what go does,
+// testdata, vendor and a directory whose name starts with a dot or an
+// underscore, reads regular files alone, never through a link, and passes
+// over a file past maxTestFile.
+func declaringDirs(root *os.Root, name string) ([]string, error) {
+	decl := []byte("\nfunc " + name + "(")
+	var dirs []string
+	found := map[string]bool{}
+	err := fs.WalkDir(root.FS(), ".", func(file string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if base := d.Name(); d.IsDir() && file != "." &&
+			(base == "testdata" || base == "vendor" || strings.HasPrefix(base, ".") || strings.HasPrefix(base, "_")) {
+			return fs.SkipDir
+		}
+		dir := asSuite(path.Dir(file))
+		if !d.Type().IsRegular() || !strings.HasSuffix(file, "_test.go") || found[dir] {
+			return nil
+		}
+		b, err := readRegular(root, file, maxTestFile+1)
+		if err != nil {
+			return err
+		}
+		if len(b) <= maxTestFile && bytes.Contains(b, decl) {
+			found[dir], dirs = true, append(dirs, dir)
+		}
+		return nil
+	})
+	return dirs, err
+}
+
+// asSuite is dir as check test takes it: ./dir, or . for the tree's root.
+func asSuite(dir string) string {
+	if dir = path.Clean(dir); dir == "." {
+		return dir
+	}
+	return "./" + dir
 }
 
 // collect reads into run the report and the artifacts the check left in

@@ -385,28 +385,36 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit, bun
 	return head, parts, nil
 }
 
-// listWipParts lists the files the work changes against the merge base of
-// main and the work, the card's diff, else against the start when main is
-// not there to read. A failed listing is unread, never an error.
+// listWipParts lists the files the work changes, a move at its new path,
+// against the merge base of main and the work, the card's diff, else
+// against the start when main is not there to read. A failed listing is
+// unread, never an error.
 func listWipParts(g PushGit, own, start, head string) wipParts {
 	from := start
 	if mb, err := g.Git(own, "merge-base", prBase, head); err == nil && mb != "" {
 		from = mb
 	}
-	out, err := g.Git(own, "diff", "--numstat", "-z", "--no-renames", from, head)
+	out, err := g.Git(own, "diff", "--numstat", "-z", "-M", from, head)
 	if err != nil {
 		log.Printf("list the interim push's files: %v", err)
 		return wipParts{unread: true}
 	}
 	var all []wipPart
-	for entry := range strings.SplitSeq(out, "\x00") {
-		f := strings.SplitN(entry, "\t", 3)
+	entries := strings.Split(out, "\x00")
+	for i := 0; i < len(entries); i++ {
+		f := strings.SplitN(entries[i], "\t", 3)
 		if len(f) != 3 {
 			continue
 		}
+		path := f[2]
+		// a move's record holds no path: its old and new paths follow
+		if path == "" && i+2 < len(entries) {
+			path = entries[i+2]
+			i += 2
+		}
 		added, _ := strconv.Atoi(f[0])
 		deleted, _ := strconv.Atoi(f[1])
-		all = append(all, wipPart{Path: textutil.Truncate(f[2], wipPartPath), Lines: added + deleted})
+		all = append(all, wipPart{Path: textutil.Truncate(path, wipPartPath), Lines: added + deleted})
 	}
 	slices.SortStableFunc(all, func(a, b wipPart) int { return cmp.Compare(b.Lines, a.Lines) })
 	n := min(len(all), wipPartsMax)

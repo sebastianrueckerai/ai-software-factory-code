@@ -140,9 +140,10 @@ func (r *Runner) boardCard(ctx context.Context, taskID string, now time.Time) (B
 		SlotHeld: d.Head.SlotHeld, Flags: d.Flags, Blind: d.Head.Blind, Criteria: d.Head.Criteria}, nil
 }
 
-// boardPlans are repository's open plans, each with its cards counted by
-// status and its proofs by its newest revision, or unreadable when that
-// revision does not decode. A store read that fails is the error.
+// boardPlans are repository's open plans, each with its keys' cards
+// (PlanWaits) counted by status and its proofs by its newest revision, or
+// unreadable when that revision does not decode. A store read that fails
+// is the error.
 func (r *Runner) boardPlans(ctx context.Context, repository string) ([]BoardDigestPlan, error) {
 	plans, err := r.store.OpenPlans(ctx, repository)
 	if err != nil {
@@ -150,7 +151,7 @@ func (r *Runner) boardPlans(ctx context.Context, repository string) ([]BoardDige
 	}
 	out := make([]BoardDigestPlan, len(plans))
 	for i, p := range plans {
-		cards, err := r.store.PlanCards(ctx, p.ID)
+		cards, err := PlanWaits(ctx, r.store, p.ID)
 		if err != nil {
 			return nil, err
 		}

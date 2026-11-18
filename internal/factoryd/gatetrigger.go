@@ -30,7 +30,7 @@ type CheckInPRFacts struct {
 // caller must never read an unreadable pull request as no open pull
 // request. With no pull request to read it returns false, nil.
 func (r *Runner) gateTrigger(ctx context.Context, t Task, p Plan) (bool, error) {
-	if t.Source != SourcePlan || t.Parent == "" || !CriteriaCard(p, t.PlanKey) {
+	if !t.PlanCard() || !CriteriaCard(p, t.PlanKey) {
 		return false, nil
 	}
 	if t.PRNumber == 0 {
@@ -68,7 +68,7 @@ func (r *Runner) gateTrigger(ctx context.Context, t Task, p Plan) (bool, error) 
 // pull request. Cards off a plan hold no facts; a plan's card without a
 // pull request holds none either.
 func (r *Runner) checkinPRFacts(ctx context.Context, t Task) (*CheckInPRFacts, error) {
-	if t.Source != SourcePlan || t.Parent == "" {
+	if !t.PlanCard() {
 		return nil, nil
 	}
 	p, err := r.filedPlan(ctx, t.Parent, t.ID)

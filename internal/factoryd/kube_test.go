@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -409,6 +410,34 @@ func TestInClusterKubePodIPOfARunningPodAlone(t *testing.T) {
 		if ip, err := k.PodIP(context.Background(), "ns", phase+"-10.0.0.7"); !errors.Is(err, errPodEnded) || ip != "" {
 			t.Fatalf("%s: %q, %v; want errPodEnded", phase, ip, err)
 		}
+	}
+}
+
+// A pod's env is read back from its spec, the named container's alone, and
+// a pod without that container answers ErrNotFound.
+func TestInClusterKubePodEnv(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/namespaces/ns/pods/worker-s-1" {
+			t.Errorf("GET %s", r.URL.Path)
+		}
+		io.WriteString(w, `{"spec":{"containers":[{"name":"clone","env":[{"name":"LINE_BOUND","value":"1"}]},`+
+			`{"name":"worker","env":[{"name":"MODEL","value":"m"},{"name":"LINE_BOUND","value":"600"}]}]}}`)
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDir := saDir
+	saDir = dir
+	t.Cleanup(func() { saDir = oldDir })
+	k := &InClusterKube{Host: srv.URL, HTTP: srv.Client()}
+	env, err := k.PodEnv(context.Background(), "ns", "worker-s-1", "worker")
+	if err != nil || !maps.Equal(env, map[string]string{"MODEL": "m", "LINE_BOUND": "600"}) {
+		t.Fatalf("env = %v, %v; want the worker container's MODEL and LINE_BOUND 600", env, err)
+	}
+	if _, err := k.PodEnv(context.Background(), "ns", "worker-s-1", "agent"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a container the pod lacks: %v, want ErrNotFound", err)
 	}
 }
 

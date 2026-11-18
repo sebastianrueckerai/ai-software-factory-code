@@ -4357,6 +4357,23 @@ func TestCheckinReplanClosesAPlansChild(t *testing.T) {
 	}
 }
 
+// A plan card's successor is its key's card in its plan: the check-in's
+// replan of it goes to that plan as a plan card's does, and it turns no
+// plan-track.
+func TestCheckinReplanOfAPlanCardsSuccessorGoesToItsPlan(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state.Source, h.state.PlanCard = SourceSuccessor, true
+	became := h.onBecomePlan(PlanSwitchResult{Switched: true})
+	works := h.onReplanChild(ReplanChildResult{Reason: "cut: plan #10 replans its work"})
+	h.onSessions(SessionResult{Outcome: OutcomeReplan, SessionID: "s1", Trip: "size", Reason: "two packages", Replan: "R"})
+	if final := h.run(t); final != "closed" || h.finals[0][1] != "cut: plan #10 replans its work" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if !slices.Equal(*works, []string{"R"}) || *became != 0 || len(h.sessions) != 1 {
+		t.Fatalf("ReplanChild works %q, BecomePlan calls %d, sessions %d; want [R], 0, 1", *works, *became, len(h.sessions))
+	}
+}
+
 // onRequestApproval records the head of each RequestApproval call.
 func (h *workflowHarness) onRequestApproval() *[]string {
 	var heads []string
@@ -4856,6 +4873,34 @@ func TestWorkflowClosesOnItsProofsAtMain(t *testing.T) {
 	}
 	if !slices.Equal(*calls, []string{"t1"}) || len(h.sessions) != 1 {
 		t.Fatalf("calls %q, sessions %+v; want one call on t1 and one session", *calls, h.sessions)
+	}
+}
+
+// The successor that carries a plan card's key, whose session pushes
+// nothing while its key's work is on main, closes done on its proofs at
+// main as the card would. A run from before the change runs none and goes
+// on to its next session.
+func TestWorkflowClosesASuccessorOnItsProofsAtMain(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state.Source, h.state.PlanCard = SourceSuccessor, true
+	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "main holds the work"})
+	calls := h.onProofsAtMain(ProofsAtMain{Head: "29b0d33aa", Met: true, Reason: "proofs met at 29b0d33: size_bound"}, nil)
+	if final := h.run(t); final != "done" || h.finals[0][1] != "proofs met at 29b0d33: size_bound" {
+		t.Fatalf("finals %v, want done on the proofs", h.finals)
+	}
+	if !slices.Equal(*calls, []string{"t1"}) || len(h.sessions) != 1 {
+		t.Fatalf("calls %q, sessions %+v; want one call on t1 and one session", *calls, h.sessions)
+	}
+
+	h = newWorkflowHarness(t)
+	h.state.Source, h.state.PlanCard = SourceSuccessor, true
+	h.env.OnGetVersion("successor-is-its-keys-card", workflow.DefaultVersion, versionSuccessorIsItsKeysCard).Return(workflow.DefaultVersion)
+	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "nothing to push"}, pushed("s2", "c2"))
+	calls = h.onProofsAtMain(ProofsAtMain{Met: true, Reason: "proofs met at 29b0d33: size_bound"}, nil)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" || len(*calls) != 0 || len(h.sessions) != 2 {
+		t.Fatalf("before the change: finals %v, calls %q, sessions %d; want the push merged, no call and two sessions", h.finals, *calls, len(h.sessions))
 	}
 }
 

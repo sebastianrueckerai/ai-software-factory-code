@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -27,7 +29,8 @@ var digestStart = time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 // digestAt is m minutes into the life of the fixtures' card.
 func digestAt(m int) time.Time { return digestStart.Add(time.Duration(m) * time.Minute) }
 
-// digestRig is a runner on a fake store and a fake object store, with
+// digestRig is a runner on a fake store, a fake object store and a Forgejo
+// that answers every call 404, so the fork holds no branch of a card, with
 // card t1410 filed at digestStart by a webhook: medium, budget 5, running.
 // Its clock stands at digestStart until a test moves it (at).
 type digestRig struct {
@@ -46,8 +49,16 @@ func newDigestRig(change func(*Task)) digestRig {
 	}
 	store.tasks[card.ID] = card
 	return digestRig{r: &Runner{store: store, objects: objects, cfg: testRunnerConfig(), now: func() time.Time { return digestStart },
-		timeline: &Timeline{Objects: objects, Events: store, Store: store}},
+		timeline: &Timeline{Objects: objects, Events: store, Store: store},
+		forgejo:  &Forgejo{BaseURL: "http://forgejo.test", BotUser: "factory-agent", HTTP: &http.Client{Transport: notFoundTrips{}}}},
 		store: store, tl: &Timeline{Objects: objects}}
+}
+
+// notFoundTrips answers every request 404.
+type notFoundTrips struct{}
+
+func (notFoundTrips) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}, Request: r}, nil
 }
 
 // at moves the rig's clock to minute m.
@@ -405,6 +416,9 @@ func TestCardDigestFlagsTheOtherPatterns(t *testing.T) {
 func TestCardDigestNamesThePlanOfASuccessorsParent(t *testing.T) {
 	g := newDigestRig(func(c *Task) { c.Source, c.Parent, c.PlanKey = SourceSuccessor, "t1344", "k1" })
 	g.store.tasks["t1344"] = Task{ID: "t1344", Kind: "agent", Repository: "sf/app", IssueNumber: 1344, Track: policy.TrackPlan, PlanName: "session-metrics"}
+	if _, err := g.store.AddPlanRevision(context.Background(), "t1344", mustJSON(Plan{Summary: "s", Cards: []PlanCard{{Key: "k1", Role: RoleFeature}}}), "r1"); err != nil {
+		t.Fatal(err)
+	}
 	if h := g.digest(t).Head; h.Plan != 1344 || h.PlanName != "session-metrics" {
 		t.Fatalf("Head = %+v, want plan #1344 session-metrics", h)
 	}
@@ -894,6 +908,31 @@ func digestPlanRig(t *testing.T, key string) digestRig {
 		t.Fatal(err)
 	}
 	return g
+}
+
+// The digest of the successor that carries the integration card's key
+// counts the plan's criteria and reads their rows on the plan-filed
+// integration card: at its approval the one criterion no row holds there
+// flags.
+func TestCardDigestOfASuccessorReadsTheIntegrationCardsRows(t *testing.T) {
+	var rows []CriterionVerdict
+	for _, c := range digestPlan().Criteria {
+		if c.ID != "pages_ok" {
+			rows = append(rows, CriterionVerdict{Criterion: c.ID, Verdict: "met", Kind: c.Kind, Source: CriteriaSourceGate,
+				DecidedBy: FactoryDecider, CreatedAt: digestAt(30)})
+		}
+	}
+	g := digestPlanRig(t, "integ")
+	card := g.store.tasks["t1410"]
+	card.Source, card.Status, card.Gate = SourceSuccessor, "in-review", GateApproval
+	g.store.tasks["t1410"] = card
+	g.store.tasks["t-int"] = Task{ID: "t-int", Kind: "agent", Repository: "sf/app", IssueNumber: 1400, Source: SourcePlan, Parent: "plan1",
+		PlanKey: "integ", Status: "failed"}
+	g.store.criteriaVerdicts = map[string][]CriterionVerdict{"t-int": rows}
+	d := g.digest(t)
+	if want := []DigestFlag{{"criterion_unproven", "pages_ok"}}; d.Head.Criteria != 7 || !slices.Equal(d.Flags, want) {
+		t.Fatalf("Head criteria %d, flags %+v; want 7 and %+v", d.Head.Criteria, d.Flags, want)
+	}
 }
 
 // The gate's line with states counts blind and open, a proof's opening is
@@ -1652,5 +1691,27 @@ func TestTheDigestNamesTheProjectAgentsRowsAsTheChats(t *testing.T) {
 		if !strings.Contains(r, want) {
 			t.Errorf("the steps =\n%s\nwant the line %q", r, want)
 		}
+	}
+}
+
+// A check-in whose every call was refused raises checkin_refused once no
+// check-in ran after it, keyed by the check-in's place in the card's life.
+func TestDigestFlagsARefusedCheckin(t *testing.T) {
+	g := newDigestRig(nil)
+	g.line(t, 12, "checkin", map[string]any{"moment": "gate", "decision": "handover", "reason": CheckinRefusedReason + "provider refused"})
+	d, err := g.r.CardDigest(context.Background(), "t1410")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(d.Flags, func(f DigestFlag) bool { return f.Name == "checkin_refused" }) {
+		t.Fatalf("flags = %+v, want checkin_refused", d.Flags)
+	}
+	g.line(t, 13, "checkin", map[string]any{"moment": "gate", "decision": "handover", "reason": "the findings stand", "handover": "do x"})
+	d, err = g.r.CardDigest(context.Background(), "t1410")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(d.Flags, func(f DigestFlag) bool { return f.Name == "checkin_refused" }) {
+		t.Fatalf("flags = %+v, want none once a check-in ran after the refused one", d.Flags)
 	}
 }

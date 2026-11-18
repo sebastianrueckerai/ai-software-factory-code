@@ -545,6 +545,27 @@ func TestQueueAdmitsOnePlanAtATime(t *testing.T) {
 		}
 	})
 
+	// the successor that carries a plan card's key is that plan's card:
+	// it waits for another plan's open group, and its merge opens its own
+	t.Run("a plan card's successor waits", func(t *testing.T) {
+		r, store := fixture(t, policy.GroupsOneAtATime, Task{ID: "hs", Status: "in-review", Repository: repo, Track: policy.TrackDirect,
+			Process: "maintenance", Source: SourceSuccessor, Parent: "p-h", PlanKey: "c", PRNumber: 14})
+		enter(t, r, "hs", 1)
+		if wait := steps(t, r, "hs", "queue_group_wait"); queued(store, "hs") || len(wait) != 1 || wait[0]["plan"] != "p-g" {
+			t.Fatalf("hs queued %v, queue_group_wait steps %v; want it held for plan p-g", queued(store, "hs"), wait)
+		}
+	})
+	t.Run("a successor's merge opens its plan's group", func(t *testing.T) {
+		r, store := fixture(t, policy.GroupsOneAtATime)
+		g1 := store.tasks["g1"]
+		g1.Source = SourceSuccessor
+		store.tasks["g1"] = g1
+		enter(t, r, "h1", 1)
+		if wait := steps(t, r, "h1", "queue_group_wait"); queued(store, "h1") || len(wait) != 1 || wait[0]["plan"] != "p-g" {
+			t.Fatalf("h1 queued %v, queue_group_wait steps %v; want it held for plan p-g", queued(store, "h1"), wait)
+		}
+	})
+
 	t.Run("free", func(t *testing.T) {
 		r, _ := fixture(t, "")
 		enter(t, r, "h1", 0)

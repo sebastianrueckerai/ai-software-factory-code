@@ -3,7 +3,9 @@ package schema
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	"io/fs"
@@ -566,5 +568,72 @@ func TestCardHoldMigration(t *testing.T) {
 	}
 	if held || by != "" || reason != "" || release != "" {
 		t.Fatalf("a row without a hold reads held %t by %q reason %q release %q", held, by, reason, release)
+	}
+}
+
+// The successor revision migration gives each plan card's successor filed
+// before successors carried a revision the one its chain's plan card ran
+// against: t-a ran at revision 2, so its successor and that successor's
+// successor read 2. t-b never started, so its successor stays 0; a
+// successor that holds a revision keeps it, and one without a key stays 0.
+// A second run changes nothing.
+func TestSuccessorPlanRevisionMigration(t *testing.T) {
+	db, err := sql.Open("pgx", schematest.DSN(t, "successorrevision"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate an empty database: %v", err)
+	}
+	succ := func(id string) string {
+		sum := sha256.Sum256([]byte("successor " + id))
+		return "t-" + hex.EncodeToString(sum[:6])
+	}
+	a1, a2, b1, c1, d1 := succ("t-a"), succ(succ("t-a")), succ("t-b"), succ("t-c"), succ("t-d")
+	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status, track, source) VALUES ('t-plan', 1, 'running', 'plan', 'webhook')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []struct {
+		id, status, source string
+		key                any
+		revision           int
+	}{
+		{"t-a", "failed", "plan", "api", 2}, {a1, "failed", "successor", "api", 0}, {a2, "running", "successor", "api", 0},
+		{"t-b", "failed", "plan", "ui", 0}, {b1, "running", "successor", "ui", 0},
+		{"t-c", "failed", "plan", "cli", 1}, {c1, "running", "successor", "cli", 4},
+		{"t-d", "failed", "plan", "ops", 3}, {d1, "running", "successor", nil, 0},
+	} {
+		if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status, track, source, parent_task, plan_key, plan_revision, finished_at)
+			VALUES ($1, 1, $2, 'direct', $3, 't-plan', $4, $5, CASE WHEN $2 = 'failed' THEN now() END)`, r.id, r.status, r.source, r.key, r.revision); err != nil {
+			t.Fatalf("insert %s: %v", r.id, err)
+		}
+	}
+	want := map[string]int{"t-plan": 0, "t-a": 2, a1: 2, a2: 2, "t-b": 0, b1: 0, "t-c": 1, c1: 4, "t-d": 3, d1: 0}
+	for _, run := range []string{"first", "second"} {
+		if _, err := db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE name = 'factoryd/20261122090000_successor_plan_revision.sql'`); err != nil {
+			t.Fatal(err)
+		}
+		if err := Migrate(ctx, db); err != nil {
+			t.Fatalf("the %s run: %v", run, err)
+		}
+		rows, err := db.QueryContext(ctx, `SELECT id, plan_revision FROM tasks`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]int{}
+		for rows.Next() {
+			var id string
+			var n int
+			if err := rows.Scan(&id, &n); err != nil {
+				t.Fatal(err)
+			}
+			got[id] = n
+		}
+		rows.Close()
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("after the %s run the revisions are %v, want %v", run, got, want)
+		}
 	}
 }

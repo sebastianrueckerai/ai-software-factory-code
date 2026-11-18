@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -13,39 +13,8 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-const unjudgedSuffix = " (not judged, judgment budget spent)"
-
 // askOf and infoOf are the question the face asked on case id.
 func (g rungRig) askOf(t *testing.T, id int64) string { return g.askedOf(t, id, "ask") }
-
-func (g rungRig) infoOf(t *testing.T, id int64) string { return g.askedOf(t, id, "info") }
-
-func (g rungRig) askedOf(t *testing.T, id int64, key string) string {
-	t.Helper()
-	for _, e := range g.asks(t) {
-		if n, _ := toInt(e.Detail["case_id"]); int64(n) == id {
-			s, _ := e.Detail[key].(string)
-			return s
-		}
-	}
-	t.Fatalf("no question asked on case %d", id)
-	return ""
-}
-
-// spendChat spends the whole month budget of the chat task of demo-app.
-func (g rungRig) spendChat(t *testing.T) Task {
-	t.Helper()
-	ctx := context.Background()
-	chat, err := g.r.JudgmentTask(ctx, Task{Repository: "demo-app/demo-app"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = budget_eur WHERE id = $1`, chat.ID); err != nil {
-		t.Fatal(err)
-	}
-	chat.SpentEUR = chat.BudgetEUR
-	return chat
-}
 
 // A chat task with 0.00 of 10.00 EUR left (the default budget): a session
 // cap that rung 0 does not resolve goes to the human on card t1 and on
@@ -53,20 +22,20 @@ func (g rungRig) spendChat(t *testing.T) Task {
 // the project has one chat_budget card and one judgment_budget case.
 func TestSpentJudgmentBudgetFacesTheHumanUnjudged(t *testing.T) {
 	g := newRungRig(t, "success")
-	g.r.store = projectStore{g.s}
-	g.r.cfg.Prices = nil
+	g.r.PgSetStore(projectStore{g.s})
+	g.r.PgSetPrices(nil)
 	cardForge, _ := newAlertForgejo(t)
-	g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: cardForge, Timeline: g.r.timeline}
+	g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: cardForge, Timeline: g.r.PgTimeline()}
 	ctx := context.Background()
 	chat := g.spendChat(t)
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'running' WHERE id = $1`, chat.ID); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'running' WHERE id = $1`, chat.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.s.CreateTask(ctx, Task{ID: "t2", Kind: "agent", Status: "running", Objective: "y", Repository: "demo-app/demo-app",
 		Track: policy.TrackDirect, Size: "medium", BudgetEUR: 3}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET required_capabilities = '["coder"]'::jsonb, size = 'medium' WHERE id = 't2'`); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET required_capabilities = '["coder"]'::jsonb, size = 'medium' WHERE id = 't2'`); err != nil {
 		t.Fatal(err)
 	}
 	a := g.trip(t, tripCap)
@@ -103,10 +72,10 @@ func TestSpentJudgmentBudgetFacesTheHumanUnjudged(t *testing.T) {
 		}
 	}
 	var cards, cases int
-	if err := g.s.db.QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE source = $1 AND parent_task = $2`, SourceChatBudget, chat.ID).Scan(&cards); err != nil {
+	if err := g.s.PgDB().QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE source = $1 AND parent_task = $2`, SourceChatBudget, chat.ID).Scan(&cards); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.s.db.QueryRowContext(ctx, `SELECT count(*) FROM cases WHERE kind = 'judgment_budget'`).Scan(&cases); err != nil {
+	if err := g.s.PgDB().QueryRowContext(ctx, `SELECT count(*) FROM cases WHERE kind = 'judgment_budget'`).Scan(&cases); err != nil {
 		t.Fatal(err)
 	}
 	if cards != 1 || cases != 1 {
@@ -152,9 +121,9 @@ func TestRung1PerCardCountSendsTheCaseToRung2(t *testing.T) {
 // With rung1_runs 7 the same six steps leave room: the seventh runs.
 func TestRung1PerCardCountFollowsPolicy(t *testing.T) {
 	g := newRungRig(t, "success")
-	v := g.r.cfg.Policy()
+	v := g.r.PgCfg().Policy()
 	v.Document.Escalation.Rung1Runs = 7
-	g.r.cfg.Policy = func() policy.Version { return v }
+	g.r.PgSetPolicy(func() policy.Version { return v })
 	ctx := context.Background()
 	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: "k", Status: CaseAtHuman, Problem: "old"})
 	if err != nil {
@@ -183,7 +152,7 @@ func TestJudgmentBudgetSpentBelowOneCall(t *testing.T) {
 		g := newRungRig(t, "success")
 		g.chat.answers = []CheckinResponse{g.handUp(t)}
 		chat := g.spendChat(t)
-		if _, err := g.s.db.ExecContext(context.Background(), `UPDATE tasks SET spent_eur = budget_eur - $2 WHERE id = $1`, chat.ID, left); err != nil {
+		if _, err := g.s.PgDB().ExecContext(context.Background(), `UPDATE tasks SET spent_eur = budget_eur - $2 WHERE id = $1`, chat.ID, left); err != nil {
 			t.Fatal(err)
 		}
 		out := g.trip(t, tripCap)
@@ -200,13 +169,13 @@ func TestJudgmentBudgetSpentBelowOneCall(t *testing.T) {
 // and the one money case is filed.
 func TestJudgedCaseIsNotMarkedUnjudged(t *testing.T) {
 	g := newRungRig(t, "success")
-	g.r.cfg.Prices = nil
-	g.r.store = projectStore{g.s}
+	g.r.PgSetPrices(nil)
+	g.r.PgSetStore(projectStore{g.s})
 	cardForge, _ := newAlertForgejo(t)
-	g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: cardForge, Timeline: g.r.timeline}
+	g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: cardForge, Timeline: g.r.PgTimeline()}
 	ctx := context.Background()
 	chat := g.spendChat(t)
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'running' WHERE id = $1`, chat.ID); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'running' WHERE id = $1`, chat.ID); err != nil {
 		t.Fatal(err)
 	}
 	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: "k", Status: CaseOpen, Problem: "stuck"})
@@ -217,7 +186,7 @@ func TestJudgedCaseIsNotMarkedUnjudged(t *testing.T) {
 	if _, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepHandedUp, Found: "the stop reads as gate_stop", Decision: "close", Grounds: "done on main", EndedAt: &now}); err != nil {
 		t.Fatal(err)
 	}
-	task, _, err := g.r.task(ctx, "t1")
+	task, _, err := g.r.PgTask(ctx, "t1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +204,7 @@ func TestJudgedCaseIsNotMarkedUnjudged(t *testing.T) {
 		ask, _ = e.Detail["ask"].(string)
 	}
 	var money int
-	if err := g.s.db.QueryRowContext(ctx, `SELECT count(*) FROM cases WHERE kind = 'judgment_budget'`).Scan(&money); err != nil {
+	if err := g.s.PgDB().QueryRowContext(ctx, `SELECT count(*) FROM cases WHERE kind = 'judgment_budget'`).Scan(&money); err != nil {
 		t.Fatal(err)
 	}
 	for _, st := range g.steps(t, c.ID) {
@@ -302,20 +271,20 @@ func TestRung1StepsStopAtTheLimitUnderRace(t *testing.T) {
 // pass of the case adds no second step of rung 0.
 func TestFailedMoneyCardDoesNotHoldTheFace(t *testing.T) {
 	g := newRungRig(t, "success")
-	g.r.cfg.Prices = nil
-	g.r.store = projectStore{g.s}
+	g.r.PgSetPrices(nil)
+	g.r.PgSetStore(projectStore{g.s})
 	ctx := context.Background()
 	dead := &Forgejo{BaseURL: "http://127.0.0.1:1", BotUser: "factory-agent", BotPassword: "pw"}
-	g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: dead, Timeline: g.r.timeline}
+	g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: dead, Timeline: g.r.PgTimeline()}
 	chat := g.spendChat(t)
 	out := g.trip(t, tripCap)
 	if out.Rung != 3 || out.Comment == 0 {
 		t.Fatalf("outcome %+v, want the face", out)
 	}
-	task, _, _ := g.r.task(ctx, "t1")
+	task, _, _ := g.r.PgTask(ctx, "t1")
 	c := caseByID(t, g.s, out.CaseID)
 	for range 2 {
-		if _, err := g.r.spentJudgment(ctx, task, c); err != nil {
+		if _, err := g.r.PgSpentJudgment(ctx, task, c); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -330,12 +299,12 @@ func TestFailedMoneyCardDoesNotHoldTheFace(t *testing.T) {
 		t.Fatalf("%d spent steps and %d stops, want one of each", n, len(stops))
 	}
 	cardForge, _ := newAlertForgejo(t)
-	cards := &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: cardForge, Timeline: g.r.timeline}
+	cards := &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: cardForge, Timeline: g.r.PgTimeline()}
 	if err := cards.Check(ctx, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	var made int
-	if err := g.s.db.QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE source = $1 AND parent_task = $2`, SourceChatBudget, chat.ID).Scan(&made); err != nil || made != 1 {
+	if err := g.s.PgDB().QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE source = $1 AND parent_task = $2`, SourceChatBudget, chat.ID).Scan(&made); err != nil || made != 1 {
 		t.Fatalf("%d money cards after the loop, %v; want 1", made, err)
 	}
 }
@@ -345,15 +314,15 @@ func TestFailedMoneyCardDoesNotHoldTheFace(t *testing.T) {
 // 11 days left is 7/7*11 = 11.
 func TestFailedMoneyCardRecordsTheConsolesSuggestion(t *testing.T) {
 	g := newRungRig(t, "success")
-	g.r.cfg.Prices = nil
-	g.r.store = projectStore{g.s}
+	g.r.PgSetPrices(nil)
+	g.r.PgSetStore(projectStore{g.s})
 	ctx := context.Background()
 	now := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
-	g.r.now = func() time.Time { return now }
+	g.r.PgSetNow(func() time.Time { return now })
 	dead := &Forgejo{BaseURL: "http://127.0.0.1:1", BotUser: "factory-agent", BotPassword: "pw"}
-	g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: dead, Timeline: g.r.timeline}
+	g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: dead, Timeline: g.r.PgTimeline()}
 	chat := g.spendChat(t)
-	task, _, _ := g.r.task(ctx, "t1")
+	task, _, _ := g.r.PgTask(ctx, "t1")
 	g.r.FileJudgmentCard(ctx, task, chat)
 	stops, err := g.s.TaskEventsOfKind(ctx, chat.ID, EventChatBudgetSpent, 1)
 	if err != nil || len(stops) != 1 {
@@ -370,14 +339,14 @@ func TestFailedMoneyCardRecordsTheConsolesSuggestion(t *testing.T) {
 func TestUnreadJudgmentBudgetFacesTheCase(t *testing.T) {
 	g := newRungRig(t, "success")
 	ctx := context.Background()
-	task, _, _ := g.r.task(ctx, "t1")
+	task, _, _ := g.r.PgTask(ctx, "t1")
 	task.Repository = "other/unknown"
 	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "other/unknown", Kind: CaseOther, StateKey: "u", Status: CaseOpen, Problem: "stuck"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
-		up, err := g.r.spentJudgment(ctx, task, c)
+		up, err := g.r.PgSpentJudgment(ctx, task, c)
 		if err != nil || up == nil || !strings.Contains(up.Found, "other/unknown names no project") {
 			t.Fatalf("hand-up %+v, %v; want it naming the missing project", up, err)
 		}
@@ -420,7 +389,7 @@ func TestUnreadJudgmentBudgetEndToEnd(t *testing.T) {
 	if err := g.s.CreateTask(ctx, Task{ID: "t3", Kind: "agent", Status: "running", Objective: "z", Repository: "other/unknown", Track: policy.TrackDirect, Size: "medium", BudgetEUR: 3}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET required_capabilities = '["coder"]'::jsonb WHERE id = 't3'`); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET required_capabilities = '["coder"]'::jsonb WHERE id = 't3'`); err != nil {
 		t.Fatal(err)
 	}
 	out, err := g.r.OpenTrip(ctx, TripInput{TaskID: "t3", Reason: tripCap}, tripAttempt{N: 1})
@@ -445,13 +414,13 @@ func TestUnreadJudgmentBudgetEndToEnd(t *testing.T) {
 func TestUnreadJudgmentFindingIsMasked(t *testing.T) {
 	g := newRungRig(t, "success")
 	ctx := context.Background()
-	task, _, _ := g.r.task(ctx, "t1")
+	task, _, _ := g.r.PgTask(ctx, "t1")
 	task.Repository = "https://user:pass@host.example/x Authorization: Bearer abc123"
 	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: "m", Status: CaseOpen, Problem: "p"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	up, err := g.r.spentJudgment(ctx, task, c)
+	up, err := g.r.PgSpentJudgment(ctx, task, c)
 	if err != nil || up == nil {
 		t.Fatalf("hand-up %+v, %v", up, err)
 	}

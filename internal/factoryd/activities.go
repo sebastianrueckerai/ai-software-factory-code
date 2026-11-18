@@ -487,16 +487,17 @@ func successorMarker(id string) string {
 // Successor files the successor of the stuck card in (task 6): a card of
 // the same objective with the findings so far, the carried pull request
 // and the card's size and budget, queued on the direct track under the
-// work bound. It continues the old card's branch with the old card's base,
-// as a plan card that goes on from another does, so its first session
-// starts at that head and its clone holds the work: an interim commit the
-// line bound refused, or work the old card took on through its from. An
-// old card with no branch leaves it to start from main's tip. A successor
-// that carries work, a pull request or a branch, keeps the old card's line
-// raise. The row lands first, with the old card's dependencies and its
-// dependents, and its issue after, so a filing that stops part way runs
-// again to the same one card: the row's identity holds the card and the
-// marker holds the issue.
+// work bound; a plan card's successor carries its key and the revision it
+// ran against in its plan. It continues the old card's branch with the old
+// card's base, as a plan card that goes on from another does, so its first
+// session starts at that head and its clone holds the work: an interim
+// commit the line bound refused, or work the old card took on through its
+// from. An old card with no branch leaves it to start from main's tip. A
+// successor that carries work, a pull request or a branch, keeps the old
+// card's line raise. The row lands first, with the old card's dependencies
+// and its dependents, and its issue after, so a filing that stops part way
+// runs again to the same one card: the row's identity holds the card and
+// the marker holds the issue.
 func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, error) {
 	old, repo, err := r.task(ctx, in.TaskID)
 	if err != nil {
@@ -535,7 +536,7 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		}
 		if t, err = fileEntry(p, Task{ID: SuccessorID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass,
 			BudgetEUR: old.BudgetEUR, Size: old.Size, Objective: old.Objective + "\n\n" + r.untrusted(old, strings.Join(lines, "\n")),
-			Repository: old.Repository, Source: SourceSuccessor, Parent: old.Parent, PlanKey: old.PlanKey, Rung: old.Rung,
+			Repository: old.Repository, Source: SourceSuccessor, Parent: old.Parent, PlanKey: old.PlanKey, PlanRevision: old.PlanRevision, Rung: old.Rung,
 			Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter, CarryPR: pr}); err != nil {
 			return "", err
 		}
@@ -1041,9 +1042,10 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		s.pull = t.CarryPR
 		s.spec += fmt.Sprintf("\n\nThis card carries pull request #%[1]d: its head is in your clone as branch pull/%[1]d. The sandbox holds no git credential and cannot fetch it, so work from that branch.", t.CarryPR)
 	}
-	// a plan card's first session pins the revision it runs against
-	// (piece 10); the merge refuses a card the plan has since passed
-	if t.Source == SourcePlan && t.Parent != "" && t.PlanRevision == 0 {
+	// a plan card's first session, its successor's too, pins the revision
+	// it runs against (piece 10); the merge refuses a card the plan has
+	// since passed
+	if t.PlanCard() && t.PlanRevision == 0 {
 		rev, ok, err := r.store.PlanRevision(ctx, t.Parent, 0)
 		if err != nil {
 			return SessionResult{}, named("plan revision", err)
@@ -1055,7 +1057,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			t.PlanRevision = rev.Revision
 		}
 	}
-	if t.Source != SourcePlan && t.Standing() == harness.StandingWriter {
+	if !t.PlanCard() && t.Standing() == harness.StandingWriter {
 		_, body, _ := strings.Cut(t.Objective, "\n\n")
 		s.directories = askedDirectories(body)
 	}
@@ -1064,7 +1066,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	// a plan's work its first revert took off main is on its salvage
 	// branch, which a card that lands it again applies from
-	if t.Source == SourcePlan && t.Parent != "" {
+	if t.PlanCard() {
 		pair, err := r.salvagePair(ctx, repo, t.Parent)
 		if err != nil {
 			return SessionResult{}, named("salvage branch", err)
@@ -2095,7 +2097,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		return RunState{}, err
 	}
 	st := RunState{Status: t.Status, Usage: t.Usage, Size: t.Size, Standing: t.Standing(), Report: t.Report(), Stronger: t.Source == SourceScreening,
-		Roll: t.Source == SourceRoll, FactoryPR: factoryPRSources(t.Source), Source: t.Source}
+		Roll: t.Source == SourceRoll, FactoryPR: factoryPRSources(t.Source), Source: t.Source, PlanCard: t.PlanCard()}
 	if t.Status == "closing" {
 		st.ClosingFinal, st.ClosingReason = t.ClosingFinal, t.ClosingReason
 	}

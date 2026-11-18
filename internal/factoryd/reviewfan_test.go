@@ -357,7 +357,10 @@ func TestGateRetryPinnedToTheFreezeReset(t *testing.T) {
 	if _, err := r2.callAll(ctx, "t1", "big", policy.PurposeReview, time.Minute, time.Time{}, labelledCalls(2)); !errors.Is(err, context.Canceled) {
 		t.Fatalf("the attempt inside the freeze = %v, want context.Canceled", err)
 	}
-	if len(again) > 2 {
-		t.Fatalf("the cancelled attempt made %d calls, want no re-call inside the freeze", len(again))
+	mu.Lock()
+	n = len(again)
+	mu.Unlock()
+	if n > 2 {
+		t.Fatalf("the cancelled attempt made %d calls, want no re-call inside the freeze", n)
 	}
 }

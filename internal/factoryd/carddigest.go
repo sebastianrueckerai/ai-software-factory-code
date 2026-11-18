@@ -195,13 +195,11 @@ func (r *Runner) readCard(ctx context.Context, taskID string) (cardRows, error) 
 		}
 		rows.caseSteps = append(rows.caseSteps, steps...)
 	}
-	if rows.verdicts, err = r.store.CriteriaVerdicts(ctx, taskID); err != nil {
-		return cardRows{}, err
-	}
 	if rows.timeline, err = r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl"); err != nil {
 		return cardRows{}, fmt.Errorf("read the timeline: %w", err)
 	}
-	if t.Source == SourcePlan && t.Parent != "" {
+	home := taskID
+	if t.PlanCard() {
 		p, _, err := planOfStore(ctx, r.store, t.Parent, taskID)
 		if err != nil {
 			return cardRows{}, err
@@ -209,6 +207,12 @@ func (r *Runner) readCard(ctx context.Context, taskID string) (cardRows, error) 
 		if roleOf(p, t.PlanKey) == RoleIntegration {
 			rows.criteria = p.Criteria
 		}
+		if home, err = verdictHome(ctx, r.store, t, p); err != nil {
+			return cardRows{}, err
+		}
+	}
+	if rows.verdicts, err = r.store.CriteriaVerdicts(ctx, home); err != nil {
+		return cardRows{}, err
 	}
 	if t.Track != policy.TrackPlan {
 		return rows, nil

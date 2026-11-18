@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -374,5 +375,24 @@ func TestAFundFailureBesideAPlanAnswerStillRecordsTheAnswer(t *testing.T) {
 	r.c.cfg.Tasks = r.tasks
 	if rec := send(); rec.Code != http.StatusConflict || rec.Body.String() != "Question 1 of plan #1 is answered already.\n" {
 		t.Errorf("the retry: %d %q", rec.Code, rec.Body)
+	}
+}
+
+// A plan case whose facts name no revision sorts by its state key's
+// revision: the newest revision's facts-less question reads first, its
+// confirmation after it, and the older revision's question last.
+func TestAFactslessPlanCaseSortsInItsKeysRevision(t *testing.T) {
+	list := []factoryd.Case{
+		{ID: 9, Kind: factoryd.CasePlanQuestion, StateKey: "c3@r1", Facts: map[string]any{"revision": 1.0, "index": 1.0}},
+		{ID: 8, Kind: factoryd.CasePlanQuestion, StateKey: "a1@r2"},
+		{ID: 7, Kind: factoryd.CasePlanConfirmation, StateKey: "b2@r2", Facts: map[string]any{"revision": 2.0, "index": 3.0}},
+	}
+	orderPlanCases(list)
+	var got []int64
+	for _, k := range list {
+		got = append(got, k.ID)
+	}
+	if want := []int64{8, 7, 9}; !slices.Equal(got, want) {
+		t.Errorf("the plan's cases read %v, want %v", got, want)
 	}
 }

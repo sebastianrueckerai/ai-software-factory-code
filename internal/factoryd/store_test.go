@@ -258,7 +258,7 @@ func (s *fakeStore) CreateSuccessor(ctx context.Context, id string, t Task) erro
 func (s *fakeStore) MoveDependents(ctx context.Context, from, to string) ([]string, error) {
 	var moved []string
 	for id, deps := range s.deps {
-		if t := s.tasks[id]; t.Source == SourcePlan && t.Parent == to && slices.Contains(deps, from) {
+		if t := s.tasks[id]; t.PlanCard() && t.Parent == to && slices.Contains(deps, from) {
 			s.deps[id] = append(slices.DeleteFunc(deps, func(d string) bool { return d == from || d == to }), to)
 			moved = append(moved, id)
 		}
@@ -581,7 +581,7 @@ func (s *fakeStore) PlanClosed(ctx context.Context, plan string) (time.Time, boo
 func (s *fakeStore) HeldPlanCards(ctx context.Context, repository string) ([]Task, error) {
 	var out []Task
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.Source == SourcePlan && t.Status == "waiting-human" && t.Gate == "approval" {
+		if t.Repository == repository && t.PlanCard() && t.Status == "waiting-human" && t.Gate == "approval" {
 			out = append(out, t)
 		}
 	}
@@ -598,9 +598,13 @@ func (s *fakeStore) cardMerged(c Task) bool {
 	return c.MergeCommit != "" || slices.ContainsFunc(s.events, func(e Event) bool { return e.TaskID == c.ID && e.Kind == "pull_request_merged" })
 }
 
+// holdsKey is planCardRow with its key: a plan's card (Task.PlanCard)
+// that holds its key.
+func holdsKey(c Task) bool { return c.PlanCard() && c.PlanKey != "" }
+
 func (s *fakeStore) PlanMerged(ctx context.Context, plan string) (bool, error) {
 	for _, c := range s.tasks {
-		if c.Parent == plan && c.Source == SourcePlan && c.PlanKey != "" && s.cardMerged(c) {
+		if c.Parent == plan && holdsKey(c) && s.cardMerged(c) {
 			return true, nil
 		}
 	}
@@ -610,8 +614,9 @@ func (s *fakeStore) PlanMerged(ctx context.Context, plan string) (bool, error) {
 func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
 	groups := map[string]*Group{}
 	merged := map[string]bool{}
+	newest := map[[2]string]Task{}
 	for _, c := range s.tasks {
-		if _, closed := s.closed[c.Parent]; c.Source != SourcePlan || c.Parent == "" || c.PlanKey == "" || closed {
+		if _, closed := s.closed[c.Parent]; !holdsKey(c) || closed {
 			continue
 		}
 		g := groups[c.Parent]
@@ -620,7 +625,10 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 			g = &Group{Plan: p.ID, Issue: p.IssueNumber, Repository: p.Repository, Children: map[string]int{}}
 			groups[c.Parent] = g
 		}
-		g.Children[c.Status]++
+		key := [2]string{c.Parent, c.PlanKey}
+		if n, ok := newest[key]; !ok || cmp.Or(c.CreatedAt.Compare(n.CreatedAt), strings.Compare(c.ID, n.ID)) > 0 {
+			newest[key] = c
+		}
 		if !s.cardMerged(c) {
 			continue
 		}
@@ -628,6 +636,9 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 		if c.FinishedAt != nil && (g.FirstMerge.IsZero() || c.FinishedAt.Before(g.FirstMerge)) {
 			g.FirstMerge = *c.FinishedAt
 		}
+	}
+	for _, c := range newest {
+		groups[c.Parent].Children[c.Status]++
 	}
 	out := map[string][]Group{}
 	for plan, g := range groups {
@@ -692,7 +703,11 @@ func (s *fakeStore) PlansAwaitingCriteria(ctx context.Context) ([]string, error)
 			continue
 		}
 		cards, _ := s.PlanCards(ctx, id)
-		if _, filed := integrationCardOf(cards, p); !filed || slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) && c.Status != "merged" }) {
+		open := false
+		for _, c := range s.tasks {
+			open = open || c.Parent == id && holdsKey(c) && !Final(c.Status) && c.Status != "merged"
+		}
+		if _, filed := integrationCardOf(cards, p); !filed || open {
 			continue
 		}
 		out = append(out, id)
@@ -705,7 +720,7 @@ func (s *fakeStore) QueuedPlans(ctx context.Context, repository string) ([]int64
 	var out []int64
 	for _, c := range s.tasks {
 		queued := c.Gate == GateMergeQueue || c.Gate == GateApproval || slices.ContainsFunc(s.queue, func(e queueEntry) bool { return e.task == c.ID })
-		if issue := s.tasks[c.Parent].IssueNumber; c.Repository == repository && c.Source == SourcePlan && c.Parent != "" && c.PlanKey != "" &&
+		if issue := s.tasks[c.Parent].IssueNumber; c.Repository == repository && holdsKey(c) &&
 			c.Status == "in-review" && queued && !slices.Contains(out, issue) {
 			out = append(out, issue)
 		}
@@ -1369,7 +1384,7 @@ func (s *fakeStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (
 
 func (s *fakeStore) SwitchToPlan(ctx context.Context, id string, capabilities []string) (bool, error) {
 	t, ok := s.tasks[id]
-	if !ok || t.Track != policy.TrackDirect || t.Source == SourcePlan || t.MergeCommit != "" || !slices.Contains(switchableStatuses, t.Status) {
+	if !ok || t.Track != policy.TrackDirect || t.Source == SourcePlan || t.PlanKey != "" || t.MergeCommit != "" || !slices.Contains(switchableStatuses, t.Status) {
 		return false, nil
 	}
 	t.Track, t.RequiredCapabilities, t.PRNumber = policy.TrackPlan, capabilities, 0
@@ -3535,7 +3550,8 @@ func TestPGStoreTaskImage(t *testing.T) {
 
 // SwitchToPlan moves a running direct card that did not merge to the plan
 // track with the planner's class, once, and drops its open pull request's
-// number; a merged card, a plan's card and an ended card stay as they are.
+// number; a merged card, a plan's card, the successor that carries a plan
+// card's key and an ended card stay as they are.
 func TestSwitchToPlan(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
@@ -3563,6 +3579,10 @@ func TestSwitchToPlan(t *testing.T) {
 		Parent: "t-plan", PlanKey: "ui", RequiredCapabilities: coder}); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.CreateTask(ctx, Task{ID: "t-succ", Status: "running", Track: "direct", Repository: "sf/r", Kind: "agent", Source: SourceSuccessor,
+		Parent: "t-plan", PlanKey: "api", RequiredCapabilities: coder}); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.SetTaskMergeCommit(ctx, "t-merged", "abc"); err != nil {
 		t.Fatal(err)
 	}
@@ -3570,7 +3590,7 @@ func TestSwitchToPlan(t *testing.T) {
 		id       string
 		switched bool
 		pr       int64
-	}{{"t-run", true, 0}, {"t-pr", true, 0}, {"t-merged", false, 4}, {"t-card", false, 0}, {"t-done", false, 0}, {"t-run", false, 0}} {
+	}{{"t-run", true, 0}, {"t-pr", true, 0}, {"t-merged", false, 4}, {"t-card", false, 0}, {"t-succ", false, 0}, {"t-done", false, 0}, {"t-run", false, 0}} {
 		switched, err := s.SwitchToPlan(ctx, tc.id, planner)
 		if err != nil {
 			t.Fatalf("SwitchToPlan(%s): %v", tc.id, err)
@@ -3587,6 +3607,50 @@ func TestSwitchToPlan(t *testing.T) {
 			t.Fatalf("SwitchToPlan(%s) = %v; track %q, capabilities %q, pull request %d; want %v, %s, %q, %d",
 				tc.id, switched, got.Track, got.RequiredCapabilities, got.PRNumber, tc.switched, track, caps, tc.pr)
 		}
+	}
+}
+
+// HeldPlanCards are the repository's plan cards held at their approval,
+// a plan card's successor among them, as its key's card: a running card,
+// a successor without a key and another repository's card are not.
+func TestHeldPlanCards(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-plan", Status: "running", Repository: "sf/r", Kind: "agent", Source: "webhook", Track: "plan"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []Task{
+		{ID: "t-card", Source: SourcePlan, PlanKey: "api"},
+		{ID: "t-succ", Source: SourceSuccessor, PlanKey: "ui"},
+		{ID: "t-run", Source: SourcePlan, PlanKey: "cli"},
+		{ID: "t-loose", Source: SourceSuccessor},
+		{ID: "t-other", Source: SourcePlan, PlanKey: "ops", Repository: "sf/q"},
+	} {
+		c.Status, c.Kind, c.Track, c.Parent, c.Repository = "running", "agent", "direct", "t-plan", cmp.Or(c.Repository, "sf/r")
+		if err := s.CreateTask(ctx, c); err != nil {
+			t.Fatalf("CreateTask %s: %v", c.ID, err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'waiting-human', gate = 'approval' WHERE id IN ('t-card', 't-succ', 't-loose', 't-other')`); err != nil {
+		t.Fatal(err)
+	}
+	held, err := s.HeldPlanCards(ctx, "sf/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, k := range held {
+		ids = append(ids, k.ID)
+	}
+	if !slices.Equal(ids, []string{"t-card", "t-succ"}) {
+		t.Fatalf("HeldPlanCards = %q, want t-card and t-succ", ids)
 	}
 }
 

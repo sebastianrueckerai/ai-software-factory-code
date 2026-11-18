@@ -413,7 +413,8 @@ func TestDeadlockAnswerCloseIntoASuccessorRunsTheSamePath(t *testing.T) {
 // The successor activity files one card: the stuck card's objective with
 // the findings so far, the carried pull request and its size and budget,
 // queued on the direct track on an issue labelled like a filed card's,
-// started under the work bound. It continues the old card's branch at the
+// started under the work bound, its old card's key and revision in its
+// plan. It continues the old card's branch at the
 // old card's base b0; an old card with no branch leaves it no base of its
 // own, so it starts from main's tip.
 func TestSuccessorFilesOneCard(t *testing.T) {
@@ -428,7 +429,7 @@ func TestSuccessorFilesOneCard(t *testing.T) {
 				delete(fj.branches, "factory/t-a")
 			}
 			a := store.tasks["t-a"]
-			a.Size, a.PRNumber = "small", 7
+			a.Size, a.PRNumber, a.PlanRevision = "small", 7, 3
 			store.tasks["t-a"] = a
 			fj.calls = nil
 			id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9,
@@ -439,7 +440,7 @@ func TestSuccessorFilesOneCard(t *testing.T) {
 			s := store.tasks[id]
 			if s.Status != "queued" || s.Track != policy.TrackDirect || s.Source != SourceSuccessor || s.Kind != "agent" ||
 				s.CarryPR != 9 || s.SHA != tc.sha || s.Repository != "linkshort/linkshort" || s.Parent != "t-plan" ||
-				s.Process != "spec" || s.BudgetEUR != 2 || s.Size != "small" {
+				s.PlanKey != "links-api" || s.PlanRevision != 3 || s.Process != "spec" || s.BudgetEUR != 2 || s.Size != "small" {
 				t.Fatalf("the successor row = %+v", s)
 			}
 			is := fj.issues[9]
