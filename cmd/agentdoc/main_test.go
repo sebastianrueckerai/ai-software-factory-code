@@ -4,7 +4,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"testing"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
 // The sweep owns the map's directory: pages and raw twins the registry
@@ -86,5 +89,26 @@ func TestRequireCleanTree(t *testing.T) {
 	}
 	if err := requireCleanTree(dir); err == nil {
 		t.Fatal("a dirty tree passed as clean")
+	}
+}
+
+// TestPinnedOpencodeIsTheSandboxs holds the captures' harness to the one
+// the agents run: the sandbox image's OPENCODE_VERSION, so a bump of the
+// image that leaves the pin behind fails here.
+func TestPinnedOpencodeIsTheSandboxs(t *testing.T) {
+	root, err := moduleRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	df, err := os.ReadFile(filepath.Join(root, "Dockerfile.sandbox"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^ARG OPENCODE_VERSION=v(\S+)$`).FindSubmatch(df)
+	if m == nil {
+		t.Fatal("Dockerfile.sandbox sets no ARG OPENCODE_VERSION=v<version>")
+	}
+	if want := "opencode " + string(m[1]); factoryd.AgentDocOpencodeVersion != want {
+		t.Errorf("AgentDocOpencodeVersion = %q, the sandbox runs %q", factoryd.AgentDocOpencodeVersion, want)
 	}
 }

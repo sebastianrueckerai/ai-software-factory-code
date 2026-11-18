@@ -51,7 +51,7 @@ func (b TokenBudget) OutputLimit() (int, error) {
 	return b.AnswerTokens + b.HeadroomTokens, nil
 }
 
-// Opencode adapts the pinned opencode v1.18.32 CLI to harness.Harness. It
+// Opencode adapts the pinned opencode CLI (the sandbox image's OPENCODE_VERSION) to harness.Harness. It
 // runs the identity proxy on an ephemeral localhost port and points the
 // provider config at it, so the only credential the harness ever holds is
 // the dummy key the proxy replaces (architecture 6.3).
