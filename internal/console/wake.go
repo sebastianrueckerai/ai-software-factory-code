@@ -135,6 +135,35 @@ func (b *wakeBooks) drop(key string, cases []int64) {
 	}
 }
 
+// named are the cases the thread's wakes not settled yet named.
+func (b *wakeBooks) named(key string) []int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if w := b.by[key]; w != nil {
+		return slices.Clone(w.cases)
+	}
+	return nil
+}
+
+// handUpStopped hands each case the thread's wakes named, and rung 2 still
+// holds, to the human: the turn stopped on its refused rounds, and no
+// human reads a wake's stop row at once.
+func (t *turn) handUpStopped() {
+	if t.c.cfg.HandUpRung2 == nil {
+		return
+	}
+	ctx := context.WithoutCancel(t.r.Context())
+	for _, id := range t.c.books.named(t.key()) {
+		k, err := t.c.cfg.CaseByID(ctx, id)
+		if err == nil {
+			_, err = t.c.cfg.HandUpRung2(ctx, k.TaskID, id, factoryd.RungTwoStopped, factoryd.RungTwoRecommendation{}, t.readList())
+		}
+		if err != nil {
+			log.Printf("console: the hand-up of case %d at the stop of a turn on %s: %v", id, t.p.Repository, err)
+		}
+	}
+}
+
 // spend adds eur to the thread's book; when settle, it takes the book out and
 // answers it.
 func (b *wakeBooks) spend(key string, eur float64, settle bool) (wakeBook, bool) {

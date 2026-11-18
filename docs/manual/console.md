@@ -245,7 +245,9 @@ decimals: a task's model calls cost fractions of a cent.
   stopped turn goes on. A factory cap's refusal names the cap and what
   raises it. The resumed context leaves the `budget` rows out. A turn
   whose every tool call was refused in 5 rounds in a row ends on a row
-  that says so, and the next message goes on. Its tools (`policy.ChatTools`) are the reads `system` (the
+  that says so, and the next message goes on. When a wake's turn ends
+  this way, each ask the factory agent held goes to the human at once,
+  and its card says that the factory agent did not answer. Its tools (`policy.ChatTools`) are the reads `system` (the
   factory's manual, rendered from the code at call time; its states,
   gates and section on sandbox images come from `internal/manual`, which
   the workers' `manual` tool reads too), `board`,

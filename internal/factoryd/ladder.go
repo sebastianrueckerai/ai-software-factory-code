@@ -777,7 +777,7 @@ func HandedUpBy(steps []CaseStep, from int, found string) *HandUp {
 	}
 	// a rung that gave no recommendation (one that did not answer) leaves the
 	// newest one the rungs below it made, and what it found
-	if strings.Contains(first.Found, expiredMark) {
+	if first.Found == RungTwoStopped || strings.Contains(first.Found, expiredMark) {
 		for k := len(steps) - 1; k >= 0; k-- {
 			s := steps[k]
 			if s.Outcome != StepHandedUp || s.Rung != 1 {
@@ -810,9 +810,17 @@ func HandedUpBy(steps []CaseStep, from int, found string) *HandUp {
 // did not answer.
 const expiredMark = "the rung did not answer within "
 
+// RungTwoStopped is the Found of rung 2's step when the factory agent's
+// turn stopped on its refused actions with the case unanswered.
+const RungTwoStopped = "The factory agent did not answer: the factory refused every action it tried."
+
 // foundLine is what the rung before the human found, as the face reads it:
-// an expired step says that its rung did not answer, no finding.
+// an expired step and a stopped turn say that the rung did not answer, no
+// finding.
 func foundLine(up *HandUp) string {
+	if up.Rung == 2 && up.Found == RungTwoStopped {
+		return RungTwoStopped
+	}
 	if _, bound, ok := strings.Cut(up.Found, expiredMark); ok && up.Rung == 2 {
 		return "The factory agent did not answer within " + bound + "."
 	}
@@ -835,6 +843,9 @@ func Quoted(s string) string {
 // what came of it, and the words it found, which are its writer's; an
 // expired step says its decider did not answer.
 func StepWords(s CaseStep) (lead, found string) {
+	if s.Found == RungTwoStopped {
+		return RungTwoStopped, ""
+	}
 	who := cmp.Or(deciderLead(s.Actor), "A human")
 	if _, bound, ok := strings.Cut(s.Found, expiredMark); ok {
 		return who + " did not answer within " + bound + ".", ""

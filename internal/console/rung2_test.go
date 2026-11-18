@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -459,5 +460,73 @@ func TestAThreadsWakeBookSettlesOnTheTurnThatEndsIt(t *testing.T) {
 	spend(false)
 	if len(booked) != 2 || booked[7] < 0.249 || booked[7] > 0.251 || booked[8] < 0.249 || booked[8] > 0.251 {
 		t.Fatalf("booked %v, want 0.25 on each of cases 7 and 8 (0.30 and 0.20 shared)", booked)
+	}
+}
+
+// A wake's turn that the refused-rounds stop ends hands its case to the
+// human at once, as a rung that did not answer does: the factory agent
+// held the case, Act refused its answer five times, and the turn stopped.
+// Rung 2's step ends handed up, saying the agent did not answer, the case
+// is at the human, and its face says so in the factory's own words.
+func TestAWakesStopHandsItsCaseToTheHuman(t *testing.T) {
+	ra := newRealAct(t, "t-hq", 51, factoryd.SourceProductionHeld, raHeldQuestion(), policy.AutonomyAutonomous)
+	ctx := t.Context()
+	if err := ra.pg.SetCaseStatus(ctx, ra.caseID, factoryd.CaseOpen); err != nil {
+		t.Fatal(err)
+	}
+	due := time.Now().Add(35 * time.Minute)
+	if _, err := ra.pg.StartRungStep(ctx, factoryd.CaseStep{CaseID: ra.caseID, Rung: 2, Actor: factoryd.ChatUser, Outcome: factoryd.StepInProgress, DueAt: &due}); err != nil {
+		t.Fatal(err)
+	}
+	if k := ra.caseNow(t); k.Status != factoryd.CaseOpen || k.OwnerRung != 2 {
+		t.Fatalf("case = %+v, want open and the factory agent's before the wake", k)
+	}
+
+	r, chat, g := newChatRig(t)
+	r.ledger.files = map[string]policy.ProjectConfig{holdProject: {Repository: "sf/code", Autonomy: policy.AutonomyAutonomous, MergeRule: policy.MergeHuman}}
+	r.tasks.tasks = append(r.tasks.tasks, holdAsk())
+	r.c.cfg.CaseByID, r.c.cfg.HandUpRung2 = ra.pg.CaseByID, ra.runner.HandUpRung2
+	no := factoryd.ErrActRefused("the note, which the human reads as the grounds of your proposal: The text holds a semicolon. Write two sentences.")
+	r.actErrs = map[int]error{}
+	for i := 1; i <= 6; i++ {
+		r.actErrs[i] = no
+		g.replies = append(g.replies, []string{call(i, "answer", `{"task_id":"#77","text":"Deploy anyway"}`)})
+	}
+	conv, err := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.StartWake(ctx, "ai-software-factory-code", "sebastian", conv, factoryd.EventCaseClimbed, "Wake: 1 case waits for the factory agent.", ra.caseID); err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+
+	g.mu.Lock()
+	asked := len(g.requests)
+	g.mu.Unlock()
+	rows, _ := chat.ChatMessages(ctx, "sf/code", "sebastian", conv, 20)
+	const stopped = "The turn stopped: every action of its last 5 rounds was refused. Send a message to go on."
+	if asked != 5 || len(rows) == 0 || rows[len(rows)-1].Content != stopped {
+		t.Fatalf("the model was asked %d times and the thread ends %+v; want 5 times and the stop's words", asked, rows[max(len(rows)-1, 0):])
+	}
+	if k := ra.caseNow(t); k.Status != factoryd.CaseAtHuman || k.OwnerRung != 3 {
+		t.Fatalf("case = %+v, want it at the human", k)
+	}
+	steps, err := ra.pg.CaseSteps(ctx, ra.caseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const said = "The factory agent did not answer: the factory refused every action it tried."
+	own := slices.DeleteFunc(slices.Clone(steps), func(s factoryd.CaseStep) bool { return s.Rung != 2 })
+	if len(own) != 1 || own[0].Outcome != factoryd.StepHandedUp || own[0].Found != said {
+		t.Fatalf("steps = %+v, want the factory agent's one step handed up as not answered", steps)
+	}
+	if lead, found := factoryd.StepWords(own[0]); lead != said || found != "" {
+		t.Errorf("the step reads %q and %q on the card's life, want %q alone", lead, found, said)
+	}
+	if info, _ := ra.face(t, "t-hq")["info"].(string); !strings.Contains(info, said) || strings.Contains(info, "found:") {
+		t.Errorf("the face's view %q, want it to say %q as the factory's words, no finding", info, said)
+	}
+	if faults := facefixtures.HumanFaults(said); len(faults) > 0 {
+		t.Errorf("%q: %v", said, faults)
 	}
 }

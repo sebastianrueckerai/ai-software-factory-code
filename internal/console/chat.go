@@ -1391,6 +1391,7 @@ func (t *turn) run(id, notice string) {
 			return
 		}
 		if refused == refusedRounds {
+			t.handUpStopped()
 			stopped := fmt.Sprintf("The turn stopped: every action of its last %d rounds was refused. Send a message to go on.", refusedRounds)
 			if _, ok := t.save(factoryd.ChatMessage{Role: "assistant", Content: stopped}); ok {
 				t.carryQuestion()
@@ -1405,7 +1406,8 @@ func (t *turn) run(id, notice string) {
 
 // refusedRounds bounds a turn's rounds in a row whose every tool call was
 // refused: an agent that corrects nothing in that many ends its turn, and
-// not the chat's budget.
+// not the chat's budget. The cases its wake named go to the human
+// (handUpStopped).
 const refusedRounds = 5
 
 // questionTurn settles the thread's open question at the turn's end: the
