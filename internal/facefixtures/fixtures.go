@@ -697,7 +697,7 @@ var humanSources = []humanSource{
 	}, factoryd.BriefFacts{Name: "450.00 EUR"}},
 	{factoryd.SourceFreezeCard, func(b *builder, group, name string, n int64) Fixture {
 		q := factoryd.FreezeQuestion(factoryd.FreezeEvent{Class: "coder", Reset: b.now.Add(5 * time.Hour).UTC().Format(time.RFC3339),
-			Words: "rate limit exceeded: the weekly limit resets later"}, 3, b.now)
+			Words: "rate limit exceeded: the weekly limit resets later"}, 3, b.now, b.now.Add(-35*time.Minute))
 		fx := b.filedHuman(group, name, n, factoryd.SourceFreezeCard, "", q, 35*time.Minute)
 		fx.Task.Objective = factoryd.IssueObjective(q.Ask, q.Info)
 		return fx

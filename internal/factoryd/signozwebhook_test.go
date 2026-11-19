@@ -40,6 +40,14 @@ type alertForgejo struct {
 	failComments int
 	// failClose is how many issue closes still answer 500
 	failClose int
+	// deleted are the issues whose patches and new comments answer 404, as
+	// a deleted issue's do; forbidden those whose answer 403, as when the
+	// bot's credential lost its rights
+	deleted, forbidden map[int64]bool
+	// refuse is the status an issue's patches and new comments answer
+	refuse map[int64]int
+	// fileStatus, when set, is what issue creations answer
+	fileStatus int
 }
 
 func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
@@ -64,6 +72,8 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			io.WriteString(w, `{"default_branch":"main"}`)
 		case r.Method == http.MethodGet && r.URL.Path == repo+"/branches/main":
 			io.WriteString(w, `{"commit":{"id":"sha-demo-main"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == repo+"/issues" && fj.fileStatus != 0:
+			http.Error(w, "refused", fj.fileStatus)
 		case r.Method == http.MethodPost && r.URL.Path == repo+"/issues" && fj.failNext > 0:
 			fj.failNext--
 			w.WriteHeader(http.StatusInternalServerError)
@@ -99,6 +109,18 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			fj.labels[n] = in.Labels
 			io.WriteString(w, `[]`)
 		case r.Method == http.MethodPost && fmtScan(r.URL.Path, repo+"/issues/%d/comments", &n):
+			if fj.refuse[n] != 0 {
+				http.Error(w, "refused", fj.refuse[n])
+				return
+			}
+			if fj.deleted[n] {
+				http.Error(w, "issue does not exist", http.StatusNotFound)
+				return
+			}
+			if fj.forbidden[n] {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
 			if fj.failComments > 0 {
 				fj.failComments--
 				w.WriteHeader(http.StatusInternalServerError)
@@ -120,6 +142,18 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			}
 			fmt.Fprintf(w, `{"state":%q}`, state)
 		case r.Method == http.MethodPatch && fmtScan(r.URL.Path, repo+"/issues/%d", &n):
+			if fj.refuse[n] != 0 {
+				http.Error(w, "refused", fj.refuse[n])
+				return
+			}
+			if fj.deleted[n] {
+				http.Error(w, "issue does not exist", http.StatusNotFound)
+				return
+			}
+			if fj.forbidden[n] {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
 			if fj.failClose > 0 {
 				fj.failClose--
 				w.WriteHeader(http.StatusInternalServerError)

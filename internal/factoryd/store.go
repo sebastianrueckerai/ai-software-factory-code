@@ -393,6 +393,9 @@ type Store interface {
 	SetQueueReason(ctx context.Context, id, reason string, now time.Time) error
 	// ListTasksByStatus lists tasks in status, highest priority first.
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
+	// FreezeCards lists the freeze cards in status, every repository's, in
+	// id order.
+	FreezeCards(ctx context.Context, status string) ([]Task, error)
 	// CountAdmitted counts repository's cards holding a work slot: running
 	// or closing, in review in any gate but the approval's, or queued and
 	// already admitted. A card the bound leaves out (Task.Unbound: a roll,

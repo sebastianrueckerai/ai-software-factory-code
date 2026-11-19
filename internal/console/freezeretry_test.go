@@ -18,17 +18,22 @@ import (
 // asking as the factory files it.
 func freezeCard(id, repository string, issue int64, status string) factoryd.BoardTask {
 	q := factoryd.FreezeQuestion(factoryd.FreezeEvent{Class: "coder", Reset: "2026-11-21T17:00:00Z", Words: "rate limit exceeded"}, 2,
-		time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC))
+		time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC), time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC))
 	return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "human", Status: status, Source: factoryd.SourceFreezeCard, Repository: repository,
 		IssueNumber: issue, Objective: factoryd.IssueObjective(q.Ask, q.Info)}, Escalation: q.Ask, Question: &q}
 }
 
 // An open freeze card asks on its opened card and offers Retry now first,
-// with what it does; a done freeze card offers none, and a writer who is
-// no approver sees it disabled and reads who may choose it.
+// with what it does; a done freeze card offers none, nor does an open one
+// whose class resumed on its own and whose close is pending, which keeps
+// its other answers; a writer who is no approver sees it disabled and reads
+// who may choose it.
 func TestFreezeCardShowsRetryNow(t *testing.T) {
 	r := newRig(t)
-	r.tasks.tasks = []factoryd.BoardTask{freezeCard("t-fz", "sf/code", 21, "waiting-human"), freezeCard("t-fz-done", "sf/code", 22, "done")}
+	resumed := freezeCard("t-fz-resumed", "sf/code", 23, "waiting-human")
+	resumed.Objective = factoryd.IssueObjective(resumed.Question.Ask, "Class: coder\n\nThe class resumed on its own at 2026-11-21T17:00:00Z: the freeze held 5h 00m. "+
+		"The card closes itself at 2026-11-21T17:05:00Z.\n\nThe freeze started at 2026-11-21T12:00:00Z.\nThe hold's reset was 2026-11-21T17:00:00Z.")
+	r.tasks.tasks = []factoryd.BoardTask{freezeCard("t-fz", "sf/code", 21, "waiting-human"), freezeCard("t-fz-done", "sf/code", 22, "done"), resumed}
 	ck, s := r.loggedIn(t)
 	opened := func(ck *http.Cookie, id string) string {
 		return r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+"/drawer?tab=overview", nil), ck).Body.String()
@@ -41,6 +46,10 @@ func TestFreezeCardShowsRetryNow(t *testing.T) {
 	}
 	if done := opened(ck, "t-fz-done"); strings.Contains(done, "Retry now") || strings.Contains(done, `value="retry"`) {
 		t.Errorf("the done freeze card offers Retry now:\n%s", done)
+	}
+	if ask := askBlockOf(t, opened(ck, "t-fz-resumed")); strings.Contains(ask, "Retry now") || strings.Contains(ask, `value="retry"`) ||
+		!strings.Contains(ask, `<button type="submit" class="pick">Noted</button>`) {
+		t.Errorf("the resumed class's freeze card offers Retry now, or lost its other answers:\n%s", ask)
 	}
 	ak, _ := r.as(t, "alice")
 	hers := opened(ak, "t-fz")
@@ -79,7 +88,7 @@ func TestRetryNowPressesTheRetrySwitch(t *testing.T) {
 	if bodies := r.fg.commentBodies("/api/v1/repos/sf/code/issues/21/comments"); len(bodies) != 0 || len(r.fg.patched) != 0 {
 		t.Fatalf("comments %q, patched %v; want none: the press is Act's", bodies, r.fg.patched)
 	}
-	const ended = "the freeze of #21 ended, the card is done: no hold waits on a retry, and the class's next freeze opens its card again"
+	const ended = "the freeze of #21 ended, the card is done: no hold waits on a retry, and a new limit on the class opens a freeze card again"
 	r.actErr = factoryd.ErrActRefused(ended)
 	if rec := press(ck, s.csrf); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != ended {
 		t.Errorf("a refused press: %d %q", rec.Code, rec.Body)

@@ -151,6 +151,7 @@ const (
 	partialHold     = "hold"
 	partialPlanHold = "plan hold"
 	partialTimeline = "timeline"
+	partialFreeze   = "freeze"
 )
 
 // holdStops are the answers that would start or close the card itself.

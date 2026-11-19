@@ -301,7 +301,7 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 		}
 		if refused := newestLine(rows.timeline, StepProviderRefused); !refused.Time.IsZero() {
 			d.refusedAt = refused.Time
-			d.refusedBackoff = time.Duration(refused.BackoffS * float64(time.Second))
+			d.refusedBackoff = refused.backoff()
 			d.retryDue = refused.Time.Add(d.refusedBackoff)
 		}
 	}

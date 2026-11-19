@@ -296,6 +296,21 @@ func closeIssueAsFactory(ctx context.Context, store interface {
 	return store.ConfirmFactoryClose(ctx, t.ID, t.IssueNumber)
 }
 
+// closeRow moves human card id's row from waiting-human to done and
+// reports whether this call moved it; a row no longer waiting is closed
+// already. After closeIssueAsFactory the webhook of that close,
+// factoryd's own, ends the human card too (finishHumanTask) and may come
+// first, its outcome counted there.
+func closeRow(ctx context.Context, store interface {
+	TransitionTask(ctx context.Context, id string, from []string, to string) error
+}, id string) (bool, error) {
+	err := store.TransitionTask(ctx, id, []string{"waiting-human"}, "done")
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // maxEscalationText bounds the question, the reason and an information
 // request's fields, maxRecommendation the recommendation, as the gateway
 // does.

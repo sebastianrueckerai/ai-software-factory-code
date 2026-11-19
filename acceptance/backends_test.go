@@ -362,6 +362,19 @@ func (s *acceptanceStore) ListTasksByStatus(_ context.Context, status string) ([
 	return out, nil
 }
 
+func (s *acceptanceStore) FreezeCards(_ context.Context, status string) ([]factoryd.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []factoryd.Task
+	for _, t := range s.tasks {
+		if t.Source == factoryd.SourceFreezeCard && t.Status == status {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b factoryd.Task) int { return strings.Compare(a.ID, b.ID) })
+	return out, nil
+}
+
 func (s *acceptanceStore) RecentlyFinishedTasks(context.Context, time.Duration) ([]string, error) {
 	return nil, nil
 }

@@ -558,6 +558,9 @@ func (s *accBatchStore) MarkStarted(ctx context.Context, id string) error { pani
 func (s *accBatchStore) ListTasksByStatus(ctx context.Context, status string) ([]factoryd.Task, error) {
 	panic("unused")
 }
+func (s *accBatchStore) FreezeCards(ctx context.Context, status string) ([]factoryd.Task, error) {
+	panic("unused")
+}
 func (s *accBatchStore) RecentlyFinishedTasks(ctx context.Context, within time.Duration) ([]string, error) {
 	panic("unused")
 }

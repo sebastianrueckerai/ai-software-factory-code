@@ -119,6 +119,10 @@ type CaseFacts struct {
 	// FreezeCard is the open freeze card of the provider freeze that holds
 	// the card (freezeCardOf), "" when none does: the retry ends it.
 	FreezeCard string `json:"freeze_card,omitempty"`
+	// NoFreeze says why no freeze a retry ends holds a card that waits on
+	// the provider, or a freeze card itself, and what follows; "" for any
+	// other card.
+	NoFreeze string `json:"no_freeze,omitempty"`
 	// Criteria: the card is the integration or a delta card of a plan whose
 	// criteria a human judges on its merge
 	Criteria bool `json:"criteria,omitempty"`
@@ -416,6 +420,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 	var reran []string
 	var pushed string
 	var newest *digestSession
+	var refused lineMark
 	// the readers in order, each after the head the events name
 	readers := []struct {
 		name string
@@ -437,6 +442,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				review, audit := newestOfKind(lines, f.Head, "review"), newestOfKind(lines, f.Head, "audit")
 				f.ReviewFindings, f.AuditFindings, f.AuditConfirmable = review.Findings, audit.Findings, audit.atFile
 				pushed = pushedCommit(tl)
+				refused = newestLine(tl, StepProviderRefused)
 				if f.PROpen {
 					f.MergeConflict = standingConflict(tl, f.Head)
 				}
@@ -454,9 +460,9 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			f.LastSession.CostEUR = cost
 			return err
 		}},
-		{"freeze", func() error {
+		{partialFreeze, func() error {
 			var err error
-			f.FreezeCard, err = r.freezeCardOf(ctx, t)
+			f.FreezeCard, f.NoFreeze, err = r.freezeCardOf(ctx, t, refused, !slices.Contains(f.Partial, partialTimeline))
 			return err
 		}},
 		{"checks", func() error {
@@ -1060,31 +1066,59 @@ func fundFor(need, left float64) float64 {
 	return math.Ceil(policy.RoundMicro(need-left)*100-1e-6) / 100
 }
 
-// freezeCardOf is the open freeze card of the provider freeze that holds
-// card t: t itself when it is one, else, while t waits on the provider,
-// the card of the class the policy holds t under, its own repository's
-// first; "" when no freeze holds t.
-func (r *Runner) freezeCardOf(ctx context.Context, t Task) (string, error) {
+// freezeCardOf is the freeze card of the provider freeze that holds card
+// t, while its hold stands (FreezeCardHolds): t itself when it is one,
+// else, while t waits on the provider-limit wait — its newest
+// provider_refused line, refused, names a reset still ahead, which the
+// undated ladder's never does — the card of the class the policy holds t
+// under, its own repository's first; "" when no freeze holds t.
+func (r *Runner) freezeCardOf(ctx context.Context, t Task, refused lineMark, read bool) (card, none string, err error) {
 	if t.Source == SourceFreezeCard {
-		if t.Status != "waiting-human" {
-			return "", nil
+		if !FreezeCardHolds(t) {
+			return "", freezeEnded(t), nil
 		}
-		return t.ID, nil
+		return t.ID, "", nil
 	}
-	if t.Status != "running" || t.Gate != GateProvider {
-		return "", nil
+	if t.Status != "running" || t.Gate != GateProvider || !read {
+		return "", "", nil // an unread timeline is actRefusal's to name
+	}
+	due, now := refused.Time.Add(refused.backoff()), r.Clock()
+	switch {
+	case refused.Time.IsZero():
+		return "", "the card waits on the provider, but its timeline records no provider refusal, so retry cannot tell a freeze from the ladder's backoff: " +
+			"its wait ends by itself, or Retry now on its class's open freeze card ends a freeze", nil
+	case refused.backoff() <= ladderBackoffMax:
+		when := "by itself"
+		if due.After(now) {
+			when += " at " + stamp(due)
+		}
+		return "", fmt.Sprintf("no provider freeze holds the card: its newest provider refusal named no reset beyond the ladder's longest backoff of %s, so its next session starts %s, and retry ends no freeze there",
+			minutesWord(ladderBackoffMax), when), nil
+	case !now.Before(due):
+		return "", fmt.Sprintf("no provider freeze holds the card any more: the reset %s its provider limit named passed, so its next session starts by itself, and retry has no freeze to end", stamp(due)), nil
 	}
 	v := r.cfg.Policy()
 	class, _ := v.Document.ProviderLimitOf(t.RequiredCapabilities)
 	if class == "" {
-		return "", nil
+		return "", "", nil
 	}
 	cards, err := openFreezeCards(ctx, r.store, class)
-	if err != nil || len(cards) == 0 {
-		return "", err
+	if err != nil {
+		return "", "", err
 	}
-	if i := slices.IndexFunc(cards, func(c Task) bool { return c.Repository == t.Repository }); i >= 0 {
-		return cards[i].ID, nil
+	ownFirst := func(cards []Task) Task {
+		if i := slices.IndexFunc(cards, func(c Task) bool { return c.Repository == t.Repository }); i >= 0 {
+			return cards[i]
+		}
+		return cards[0]
 	}
-	return cards[0].ID, nil
+	holding := slices.DeleteFunc(slices.Clone(cards), func(c Task) bool { return !FreezeCardHolds(c) })
+	switch {
+	case len(holding) > 0:
+		return ownFirst(holding).ID, "", nil
+	case len(cards) > 0:
+		return "", freezeEnded(ownFirst(cards)), nil
+	}
+	return "", fmt.Sprintf("the card waits to the provider limit's reset %s, and no freeze card of the %s class stands open to end the freeze sooner: the card starts by itself at the reset",
+		stamp(due), class), nil
 }
