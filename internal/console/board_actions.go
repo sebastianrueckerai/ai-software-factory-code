@@ -146,7 +146,7 @@ func (c *Console) fileFromCase(ctx context.Context, a actor, t factoryd.Task, k 
 		n, _ := strconv.ParseInt(string(b), 10, 64)
 		return n
 	}
-	from := "Filed from " + issueRef(t.ID, t.IssueNumber)
+	from := "Filed from " + factoryd.ShownName(t)
 	if k.ID != 0 {
 		from += fmt.Sprintf(", case %d (%s)", k.ID, k.Kind)
 	}

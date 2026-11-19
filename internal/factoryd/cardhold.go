@@ -142,7 +142,7 @@ func (r *Runner) holdFact(ctx context.Context, t Task) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("card %s is %s", shownName(t), v.Line), nil
+	return fmt.Sprintf("card %s is %s", ShownName(t), v.Line), nil
 }
 
 // The readers of the hold facts and of the card's timeline, as

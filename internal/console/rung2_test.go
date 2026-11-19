@@ -355,9 +355,19 @@ func TestAHeldHumanCardTakesOnlyRungTwosAnswerBeforeItsFace(t *testing.T) {
 	_, s := r.loggedIn(t)
 	human := actor{s: s, repository: "sf/code", via: factoryd.ViaButton, decider: "member", level: policy.AutonomyAutonomous}
 	_, err := r.c.doAnswerCase(t.Context(), human, "t-stall", 51, "", factoryd.AnswerCheckAgain, nil, 0)
-	want := "Card t-stall waits on its case 51, open at rung 2: rung 2 decides it or hands it up, and only then is it the human's, in Needs you."
+	want := "Card “needs you: the chain of sf/code has been pending” waits for the factory agent, which decides it or hands it to you: answer it once it stands in Needs you."
 	if err == nil || err.Error() != want || len(r.acted) != 0 || len(r.closed) != 0 {
 		t.Fatalf("the human's press = %v, Act calls %+v, closed %v; want %q and nothing done", err, r.acted, r.closed, want)
+	}
+	if strings.Contains(err.Error(), "t-stall") {
+		t.Fatalf("the human's refusal names the task id: %v", err)
+	}
+	// the chat's agent outside rung 2's turn reads the title and the id its tools take
+	chat := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyAutonomous}
+	_, err = r.c.doAnswerCase(t.Context(), chat, "t-stall", 51, "", factoryd.AnswerCheckAgain, nil, 0)
+	want = "Card “needs you: the chain of sf/code has been pending” (t-stall) waits on its case 51, open at rung 2: rung 2 decides it or hands it up, and only then is it the human's, in Needs you."
+	if err == nil || err.Error() != want || len(r.acted) != 0 || len(r.closed) != 0 {
+		t.Fatalf("the agent's answer = %v, Act calls %+v, closed %v; want %q and nothing done", err, r.acted, r.closed, want)
 	}
 	agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyAutonomous, wake: true, birth: factoryd.EventCaseClimbed}
 	if _, err := r.c.doAnswerCase(t.Context(), agent, "t-stall", 51, "", factoryd.AnswerCheckAgain, nil, 0); err != nil {

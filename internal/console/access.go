@@ -245,7 +245,7 @@ func (c *Console) scopeOf(sc scope, r *http.Request) (string, string, error) {
 		if err != nil {
 			return "", "", err
 		}
-		return t.Repository, "task " + t.ID, nil
+		return t.Repository, "card " + cardRef(button(r), t), nil
 	case scApproval:
 		q, err := c.pendingRequest(ctx, button(r), pathID(r))
 		if err != nil {
@@ -261,7 +261,7 @@ func (c *Console) scopeOf(sc scope, r *http.Request) (string, string, error) {
 		case !ok:
 			return "", "", refuse(http.StatusNotFound, "This project holds no such card.")
 		}
-		return t.Repository, "task " + t.ID, nil
+		return t.Repository, "card " + cardRef(button(r), t), nil
 	}
 	return "", "", nil
 }
@@ -381,7 +381,7 @@ func (t *turn) scopeOf(sc scope, in toolInput) (string, string, error) {
 		if err != nil {
 			return "", "", err
 		}
-		return task.Repository, "task " + in.TaskID, nil
+		return task.Repository, "card " + cardRef(t.a, task), nil
 	}
 	return "", "", nil
 }

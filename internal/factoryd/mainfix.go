@@ -288,7 +288,7 @@ func (r *Roller) stillRed(ctx context.Context, pause QueuePause, run ActionRun, 
 		return true, nil
 	}
 	return true, closeIssueAsFactory(ctx, r.Store, r.Forgejo, fix, fmt.Sprintf("Main is still red at commit %s after %s merged: the human card %s replaces this card. Closing this issue.",
-		ShortSHA(run.CommitSHA), remedy, shownName(t)))
+		ShortSHA(run.CommitSHA), remedy, ShownName(t)))
 }
 
 // newestMain is main's newest push run among runs, nil without one.
@@ -837,7 +837,7 @@ func (r *Roller) replaceFix(ctx context.Context, pause QueuePause, fix, rev Task
 		return err
 	}
 	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, fix, fmt.Sprintf("No fix landed by %s: the revert %s replaces this card. Closing this issue.",
-		pause.Since.Add(mainRedBound).UTC().Format(time.RFC3339), shownName(rev)))
+		pause.Since.Add(mainRedBound).UTC().Format(time.RFC3339), ShownName(rev)))
 }
 
 // RerunWhy is why the re-run card of a red main whose jobs lost their

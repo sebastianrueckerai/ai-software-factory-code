@@ -709,9 +709,9 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	}
 	switch {
 	case t.Kind != "human":
-		return 0, ErrNoGo(fmt.Sprintf("Card %s is an agent card: the factory runs it.", shownName(t)))
+		return 0, ErrNoGo(fmt.Sprintf("Card %s is an agent card: the factory runs it.", ShownName(t)))
 	case !slices.Contains(humanCardWaits, t.Status):
-		return 0, ErrNoGo(fmt.Sprintf("Card %s does not wait on you: it is %s.", shownName(t), t.Status))
+		return 0, ErrNoGo(fmt.Sprintf("Card %s does not wait on you: it is %s.", ShownName(t), t.Status))
 	}
 	// the card's directories: its plan card's, else its text's line
 	pc, _, planned, err := planCardOf(ctx, r.store, t)
@@ -734,7 +734,7 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	}
 	// the run row left the card: the go already filed its hand-over
 	if t.Source == SourceRoutine && !filed {
-		return 0, ErrNoGo(fmt.Sprintf("Card %s was already handed over.", shownName(t)))
+		return 0, ErrNoGo(fmt.Sprintf("Card %s was already handed over.", ShownName(t)))
 	}
 	name, labels := "", []string(nil)
 	if filed {
@@ -792,7 +792,7 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	}
 	// the claim lost: another hand filed this card's hand-over already
 	if claim == 0 {
-		return 0, ErrNoGo(fmt.Sprintf("Card %s was already handed over.", shownName(t)))
+		return 0, ErrNoGo(fmt.Sprintf("Card %s was already handed over.", ShownName(t)))
 	}
 	n, ref, err := FileAgentTask(ctx, into, r.forgejo, r.cfg.Workflows, r.timeline, p, b, labels, agent)
 	if err != nil {

@@ -153,7 +153,7 @@ func (r *Registrar) openTemplateUpdate(ctx context.Context, p Project, want map[
 		return "", err
 	}
 	if replaced != nil {
-		if err := closeIssueAsFactory(ctx, r.Cards, r.Forgejo, *replaced, fmt.Sprintf("Pull request #%d replaces #%d. Its card is %s.", ref.Number, last.Number, shownName(card))); err != nil {
+		if err := closeIssueAsFactory(ctx, r.Cards, r.Forgejo, *replaced, fmt.Sprintf("Pull request #%d replaces #%d. Its card is %s.", ref.Number, last.Number, ShownName(card))); err != nil {
 			return "", err
 		}
 	}
@@ -252,7 +252,7 @@ func (r *Registrar) fileDueCard(ctx context.Context, p Project, number int64, fa
 	if err != nil || failed == nil {
 		return err
 	}
-	return closeIssueAsFactory(ctx, r.Cards, r.Forgejo, *failed, fmt.Sprintf("Filed again as %s.", shownName(card)))
+	return closeIssueAsFactory(ctx, r.Cards, r.Forgejo, *failed, fmt.Sprintf("Filed again as %s.", ShownName(card)))
 }
 
 // leftBranch keeps the branch a closed pull request left when a person

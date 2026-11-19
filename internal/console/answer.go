@@ -222,12 +222,12 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 		switch {
 		case q.TaskID != id:
 		case q.Kind == factoryd.ApprovalMerge && choice == factoryd.LabelOf(factoryd.ActApproveMerge):
-			if err := c.admit(ctx, accessTable["approve_merge"], a, t.Repository, "task "+id); err != nil {
+			if err := c.admit(ctx, accessTable["approve_merge"], a, t.Repository, "card "+cardRef(a, t)); err != nil {
 				return "", err
 			}
 			return c.doApprove(ctx, a, q.ID)
 		case q.Kind == factoryd.ApprovalMerge && choice == factoryd.LabelOf(factoryd.ActRerunChecks):
-			if err := c.admit(ctx, accessTable["rerun_checks"], a, t.Repository, "task "+id); err != nil {
+			if err := c.admit(ctx, accessTable["rerun_checks"], a, t.Repository, "card "+cardRef(a, t)); err != nil {
 				return "", err
 			}
 			return c.doRerun(ctx, a, q.ID)

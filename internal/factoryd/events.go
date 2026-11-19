@@ -244,7 +244,7 @@ func cardGone(ctx context.Context, store Store, c Task) (string, error) {
 	case !ok:
 		return ReasonCardGone + c.Parent + " is not there", nil
 	case parent.Status == "closed" || parent.Status == "failed" && c.Source != SourceProver:
-		return ReasonCardGone + shownName(parent) + " ended " + parent.Status, nil
+		return ReasonCardGone + ShownName(parent) + " ended " + parent.Status, nil
 	}
 	return "", nil
 }

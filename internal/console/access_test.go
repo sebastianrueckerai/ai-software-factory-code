@@ -80,7 +80,7 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 			continue
 		}
 		cookie, csrf, name := bk, bs.csrf, "ai-software-factory-code"
-		subject, user := "task t-c", "bob"
+		subject, user := "card #5", "bob"
 		if rule.scope == scApproval {
 			subject = "approval request 3"
 		}
@@ -124,7 +124,7 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 			continue
 		}
 		rule := accessTable[tool.name]
-		trn, subject, project, who := turnOf(bs, code), "task t-c", "ai-software-factory-code", "bob"
+		trn, subject, project, who := turnOf(bs, code), "card #5", "ai-software-factory-code", "bob"
 		if rule.scope == scFactory {
 			trn = turnOf(bs, demo)
 		}
@@ -237,7 +237,7 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 	for _, p := range r.c.postRoutes() {
 		rule := accessTable[p.pattern]
 		cookie, s, name := ak, as, "ai-software-factory-code"
-		subject := "task t-c"
+		subject := "card #5"
 		if rule.scope == scApproval {
 			subject = "approval request 3"
 		}
@@ -302,7 +302,7 @@ func TestChatTimelineIsACard(t *testing.T) {
 	}
 	ak, _ := memberLogin(t, r, "alice")
 	if rec := r.do(httptest.NewRequest(http.MethodGet, "/tasks/"+task.ID+"/timeline", nil), ak); rec.Code != http.StatusForbidden ||
-		strings.TrimSpace(rec.Body.String()) != "you write no project of task "+task.ID {
+		strings.TrimSpace(rec.Body.String()) != "you write no project of card "+task.ID {
 		t.Fatalf("demo's chat task timeline as alice = %d %q, want the writer refusal", rec.Code, rec.Body)
 	}
 	r.ledger.costs = policy.Costs{Tasks: []policy.TaskCost{{TaskID: task.ID, EUR: 1.25}}}
