@@ -166,6 +166,8 @@ func TestEverySmallCardMeetsTheContract(t *testing.T) {
 				t.Skip("the status strip is no card")
 			case strings.HasPrefix(target, galleryInbox+":"):
 				t.Skip("an inbox row is no card")
+			case endedHumanCard(r, target):
+				t.Skip("an ended human card has no small card")
 			}
 			rec := r.do(httptest.NewRequest(http.MethodGet, "/?project="+labCodeProject.Name, nil), ck)
 			if rec.Code != http.StatusOK {

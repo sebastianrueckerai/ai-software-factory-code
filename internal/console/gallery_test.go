@@ -405,6 +405,8 @@ func galleryFaces(t *testing.T, e galleryEntry) (galleryFace, error) {
 		if f.Small, err = boardItems(page, "data-ghost", name); err == nil {
 			open, err = get("/routines/" + name + "/drawer")
 		}
+	case endedHumanCard(r, target):
+		open, err = get("/cards/" + target + "/drawer?tab=overview")
 	default:
 		if f.Small, err = boardItems(page, "data-card", target); err == nil {
 			open, err = get("/cards/" + target + "/drawer?tab=overview")
@@ -434,6 +436,12 @@ func gallerySlug(s string) string {
 }
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
+
+// endedHumanCard says card id of r's store is a human card that ended: the
+// board holds no small card of it, and its opened card alone shows it.
+func endedHumanCard(r *rig, id string) bool {
+	return slices.ContainsFunc(r.tasks.tasks, func(b factoryd.BoardTask) bool { return b.ID == id && b.Kind == "human" && factoryd.Final(b.Status) })
+}
 
 // boardItems are the board's columns that show the items whose attr is
 // value, each holding those items alone.
@@ -584,6 +592,10 @@ func TestGalleryHoldsEveryKind(t *testing.T) {
 	need(facefixtures.GroupApproval, factoryd.ApprovalKinds())
 	need(facefixtures.GroupFlag, factoryd.MonitorFlags())
 	need(facefixtures.GroupCard, censusCardKinds)
+	// a freeze card at the two ends no answer of its ask makes, and the
+	// face of a card that waits with no question to ask again
+	need(facefixtures.GroupCard, []string{"provider freeze a retry press closed", "provider freeze its watcher gave up"})
+	need(facefixtures.GroupVariant, []string{"other with no question to ask again"})
 	for _, s := range factoryd.CardSources() {
 		columns := slices.Collect(maps.Keys(galleryColumns))
 		if slices.Contains(humanCardSources, s) {

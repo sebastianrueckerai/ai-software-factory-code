@@ -234,12 +234,15 @@ func galleryTexts(t *testing.T, e galleryEntry) []shownText {
 		}
 		texts = append(shownTexts(name+" small", string(small)), shownTexts(name+" opened", get("/routines/"+routine+"/drawer"))...)
 	default:
-		small, err := boardItems(page, "data-card", target)
-		if err != nil {
-			t.Fatal(err)
+		if !endedHumanCard(r, target) {
+			small, err := boardItems(page, "data-card", target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			texts = shownTexts(name+" small", string(small))
 		}
 		opened := get("/cards/" + target + "/drawer?tab=overview")
-		texts = append(shownTexts(name+" small", string(small)), shownTexts(name+" opened", opened)...)
+		texts = append(texts, shownTexts(name+" opened", opened)...)
 		texts = append(texts, shownTexts(name+" life", get("/tasks/"+target+"/digest"))...)
 		texts = append(texts, pressedRefusals(r, ck, s.csrf, name, opened)...)
 	}

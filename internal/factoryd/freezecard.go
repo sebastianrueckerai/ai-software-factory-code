@@ -80,6 +80,18 @@ func freezePressedBody(class, by string, at time.Time, reset string) string {
 	return freezeCardTitle(class) + "\n\n" + body
 }
 
+// FreezePressedFace and FreezeRefusedFace are the faces of class's done
+// freeze card at the two ends no answer of its ask makes: the retry press
+// by closed it at at, and Forgejo refused its issue for good, why, while
+// the freeze that started at since held until reset.
+func FreezePressedFace(class, by string, at time.Time, reset string) string {
+	return freezePressedBody(class, by, at, reset)
+}
+
+func FreezeRefusedFace(class string, issue int64, why, reset string, since time.Time) string {
+	return freezeRefusedBody(&freezeClass{class: class, issue: issue, reset: reset, frozenAt: since}, why)
+}
+
 // beforeReset reports whether at lies before reset, an RFC 3339 stamp: a
 // moment inside the episode a press closed. No reset bounds no episode.
 func beforeReset(at time.Time, reset string) bool {

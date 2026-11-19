@@ -983,6 +983,10 @@ func (b *builder) variants() {
 		b.agentStop(GroupVariant, "budget_floor without findings", floor, nil),
 		b.agentStop(GroupVariant, "budget_floor at the spend limit", floor, func(_ *factoryd.Task, f *factoryd.CaseFacts) { f.CeilingEUR = f.BudgetEUR }),
 		b.agentStop(GroupVariant, "gate_stop on review concerns", concerns, nil),
+		b.agentStop(GroupVariant, "other with no question to ask again", caseStop{"Console: show the build's commit", "Show the commit the console was built from in its footer.",
+			func(*builder, *factoryd.Task, *factoryd.CaseFacts) factoryd.TripInput {
+				return factoryd.TripInput{Reason: factoryd.AsklessReason}
+			}}, nil),
 		b.agentCase(GroupVariant, "dependency_failed as a plan's wait", factoryd.CaseDependencyFailed, func(t *factoryd.Task, f *factoryd.CaseFacts) {
 			t.Track, f.Planner, f.Plan = policy.TrackPlan, true, t.ID
 			f.Siblings = []factoryd.SiblingFact{{Issue: 2187, Status: "merged"}, {Issue: 2188, Status: "merged"}, {Issue: 2189, Status: "failed"}}
@@ -1650,6 +1654,24 @@ func (b *builder) cards() {
 		{"judgment budget", factoryd.SourceChatBudget}, {"production held", factoryd.SourceProductionHeld},
 	} {
 		b.out = append(b.out, humanSourceOf(s.source).file(b, GroupCard, s.name, b.next()))
+	}
+	// a freeze card at the two ends no answer of its ask makes
+	reset, since := b.now.Add(5*time.Hour).UTC().Format(time.RFC3339), b.now.Add(-35*time.Minute)
+	for _, end := range []struct {
+		name string
+		face func(n int64) string
+	}{
+		{"provider freeze a retry press closed", func(int64) string {
+			return factoryd.FreezePressedFace("coder", "sebastian", b.now.Add(-10*time.Minute), reset)
+		}},
+		{"provider freeze its watcher gave up", func(n int64) string {
+			return factoryd.FreezeRefusedFace("coder", n, fmt.Sprintf("GET /api/v1/repos/%s/issues/%d: forgejo: not found", Repository, n), reset, since)
+		}},
+	} {
+		n := b.next()
+		b.out = append(b.out, Fixture{Group: GroupCard, Kind: end.name, Task: factoryd.Task{ID: TaskID(n), Kind: "human", Status: "done", Repository: Repository,
+			IssueNumber: n, Source: factoryd.SourceFreezeCard, Objective: end.face(n), Author: "factory-agent", RiskClass: "standard",
+			CreatedAt: since, FinishedAt: b.ago(10 * time.Minute)}})
 	}
 	digest := policy.Routine{Name: "needs-you-digest", Title: "Answer every card that waited in Needs you over a day", Files: policy.FilesHuman, Schedule: []policy.Trigger{{Cron: "0 8 * * 1"}}}
 	b.out = append(b.out, b.filedHuman(GroupCard, "routine for a human", b.next(), factoryd.SourceRoutine, factoryd.RoutineDecider(digest.Name, 9, digest.Words()),
