@@ -194,9 +194,9 @@ func TestChatEdit(t *testing.T) {
 		factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardEdited, Detail: map[string]any{
 			"title": "Fix the cache eviction", "why": "So the board loads at once.", "summary": "The cache keeps its entries. A test reads them back."}})
 
-	code, msg := refused(t, r, "edit", toolInput{TaskID: "t-m", Title: "Fix the cache: it drops entries"})
+	code, msg := refused(t, r, "edit", toolInput{TaskID: "t-m", Title: "Fix the cacheStore eviction"})
 	equal(t, "a refused brief", []any{code, msg}, []any{http.StatusBadRequest,
-		`The title names ": it drops entries". A title uses plain words. Move ": it drops entries" to the text.`})
+		`The title names "cacheStore". A title uses plain words. Move "cacheStore" to the text.`})
 	code, msg = refused(t, r, "edit", toolInput{TaskID: "t-r", Title: "Faster"})
 	equal(t, "edit of a running card's title", []any{code, msg}, []any{http.StatusConflict,
 		"Card #11 runs a session, which keeps the title and the body it started with. Edit them after the session ends. The why line and the summary can change now."})

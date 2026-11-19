@@ -615,7 +615,7 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 		}
 	}
 
-	if got, want := fits(capped, factoryd.Resolution{Action: factoryd.ActContinue, Note: "go on"}), "the session cap of 3 is reached"; got != want {
+	if got, want := fits(capped, factoryd.Resolution{Action: factoryd.ActContinue, Note: "go on"}), "the session cap of 3 is reached (the card's answers at this stop: `extend`, `close` and `note`)"; got != want {
 		t.Errorf("a continue at the cap = %q, want the table's refusal %q", got, want)
 	}
 	ask := room

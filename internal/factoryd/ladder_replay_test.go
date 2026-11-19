@@ -129,7 +129,7 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 		if final := h.run(t); final != "done" {
 			t.Fatalf("final = %q, escalated = %q", final, h.escalated)
 		}
-		question := "the planner used its agent time and its automatic second session without filing a plan: an extend of its agent time starts one more planner session, with the answer among its findings"
+		question := "the planner used its agent time and its automatic second session without filing a plan: an extend of its agent time starts one more planner session, with the answer among its findings, a note alone starts none, and a close ends the card"
 		if !slices.Equal(h.escalated, []string{question}) {
 			t.Fatalf("escalations = %q, want the time card alone", h.escalated)
 		}

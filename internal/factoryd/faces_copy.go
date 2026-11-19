@@ -1341,7 +1341,7 @@ func agentAsk(fallback string) func(Facts) string {
 // agentParts are the agent's question as the face shows it: what it said
 // before the sentence that asks, and that sentence, "" for a question no
 // ask can show. The last sentence is the ask only when a story line holds
-// the first of what stands before it.
+// the first of what stands before it, else the story would drop it.
 func agentParts(f Facts) (before, ask string) {
 	q := capitalize(agentQuestion(f))
 	if q != "" && readsAsAsk(q) {
@@ -1349,9 +1349,9 @@ func agentParts(f Facts) (before, ask string) {
 	}
 	if b := sentenceBreaks(q); len(b) > 0 {
 		last := q[b[len(b)-1][3]:]
-		before := strings.TrimSpace(q[:b[len(b)-1][3]])
-		if strings.HasSuffix(last, "?") && readsAsAsk(last) && line(endSentence(firstSentence(before))) != "" {
-			return before, last
+		head := strings.TrimSpace(q[:b[len(b)-1][3]])
+		if strings.HasSuffix(last, "?") && readsAsAsk(last) && line(endSentence(firstSentence(head))) != "" {
+			return head, last
 		}
 	}
 	return q, ""
@@ -1422,7 +1422,7 @@ func agentPick(f Facts) string {
 // sayKeys are the keys of the answers the agent offered, at most three:
 // words that read as an answer of the vocabulary are the vocabulary's, so
 // the agent's "End the card" never stands for the card's own end, and words
-// the guide faults, filed before their door checked them, show on no face.
+// a button cannot carry, filed before their door checked them, show on no face.
 func sayKeys(f Facts) []string {
 	var out []string
 	for _, c := range factStrings(f.Case, "choices") {

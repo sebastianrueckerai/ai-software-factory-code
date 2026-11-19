@@ -57,7 +57,6 @@ func TestCheckBriefRefuses(t *testing.T) {
 	titled := func(title string) BriefText { return with(func(b *BriefText) { b.Title = title }) }
 	const why = "The why line gives the reason in one sentence: who needs this, or which problem it removes."
 	const summary = "The summary says what gets built, what it changes and how it is checked, under 600 characters."
-	const verb = "A work title starts with its verb, for example 'Narrow the close refusal to plans that hold criteria'."
 	label := func(x string) string {
 		return "'" + x + "' names a part of a document. Link it as [words](path#heading), or say what it is."
 	}
@@ -80,11 +79,6 @@ func TestCheckBriefRefuses(t *testing.T) {
 		{"a backtick in the title", titled("Change two lines in `Dockerfile.runner`"), BriefWork, plainWords("`Dockerfile.runner`")},
 		{"a camelCase word in the title", titled(title2100), BriefWork, plainWords("doClose")},
 		{"a snake_case word in the title", titled("Drop the human_summary column"), BriefWork, plainWords("human_summary")},
-		{"a colon in the title", titled(title2004), BriefWork, plainWords(": priced, asked, funded")},
-		{"a colon in an ask", titled(title2004), BriefAsk, plainWords(": priced, asked, funded")},
-		{"a work title with an article", titled(title2101), BriefWork, verb},
-		{"a second work title with an article", titled(title2004), BriefWork, verb},
-		{"a third work title with an article", titled(title2100), BriefWork, verb},
 		{"an ask that is a statement", titled(title2004), BriefAsk, "An ask is one question or one instruction."},
 		{"an ask of two questions", titled("Fund it? Park it?"), BriefAsk, "An ask is one question or one instruction."},
 		{"an ask after two statements", titled("The plan finished. No test ran. Settle each one."), BriefAsk, "An ask is one question or one instruction."},
@@ -94,9 +88,6 @@ func TestCheckBriefRefuses(t *testing.T) {
 			b.Why = "It spent 4.00 of 4.00 EUR in 3 sessions. The last session fixed 2 of 10 findings."
 		}), BriefWork, why},
 		{"a why line over 160 runes", with(func(b *BriefText) { b.Why = "So " + strings.Repeat("a", 157) + "." }), BriefWork, why},
-		{"a why line that starts with the title", with(func(b *BriefText) {
-			b.Why = "Narrow the close refusal to plans that hold criteria, so a plan with none closes."
-		}), BriefWork, why},
 		{"no summary", with(func(b *BriefText) { b.Summary = "" }), BriefWork, summary},
 		{"a summary over 600 runes", with(func(b *BriefText) { b.Summary = strings.Repeat("a", 600) + "." }), BriefWork, summary},
 		{"a #N that is no card", with(func(b *BriefText) { b.Summary = "The review finding on #2084 asks for it." }), BriefWork,
@@ -197,9 +188,9 @@ func TestCheckEditChecksTheChangedFields(t *testing.T) {
 	if got := CheckEdit(b, edit, BriefWork, briefRefs{}); len(got) != 0 {
 		t.Fatalf("a why line and a summary under an old title: CheckEdit = %q, want none", got)
 	}
-	edit.Title, b.Title = title2004, title2004
-	if got := CheckEdit(b, edit, BriefWork, briefRefs{}); !slices.Contains(got, plainWords(": priced, asked, funded")) {
-		t.Fatalf("a new title: CheckEdit = %q, want its colon refused", got)
+	edit.Title, b.Title = title2100, title2100
+	if got := CheckEdit(b, edit, BriefWork, briefRefs{}); !slices.Contains(got, plainWords("card/2084")) {
+		t.Fatalf("a new title: CheckEdit = %q, want its branch refused", got)
 	}
 	edit = BriefText{Summary: "It waits for #2084."}
 	b = BriefText{Title: title2101, Summary: edit.Summary}

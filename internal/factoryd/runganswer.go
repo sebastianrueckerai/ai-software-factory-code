@@ -438,7 +438,7 @@ func ParseRungAnswer(f CaseFacts, rung int, text string) (RungAnswer, error) {
 		// a session's action the facts leave no room for is asked again, not
 		// handed up for Act to refuse
 		if why := a.refusal(f, rung, rungResolution(out, f)); why != "" {
-			return RungAnswer{}, fmt.Errorf("the answer %s is refused on these facts: %s", out.Decision, why)
+			return RungAnswer{}, fmt.Errorf("the answer %s is refused on these facts: %s; the rung answers with %s%s", out.Decision, why, offeredText(offered), handUpText(rung))
 		}
 	}
 	return out, nil

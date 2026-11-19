@@ -381,7 +381,8 @@ func TestParseRungAnswerTakesTheRungsRealAnswerShape(t *testing.T) {
 
 // A handover at the cap parses for rung 1 with a draw of a session and is
 // refused at the parse without one, so rung 1 is asked again instead of
-// handing up for Act to refuse. By hand: 3 of 3 sessions used, the card's
+// handing up for Act to refuse, with the stop, the answers the card holds
+// there and the answers the rung may give. By hand: 3 of 3 sessions used, the card's
 // draw left holds 2 sessions.
 func TestParseRungAnswerRefusesAHandoverAtTheCapWithNoDraw(t *testing.T) {
 	f := answerFacts
@@ -398,7 +399,12 @@ func TestParseRungAnswerRefusesAHandoverAtTheCapWithNoDraw(t *testing.T) {
 		t.Fatalf("with a draw: %+v, %v; want the handover accepted", got, err)
 	}
 	_, err := ParseRungAnswer(f, 1, handover(map[string]any{"sessions": 0, "agent_time_s": 0, "eur": 0}))
-	if err == nil || !strings.Contains(err.Error(), "the session cap of 3 is reached") {
-		t.Fatalf("with no draw: %v, want the refusal naming the cap", err)
+	// the card has an open pull request, so its cap's face holds a successor
+	// beside the extend, the close and the note
+	want := "the answer handover is refused on these facts: the session cap of 3 is reached" +
+		" (the card's answers at this stop: `extend`, `successor`, `close` and `note`);" +
+		" the rung answers with handover, route_approval, reverify, extend, successor and replan, or hand_up when it cannot resolve"
+	if err == nil || err.Error() != want {
+		t.Fatalf("with no draw: %v, want the refusal naming the cap and the answers: %s", err, want)
 	}
 }

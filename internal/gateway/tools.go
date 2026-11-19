@@ -423,7 +423,7 @@ type EscalateIn struct {
 	Question       string `json:"question" jsonschema:"what the human must answer or decide"`
 	Reason         string `json:"reason"`
 	Recommendation string `json:"recommendation" jsonschema:"what you would do and why, at most 2000 bytes"`
-	// a choice the guide faults is refused; a list factoryd cannot offer is
+	// a choice a button cannot carry is refused; a list factoryd cannot offer is
 	// dropped there
 	Choices []string `json:"choices,omitempty" jsonschema:"offer 2 to 5 short answers the human can pick with one click, each at most 60 characters in plain words; always leave free text possible"`
 	Choice  string   `json:"choice,omitempty" jsonschema:"the choice you recommend, by its label or its number from 1"`

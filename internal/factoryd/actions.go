@@ -260,7 +260,7 @@ var Actions = []Action{
 		case f.Report:
 			return reportRuns
 		case f.Kind == CaseBudgetFloor:
-			return "this card waits on money, not a session"
+			return "this card waits on money, not a session" + stopAnswers(CaseBudgetFloor, f)
 		case f.Kind == CaseMonthCap:
 			return "this card waits on the month cap, not a session: raise the month cap in policy.yaml or wait for the month to turn, then `fund` or `retry`"
 		case f.Kind != "" && !slices.Contains(extendKinds, f.Kind):
@@ -531,14 +531,16 @@ func timelineUnread(action string, rung int) string {
 }
 
 // conflictFit is what a merge conflict needs, by the stop's kind: a
-// session that merges main, which a stop on sessions, agent time or money
-// has no room for, the cap's own turn at a cap wait, else a continue with a
-// note. The door that refuses lists the answers the rung may take
-// (actRefusal, rungStatement).
+// session that merges main, with the answers a stop on sessions, agent
+// time or money holds, an extend at the other stops an extend answers, the
+// cap's own turn at a cap wait, else a continue with a note.
 func conflictFit(f CaseFacts) string {
+	const session = "the card needs a session that merges main into the branch"
 	switch {
-	case slices.Contains(extendKinds, f.Kind), f.Kind == CaseBudgetFloor:
-		return "the card needs a session that merges main into the branch"
+	case f.Kind == CaseSessionCap || f.Kind == CaseAgentTimeCap || f.Kind == CaseBudgetFloor:
+		return session + stopAnswers(f.Kind, f)
+	case slices.Contains(extendKinds, f.Kind):
+		return session + ", which `" + ActExtend + "` buys"
 	case f.Kind == CaseDayCap || f.Kind == CaseMonthCap || f.Kind == CaseProjectCap:
 		return "the card's next session, once the cap turns, merges main into the branch"
 	}
@@ -916,8 +918,8 @@ func (f CaseFacts) withDraw(r Resolution) CaseFacts {
 
 // sessionRoom is why f leaves no room to open a session, "" when it has
 // it: none running, an attempt under the cap, the agent time a session
-// needs (SessionLeastS), and the money an opening needs. The door that
-// refuses lists the answers the rung may take (actRefusal).
+// needs (SessionLeastS), and the money an opening needs, each stop with
+// the answers it holds (stopAnswers).
 func sessionRoom(f CaseFacts) string {
 	limit, left, need := f.agentTime()
 	switch {
@@ -926,19 +928,46 @@ func sessionRoom(f CaseFacts) string {
 	case !f.Planner && capWaitDecision(f.CapWait) != "":
 		return "a cap binds before a session can start: " + f.CapWait
 	case f.Attempts >= f.SessionCap:
-		return fmt.Sprintf("the session cap of %d is reached", f.SessionCap)
+		return fmt.Sprintf("the session cap of %d is reached", f.SessionCap) + stopAnswers(CaseSessionCap, f)
 	case slices.Contains(f.Partial, "config"):
 		return "the agent time cap could not be read: try again in a minute, or close the card"
 	case left <= 0:
-		return fmt.Sprintf("the agent time cap of %s is reached", minutesWord(limit))
+		return fmt.Sprintf("the agent time cap of %s is reached", minutesWord(limit)) + stopAnswers(CaseAgentTimeCap, f)
 	case left < need:
-		return fmt.Sprintf("the agent time cap of %s leaves %s and a session needs %s", minutesWord(limit), minutesWord(left), minutesWord(need))
+		return fmt.Sprintf("the agent time cap of %s leaves %s and a session needs %s", minutesWord(limit), minutesWord(left), minutesWord(need)) + stopAnswers(CaseAgentTimeCap, f)
 	case slices.Contains(f.Partial, "floor"):
 		return "what an opening needs could not be read: try again in a minute, or close the card"
 	case f.unfunded():
-		return fmt.Sprintf("%s EUR is left for a session and an opening needs %s EUR", textutil.EUR(f.SessionLeft()), textutil.EUR(f.FloorEUR))
+		return fmt.Sprintf("%s EUR is left for a session and an opening needs %s EUR", textutil.EUR(f.SessionLeft()), textutil.EUR(f.FloorEUR)) + stopAnswers(CaseBudgetFloor, f)
 	}
 	return ""
+}
+
+// stopAnswers ends a refusal that names a stop on f with the answers the
+// stop's face holds, by key: no reader of the refusal is left without its
+// ways out. The stop is the card's own, else the one of kind that keeps a
+// session off. "" when the face holds none. It is set in init because the
+// action table's rows call it and it reads the table.
+var stopAnswers func(kind CaseKind, f CaseFacts) string
+
+func init() { stopAnswers = faceAnswerKeys }
+
+func faceAnswerKeys(kind CaseKind, f CaseFacts) string {
+	// a card that waits at a stop of its own shows that stop's face
+	if f.Kind != CaseSessionCap && f.Kind != CaseAgentTimeCap && f.Kind != CaseBudgetFloor {
+		f.Kind = kind
+	}
+	facts := Facts{CaseFacts: f}
+	var names []string
+	for _, key := range CaseFaces[f.Kind].Answers(facts) {
+		if a, ok := AnswerFor(key, facts); ok && answerHolds(a, facts) && !slices.Contains(names, "`"+a.Action+"`") {
+			names = append(names, "`"+a.Action+"`")
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	return " (the card's answers at this stop: " + textutil.AndList(names) + ")"
 }
 
 // retriedAs names the card that replaced failed dependency id of f's card

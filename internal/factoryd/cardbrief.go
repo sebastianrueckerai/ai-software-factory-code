@@ -152,24 +152,17 @@ func checkBrief(b BriefText, job BriefJob, refs RefResolver, on [4]bool) []strin
 	if on[0] {
 		add(titleLength(title, job)...)
 		if job != BriefHumanIssue {
-			for _, check := range []func(string) []string{titleIssueRefs, branches, titleHexIDs, titleBackticks, titleCamelCase, titleSnakeCase, titleColon} {
+			for _, check := range []func(string) []string{titleIssueRefs, branches, titleHexIDs, titleBackticks, titleCamelCase, titleSnakeCase} {
 				for _, x := range check(title) {
 					add(fmt.Sprintf("The title names %q. A title uses plain words. Move %q to the text.", x, x))
 				}
 			}
 		}
-		switch job {
-		case BriefWork:
-			if startsWithArticle(title) {
-				add("A work title starts with its verb, for example 'Narrow the close refusal to plans that hold criteria'.")
-			}
-		case BriefAsk:
-			if !oneAsk(title) {
-				add("An ask is one question or one instruction.")
-			}
+		if job == BriefAsk && !oneAsk(title) {
+			add("An ask is one question or one instruction.")
 		}
 	}
-	if on[1] && job != BriefHumanIssue && !whyLine(b.Why, title) {
+	if on[1] && job != BriefHumanIssue && !whyLine(b.Why) {
 		add("The why line gives the reason in one sentence: who needs this, or which problem it removes.")
 	}
 	if n := utf8.RuneCountInString(strings.TrimSpace(b.Summary)); on[2] && job == BriefWork && (n == 0 || n > summaryMax) {
@@ -288,20 +281,6 @@ func titleCamelCase(title string) []string {
 
 func titleSnakeCase(title string) []string { return snakeCase.FindAllString(title, -1) }
 
-// titleColon is the title from its first colon on, the second statement
-// the colon joins, which belongs in the text. A colon between two digits,
-// as in a time, joins nothing.
-func titleColon(title string) []string {
-	for i := 0; i < len(title); i++ {
-		if title[i] == ':' && !(i > 0 && i < len(title)-1 && isDigit(title[i-1]) && isDigit(title[i+1])) {
-			return []string{title[i:]}
-		}
-	}
-	return nil
-}
-
-func isDigit(b byte) bool { return '0' <= b && b <= '9' }
-
 // branches are the branches text names by the names the factory gives
 // them: card/N, pull/N, factory/t-…, factory/schema-…,
 // factory/template-update, salvage/t-… and factory-pins/…, each standing
@@ -352,14 +331,13 @@ func sentenceBreaks(text string) [][]int {
 	return out
 }
 
-// whyLine is whether why is one sentence of 1 to 160 runes that does not
-// open with the title. A sentence ends at a full stop, a question mark or
-// an exclamation mark before a capital, so "e.g. in" ends none.
-func whyLine(why, title string) bool {
+// whyLine is whether why is one sentence of 1 to 160 runes. A sentence
+// ends at a full stop, a question mark or an exclamation mark before a
+// capital, so "e.g. in" ends none.
+func whyLine(why string) bool {
 	why = strings.TrimSpace(why)
 	n := utf8.RuneCountInString(why)
-	return n > 0 && n <= whyMax && !strings.Contains(why, "\n") && len(sentenceBreaks(why)) == 0 &&
-		(title == "" || len(why) < len(title) || !strings.EqualFold(why[:len(title)], title))
+	return n > 0 && n <= whyMax && !strings.Contains(why, "\n") && len(sentenceBreaks(why)) == 0
 }
 
 func resolves(refs RefResolver, n int) bool {

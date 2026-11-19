@@ -3207,10 +3207,10 @@ func TestChatAskBounds(t *testing.T) {
 	}
 }
 
-// An ask's choice is a button the human presses: the guide's check of an
-// offered answer refuses one in the agent's own voice, and the ask stores
+// An ask's choice is a button the human presses: a choice a button cannot
+// carry, one in the agent's own voice, is refused, and the ask stores
 // nothing.
-func TestChatAskRefusesAChoiceTheGuideFaults(t *testing.T) {
+func TestChatAskRefusesAChoiceAButtonCannotCarry(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
 	args := `{"ask":"Which store?","choices":["Postgres","I keep SQLite"]}`

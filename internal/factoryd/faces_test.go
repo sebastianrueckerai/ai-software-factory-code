@@ -570,9 +570,10 @@ func TestAHumanCardAsksWhetherItsTitledWorkIsDone(t *testing.T) {
 	}
 	for title, want := range map[string]string{
 		"Rotate the bot token before Friday":       "Is \u201cRotate the bot token before Friday\u201d done?",
-		"Rotate the bot token: it expires Friday":  "Is the work of this card done?",
-		"Fix CI: it fails on arm64":                "Is the work of this card done?",
-		"Board export: keep the nightly snapshots": "Is the work of this card done?",
+		"Rotate the bot token: it expires Friday":  "Is \u201cRotate the bot token: it expires Friday\u201d done?",
+		"Rotate the bot token in `secrets.yaml`":   "Is the work of this card done?",
+		"Fix the doClose refusal on arm64":         "Is the work of this card done?",
+		"Merge the work of branch card/2084 first": "Is the work of this card done?",
 	} {
 		if got := ask(title); got != want {
 			t.Errorf("%q asks %q, want %q", title, got, want)
@@ -938,7 +939,7 @@ var pairAsk = regexp.MustCompile(`, or [^.?]*\?$`)
 
 // yesAndItsRefusals are the asks that yes or no answers on a face of more
 // than two answers: each answer past the yes is a way to say no.
-var yesAndItsRefusals = []string{"Merge this card's pull request?", "Is this promise of the plan met?"}
+var yesAndItsRefusals = regexp.MustCompile(`^(Merge (this card's pull request|“.+”)|Is this promise (of the plan met|met by “.+”))\?$`)
 
 // yesNoAsk says whether ask ends in a question that yes or no answers: one
 // that opens with no question word and names no pair.
@@ -972,7 +973,7 @@ func TestTheAsksWithManyAnswersNameNoPair(t *testing.T) {
 		if pair {
 			t.Errorf("%s/%s: the ask %q names a pair, and the face holds %v", x.fx.Group, x.fx.Kind, x.face.Ask, ways)
 		}
-		if yesNo && !slices.Contains(yesAndItsRefusals, x.face.Ask) {
+		if yesNo && !yesAndItsRefusals.MatchString(x.face.Ask) {
 			t.Errorf("%s/%s: the ask %q takes yes or no, and the face holds %v", x.fx.Group, x.fx.Kind, x.face.Ask, ways)
 		}
 	}

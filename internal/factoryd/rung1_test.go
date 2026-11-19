@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 
@@ -130,6 +131,27 @@ func TestRung1StatementOrderMoneyAndRefusals(t *testing.T) {
 	}
 }
 
+// At a budget floor each action the stop keeps off is listed as not offered
+// with the stop and the answers the card holds there. By hand: 0.00 EUR is
+// left of a 2.00 EUR opening under an 18.00 EUR spend limit, so the face
+// holds the fund and no raise, and with no branch no successor.
+func TestRung1StatementNamesTheAnswersOfAMoneyStop(t *testing.T) {
+	floor := CaseFacts{Kind: CaseBudgetFloor, Attempts: 1, SessionCap: 3, AgentTimeS: 600, AgentTimeCapS: 7200, SessionLeastS: 300,
+		BudgetEUR: 4, SpentEUR: 4, LeftEUR: 0, FloorEUR: 2, CeilingEUR: 18,
+		PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
+	got := (&Runner{}).rungStatement(Case{Kind: CaseBudgetFloor, Problem: "PROBLEM"}, floor, "DIGEST", nil, 1)
+	const answers = " (the card's answers at this stop: `fund`, `close` and `note`)\n"
+	for _, w := range []string{
+		"- extend: not offered: this card waits on money, not a session" + answers,
+		"- resume: not offered: 0.00 EUR is left for a session and an opening needs 2.00 EUR" + answers,
+		"- fund\n",
+	} {
+		if !strings.Contains(got, w) {
+			t.Errorf("statement lacks %q:\n%s", w, got)
+		}
+	}
+}
+
 // A pull request that no longer merges into main is said right after the
 // problem, with Forgejo's refusal, and route_approval and reverify are
 // listed as not offered for it.
@@ -138,10 +160,10 @@ func TestRung1StatementSaysThePullRequestNoLongerMerges(t *testing.T) {
 	f.ReviewApproved, f.MergeConflict = true, "the branch conflicts with its base: status 409"
 	got := (&Runner{}).rungStatement(Case{Kind: CaseGateStop, Problem: "PROBLEM"}, f, "DIGEST", nil, 1)
 	said := "The pull request does not merge into main: the branch conflicts with its base: status 409. Neither reverify nor route_approval clears it:" +
-		" the card needs a session that merges main into the branch, or the card closes as superseded."
+		" the card needs a session that merges main into the branch, which `extend` buys, or the card closes as superseded."
 	refusal := func(name string) string {
 		return "- " + name + ": not offered: the pull request no longer merges into main (Forgejo refused to merge main into c1), so `" + name +
-			"` only runs the gates into the same refusal at the merge queue: the card needs a session that merges main into the branch," +
+			"` only runs the gates into the same refusal at the merge queue: the card needs a session that merges main into the branch, which `extend` buys," +
 			" or the card closes as superseded when main already carries its work\n"
 	}
 	for _, w := range []string{"PROBLEM\n" + said + "\n", refusal(ActRouteApproval), refusal(ActReverify), "- extend\n"} {

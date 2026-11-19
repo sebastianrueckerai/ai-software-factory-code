@@ -1493,7 +1493,7 @@ func TestAHumanCardsEndSaysItsWaitingCardsAsk(t *testing.T) {
 // small card leads with the card's title, so Needs you names the work.
 func TestAFallbackAskLeadsTheSmallCardWithTheTitle(t *testing.T) {
 	r := newRig(t)
-	const title = "Board export: keep the nightly snapshots"
+	const title = "Keep the nightly snapshots of boardExport"
 	hq := humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerDone, Label: "I did it"})
 	hq.Objective, hq.Question.Ask, hq.Escalation = title+"\n\nWrite the board to a snapshot every night.", title, title
 	r.tasks.tasks = []factoryd.BoardTask{hq}

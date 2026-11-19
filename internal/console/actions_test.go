@@ -719,7 +719,7 @@ func TestExtendFormShowsWhereTheAskOffersIt(t *testing.T) {
 // stop asks agent time, and the form's own order says so.
 func TestExtendFormLeadsWithMinutesAtAPlannerTimeStop(t *testing.T) {
 	r := fundRig(t)
-	r.tasks.set(factoryd.PlannerOutOfTime+" and its automatic second session without filing a plan: an extend of its agent time starts one more planner session, with the answer among its findings",
+	r.tasks.set(factoryd.PlannerOutOfTime+" and its automatic second session without filing a plan: an extend of its agent time starts one more planner session, with the answer among its findings, a note alone starts none, and a close ends the card",
 		factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13,
 			Objective: "Plan the API.", BudgetEUR: 2, ModelAlias: "factory/small"})
 	seatAsk(r, "t-e", factoryd.CaseAgentTimeCap, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.AgentTimeS, f.Planner = 1, 7200, true }))
