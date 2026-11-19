@@ -1628,9 +1628,11 @@ func TestAWaitingCardWithoutAnIssueOffersClose(t *testing.T) {
 	ra.seed(t, factoryd.Task{ID: "t-nw", Kind: "agent", Status: "waiting-human", Track: policy.TrackDirect, BudgetEUR: 5, Objective: "Write it up."})
 	ra.seed(t, factoryd.Task{ID: "t-nf", Kind: "agent", Status: "failed", Track: policy.TrackDirect, BudgetEUR: 5, Objective: "Write it up."})
 	ra.wire(r, "t-nw", false)
-	// a waiting card with no case waits on the heal pass; the failed card meets the real Act's gate
+	// a waiting card with no case waits on the heal pass; the failed card
+	// meets the real Act's gate, which names a card with no issue by its
+	// title, and the chat's door adds the task id its tools take
 	for id, want := range map[string]string{"t-nw": "this card waits with no open ask: the factory opens one within a minute",
-		"t-nf": "no ask is open on card t-nf, so `continue` has nothing to answer, and the human may take `replan` and `close`"} {
+		"t-nf": "no ask is open on card “Write it up.” (t-nf), so `continue` has nothing to answer, and the human may take `replan` and `close`"} {
 		code, msg := refused(t, r, "answer", toolInput{TaskID: id, Text: "go on"})
 		equal(t, "answer "+id, []any{code, msg}, []any{http.StatusConflict, want})
 	}

@@ -876,10 +876,10 @@ func ConfirmDeliveredCriteria(ctx context.Context, store Store, id, by, line str
 		case offender.Status == "in-review", offender.Status == "waiting-human":
 			act = "answer it, then confirm again"
 		}
-		return 0, fmt.Errorf("%s is %s: %w: %s", cardName(offender), offender.Status, ErrChildOpen, act)
+		return 0, fmt.Errorf("%s is %s: %w: %s", shownName(offender), offender.Status, ErrChildOpen, act)
 	}
 	if i := slices.IndexFunc(g.cards, func(c Task) bool { return c.Status == "closed" }); i >= 0 && line == "" {
-		return 0, fmt.Errorf("%s is closed: %w", cardName(g.cards[i]), ErrNoEvidence)
+		return 0, fmt.Errorf("%s is closed: %w", shownName(g.cards[i]), ErrNoEvidence)
 	}
 	out := make([]CriterionVerdict, len(open))
 	for i, c := range open {

@@ -189,7 +189,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	return out, err
 }
 
-func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
+func (r *Runner) act(ctx context.Context, in ActInput) (_ ActResult, err error) {
 	if in.CaseID != 0 {
 		lock, _ := r.caseLocks.LoadOrStore(in.CaseID, &sync.Mutex{})
 		mu := lock.(*sync.Mutex)
@@ -202,12 +202,24 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	if err != nil {
 		return ActResult{}, err
 	}
+	if in.Via != ViaButton {
+		// a human reads a button's refusal; every other door is an agent's
+		defer func() {
+			switch e := err.(type) {
+			case ErrActRefused:
+				err = ErrActRefused(ForAgent(string(e), t))
+			case ErrCaseEnded:
+				e.Card = ForAgent(e.Card, t)
+				err = e
+			}
+		}()
+	}
 	c, err := r.actCase(ctx, t, in)
 	if err != nil {
 		return ActResult{Case: c}, err
 	}
 	if why := endedRefusal(t.Status, PlanWaitCase(c, t), in.Res.Action); c.ID != 0 && why != "" {
-		return ActResult{Case: c}, ErrActRefused("card " + cardName(t) + " " + why)
+		return ActResult{Case: c}, ErrActRefused("card " + shownName(t) + " " + why)
 	}
 	own, err := r.ownStep(ctx, c, in)
 	if err != nil {
@@ -280,7 +292,7 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 		if human, why := humanOnly(c, f); human && in.Rung == 2 {
 			return ActResult{}, agentRefused(fmt.Sprintf("This ask is the human's by its kind (%s): record your analysis and the answer you suggest with `attach_analysis`.", why))
 		}
-		if why := actRefusal(f, in, cardName(t)); why != "" {
+		if why := actRefusal(f, in, shownName(t)); why != "" {
 			return ActResult{}, ErrActRefused(why)
 		}
 		before, after := r.sessionParts(f, in)
@@ -726,7 +738,7 @@ func (r *Runner) actCase(ctx context.Context, t Task, in ActInput) (Case, error)
 	if in.CaseID == 0 {
 		c, err := r.store.NewestAskCase(ctx, t.ID)
 		if err == nil && c.ID != 0 {
-			err = ErrActRefused(fmt.Sprintf("Card %s waits on %s: answer that ask, not the card.", cardName(t), caseRef(in.Via, "", c)))
+			err = ErrActRefused(fmt.Sprintf("Card %s waits on %s: answer that ask, not the card.", shownName(t), caseRef(in.Via, "", c)))
 		}
 		return Case{}, err
 	}
@@ -738,9 +750,9 @@ func (r *Runner) actCase(ctx context.Context, t Task, in ActInput) (Case, error)
 	case c.TaskID != t.ID:
 		other, _, _ := r.store.Task(ctx, c.TaskID)
 		other.ID = c.TaskID
-		return Case{}, ErrActRefused(fmt.Sprintf("%s is card %s's, not card %s's: answer it on its own card", caseRef(in.Via, "", c), cardName(other), cardName(t)))
+		return Case{}, ErrActRefused(fmt.Sprintf("%s is card %s's, not card %s's: answer it on its own card", caseRef(in.Via, "", c), shownName(other), shownName(t)))
 	case c.Status != CaseOpen && c.Status != CaseAtHuman:
-		return c, ErrCaseEnded{Case: c, Card: cardName(t)}
+		return c, ErrCaseEnded{Case: c, Card: shownName(t)}
 	}
 	return c, nil
 }
@@ -791,7 +803,7 @@ func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, own 
 	case errors.As(err, &bound):
 		return ErrActRefused(bound.Error())
 	case errors.As(err, &ended) && ended.Card == "":
-		ended.Card = cardName(t)
+		ended.Card = shownName(t)
 		return ended
 	}
 	return err
@@ -1015,9 +1027,9 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) (
 	case in.Rung != 2 && in.Rung != 3:
 		return fmt.Sprintf("%s may not answer a human card: the factory agent and the human may", who(in.Rung)), nil
 	case in.Res.Fund != nil:
-		return fmt.Sprintf("card %s is a human card, so its answer draws nothing: answer it without the fund", cardName(t)), nil
+		return fmt.Sprintf("card %s is a human card, so its answer draws nothing: answer it without the fund", shownName(t)), nil
 	case len(in.Res.Args) > 0:
-		return fmt.Sprintf("card %s is a human card, so its answer is one of its choices and takes no args: answer it without them", cardName(t)), nil
+		return fmt.Sprintf("card %s is a human card, so its answer is one of its choices and takes no args: answer it without them", shownName(t)), nil
 	}
 	if why := r.heldRefusal(ctx, t, in); why != "" {
 		return why, nil
@@ -1029,11 +1041,11 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) (
 	offers := AskOffers(ask.Detail)
 	switch {
 	case len(offers) == 0:
-		return fmt.Sprintf("card %s asks no question with choices: answer it with a note", cardName(t)), nil
+		return fmt.Sprintf("card %s asks no question with choices: answer it with a note", shownName(t)), nil
 	case !slices.ContainsFunc(offers, func(o QuestionChoice) bool { return o.Value == in.Res.Action }):
 		return choiceRefusal(t, offers), nil
 	case in.Rung != 3 && (in.Res.Action == ActApproveMerge || in.Res.Action == ActDenyMerge):
-		return fmt.Sprintf("Pull request #%d of card %s was opened by the factory, and no gate checked it: a human must press Merge it or Reject and close it on the card.", t.PRNumber, cardName(t)) + planAgentStep, nil
+		return fmt.Sprintf("Pull request #%d of card %s was opened by the factory, and no gate checked it: a human must press Merge it or Reject and close it on the card.", t.PRNumber, shownName(t)) + planAgentStep, nil
 	case in.Res.Action != AnswerDone:
 		return "", nil
 	}
@@ -1066,14 +1078,14 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) (
 		if len(closed) > 1 {
 			were = "were"
 		}
-		return fmt.Sprintf("card %s waits for %s, which %s closed and will never be done: %s", cardName(t), textutil.AndList(closed), were, end), nil
+		return fmt.Sprintf("card %s waits for %s, which %s closed and will never be done: %s", shownName(t), textutil.AndList(closed), were, end), nil
 	}
 	until := "it is"
 	if len(deps) > 1 {
 		until = "they are"
 	}
 	return fmt.Sprintf("card %s waits for %s, so its work cannot be done yet: answer Not now (park) until %s done, or %s",
-		cardName(t), textutil.AndList(waits), until, end), nil
+		shownName(t), textutil.AndList(waits), until, end), nil
 }
 
 // endsFact is the case fact that says how the issue's close ends the human
@@ -1128,9 +1140,9 @@ func (r *Runner) heldRefusal(ctx context.Context, t Task, in ActInput) string {
 	up := "hand the case up (`hand_up`) with `" + choice + "` as the recommendation"
 	switch choice {
 	case AnswerPark, AnswerKeepWaiting:
-		return fmt.Sprintf("card %s waits out of sight until a human is asked, so `%s` would leave it there: %s", cardName(t), choice, up)
+		return fmt.Sprintf("card %s waits out of sight until a human is asked, so `%s` would leave it there: %s", shownName(t), choice, up)
 	case AnswerGo:
-		return fmt.Sprintf("card %s's filer routed it to a human, so only a human hands it to an agent: %s", cardName(t), up)
+		return fmt.Sprintf("card %s's filer routed it to a human, so only a human hands it to an agent: %s", shownName(t), up)
 	}
 	if !slices.Contains(heldEnds, choice) {
 		return ""
@@ -1138,7 +1150,7 @@ func (r *Runner) heldRefusal(ctx context.Context, t Task, in ActInput) string {
 	gone, why, err := r.conditionGone(ctx, t)
 	switch {
 	case err != nil:
-		return fmt.Sprintf("card %s's condition could not be read (%s), so `%s` ends nothing: %s", cardName(t), r.scrub(err.Error()), choice, up)
+		return fmt.Sprintf("card %s's condition could not be read (%s), so `%s` ends nothing: %s", shownName(t), r.scrub(err.Error()), choice, up)
 	case !gone:
 		return why + ": " + up
 	}
@@ -1150,7 +1162,7 @@ func (r *Runner) heldRefusal(ctx context.Context, t Task, in ActInput) string {
 // what stands, or that no code checks a source with no such fact.
 func (r *Runner) conditionGone(ctx context.Context, t Task) (gone bool, why string, err error) {
 	stands := func(format string, args ...any) string {
-		return fmt.Sprintf("card %s's condition stands: ", cardName(t)) + fmt.Sprintf(format, args...)
+		return fmt.Sprintf("card %s's condition stands: ", shownName(t)) + fmt.Sprintf(format, args...)
 	}
 	short := t.SHA[:min(7, len(t.SHA))]
 	switch t.Source {
@@ -1187,7 +1199,7 @@ func (r *Runner) conditionGone(ctx context.Context, t Task) (gone bool, why stri
 		_, firing := firingSince(row)
 		return row.Detail["event"] != true && resolved != "" && !firing, stands("its alert fires, or is an event no resolve clears"), nil
 	}
-	return false, fmt.Sprintf("no code checks card %s's condition", cardName(t)), nil
+	return false, fmt.Sprintf("no code checks card %s's condition", shownName(t)), nil
 }
 
 // choiceRefusal says card t takes one of offers, with a note beside it.
@@ -1196,7 +1208,7 @@ func choiceRefusal(t Task, offers []QuestionChoice) string {
 	for _, o := range offers {
 		choices = append(choices, fmt.Sprintf("%s (%s)", o.Label, o.Value))
 	}
-	return fmt.Sprintf("card %s takes one of its choices, with your note beside it: %s", cardName(t), strings.Join(choices, ", "))
+	return fmt.Sprintf("card %s takes one of its choices, with your note beside it: %s", shownName(t), strings.Join(choices, ", "))
 }
 
 // wordsRefusal is why free words alone answer no human card whose question
@@ -1263,7 +1275,7 @@ func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInpu
 		issue, err := r.RetryCard(ctx, id, in.By)
 		var no ErrNoRetry
 		if as, ok := retriedAs(f, id); errors.As(err, &no) && ok {
-			return []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": id}, Result: fmt.Sprintf("%s was retried as %s already.", cardName(old), as)}}, nil
+			return []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": id}, Result: fmt.Sprintf("%s was retried as %s already.", shownName(old), as)}}, nil
 		}
 		if err != nil {
 			return nil, err
@@ -1350,25 +1362,25 @@ func (r *Runner) salvage(ctx context.Context, t Task, f CaseFacts, in ActInput) 
 		}
 		packed, _ := packCardLines(lines)
 		if _, err := r.Successor(ctx, SuccessorInput{TaskID: t.ID, Findings: packed, PR: t.PRNumber}); err != nil {
-			return nil, fmt.Errorf("the successor of card %s was not filed and the run goes on: press again: %s", cardName(t), r.scrub(err.Error()))
+			return nil, fmt.Errorf("the successor of card %s was not filed and the run goes on: press again: %s", shownName(t), r.scrub(err.Error()))
 		}
 	} else if _, err := r.Successor(ctx, SuccessorInput{TaskID: t.ID, PR: t.PRNumber}); err != nil {
-		return nil, fmt.Errorf("the successor of card %s could not be completed: press again: %s", cardName(t), r.scrub(err.Error()))
+		return nil, fmt.Errorf("the successor of card %s could not be completed: press again: %s", shownName(t), r.scrub(err.Error()))
 	}
 	succ, _, err := r.store.Task(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	if err := r.Finish(ctx, t.ID, "closed", fmt.Sprintf("salvaged into #%d", succ.IssueNumber)); err != nil {
-		return nil, fmt.Errorf("the successor #%d is filed, but card %s did not close and its run goes on: press again: %s", succ.IssueNumber, cardName(t), r.scrub(err.Error()))
+		return nil, fmt.Errorf("the successor #%d is filed, but card %s did not close and its run goes on: press again: %s", succ.IssueNumber, shownName(t), r.scrub(err.Error()))
 	}
 	if err := r.cfg.Workflows.Terminate(ctx, t.ID, "", "salvaged by "+in.By); err != nil {
 		return []CaseAction{{Action: ActSalvage, Args: map[string]any{"successor": id, "issue": succ.IssueNumber},
 			Result: fmt.Sprintf("Salvaged: the card %s is closed and #%d filed; the run did not end: %s. The heal pass ends it within %s.",
-				cardName(t), succ.IssueNumber, r.scrub(err.Error()), r.cfg.Policy().WaitsOf(t.Repository).RunQuiet)}}, nil
+				shownName(t), succ.IssueNumber, r.scrub(err.Error()), r.cfg.Policy().WaitsOf(t.Repository).RunQuiet)}}, nil
 	}
 	return []CaseAction{{Action: ActSalvage, Args: map[string]any{"successor": id, "issue": succ.IssueNumber},
-		Result: fmt.Sprintf("Salvaged: the run of card %s ended, and its successor #%d starts from main's tip.", cardName(t), succ.IssueNumber)}}, nil
+		Result: fmt.Sprintf("Salvaged: the run of card %s ended, and its successor #%d starts from main's tip.", shownName(t), succ.IssueNumber)}}, nil
 }
 
 // replanDependency sends failed dependency id of card t to its plan's
@@ -1387,7 +1399,7 @@ func (r *Runner) replanDependency(ctx context.Context, t Task, id string) ([]Cas
 		return nil, err
 	}
 	if slices.ContainsFunc(deps, func(d Dependency) bool { return d.TaskID == id }) {
-		return nil, ErrActRefused(fmt.Sprintf("the planner did not take the work of #%d, and card %s still waits on it: retry it or close the card", dep.IssueNumber, cardName(t)))
+		return nil, ErrActRefused(fmt.Sprintf("the planner did not take the work of #%d, and card %s still waits on it: retry it or close the card", dep.IssueNumber, shownName(t)))
 	}
 	return []CaseAction{{Action: ActReplan, Args: map[string]any{"task_id": id},
 		Result: fmt.Sprintf("Sent the work of #%d to its plan's planner.", dep.IssueNumber)}}, nil
@@ -1663,7 +1675,7 @@ func caseRef(via, card string, c Case) string {
 // or the chat, with what ran outside the run.
 func actText(in ActInput, t Task, c Case, res Resolution, did []CaseAction) string {
 	var text string
-	ref := caseRef(in.Via, cardName(t), c)
+	ref := caseRef(in.Via, shownName(t), c)
 	switch {
 	case c.ID == 0:
 		text = fmt.Sprintf("Card %s took %s.", shownName(t), res.Sentence())
@@ -1684,16 +1696,31 @@ func actText(in ActInput, t Task, c Case, res Resolution, did []CaseAction) stri
 	return text
 }
 
-// cardName is how a refusal or a log line names card t: its issue, else
-// its task id.
+// cardName is how a log line names card t: its issue, else its task id.
 func cardName(t Task) string { return cardRef(Event{TaskID: t.ID}, t) }
 
-// shownName is how a comment or a result a human reads names card t: its
-// issue; its title, quoted, for a card with no issue, as one that waits
-// for its face is; its task id for a card with neither.
+// shownName is how a comment, a result or a refusal a human reads names
+// card t: its issue; its title, quoted, for a card with no issue, as one
+// that waits for its face is; its task id for a card with neither.
 func shownName(t Task) string {
 	if t.IssueNumber != 0 {
 		return fmt.Sprintf("#%d", t.IssueNumber)
 	}
 	return cmp.Or(CardName(t, 0), t.ID)
+}
+
+// agentName is shownName as an agent reads it: the task id, which its
+// tools take, stands after the title of a card with no issue.
+func agentName(t Task) string {
+	name := shownName(t)
+	if t.IssueNumber != 0 || name == t.ID {
+		return name
+	}
+	return name + " (" + t.ID + ")"
+}
+
+// ForAgent is refusal why of card t as an agent reads it: the card's name
+// with its task id (agentName).
+func ForAgent(why string, t Task) string {
+	return strings.Replace(why, shownName(t), agentName(t), 1)
 }

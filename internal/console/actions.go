@@ -767,7 +767,11 @@ func (c *Console) goWork(ctx context.Context, a actor, t factoryd.Task) (string,
 	var no factoryd.ErrNoGo
 	switch {
 	case errors.As(err, &no):
-		return "", 0, refuse(http.StatusConflict, no.Error())
+		why := no.Error()
+		if a.via == factoryd.ViaChat {
+			why = factoryd.ForAgent(why, t)
+		}
+		return "", 0, refuse(http.StatusConflict, why)
 	case err != nil:
 		log.Printf("console: %s hands %s to the factory: %v", a.s.user, t.ID, err)
 		return "", 0, refuse(http.StatusInternalServerError, "The card could not be handed to the factory: "+errText(err)+". Try again in a moment.")

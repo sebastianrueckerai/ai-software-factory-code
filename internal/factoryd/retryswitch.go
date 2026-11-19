@@ -51,14 +51,14 @@ func (e ErrNoFreeze) Error() string { return string(e) }
 func freezeEnded(t Task) string {
 	switch {
 	case t.Status != "waiting-human":
-		return fmt.Sprintf("the freeze of %s ended, the card is %s: no hold waits on a retry, and a new limit on the class opens a freeze card again", cardName(t), t.Status)
+		return fmt.Sprintf("the freeze of %s ended, the card is %s: no hold waits on a retry, and a new limit on the class opens a freeze card again", shownName(t), t.Status)
 	case strings.Contains(t.Objective, freezeResumedSentence):
 		closes := "itself"
 		if at, ok := freezeResumeStamp(t.Objective); ok {
 			closes += " at " + stamp(at)
 		}
 		return fmt.Sprintf("the %s class resumed on its own and %s closes %s: no hold waits on a retry, its frozen cards wake once the resume holds five minutes, and a new limit opens a freeze card again",
-			freezeCardClass(t.Objective), cardName(t), closes)
+			freezeCardClass(t.Objective), shownName(t), closes)
 	}
 	return ""
 }
@@ -89,7 +89,7 @@ func (s *RetrySwitch) RetryFreeze(ctx context.Context, cardID, by, via string) e
 	case !ok:
 		return ErrNoFreeze("no card " + cardID + " stands: the retry switch ends a provider freeze from the class's open freeze card")
 	case card.Source != SourceFreezeCard || class == "":
-		return ErrNoFreeze(fmt.Sprintf("%s is no freeze card: the retry switch ends a provider freeze from the class's open freeze card, and Retry files a failed card again", cardName(card)))
+		return ErrNoFreeze(fmt.Sprintf("%s is no freeze card: the retry switch ends a provider freeze from the class's open freeze card, and Retry files a failed card again", shownName(card)))
 	case !FreezeCardHolds(card):
 		return ErrNoFreeze(freezeEnded(card))
 	case s.Freeze.Signal == nil:

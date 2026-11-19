@@ -475,12 +475,20 @@ func TestAChoiceAfterTheCardEndedNamesTheEnd(t *testing.T) {
 	if _, err := h.s.PgDB().ExecContext(context.Background(), `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = $1`, h.cardID); err != nil {
 		t.Fatal(err)
 	}
+	// the held card has no issue before its face, so a refusal names it by
+	// its title, cut at a word within 70 runes, and an agent's door adds the
+	// task id its tools take
+	const title = "“Deploys of demo-app-demo-app to production wait for an open plan. How…”"
+	const ended = " ended done, so `hold_wait` changes nothing: an ended card does no more work, and a new card carries the work on"
 	for _, rung := range []int{2, 3} {
 		_, err := h.r.Act(context.Background(), ActInput{TaskID: h.cardID, CaseID: h.caseID, By: "sebastian", Via: ViaChat, Rung: rung, Res: Resolution{Action: AnswerHoldWait, Note: "Wait"}})
-		// the held card has no issue before its face, so the refusal names it by its id
-		if want := "card " + h.cardID + " ended done, so `hold_wait` changes nothing: an ended card does no more work, and a new card carries the work on"; err == nil || !strings.Contains(err.Error(), want) {
+		if want := "card " + title + " (" + h.cardID + ")" + ended; err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("rung %d: Act = %v, want a refusal with %q", rung, err, want)
 		}
+	}
+	_, err := h.r.Act(context.Background(), ActInput{TaskID: h.cardID, CaseID: h.caseID, By: "sebastian", Via: ViaButton, Rung: 3, Res: Resolution{Action: AnswerHoldWait, Note: "Wait"}})
+	if want := "card " + title + ended; err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), h.cardID) {
+		t.Errorf("a human's press: Act = %v, want a refusal with %q and no task id", err, want)
 	}
 }
 

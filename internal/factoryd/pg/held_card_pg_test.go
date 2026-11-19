@@ -44,7 +44,7 @@ func TestAHeldProductionAskIsDecidedOutOfSight(t *testing.T) {
 		t.Fatalf("pokes = %v, want none before the face", pokes)
 	}
 	_, err := h.r.Act(ctx, ActInput{TaskID: h.cardID, CaseID: h.caseID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: AnswerHoldWait, Note: "Wait"}})
-	want := "card " + h.cardID + "'s condition stands: a plan is open on main of demo-app/demo-app: hand the case up (`hand_up`) with `hold_wait` as the recommendation"
+	want := "card “Deploys of demo-app-demo-app to production wait for an open plan. How…” (" + h.cardID + ")'s condition stands: a plan is open on main of demo-app/demo-app: hand the case up (`hand_up`) with `hold_wait` as the recommendation"
 	if err == nil || err.Error() != want {
 		t.Fatalf("rung 2's wait = %v,\nwant %q", err, want)
 	}
@@ -132,7 +132,7 @@ func TestMainStillRedClimbsToItsFace(t *testing.T) {
 		t.Fatalf("steps = %+v, want rung 0's hand-up and rung 2 in progress", steps)
 	}
 	_, err := g.r.Act(ctx, ActInput{TaskID: card.ID, CaseID: c.ID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActClose, Note: "Fixed, close"}})
-	want := "card " + card.ID + "'s condition stands: main of demo-app/demo-app is red and its merge queue paused on it: hand the case up (`hand_up`) with `close` as the recommendation"
+	want := "card “main is still red at abcdef1 after the revert #12 merged: a person…” (" + card.ID + ")'s condition stands: main of demo-app/demo-app is red and its merge queue paused on it: hand the case up (`hand_up`) with `close` as the recommendation"
 	if err == nil || err.Error() != want {
 		t.Fatalf("rung 2's close = %v,\nwant %q", err, want)
 	}
@@ -254,7 +254,7 @@ func TestOnlyAHumanHandsAHeldRoutineCardToAnAgent(t *testing.T) {
 	})
 	ctx := context.Background()
 	_, err := g.r.Act(ctx, ActInput{TaskID: card.ID, CaseID: c.ID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: AnswerGo, Note: "Have the factory do it"}})
-	want := "card t-bump's filer routed it to a human, so only a human hands it to an agent: hand the case up (`hand_up`) with `go` as the recommendation"
+	want := "card “Weekly bump of the pinned outside inputs” (t-bump)'s filer routed it to a human, so only a human hands it to an agent: hand the case up (`hand_up`) with `go` as the recommendation"
 	if err == nil || err.Error() != want {
 		t.Fatalf("rung 2's go = %v,\nwant %q", err, want)
 	}

@@ -186,7 +186,7 @@ func (r *Runner) rungTwoRecommends(ctx context.Context, t Task, c Case, rec stri
 		for i, o := range offers {
 			values[i] = o.Value
 		}
-		return ErrActRefused(fmt.Sprintf("%q is no choice of card %s: recommend one of %s", rec, cardName(t), textutil.AndList(values)))
+		return ErrActRefused(fmt.Sprintf("%q is no choice of card %s: recommend one of %s", rec, agentName(t), textutil.AndList(values)))
 	}
 	switch c.Kind {
 	case CasePlanConfirmation:
