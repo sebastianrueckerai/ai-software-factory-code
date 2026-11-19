@@ -15,8 +15,9 @@ import (
 // puts the live ask case of an agent card that waits on a human with no case
 // at the human there: the card's newest live case an answer on the card
 // ends. A card with a case at the human, a card that waits on no human, a
-// case of its own answer and a human card stay as they are, and a second run
-// changes nothing.
+// case of its own answer, a human card and a case a rung holds with a wake,
+// which climbs to its face, stay as they are, and a second run changes
+// nothing.
 func TestWaitingCardCaseMigrationPutsTheLiveAskAtTheHuman(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("pgx", schematest.DSN(t, "factoryd_waiting_card_case_at_human"))
@@ -57,7 +58,8 @@ func TestWaitingCardCaseMigrationPutsTheLiveAskAtTheHuman(t *testing.T) {
 		 ('t2', 5, 0, 'waiting-human', 'sf/r', 'agent', 'webhook', 'direct'),
 		 ('t3', 5, 0, 'running', 'sf/r', 'agent', 'webhook', 'direct'),
 		 ('t4', 5, 0, 'waiting-human', 'sf/r', 'agent', 'webhook', 'direct'),
-		 ('t5', 5, 0, 'waiting-human', 'sf/r', 'human', 'webhook', 'direct')`,
+		 ('t5', 5, 0, 'waiting-human', 'sf/r', 'human', 'webhook', 'direct'),
+		 ('t6', 5, 0, 'waiting-human', 'sf/r', 'agent', 'webhook', 'direct')`,
 		`INSERT INTO cases (id, task_id, repository, kind, state_key, status, problem, facts) VALUES
 		 (1, 't1', 'sf/r', 'session_cap', 'k1', 'open', 'p', '{}'),
 		 (2, 't1', 'sf/r', 'agent_escalate', 'k2', 'open', 'p', '{}'),
@@ -67,6 +69,8 @@ func TestWaitingCardCaseMigrationPutsTheLiveAskAtTheHuman(t *testing.T) {
 		 (6, 't3', 'sf/r', 'session_cap', 'k6', 'open', 'p', '{}'),
 		 (7, 't4', 'sf/r', 'merge_approval', 'k7', 'open', 'p', '{}'),
 		 (8, 't5', 'sf/r', 'human_card', 'k8', 'open', 'p', '{}')`,
+		`INSERT INTO cases (id, task_id, repository, kind, state_key, status, problem, facts, owner_rung, next_wake_at) VALUES
+		 (9, 't6', 'sf/r', 'session_cap', 'k9', 'open', 'p', '{}', 1, now())`,
 	)
 	exec(`DELETE FROM schema_migrations WHERE name >= '` + name + `' AND name LIKE 'factoryd/%'`)
 	read := func() map[int64]string {
@@ -97,8 +101,8 @@ func TestWaitingCardCaseMigrationPutsTheLiveAskAtTheHuman(t *testing.T) {
 		// t1's newest live ask, case 2, goes to the human, not its older
 		// case 1 nor its monitor flag; t2 holds one at the human already; t3
 		// waits on no human; t4's only live case is its merge's; t5 is a
-		// human card
-		want := map[int64]string{1: "open", 2: "at_human", 3: "open", 4: "open", 5: "at_human", 6: "open", 7: "open", 8: "open"}
+		// human card; t6's case is the check-in's, due now
+		want := map[int64]string{1: "open", 2: "at_human", 3: "open", 4: "open", 5: "at_human", 6: "open", 7: "open", 8: "open", 9: "open"}
 		if got := read(); !reflect.DeepEqual(got, want) {
 			t.Fatalf("run %d: status by case = %v, want %v", run, got, want)
 		}
