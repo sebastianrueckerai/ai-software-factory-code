@@ -33,6 +33,10 @@ type freezeStore struct {
 	failFace bool
 	// failFrozen is how many reads of a class's frozen cards still fail
 	failFrozen int
+	// failStandingAt and failHeldAt fail the read of the standing freezes
+	// and of the held resumes once, when the stored cursor has reached
+	// that row; 0 fails none
+	failStandingAt, failHeldAt int64
 	// woken are the class_resumed rows whose wake is recorded
 	woken map[int64]bool
 	// fault counts the store's writes and fails one; nil counts none
@@ -153,6 +157,10 @@ func (s *freezeStore) FreezeEvents(ctx context.Context) ([]FreezeEvent, int64, e
 }
 
 func (s *freezeStore) StandingFreezes(ctx context.Context) ([]FreezeEvent, error) {
+	if s.failStandingAt > 0 && s.storedCursor >= s.failStandingAt {
+		s.failStandingAt = 0
+		return nil, errors.New("the store is away")
+	}
 	armed := map[string][]FreezeEvent{}
 	for _, ev := range s.rows {
 		switch {
@@ -187,6 +195,10 @@ func (s *freezeStore) StandingFreezes(ctx context.Context) ([]FreezeEvent, error
 // their class at the cursor and whose wake is not recorded, as the store's
 // read does.
 func (s *freezeStore) HeldResumes(ctx context.Context) ([]FreezeEvent, error) {
+	if s.failHeldAt > 0 && s.storedCursor >= s.failHeldAt {
+		s.failHeldAt = 0
+		return nil, errors.New("the store is away")
+	}
 	newest := map[string]FreezeEvent{}
 	for _, ev := range s.rows {
 		if ev.ID <= s.storedCursor && ev.ID > newest[ev.Class].ID {
@@ -2620,13 +2632,17 @@ func (h *freezeTable) restart() {
 // after 12:00, at the rig's time.
 func (h *freezeTable) row(kind string, days int) { h.rowIn("sf/acme", kind, days) }
 
-func (h *freezeTable) rowIn(repo, kind string, days int) {
+func (h *freezeTable) rowIn(repo, kind string, days int) { h.rowOn("", repo, kind, days) }
+
+// rowOn writes the row on task's account, as the gateway names the task
+// whose call or press made it.
+func (h *freezeTable) rowOn(task, repo, kind string, days int) {
 	at := h.now
 	if kind == "class_frozen" {
 		// an arm's own instant, after a press's record of the same minute
 		at = at.Add(h.store.instant())
 	}
-	h.store.rows = append(h.store.rows, FreezeEvent{ID: int64(len(h.store.rows) + 1), Repository: repo, At: at, Kind: kind, Class: "big",
+	h.store.rows = append(h.store.rows, FreezeEvent{ID: int64(len(h.store.rows) + 1), Repository: repo, TaskID: task, At: at, Kind: kind, Class: "big",
 		Reset: freezeTableBase.Add(time.Duration(days) * 24 * time.Hour).Format(time.RFC3339), Words: "free quota exhausted"})
 }
 
@@ -2675,15 +2691,38 @@ func (h *freezeTable) pass() {
 }
 
 // press is the retry press as RetryFreeze makes it: only on a card that
-// holds, the gateway clears the hold and writes the class_resumed row,
-// then the card closes. A press that fails is made again, as a human
-// presses again: the gateway, its hold cleared, writes no second row.
+// holds, the gateway clears the hold and writes the class_resumed row
+// (clear), then the card closes (closePressed). A press that fails is made
+// again, as a human presses again: the gateway, its hold cleared, writes
+// no second row.
 func (h *freezeTable) press() {
 	h.t.Helper()
-	if !h.holds() {
-		return
+	if h.clear() {
+		h.closePressed()
 	}
-	h.row("class_resumed", 5)
+}
+
+// clear is the first half of a press: on a card that holds, the gateway
+// clears the hold and writes the class_resumed row on the pressed card.
+// It answers whether a card took the press.
+func (h *freezeTable) clear() bool {
+	h.t.Helper()
+	open, err := h.store.FreezeCards(context.Background(), "waiting-human")
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	i := slices.IndexFunc(open, FreezeCardHolds)
+	if i < 0 {
+		return false
+	}
+	h.rowOn(open[i].ID, "sf/acme", "class_resumed", 5)
+	return true
+}
+
+// closePressed is the second half of a press, after the gateway cleared
+// the hold: the card closes.
+func (h *freezeTable) closePressed() {
+	h.t.Helper()
 	if h.closeOnRetry() {
 		return
 	}
@@ -3713,6 +3752,83 @@ func TestFreezeCardAMalformedRepositoryStopsNoOtherClass(t *testing.T) {
 		}
 		if got := h.cards(); h.store.storedCursor != 3 || got != "#1 waiting frozen R1" || len(h.fj.repos) != 1 || h.fj.repos[0] != "sf/acme" {
 			t.Fatalf("at %s: cursor %d, cards %q in %q; want cursor 3 and small's #1 in sf/acme", h.now.Format("15:04"), h.store.storedCursor, got, h.fj.repos)
+		}
+	}
+}
+
+// Hand-derived from an arm between a press's two halves: #1 is frozen to
+// R1. At 14:00 the press clears the gateway's hold, which writes the
+// press's class_resumed. A running card then calls the provider, whose
+// dated refusal of R1 arms the hold again, and a pass reads both rows
+// while #1 is still open: the resume, then the arm, so #1 holds its frozen
+// face. Only then the press closes #1. The arm's row is after the press's
+// own class_resumed, so the press did not answer it and the freeze stands:
+// the next pass opens #1 again with the re-arm's comment. Without a fault
+// #1 waits with the press's comment and the re-arm's, its end counted
+// once, and no card wakes, as the class is frozen. A press that was lost
+// leaves the card open under the standing freeze, with no comment.
+func TestFreezeCardFaultsOfAnArmBetweenAPressesClearAndItsClose(t *testing.T) {
+	freezeScenario(t, frozenCard, func(h *freezeTable) {
+		pressed := h.clear()
+		h.row("class_frozen", 5)
+		h.pass()
+		if pressed {
+			h.closePressed()
+		}
+		h.pass()
+	}, "#1 waiting frozen R1 | open #1 | 2 comments, 1 ends, 0 wakes", lostPress("#1 waiting frozen R1 | open #1 | 0 comments, 0 ends, 0 wakes"))
+}
+
+// Hand-derived from a read of the held resumes that fails once: big's #1
+// is frozen at 12:00 and its class resumes at 12:10. The pass at 12:10
+// writes the cursor past the resume, and the store then fails the read of
+// the held resumes, so that pass ends in the error. The passes from 12:11
+// read the rows again: #1 closes itself at 12:15, and the resume that held
+// five minutes wakes the running card once.
+func TestFreezeCardAFailedReadOfTheHeldResumesLosesNoWake(t *testing.T) {
+	h := newFreezeTable(t)
+	h.row("class_frozen", 5)
+	h.pass()
+	h.at(10 * time.Minute)
+	h.row("class_resumed", 5)
+	h.store.failHeldAt = 2
+	if err := h.w.Check(context.Background()); err == nil {
+		t.Fatal("the pass whose read of the held resumes failed ended without an error")
+	}
+	for at := 11 * time.Minute; at <= 16*time.Minute; at += time.Minute {
+		h.at(at)
+		h.pass()
+	}
+	if c := freezeCardOn(t, h.store, 1); c.Status != "done" || !slices.Equal(h.wakes, []string{"work-big"}) {
+		t.Fatalf("at 12:16 #1 stands %s with the wakes %q, want it done and the running card woken once", c.Status, h.wakes)
+	}
+}
+
+// Hand-derived from a read of the standing freezes that fails once: the
+// big class freezes at 12:00 while sf/acme's Forgejo does not answer, so
+// the pass files no card, and writes the cursor past the arm. The store
+// then fails the read of the standing freezes, and that pass ends in the
+// error. Forgejo answers again at 12:01: the freeze stands by the rows, so
+// that pass files #1 with the arm's reset, and the pass at 12:02 files no
+// second card.
+func TestFreezeCardAFailedReadOfTheStandingFreezesLosesNoArm(t *testing.T) {
+	h := newFreezeTable(t)
+	h.row("class_frozen", 5)
+	h.fj.mu.Lock()
+	h.fj.downRepos = map[string]bool{"sf/acme": true}
+	h.fj.mu.Unlock()
+	h.store.failStandingAt = 1
+	if err := h.w.Check(context.Background()); err == nil {
+		t.Fatal("the pass whose read of the standing freezes failed ended without an error")
+	}
+	h.fj.mu.Lock()
+	h.fj.downRepos = nil
+	h.fj.mu.Unlock()
+	for _, at := range []time.Duration{time.Minute, 2 * time.Minute} {
+		h.at(at)
+		h.pass()
+		if got := h.reached(); got != "#1 waiting frozen R1 | open #1 | 0 comments, 0 ends, 0 wakes" {
+			t.Fatalf("at %s the cards reach %q, want #1 filed for the freeze that stands", h.now.Format("15:04"), got)
 		}
 	}
 }

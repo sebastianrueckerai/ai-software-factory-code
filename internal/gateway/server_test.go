@@ -75,11 +75,13 @@ type memStore struct {
 	tasks  map[string]Task
 	audits []AuditRow
 	events []EventRow
-	spends map[string]float64
-	ledger []ledgerRow
-	usages []policy.Usage // each ledger row's
-	holds  map[int64]policy.Hold
-	nextID int64
+	// failEvents refuses every event row
+	failEvents bool
+	spends     map[string]float64
+	ledger     []ledgerRow
+	usages     []policy.Usage // each ledger row's
+	holds      map[int64]policy.Hold
+	nextID     int64
 	// reqs are the hold requests in order
 	reqs []policy.HoldRequest
 	// day is today's ledger total before this test's calls, month the
@@ -287,6 +289,9 @@ func (m *memStore) auditRows() []AuditRow {
 func (m *memStore) InsertEvent(_ context.Context, row EventRow) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failEvents {
+		return errors.New("the store is away")
+	}
 	m.events = append(m.events, row)
 	return nil
 }
@@ -3529,7 +3534,9 @@ func TestProviderLimitArmsTheCardClassOnThePremiumFallback(t *testing.T) {
 // them, is refused and leaves the hold armed: the next call is still
 // answered locally. factoryd's clear writes one class_resumed row on the
 // pressing card, the next call probes the upstream, and a clear of a
-// class with no armed hold is a quiet success.
+// class with no armed hold writes its class_resumed row too, with no
+// reset: every press leaves its row, so the rows alone tell which arms it
+// answered.
 func TestHoldClearPath(t *testing.T) {
 	stub := newStubUpstream(t)
 	store := newMemStore()
@@ -3616,11 +3623,31 @@ func TestHoldClearPath(t *testing.T) {
 		t.Fatalf("upstream hits after the clear = %d, want 2: the hold is gone", hits)
 	}
 
-	// a clear of a class with no armed hold is a quiet success
+	// a clear of a class with no armed hold leaves its row too
 	if rr := clear(testFactorydToken, "fc"); rr.Code != http.StatusOK {
-		t.Fatalf("the second clear = %d %s, want a quiet 200", rr.Code, rr.Body.String())
+		t.Fatalf("the second clear = %d %s, want 200", rr.Code, rr.Body.String())
 	}
-	if events = store.eventRows(); len(events) != 2 {
-		t.Fatalf("events after the second clear = %+v, want no new row", events)
+	if events = store.eventRows(); len(events) != 3 || events[2].Kind != "class_resumed" || events[2].TaskID != "fc" ||
+		events[2].Detail["class"] != "big" || events[2].Detail["reset"] != nil {
+		t.Fatalf("events after the second clear = %+v, want a third row, the class_resumed of class big on fc with no reset", events)
+	}
+
+	// a clear whose row the store refuses fails and leaves the hold armed
+	stub.setResp(stubResp{status: http.StatusTooManyRequests, body: first})
+	if rr := doChat(t, h, chatBody("big")); rr.Header().Get(HeaderDecision) != RefusedProviderLimit {
+		t.Fatalf("the arming call = %d %q: %s, want a refused_provider_limit", rr.Code, rr.Header().Get(HeaderDecision), rr.Body.String())
+	}
+	hits := len(stub.auths)
+	store.mu.Lock()
+	store.failEvents = true
+	store.mu.Unlock()
+	if rr := clear(testFactorydToken, "fc"); rr.Code != http.StatusInternalServerError {
+		t.Fatalf("the clear whose row the store refused = %d %s, want 500", rr.Code, rr.Body.String())
+	}
+	if rr := doChat(t, h, chatBody("big")); rr.Header().Get(HeaderDecision) != RefusedProviderLimit || len(stub.auths) != hits {
+		t.Fatalf("the call after the failed clear = %d %q with %d upstream hits, want the hold's local refusal and %d hits", rr.Code, rr.Header().Get(HeaderDecision), len(stub.auths), hits)
+	}
+	if events = store.eventRows(); len(events) != 4 || events[3].Kind != "class_frozen" {
+		t.Fatalf("events after the failed clear = %+v, want the new arm as the fourth and last row", events)
 	}
 }
