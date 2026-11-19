@@ -148,7 +148,7 @@ type FreezeCardStore interface {
 	// ListFrozenCards lists the running and queued cards whose classes
 	// hold class, in every repository.
 	ListFrozenCards(ctx context.Context, class string) ([]Task, error)
-	OpenCasesOf(ctx context.Context, taskID string) ([]Case, error)
+	CasesOf(ctx context.Context, taskID string) ([]Case, error)
 	SetObjective(ctx context.Context, id, objective string) error
 	// FaceFreezeCard writes face on card taskID and info as what its
 	// newest ask knows, in one transaction.
@@ -622,15 +622,16 @@ func (w *FreezeCard) rehydrate(ctx context.Context) error {
 	return nil
 }
 
-// askIfAskless makes waiting freeze card t ask when no live case holds
-// it: an older factoryd filed the card with a title and a face that say it
-// asks nothing, and the board answers a card only through its case. A
-// holding face is written again as this factoryd writes it; a resumed
-// card's keeps its text. The face and the ask are one write
-// (AskFreezeCard).
+// askIfAskless makes waiting freeze card t ask when it never held an ask,
+// so no case of it stands, live or ended: an older factoryd filed the card
+// with a title and a face that say it asks nothing, and the board answers
+// a card only through its case. A card whose case ended was answered, and
+// asks no second time. A holding face is written again as this factoryd
+// writes it; a resumed card's keeps its text. The face and the ask are one
+// write (AskFreezeCard).
 func (w *FreezeCard) askIfAskless(ctx context.Context, t Task, st *freezeClass) error {
-	open, err := w.Store.OpenCasesOf(ctx, t.ID)
-	if err != nil || len(open) > 0 {
+	held, err := w.Store.CasesOf(ctx, t.ID)
+	if err != nil || len(held) > 0 {
 		return err
 	}
 	_, body, _ := strings.Cut(t.Objective, "\n\n")

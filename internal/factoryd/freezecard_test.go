@@ -1276,6 +1276,40 @@ func TestFreezeCardCloseInFlightAsksNoMore(t *testing.T) {
 	}
 }
 
+// A card whose case ended while its row still waits held its ask: the
+// watcher's next pass asks no second time, and so does a restarted
+// watcher's. Only a card that never held an ask is made to ask
+// (TestFreezeCardAdoptedWithNoCaseAsks).
+func TestFreezeCardWhoseCaseEndedAsksNoMore(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, _ := newAlertForgejo(t)
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	store.rows = append(store.rows, FreezeEvent{ID: 1, Repository: "sf/acme", At: base, Kind: "class_frozen", Class: "big",
+		Reset: base.Add(5 * time.Hour).Format(time.RFC3339), Words: "free quota exhausted"})
+	if err := freezeWatcher(store, forgejo, &now).Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	card := freezeCardOn(t, store, 1)
+	open, err := store.OpenCasesOf(ctx, card.ID)
+	if err != nil || len(open) != 1 {
+		t.Fatalf("the filed card's live cases = %+v, %v; want one", open, err)
+	}
+	if err := store.WithdrawCase(ctx, open[0].ID, "answered"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		now = now.Add(time.Minute)
+		if err := freezeWatcher(store, forgejo, &now).Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if asks := freezeAsks(t, store)[card.ID]; asks != 1 {
+		t.Fatalf("the card asked %d times, want 1: its case ended, and a restart asks it no second time", asks)
+	}
+}
+
 // An older factoryd's card that spoke its one-time sentence keeps one such
 // sentence on the face the adoption writes, and speaks no second time.
 func TestFreezeCardAdoptedAfterItSpokeStaysQuiet(t *testing.T) {
