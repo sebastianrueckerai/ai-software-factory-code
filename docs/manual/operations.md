@@ -489,15 +489,6 @@ port 8090 only.
   `task <id>: signal <name> from <user> delivered`),
   `GET /tasks/{id}/timeline`, and the session records
   `sessions/<task>/<session>.jsonl` in the sessions bucket.
-- Audit the board's text: `factoryd audit-board` in the factoryd pod
-  (`kubectl -n factory exec deploy/factoryd -- env
-  FACTORYD_DATABASE_URL='<replica DSN>' factoryd audit-board`) prints a
-  line for each card text on every project's board that the brief's door
-  refuses, then the count of cards to fix and of cards that keep a
-  human's own issue as written. It reads the database and Forgejo and
-  writes nothing. It takes no arguments and needs the daemon's secrets,
-  so that it scrubs every one. Exit 0 means no card is left to fix, 1
-  means a card is, and 2 means the audit could not run.
 - Webhook deliveries: this Forgejo has no delivery-list API; the web UI
   (repository settings, webhooks) or Forgejo's `hook_task` table shows
   them (select id, event_type, is_succeed, delivered and the response

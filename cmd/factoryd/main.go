@@ -64,8 +64,6 @@ func main() {
 		case "export-fixture":
 			exportFixtureMain(os.Args[2:])
 			return
-		case "audit-board":
-			auditBoardMain(os.Args[2:])
 		}
 	}
 	addr := flag.String("addr", ":8080", "listen address")

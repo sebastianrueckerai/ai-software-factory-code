@@ -8,9 +8,8 @@ import (
 
 // daemonSecrets are the credentials factoryd loads at boot, by env name
 // and whether the daemon needs them. The daemon's scrubber and the
-// commands that print text built from its records (export-fixture,
-// audit-board) load this one list, so no secret is scrubbed in one and
-// missed in the other.
+// command that prints text built from its records (export-fixture) load
+// this one list, so no secret is scrubbed in one and missed in the other.
 var daemonSecrets = []struct {
 	name     string
 	required bool
