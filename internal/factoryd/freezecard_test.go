@@ -3439,6 +3439,20 @@ func lostPress(reaches string) map[string]freezeFaultException {
 	return map[string]freezeFaultException{"EndFreezeCard/made again later": lost, "EndFreezeCard/restart/made again later": lost}
 }
 
+// lostClose is the one fault a human's console close does not converge
+// from: the close failed before its record, on the read of the issue's
+// dependencies or on the record's write, and the human did not close
+// again, so nothing says that a human closed the card. reaches is where
+// that run ends.
+func lostClose(reaches string) map[string]freezeFaultException {
+	lost := freezeFaultException{"the human's close failed before its record and the human did not close again: the card goes on as if no one closed it", reaches}
+	out := map[string]freezeFaultException{}
+	for _, op := range []string{"GET issues 1 dependencies", "InsertIntakeEvent factory_closed"} {
+		out[op+"/made again later"], out[op+"/restart/made again later"] = lost, lost
+	}
+	return out
+}
+
 // Hand-derived from a reopen the class's resume follows in one pass: #1,
 // which the press closed at 13:58, meets at 14:00 a dated refusal of its
 // reset and then the class's resume, both read by one pass. Without a
@@ -3458,14 +3472,20 @@ func TestFreezeCardFaultsOfAReopenTheResumeFollows(t *testing.T) {
 // Hand-derived from a freeze that arms and resumes in one pass with no
 // card: the dated refusal of 14:00 files #1 and the resume of the same
 // pass puts it on its resumed face. At 14:05 #1 closes itself with one
-// comment, its end counted, and the frozen card wakes once. A filing that
-// failed once is made again by the next pass, which reads both rows again.
+// comment, its end counted, and the frozen card wakes once. A filing whose
+// write the store failed is made again by the next pass, which reads both
+// rows again. A filing Forgejo did not take is not: the freeze is over in
+// the same pass, no other class waits on that repository's Forgejo, and
+// the frozen card still wakes once.
 func TestFreezeCardFaultsOfAFilingTheResumeFollows(t *testing.T) {
+	over := freezeFaultException{"Forgejo did not take the filing and the class resumed in the same pass: no card shows the freeze, which is over, and the frozen card wakes",
+		" | open  | 0 comments, 0 ends, 1 wakes"}
 	freezeScenario(t, func(h *freezeTable) { h.at(2 * time.Hour) }, func(h *freezeTable) {
 		h.row("class_frozen", 5)
 		h.row("class_resumed", 5)
 		h.pass()
-	}, "#1 done resumed R1 | open  | 1 comments, 1 ends, 1 wakes", nil)
+	}, "#1 done resumed R1 | open  | 1 comments, 1 ends, 1 wakes",
+		map[string]freezeFaultException{"GET issues": over, "GET issues/restart": over, "POST issues": over, "POST issues/restart": over})
 }
 
 // Hand-derived from a press and a re-arm in one second and a human's close
@@ -3484,7 +3504,7 @@ func TestFreezeCardFaultsOfAReopenAHumanThenCloses(t *testing.T) {
 		h.pass()
 		h.pass()
 		h.humanClose(1, true)
-	}, "#1 done frozen R1 | open  | 3 comments, 1 ends, 0 wakes", nil)
+	}, "#1 done frozen R1 | open  | 3 comments, 1 ends, 0 wakes", lostClose("#1 waiting frozen R1 | open #1 | 2 comments, 1 ends, 0 wakes"))
 }
 
 // Hand-derived from a human's close while a reopen is owed: the press
@@ -3505,7 +3525,7 @@ func TestFreezeCardFaultsOfAHumanCloseWhileTheReopenIsOwed(t *testing.T) {
 		h.fj.refuse = nil
 		h.humanClose(1, false)
 		h.pass()
-	}, "#1 done frozen R1 | open  | 2 comments, 1 ends, 0 wakes", nil)
+	}, "#1 done frozen R1 | open  | 2 comments, 1 ends, 0 wakes", lostClose("#1 waiting frozen R1 | open #1 | 2 comments, 1 ends, 0 wakes"))
 }
 
 // Hand-derived from a human's close inside the five-minute hold: #1's
@@ -3527,7 +3547,9 @@ func TestFreezeCardFaultsOfAHumanCloseInsideTheHold(t *testing.T) {
 			}, func(h *freezeTable) {
 				h.humanClose(1, webhook)
 				h.pass()
-			}, "#1 done resumed R1 | open  | 1 comments, 1 ends, 1 wakes", nil)
+				// a close that left no record leaves the card to close itself
+				// at 14:03, with the self-resume's comment and not the human's
+			}, "#1 done resumed R1 | open  | 1 comments, 1 ends, 1 wakes", lostClose("#1 done resumed R1 | open  | 1 comments, 1 ends, 1 wakes"))
 		})
 	}
 }

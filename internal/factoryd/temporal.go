@@ -284,7 +284,8 @@ func startOptions(taskID string) client.StartWorkflowOptions {
 // the case signals no send delivered (resendCaseSignals) and reconciles
 // every project's cases (ReconcileCases). A card of a running kind that
 // waits on a human with no live ask older than the repository's at_human
-// bound gets its ask back (healParkedAsk) through runner.
+// bound gets its ask back (healParkedAsk) through runner. An open report
+// task whose card is gone is ended (endOrphanReport).
 func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, completion *Completion, completed func(ctx context.Context, taskID string) (bool, error), runner *Runner) {
 	// first, so an answer's own signal reaches its run before the comments
 	// the resyncs send again: a run that took the comment first would take it
@@ -320,6 +321,10 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 						log.Printf("heal pass: resync task %s: %s", t.ID, maskedErr(err))
 					}
 				}
+				continue
+			}
+			// a report task whose card is gone ends, and gets no run
+			if t.Report() && t.Parent != "" && endOrphanReport(ctx, store, wf, t) {
 				continue
 			}
 			// a task no workflow can run (its repository is not owner/name)

@@ -9,7 +9,6 @@ import (
 	"maps"
 	"slices"
 	"sync"
-	"time"
 )
 
 // The events (stage11-design.md section 2): the fixed list a later triggers
@@ -229,34 +228,32 @@ func (tl *Timeline) RecordFact(ctx context.Context, e Event) {
 // done (one factoryd replica).
 var allDoneMu sync.Mutex
 
-// endOpenReports ends the report tasks of card t that are still open,
-// screening, sizing and prover alike, when t ended failed or closed: no
-// report runs for a card that is gone. It sends each the factory's own
-// close, issue_closed, which a report task takes in any wait, a provider
-// limit's hold too, and which ends it closed with its row. It runs on the
-// card's end and not where a gate's wait for its report stops: that wait
-// also stops on an activity's retry and on a restart, while the card
-// lives. The signals have their own short bound, off the caller's
-// context. A failed read or signal is logged.
-func endOpenReports(ctx context.Context, store Store, wf Workflows, t Task) {
-	if wf == nil {
-		return
+// endOrphanReport ends report task c when its card is gone: closed, or
+// failed for a screening or a sizing, whose gate belongs to the card's
+// run. It sends c the factory's own close, issue_closed, which a report
+// task takes in any wait, a provider limit's hold too, and which ends it
+// closed with its row. A failed plan keeps its prover, which a replan of
+// the plan takes up again, and a done plan's prover still writes its
+// proofs. The heal pass calls it for every open report task, so the end
+// is read from the rows: no crash at a card's end and no stopped activity
+// loses it, and an activity that runs again for a card that lives ends
+// nothing. A card that lives again gets its closed report task run again
+// (openReport). It reports whether c's card is gone.
+func endOrphanReport(ctx context.Context, store Store, wf Workflows, c Task) bool {
+	parent, ok, err := store.Task(ctx, c.Parent)
+	if err != nil {
+		log.Printf("heal pass: the card of %s task %s: %s", c.Source, c.ID, maskedErr(err))
+		return false
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	defer cancel()
-	for _, source := range reportSources {
-		c, ok, err := store.ReportOf(ctx, t.ID, source)
-		if err != nil {
-			log.Printf("task %s: its %s task: %v", t.ID, source, err)
-			continue
-		}
-		if !ok || Final(c.Status) {
-			continue
-		}
+	if ok && parent.Status != "closed" && (parent.Status != "failed" || c.Source == SourceProver) {
+		return false
+	}
+	if c.Status != "closing" {
 		if err := wf.Signal(ctx, c.ID, SignalIssueClosed, TaskSignal{Author: FactoryDecider}); err != nil {
-			log.Printf("task %s: end its %s task %s: %v", t.ID, source, c.ID, err)
+			log.Printf("heal pass: end %s task %s, whose card %s is gone: %s", c.Source, c.ID, c.Parent, maskedErr(err))
 		}
 	}
+	return true
 }
 
 // taskEnded records task t's end in state final, with why when one is
@@ -278,9 +275,6 @@ func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo,
 	}
 	if t.Source == SourceRoutine {
 		endRoutineRun(ctx, store, t, final)
-	}
-	if final == "failed" || final == "closed" {
-		endOpenReports(ctx, store, wf, t)
 	}
 	signalDependents(ctx, store, wf, t.ID)
 	// the freed slot goes to the oldest queued card of the same project
