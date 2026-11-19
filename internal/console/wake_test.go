@@ -94,6 +94,43 @@ func TestAWakesFailureStaysInItsThread(t *testing.T) {
 	}
 }
 
+// A wake turn whose call the model refuses hands up at once the cases its
+// thread's wakes named, so no rung 2 step waits out its bound for an answer
+// that cannot come: a 400 calls the hook with case 7 and the refusal's
+// words. A model that cannot be reached (503) refuses nothing: the hook is
+// not called, and the step keeps its bound.
+func TestARefusedWakeHandsItsCasesUp(t *testing.T) {
+	for _, tc := range []struct {
+		status string
+		want   [][]int64
+		detail string
+	}{
+		{"STATUS 400 bad request", [][]int64{{7}}, "the model refused the call (400): bad request"},
+		{"STATUS 503 upstream down", nil, ""},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			r, chat, g := newChatRig(t)
+			var got [][]int64
+			var detail string
+			r.c.cfg.RefusedRung2 = func(_ context.Context, cases []int64, d string) error {
+				got, detail = append(got, cases), d
+				return nil
+			}
+			g.replies = [][]string{{tc.status}}
+			conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, factoryd.EventCaseClimbed, "Rung 2: case 7.", 7); err != nil {
+				t.Fatalf("StartWake: %v", err)
+			}
+			if !slices.EqualFunc(got, tc.want, slices.Equal) || detail != tc.detail {
+				t.Fatalf("the hook got %v with %q, want %v with %q", got, detail, tc.want, tc.detail)
+			}
+		})
+	}
+}
+
 // The inbox takes presses only, so an ask there without choices is
 // refused, naming choices and attach_analysis, and stores no ask row,
 // whatever started the turn: a wake or a press. A wake in a thread of the
@@ -454,7 +491,7 @@ type wakeCall struct {
 	status       int
 }
 
-// mergeWake runs a merge row's wake on sebastian's inbox, or with inbox
+// mergeWake runs a merge case's wake on sebastian's inbox, or with inbox
 // false on his own thread 1, at autonomous under merge rule rule, the
 // model answering replies, and answers the rig, its chat and the turn's
 // stored tool calls.
@@ -476,8 +513,8 @@ func mergeWake(t *testing.T, rule string, inbox bool, setup func(*rig), replies 
 		conv = 1
 	}
 	g.replies = replies
-	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask",
-		"Wake: 1 ask waits for a human.\n#5: merge of PR #9, high risk"); err != nil {
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, factoryd.EventCaseClimbed,
+		"Wake: 1 case waits for the factory agent.\n#5: merge of PR #9, high risk"); err != nil {
 		t.Fatalf("StartWake: %v", err)
 	}
 	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 20)
@@ -535,6 +572,60 @@ func TestWakeApproveMergeRefusedOnMergeRuleHuman(t *testing.T) {
 	}
 }
 
+// A merge request whose case climbs its rungs takes no decision in the
+// chat: in a human's thread approve_merge, deny_merge, rerun_checks,
+// tell_card on the card in review and answer_criteria on the merge's
+// criterion each refuse naming the case and its rung, before any
+// proposal; in rung 2's wake approve_merge refuses naming the case's own
+// ends. The card read says the case is open. The request stays pending.
+func TestAClimbingMergeTakesNoDecisionInTheChat(t *testing.T) {
+	climbing := func(r *rig, task string, approval float64) {
+		r.tasks.mu.Lock()
+		for i := range r.tasks.tasks {
+			if k := &r.tasks.tasks[i]; k.ID == task {
+				k.Status, k.PRNumber = "in-review", 9
+			}
+		}
+		r.tasks.mu.Unlock()
+		r.openCases = map[string][]factoryd.Case{task: {{ID: 41, TaskID: task, Repository: "sf/code", Kind: factoryd.CaseMergeApproval,
+			Status: factoryd.CaseOpen, OwnerRung: 2, Problem: "Pull request #9 waits for a merge approval", Facts: map[string]any{"approval": approval}}}}
+	}
+	const waits = "The merge request of #5 waits on its case 41, open at rung 2: rung 2 decides it or hands it up, and only then is it the human's, in Needs you."
+	r, _, g := newChatRig(t)
+	climbing(r, "t-m", 4)
+	for name, in := range map[string]toolInput{"approve_merge": {TaskID: "t-m"}, "deny_merge": {TaskID: "t-m", Note: "the index breaks", Action: "reject"},
+		"rerun_checks": {TaskID: "t-m"}, "tell_card": {TaskID: "t-m", Text: "rename the flag"}} {
+		if code, why := refused(t, r, name, in); code != http.StatusConflict || why != waits {
+			t.Errorf("%s = %d %q, want 409 %q", name, code, why, waits)
+		}
+	}
+	if got := reads(t, r, g, "card", `{"task_id":"t-m"}`); len(got) != 1 || !strings.Contains(got[0], "; its case 41 is open at rung 2, so no human decides it yet") {
+		t.Errorf("the card read = %q, want it to say the merge's case is open", got)
+	}
+	if q := r.approvals.get(4); q.Status != "pending" {
+		t.Errorf("request 4 is %s, want pending", q.Status)
+	}
+
+	r, _, g = newChatRig(t)
+	humanRig(r)
+	climbing(r, "t-int", 31)
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	ck, s := r.loggedIn(t)
+	met := `{"task_id":"t-int","action":"met","criterion":"pages_ok"}`
+	g.replies = [][]string{{call(1, "answer_criteria", met)}, {say("It waits.")}}
+	if _, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"pages_ok reads well"}}); !strings.Contains(events[0], "Refused: "+waits) {
+		t.Errorf("answer_criteria on the climbing merge streams %q, want the refusal %q", events, waits)
+	}
+
+	r, _, calls := mergeWake(t, policy.MergeAuto, true, func(r *rig) { climbing(r, "t-m", 4) },
+		[]string{call(1, "approve_merge", `{"task_id":"t-m"}`)}, []string{say("It is rung 2's case.")})
+	equal(t, "the wake's call on the climbing merge", calls, []wakeCall{{name: "approve_merge", status: http.StatusConflict,
+		result: "Refused: The merge request of #5 is case 41, open at rung 2: end it with answer and case_id 41, or with attach_analysis, case_id 41 and the recommended action."}})
+	if q := r.approvals.get(4); q.Status != "pending" {
+		t.Errorf("request 4 is %s after the wake, want pending", q.Status)
+	}
+}
+
 // A human who approved first settled the merge: the wake's approve_merge
 // finds no pending merge request and refuses naming the card's state, and
 // attach_analysis finds the ask settled, naming who approved it.
@@ -554,7 +645,7 @@ func TestWakeApproveMergeAfterAHumanApprovedAnswers409(t *testing.T) {
 		// the store's answer on a card whose merge request a human approved
 		r.c.cfg.AttachAnalysis = func(_ context.Context, taskID, _, _ string, _ factoryd.Event) error {
 			if q := r.approvals.get(4); q.TaskID == taskID && q.Status == "approved" {
-				return &factoryd.AskSettledError{Kind: factoryd.ApprovalMerge, Word: "approved", By: q.DecidedBy}
+				return &factoryd.AskSettledError{Word: "approved", By: q.DecidedBy}
 			}
 			return nil
 		}
@@ -566,7 +657,7 @@ func TestWakeApproveMergeAfterAHumanApprovedAnswers409(t *testing.T) {
 		{name: "approve_merge", status: http.StatusConflict,
 			result: "Refused: Card #5 passes the gates after its session, not a pending merge request: its gates run; nothing to do until they end."},
 		{name: "attach_analysis", status: http.StatusConflict,
-			result: "Refused: The merge request of #5 is approved by sebastian. A settled ask is done; escalate files a new one when you need a person."}})
+			result: "Refused: The question of #5 is approved by sebastian. A settled ask is done; escalate files a new one when you need a person."}})
 }
 
 // By hand: a card the agent files in a human's turn goes out as its

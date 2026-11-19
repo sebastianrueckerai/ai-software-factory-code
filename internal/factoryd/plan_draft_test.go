@@ -167,7 +167,7 @@ const timeCapAsk = "the planner used its agent time and its automatic second ses
 // other ask, nothing is added.
 func TestTimeCapAskNamesTheDraft(t *testing.T) {
 	r, store, fj := outsidePlanRig(t)
-	rungsOff(r)
+	rung1Off(r)
 	r.timeline.Events = store
 	ctx := context.Background()
 	if got, err := r.planDraftNote(ctx, "t-b", timeCapAsk); err != nil || got != "" {
@@ -181,6 +181,9 @@ func TestTimeCapAskNamesTheDraft(t *testing.T) {
 	}
 	want := "The planner's last refused filing is kept as a draft, refused for 2 findings."
 	first, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: timeCapAsk}, tripAttempt{N: 1})
+	if err == nil {
+		first = rung2Faces(t, r, "t-b", first)
+	}
 	if err != nil || first.CaseID == 0 || first.Comment == 0 {
 		t.Fatalf("first trip %+v, %v", first, err)
 	}
@@ -240,6 +243,7 @@ func questionInfo(store *fakeStore, comment int64) string {
 // A restart's re-ask of a time-cap stop shows the draft note too.
 func TestHealedReAskNamesTheDraft(t *testing.T) {
 	r, store, fj := outsidePlanRig(t)
+	rung1Off(r)
 	ctx := context.Background()
 	store.face("t-b", 1, CaseAgentTimeCap, 77, timeCapAsk, time.Now())
 	store.cases[len(store.cases)-1].Status = CaseWithdrawn
@@ -247,6 +251,9 @@ func TestHealedReAskNamesTheDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: HealedReason}, tripAttempt{N: 1})
+	if err == nil {
+		out = rung2Faces(t, r, "t-b", out)
+	}
 	if err != nil || out.Comment == 0 {
 		t.Fatalf("the re-ask %+v, %v", out, err)
 	}
@@ -270,7 +277,7 @@ func TestEscalateNamesTheDraft(t *testing.T) {
 	if err := store.SetPlanDraft(ctx, "t-plan", json.RawMessage(`{}`), []string{"a", "b"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runner.FaceStop(context.Background(), "t-plan", timeCapAsk, nil); err != nil {
+	if _, err := runner.PgFaceStop(context.Background(), "t-plan", timeCapAsk, nil); err != nil {
 		t.Fatal(err)
 	}
 	if e := store.askedRows("t-plan"); len(e) != 1 || e[0].Body != timeCapAsk {

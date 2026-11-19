@@ -160,7 +160,7 @@ var columnTitles = []string{"Needs you", "Queued", "In progress", "Done"}
 var columnHolds = [][]string{
 	colNeedsYou: {"waiting-human", "waiting-poster"},
 	colQueued:   {"queued", "waiting-deps", "waiting-image"},
-	colProgress: {"running", "closing", "in-review", "merged"},
+	colProgress: {"running", "closing", "waiting-agent", "in-review", "merged"},
 	colDone:     {"done", "failed", "closed"},
 }
 
@@ -476,7 +476,7 @@ func isState(k card, v string) bool {
 }
 
 // stateColumns are the wide view's columns, in board order; waiting-deps
-// counts as queued, closing as running.
+// counts as queued, closing and waiting-agent as running.
 var stateColumns = []struct{ Title, Status string }{
 	{"Queued", "queued"}, {"Running", "running"}, {"Waiting on a human", "waiting-human"}, {"Waiting for image", "waiting-image"}, {"Waiting on the author", "waiting-poster"},
 	{"In review", "in-review"}, {"Merged", "merged"}, {"Done", "done"}, {"Failed", "failed"}, {"Closed", "closed"},
@@ -685,9 +685,10 @@ func fineStates(k card, wide bool) []fine {
 // statusClasses are the pill's classes, one hue per state: running the
 // accent blue, a wait amber, review violet, merged teal, done green,
 // failed red, closed grey; waiting-poster wears the hollow pill. closing
-// counts as running.
+// and waiting-agent, the factory agent's turn on a human card, count as
+// running.
 var statusClasses = map[string]string{
-	"running": "st-running", "closing": "st-running", "queued": "st-queued",
+	"running": "st-running", "closing": "st-running", "waiting-agent": "st-running", "queued": "st-queued",
 	"waiting-human": "st-waiting", "waiting-poster": "st-waiting hollow",
 	"in-review": "st-review", "merged": "st-merged", "done": "st-done", "failed": "st-failed",
 	"closed":       "st-closed",
@@ -1940,13 +1941,9 @@ type boardView struct {
 	byID            map[string]factoryd.Task
 	pending         []factoryd.ApprovalRequest
 	carded, planned map[string]bool
-	// mergePended names the tasks whose merge approval pends: in the four
-	// columns the card yields In progress to that approval (Needs you
-	// holds it), as a plan does to its open questions.
-	mergePended map[string]bool
-	writes      bool // the viewer writes the shown project
-	unchecked   bool // a writers check failed, logged once per render
-	problems    []string
+	writes          bool // the viewer writes the shown project
+	unchecked       bool // a writers check failed, logged once per render
+	problems        []string
 	// planTrack names the repositories whose project's process has a plan
 	// track.
 	planTrack map[string]bool
@@ -1967,7 +1964,6 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 	for _, a := range v.pending {
 		v.carded[a.TaskID] = true
 		v.planned[a.TaskID] = v.planned[a.TaskID] || a.Kind == factoryd.ApprovalPlan
-		v.mergePended[a.TaskID] = v.mergePended[a.TaskID] || a.Kind == factoryd.ApprovalMerge
 	}
 	return v, all, nil
 }
@@ -1977,8 +1973,7 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 // approval.
 func (c *Console) projectsOf(r *http.Request, f boardFilter) (*boardView, []factoryd.Project, error) {
 	ctx, s := r.Context(), current(r)
-	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{},
-		mergePended: map[string]bool{}}
+	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{}}
 	v.policy, v.policyOK = c.inForce(ctx)
 	all, err := c.coderProjects(ctx)
 	if err != nil {
@@ -2448,8 +2443,10 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			}
 			d.Columns = append(d.Columns, k)
 		}
-		byStatus["closing"] = byStatus["running"]
-		d.Columns[byStatus["closing"]].Holds += " closing"
+		for _, status := range []string{"closing", "waiting-agent"} {
+			byStatus[status] = byStatus["running"]
+			d.Columns[byStatus[status]].Holds += " " + status
+		}
 		byStatus["waiting-deps"] = byStatus["queued"]
 		d.Columns[byStatus["waiting-deps"]].Holds += " waiting-deps"
 	} else {
@@ -2476,7 +2473,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			v.byID[bt.ID] = bt.Task
 		}
 	}
-	escalations := map[string]factoryd.BoardTask{}
 	var needs []need
 	cs, err := c.caseSetOf(ctx, shown.Repository)
 	if err != nil {
@@ -2494,7 +2490,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	// pending approval's task lives in its project, which here is shown's
 	for _, bt := range tasks {
 		t := bt.Task
-		human, col := v.humanLane(t), fiveColumn(t)
+		// factoryd's own human card works with the factory agent until its
+		// face asks a human
+		human, col := v.humanLane(t) && t.Status != "waiting-agent", fiveColumn(t)
 		// a done plan that waits on its failed card holds its case at the
 		// human: its row of Needs you carries the case
 		holds := slices.ContainsFunc(cs.byCard[t.ID], func(o factoryd.Case) bool {
@@ -2516,9 +2514,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			d.Status.Working++
 		case col == colNeedsYou && !v.planned[t.ID]:
 			d.Status.NeedYou++
-		}
-		if t.Status == "waiting-human" && v.planned[t.ID] {
-			escalations[t.ID] = bt
 		}
 		k := c.boardCard(ctx, v, bt)
 		// a card that holds a case at the human is one row of Needs you, its
@@ -2573,6 +2568,10 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			}
 		case holds:
 			needs = append(needs, row)
+		case col == colNeedsYou && v.planned[t.ID] && !planFaced(v, cs, t.ID):
+			// a plan whose questions climb their rungs works, as a merge
+			// card in review does while its case climbs
+			d.Columns[colProgress].Cards = append(d.Columns[colProgress].Cards, k)
 		case col == colNeedsYou:
 			// a plan that waits for its answers needs its approval card
 			if v.planned[t.ID] {
@@ -2585,11 +2584,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			}
 			needs = append(needs, n)
 		case col >= 0:
-			// a card whose merge approval pends yields In progress to
-			// that approval, as a plan yields to its questions' card
-			if col == colProgress && v.mergePended[t.ID] && !v.planned[t.ID] {
-				break
-			}
 			d.Columns[col].Cards = append(d.Columns[col].Cards, k)
 		}
 	}
@@ -2597,19 +2591,25 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		if a.Project != shown.Repository {
 			continue
 		}
-		// the card's row holds its approvals, unless the card has ended and has no row
-		if t := v.byID[a.TaskID]; len(cs.byCard[a.TaskID]) > 0 && !factoryd.Final(t.Status) {
+		// the card's row holds its approvals, unless the card has ended and
+		// has no row; a card outside the board's pages has ended
+		if t, ok := v.byID[a.TaskID]; ok && len(cs.byCard[a.TaskID]) > 0 && !factoryd.Final(t.Status) {
+			continue
+		}
+		// a merge's, a plan's or a plan's criteria request waits for its
+		// case to reach the human, whose face the card carries
+		criteria := a.Kind == factoryd.ApprovalCriteria || a.Kind == factoryd.ApprovalCriteriaRerun
+		held, faced := cs.faced(a)
+		if waitsForFace(a) && !faced {
 			continue
 		}
 		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver, true)
+		if criteria {
+			k.faceOf(cs, held, v.policy.Document.LinkHosts)
+		}
 		k.Filter, k.Writer = f, d.Writes
 		k.buildDecide()
 		k.Asks = a.Kind == factoryd.ApprovalPlan
-		// an escalation from before this revision's request (a cap a
-		// writer granted) no longer holds
-		if e := escalations[a.TaskID]; a.Kind == factoryd.ApprovalPlan && e.EscalatedAt.After(a.CreatedAt) {
-			k.Escalation = cardReason(e.Escalation)
-		}
 		d.Status.NeedYou++
 		if wide {
 			d.Approvals = append(d.Approvals, k)
@@ -3989,8 +3989,16 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 				}
 			}
 		}
+		cs, cerr := c.caseSetOf(ctx, bt.Repository)
+		if cerr != nil {
+			problem("cases", "Reload the board.", cerr)
+		}
 		for _, a := range v.pending {
 			if a.TaskID == bt.ID && (a.Kind == factoryd.ApprovalMerge || a.Kind == factoryd.ApprovalPlan) {
+				// a merge's or a plan's request waits for its case's face, as Needs you's does
+				if _, faced := cs.faced(a); cerr != nil || !faced {
+					continue
+				}
 				m := c.approvalCard(ctx, a, button(r), v.byID, v.csrf, v.approves(a.Project), false)
 				m.Filter, m.IDSuffix = k.Filter, "-d"
 				m.buildDecide()
@@ -4007,9 +4015,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 		if v.escalated(bt.Task) && bt.Escalation != "" {
 			d.Need = &need{Card: k, Escalated: true, CSRF: v.csrf, Suffix: "-d"}
 			// a card with a live case answers from the case's own face
-			if cs, err := c.caseSetOf(ctx, bt.Repository); err != nil {
-				problem("cases", "Reload the board.", err)
-			} else if len(cs.byCard[bt.ID]) > 0 {
+			if cerr == nil && len(cs.byCard[bt.ID]) > 0 {
 				n := c.caseNeed(ctx, v, button(r), bt, k, cs, 0)
 				n.Suffix = "-d"
 				d.Need = &n

@@ -43,11 +43,7 @@ func TestMergeFaceWhispers(t *testing.T) {
 	}}
 	ck, s := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	start := strings.Index(body, `aria-labelledby="approval-4"`)
-	if start < 0 {
-		t.Fatal("no merge approval card on the board")
-	}
-	face := body[start : start+strings.Index(body[start:], "</article>")]
+	face := hostedFaceOf(t, body, "t-m")
 	// the one-face contract: the face carries every part of the ask, each
 	// at its clamped first line — the ask, the why, what the call needs,
 	// the recommendation, and each offer's one line of effect

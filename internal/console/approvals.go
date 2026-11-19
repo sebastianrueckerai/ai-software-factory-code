@@ -101,9 +101,8 @@ type approvalCard struct {
 	Confirming  bool   // the revision's confirmation waits; its Request changes is the card's
 	// Confirm is the waiting confirmation itself, hoisted above the card's
 	// other questions: the lead and the two forms answer it.
-	Confirm    *planQuestion
-	Escalation string // the plan task's escalation, such as its session cap
-	Problem    string // why the human's last action on the card was refused
+	Confirm *planQuestion
+	Problem string // why the human's last action on the card was refused
 	// TaskStatus is its task's, where the task's card stands once the
 	// request is decided
 	TaskStatus string
@@ -129,6 +128,19 @@ type approvalCard struct {
 	// not repeat them.
 	Decide *decide
 	Hosted bool
+	// Face is the face of the case that holds a criteria request once it
+	// reached the human: the rungs' analysis and recommendation
+	Face *factoryd.Face
+}
+
+// faceOf gives criteria card k the face of its case held, at the human
+// among cs, its words masked as the case row masks them.
+func (k *approvalCard) faceOf(cs caseSet, held factoryd.Case, hosts []string) {
+	face := factoryd.CaseFace(held, cs.desk.Steps[held.ID], factoryd.FactsOf(held), cs.desk.Asks[held.ID], nil)
+	for _, s := range []*string{&face.Info, &face.Recommendation, &face.Source} {
+		*s = sanitize.Outbound(scrubText(*s), hosts)
+	}
+	k.Face = &face
 }
 
 // openedView is an opened proof as the drawer shows it: the original
@@ -788,7 +800,8 @@ func (c *Console) decideCriterion(w http.ResponseWriter, r *http.Request) {
 
 // criterionFragment answers GET /approvals/{id}/criteria/{at}: the
 // criteria card with criterion at of its request in view (one-face 6b),
-// which htmx swaps in for the card's row.
+// which htmx swaps in for the card's row, with its case's face; a request
+// whose case has not reached the human has no card yet.
 func (c *Console) criterionFragment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -818,12 +831,24 @@ func (c *Console) criterionFragment(w http.ResponseWriter, r *http.Request) {
 	case !slices.Contains([]string{factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun}, q.Kind) || q.Project != shown.Repository:
 		http.NotFound(w, r)
 	default:
+		cs, cerr := c.caseSetOf(ctx, shown.Repository)
+		if cerr != nil {
+			log.Printf("console: the cases of %s: %v", shown.Repository, cerr)
+			http.Error(w, "cannot read the cases", http.StatusInternalServerError)
+			return
+		}
+		held, faced := cs.faced(q)
+		if !faced {
+			http.NotFound(w, r)
+			return
+		}
 		if bt, ok, terr := c.cfg.Tasks.BoardTask(ctx, q.TaskID); terr == nil && ok {
 			v.byID[bt.ID] = bt.Task
 		} else if terr != nil {
 			log.Printf("console: card %s: %v", q.TaskID, terr)
 		}
 		k := c.approvalCard(ctx, q, button(r), v.byID, v.csrf, v.approves(shown.Repository), true)
+		k.faceOf(cs, held, v.policy.Document.LinkHosts)
 		k.Filter, k.Writer = v.filter, v.writes
 		if at > k.CriterionOf {
 			http.NotFound(w, r)

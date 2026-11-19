@@ -221,6 +221,64 @@ func templateQuestion(reason string, f QuestionFacts, choices []string) *HumanQu
 	return plainQuestion(reason, f, choices)
 }
 
+// criteriaInfo is what answers a plan's criteria case: its criteria card.
+const criteriaInfo = "The plan's criteria card answers it: grant one more bounded card, which the planner drafts, waive a criterion with your reason, or confirm with your evidence that the delivered cards meet them. Every criterion met or waived ends the request on the next sweep."
+
+// criteriaQuestion is the face of a plan's criteria case: problem, its
+// request's reason, asks, the first line of reason, its request's words,
+// says why, and the criteria card answers it, so it offers no choice.
+func criteriaQuestion(problem, reason string) *HumanQuestion {
+	why := strings.TrimPrefix(EscalationQuestion(reason), "factoryd: ")
+	if why != "" {
+		why = upperFirst(why)
+	}
+	return &HumanQuestion{Ask: problem, Why: why, Info: criteriaInfo}
+}
+
+// mergeQuestion is the face of merge approval case c: what its request
+// asks on the head's checks, green the merge at its risk with Approve, red
+// a factory pull request's checks run again with the re-run, red an
+// agent's pull request sent back or closed, which no choice answers; and
+// why a human decides it. The rungs' lines are its info.
+func mergeQuestion(c Case) *HumanQuestion {
+	pr, _ := toInt(c.Facts["pr"])
+	class, _ := c.Facts["class"].(string)
+	red, _ := c.Facts["red_checks"].(bool)
+	factory, _ := c.Facts["factory"].(bool)
+	q := &HumanQuestion{Ask: fmt.Sprintf("Merge PR #%d, %s risk.", pr, class), Why: mergeWhy(c), Choices: []QuestionChoice{{Value: "Approve", Label: "Approve"}}}
+	switch {
+	case red && factory:
+		q.Ask = fmt.Sprintf("The checks of PR #%d are red, so it cannot merge: run them again, or close it with your words.", pr)
+		q.Choices = []QuestionChoice{{Value: ChoiceRerun, Label: ChoiceRerun}}
+	case red:
+		q.Ask = fmt.Sprintf("PR #%d cannot merge, its checks are red: send it back to the agent with what to change, or close it.", pr)
+		q.Choices = nil
+	}
+	return q
+}
+
+// planQuestion is the face of plan question or confirmation case c, from
+// the planner's row its facts hold: the question, why a human answers it,
+// its choices and the planner's recommendation, which a rung's replaces.
+// The rungs' lines are its info.
+func planQuestion(c Case) *HumanQuestion {
+	question, _ := c.Facts["question"].(string)
+	revision, _ := toInt(c.Facts["revision"])
+	q := &HumanQuestion{Ask: cmp.Or(question, c.Problem), Why: fmt.Sprintf("Plan revision %d asks it: the planner revises the plan with the answers.", revision)}
+	if c.Kind == CasePlanConfirmation {
+		q.Why = fmt.Sprintf("Plan revision %d waits for its confirmation: Confirm fixes the spec and the criteria; Request changes sends your words to the next planner round.", revision)
+	}
+	choices, _ := c.Facts["choices"].([]any)
+	for _, ch := range choices {
+		if s, _ := ch.(string); s != "" {
+			q.Choices = append(q.Choices, QuestionChoice{Value: s, Label: s})
+		}
+	}
+	q.Recommendation, _ = c.Facts["recommendation"].(string)
+	q.Source, _ = c.Facts["recommended_by"].(string)
+	return q
+}
+
 // planWaitMark is the phrase of a plan's wait on its failed card
 // (planCardFailedReason), whose face the plan's wait carries.
 const planWaitMark = "this plan's close and its next round wait on it"

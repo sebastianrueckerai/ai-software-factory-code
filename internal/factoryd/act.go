@@ -125,7 +125,7 @@ var keepsWaiting = []string{AnswerRerunAgain}
 // or a filed card, a decision whose request ended the case already, or a
 // human card's choice that keeps the card waiting.
 func keepsOpen(c Case, t Task, res Resolution) bool {
-	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(requestEnds, res.Action) || ChoiceCase(c, t.Kind) && slices.Contains(keepsWaiting, res.Action)
+	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(requestEnds, res.Action) || ChoiceKind(c.Kind) && slices.Contains(keepsWaiting, res.Action)
 }
 
 // Act is the one way a human, the chat or a rung answers a case. It reads
@@ -208,8 +208,8 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	// ownNote is the answer's note as its author wrote it, added what code puts
 	// beside it for the session: the issue's record names them apart
 	ownNote, added := res.Note, ""
-	choice := ChoiceCase(c, t.Kind) && res.Action != ActNote
-	if ChoiceCase(c, t.Kind) && res.Action == ActNote && in.Rung != 0 {
+	choice := ChoiceKind(c.Kind) && res.Action != ActNote
+	if ChoiceKind(c.Kind) && res.Action == ActNote && in.Rung != 0 {
 		if why := r.wordsRefusal(ctx, t, c); why != "" {
 			return ActResult{}, ErrActRefused(why)
 		}
@@ -382,7 +382,7 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	if !runHears(t, c) {
 		return out, nil
 	}
-	r.signalRun(ctx, t.ID, SignalCaseResolved, resolvedSignal(in, res, c.ID, out.Comment))
+	r.signalRun(ctx, t.ID, SignalCaseResolved, resolvedSignal(in, res, c, out.Comment))
 	if out.Comment != 0 {
 		r.signalRun(ctx, t.ID, SignalAnswerWhole, TaskSignal{Author: in.By, Comment: out.Comment})
 	}
@@ -416,7 +416,7 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 			continue
 		}
 		for _, c := range cases {
-			if c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
+			if c.Status != CaseAtHuman || !AnswersByOffers(c) {
 				continue
 			}
 			ask, found := r.CaseAsk(ctx, c)
@@ -450,7 +450,7 @@ func (r *Runner) refreshOffersOf(ctx context.Context, taskID string, caseID int6
 		return
 	}
 	c, err := r.store.CaseByID(ctx, caseID)
-	if err != nil || c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
+	if err != nil || c.Status != CaseAtHuman || !AnswersByOffers(c) {
 		return
 	}
 	if f, err := r.FactsAtCase(ctx, t, c); err == nil {
@@ -475,19 +475,18 @@ func (r *Runner) refreshOffers(ctx context.Context, t Task, c Case, f CaseFacts)
 }
 
 // Proposes says rung 2's answer action at autonomy state is a proposal the
-// human confirms, not an action that runs: never at full auto, at autonomous
-// for a merge approval alone, at assisted and manual for every action a
-// human may take. An action only the rungs take (route_approval) runs at
-// every level: it asks nobody for anything the human could confirm.
+// human confirms, not an action that runs: never at full auto or
+// autonomous, at assisted and manual for every action a human may take. A
+// merge decision below full auto is refused before it could be one
+// (mergeRuleRefusal). An action only the rungs take (route_approval) runs
+// at every level: it asks nobody for anything the human could confirm.
 func Proposes(state, action string) bool {
 	if a, ok := ActionByName(action); ok && !a.Rungs[3] {
 		return false
 	}
 	switch state {
-	case policy.AutonomyFullAuto:
+	case policy.AutonomyFullAuto, policy.AutonomyAutonomous:
 		return false
-	case policy.AutonomyAutonomous:
-		return action == ActApproveMerge
 	}
 	return true
 }
@@ -614,7 +613,7 @@ func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, own 
 			step.Outcome = StepWithdrawn
 			resolution.Reason = cmp.Or(strings.TrimSpace(res.Note), "withdrawn by "+in.By)
 		} else if runHears(t, c) {
-			resolved := resolvedSignal(in, res, c.ID, comment)
+			resolved := resolvedSignal(in, res, c, comment)
 			sig = &resolved
 		}
 		err = r.store.ResolveCase(ctx, c.ID, resolution, draw, &step, sig)
@@ -698,9 +697,9 @@ func runHears(t Task, c Case) bool {
 }
 
 // resolvedSignal is the case_resolved of answer in, res as the run takes
-// it, on case caseID, carried by comment.
-func resolvedSignal(in ActInput, res Resolution, caseID, comment int64) TaskSignal {
-	return TaskSignal{Author: in.By, Comment: comment, Case: &CaseSignal{CaseID: caseID, Rung: in.Rung, By: in.By, Res: res, Comment: comment}}
+// it, on case c, carried by comment.
+func resolvedSignal(in ActInput, res Resolution, c Case, comment int64) TaskSignal {
+	return TaskSignal{Author: in.By, Comment: comment, Case: &CaseSignal{CaseID: c.ID, Rung: in.Rung, By: in.By, Res: res, Comment: comment, Again: asksAgain(c)}}
 }
 
 // signalRun signals card taskID's run. A failed signal is logged: the
@@ -833,7 +832,7 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 	if why == "" {
 		return ""
 	}
-	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks == "red" {
+	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks == "red" && mergeRuleRefusal(f, in.Rung, a.Name) == "" {
 		// the approval card's own remedies: a factory pull request's checks run again, an agent's goes back
 		remedy := "return it to the agent with what to change (deny_merge with request_changes) or close it (deny_merge with reject)"
 		if f.Factory {
@@ -841,7 +840,7 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 		}
 		return why + ", and " + who(in.Rung) + " may " + remedy
 	}
-	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks != "green" {
+	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks != "green" && mergeRuleRefusal(f, in.Rung, a.Name) == "" {
 		return why + ", and " + who(in.Rung) + " may wait for them to settle or close it (deny_merge)"
 	}
 	var names []string
@@ -867,7 +866,11 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) s
 		return fmt.Sprintf("card %s is a human card, so its answer draws nothing: answer it without the fund", cardName(t))
 	case len(in.Res.Args) > 0:
 		return fmt.Sprintf("card %s is a human card, so its answer is one of its choices and takes no args: answer it without them", cardName(t))
-	case in.Res.Action == ActClose:
+	}
+	if why := r.heldRefusal(ctx, t, in); why != "" {
+		return why
+	}
+	if in.Res.Action == ActClose {
 		return "" // a human card closes whatever it asks, as its Close button does
 	}
 	ask, _ := r.CaseAsk(ctx, c)
@@ -879,6 +882,85 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) s
 		return ""
 	}
 	return choiceRefusal(t, offers)
+}
+
+// heldEnds are the choices that end a human card on no work of their own:
+// they hold only once the card's condition is gone.
+var heldEnds = []string{AnswerClose, AnswerCheckAgain, AnswerHoldWait, AnswerDismiss}
+
+// heldRefusal is why rung 2 may not take in on factoryd's own human card t,
+// which waits out of sight for its face: a choice that ends the card while
+// factoryd finds its condition standing, or with no check of it, one that
+// leaves the card waiting where no human sees it, and a hand-over to an
+// agent of a card its filer routed to a human. "" when rung 2 may.
+func (r *Runner) heldRefusal(ctx context.Context, t Task, in ActInput) string {
+	choice := in.Res.Action
+	if t.Status != "waiting-agent" || in.Rung != 2 {
+		return ""
+	}
+	up := "hand it up with attach_analysis and " + choice + " as the recommended action"
+	switch choice {
+	case AnswerPark, AnswerKeepWaiting:
+		return fmt.Sprintf("card %s waits out of sight until a human is asked, so %s would leave it there: %s", cardName(t), choice, up)
+	case AnswerGo:
+		return fmt.Sprintf("card %s's filer routed it to a human, so only a human hands it to an agent: %s", cardName(t), up)
+	}
+	if !slices.Contains(heldEnds, choice) {
+		return ""
+	}
+	gone, why, err := r.conditionGone(ctx, t)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("card %s's condition could not be read (%s), so %s ends nothing: %s", cardName(t), r.scrub(err.Error()), choice, up)
+	case !gone:
+		return why + ": " + up
+	}
+	return ""
+}
+
+// conditionGone tells whether the condition human card t was filed for is
+// gone, read from the fact its source's own closer ends it on; why says
+// what stands, or that no code checks a source with no such fact.
+func (r *Runner) conditionGone(ctx context.Context, t Task) (gone bool, why string, err error) {
+	stands := func(format string, args ...any) string {
+		return fmt.Sprintf("card %s's condition stands: ", cardName(t)) + fmt.Sprintf(format, args...)
+	}
+	short := t.SHA[:min(7, len(t.SHA))]
+	switch t.Source {
+	case SourceChainStall, SourceChainRepair:
+		sha, status, ok, err := r.store.ChainHeadRow(ctx, t.Repository)
+		if err != nil || !ok {
+			// with no head row no chain stands
+			return err == nil, "", err
+		}
+		standing := status == "pending" || status == "stalled"
+		if t.Source == SourceChainRepair {
+			standing = status != "success"
+		}
+		return sha != t.SHA || !standing, stands("the chain of %s is %s at %s", t.Repository, status, short), nil
+	case SourceStillRed, SourceRerun:
+		pause, paused, err := r.store.QueuePause(ctx, t.Repository)
+		return !paused || pause.FixTask != t.ID, stands("main of %s is red and its merge queue paused on it", t.Repository), err
+	case SourceConfig:
+		row, ok, err := r.store.AlertByFingerprint(ctx, AlertConfigRejected, t.SHA)
+		if err != nil || !ok {
+			return false, stands("the rejection of %s is not on record", short), err
+		}
+		current, _ := toInt(row.Detail["current"])
+		return row.Verdict != "" || r.cfg.Policy().ID > int64(current), stands("no valid commit loaded after %s", short), nil
+	case SourceProductionHeld:
+		groups, err := r.store.OpenGroups(ctx)
+		return len(groups[t.Repository]) == 0, stands("a plan is open on main of %s", t.Repository), err
+	case SourceAlert:
+		row, ok, err := r.store.AlertByFingerprint(ctx, AlertSigNoz, t.AlertFingerprint)
+		if err != nil || !ok {
+			return false, stands("its alert is not on record"), err
+		}
+		resolved, _ := row.Detail["resolved_at"].(string)
+		_, firing := firingSince(row)
+		return row.Detail["event"] != true && resolved != "" && !firing, stands("its alert fires, or is an event no resolve clears"), nil
+	}
+	return false, fmt.Sprintf("no code checks card %s's condition", cardName(t)), nil
 }
 
 // choiceRefusal says card t takes one of offers, with a note beside it.

@@ -459,7 +459,8 @@ type Store interface {
 	// missing row is left as it is.
 	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
 	// UnconfirmedFactoryCloses lists up to limit factory_closed rows not
-	// yet confirmed and created more than olderThan ago, oldest first.
+	// yet confirmed, oldest first: one of an issue created more than
+	// olderThan ago, one of a card with no issue at any age.
 	UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error)
 	// ReleaseHandover deletes the card's hand-over claim, the failed
 	// filing's, so a retry can claim it again.
@@ -542,6 +543,9 @@ type Store interface {
 	// the revert card, ClearQueuePause ends it.
 	PauseQueue(ctx context.Context, p QueuePause) (bool, error)
 	QueuePause(ctx context.Context, project string) (QueuePause, bool, error)
+	// ChainHeadRow reads repository's chain head row, the facts a stall or
+	// repair card stands on.
+	ChainHeadRow(ctx context.Context, repository string) (sha, status string, ok bool, err error)
 	SetQueuePauseRevert(ctx context.Context, project, taskID string) error
 	ClearQueuePause(ctx context.Context, project string) error
 	// PauseQueueForRevert pauses the queue for a plan's group revert; false
@@ -939,7 +943,9 @@ type Store interface {
 	// EnsureChatTask is project name's chat task for the month of at, whose
 	// budget the project agent's and the rungs' model calls book on.
 	EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (Task, error)
-	SetCaseStatus(ctx context.Context, id int64, status string) error
+	// ToHuman moves live case id to the human, the one writer of at_human,
+	// once the door passes it (doorRefusal).
+	ToHuman(ctx context.Context, id int64) error
 	// SetCaseFact sets fact key of live case id to value, or removes it
 	// for the empty value.
 	SetCaseFact(ctx context.Context, id int64, key, value string) error
@@ -953,7 +959,7 @@ type Store interface {
 	// once: a problem that ends with suffix already stays as it is.
 	AppendCaseProblem(ctx context.Context, id int64, suffix string) error
 	// SetCaseWake sets who owns the next move on case id, the events that
-	// end its wait, and when the sweep wakes it if none does.
+	// end its wait, and when the case-wake pass wakes it if none does.
 	SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error
 	// DueCases lists the live cases whose next_wake_at passed, oldest
 	// first.
@@ -1663,15 +1669,19 @@ func (s *PGStore) ConfirmFactoryClose(ctx context.Context, taskID string, issue 
 	return err
 }
 
-// UnconfirmedFactoryCloses lists up to limit card-closed comments
-// unconfirmed for olderThan (oldest first, on the store's clock).
-// HealFactoryCloses, the temporal heal pass that answers them, is its
-// sole caller. A freeze card's close is its watcher's
-// (UnconfirmedFreezeCloses).
+// UnconfirmedFactoryCloses lists up to limit unconfirmed card-closed
+// rows, oldest first: one of an issue once unconfirmed for olderThan (on
+// the store's clock), the wait for Forgejo's webhook of the close, and one
+// of a card with no issue (comment_id 0), which no webhook confirms, at
+// any age. HealFactoryCloses, the temporal heal pass that answers them, is
+// its sole caller. No row of a freeze card is listed: its closes are its
+// watcher's (UnconfirmedFreezeCloses), and its record off its issue
+// (comment_id 0) is the card's earlier end, not the close of a card with
+// no issue.
 func (s *PGStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+intakeColumns+`
-		 FROM intake_events WHERE kind = $1 AND confirmed_at IS NULL AND created_at < now() - $2 * interval '1 second'
+		 FROM intake_events WHERE kind = $1 AND confirmed_at IS NULL AND (comment_id = 0 OR created_at < now() - $2 * interval '1 second')
 		   AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = intake_events.task_id AND t.source = $4)
 		 ORDER BY id LIMIT $3`, IntakeFactoryClosed, olderThan.Seconds(), limit, SourceFreezeCard)
 	return scanIntakeEvents(rows, err)
@@ -2360,13 +2370,15 @@ func (s *PGStore) SetTaskAccent(ctx context.Context, id, accent string) error {
 
 // CreateHumanCard stores human card t and its ask's question_asked row in
 // one transaction: a failure leaves neither, and the caller's own retry (the
-// activity's, the webhook's redelivery, the heal pass) files both. A card of
-// t's id that is a queued agent card moves to the human lane (kind human,
-// waiting-human, its track, process and gate cleared); one that is not
-// queued answers itself and false, with no ask written; a plan's card whose
-// key already has its row answers that row and false, with no second ask.
+// activity's, the webhook's redelivery, the heal pass) files both. The card
+// takes the status its source files in (HumanCardStatus). A card of t's id
+// that is a queued agent card moves to the human lane (kind human, that
+// status, its track, process and gate cleared); one that is not queued
+// answers itself and false, with no ask written; a plan's card whose key
+// already has its row answers that row and false, with no second ask.
 // Otherwise it inserts t.
 func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error) {
+	t.Kind, t.Status = "human", HumanCardStatus(t.Source)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Task{}, false, err
@@ -2380,9 +2392,9 @@ func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Ta
 	switch {
 	case have:
 		moved := false
-		if status, moved, err = changeStatusOn(ctx, tx, `kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL, track = NULL, process = NULL,
+		if status, moved, err = changeStatusOn(ctx, tx, `kind = 'human', status = $2, gate = '', gate_since = NULL, track = NULL, process = NULL,
 			hold_at = NULL, hold_by = '', hold_reason = '', hold_release = NULL`,
-			`id = $1 AND kind = 'agent' AND status = 'queued'`, t.ID); err != nil {
+			`id = $1 AND kind = 'agent' AND status = 'queued'`, t.ID, t.Status); err != nil {
 			return Task{}, false, err
 		}
 		if !moved {

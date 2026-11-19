@@ -304,7 +304,7 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 	// oldest queued cards start below, once per project, the sweep that
 	// re-derives what a missed pull would have started
 	pulls := map[string]bool{}
-	for _, status := range []string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image", "closing"} {
+	for _, status := range []string{"queued", "waiting-deps", "running", "in-review", "waiting-agent", "waiting-human", "waiting-poster", "waiting-image", "closing"} {
 		tasks, err := store.ListTasksByStatus(ctx, status)
 		if err != nil {
 			log.Printf("start open workflows: list %s: %s", status, maskedErr(err))
@@ -316,10 +316,8 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 			}
 			if t.Kind == "human" {
 				// no workflow: only a close to take in
-				if status == "waiting-human" {
-					if err := in.Resync(ctx, t); err != nil {
-						log.Printf("heal pass: resync task %s: %s", t.ID, maskedErr(err))
-					}
+				if err := in.Resync(ctx, t); err != nil {
+					log.Printf("heal pass: resync task %s: %s", t.ID, maskedErr(err))
 				}
 				continue
 			}
@@ -389,8 +387,10 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 // included. A plan whose newest revision still waits on its questions
 // gets their cases back from their own rows (restorePlanAsk). Else once
 // the wait is older than the repository's at_human bound, healedTrip's
-// no-case arm opens the stop the card asked last again, with its face on
-// the card's issue, so the console's answer paths find an ask to press.
+// no-case arm opens the stop the card asked last again as a case that
+// names the case it asks again and climbs the rungs to its face, so the
+// console's answer paths find an ask to press and the waiting run hears
+// its answer.
 func healParkedAsk(ctx context.Context, store Store, r *Runner, tree func() policy.Tree, t Task) {
 	if t.Kind == "human" || t.Kind == KindChat {
 		return

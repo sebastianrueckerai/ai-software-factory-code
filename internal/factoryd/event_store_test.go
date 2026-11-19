@@ -363,7 +363,7 @@ func TestPGStoreStatusChangesLeaveTaskStatusRows(t *testing.T) {
 				return fmt.Errorf("moved %v, %v; want the queued card moved", moved, err)
 			}
 			return nil
-		}, "t-h", 8, map[string]any{"status": "waiting-human", "gate": ""}},
+		}, "t-h", 8, map[string]any{"status": "waiting-agent", "gate": ""}},
 	} {
 		before, err := s.ProjectEvents(ctx, "sf/r", 0, 50)
 		if err != nil {

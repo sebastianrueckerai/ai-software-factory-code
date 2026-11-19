@@ -58,9 +58,11 @@ func TestAConfirmedCriteriaRequestGetsNoCaseFromTheHeal(t *testing.T) {
 	}
 }
 
-// A month cap's human card keeps its kind, and its question's choices answer
-// it through the real Act: "Decided, close" closes the card, "Let it stand"
-// settles its case and the card keeps its wait.
+// The factory's month cap card opens a factory_month_cap case, which the
+// door passes to the human at its opening by the kind's exception: no rung
+// step, rung 3 and no wake. Its question's choices answer it through the
+// real Act: "Decided, close" closes the card, "Let it stand" settles its
+// case and the card keeps its wait.
 func TestAMonthCapHumanCardIsAnsweredByItsChoices(t *testing.T) {
 	for _, tc := range []struct {
 		value  string
@@ -77,8 +79,12 @@ func TestAMonthCapHumanCardIsAnsweredByItsChoices(t *testing.T) {
 				t.Fatal(err)
 			}
 			cases, _ := g.s.OpenCasesOf(ctx, "h1")
-			if len(cases) != 1 || cases[0].Kind != CaseMonthCap || !ChoiceCase(cases[0], h.Kind) || AnswersByOffers(cases[0], h.Kind) {
-				t.Fatalf("cases %+v; want the month cap kept, answered by its choices and with no table offers", cases)
+			if len(cases) != 1 || cases[0].Kind != CaseFactoryMonthCap || cases[0].Status != CaseAtHuman || cases[0].OwnerRung != 3 || cases[0].NextWakeAt != nil ||
+				!ChoiceKind(cases[0].Kind) || AnswersByOffers(cases[0]) {
+				t.Fatalf("cases %+v; want the factory's month cap at the human on rung 3 with no wake, answered by its choices and with no table offers", cases)
+			}
+			if steps, _ := g.s.CaseSteps(ctx, cases[0].ID); len(steps) != 1 || steps[0].Rung != 3 || steps[0].Actor != FactoryDecider {
+				t.Fatalf("steps %+v; want the face's step of rung 3 alone", steps)
 			}
 			if _, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: cases[0].ID, By: "sebastian", Via: ViaButton, Rung: 3, Res: Resolution{Action: tc.value}}); err != nil {
 				t.Fatalf("the choice %s = %v", tc.value, err)
@@ -95,7 +101,7 @@ func TestAMonthCapHumanCardIsAnsweredByItsChoices(t *testing.T) {
 func TestAnAskStoresTheOffersOfTheLiveFacts(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.FaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.PgFaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")
@@ -128,7 +134,7 @@ func TestAnAskStoresTheOffersOfTheLiveFacts(t *testing.T) {
 func TestAFailedWorkRefreshesTheStoredOffers(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.FaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.PgFaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")

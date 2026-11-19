@@ -60,3 +60,14 @@ func (a Action) PgRefusal(f CaseFacts, rung int, res Resolution) string {
 // PgMonitorKinds aliases the monitor's unexported event kinds, for the
 // moved monitor parity test that reads them from the store.
 var PgMonitorKinds = monitorKinds
+
+// PgSetLaunchRung1 sets the runner's unexported launchRung1, for the moved
+// monitor test that keeps rung 1's conversation from running.
+func (r *Runner) PgSetLaunchRung1(f func(run func())) { r.launchRung1 = f }
+
+// PgDepFailedReason and PgPlanCardFailedReason run the unexported reasons a
+// failed dependency's stop and a plan's wait on its failed card ask with,
+// for the moved trip and rung 2 tests that open those cases.
+func PgDepFailedReason(d Dependency) string { return depFailedReason(d) }
+
+func PgPlanCardFailedReason(k Task) string { return planCardFailedReason(k) }

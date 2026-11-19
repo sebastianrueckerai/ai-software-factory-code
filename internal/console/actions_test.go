@@ -1156,15 +1156,11 @@ func TestGrantOnANeverJudgedPlanDraftsOneCard(t *testing.T) {
 	r.c.cfg.GrantCriteria = func(ctx context.Context, id, by string, approval int64) (int, error) {
 		return factoryd.GrantCriteria(ctx, st, id, by, approval)
 	}
-	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
-	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "answer_criteria", `{"task_id":"t-plan","action":"grant"}`)}, {say("Granted.")}}
-	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"grant the plan one more card"}})
+	events := grantOnDoIt(t, r, g)
 	note := "Granted one more bounded card for 2 criteria; the planner drafts it and the board shows it."
-	equal(t, "stream", events, []string{
-		`tool {"arguments":{"task_id":"t-plan","action":"grant"},"duration_ms":0,"name":"answer_criteria","result":"` + note + `"}`,
-		`applied {"result":"` + note + `","tool":"answer_criteria"}`,
-		`text {"text":"Granted."}`, `done {}`})
+	equal(t, "Do it", events, []string{
+		`tool {"arguments":` + grantArgs + `,"duration_ms":0,"name":"answer","result":"` + note + `"}`,
+		`applied {"result":"` + note + `","tool":"answer"}`, `done {}`})
 	if len(r.acted) != 1 || r.acted[0].Res.Action != factoryd.ActGrantCriteria {
 		t.Fatalf("Act took %+v, want one grant_criteria", r.acted)
 	}

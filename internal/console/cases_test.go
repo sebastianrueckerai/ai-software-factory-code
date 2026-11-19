@@ -375,12 +375,15 @@ func TestAnswerFormsNeedTheQuestionsComment(t *testing.T) {
 }
 
 // A plan at its session cap has a session cap case and a pending plan
-// approval that case does not answer: the card is one row, the approval
-// inside it under the carousel, counted once.
+// approval that case does not answer, its revision's question faced too:
+// the card is one row, the approval inside it under the carousel, counted
+// once.
 func TestACardsApprovalWithNoCaseOfItsOwnSitsInItsRow(t *testing.T) {
 	r := newRig(t)
 	planRig(r)
-	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 5, TaskID: "t-plan", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman, Problem: "The plan hit its session cap."}}}
+	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 5, TaskID: "t-plan", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman, Problem: "The plan hit its session cap."},
+		{ID: 6, TaskID: "t-plan", Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman, Problem: "Which store?",
+			Facts: map[string]any{"revision": 2.0, "index": 1.0, "question": "Which store?", "choices": []any{"Postgres", "SQLite"}}}}}
 	ck, _ := r.loggedIn(t)
 	body := getAs(r, ck, "/?project=linkshort", false).Body.String()
 	needs := col(t, body, "Needs you")

@@ -25,7 +25,11 @@ func TestSetCaseWakeAndDueCases(t *testing.T) {
 			now := time.Now().UTC().Truncate(time.Millisecond)
 			at := func(d time.Duration) *time.Time { v := now.Add(d); return &v }
 			opened := func(key, status string) Case {
-				c, ok, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: key, Status: status, Problem: key})
+				open := s.OpenCase
+				if status == CaseAtHuman {
+					open = func(ctx context.Context, c Case) (Case, bool, error) { return openAtHuman(ctx, s, c) }
+				}
+				c, ok, err := open(ctx, Case{TaskID: "t1", Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: key, Problem: key})
 				if err != nil || !ok {
 					t.Fatalf("OpenCase %s = %v, %v", key, ok, err)
 				}
@@ -38,8 +42,8 @@ func TestSetCaseWakeAndDueCases(t *testing.T) {
 			}
 			due, later, never, done, earlier := opened("due", ""), opened("later", ""), opened("never", ""), opened("done", ""), opened("earlier", CaseAtHuman)
 			gone := opened("gone", "")
-			if never.OwnerRung != 3 || never.NextWakeAt != nil || len(never.WakeOn) != 0 {
-				t.Fatalf("a new case = rung %d, wake %v on %v; want rung 3, no wake, no events", never.OwnerRung, never.NextWakeAt, never.WakeOn)
+			if never.OwnerRung != 0 || never.NextWakeAt != nil || len(never.WakeOn) != 0 {
+				t.Fatalf("a new case = rung %d, wake %v on %v; want rung 0, no wake, no events", never.OwnerRung, never.NextWakeAt, never.WakeOn)
 			}
 			wake(due, 0, []string{"card_moved", "case_answered"}, at(-time.Minute))
 			wake(later, 0, nil, at(time.Hour))
@@ -88,6 +92,65 @@ func TestSetCaseWakeAndDueCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+// An open case is rung 0's from its opening and takes the wake its opener
+// gives it: one opened with a wake at t0 reads rung 0 and is due at t0,
+// one opened with none reads rung 0 and is never due, and one the door
+// moves to the human after rung 2's hand-up is the human's, rung 3, with
+// no wake. A case opened at the human is refused: only the door moves it
+// there.
+func TestAnOpenedCaseIsRungZerosWithItsOpenersWake(t *testing.T) {
+	for name, open := range caseWaitStores {
+		t.Run(name, func(t *testing.T) {
+			ctx, s := context.Background(), open(t)
+			t0 := time.Now().UTC().Truncate(time.Millisecond)
+			opened := func(key string, wake *time.Time) Case {
+				c, ok, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "sf/r", Kind: CaseOther, StateKey: key, Problem: key, NextWakeAt: wake})
+				if err != nil || !ok {
+					t.Fatalf("OpenCase %s = %v, %v", key, ok, err)
+				}
+				return c
+			}
+			woken, bare, faced := opened("woken", &t0), opened("bare", nil), opened("faced", &t0)
+			if _, err := s.AppendCaseStep(ctx, CaseStep{CaseID: faced.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.ToHuman(ctx, faced.ID); err != nil {
+				t.Fatalf("ToHuman after rung 2's hand-up: %v", err)
+			}
+			const refused = "OpenCase opens a case only as open: the door moves it to the human"
+			if _, _, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "sf/r", Kind: CaseOther, StateKey: "at once", Status: CaseAtHuman, Problem: "p"}); err == nil || err.Error() != refused {
+				t.Fatalf("OpenCase at the human = %v, want %q", err, refused)
+			}
+			for _, c := range []Case{woken, caseOf(t, s, woken.ID)} {
+				if c.OwnerRung != 0 || c.NextWakeAt == nil || !c.NextWakeAt.Equal(t0) {
+					t.Fatalf("the case opened with a wake = rung %d, wake %v; want rung 0, due at %s", c.OwnerRung, c.NextWakeAt, t0)
+				}
+			}
+			if c := caseOf(t, s, bare.ID); c.OwnerRung != 0 || c.NextWakeAt != nil {
+				t.Fatalf("the case opened with no wake = rung %d, wake %v; want rung 0, no wake", c.OwnerRung, c.NextWakeAt)
+			}
+			if c := caseOf(t, s, faced.ID); c.Status != CaseAtHuman || c.OwnerRung != 3 || c.NextWakeAt != nil {
+				t.Fatalf("the case the door moved = %s at rung %d, wake %v; want at_human at rung 3, no wake", c.Status, c.OwnerRung, c.NextWakeAt)
+			}
+			if got, err := s.DueCases(ctx, t0, 10); err != nil || !slices.Equal(caseIDs(got), []int64{woken.ID}) {
+				t.Fatalf("DueCases at t0 = %v, %v; want %d alone", caseIDs(got), err, woken.ID)
+			}
+			if got, err := s.DueCases(ctx, t0.Add(-time.Millisecond), 10); err != nil || len(got) != 0 {
+				t.Fatalf("DueCases before t0 = %v, %v; want none", caseIDs(got), err)
+			}
+		})
+	}
+}
+
+func caseOf(t *testing.T, s Store, id int64) Case {
+	t.Helper()
+	c, err := s.CaseByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("CaseByID %d: %v", id, err)
+	}
+	return c
 }
 
 // A step in progress past its due_at hands up and names its bound, the

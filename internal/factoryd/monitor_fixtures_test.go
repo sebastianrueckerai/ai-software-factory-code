@@ -139,6 +139,14 @@ func newMonitorRig(t *testing.T) monitorRig {
 	return monitorRig{m: m, s: s, forge: forge, objects: objects, signals: signals}
 }
 
+// wakeCases runs the case-wake pass once.
+func (g monitorRig) wakeCases(t *testing.T) {
+	t.Helper()
+	if err := g.m.WakeCases(context.Background()); err != nil {
+		t.Fatalf("WakeCases: %v", err)
+	}
+}
+
 // event records an event of kind on card id, on issue, at at.
 func (g monitorRig) event(t *testing.T, id string, issue int64, kind string, detail map[string]any, at time.Time) int64 {
 	t.Helper()
@@ -189,8 +197,8 @@ const (
 )
 
 // assertQueueCase checks that card id carries the queue's flag case alone,
-// at the human with rung 0's hand-up and the human's step, its facts naming
-// the flag, its state and the wait, beside the digest, and that the card
+// at the human with rung 0's hand-up, rung 2's and the human's step, its
+// facts naming the flag, its state and the wait, beside the digest, and that the card
 // stays queued on its reason with no ask of its own.
 func (g monitorRig) assertQueueCase(t *testing.T, id string) {
 	t.Helper()
@@ -207,9 +215,9 @@ func (g monitorRig) assertQueueCase(t *testing.T, id string) {
 		t.Fatalf("%s's case facts = %v, want the flag, its detail, state queued|%s, the queued wait since then against 2h and the digest", id, c.Facts, queuedSince)
 	}
 	steps := caseStepsOf(t, g.s, c.ID)
-	if len(steps) != 2 || steps[0].Rung != 0 || steps[0].Found != monitorHandsUp || steps[0].Outcome != StepHandedUp ||
-		steps[1].Rung != 3 || steps[1].Outcome != StepInProgress {
-		t.Fatalf("%s's case steps = %+v, want rung 0's hand-up and the human's step", id, steps)
+	if len(steps) != 3 || steps[0].Rung != 0 || steps[0].Found != monitorHandsUp || steps[0].Outcome != StepHandedUp ||
+		steps[1].Rung != 2 || steps[1].Outcome != StepHandedUp || steps[2].Rung != 3 || steps[2].Outcome != StepInProgress {
+		t.Fatalf("%s's case steps = %+v, want rung 0's hand-up, rung 2's and the human's step", id, steps)
 	}
 	task, _, err := g.s.Task(ctx, id)
 	if err != nil || task.Status != "queued" || task.QueueReason != "work bound 3 of 3" {
@@ -236,12 +244,12 @@ func TestNewestAskCaseLeavesAMonitorCaseOut(t *testing.T) {
 	for name, open := range monitorStores {
 		t.Run(name, func(t *testing.T) {
 			ctx, s := context.Background(), open(t)
-			run, _, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap", Status: CaseAtHuman, Problem: "p"})
+			run, _, err := openAtHuman(ctx, s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap", Problem: "p"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20",
-				Status: CaseAtHuman, Problem: "Monitor flag: checkin_cut(+0:20)"}); err != nil {
+			if _, _, err := openAtHuman(ctx, s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20",
+				Problem: "Monitor flag: checkin_cut(+0:20)"}); err != nil {
 				t.Fatal(err)
 			}
 			if got, err := s.NewestAskCase(ctx, "t1"); err != nil || got.ID != run.ID {

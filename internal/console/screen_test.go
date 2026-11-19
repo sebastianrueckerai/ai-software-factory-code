@@ -1160,8 +1160,7 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 9}})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	start := strings.Index(body, `aria-labelledby="approval-4"`)
-	card := body[start : start+strings.Index(body[start:], "</article>")]
+	card := hostedFaceOf(t, body, "t-m")
 	for _, want := range []string{`<span class="chip risk">high risk</span> <span class="chip migration">migration</span>`,
 		`<p class="ask">Merge PR #9 of t-m? high risk. It carries a migration.</p>`,
 		`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`,
@@ -1181,7 +1180,12 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 		}
 	}
 	for _, gone := range []string{`<form method="post" action="/approvals/4/deny"`, `name="action" value="request_changes"`, "0018_x.sql", "Earlier review", "Security audit", "Why a human", "<details", "<dt>"} {
-		if strings.Contains(card, gone) {
+		in := card
+		if gone == "<details" {
+			// the case row's own fold is the card's life, read when it opens
+			in = card[strings.Index(card, `aria-labelledby="approval-4"`):]
+		}
+		if strings.Contains(in, gone) {
 			t.Errorf("the merge item shows %s, which the drawer holds:\n%s", gone, card)
 		}
 	}

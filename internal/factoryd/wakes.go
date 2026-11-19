@@ -2,9 +2,7 @@ package factoryd
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -18,20 +16,16 @@ import (
 )
 
 // wakeCaseIDs are the cases handed to rung 2 that a wake was woken for, each
-// once, in order: the cases whose rung 2 step the turn's cost lands on. A
-// face's ask names a case too, but no rung 2 step stands for it.
+// once, in order: the cases whose rung 2 step the turn's cost lands on.
 func wakeCaseIDs(asks []pendingAsk) []int64 {
 	var out []int64
 	for _, a := range asks {
-		if id, _ := toInt(a.e.Detail["case_id"]); id != 0 && a.e.Kind == EventCaseClimbed && !slices.Contains(out, int64(id)) {
+		if id, _ := toInt(a.e.Detail["case_id"]); id != 0 && !slices.Contains(out, int64(id)) {
 			out = append(out, int64(id))
 		}
 	}
 	return out
 }
-
-// WakeAsk is the birth kind of the wake that names asks and merge rows.
-const WakeAsk = "wake_ask"
 
 // WakeStarter starts one wake turn on the member's thread: the console's
 // seam (Console.StartWake). The turn runs without the member's request
@@ -75,11 +69,12 @@ type WakeStore interface {
 }
 
 // The Waker wakes the project agent's turn on the factory's own events
-// (the concept's wake): an ask the agent did not file becomes one turn on
-// the venue member's inbox thread that names every ask of the batch. Its
+// (the concept's wake): a case handed to rung 2 becomes one turn on the
+// venue member's inbox thread that names every case of the batch. Its
 // cursor and marks are rows, so a restart or a repeat changes nothing,
 // and no wake follows an event the agent itself caused. Wakes fire on
-// asks, watched cards and timers, never on the clock alone.
+// cases handed to rung 2, watched cards and timers, never on the clock
+// alone.
 type Waker struct {
 	Store   WakeStore
 	Current func() policy.Version
@@ -118,10 +113,10 @@ const (
 // call returns it wrapped with the count.
 var ErrChatWakeCap = errors.New("this project's watches and timers are full")
 
-// wakeKinds are the events the Waker reads: the asks, the cases handed to
-// rung 2, the approval rows whose merge kind wakes like an ask, and the
-// task moves the watches judge.
-var wakeKinds = []string{EventQuestionAsked, EventCaseClimbed, EventApprovalRequested, EventTaskStatus, EventTaskEnded}
+// wakeKinds are the events the Waker reads: the cases handed to rung 2, and
+// the task moves the watches judge. An ask wakes nobody: its case climbs to
+// rung 2 on case_climbed, or reaches the human with no rung able to run.
+var wakeKinds = []string{EventCaseClimbed, EventTaskStatus, EventTaskEnded}
 
 // Loop passes every interval until ctx ends.
 func (w *Waker) Loop(ctx context.Context, every time.Duration) {
@@ -241,7 +236,6 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 	var pending []pendingAsk
 	var watched []pendingCard
 	moved := map[string]bool{}
-	judges := v.EscalationOf(p.Repository).Judges(p.AutonomyState())
 	for _, e := range events {
 		if e.Kind == EventTaskEnded {
 			// the card is gone however its end was filed: its watches and
@@ -253,13 +247,7 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 		if e.Via == ViaChat {
 			continue // the agent's own doing wakes nobody
 		}
-		if source, _ := e.Detail["source"].(string); e.Kind == EventQuestionAsked && (source == SourceMonthCap || source == SourceChatBudget) {
-			continue // the month cap and the chat budget refuse the agent's own calls: their asks wake nobody
-		}
-		if settled, _ := e.Detail["settled"].(string); e.Kind == EventQuestionAsked && settled != "" {
-			continue // the factory answered the ask as it asked it: it wakes nobody
-		}
-		if (e.Kind == EventQuestionAsked || e.Kind == EventCaseClimbed || isMergeRow(e)) && judges {
+		if e.Kind == EventCaseClimbed {
 			if worked, err := w.staleCaseEvent(ctx, e); err != nil {
 				return err
 			} else if worked {
@@ -338,13 +326,9 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 	if err != nil {
 		return err
 	}
-	asks, text := pending, w.askText(ctx, pending, v.ApproversOf(p.Repository), logins[0], p.MergeRule, p.Repository)
-	birth := WakeAsk
-	if slices.ContainsFunc(pending, func(a pendingAsk) bool { return a.e.Kind == EventCaseClimbed }) {
-		birth = EventCaseClimbed
-	}
+	asks, text := pending, w.askText(ctx, pending, p.Repository)
 	w.goWake(ctx, p.Repository, func(ctx context.Context) error {
-		if err := w.Start.StartWake(ctx, name, logins[0], conv, birth, text, wakeCaseIDs(pending)...); err != nil {
+		if err := w.Start.StartWake(ctx, name, logins[0], conv, EventCaseClimbed, text, wakeCaseIDs(pending)...); err != nil {
 			log.Printf("wake %s: %v", name, err)
 			return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
 		}
@@ -500,54 +484,21 @@ func (w *Waker) cardText(ctx context.Context, e Event) string {
 	return fmt.Sprintf("The watched card %s moved: read the card and act on where it stands.", cardRef(e, t))
 }
 
-// askText is the wake's text: the asks, the cases handed to rung 2 and the
-// merge rows of the batch counted apart, each with its card ref, a case
-// with its statement for rung 2 and the two ends of the turn, then the
-// project's board digest once. A batch with a merge row closes on one merge
-// sentence: approve_merge and deny_merge where the approver may merge, at
-// merge rule auto, else that a human approves merges.
-func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []string, login, mergeRule, repository string) string {
-	merges, cases := 0, 0
-	for _, a := range asks {
-		switch {
-		case isMergeRow(a.e):
-			merges++
-		case a.e.Kind == EventCaseClimbed:
-			cases++
-		}
-	}
-	var heads []string
-	if n := len(asks) - merges - cases; n > 0 {
-		heads = append(heads, plural(n, "ask"))
-	}
-	if cases > 0 {
-		heads = append(heads, plural(cases, "case"))
-	}
-	if merges > 0 {
-		heads = append(heads, plural(merges, "merge"))
-	}
-	verb, who := "wait", "a human"
+// askText is the wake's text: the cases handed to rung 2 of the batch
+// counted, each with its card ref, its statement for rung 2 and the two
+// ends of the turn, then the project's board digest once.
+func (w *Waker) askText(ctx context.Context, asks []pendingAsk, repository string) string {
+	verb := "wait"
 	if len(asks) == 1 {
 		verb = "waits"
 	}
-	if cases == len(asks) {
-		who = "the factory agent"
-	} else if cases > 0 {
-		who = "a human or the factory agent"
-	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Wake: %s %s for %s.", strings.Join(heads, " and "), verb, who)
+	fmt.Fprintf(&b, "Wake: %s %s for the factory agent.", plural(len(asks), "case"), verb)
 	for _, a := range asks {
 		t, _, _ := w.Store.Task(ctx, a.e.TaskID)
-		line := askSentence(a.e)
-		switch {
-		case isMergeRow(a.e):
-			line = mergeLine(a.e, t)
-		case a.e.Kind == EventCaseClimbed:
-			line, _ = a.e.Detail["problem"].(string)
-		}
+		line, _ := a.e.Detail["problem"].(string)
 		id, _ := toInt(a.e.Detail["case_id"])
-		withStatement := id != 0 && w.Statement != nil && !isMergeRow(a.e)
+		withStatement := id != 0 && w.Statement != nil
 		if withStatement {
 			// the statement's first line is the case's problem
 			fmt.Fprintf(&b, "\n%s:", cardRef(a.e, t))
@@ -561,7 +512,15 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []stri
 			fmt.Fprintf(&b, " %s\nThe statement of case %d could not be built: %s", line, id, err)
 			continue
 		}
-		fmt.Fprintf(&b, "\n%s\nEnd case %d with answer and its case_id, or with attach_analysis, its case_id and the recommended action.", statement, id)
+		end := fmt.Sprintf("End case %d with answer and its case_id, or with attach_analysis, its case_id and the recommended action.", id)
+		kind, _ := a.e.Detail["kind"].(string)
+		switch {
+		case kind == string(CasePlanQuestion) || kind == string(CasePlanConfirmation):
+			end = fmt.Sprintf("End case %d with answer on the plan's revision and question, with no case_id, or with attach_analysis, case_id %d and the recommended answer.", id, id)
+		case ChoiceKind(CaseKind(kind)):
+			end = fmt.Sprintf("End case %d with answer, its case_id and one of the card's choices as text, or with attach_analysis, case_id %d and a choice's value as the recommended answer.", id, id)
+		}
+		fmt.Fprintf(&b, "\n%s\n%s", statement, end)
 	}
 	if w.Board != nil {
 		if board, err := w.Board(ctx, repository); err != nil {
@@ -571,76 +530,29 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []stri
 			b.WriteString("\n\n" + board)
 		}
 	}
-	switch {
-	case merges > 0 && slices.Contains(approvers, login) && mergeRule == policy.MergeAuto:
-		b.WriteString("\n\nA merge you find safe takes approve_merge, a wrong one deny_merge, and the rest goes to a human with attach_analysis.")
-	case merges > 0:
-		b.WriteString("\n\nA human approves merges here.")
-	}
 	return b.String()
 }
 
-// staleCaseEvent says e no longer asks rung 2: the face of a case rung 2
-// already worked wakes nobody, and neither does a case_climbed whose step
-// ended since.
+// staleCaseEvent says case_climbed e no longer asks rung 2: its step ended
+// since.
 func (w *Waker) staleCaseEvent(ctx context.Context, e Event) (bool, error) {
 	id, _ := toInt(e.Detail["case_id"])
-	if id == 0 || e.Kind != EventQuestionAsked && e.Kind != EventCaseClimbed {
+	if id == 0 {
 		return false, nil
 	}
 	steps, err := w.Store.CaseSteps(ctx, int64(id))
 	if err != nil {
 		return false, err
 	}
-	if e.Kind == EventCaseClimbed {
-		_, open := inProgress(steps, 2)
-		return !open, nil
-	}
-	return slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 2 }), nil
+	_, open := inProgress(steps, 2)
+	return !open, nil
 }
 
-// isMergeRow says e is a merge approval row, the one approval kind that
-// wakes.
-func isMergeRow(e Event) bool {
-	return e.Kind == EventApprovalRequested && e.Detail["kind"] == ApprovalMerge
-}
-
-// mergeLine is a merge approval row's line on the wake: its pull request,
-// its risk class, its red checks, and a human's approval when card t is
-// a GitHub sync, which no agent approves.
-func mergeLine(e Event, t Task) string {
-	pr, _ := toInt(e.Detail["pr"])
-	class, _ := e.Detail["class"].(string)
-	line := fmt.Sprintf("merge of PR #%d, %s risk", pr, class)
-	if red, _ := e.Detail["red_checks"].(bool); red {
-		line += ", checks red"
-	}
-	if t.Source == SourceGitHubSync {
-		line += ", a human approves"
-	}
-	return line
-}
-
-// askKey is the ask's own identity on its mark: the issue comment the ask
-// filed, so a new ask wakes however it is worded, for two asks of one
-// sentence are two asks, and a reprocessed batch still wakes once, the
-// same comment keeping its key. An ask that files no comment (the
-// planner's) falls back to its sentence's hash. A merge approval row keys
-// its approval id, so each merge request of a card wakes once, and a case
-// handed to rung 2 its case id.
+// askKey is a case handed to rung 2's identity on its mark: its case id, so
+// a reprocessed batch wakes once.
 func askKey(e Event) string {
-	if id, _ := toInt(e.Detail["case_id"]); e.Kind == EventCaseClimbed {
-		return "case:" + strconv.Itoa(id)
-	}
-	if e.Kind == EventApprovalRequested {
-		id, _ := toInt(e.Detail["approval"])
-		return "approval:" + e.TaskID + ":" + strconv.Itoa(id)
-	}
-	if id, _ := toInt(e.Detail["comment"]); id > 0 {
-		return "ask:" + e.TaskID + ":" + strconv.Itoa(id)
-	}
-	sum := sha256.Sum256([]byte(askSentence(e)))
-	return "ask:" + e.TaskID + ":" + hex.EncodeToString(sum[:])
+	id, _ := toInt(e.Detail["case_id"])
+	return "case:" + strconv.Itoa(id)
 }
 
 // askSentence is the ask event's own words: a shaped ask carries its full

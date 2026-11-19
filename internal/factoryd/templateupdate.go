@@ -148,12 +148,12 @@ func (r *Registrar) openTemplateUpdate(ctx context.Context, p Project, want map[
 		// a branch without its pull request would read as the last one closed
 		return "", errors.Join(err, f.DeleteBranch(ctx, fork.Owner, fork.Name, TemplateUpdateBranch))
 	}
-	_, issue, err := r.fileTemplateCard(ctx, p, ref.Number, strings.Join(slices.Sorted(maps.Keys(want)), ", "))
+	card, _, err := r.fileTemplateCard(ctx, p, ref.Number, strings.Join(slices.Sorted(maps.Keys(want)), ", "))
 	if err != nil {
 		return "", err
 	}
 	if replaced != nil {
-		if err := closeIssueAsFactory(ctx, r.Cards, r.Forgejo, *replaced, fmt.Sprintf("factoryd: Pull request #%d replaces #%d; its card is #%d.", ref.Number, last.Number, issue.Number)); err != nil {
+		if err := closeIssueAsFactory(ctx, r.Cards, r.Forgejo, *replaced, fmt.Sprintf("factoryd: Pull request #%d replaces #%d; its card is %s.", ref.Number, last.Number, cardName(card))); err != nil {
 			return "", err
 		}
 	}
@@ -242,11 +242,11 @@ const refusedToAgents = " is forbidden to agents: "
 // failed card it replaces closes as factoryd's recorded close, its comment
 // naming the card filed again.
 func (r *Registrar) fileDueCard(ctx context.Context, p Project, number int64, failed *Task, want map[string][]byte) error {
-	_, ref, err := r.fileTemplateCard(ctx, p, number, strings.Join(slices.Sorted(maps.Keys(want)), ", "))
+	card, _, err := r.fileTemplateCard(ctx, p, number, strings.Join(slices.Sorted(maps.Keys(want)), ", "))
 	if err != nil || failed == nil {
 		return err
 	}
-	return closeIssueAsFactory(ctx, r.Cards, r.Forgejo, *failed, fmt.Sprintf("factoryd: Filed again as #%d.", ref.Number))
+	return closeIssueAsFactory(ctx, r.Cards, r.Forgejo, *failed, fmt.Sprintf("factoryd: Filed again as %s.", cardName(card)))
 }
 
 // leftBranch keeps the branch a closed pull request left when a person

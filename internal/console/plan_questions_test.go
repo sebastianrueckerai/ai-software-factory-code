@@ -640,7 +640,7 @@ func TestAWakeAnswersAPlanOnlyWhereTheGuardPasses(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r, trn, _ := planGuardRig(t, c.confirmation, c.takeOff...)
-			trn.a.level, trn.a.wake, trn.a.birth = c.level, true, factoryd.WakeAsk
+			trn.a.level, trn.a.wake, trn.a.birth = c.level, true, factoryd.EventCaseClimbed
 			res, proposal, _ := trn.call(factoryd.OperatorCall{Name: c.tool, Arguments: c.args})
 			wrote := len(r.fg.comments) > 0
 			if c.want == "" && (proposal != "" || !wrote || strings.HasPrefix(res, "Refused")) ||
@@ -747,7 +747,7 @@ func TestAnAgentsPlanAnswerRecordsTheAgentAndItsWake(t *testing.T) {
 	const confirm = `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"fine"}`
 	const changes = `{"task_id":"t-p","text":"split the API card"}`
 	r, trn, _ := planGuardRig(t, true)
-	trn.a.level, trn.a.wake, trn.a.birth, trn.conv = policy.AutonomyFullAuto, true, factoryd.WakeAsk, 7
+	trn.a.level, trn.a.wake, trn.a.birth, trn.conv = policy.AutonomyFullAuto, true, factoryd.EventCaseClimbed, 7
 	before := r.events.count()
 	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: confirm}); !strings.HasPrefix(res, "Confirmed plan #20") {
 		t.Fatalf("result %q", res)
@@ -756,20 +756,20 @@ func TestAnAgentsPlanAnswerRecordsTheAgentAndItsWake(t *testing.T) {
 		t.Errorf("the signal's author: %v", r.fg.calls)
 	}
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20, Kind: factoryd.EventPlanQuestionAnswered,
-		Detail: map[string]any{"revision": 1, "index": 1, "answer": "fine", "decision": "confirm", "birth": factoryd.WakeAsk,
+		Detail: map[string]any{"revision": 1, "index": 1, "answer": "fine", "decision": "confirm", "birth": factoryd.EventCaseClimbed,
 			"autonomy": policy.AutonomyFullAuto, "decider": "agent", "thread": int64(7)}})
 	before = r.events.count()
 	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "request_changes", Arguments: changes}); !strings.HasPrefix(res, "Your change request is on plan #20") {
 		t.Fatalf("result %q", res)
 	}
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20, Kind: factoryd.EventPlanChangesRequested,
-		Detail: map[string]any{"birth": factoryd.WakeAsk, "autonomy": policy.AutonomyFullAuto, "decider": "agent", "thread": int64(7)}})
+		Detail: map[string]any{"birth": factoryd.EventCaseClimbed, "autonomy": policy.AutonomyFullAuto, "decider": "agent", "thread": int64(7)}})
 }
 
 // The batch path stores the agent's answers as factory-chat's too.
 func TestAnAgentsBatchAnswerNamesTheAgent(t *testing.T) {
 	r, trn, _ := planGuardRig(t, false)
-	trn.a.level, trn.a.wake, trn.a.birth = policy.AutonomyFullAuto, true, factoryd.WakeAsk
+	trn.a.level, trn.a.wake, trn.a.birth = policy.AutonomyFullAuto, true, factoryd.EventCaseClimbed
 	res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: `{"task_id":"t-p","revision":1,"answers":[{"question":1,"text":"60 seconds"},{"question":2,"text":"7 days"}]}`})
 	if !strings.HasPrefix(res, "Answered") || !slices.ContainsFunc(r.fg.calls, func(c string) bool {
 		return strings.HasPrefix(c, "SIGNAL plan_answered t-p 1") && strings.HasSuffix(c, " by "+factoryd.ChatUser)
@@ -931,7 +931,7 @@ func TestThePlanPathPostsAsItsDecider(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				trn.a.s, trn.a.wake, trn.a.birth = s, true, factoryd.WakeAsk
+				trn.a.s, trn.a.wake, trn.a.birth = s, true, factoryd.EventCaseClimbed
 			}
 			humanTurn(t, r, trn, c.turn == "absorbed")
 			res, _, _ := trn.call(factoryd.OperatorCall{Name: c.tool, Arguments: c.args})
@@ -981,5 +981,94 @@ func TestAPlanButtonPressPassesTheGuard(t *testing.T) {
 	}
 	if _, err := r.c.doRequestChanges(t.Context(), a, "t-p", "split the API card"); err != nil {
 		t.Errorf("the Request changes button: %v", err)
+	}
+}
+
+// In rung 2's turn on a plan's case the plan answer runs as the agent at
+// every level, past the confirm list: below full auto the guard refuses it
+// with the hand-up's words, so rung 2 hands the case up with
+// attach_analysis, and no proposal waits for a human's press while the
+// case climbs. Outside a case's wake the confirm list proposes it still.
+func TestACaseWakeAnswersAPlanAsTheAgentAtEveryLevel(t *testing.T) {
+	for _, c := range []struct{ tool, args string }{
+		{"answer", `{"task_id":"t-p","revision":1,"question":1,"text":"60 seconds"}`},
+		{"answer", `{"task_id":"t-p","revision":1,"answers":[{"question":1,"text":"60 seconds"}]}`},
+		{"request_changes", `{"task_id":"t-p","text":"split the API card"}`},
+	} {
+		r, trn, _ := planGuardRig(t, false)
+		trn.cfg.Confirm = policy.ConfirmFor(policy.AutonomyAssisted, policy.MergeHuman, policy.DefaultChat.Confirm)
+		trn.a.level, trn.a.wake, trn.a.birth = policy.AutonomyAssisted, true, factoryd.EventCaseClimbed
+		if res, proposal, _ := trn.call(factoryd.OperatorCall{Name: c.tool, Arguments: c.args}); res != refusedBelowA+agentStep || proposal != "" || len(r.fg.comments) > 0 {
+			t.Errorf("%s in the case's wake: result %q, proposal %q, comments %v; want the guard's refusal and no proposal", c.args, res, proposal, r.fg.comments)
+		}
+		trn.a.wake, trn.a.birth = false, ""
+		if res, proposal, _ := trn.call(factoryd.OperatorCall{Name: c.tool, Arguments: c.args}); proposal == "" || !strings.HasPrefix(res, "Proposed to sebastian") {
+			t.Errorf("%s in a human's turn: result %q, proposal %q; want a proposal", c.args, res, proposal)
+		}
+	}
+}
+
+// A human's answer in the chat to a plan question whose case still climbs
+// is refused, one answer or a batch, naming the case and its rung: the
+// question reaches a human only through its face. A question whose case is
+// at the human takes its answer, and in rung 2's own turn on the case the
+// climbing question's answer runs.
+func TestAClimbingPlanQuestionTakesNoAnswerInTheChat(t *testing.T) {
+	r, trn, _ := planGuardRig(t, false)
+	r.openCases = map[string][]factoryd.Case{"t-p": {
+		{ID: 61, TaskID: "t-p", Repository: "sf/code", Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseOpen, OwnerRung: 2,
+			Problem: "How often does the checker probe a site?", Facts: map[string]any{"revision": 1.0, "index": 1.0}},
+		{ID: 62, TaskID: "t-p", Repository: "sf/code", Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman,
+			Problem: "How long are the results kept?", Facts: map[string]any{"revision": 1.0, "index": 2.0}}}}
+	trn.a.level = policy.AutonomyFullAuto
+	const refused = "Refused: Question 1 of revision 1 of plan #20 waits on its case 61, open at rung 2: rung 2 answers it or hands it up, and only then is it the human's, in Needs you."
+	for _, args := range []string{`{"task_id":"t-p","revision":1,"question":1,"text":"60 seconds"}`,
+		`{"task_id":"t-p","revision":1,"answers":[{"question":2,"text":"7 days"},{"question":1,"text":"60 seconds"}]}`} {
+		if res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: args}); res != refused {
+			t.Errorf("%s: result %q, want %q", args, res, refused)
+		}
+	}
+	if slices.ContainsFunc(r.fg.calls, func(s string) bool { return strings.HasPrefix(s, "SIGNAL") }) {
+		t.Fatalf("calls %v; want no answer signalled", r.fg.calls)
+	}
+	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: `{"task_id":"t-p","revision":1,"question":2,"text":"7 days"}`}); res != "Answered question 2 of plan #20."+noUndoSentence {
+		t.Errorf("the faced question: result %q", res)
+	}
+	trn.a.wake, trn.a.birth = true, factoryd.EventCaseClimbed
+	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: `{"task_id":"t-p","revision":1,"question":1,"text":"60 seconds"}`}); res != "Answered question 1 of plan #20."+noUndoSentence {
+		t.Errorf("rung 2's answer in its case's wake: result %q", res)
+	}
+}
+
+// Rung 2 confirms at full auto a revision that takes nothing off main once
+// every hold-out of its round is decided: while one waits its confirmation
+// is refused naming it, and nothing is answered.
+func TestRung2ConfirmsAPlanOnceItsHoldoutsAreDecided(t *testing.T) {
+	const confirm = `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"fine"}`
+	r, trn, _ := planGuardRig(t, true)
+	r.tasks.mu.Lock()
+	r.tasks.proofs = map[string][]factoryd.PlanProof{"t-p": {{Idx: 1, Round: 1, ID: "door_state", Origin: factoryd.ProofOriginHoldout, State: factoryd.ProofProposed}}}
+	r.tasks.mu.Unlock()
+	trn.a.level, trn.a.wake, trn.a.birth = policy.AutonomyFullAuto, true, factoryd.EventCaseClimbed
+	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: confirm}); res != "Refused: 1 hold-out waits for your okay or drop below." ||
+		slices.ContainsFunc(r.fg.calls, func(s string) bool { return strings.HasPrefix(s, "SIGNAL") }) {
+		t.Fatalf("with a hold-out waiting: result %q, calls %v", res, r.fg.calls)
+	}
+	r.tasks.mu.Lock()
+	r.tasks.proofs["t-p"][0].State = factoryd.ProofDropped
+	r.tasks.mu.Unlock()
+	trn.conv = 7
+	before := r.events.count()
+	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: confirm}); !strings.HasPrefix(res, "Confirmed plan #20") ||
+		!slices.Contains(r.fg.calls, "SIGNAL plan_answered t-p 1 1 by "+factoryd.ChatUser) {
+		t.Fatalf("with its hold-out dropped: result %q, calls %v", res, r.fg.calls)
+	}
+	// the row's actor is the venue's human; the stored answer, which the
+	// case's resolution reads, is the agent's
+	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20, Kind: factoryd.EventPlanQuestionAnswered,
+		Detail: map[string]any{"revision": 1, "index": 1, "answer": "fine", "decision": "confirm", "birth": factoryd.EventCaseClimbed,
+			"autonomy": policy.AutonomyFullAuto, "decider": "agent", "thread": int64(7)}})
+	if qs, _ := r.tasks.PlanQuestions(t.Context(), "t-p", 1); len(qs) != 1 || qs[0].AnsweredBy != factoryd.ChatUser {
+		t.Fatalf("questions %+v, want the confirmation answered by %s", qs, factoryd.ChatUser)
 	}
 }

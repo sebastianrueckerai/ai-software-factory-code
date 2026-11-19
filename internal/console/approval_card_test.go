@@ -31,6 +31,167 @@ func TestMergeApprovalYieldsTheCardInNeedsYou(t *testing.T) {
 	}
 }
 
+// factoryd's own human card waits out of sight for its face: in
+// waiting-agent, its case climbing, it is in no row of Needs you and adds
+// nothing to the figure, and In progress holds it as working. At its face,
+// waiting on a human on its issue with its case at the human, it is one row
+// of Needs you, counted once.
+func TestAHeldHumanCardWaitsInProgressUntilItsFace(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	r.tasks.set("", factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-agent", Repository: "linkshort/linkshort", Source: factoryd.SourceChainStall,
+		Objective: "The chain is pending. Re-run it?"})
+	r.openCases = map[string][]factoryd.Case{"t-h": {{ID: 51, TaskID: "t-h", Repository: "linkshort/linkshort", Kind: factoryd.CaseHumanCard,
+		Status: factoryd.CaseOpen, OwnerRung: 2, Problem: "The chain is pending. Re-run it?"}}}
+	ck, _ := r.loggedIn(t)
+	board := func() string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	}
+	body := board()
+	if needs := col(t, body, "Needs you"); strings.Contains(needs, `data-card="t-h"`) {
+		t.Fatalf("Needs you lists the card while its case climbs:\n%s", needs)
+	}
+	if !strings.Contains(col(t, body, "In progress"), `data-card="t-h"`) {
+		t.Fatal("In progress lacks the card whose case climbs")
+	}
+	for _, want := range []string{`<b class="n">0</b> need you`, `<b class="n">1</b> working`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the status line lacks %q while the case climbs", want)
+		}
+	}
+	r.tasks.set("", factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "linkshort/linkshort", Source: factoryd.SourceChainStall,
+		IssueNumber: 33, Objective: "The chain is pending. Re-run it?"})
+	r.openCases["t-h"][0].Status = factoryd.CaseAtHuman
+	body = board()
+	if !strings.Contains(col(t, body, "Needs you"), `data-card="t-h"`) || strings.Contains(col(t, body, "In progress"), `data-card="t-h"`) {
+		t.Fatalf("at its face the card is not in Needs you alone:\n%s", body)
+	}
+	if !strings.Contains(body, `<b class="n">1</b> need you`) {
+		t.Fatal("the status line does not count the card at its face once")
+	}
+}
+
+// A merge request waits for its case's face: while the case is open on its
+// rungs Needs you lists no approval for the card, which stays in In
+// progress, and the card's drawer offers no merge, neither Approve nor
+// Deny; once the case is at the human the card's row in Needs you is the
+// case's, hosting the approval with the rungs' analysis and
+// recommendation, In progress holds the card no more, and the drawer
+// offers the merge.
+func TestAMergeRequestWaitsForItsCasesFace(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("", factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 7, PRNumber: 9})
+	r.openCases = map[string][]factoryd.Case{"t-m": {{ID: 41, TaskID: "t-m", Repository: "sf/code", Kind: factoryd.CaseMergeApproval,
+		Status: factoryd.CaseOpen, Problem: "Pull request #9 waits for a merge approval", Facts: map[string]any{"approval": 4.0, "class": "high"}}}}
+	ck, _ := r.loggedIn(t)
+	board := func() string { return r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String() }
+	body := board()
+	if needs := col(t, body, "Needs you"); strings.Contains(needs, `data-card="t-m"`) || strings.Contains(needs, "approval-4") {
+		t.Fatalf("Needs you lists the request while its case is open:\n%s", needs)
+	}
+	if progress := col(t, body, "In progress"); !strings.Contains(progress, `data-card="t-m"`) {
+		t.Fatalf("In progress lacks the card whose merge case is open:\n%s", progress)
+	}
+	drawer := func() string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
+	}
+	if got := drawer(); strings.Contains(got, "/approvals/4/") || strings.Contains(got, `value="approve"`) || strings.Contains(got, `value="deny"`) {
+		t.Fatalf("the drawer offers the merge while its case is open:\n%s", got)
+	}
+	r.openCases["t-m"][0].Status = factoryd.CaseAtHuman
+	r.caseAsks = map[int64]factoryd.CaseAsk{41: {Detail: map[string]any{"info": "The factory agent found: the column is added with its default.",
+		"recommendation": "approve_merge: the migration is additive", "recommended_by": "the factory agent"}}}
+	body = board()
+	needs := col(t, body, "Needs you")
+	for _, want := range []string{`id="need-t-m"`, `aria-labelledby="approval-4"`, "The factory agent found: the column is added with its default.",
+		`<p class="recommendation">Recommendation (the factory agent): approve_merge: the migration is additive</p>`} {
+		if !strings.Contains(needs, want) {
+			t.Fatalf("Needs you lacks %q once the case is at the human:\n%s", want, needs)
+		}
+	}
+	if strings.Contains(col(t, body, "In progress"), `data-card="t-m"`) {
+		t.Fatal("In progress holds the card whose merge case is at the human")
+	}
+	if got := drawer(); !strings.Contains(got, `action="/approvals/4/approve"`) || !strings.Contains(got, `value="approve"`) || !strings.Contains(got, `value="deny"`) {
+		t.Fatalf("the drawer lacks the merge's Approve and Deny once its case is at the human:\n%s", got)
+	}
+}
+
+// A plan's request waits for its revision's face: while the revision's case
+// climbs, Needs you lists no plan approval, the waiting plan sits in In
+// progress and its drawer offers no plan approval. A case of an older
+// revision at the human is no face of the newer request: the card's row is
+// that case's, with no plan approval in it. Once a case of the request's
+// revision is at the human the card's row carries the plan's approval card,
+// In progress holds the card no more and the drawer offers it.
+func TestAPlanRequestWaitsForItsCasesFace(t *testing.T) {
+	r := newRig(t)
+	planRig(r)
+	question := func(id int64, status string, revision float64, text string) factoryd.Case {
+		return factoryd.Case{ID: id, TaskID: "t-plan", Repository: "linkshort/linkshort", Kind: factoryd.CasePlanQuestion, Status: status, OwnerRung: 2,
+			Problem: text, Facts: map[string]any{"revision": revision, "index": 1.0, "question": text, "choices": []any{"Postgres", "SQLite"}}}
+	}
+	r.openCases = map[string][]factoryd.Case{"t-plan": {question(61, factoryd.CaseOpen, 2, "Which store?")}}
+	ck, _ := r.loggedIn(t)
+	board := func() string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	}
+	drawer := func() string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?tab=overview", nil), ck).Body.String()
+	}
+	const plan = `class="card approval plan"`
+	body := board()
+	if needs := col(t, body, "Needs you"); strings.Contains(needs, `data-card="t-plan"`) || strings.Contains(needs, plan) {
+		t.Fatalf("Needs you lists the plan while its case climbs:\n%s", needs)
+	}
+	if progress := col(t, body, "In progress"); !strings.Contains(progress, `data-card="t-plan"`) {
+		t.Fatalf("In progress lacks the plan whose case climbs:\n%s", progress)
+	}
+	if got := drawer(); strings.Contains(got, plan) {
+		t.Fatalf("the drawer offers the plan's approval while its case climbs:\n%s", got)
+	}
+	r.openCases["t-plan"] = append(r.openCases["t-plan"], question(60, factoryd.CaseAtHuman, 1, "Which cache?"))
+	if needs := col(t, board(), "Needs you"); !strings.Contains(needs, `data-case="60"`) || strings.Contains(needs, plan) {
+		t.Fatalf("Needs you: want revision 1's case row with no approval of revision 2:\n%s", needs)
+	}
+	r.openCases["t-plan"] = []factoryd.Case{question(61, factoryd.CaseAtHuman, 2, "Which store?")}
+	body = board()
+	if needs := col(t, body, "Needs you"); !strings.Contains(needs, `data-case="61"`) || strings.Count(needs, plan) != 1 {
+		t.Fatalf("Needs you: want case 61's row carrying the plan's approval once:\n%s", needs)
+	}
+	if strings.Contains(col(t, body, "In progress"), `data-card="t-plan"`) {
+		t.Fatal("In progress holds the plan whose case is at the human")
+	}
+	if got := drawer(); !strings.Contains(got, plan) {
+		t.Fatalf("the drawer lacks the plan's approval once its case is at the human:\n%s", got)
+	}
+}
+
+// A merge request whose case climbs its rungs rides no other case's row:
+// card t-m's monitor flag at the human is its row in Needs you, in its
+// carousel's page and in its card swap, each with no approval of the
+// merge.
+func TestAClimbingMergeRidesNoOtherCasesRow(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("", factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 7, PRNumber: 9})
+	r.openCases = map[string][]factoryd.Case{"t-m": {
+		{ID: 41, TaskID: "t-m", Repository: "sf/code", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseOpen, OwnerRung: 2,
+			Problem: "Pull request #9 waits for a merge approval", Facts: map[string]any{"approval": 4.0, "class": "high"}},
+		{ID: 42, TaskID: "t-m", Repository: "sf/code", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman,
+			Problem: "the review waits past its bound", Facts: map[string]any{"flag": "wait_over_bound"}}}}
+	ck, _ := r.loggedIn(t)
+	for where, path := range map[string]string{"Needs you": "/", "the carousel's page": "/projects/ai-software-factory-code/cards/t-m/cases/42",
+		"the card swap": "/cards/t-m"} {
+		got := r.do(httptest.NewRequest(http.MethodGet, path, nil), ck).Body.String()
+		if where == "Needs you" {
+			got = col(t, got, "Needs you")
+		}
+		if !strings.Contains(got, `data-case="42"`) || strings.Contains(got, "approval-4") || strings.Contains(got, "/approvals/4/") {
+			t.Errorf("%s: want case 42's row with no approval of the climbing merge:\n%s", where, got)
+		}
+	}
+}
+
 // The drawer's merge card: the case's brief renders as markup (its own
 // lists, never a raw wall), each why-a-human entry its own line, and an
 // agent pull request on red checks shows its return and close directly —
@@ -293,9 +454,9 @@ func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	for page, wants := range map[string][]string{
 		"/?project=ai-software-factory-code": {`id="needs-you" data-holds="waiting-human waiting-poster">`,
-			`data-holds="queued waiting-deps waiting-image">`, `data-holds="running closing in-review merged">`, `data-holds="done failed closed"`,
+			`data-holds="queued waiting-deps waiting-image">`, `data-holds="running closing waiting-agent in-review merged">`, `data-holds="done failed closed"`,
 			`<form method="post" action="/approvals/31/approve" hx-post="/approvals/31/approve" class="decide resolve" data-to="in-review">`},
-		"/?project=ai-software-factory-code&view=wide": {`data-holds="queued waiting-deps">`, `data-holds="running closing">`, `data-holds="in-review">`, `data-holds="merged">`,
+		"/?project=ai-software-factory-code&view=wide": {`data-holds="queued waiting-deps">`, `data-holds="running closing waiting-agent">`, `data-holds="in-review">`, `data-holds="merged">`,
 			`data-holds="failed"`, `data-holds="closed"`},
 	} {
 		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()
@@ -325,5 +486,58 @@ func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 			detail: map[string]any{"pr": int64(9), "approval": int64(31), "fund_eur": 1.5, "reason": "the board alone answers"}})
 	if rec := r.do(post("/approvals/31/approve", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code" {
 		t.Fatalf("the browser's approve = %d to %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+// A plan's criteria request waits for its case's face: while the case is
+// open on its rungs the board lists no approval for the plan, the card's
+// page of criteria answers 404 and the plan's drawer holds no gap card;
+// once the case is at the human the gap card stands in Needs you, and on
+// each page of its criteria, with the rungs' analysis and recommendation
+// from the case's ask. A done plan outside the board's finished page is
+// listed all the same.
+func TestACriteriaRequestWaitsForItsCasesFace(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		onBoard bool
+	}{{"on the board", true}, {"past the finished page", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			verdictRig(r)
+			if !tc.onBoard {
+				r.tasks.tasks = slices.DeleteFunc(r.tasks.tasks, func(bt factoryd.BoardTask) bool { return bt.ID == "t-plan" })
+			}
+			r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 41, TaskID: "t-plan", Repository: "sf/code", Kind: factoryd.CasePlanCriteria,
+				Status: factoryd.CaseOpen, Problem: "criteria not met once every card of the plan ended: c2, c3", Facts: map[string]any{"approval": 30.0}}}}
+			ck, _ := r.loggedIn(t)
+			needs := func() string {
+				return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+			}
+			page := func() *httptest.ResponseRecorder {
+				return r.do(httptest.NewRequest(http.MethodGet, "/approvals/30/criteria/2?project=ai-software-factory-code", nil), ck)
+			}
+			if got := needs(); strings.Contains(got, "Criteria gap") {
+				t.Fatalf("Needs you lists the request while its case is open:\n%s", got)
+			}
+			if rec := page(); rec.Code != http.StatusNotFound {
+				t.Fatalf("the criteria page while the case is open = %d %q, want 404", rec.Code, rec.Body.String())
+			}
+			if tc.onBoard {
+				if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?tab=overview", nil), ck).Body.String(); strings.Contains(drawer, "Criteria gap") || strings.Contains(drawer, "/approvals/30/") {
+					t.Fatalf("the plan's drawer holds the request while its case is open:\n%s", drawer)
+				}
+			}
+			r.openCases["t-plan"][0].Status = factoryd.CaseAtHuman
+			r.caseAsks = map[int64]factoryd.CaseAsk{41: {Detail: map[string]any{"info": "The factory agent found: c3 fails on main's head.",
+				"recommendation": "grant_criteria: one more card fixes the suite", "recommended_by": "the factory agent"}}}
+			for where, got := range map[string]string{"Needs you": needs(), "the criteria page": page().Body.String()} {
+				for _, want := range []string{"Criteria gap", "The factory agent found: c3 fails on main's head.",
+					`<p class="recommendation">Recommendation (the factory agent): grant_criteria: one more card fixes the suite</p>`} {
+					if !strings.Contains(got, want) {
+						t.Fatalf("%s lacks %q once the case is at the human:\n%s", where, want, got)
+					}
+				}
+			}
+		})
 	}
 }

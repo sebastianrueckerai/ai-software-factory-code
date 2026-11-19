@@ -105,8 +105,8 @@ func newActRig(t *testing.T) actRig {
 		IssueNumber: 12, Track: policy.TrackDirect, Size: "large", BudgetEUR: 3}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	c, opened, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
-		Status: CaseAtHuman, Problem: "Card #12 used its sessions"})
+	c, opened, err := openAtHuman(ctx, s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
+		Problem: "Card #12 used its sessions"})
 	if err != nil || !opened {
 		t.Fatalf("OpenCase = %+v, %v, %v", c, opened, err)
 	}
@@ -122,9 +122,12 @@ func newActRig(t *testing.T) actRig {
 }
 
 // rows are card t1's events of kind, oldest first.
-func (g actRig) rows(t *testing.T, kind string) []Event {
+func (g actRig) rows(t *testing.T, kind string) []Event { return taskRows(t, g.s, "t1", kind) }
+
+// taskRows are card taskID's rows of kind, oldest first.
+func taskRows(t *testing.T, s *PGStore, taskID, kind string) []Event {
 	t.Helper()
-	events, err := g.s.TaskEvents(context.Background(), "t1", 100)
+	events, err := s.TaskEvents(context.Background(), taskID, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,8 +298,8 @@ func TestActSignalsTheRunAndPostsTheComment(t *testing.T) {
 	}
 
 	g.signals.got = nil
-	second, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseAgentEscalate, StateKey: "ask",
-		Status: CaseAtHuman, Problem: "Which file?", CommentID: 71})
+	second, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseAgentEscalate, StateKey: "ask",
+		Problem: "Which file?", CommentID: 71})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,8 +540,8 @@ func TestActTakesOverTheWebhooksCopyOfItsComment(t *testing.T) {
 	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseResolved || c.Resolution.Action != ActExtend || g.card(t).Usage.RaisedSessions != 1 {
 		t.Fatalf("case = %s, %+v, raised %d; want resolved with extend and 1 session raised", c.Status, c.Resolution, g.card(t).Usage.RaisedSessions)
 	}
-	second, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseAgentEscalate, StateKey: "ask",
-		Status: CaseAtHuman, Problem: "Which file?"})
+	second, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseAgentEscalate, StateKey: "ask",
+		Problem: "Which file?"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,8 +588,8 @@ func TestActDrawsThePoolOnceUnderTwoAnswers(t *testing.T) {
 		IssueNumber: 14, Track: policy.TrackDirect, Size: "large", BudgetEUR: 3}); err != nil {
 		t.Fatal(err)
 	}
-	other, _, err := g.s.OpenCase(ctx, Case{TaskID: "t2", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
-		Status: CaseAtHuman, Problem: "Card #14 used its sessions"})
+	other, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t2", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
+		Problem: "Card #14 used its sessions"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -761,7 +764,7 @@ func TestActTakesAHumanCardsChoice(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := HumanQuestion{Ask: "Roll the release?", Choices: []QuestionChoice{{Value: AnswerDismiss, Label: "Dismiss"}, {Value: AnswerCheckAgain, Label: "Check again"}}}
-	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "h1", Repository: "demo-app/demo-app", Kind: CaseHumanCard, StateKey: "roll", Status: CaseAtHuman, Problem: q.Ask})
+	c, _, err := openAtHuman(ctx, g.s, Case{TaskID: "h1", Repository: "demo-app/demo-app", Kind: CaseHumanCard, StateKey: "roll", Problem: q.Ask})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -796,7 +799,7 @@ func TestActReadsTheChoicesOfTheCasesOwnAsk(t *testing.T) {
 		t.Fatal(err)
 	}
 	open := func(key string, offers ...QuestionChoice) Case {
-		c, _, err := g.s.OpenCase(ctx, Case{TaskID: "h2", Repository: "demo-app/demo-app", Kind: CaseHumanCard, StateKey: key, Status: CaseAtHuman, Problem: key})
+		c, _, err := openAtHuman(ctx, g.s, Case{TaskID: "h2", Repository: "demo-app/demo-app", Kind: CaseHumanCard, StateKey: key, Problem: key})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -832,7 +835,7 @@ func TestActLeavesAHumanCardsCloseToTheConsole(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := HumanQuestion{Ask: "Rotate the key?", Choices: []QuestionChoice{{Value: AnswerGo, Label: "Have the factory do it"}, {Value: AnswerClose, Label: "Done"}}}
-	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "h1", Repository: "demo-app/demo-app", Kind: CaseHumanCard, StateKey: "key", Status: CaseAtHuman, Problem: q.Ask})
+	c, _, err := openAtHuman(ctx, g.s, Case{TaskID: "h1", Repository: "demo-app/demo-app", Kind: CaseHumanCard, StateKey: "key", Problem: q.Ask})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -909,8 +912,8 @@ func TestActTakesAHumanCardsCloseItsQuestionDoesNotOffer(t *testing.T) {
 			IssueNumber: tc.issue}); err != nil {
 			t.Fatal(err)
 		}
-		c, _, err := g.s.OpenCase(ctx, Case{TaskID: tc.id, Repository: "demo-app/demo-app", Kind: CaseHumanCard, StateKey: tc.id,
-			Status: CaseAtHuman, Problem: "a person's work"})
+		c, _, err := openAtHuman(ctx, g.s, Case{TaskID: tc.id, Repository: "demo-app/demo-app", Kind: CaseHumanCard, StateKey: tc.id,
+			Problem: "a person's work"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1238,7 +1241,7 @@ func TestActTakesTheJudgmentBudgetCardsClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := ChatBudgetQuestion(Task{ID: "t-chat-demo-app-2026-11", BudgetEUR: 10})
-	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "h1", Repository: "demo-app/demo-app", Kind: CaseJudgmentBudget, StateKey: "budget", Status: CaseAtHuman, Problem: q.Ask})
+	c, _, err := openAtHuman(ctx, g.s, Case{TaskID: "h1", Repository: "demo-app/demo-app", Kind: CaseJudgmentBudget, StateKey: "budget", Problem: q.Ask})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1261,8 +1264,8 @@ func (w *caseSignals) RunningRuns(context.Context) ([]RunningRun, error) { retur
 func TestSalvageCloseWithdrawsTheCardsOtherCases(t *testing.T) {
 	ctx := context.Background()
 	g := newActRig(t)
-	flag, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "wait_over_bound|run_quiet",
-		Status: CaseAtHuman, Problem: "Monitor flag: wait_over_bound"})
+	flag, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "wait_over_bound|run_quiet",
+		Problem: "Monitor flag: wait_over_bound"})
 	if err != nil {
 		t.Fatal(err)
 	}

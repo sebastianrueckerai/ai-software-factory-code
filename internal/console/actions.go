@@ -733,7 +733,7 @@ func (c *Console) goWork(ctx context.Context, a actor, t factoryd.Task) (string,
 		return "", 0, err
 	}
 	log.Printf("console: %s hands %s (%s#%d) to the factory as #%d via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, issue, a.via)
-	return fmt.Sprintf("The factory runs it as #%d; card #%d closes.", issue, t.IssueNumber), posted, nil
+	return fmt.Sprintf("The factory runs it as #%d; card %s closes.", issue, issueRef(t.ID, t.IssueNumber)), posted, nil
 }
 
 // planIn is plan task id for a; 409 when it is no plan.
@@ -1194,9 +1194,11 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, i
 // board's button, the chat, the api): a running agent card's words steer its
 // session where an answer with an action never does, and a human card's
 // choice goes to its work (doHumanAnswer, typed's action its value); a
-// freeze card asks nothing, so its answers go to Act. It
-// refuses nothing about the card's state: Act is the one gate. typed is the
-// chat's answer with an action (nil for none). done: routed, with said or err.
+// freeze card asks nothing, so its answers go to Act. It refuses only an
+// answer on factoryd's own human card while its case climbs, outside rung
+// 2's turn on it: the card reaches a human through its face. Act is the one
+// gate of the rest. typed is the chat's answer with an action (nil for
+// none). done: routed, with said or err.
 func (c *Console) routeAnswer(ctx context.Context, a actor, id, text, value string, typed *factoryd.Resolution) (t factoryd.Task, said string, done bool, err error) {
 	if len(text) > factoryd.MaxAnswer {
 		return t, "", true, answerFits(text)
@@ -1208,11 +1210,29 @@ func (c *Console) routeAnswer(ctx context.Context, a actor, id, text, value stri
 	case t.Kind == "agent" && t.Status == "running" && text != "" && typed == nil && c.cfg.Steer != nil:
 		said, err = c.doSteer(ctx, a, id, text)
 		return t, said, true, err
-	case t.Kind == "human" && t.Status == "waiting-human" && t.IssueNumber != 0 && t.Source != factoryd.SourceFreezeCard:
+	case t.Kind == "human" && t.Status == "waiting-agent" && !a.caseWake():
+		return t, "", true, c.heldOnRungs(ctx, t)
+	case t.Kind == "human" && (t.Status == "waiting-human" && t.IssueNumber != 0 && t.Source != factoryd.SourceFreezeCard || t.Status == "waiting-agent"):
 		said, err = c.doHumanAnswer(ctx, a, t, text, value, typed)
 		return t, said, true, err
 	}
 	return t, "", false, nil
+}
+
+// heldOnRungs refuses an answer on factoryd's own human card t while its
+// case climbs its rungs, naming the case.
+func (c *Console) heldOnRungs(ctx context.Context, t factoryd.Task) error {
+	k, err := c.cfg.NewestAskCase(ctx, t.ID)
+	if err != nil {
+		log.Printf("console: the cases of %s: %v", t.ID, err)
+		return refuse(http.StatusServiceUnavailable, "The card's cases could not be read, so nothing was answered. Try again.")
+	}
+	if k.ID == 0 {
+		return refuse(http.StatusConflict, fmt.Sprintf("Card %s waits for the factory agent's judgment and holds no live case to answer: it is the human's only once a case of it reaches Needs you.",
+			issueRef(t.ID, t.IssueNumber)))
+	}
+	return refuse(http.StatusConflict, fmt.Sprintf("Card %s waits on its case %d, open at rung %d: rung 2 decides it or hands it up, and only then is it the human's, in Needs you.",
+		issueRef(t.ID, t.IssueNumber), k.ID, k.OwnerRung))
 }
 
 // answerArgs are the keys of an action's args the answer tool's schema
@@ -1281,7 +1301,7 @@ func (c *Console) doAnswerCase(ctx context.Context, a actor, id string, caseID i
 	switch {
 	case open[i].Kind == factoryd.CaseMonitorFlag:
 		post = nil
-	case factoryd.ChoiceCase(open[i], t.Kind):
+	case factoryd.ChoiceKind(open[i].Kind):
 		// a human card's choice is routed to its work here (doHumanAnswer)
 		var said string
 		var done bool
@@ -1591,7 +1611,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 	}
 	label := q.ChoiceLabel(value)
 	if label == "" && value == "" && text == "" {
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Card #%d takes one of its choices: %s. A remark goes on the issue.", t.IssueNumber, strings.Join(q.Labels(), ", ")))
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Card %s takes one of its choices: %s. A remark goes on the issue.", issueRef(t.ID, t.IssueNumber), strings.Join(q.Labels(), ", ")))
 	}
 	k, err := c.liveCase(ctx, t)
 	if err != nil {
@@ -1615,7 +1635,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 	var gone factoryd.ErrStallGone
 	switch {
 	case label == "" && value == "":
-		res, note = factoryd.Resolution{Action: factoryd.ActNote, Note: text}, fmt.Sprintf("Commented on #%d; the card keeps waiting.", t.IssueNumber)
+		res, note = factoryd.Resolution{Action: factoryd.ActNote, Note: text}, fmt.Sprintf("Commented on %s; the card keeps waiting.", issueRef(t.ID, t.IssueNumber))
 		work = func(ctx context.Context) (int64, error) {
 			var posted int64
 			if err := c.comment(ctx, a, t, text, &posted); err != nil {
@@ -1648,7 +1668,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		work = func(ctx context.Context) (int64, error) {
 			switch err := c.cfg.RerunStall(ctx, t.Repository, t.SHA); {
 			case errors.As(err, &gone):
-				return 0, refuse(http.StatusConflict, fmt.Sprintf("Card #%d: %s.", t.IssueNumber, gone))
+				return 0, refuse(http.StatusConflict, fmt.Sprintf("Card %s: %s.", issueRef(t.ID, t.IssueNumber), gone))
 			case errors.Is(err, factoryd.ErrNoRerun):
 				log.Printf("console: %s re-runs the stall of %s: %v", a.s.user, t.Repository, err)
 				return 0, refuse(http.StatusConflict, "Forgejo re-runs no action run of "+t.Repository+
@@ -1660,14 +1680,14 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 				return 0, refuse(http.StatusInternalServerError, "The re-run failed: "+errText(err)+". Try again in a moment.")
 			}
 			log.Printf("console: %s re-ran the stall of %s via %s", a.s.user, t.Repository, a.via)
-			note = fmt.Sprintf("Re-ran the pending run; #%d stays open until the chain moves.", t.IssueNumber)
+			note = fmt.Sprintf("Re-ran the pending run; %s stays open until the chain moves.", issueRef(t.ID, t.IssueNumber))
 			return 0, nil
 		}
 	case value == factoryd.AnswerDismiss:
 		work = func(ctx context.Context) (int64, error) {
 			switch err := c.cfg.DismissStall(ctx, t.Repository, t.SHA, a.approver()); {
 			case errors.As(err, &gone):
-				return 0, refuse(http.StatusConflict, fmt.Sprintf("Card #%d: %s.", t.IssueNumber, gone))
+				return 0, refuse(http.StatusConflict, fmt.Sprintf("Card %s: %s.", issueRef(t.ID, t.IssueNumber), gone))
 			case err != nil:
 				log.Printf("console: %s dismisses the stall of %s: %v", a.s.user, t.Repository, err)
 				return 0, refuse(http.StatusInternalServerError, "The stall could not be dismissed: "+errText(err)+". Try again in a moment.")
@@ -1682,9 +1702,9 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 			}
 			return 0, nil
 		}
-		note = fmt.Sprintf("Answered #%d: the failed rolls are reset, the card is closed and the roller starts the roll again.", t.IssueNumber)
+		note = fmt.Sprintf("Answered %s: the failed rolls are reset, the card is closed and the roller starts the roll again.", issueRef(t.ID, t.IssueNumber))
 	case value == factoryd.AnswerPark || value == factoryd.AnswerKeepWaiting:
-		note = fmt.Sprintf("The ask is settled: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber)
+		note = fmt.Sprintf("The ask is settled: the card keeps waiting; nothing was posted on %s.", issueRef(t.ID, t.IssueNumber))
 	case value == factoryd.AnswerGo:
 		// the agent card is filed with the hand-over: a client that leaves now must not leave the old card waiting
 		var stop context.CancelFunc
@@ -1759,7 +1779,7 @@ const noCase = "this card waits with no open case: the heal pass opens one withi
 // not the human's thread, which a refill's resume and a retry also run as a
 // wake.
 func (a actor) caseWake() bool {
-	return a.wake && (a.birth == factoryd.WakeAsk || a.birth == factoryd.EventCaseClimbed)
+	return a.wake && a.birth == factoryd.EventCaseClimbed
 }
 
 // rung is the rung a answers on: the agent's own decision, unconfirmed, is

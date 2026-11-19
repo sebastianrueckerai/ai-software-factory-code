@@ -99,7 +99,7 @@ func (b *BriefWriter) caseFacts(ctx context.Context, c Case, t Task) ([]byte, er
 	}
 	m := map[string]any{
 		"The card's life": life.Render(),
-		"case_kind":       caseKindWords[c.Kind],
+		"case_kind":       kindRow(c.Kind).Words,
 		"problem":         c.Problem,
 		"facts":           c.Facts,
 		"money":           c.Money,
@@ -187,7 +187,7 @@ func parseCaseBrief(content string) (background, recommendation string, err erro
 // BrieflessCases are the live at_human cases without a brief, oldest first,
 // at most perRepo of each repository. A case whose wake is still ahead is
 // not among them: a freeze the writer refused holds the retry at the case
-// wake, and the sweep wakes it then.
+// wake, and the case-wake pass wakes it then.
 func (s *PGStore) BrieflessCases(ctx context.Context, perRepo int) ([]Case, error) {
 	return s.cases(ctx, `SELECT `+caseColumns+` FROM (SELECT *, row_number() OVER (PARTITION BY repository ORDER BY id) AS n
 		FROM cases WHERE status = $1 AND brief = '' AND (next_wake_at IS NULL OR next_wake_at <= now())

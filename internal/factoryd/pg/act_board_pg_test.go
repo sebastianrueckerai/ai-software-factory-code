@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -46,7 +47,7 @@ func TestApproveMergeAtRung3WithGreenChecksRunsAndResolves(t *testing.T) {
 }
 
 // Red checks on the head refuse the approval at once, naming the checks;
-// the console's work never runs and the case stays at the human.
+// the console's work never runs and the case stays open where it was.
 func TestApproveMergeWithRedChecksIsRefusedNamingThem(t *testing.T) {
 	g, stub, _ := mergeRig(t, "failure")
 	c := g.liveCase(t, CaseMergeApproval)
@@ -55,17 +56,17 @@ func TestApproveMergeWithRedChecksIsRefusedNamingThem(t *testing.T) {
 	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "the checks on h2 are red, not green") {
 		t.Fatalf("Act = %v, want a refusal naming the red checks", err)
 	}
-	if len(stub.calls) != 0 || caseByID(t, g.s, c.ID).Status != CaseAtHuman {
+	if len(stub.calls) != 0 || caseByID(t, g.s, c.ID).Status != CaseOpen {
 		t.Fatalf("board calls %d, case %s: a refused approval runs nothing and ends nothing", len(stub.calls), caseByID(t, g.s, c.ID).Status)
 	}
 }
 
-// Rung 2's approval is refused with 2.8's text when a gate did not run on
-// the card (the rig holds a review and no audit row, and the process lists
-// both), and rung 1 may not pick approve_merge at all.
+// Rung 2's approval at full auto, where the merge is rung 2's to decide,
+// is refused with 2.8's text when a gate did not run on the card (the rig
+// holds a review and no audit row, and the process lists both).
 func TestApproveMergeAtRung2NeedsTheGates(t *testing.T) {
 	g, stub, _ := mergeRig(t, "success")
-	g.atAutonomy(policy.AutonomyManual)
+	g.atAutonomy(policy.AutonomyFullAuto)
 	// a push after the review: the review of the new head did not run
 	g.record(t, EventSessionPushed, map[string]any{"head": "h2"})
 	c := g.liveCase(t, CaseMergeApproval)
@@ -87,27 +88,12 @@ func TestApproveMergeAtRung2NeedsTheGates(t *testing.T) {
 	}
 }
 
-// At autonomous rung 2's approve_merge is a proposal: nothing is decided and
-// the case stays at the human.
-func TestApproveMergeAtAutonomousRung2IsAProposal(t *testing.T) {
-	g, stub, _ := mergeRig(t, "success")
-	g.atAutonomy(policy.AutonomyAutonomous)
-	c := g.liveCase(t, CaseMergeApproval)
-	res, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActApproveMerge, Note: "ok"}})
-	if err != nil {
-		t.Fatalf("Act: %v", err)
-	}
-	if !res.Proposed || len(stub.calls) != 0 {
-		t.Fatalf("result %+v, board calls %d, want a proposal and no call", res, len(stub.calls))
-	}
-}
-
 // criteriaRig is the rung rig helpers_2e_test.go holds for these tests.
 //
 // A done plan's criteria request is answered through Act (the ended-card
 // check lets the criteria's actions and the restart through): a verdict keeps
-// the case at the human; a grant, a confirmation and a denial each resolve it
-// under their own name; restart_plan resolves it too.
+// the case open where it stands; a grant, a confirmation and a denial each
+// resolve it under their own name; restart_plan resolves it too.
 func TestCriteriaActionsRunOnADonePlansCase(t *testing.T) {
 	for _, tc := range []struct {
 		action  string
@@ -116,7 +102,7 @@ func TestCriteriaActionsRunOnADonePlansCase(t *testing.T) {
 		status  string
 		resolve string
 	}{
-		{ActAnswerCriteria, map[string]any{"criterion": "c1", "verdict": "waive"}, "out of scope", CaseAtHuman, ""},
+		{ActAnswerCriteria, map[string]any{"criterion": "c1", "verdict": "waive"}, "out of scope", CaseOpen, ""},
 		{ActGrantCriteria, nil, "", CaseResolved, ActGrantCriteria},
 		{ActConfirmCriteria, nil, "the cards deliver it", CaseResolved, ActConfirmCriteria},
 		{ActDenyCriteria, nil, "not now", CaseResolved, ActDenyCriteria},
@@ -147,12 +133,12 @@ func TestCriteriaActionsRunOnADonePlansCase(t *testing.T) {
 
 // Settling a plan's criteria by word is a human's act, on every path. At
 // autonomous, where rung 2's answers run and propose nothing, its waiver,
-// denial and confirmation through Act are each refused with the hand-up
-// and run no work; the store refuses the project agent's denial of a
+// denial and confirmation through Act are each refused, naming the grant
+// and the hand-up, and run no work; the store refuses the project agent's denial of a
 // criteria request too. The human's press takes each, and rung 2's grant,
 // which waives nothing, runs.
 func TestRung2SettlesNoCriteriaByWord(t *testing.T) {
-	const want = "settling a plan's criteria by word is the human's: hand it up with your recommendation; the human waives, denies or confirms"
+	const want = "settling a plan's criteria by word is the human's: take grant_criteria for one more bounded card, or hand the case up with attach_analysis and recommend answer_criteria (waive), deny_criteria or confirm_criteria"
 	words := []struct {
 		name string
 		res  Resolution
@@ -170,7 +156,7 @@ func TestRung2SettlesNoCriteriaByWord(t *testing.T) {
 			if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
 				t.Fatalf("rung 2's %s = %v, want a refusal starting %q", w.name, err, want)
 			}
-			if len(stub.calls) != 0 || caseByID(t, g.s, c.ID).Status != CaseAtHuman {
+			if len(stub.calls) != 0 || caseByID(t, g.s, c.ID).Status != CaseOpen {
 				t.Fatalf("board calls %d, case %s: a refused answer runs nothing and ends nothing", len(stub.calls), caseByID(t, g.s, c.ID).Status)
 			}
 			if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: w.res}); err != nil {
@@ -289,7 +275,7 @@ func TestSetDependencyResolvesTheDependencyCase(t *testing.T) {
 	if err := g.s.AddTaskDeps(ctx, "t2", []string{"t1"}); err != nil {
 		t.Fatal(err)
 	}
-	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t2", Repository: "demo-app/demo-app", Kind: CaseDependencyFailed, StateKey: "d", Status: CaseAtHuman, Problem: "a dependency failed"})
+	c, _, err := openAtHuman(ctx, g.s, Case{TaskID: "t2", Repository: "demo-app/demo-app", Kind: CaseDependencyFailed, StateKey: "d", Problem: "a dependency failed"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,12 +289,19 @@ func TestSetDependencyResolvesTheDependencyCase(t *testing.T) {
 	}
 }
 
-// Rung 2's approve_merge on a merge approval of class migration is refused
-// through Act, on the policy version the class came from: the case's
-// facts carry the human classes of the pinned version, a version that marks
-// migration, while the live policy no longer marks it.
+// Rung 2's approve_merge at full auto on a merge approval of class
+// migration is refused through Act, on the policy version the class came
+// from: the case's facts carry the human classes of the pinned version, a
+// version that marks migration, while the live policy no longer marks it.
+// The request opens the case at rung 0, the case-wake pass hands it to
+// rung 2, and rung 2's hand-up faces it: at the human with rung 2's
+// finding, one poke, and the card still in review.
 func TestRung2ApproveOfAMigrationMergeIsRefusedOnThePinnedPolicy(t *testing.T) {
 	g := newRungRig(t, "success")
+	ctx := context.Background()
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'in-review' WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
 	pinned := policy.Version{ID: 9, Tree: projectTree(t)}
 	live := policy.Version{ID: 11, Tree: projectTree(t)}
 	live.Document.Risk.Classes = slices.Clone(pinned.Document.Risk.Classes)
@@ -317,6 +310,9 @@ func TestRung2ApproveOfAMigrationMergeIsRefusedOnThePinnedPolicy(t *testing.T) {
 		t.Fatal("the test policy has no migration class marked migration")
 	}
 	live.Document.Risk.Classes[i].Migration = false
+	p := live.Projects["demo-app"]
+	p.Notify = []string{"sebastian"}
+	live.Projects = map[string]policy.ProjectConfig{"demo-app": p}
 	g.r.PgSetPolicy(func() policy.Version { return live })
 	g.r.PgSetPolicyVersion(func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == pinned.ID, nil })
 	spec, err := json.Marshal(MergeSpec{RiskClass: "migration", HeadSHA: "h2", PolicyVersion: pinned.ID})
@@ -330,13 +326,64 @@ func TestRung2ApproveOfAMigrationMergeIsRefusedOnThePinnedPolicy(t *testing.T) {
 	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalMerge, "pr": int64(9)})
 	stub := &boardStub{s: g.s, approval: id}
 	c := g.liveCase(t, CaseMergeApproval)
+	if c.Status != CaseOpen {
+		t.Fatalf("the request's case is %s, want it open at rung 0", c.Status)
+	}
+	g.wakePass(t)
 	_, err = stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: ChatUser, Via: ViaFactoryd, Rung: 2, Res: Resolution{Action: ActApproveMerge}})
 	var refused ErrActRefused
 	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "risk class migration keeps a human on its merge") {
 		t.Fatalf("Act = %v, want a refusal naming the class migration", err)
 	}
-	if len(stub.calls) != 0 || caseByID(t, g.s, c.ID).Status != CaseAtHuman {
+	if len(stub.calls) != 0 || caseByID(t, g.s, c.ID).Status != CaseOpen {
 		t.Fatalf("board calls %d, case %s: a refused approval runs nothing and ends nothing", len(stub.calls), caseByID(t, g.s, c.ID).Status)
+	}
+	if _, err := g.r.HandUpRung2(ctx, "t1", c.ID, "the migration adds a column with its default",
+		RungTwoRecommendation{Action: ActApproveMerge, Grounds: "the migration is additive"}, nil); err != nil {
+		t.Fatalf("HandUpRung2: %v", err)
+	}
+	task, _, err := g.s.Task(ctx, "t1")
+	if got := caseByID(t, g.s, c.ID); err != nil || got.Status != CaseAtHuman || task.Status != "in-review" {
+		t.Fatalf("case %s, card %s (%v); want the case at the human and the card in review", got.Status, task.Status, err)
+	}
+	if asks := g.asks(t); len(asks) != 1 || !strings.Contains(asks[0].Detail["info"].(string), "The factory agent found: the migration adds a column with its default") {
+		t.Fatalf("asks = %+v, want one carrying rung 2's finding", asks)
+	}
+	if pokes := g.pokeRows(t); !slices.Equal(pokes, []string{EventQuestionAsked}) {
+		t.Fatalf("pokes = %v, want the face's ask alone", pokes)
+	}
+}
+
+// Rung 2 approves a head once. Its approve_merge of h2 on case 1 decided
+// the request, Forgejo refused the merge, and the request's reopening
+// opens case 2 for the same head, where rung 2's approve_merge is refused
+// naming case 1 and what fits, while the human's approve passes.
+func TestRung2ApprovesAHeadOnce(t *testing.T) {
+	g, stub, _ := mergeRig(t, "success")
+	g.record(t, EventGateAudit, map[string]any{"commit": "h2", "ran": true})
+	ctx := context.Background()
+	first := g.liveCase(t, CaseMergeApproval)
+	if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: first.ID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActApproveMerge}}); err != nil {
+		t.Fatalf("rung 2's approve on case 1: %v", err)
+	}
+	if err := g.s.ReopenApproval(ctx, "t1", ApprovalMerge, "waiting: Forgejo refused the merge"); err != nil {
+		t.Fatal(err)
+	}
+	second := g.liveCase(t, CaseMergeApproval)
+	if second.ID == first.ID || second.StateKey != first.StateKey || second.Status != CaseOpen {
+		t.Fatalf("case 2 = %+v, want a new open case of case 1's key %s", second, first.StateKey)
+	}
+	_, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: second.ID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActApproveMerge}})
+	want := fmt.Sprintf("rung 2 approved head h2 of pull request #9 on case %d and its merge did not land: hand_up with what the merge said", first.ID)
+	var refused ErrActRefused
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), want) {
+		t.Fatalf("rung 2's approve on case 2 = %v, want the refusal %q", err, want)
+	}
+	if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: second.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActApproveMerge}}); err != nil {
+		t.Fatalf("the human's approve on case 2: %v", err)
+	}
+	if got := caseByID(t, g.s, second.ID); got.Status != CaseResolved || got.Resolution == nil || got.Resolution.By != "sebastian" {
+		t.Fatalf("case 2 = %+v, want it resolved by sebastian", got)
 	}
 }
 

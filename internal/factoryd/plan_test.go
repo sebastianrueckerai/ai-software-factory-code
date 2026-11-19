@@ -1287,7 +1287,7 @@ func TestChildrenFiledInTopologicalOrder(t *testing.T) {
 			onPlan = append(onPlan, c.body)
 		}
 	}
-	if len(onPlan) != 1 || !strings.HasPrefix(onPlan[0], "factoryd: plan revision 1 of task t-plan, written by the planner. It asks no question, so its cards are filed") ||
+	if len(onPlan) != 1 || !strings.HasPrefix(onPlan[0], "factoryd: revision 1 of the plan of task t-plan, written by the planner. It asks no question, so its cards are filed") ||
 		!strings.Contains(onPlan[0], "| 3 | redirects | feature | Redirects and clicks | small | foundation, links-api | #4 |") {
 		t.Fatalf("the plan's comments %q, want one naming the issues", onPlan)
 	}
@@ -1464,7 +1464,7 @@ func TestPlanCommentMarker(t *testing.T) {
 	}
 	body := fj.comments[0].body
 	for _, want := range []string{
-		"factoryd: plan revision 1 of task t-plan, written by the planner. Its open questions wait for the humans' answers on the factory console",
+		"factoryd: revision 1 of the plan of task t-plan, written by the planner.\n\nLinks first.",
 		"Links first.  ＠sebastian",
 		"Spec: A link shortener: links with slugs that redirect and count clicks.\nGlossary:\n- slug: the short key a link gets\n- click: one redirect served",
 		"| # | key | role | title | size | depends on | issue |",
@@ -1479,6 +1479,10 @@ func TestPlanCommentMarker(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("comment lacks %q:\n%s", want, body)
 		}
+	}
+	// the revision's record: its face, at the hand-up, asks for the answers
+	if strings.Contains(body, "the humans' answers") || strings.Contains(body, "asks the planner") {
+		t.Fatalf("the record asks for answers:\n%s", body)
 	}
 	if !strings.HasSuffix(body, "\n<!-- factoryd plan t-plan revision 1 -->") || strings.Count(body, "<!--") != 1 {
 		t.Fatalf("comment's markers:\n%s", body)
@@ -2254,7 +2258,8 @@ func TestFileRevisionRefusesACycle(t *testing.T) {
 // whose confirmation was confirmed, its whitespace aside. The filing still
 // asks 6's confirmation and the factory answers it at once naming 5, so
 // the record shows the ask and its answer, no one is poked and the cards
-// file. A changed spec asks the human as before.
+// file. A changed spec asks its confirmation, whose case climbs to its
+// face: the planner's row pokes no one either.
 func TestIdenticalPlanRefileConfirmsItself(t *testing.T) {
 	drifted := testPlan()
 	drifted.Spec.Outcome = "  A link shortener:\n links  with slugs that redirect and count clicks.\n"
@@ -2313,8 +2318,8 @@ func TestIdenticalPlanRefileConfirmsItself(t *testing.T) {
 			}
 			_, poked := pokeOf(asked[0], store.tasks["t-plan"])
 			if !tc.same {
-				if qs[0].Decision != "" || open != 1 || !poked || asked[0].Detail["settled"] != nil || len(answered) != 0 || len(ref.Filed) != 0 || ref.Comment == 0 {
-					t.Fatalf("confirmation %+v, open %d, poked %v, ask %v, answers %+v, ref %+v; want it asked of the human", qs[0], open, poked, asked[0].Detail, answered, ref)
+				if qs[0].Decision != "" || open != 1 || poked || asked[0].Detail["settled"] != nil || len(answered) != 0 || len(ref.Filed) != 0 || ref.Comment == 0 {
+					t.Fatalf("confirmation %+v, open %d, poked %v, ask %v, answers %+v, ref %+v; want it asked, its case to climb to its face", qs[0], open, poked, asked[0].Detail, answered, ref)
 				}
 				return
 			}
@@ -2596,6 +2601,42 @@ func TestPlanLoopDropsALateResolutionOfItsTakenCase(t *testing.T) {
 	asks := capReachedLadder + "\nlast: the planner filed no plan\n- " + invalid[0]
 	if len(h.plans) != 4 || !slices.Equal(h.requests, []int{1}) || !slices.Equal(h.escalated, []string{asks}) {
 		t.Fatalf("plans %q, requests %v, escalated %q; want revision 1 waiting on its answers to the close", h.plans, h.requests, h.escalated)
+	}
+}
+
+// A case that asks the plan's question again is the plan's: waiting on the
+// cap's case 701, the plan loop takes the extend of case 709, whose Again
+// is 701, as its answer, and the fourth session files revision 1, which
+// waits on its answers to the close. The same extend with no Again is
+// another case's and is dropped: the cap's wait goes on to the close with
+// no fourth session.
+func TestPlanLoopTakesTheResolutionOfTheCaseThatAsksItsQuestionAgain(t *testing.T) {
+	invalid := []string{"plan: card web: size huge: split it; a card is one package, one page or one set of endpoints"}
+	run := func(t *testing.T, again int64) *planHarness {
+		h := newPlanHarness(t, PlanResult{Findings: invalid}, PlanResult{Findings: invalid}, PlanResult{Findings: invalid}, PlanResult{Revision: 1, SHA256: "sha-1"})
+		start := h.env.Now()
+		h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (TaskUsage, error) {
+			row := h.rowUsage
+			if h.env.Now().Sub(start) >= time.Hour {
+				row.RaisedSessions = 2
+			}
+			return row, nil
+		})
+		sig := caseResolved(709, Resolution{Action: ActExtend, Note: "one more go"}, 610)
+		sig.Case.Again = again
+		h.signalAfter(time.Hour, SignalCaseResolved, sig)
+		h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+		if final := h.run(t); final != "closed" {
+			t.Fatalf("finals %v", h.finals)
+		}
+		return h
+	}
+	asks := capReachedLadder + "\nlast: the planner filed no plan\n- " + invalid[0]
+	if h := run(t, 701); len(h.plans) != 4 || !slices.Equal(h.requests, []int{1}) || !slices.Equal(h.escalated, []string{asks}) {
+		t.Fatalf("with case 709 asking 701's question again: plans %q, requests %v, escalated %q; want revision 1 waiting on its answers to the close", h.plans, h.requests, h.escalated)
+	}
+	if h := run(t, 0); len(h.plans) != 3 || len(h.requests) != 0 || !slices.Equal(h.escalated, []string{asks}) {
+		t.Fatalf("with another case's extend: plans %q, requests %v, escalated %q; want the cap's wait to the close", h.plans, h.requests, h.escalated)
 	}
 }
 

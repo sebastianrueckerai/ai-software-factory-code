@@ -79,13 +79,13 @@ var extendKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseCheckinShare,
 
 // replyAloneKinds are the cases an answer row that names no action ends
 // never: every ask whose ladder line reads "A reply alone starts none",
-// the five caps and the budget floor. Such a row is the webhook's copy of
-// a comment on the card's issue; it stands as the recorded comment, the
-// run reads it as guidance and the card trips again at the cap or the
-// floor. A row that names its action — the console's and chat's Act
-// answers, an extend, a fund — and a session grant answer them as any
-// other case.
-var replyAloneKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseDayCap, CaseMonthCap, CaseProjectCap, CaseBudgetFloor}
+// the five caps and the budget floor, and the factory's month cap card,
+// whose choices answer it. Such a row is the webhook's copy of a comment on
+// the card's issue; it stands as the recorded comment, the run reads it as
+// guidance and the card trips again at the cap or the floor. A row that
+// names its action — the console's and chat's Act answers, an extend, a
+// fund — and a session grant answer them as any other case.
+var replyAloneKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseDayCap, CaseMonthCap, CaseFactoryMonthCap, CaseProjectCap, CaseBudgetFloor}
 
 // reportRuns refuses a handover, an extend and a replan on a report card:
 // its run takes none of them, and runs the report again on its own model
@@ -522,14 +522,37 @@ func criteriaCaseRefusal(f CaseFacts, action string) string {
 	return ""
 }
 
+// mergeRuleRefusal is why rung may not take action, a decision of merge
+// approval f, "" when it may: below full auto the merge rule is human, and
+// rung 2 hands the merge up with its recommendation.
+func mergeRuleRefusal(f CaseFacts, rung int, action string) string {
+	if rung != 2 || f.Kind != CaseMergeApproval || action != ActApproveMerge && action != ActDenyMerge || f.Autonomy == policy.AutonomyFullAuto {
+		return ""
+	}
+	return "the merge rule is human at " + f.Autonomy + ": hand_up with approve_merge or deny_merge as the recommendation"
+}
+
 // humanWordActions settle a plan's criteria by word: a verdict on a
 // criterion, a waiver among them, a confirmation and a denial. A person
-// takes them (ErrNotPerson); rung 2 hands them up.
+// takes them (ErrNotPerson); rung 2 hands them up (CriteriaWordRefusal).
 var humanWordActions = []string{ActAnswerCriteria, ActConfirmCriteria, ActDenyCriteria}
+
+// CriteriaWordRefusal is rung 2's refusal of a plan's criteria settled by
+// word on a case of kind k, which names what rung 2 may do instead: on a
+// plan's criteria case the grant or the hand-up, on a criteria card's
+// merge the hand-up.
+func CriteriaWordRefusal(k CaseKind) string {
+	const human = "settling a plan's criteria by word is the human's: "
+	if k == CasePlanCriteria {
+		return human + "take " + ActGrantCriteria + " for one more bounded card, or hand the case up with attach_analysis and recommend " +
+			ActAnswerCriteria + " (waive), " + ActDenyCriteria + " or " + ActConfirmCriteria
+	}
+	return human + "hand the case up with attach_analysis and recommend " + ActAnswerCriteria
+}
 
 // fileCardKinds are the cases whose cause may lie outside the card: the
 // work is filed as a card of its own.
-var fileCardKinds = []CaseKind{CaseDependencyFailed, CaseDependencyClosed, CaseFindingsRepeated, CaseAgentEscalate, CaseAgentRequestInfo}
+var fileCardKinds = []CaseKind{CaseDependencyFailed, CaseDependencyClosed, CaseFindingsRepeated, CaseAgentEscalate}
 
 // dependencyKinds are the cases a dependency edge answers; an edge is also
 // set on a card that waits on no case.
@@ -714,7 +737,10 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 		}
 	}
 	if rung == 2 && slices.Contains(humanWordActions, a.Name) && criteriaCaseRefusal(f, a.Name) == "" {
-		return ErrNotPerson.Error()
+		return CriteriaWordRefusal(f.Kind)
+	}
+	if why := mergeRuleRefusal(f, rung, a.Name); why != "" {
+		return why
 	}
 	if why := a.Applies(f, r); why != "" {
 		return why
@@ -731,6 +757,14 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	}
 	if rung == 2 && a.Name == ActApproveMerge && len(f.UnreadGates) > 0 {
 		return (&UnreviewedMergeError{Stages: f.UnreadGates}).Error()
+	}
+	if i := slices.IndexFunc(f.Partial, func(p string) bool { return strings.HasPrefix(p, partialApprovedCases) }); rung == 2 && a.Name == ActApproveMerge && i >= 0 {
+		return fmt.Sprintf("the earlier cases of this merge could not be read (%s), so rung 2 cannot tell whether it approved head %s before: hand_up with approve_merge as the recommendation",
+			strings.TrimPrefix(f.Partial[i], partialApprovedCases+": "), f.Head[:min(7, len(f.Head))])
+	}
+	if rung == 2 && a.Name == ActApproveMerge && f.ApprovedOn != 0 {
+		return fmt.Sprintf("rung 2 approved head %s of pull request #%d on case %d and its merge did not land: hand_up with what the merge said",
+			f.Head[:min(7, len(f.Head))], f.PR, f.ApprovedOn)
 	}
 	if rung == 2 && a.Name == ActRestartPlan && slices.Contains(f.Partial, "open criteria") {
 		return "the plan's open criteria could not be read, so rung 2 cannot tell whether a restart's close waives any, and a waiver is the human's: hand it up with restart_plan as the recommendation"

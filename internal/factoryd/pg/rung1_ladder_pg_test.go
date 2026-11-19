@@ -261,7 +261,7 @@ func TestRung1RepeatTripStartsNoSecondConversation(t *testing.T) {
 	}
 }
 
-// A rung 1 step past its due climbs once: the sweep ends it handed up as
+// A rung 1 step past its due climbs once: the wake pass ends it handed up as
 // unanswered within 35m and the human is asked, one face; the rung's late
 // answer is refused as too late and asks nobody.
 func TestRung1ExpiryClimbsOnce(t *testing.T) {
@@ -331,23 +331,26 @@ func TestRung1MomentHumanIsItsStep(t *testing.T) {
 }
 
 // A human card and a merge approval reach the trip but run no rung 1: Act
-// refuses rung 1 an answer on them.
+// refuses rung 1 an answer on them. Both go to rung 2, a human card for
+// rung 2's decision or analysis, a merge for its analysis and its decision
+// on full auto.
 func TestRung1SkipsHumanCardsAndMergeApprovals(t *testing.T) {
-	for _, kind := range []CaseKind{CaseHumanCard, CaseMergeApproval} {
+	for kind, rung := range map[CaseKind]int{CaseHumanCard: 2, CaseMergeApproval: 2} {
 		g := newRungRig(t, "success")
 		out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: "a stop of " + string(kind), Kind: kind, StateKey: "k"}, tripAttempt{N: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
 		g.settle()
-		if out.Rung != 3 || g.chat.calls != 0 || slices.ContainsFunc(g.steps(t, out.CaseID), func(s CaseStep) bool { return s.Rung == 1 }) {
-			t.Fatalf("%s: outcome %+v, %d conversations; want the face at once and no step of rung 1", kind, out, g.chat.calls)
+		if out.Rung != rung || g.chat.calls != 0 || slices.ContainsFunc(g.steps(t, out.CaseID), func(s CaseStep) bool { return s.Rung == 1 }) {
+			t.Fatalf("%s: outcome %+v, %d conversations; want rung %d and no step of rung 1", kind, out, g.chat.calls, rung)
 		}
 	}
 }
 
-// With escalation.judgment autonomous_and_above on a manual project the
-// rungs do not judge: no conversation, the face at once.
+// With escalation.judgment autonomous_and_above on a manual project rung 1
+// does not judge: no conversation and no step of rung 1, and rung 2 takes
+// the case, with no face yet.
 func TestRung1DoesNotJudgeAtManualWithAutonomousJudgment(t *testing.T) {
 	g := newRungRig(t, "success")
 	v := g.r.PgCfg().Policy()
@@ -358,8 +361,8 @@ func TestRung1DoesNotJudgeAtManualWithAutonomousJudgment(t *testing.T) {
 	g.r.PgSetPolicy(func() policy.Version { return v })
 	out := g.trip(t, tripCap)
 	g.settle()
-	if out.Rung != 3 || g.chat.calls != 0 || slices.ContainsFunc(g.steps(t, out.CaseID), func(s CaseStep) bool { return s.Rung == 1 }) || len(g.forge.comments) != 1 {
-		t.Fatalf("outcome %+v, %d conversations, %d comments; want the face at once and no rung 1", out, g.chat.calls, len(g.forge.comments))
+	if out.Rung != 2 || g.chat.calls != 0 || slices.ContainsFunc(g.steps(t, out.CaseID), func(s CaseStep) bool { return s.Rung == 1 }) || len(g.forge.comments) != 0 {
+		t.Fatalf("outcome %+v, %d conversations, %d comments; want rung 2 holding the case, no rung 1 and no face", out, g.chat.calls, len(g.forge.comments))
 	}
 }
 
@@ -830,10 +833,10 @@ func TestSessionNoteKeepsItsCodeWrittenPartsWithinTheAnswerBound(t *testing.T) {
 	}
 }
 
-// At the due of rung 1's step the sweep ends the step first: the case's wake,
+// At the due of rung 1's step the wake pass ends the step first: the case's wake,
 // due at the same time, finds it at the human, so no false repeat of rung 0
 // is recorded.
-func TestSweepExpiresRungOneBeforeItWakesItsCase(t *testing.T) {
+func TestTheWakePassExpiresRungOneBeforeItWakesItsCase(t *testing.T) {
 	g := newRungRig(t, "success")
 	var clock atomic.Int64
 	clock.Store(time.Now().UnixNano())
@@ -851,13 +854,13 @@ func TestSweepExpiresRungOneBeforeItWakesItsCase(t *testing.T) {
 	clock.Store(steps[1].DueAt.Add(time.Minute).UnixNano())
 	v := g.r.PgCfg().Policy()
 	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: now}
-	if err := m.Sweep(ctx); err != nil {
+	if err := m.WakeCases(ctx); err != nil {
 		t.Fatal(err)
 	}
 	close(release)
 	g.settle()
 	g.afterRung2(t, out.CaseID)
-	if err := m.Sweep(ctx); err != nil {
+	if err := m.WakeCases(ctx); err != nil {
 		t.Fatal(err)
 	}
 	for _, s := range g.steps(t, out.CaseID) {
@@ -877,8 +880,8 @@ func TestSweepExpiresRungOneBeforeItWakesItsCase(t *testing.T) {
 }
 
 // Rung 1, then rung 2, work on a case when its due and its wake pass:
-// the heal pass, before or after the sweep in the same minute, leaves the
-// case to the sweep, whose expiry faces it once and tells the run the face's
+// the heal pass, before or after the wake pass in the same minute, leaves the
+// case to the wake pass, whose expiry faces it once and tells the run the face's
 // comment. The card waits on the human.
 func TestAHeldCaseIsFacedAtItsDueWhicheverPassRunsFirst(t *testing.T) {
 	for _, healFirst := range []bool{true, false} {
@@ -900,16 +903,16 @@ func TestAHeldCaseIsFacedAtItsDueWhicheverPassRunsFirst(t *testing.T) {
 		m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: time.Now}
 		passes := func() {
 			var rep CaseHealReport
-			var healErr, sweepErr error
+			var healErr, wakeErr error
 			if healFirst {
 				rep, healErr = g.s.ReconcileCases(ctx, "demo-app/demo-app")
-				sweepErr = m.Sweep(ctx)
+				wakeErr = m.WakeCases(ctx)
 			} else {
-				sweepErr = m.Sweep(ctx)
+				wakeErr = m.WakeCases(ctx)
 				rep, healErr = g.s.ReconcileCases(ctx, "demo-app/demo-app")
 			}
-			if healErr != nil || sweepErr != nil || rep.Moved != 0 {
-				t.Fatalf("heal first %v: heal %+v (%v), sweep %v; want nothing moved", healFirst, rep, healErr, sweepErr)
+			if healErr != nil || wakeErr != nil || rep.Moved != 0 {
+				t.Fatalf("heal first %v: heal %+v (%v), wake pass %v; want nothing moved", healFirst, rep, healErr, wakeErr)
 			}
 		}
 		// rung 1's bound ends: the case climbs to rung 2, with no face yet
@@ -924,7 +927,7 @@ func TestAHeldCaseIsFacedAtItsDueWhicheverPassRunsFirst(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		// rung 2's bound ends: the sweep's expiry faces it once
+		// rung 2's bound ends: the wake pass's expiry faces it once
 		passes()
 		faces := 0
 		for _, a := range g.asks(t) {
@@ -942,8 +945,8 @@ func TestAHeldCaseIsFacedAtItsDueWhicheverPassRunsFirst(t *testing.T) {
 	}
 }
 
-// The sweep's face of an expired rung 2 step fails: the case keeps its wake,
-// the heal pass leaves it, and the next sweep faces it.
+// The wake pass's face of an expired rung 2 step fails: the case keeps its wake,
+// the heal pass leaves it, and the next wake pass faces it.
 func TestAFailedFaceAtTheDueKeepsTheWake(t *testing.T) {
 	ctx := context.Background()
 	g := newRungRig(t, "success")
@@ -1000,14 +1003,14 @@ func TestAFailedFaceAtTheDueKeepsTheWake(t *testing.T) {
 	}
 	v := g.r.PgCfg().Policy()
 	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: time.Now}
-	if err := m.Sweep(ctx); err != nil {
+	if err := m.WakeCases(ctx); err != nil {
 		t.Fatal(err)
 	}
 	close(release)
 	g.settle()
 	faced := g.signalsOf(SignalCaseFaced)
 	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseAtHuman || faces() != 1 || len(faced) != 1 || faced[0].sig.Case.CaseID != out.CaseID {
-		t.Fatalf("after the next sweep: case %s, %d faces, signals %+v; want it at the human, one face, its signal", c.Status, faces(), faced)
+		t.Fatalf("after the next wake pass: case %s, %d faces, signals %+v; want it at the human, one face, its signal", c.Status, faces(), faced)
 	}
 }
 
@@ -1046,10 +1049,10 @@ func TestAFaceTheMonitorRecoversCarriesRungOnesFindingAndSignalsTheRun(t *testin
 	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: now}
 	own := g.stepsOfRung(t, out.CaseID, 2)
 	clock.Store(own[0].DueAt.Add(time.Minute).UnixNano())
-	// rung 2's bound ends and its face fails to post once; the sweep's due
+	// rung 2's bound ends and its face fails to post once; the wake pass's due
 	// wake of the case posts it
-	if err := m.Sweep(context.Background()); err == nil || !strings.Contains(err.Error(), "status 500") {
-		t.Fatalf("Sweep = %v, want the failed post of the first face named", err)
+	if err := m.WakeCases(context.Background()); err == nil || !strings.Contains(err.Error(), "status 500") {
+		t.Fatalf("WakeCases = %v, want the failed post of the first face named", err)
 	}
 	g.settle()
 	c := caseByID(t, g.s, out.CaseID)
@@ -1168,9 +1171,9 @@ func TestSignalFacedRetriesWithinItsBound(t *testing.T) {
 	}
 }
 
-// The face's signal runs off the sweep's path and outlives it: the sweep that
+// The face's signal runs off the wake pass's path and outlives it: the wake pass that
 // faces an expired rung 1 step returns while the signal hangs, and the signal
-// lands after the sweep's context ended.
+// lands after the wake pass's context ended.
 func TestAFaceDoesNotWaitForItsSignal(t *testing.T) {
 	g := newRungRig(t, "success")
 	var clock atomic.Int64
@@ -1187,8 +1190,8 @@ func TestAFaceDoesNotWaitForItsSignal(t *testing.T) {
 	clock.Store(steps[1].DueAt.Add(time.Minute).UnixNano())
 	v := g.r.PgCfg().Policy()
 	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: now}
-	// rung 1's bound ends first; rung 2 holds the case, and its own bound ends in the sweep under test
-	if err := m.Sweep(context.Background()); err != nil {
+	// rung 1's bound ends first; rung 2 holds the case, and its own bound ends in the wake pass under test
+	if err := m.WakeCases(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	own := g.stepsOfRung(t, out.CaseID, 2)
@@ -1198,20 +1201,20 @@ func TestAFaceDoesNotWaitForItsSignal(t *testing.T) {
 	clock.Store(own[0].DueAt.Add(time.Minute).UnixNano())
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- m.Sweep(ctx) }()
+	go func() { done <- m.WakeCases(ctx) }()
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Errorf("sweep: %v", err)
+			t.Errorf("wake pass: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Errorf("the sweep waited for the face's signal")
+		t.Errorf("the wake pass waited for the face's signal")
 		cancel()
 		close(held)
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			t.Fatal("the sweep still waits with the signal released and its context ended")
+			t.Fatal("the wake pass still waits with the signal released and its context ended")
 		}
 		close(release)
 		g.settle()
@@ -1222,7 +1225,7 @@ func TestAFaceDoesNotWaitForItsSignal(t *testing.T) {
 	close(release)
 	g.settle()
 	if faced := g.signalsOf(SignalCaseFaced); len(faced) != 1 || faced[0].sig.Case.CaseID != out.CaseID {
-		t.Fatalf("signals %+v, want the face's signal delivered after the sweep's context ended", faced)
+		t.Fatalf("signals %+v, want the face's signal delivered after the wake pass's context ended", faced)
 	}
 }
 
@@ -1575,8 +1578,8 @@ func (s *failingWake) SetCaseWake(ctx context.Context, id int64, rung int, on []
 
 // Rung 1's step and its case's wake land together: a store whose separate
 // wake write would fail once leaves no step without a wake, so a retried trip
-// finds rung 1 at work on a case the sweep wakes, and the heal leaves it to
-// the sweep past ten minutes; one conversation runs.
+// finds rung 1 at work on a case the wake pass wakes, and the heal leaves it to
+// the wake pass past ten minutes; one conversation runs.
 func TestRungOnesStepNeverHoldsACaseWithoutAWake(t *testing.T) {
 	ctx := context.Background()
 	g := newRungRig(t, "success")
@@ -1597,13 +1600,13 @@ func TestRungOnesStepNeverHoldsACaseWithoutAWake(t *testing.T) {
 	close(release)
 	g.settle()
 	if err != nil || rep.Moved != 0 || c.Status != CaseOpen || c.OwnerRung != 1 || c.NextWakeAt == nil || g.chat.calls != 1 {
-		t.Fatalf("heal %+v (%v), case %s owner %d wake %v, conversations %d; want the case rung 1's with its wake, left to the sweep, one conversation",
+		t.Fatalf("heal %+v (%v), case %s owner %d wake %v, conversations %d; want the case rung 1's with its wake, left to the wake pass, one conversation",
 			rep, err, c.Status, c.OwnerRung, c.NextWakeAt, g.chat.calls)
 	}
 }
 
 // A card that cannot wait for a human gets no face: a case rung 1 holds past
-// its due on a merged card is neither faced nor woken by the sweep, the heal
+// its due on a merged card is neither faced nor woken by the wake pass, the heal
 // withdraws it, and no comment reaches the issue over three minutes of
 // passes; a face asked of a merged card ends its case with no comment.
 func TestNoFaceOnACardThatCannotWaitForAHuman(t *testing.T) {
@@ -1627,7 +1630,7 @@ func TestNoFaceOnACardThatCannotWaitForAHuman(t *testing.T) {
 	v := g.r.PgCfg().Policy()
 	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: time.Now}
 	for range 3 {
-		if err := m.Sweep(ctx); err != nil {
+		if err := m.WakeCases(ctx); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := g.s.ReconcileCases(ctx, "demo-app/demo-app"); err != nil {
@@ -1644,6 +1647,9 @@ func TestNoFaceOnACardThatCannotWaitForAHuman(t *testing.T) {
 	g2.r.Checkin = nil
 	c, _, err := g2.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "k", Problem: capAsk})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g2.s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := g2.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'merged', finished_at = now() WHERE id = 't1'`); err != nil {

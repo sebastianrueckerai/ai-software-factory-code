@@ -102,8 +102,7 @@ func (f *healAskForgejo) comments() []string {
 // a human with no live ask. It tells the ended case.
 func park(t *testing.T, s *PGStore, resolvedAgo time.Duration) Case {
 	t.Helper()
-	askCap(t, s, 27001)
-	c := onlyOpenCase(t, s)
+	c := facedCap(t, s, 27001)
 	recordCaseEvent(t, s, EventQuestionAnswered, "sebastian", ViaChat, map[string]any{
 		"action": ActExtend, "agent_time_s": 1800, "comment": int64(27002)})
 	if got := caseByID(t, s, c.ID); got.Status != CaseResolved || got.ResolvedAt == nil {
@@ -123,8 +122,10 @@ func park(t *testing.T, s *PGStore, resolvedAgo time.Duration) Case {
 // ask consumed by an answer, its case ended past the at_human bound —
 // gets its ask back on the heal pass: the healed-run path opens the
 // ask's own case again, with its face on the card's issue, so the
-// console's answer paths find an ask to press. A second pass finds the
-// ask live and posts no second face.
+// console's answer paths find an ask to press. The face asks the stop's
+// own question, marked unjudged as sf/r names no project, under the
+// sentence that it asks again. A second pass finds the ask live and posts
+// no second face.
 func TestHealPassReasksACardWaitingWithNoAsk(t *testing.T) {
 	ctx := context.Background()
 	g := newHealAskRig(t, "heal_ask")
@@ -141,8 +142,12 @@ func TestHealPassReasksACardWaitingWithNoAsk(t *testing.T) {
 	}
 	reopened := ask
 	posted := g.forge.comments()
-	if len(posted) != 1 || !strings.Contains(posted[0], AsklessReason) {
-		t.Fatalf("posted %q; want the ask's face once, asking again after the wait", posted)
+	if len(posted) != 1 || !strings.Contains(posted[0], AsklessReason) || !strings.Contains(posted[0], capReached) {
+		t.Fatalf("posted %q; want the ask's face once, asking the stop again after the wait", posted)
+	}
+	rows, err := g.s.TaskEventsOfKind(ctx, caseTask, EventQuestionAsked, 1)
+	if want := "The card reached its session cap of 3 sessions. Grant it one more session? (not judged, judgment budget unreadable)"; err != nil || len(rows) != 1 || rows[0].Detail["ask"] != want {
+		t.Fatalf("the newest ask = %+v, %v; want the stop's own ask %q", rows, err, want)
 	}
 	asks, err := g.s.AskAnchors(ctx, caseTask)
 	if err != nil || len(asks) == 0 {
@@ -159,6 +164,47 @@ func TestHealPassReasksACardWaitingWithNoAsk(t *testing.T) {
 	}
 	if posted := g.forge.comments(); len(posted) != 1 {
 		t.Fatalf("posted %q after two passes; want the one face: the ask is live again", posted)
+	}
+}
+
+// The heal pass's case names the case whose question it asks again, so the
+// run that still waits on that case hears the rungs' answer: card t1's
+// faced case was withdrawn past the at_human bound, one pass opens a case
+// with asks_again that case, rung 1 hands it up to rung 2, and rung 2's
+// continue at autonomous sends case_resolved of the new case with Again
+// the withdrawn one.
+func TestHealPassCaseCarriesTheCaseItAsksAgain(t *testing.T) {
+	ctx := context.Background()
+	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+	if _, err := g.r.PgFaceStop(ctx, "t1", whichFile, nil); err != nil {
+		t.Fatal(err)
+	}
+	first := onlyLiveCase(t, g.s, "t1")
+	if err := g.s.WithdrawCase(ctx, first.ID, "the run that asked it is gone"); err != nil {
+		t.Fatal(err)
+	}
+	tree := g.r.PgCfg().Policy().Tree
+	past := tree.WaitsOf("demo-app/demo-app").AtHuman + time.Minute
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE cases SET resolved_at = now() - $1::interval WHERE id = $2`,
+		fmt.Sprintf("%d seconds", int(past.Seconds())), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	g.chat.answers = []CheckinResponse{g.handUp(t)}
+	wf := &fakeWorkflows{}
+	HealPass(ctx, g.s, wf, &Intake{Store: g.s, Forgejo: g.r.PgForgejo(), Workflows: wf, BotUser: "factory-agent",
+		Policy: func() policy.Tree { return tree }}, nil, noneCompleted, g.r)
+	g.settle()
+	healed := onlyLiveCase(t, g.s, "t1")
+	if again, _ := healed.Facts["asks_again"].(float64); healed.ID == first.ID || int64(again) != first.ID || len(g.stepsOfRung(t, healed.ID, 2)) != 1 {
+		t.Fatalf("the healed case %d, facts %v, steps %+v; want a new case asking case %d again with rung 2 on it", healed.ID, healed.Facts, g.steps(t, healed.ID), first.ID)
+	}
+	g.atAutonomy(policy.AutonomyAutonomous)
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: healed.ID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActContinue, Note: "use a.txt"}}); err != nil {
+		t.Fatal(err)
+	}
+	resolved := g.signalsOf(SignalCaseResolved)
+	if len(resolved) != 1 || resolved[0].sig.Case.CaseID != healed.ID || resolved[0].sig.Case.Again != first.ID {
+		t.Fatalf("case_resolved %+v; want case %d's with Again %d", resolved, healed.ID, first.ID)
 	}
 }
 
@@ -196,8 +242,8 @@ func TestHealPassLeavesAskedAndFreshlyParkedCards(t *testing.T) {
 	if err != nil || len(cases) != 1 || cases[0].ID != live[0].ID {
 		t.Fatalf("the asked card's cases = %+v, %v; want its one live ask's case", cases, err)
 	}
-	if ask, err := g.s.NewestAskCase(ctx, "t1420"); err != nil || ask.ID != live[0].ID || ask.Status != CaseAtHuman {
-		t.Fatalf("the asked card's live ask = %+v, %v; want the ask that stood", ask, err)
+	if ask, err := g.s.NewestAskCase(ctx, "t1420"); err != nil || ask.ID != live[0].ID || ask.Status != CaseOpen {
+		t.Fatalf("the asked card's live ask = %+v, %v; want the ask that stood, open as its ask opened it", ask, err)
 	}
 	if posted := g.forge.comments(); len(posted) != 0 {
 		t.Fatalf("posted %q; want no face: both cards wait as they are", posted)
@@ -268,8 +314,8 @@ func TestHealPassReasksWhenOnlyAMonitorFlagIsLive(t *testing.T) {
 	ctx := context.Background()
 	g := newHealAskRig(t, "heal_ask_flag")
 	ended := park(t, g.s, 10*time.Minute)
-	flag, _, err := g.s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: "wait_over_bound|at_human",
-		Status: CaseAtHuman, Problem: "Monitor flag: wait_over_bound"})
+	flag, _, err := openAtHuman(ctx, g.s, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: "wait_over_bound|at_human",
+		Problem: "Monitor flag: wait_over_bound"})
 	if err != nil {
 		t.Fatalf("open the flag: %v", err)
 	}
@@ -330,8 +376,8 @@ func planAwaitingConfirmation(t *testing.T, s *PGStore) int {
 
 // A plan whose newest revision waits on its confirmation under its
 // request, its case gone, gets that case back from its own ask row, with
-// the same key: the plan's answer path resolves it, and no askless ask is
-// put to the human.
+// the same key, open on the rungs with its wake: the plan's answer path
+// resolves it, and no askless ask is put to the human.
 func TestHealPassRestoresAPlansConfirmation(t *testing.T) {
 	ctx := context.Background()
 	g := newHealAskRig(t, "heal_ask_restore")
@@ -340,8 +386,9 @@ func TestHealPassRestoresAPlansConfirmation(t *testing.T) {
 	g.pass(t)
 
 	restored := onlyOpenCase(t, g.s)
-	if restored.Kind != factoryd.CasePlanConfirmation || !strings.HasSuffix(restored.StateKey, "@r1") || restored.Status != CaseAtHuman {
-		t.Fatalf("the live case = %+v; want revision 1's confirmation at the human", restored)
+	if restored.Kind != factoryd.CasePlanConfirmation || !strings.HasSuffix(restored.StateKey, "@r1") || restored.Status != CaseOpen ||
+		restored.OwnerRung != 0 || restored.NextWakeAt == nil {
+		t.Fatalf("the live case = %+v; want revision 1's confirmation open at rung 0 with its wake, to climb to its face", restored)
 	}
 	cases, err := g.s.CasesOf(ctx, caseTask)
 	if err != nil {
@@ -407,7 +454,7 @@ func TestHealPassLeavesAnAnsweredRevisionToTheStop(t *testing.T) {
 	if live.Kind == factoryd.CasePlanConfirmation || live.Kind == CasePlanQuestion {
 		t.Fatalf("the live case = %+v; want no plan case", live)
 	}
-	if live.Problem != AsklessReason || !holdsAskless(t, g.s, live) {
+	if live.Problem != AsklessReason+" (not judged, judgment budget unreadable)" || !holdsAskless(t, g.s, live) {
 		t.Fatalf("the new case = %+v, steps %+v; want the askless reason as its problem and its step", live, caseStepsOf(t, g.s, live.ID))
 	}
 	if cases, err := g.s.CasesOf(ctx, caseTask); err != nil || len(cases) != 2 {
@@ -422,8 +469,8 @@ func TestAsklessSinceSkipsMonitorFlags(t *testing.T) {
 	ctx := context.Background()
 	g := newHealAskRig(t, "heal_ask_since")
 	park(t, g.s, 2*time.Minute)
-	flag, _, err := g.s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: "wait_over_bound|at_human",
-		Status: CaseAtHuman, Problem: "Monitor flag: wait_over_bound"})
+	flag, _, err := openAtHuman(ctx, g.s, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: "wait_over_bound|at_human",
+		Problem: "Monitor flag: wait_over_bound"})
 	if err != nil {
 		t.Fatalf("open the flag: %v", err)
 	}

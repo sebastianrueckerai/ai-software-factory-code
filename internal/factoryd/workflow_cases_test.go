@@ -611,6 +611,37 @@ func TestWorkflowKeepsAnotherCasesResolutionForItsOwnWait(t *testing.T) {
 	}
 }
 
+// A case that asks the run's question again, as the heal pass opens one
+// when the case a run waits on ended with no answer, is the run's: the
+// healed run waiting on case 701 takes the reverify of case 709, whose
+// Again is 701, as its answer, and the pull request's head c3 goes through
+// the checks with no session. The same reverify with no Again is another
+// case's: it waits for a wait that comes to case 709, and the run waits on
+// to the merge with no check.
+func TestWorkflowTakesTheResolutionOfTheCaseThatAsksItsQuestionAgain(t *testing.T) {
+	run := func(t *testing.T, again int64) []string {
+		h := newWorkflowHarness(t)
+		h.state = RunState{Status: "waiting-human", PR: PullRequest{Number: 9}, Head: "c3", Question: capReachedLadder + "\nlast: the review asked for changes"}
+		h.onSessions(pushed("s1", "c4"))
+		var checked []string
+		h.onWaitChecks(&checked)
+		sig := caseResolved(709, Resolution{Action: ActReverify}, 605)
+		sig.Case.Again = again
+		h.signalAfter(time.Hour, SignalCaseResolved, sig)
+		h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+		if final := h.run(t); final != "done" || len(h.sessions) != 0 || len(h.trips) != 1 {
+			t.Fatalf("final = %q, sessions %d, trips %d; want done with the restart's one ask and no session", final, len(h.sessions), len(h.trips))
+		}
+		return checked
+	}
+	if checked := run(t, 701); !slices.Equal(checked, []string{"c3"}) {
+		t.Fatalf("with case 709 asking 701's question again: checked %q, want c3", checked)
+	}
+	if checked := run(t, 0); len(checked) != 0 {
+		t.Fatalf("with another case's resolution: checked %q, want none", checked)
+	}
+}
+
 // In a run from before the case queue the same answer is dropped, and the
 // question must be answered again once it is asked: the run waits the
 // quarter hour between the stop's ask and the second answer, so its
@@ -1770,6 +1801,44 @@ func TestWorkflowCountsTheReplyToAFacePostedAfterTheTrip(t *testing.T) {
 	}
 	if got, _ := run(t, 0, time.Hour, 602, CaseState{}); !slices.Equal(got, want[:3]) {
 		t.Fatalf("with no signal and no face in the store: steps = %q, want the reply no answer: %q", got, want[:3])
+	}
+}
+
+// The face of a case that asks the run's question again is the run's face:
+// with rung 1 holding the trip's case 701, the face of case 709, whose
+// Again is 701, on comment 610 makes 610 the escalation the wait counts
+// replies after. A reply on 612 runs the next step; one on 605, older than
+// that face, answers nothing. The same face with no Again is another
+// case's, and the reply on 612 is kept for a face of case 701 that never
+// comes.
+func TestWorkflowCountsTheReplyToTheFaceOfTheCaseThatAsksItsQuestionAgain(t *testing.T) {
+	run := func(t *testing.T, again, reply int64) []string {
+		h := newWorkflowHarness(t)
+		h.taskConfig = askTaskConfig()
+		h.rungOne = true
+		var steps []string
+		h.onVerify(&steps, []SessionResult{
+			pushed("s1", "c1"),
+			{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: spentStop,
+				CheckIn: &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend, Reason: spentStop,
+					Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}}})
+		h.onReviews("c1")
+		h.signalAfter(30*time.Minute, SignalCaseFaced, TaskSignal{Author: FactoryDecider, Comment: 610,
+			Case: &CaseSignal{CaseID: 709, Rung: 3, By: FactoryDecider, Comment: 610, Again: again}})
+		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: reply})
+		h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+		h.run(t)
+		return steps
+	}
+	want := []string{"session 1 after 0 cards", "pr c1 after 0 cards", "session 2 after 0 cards", "pr c2 after 1 cards", "approval c2"}
+	if got := run(t, 701, 612); !slices.Equal(got, want) {
+		t.Fatalf("with the face of case 709 asking 701's question again: steps = %q, want the reply counted: %q", got, want)
+	}
+	if got := run(t, 701, 605); !slices.Equal(got, want[:3]) {
+		t.Fatalf("with a reply older than that face: steps = %q, want it no answer: %q", got, want[:3])
+	}
+	if got := run(t, 0, 612); !slices.Equal(got, want[:3]) {
+		t.Fatalf("with the face of another case: steps = %q, want the reply no answer: %q", got, want[:3])
 	}
 }
 

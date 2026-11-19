@@ -135,13 +135,13 @@ var writeCases = []writeCase{
 		},
 		result: "Running the checks of pull request #12 again; the card asks again once they settle.", event: factoryd.EventMergeDenied,
 		calls: []string{"rerun t-g pr 12 by " + factoryd.ChatUser}},
-	{name: "answer_criteria", tool: "answer_criteria", args: `{"task_id":"t-pl","action":"grant"}`,
+	{name: "answer_criteria", tool: "answer_criteria", args: `{"task_id":"t-pl","action":"confirm"}`,
 		setup: func(r *AcceptanceRig) {
 			r.AddCard(planCard())
 			r.PendRequest(8, factoryd.ApprovalCriteria, "t-pl", 0, `{}`)
 		},
-		result: "Granted one more bounded card for 2 criteria; the planner drafts it and the board shows it.", event: factoryd.EventCriterionDecided,
-		calls: []string{"grant t-pl approval 8 by sebastian"}},
+		result: "Confirmed 1 criteria met on the delivered cards; the request closes on the next sweep.", event: factoryd.EventCriterionDecided,
+		calls: []string{"confirm t-pl by sebastian: do it"}},
 	{name: "set_summary", tool: "set_summary", args: `{"task_id":"t-m","summary":"Fix the cache"}`,
 		result: "The summary of #5 is set.", undo: true, undoResult: `The summary of #5 is back to "".`, event: factoryd.EventSummarySet},
 	{name: "set_accent", tool: "set_accent", args: `{"task_id":"t-m","accent":"blue"}`,

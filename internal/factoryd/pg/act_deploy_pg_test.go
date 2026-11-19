@@ -235,8 +235,10 @@ func TestRollHeldStatementShowsThePlansAndTheOptions(t *testing.T) {
 }
 
 // At autonomous and full auto rung 2's deploy_now runs once as the agent
-// and resolves the case on rung 2; at assisted and manual no release runs
-// and rung 2's step hands the case up.
+// and resolves the case on rung 2, with no issue filed; at assisted and
+// manual no release runs and rung 2's step hands the case up: its face
+// files the card's one issue, #31, with no comment, asks with deploy_now
+// preselected beside the keeper's held row, and the card waits on a human.
 func TestRung2DeployNowRunsOrProposesByLevel(t *testing.T) {
 	for _, tc := range []struct {
 		state string
@@ -263,16 +265,24 @@ func TestRung2DeployNowRunsOrProposesByLevel(t *testing.T) {
 						asked = append(asked, e)
 					}
 				}
-				if len(asked) != 1 {
-					t.Fatalf("%d question_asked rows on the ask, want the keeper's one", len(asked))
+				if len(asked) != 2 || asked[0].Detail["held"] != nil || asked[1].Detail["held"] != true {
+					t.Fatalf("question_asked rows %+v, newest first, want the face's and the keeper's held one", asked)
 				}
 				if pre, _ := asked[0].Detail["preselected"].(map[string]any); pre["action"] != ActDeployNow {
 					t.Errorf("preselected %v, want deploy_now", asked[0].Detail["preselected"])
 				}
-				if len(h.forge.comments) != 1 || !strings.Contains(h.forge.comments[0], "The factory agent proposes deploy_now") {
-					t.Errorf("comments %q, want one naming the proposal", h.forge.comments)
+				card, _, err := h.s.Task(context.Background(), h.cardID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if card.Status != "waiting-human" || card.IssueNumber != 31 || len(h.forge.issues) != 1 || len(h.forge.comments) != 0 {
+					t.Errorf("card %s #%d, issues %q, comments %q; want it waiting on a human on its one issue, #31, with no comment",
+						card.Status, card.IssueNumber, h.forge.issues, h.forge.comments)
 				}
 				return
+			}
+			if len(h.forge.issues) != 0 {
+				t.Errorf("issues %q, want none", h.forge.issues)
 			}
 			if len(h.stub.calls) != 1 || h.stub.calls[0] != (deployCall{heldRepo, ChatUser, ViaChat, "agent"}) {
 				t.Fatalf("DeployNow calls %+v, want one as the agent", h.stub.calls)
@@ -362,8 +372,8 @@ func TestNoAnswerRunsOnAnEndedCard(t *testing.T) {
 					if len(h.stub.calls) != 0 {
 						t.Errorf("DeployNow ran %d times", len(h.stub.calls))
 					}
-					if c := caseByID(t, h.s, h.caseID); c.Status != CaseAtHuman {
-						t.Errorf("case %s, want still at the human", c.Status)
+					if c := caseByID(t, h.s, h.caseID); c.Status != CaseOpen {
+						t.Errorf("case %s, want still open on the rungs", c.Status)
 					}
 					events, _ := h.s.TaskEvents(context.Background(), h.cardID, 100)
 					for _, e := range events {
@@ -451,8 +461,8 @@ func TestDeployNowFailures(t *testing.T) {
 					t.Errorf("the refusal holds %q: %v", secret, err)
 				}
 			}
-			if c := caseByID(t, h.s, h.caseID); c.Status != CaseAtHuman {
-				t.Errorf("case %s, want still at the human", c.Status)
+			if c := caseByID(t, h.s, h.caseID); c.Status != CaseOpen {
+				t.Errorf("case %s, want still open on the rungs", c.Status)
 			}
 		})
 	}

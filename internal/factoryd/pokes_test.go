@@ -19,6 +19,9 @@ func TestPokeOf(t *testing.T) {
 	child := card
 	child.Parent = "t-plan"
 	plan := Task{ID: "t-plan", Kind: "agent", IssueNumber: 558, Objective: "Members page", Track: "plan"}
+	held := Task{ID: "t-h", Kind: "human", Status: "waiting-agent", Objective: "main is still red", Source: SourceStillRed}
+	faced := held
+	faced.Status, faced.IssueNumber = "waiting-human", 70
 	agentDid := func(kind, level string, more map[string]any) Event {
 		d := map[string]any{"autonomy": level, "merge_rule": "human", "decider": "agent"}
 		for k, v := range more {
@@ -58,18 +61,34 @@ func TestPokeOf(t *testing.T) {
 			ChatMessage{Kind: MessagePoke, Content: "#603 needs you no more: its question is withdrawn because reviewer sebastian requested changes."}, true},
 		{"another flag withdrawn for the same reason reads differently", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"case_id": float64(13), "case_kind": string(CaseMonitorFlag), "reason": "the wait ended", "problem": "wait_over_bound(review 5h)"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: "The flag on #603 - Session store: pick the table's store (wait_over_bound(review 5h)) needs you no more: its question is withdrawn because the wait ended."}, true},
-		{"a merge", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "high"}}, card,
-			ChatMessage{Kind: MessageEscalation, Content: "#603 waits for you: merge PR #612, high risk.", Choices: []string{"Approve"}}, true},
-		{"an agent's merge on red checks offers no Approve", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": false, "red_checks": true}}, card,
-			ChatMessage{Kind: MessageEscalation, Content: "#603 waits for you: PR #612 cannot merge, its checks are red; send it back to the agent with what to change, or close it."}, true},
-		{"a factory merge on red checks offers the re-run", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": true, "red_checks": true}}, card,
-			ChatMessage{Kind: MessageEscalation, Content: "#603 waits for you: the checks of PR #612 are red, so it cannot merge; run them again, or close it with your words.", Choices: []string{ChoiceRerun}}, true},
-		{"a plan", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "plan", "revision": float64(2), "cards": float64(6)}}, plan,
-			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for your answers: revision 2, 6 cards; the planner revises it with them.`}, true},
-		{"a criteria gap", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria"}}, plan,
-			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for you: every card of it has ended with a criterion still unmet. Waive one with your reason, grant one more bounded card, or confirm the delivered cards satisfy them.`}, true},
-		{"criteria never judged", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria_rerun"}}, plan,
-			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for you: its cards have ended and no verdict on main settles its criteria. Waive one with your reason, grant one more bounded card, or confirm with your evidence that the delivered cards meet them.`}, true},
+		// a merge request's case climbs first: its face's ask is the poke
+		{"a merge", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "high"}}, card, ChatMessage{}, false},
+		{"an agent's merge on red checks", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": false, "red_checks": true}}, card, ChatMessage{}, false},
+		{"a factory merge on red checks", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": true, "red_checks": true}}, card, ChatMessage{}, false},
+		// a plan's questions climb first: the face of each asks, never its
+		// request nor the planner's row
+		{"a plan", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "plan", "revision": float64(2), "cards": float64(6)}}, plan, ChatMessage{}, false},
+		{"a planner's question", Event{Kind: EventQuestionAsked, TaskID: "t-plan", Detail: map[string]any{"question": "Which database?", "revision": float64(2),
+			"index": float64(1), "case_id": float64(31), "choices": []any{"Postgres", "SQLite"}}}, plan, ChatMessage{}, false},
+		{"a plan question's face", Event{Kind: EventQuestionAsked, TaskID: "t-plan", Detail: map[string]any{"question": "Which database?", "revision": float64(2),
+			"index": float64(1), "case_id": float64(31), "case_kind": string(CasePlanQuestion), "why": "Plan revision 2 asks it: the planner revises the plan with the answers.",
+			"choices": []any{"Postgres", "SQLite"}}}, plan,
+			ChatMessage{Kind: MessageEscalation, Content: "#558 - Members page needs you: Which database?\nWhy: Plan revision 2 asks it: the planner revises the plan with the answers.",
+				Choices: []string{"Postgres", "SQLite"}}, true},
+		// factoryd's own human card climbs first: its held row pokes nobody,
+		// its face's row asks
+		{"a held human card's ask", Event{Kind: EventQuestionAsked, TaskID: "t-h", Detail: map[string]any{"question": "main is still red at abc1234: a person decides.",
+			"source": SourceStillRed, "held": true, "case_id": float64(40)}}, held, ChatMessage{}, false},
+		{"a human card's face", Event{Kind: EventQuestionAsked, TaskID: "t-h", Detail: map[string]any{"question": "main is still red at abc1234: a person decides.",
+			"source": SourceStillRed, "case_id": float64(40), "why": "the remedy merged and main stayed red"}}, faced,
+			ChatMessage{Kind: MessageEscalation, Content: "#70 - main is still red needs you: main is still red at abc1234: a person decides.\nWhy: the remedy merged and main stayed red"}, true},
+		// a held card's withdrawn ask reached nobody, so its withdrawal
+		// tells nobody either
+		{"a held card's withdrawal", Event{Kind: EventQuestionWithdrawn, TaskID: "t-h", Detail: map[string]any{"reason": "factoryd closed pull request #1: x",
+			"held": true}}, held, ChatMessage{}, false},
+		// a criteria request's case climbs first: its face's ask is the poke
+		{"a criteria gap", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria"}}, plan, ChatMessage{}, false},
+		{"criteria never judged", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria_rerun"}}, plan, ChatMessage{}, false},
 		{"a failure", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed",
 			"reason": "policy: policy version 669: risk class forbidden is forbidden to agents: .forgejo/workflows/ci.yml, .forgejo/workflows/pr.yml"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: "#603 failed: policy: policy version 669: risk class forbidden is forbidden to agents: .forgejo/workflows/ci.yml, .forgejo/workflows/pr.yml.",
@@ -518,6 +537,10 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// the flag's face follows rung 2's hand-up, which passes it through the door
+	if _, err := s.AppendCaseStep(ctx, CaseStep{CaseID: flag.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp}); err != nil {
+		t.Fatal(err)
+	}
 	record := func(kind string, detail map[string]any) {
 		t.Helper()
 		if _, err := s.Record(ctx, Event{Repository: "sf/code", TaskID: "t-1", IssueNumber: 603, Kind: kind, Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail}); err != nil {
@@ -589,6 +612,9 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 	for _, flag := range []string{"issue_open_after_end", "checkin_cut"} {
 		c, _, err := s.OpenCase(ctx, Case{TaskID: "t-1", Repository: "sf/code", Kind: CaseMonitorFlag, StateKey: flag + "|x", Problem: "Monitor flag: " + flag})
 		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp}); err != nil {
 			t.Fatal(err)
 		}
 		faced = append(faced, c.ID)

@@ -50,11 +50,16 @@ const capAsk = "Card 1410 asks: grant one more session?"
 // askCap records the session cap's ask as Escalate writes it.
 func askCap(t *testing.T, s *factoryd.PGStore, comment int64) {
 	t.Helper()
-	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, capAskDetail(comment))
+}
+
+// capAskDetail is the session cap's ask row on comment.
+func capAskDetail(comment int64) map[string]any {
+	return map[string]any{
 		"question": capAsk, "ask": capAsk, "comment": comment, "source": "cap",
 		"reason": capReached + "\nlast: the review asked for changes",
 		"why":    "the card used its 3 sessions", "info": "a grant buys one session",
-		"choices": []string{"Grant one session", "Leave it waiting"}})
+		"choices": []string{"Grant one session", "Leave it waiting"}}
 }
 
 func onlyOpenCase(t *testing.T, s *factoryd.PGStore) Case {
@@ -169,4 +174,46 @@ func testPolicyVersion() policy.Version {
 		panic(err)
 	}
 	return policy.Version{ID: 7, Commit: "c7", Tree: tree}
+}
+
+// openAtHuman opens case c and seats it at the human as the door leaves a
+// case, owned by rung 3 with no wake: the seed of a test whose case reached
+// the human by a path the test does not drive.
+func openAtHuman(ctx context.Context, s factoryd.Store, c factoryd.Case) (factoryd.Case, bool, error) {
+	pg, ok := s.(*factoryd.PGStore)
+	if !ok {
+		return factoryd.Case{}, false, fmt.Errorf("openAtHuman seats a case in Postgres, not in a %T", s)
+	}
+	got, opened, err := pg.OpenCase(ctx, c)
+	if err == nil {
+		_, err = pg.DB().ExecContext(ctx, `UPDATE cases SET status = 'at_human', owner_rung = 3, next_wake_at = NULL WHERE id = $1`, got.ID)
+	}
+	if err == nil {
+		got, err = pg.CaseByID(ctx, got.ID)
+	}
+	return got, opened, err
+}
+
+// facedCap is the session cap's case at the human with its face on comment:
+// the case its ask opens, seated at the human, then its face's ask row,
+// which names it and gives it the face's step of rung 3. The seed of a test
+// about a case already faced.
+func facedCap(t *testing.T, s *factoryd.PGStore, comment int64) Case {
+	t.Helper()
+	ctx := context.Background()
+	card, _, err := s.Task(ctx, caseTask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ask := capAskDetail(comment)
+	c, err := CaseFromAsk(card, Event{Kind: EventQuestionAsked, Detail: ask}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, _, err = openAtHuman(ctx, s, c); err != nil {
+		t.Fatal(err)
+	}
+	ask["case_id"] = c.ID
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, ask)
+	return caseByID(t, s, c.ID)
 }

@@ -3399,7 +3399,7 @@ func TestImpasseRefusalNamesTheState(t *testing.T) {
 func TestActReplanSendsADependencysWorkToThePlanner(t *testing.T) {
 	ctx := context.Background()
 	r, store, _ := impasseRig(t)
-	c, _, err := store.OpenCase(ctx, Case{TaskID: "s", Repository: "sf/repo", Kind: CaseDependencyFailed, StateKey: "c", Status: CaseAtHuman})
+	c, _, err := openAtHuman(ctx, store, Case{TaskID: "s", Repository: "sf/repo", Kind: CaseDependencyFailed, StateKey: "c"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3423,7 +3423,7 @@ func TestActReplanRefusedWhileTheCardStillWaits(t *testing.T) {
 	ctx := context.Background()
 	r, store, _ := impasseRig(t)
 	store.closed["p"] = time.Now().UTC()
-	c, _, err := store.OpenCase(ctx, Case{TaskID: "s", Repository: "sf/repo", Kind: CaseDependencyFailed, StateKey: "c", Status: CaseAtHuman})
+	c, _, err := openAtHuman(ctx, store, Case{TaskID: "s", Repository: "sf/repo", Kind: CaseDependencyFailed, StateKey: "c"})
 	if err != nil {
 		t.Fatal(err)
 	}

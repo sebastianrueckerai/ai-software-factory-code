@@ -2436,7 +2436,7 @@ func TestReconcileRebuildsCheckinVerdicts(t *testing.T) {
 func TestEscalateWritesNoEscalationRowAndNoAlert(t *testing.T) {
 	r, store, _ := newActivityRunner(t, prTask, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
 	for _, reason := range []string{"The agent asks: Which file?\nWhy: open", "supervisor escalated: the check cannot pass", CapReached + "\nlast: no push", HealedReason} {
-		if _, err := r.FaceStop(context.Background(), "t1", reason, nil); err != nil {
+		if _, err := r.PgFaceStop(context.Background(), "t1", reason, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2455,7 +2455,7 @@ func TestEscalateNamesAWaitThatEndsOnItsOwn(t *testing.T) {
 	const next = "The task resumes on its own as above. Reply on this issue to start a new attempt sooner with your comment as guidance, or close the issue to end the task."
 	until := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	for _, decision := range []string{policy.RefusedDayCap, policy.RefusedMonthCap, policy.RefusedProjectCap} {
-		if _, err := r.FaceStop(context.Background(), "t1", CapWaitReason(decision, capGateway(decision), "spent", until), nil); err != nil {
+		if _, err := r.PgFaceStop(context.Background(), "t1", CapWaitReason(decision, capGateway(decision), "spent", until), nil); err != nil {
 			t.Fatal(err)
 		}
 		if got := fj.comments[len(fj.comments)-1]; !strings.HasSuffix(got, next) {
@@ -2475,11 +2475,11 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 	rows := &fakeEventRecorder{}
 	r.timeline.Events = teeEvents{rows, store}
 	for _, reason := range []string{"The agent asks: Which file?\nWhy: open\nRecommendation: a.txt, it is first", HealedReason} {
-		if _, err := r.FaceStop(context.Background(), "t1", reason, []string{"a.txt", "b.txt", "ask @mallory"}); err != nil {
+		if _, err := r.PgFaceStop(context.Background(), "t1", reason, []string{"a.txt", "b.txt", "ask @mallory"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := r.FaceStop(context.Background(), "t1", "supervisor escalated: the check cannot pass\n\nProgress: 3 commands", nil); err != nil {
+	if _, err := r.PgFaceStop(context.Background(), "t1", "supervisor escalated: the check cannot pass\n\nProgress: 3 commands", nil); err != nil {
 		t.Fatal(err)
 	}
 	sane := []string{"a.txt", "b.txt", "ask ＠mallory"}
@@ -2619,7 +2619,7 @@ func TestFaceRecordsTheAskRow(t *testing.T) {
 	r, store, _ := newActivityRunner(t, prTask, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
 	rows := &fakeEventRecorder{}
 	r.timeline.Events = teeEvents{rows, store}
-	if _, err := r.FaceStop(context.Background(), "t1", "The agent asks: Which file?\nWhy: open", nil); err != nil {
+	if _, err := r.PgFaceStop(context.Background(), "t1", "The agent asks: Which file?\nWhy: open", nil); err != nil {
 		t.Fatal(err)
 	}
 	asked := store.askedRows("t1")
@@ -2640,7 +2640,7 @@ func TestFaceFailsBeforeTheWaitWhenItsRowCannotBeWritten(t *testing.T) {
 	r, store, _ := newActivityRunner(t, prTask, fj)
 	r.timeline.Events = teeEvents{&fakeEventRecorder{}, store}
 	store.recordFails = map[string]int{EventQuestionAsked: 1}
-	if _, err := r.FaceStop(context.Background(), "t1", "The agent asks: Which file?\nWhy: open", nil); err == nil {
+	if _, err := r.PgFaceStop(context.Background(), "t1", "The agent asks: Which file?\nWhy: open", nil); err == nil {
 		t.Fatal("face with a failing ask row = nil error, want the row's error")
 	}
 	if got := store.tasks["t1"].Status; got != "running" {
@@ -2658,7 +2658,7 @@ func TestFaceAsksAHumanOnTheIssue(t *testing.T) {
 	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}}
 	r, store, objects := newActivityRunner(t, prTask, fj)
 
-	id, err := r.FaceStop(context.Background(), "t1", "the check cannot pass\n\nProgress: 3 commands", nil)
+	id, err := r.PgFaceStop(context.Background(), "t1", "the check cannot pass\n\nProgress: 3 commands", nil)
 	if err != nil {
 		t.Fatalf("faceStop: %v", err)
 	}
@@ -2675,7 +2675,7 @@ func TestFaceAsksAHumanOnTheIssue(t *testing.T) {
 	if !strings.Contains(string(timeline), `"step":"escalated"`) || !strings.Contains(string(timeline), `"comment":701`) {
 		t.Fatalf("timeline = %s", timeline)
 	}
-	if _, err := r.FaceStop(context.Background(), "t1", "asked again", nil); err != nil || len(fj.comments) != 2 {
+	if _, err := r.PgFaceStop(context.Background(), "t1", "asked again", nil); err != nil || len(fj.comments) != 2 {
 		t.Fatalf("second Escalate: %v, comments = %d", err, len(fj.comments))
 	}
 	// a human answer starts the next attempt
@@ -2692,7 +2692,7 @@ func TestEscalateATaskWithoutAnIssue(t *testing.T) {
 	task.IssueNumber, task.Source, task.Parent = 0, SourceScreening, "t-parent"
 	r, store, _ := newActivityRunner(t, task, fj)
 	reason := providerRefused + "6 sessions in a row (status 429): budget exhausted"
-	id, err := r.FaceStop(context.Background(), "t1", reason, nil)
+	id, err := r.PgFaceStop(context.Background(), "t1", reason, nil)
 	if err != nil {
 		t.Fatalf("faceStop: %v", err)
 	}
@@ -2735,7 +2735,7 @@ func TestEscalateQuotesTheLastToolRefusal(t *testing.T) {
 		if err := objects.Put(ctx, "sessions/t1/s1.jsonl", []byte(c.transcript)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := r.FaceStop(context.Background(), "t1", "the planner session stopped: it was told to report the exact refusal, and cannot", nil); err != nil {
+		if _, err := r.PgFaceStop(context.Background(), "t1", "the planner session stopped: it was told to report the exact refusal, and cannot", nil); err != nil {
 			t.Fatal(err)
 		}
 		q := questionOfAsk(rows.rows[0].Detail)
@@ -2768,7 +2768,7 @@ func TestEscalateOfAProverQuotesNoRefusal(t *testing.T) {
 	}
 	rows := &fakeEventRecorder{}
 	r.timeline.Events = rows
-	if _, err := r.FaceStop(context.Background(), "t1", providerRefused+"3 sessions in a row (status 400): the request was refused", nil); err != nil {
+	if _, err := r.PgFaceStop(context.Background(), "t1", providerRefused+"3 sessions in a row (status 400): the request was refused", nil); err != nil {
 		t.Fatal(err)
 	}
 	ask := string(mustJSON(rows.rows[0].Detail))

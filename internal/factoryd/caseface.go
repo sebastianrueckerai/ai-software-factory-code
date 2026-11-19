@@ -99,15 +99,9 @@ func caseWhy(c Case, f CaseFacts, steps []CaseStep) string {
 	var why string
 	if reason, _ := c.Facts["reason"].(string); reason != "" {
 		why = ShapedQuestion(reason, questionFactsOf(f), nil).Why
-	} else if class, _ := c.Facts["class"].(string); c.Kind == CaseMergeApproval && class != "" {
-		why = fmt.Sprintf("The merge gate classes the change %s: a human decides its merge.", class)
-		if line, _ := c.Facts["review_not_run"].(string); line != "" {
-			why += " " + line
-		}
-	} else {
-		words, ok := caseKindWords[c.Kind]
-		why = "The case is the " + cmp.Or(words, "open problem") + "."
-		if !ok {
+	} else if why = mergeWhy(c); why == "" {
+		why = "The case is the " + kindRow(c.Kind).Words + "."
+		if kindRow(c.Kind).Words == "" {
 			why = "The case is " + strings.ReplaceAll(string(c.Kind), "_", " ") + "."
 		}
 	}
@@ -120,6 +114,21 @@ func caseWhy(c Case, f CaseFacts, steps []CaseStep) string {
 		if s.Outcome == StepHandedUp && strings.TrimSpace(s.Found) != "" {
 			return strings.TrimSpace(why + " " + firstSentences(s.Found, 2))
 		}
+	}
+	return why
+}
+
+// mergeWhy is why merge approval case c asks a human: the merge gate's
+// class of its change, and why its review did not run; "" for another
+// kind or a case with no class.
+func mergeWhy(c Case) string {
+	class, _ := c.Facts["class"].(string)
+	if c.Kind != CaseMergeApproval || class == "" {
+		return ""
+	}
+	why := fmt.Sprintf("The merge gate classes the change %s: a human decides its merge.", class)
+	if line, _ := c.Facts["review_not_run"].(string); line != "" {
+		why += " " + line
 	}
 	return why
 }

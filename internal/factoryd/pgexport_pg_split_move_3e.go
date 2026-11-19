@@ -73,7 +73,7 @@ func (r *Runner) PgRungUp(ctx context.Context, t Task, c Case, f CaseFacts, step
 // PgSignalFaced runs signalFaced on a runner over store and wf alone, for
 // the moved rung 1 test that pins its retries.
 func PgSignalFaced(ctx context.Context, store Store, wf Workflows, taskID string, caseID, comment int64) {
-	(&Runner{store: store, cfg: RunnerConfig{Workflows: wf}}).signalFaced(ctx, taskID, caseID, comment)
+	(&Runner{store: store, cfg: RunnerConfig{Workflows: wf}}).signalFaced(ctx, taskID, Case{ID: caseID}, comment)
 }
 
 // PgResendCaseSignals aliases the heal pass's unexported resendCaseSignals,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 )
@@ -23,15 +24,15 @@ func setCaseTaskStatus(t *testing.T, s *PGStore, status string) {
 	}
 }
 
-func withdrawnFor(t *testing.T, s *PGStore, id int64, reason string) {
+func withdrawnFor(t *testing.T, s *PGStore, id int64, reason string, steps int) {
 	t.Helper()
 	got := caseByID(t, s, id)
 	want := &CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: reason}
 	if got.Status != CaseWithdrawn || !reflect.DeepEqual(got.Resolution, want) {
 		t.Fatalf("case %d = %+v, resolution %+v; want withdrawn %+v", id, got, got.Resolution, want)
 	}
-	if steps := caseStepsOf(t, s, id); len(steps) != 1 || steps[0].Outcome != StepWithdrawn {
-		t.Fatalf("case %d steps = %+v; want the one step withdrawn", id, steps)
+	if held := caseStepsOf(t, s, id); len(held) != steps || slices.ContainsFunc(held, func(st CaseStep) bool { return st.Outcome != StepWithdrawn }) {
+		t.Fatalf("case %d steps = %+v; want %d, each withdrawn", id, held, steps)
 	}
 }
 
@@ -48,12 +49,11 @@ func TestReconcileCasesWithdrawsTheCasesOfEndedCards(t *testing.T) {
 	for _, status := range []string{"done", "failed", "closed"} {
 		t.Run(status, func(t *testing.T) {
 			s := cardCaseStore(t, "cases_heal")
-			askCap(t, s, 27001)
-			c := onlyOpenCase(t, s)
+			c := facedCap(t, s, 27001)
 			setCaseTaskStatus(t, s, status)
 
 			reconcile(t, s, CaseHealReport{Withdrawn: 1})
-			withdrawnFor(t, s, c.ID, "card ended "+status)
+			withdrawnFor(t, s, c.ID, "card ended "+status, 1)
 			reconcile(t, s, CaseHealReport{})
 		})
 	}
@@ -65,16 +65,15 @@ func TestReconcileCasesWithdrawsTheCasesOfEndedCards(t *testing.T) {
 // withdraws it.
 func TestReconcileCasesLeavesAnEndedCardsMonitorCase(t *testing.T) {
 	s := cardCaseStore(t, "cases_heal")
-	askCap(t, s, 27001)
-	own := onlyOpenCase(t, s)
-	flag, _, err := s.OpenCase(context.Background(), Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: "issue_open_after_end|x",
-		Status: CaseAtHuman, Problem: "Monitor flag: issue_open_after_end"})
+	own := facedCap(t, s, 27001)
+	flag, _, err := openAtHuman(context.Background(), s, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: "issue_open_after_end|x",
+		Problem: "Monitor flag: issue_open_after_end"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	setCaseTaskStatus(t, s, "done")
 	reconcile(t, s, CaseHealReport{Withdrawn: 1})
-	withdrawnFor(t, s, own.ID, "card ended done")
+	withdrawnFor(t, s, own.ID, "card ended done", 1)
 	if got := caseByID(t, s, flag.ID); got.Status != CaseAtHuman {
 		t.Fatalf("the monitor case = %s, want it at the human", got.Status)
 	}
@@ -89,7 +88,7 @@ func TestReconcileCasesLeavesAPlansWaitOnItsFailedCard(t *testing.T) {
 	setCaseTaskStatus(t, s, "done")
 	open := func(id string) Case {
 		t.Helper()
-		c, _, err := s.OpenCase(ctx, Case{TaskID: id, Repository: "sf/r", Kind: CaseDependencyFailed, StateKey: "t-a", Status: CaseAtHuman,
+		c, _, err := openAtHuman(ctx, s, Case{TaskID: id, Repository: "sf/r", Kind: CaseDependencyFailed, StateKey: "t-a",
 			Problem: "A dependency failed: #5"})
 		if err != nil {
 			t.Fatal(err)
@@ -138,7 +137,10 @@ func TestReconcileCasesResolvesAMergeCaseWhoseApprovalWasDecided(t *testing.T) {
 		t.Fatalf("deny: %v", err)
 	}
 	reconcile(t, s, CaseHealReport{Withdrawn: 1})
-	withdrawnFor(t, s, c.ID, leftQueue)
+	want := &CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: leftQueue}
+	if got := caseByID(t, s, c.ID); got.Status != CaseWithdrawn || !reflect.DeepEqual(got.Resolution, want) || len(caseStepsOf(t, s, c.ID)) != 0 {
+		t.Fatalf("case = %+v, resolution %+v, steps %+v; want withdrawn %+v with no step: it never climbed", got, got.Resolution, caseStepsOf(t, s, c.ID), want)
+	}
 }
 
 // agedMerge opens a merge request of caseTask for pull request 1479 at
@@ -173,11 +175,12 @@ func TestReconcileCasesOpensTheCaseOfAPendingMergeWithNone(t *testing.T) {
 	}
 	reconcile(t, s, CaseHealReport{Opened: 1})
 	c := onlyOpenCase(t, s)
-	if c.Kind != CaseMergeApproval || c.StateKey != "pr:1479@abc1479" || c.Status != CaseAtHuman || c.Facts["approval"] != float64(id) {
-		t.Fatalf("case = %+v; want the pending request's merge case at the human", c)
+	if c.Kind != CaseMergeApproval || c.StateKey != "pr:1479@abc1479" || c.Status != CaseOpen || c.OwnerRung != 0 || c.Facts["approval"] != float64(id) ||
+		c.NextWakeAt == nil || c.NextWakeAt.After(time.Now()) {
+		t.Fatalf("case = %+v; want the pending request's merge case open at rung 0 and due", c)
 	}
-	if steps := caseStepsOf(t, s, c.ID); len(steps) != 1 || steps[0].Rung != 3 || steps[0].Outcome != StepInProgress {
-		t.Fatalf("steps = %+v; want one running rung 3 step", steps)
+	if steps := caseStepsOf(t, s, c.ID); len(steps) != 0 {
+		t.Fatalf("steps = %+v; want none: the case-wake pass climbs it", steps)
 	}
 	reconcile(t, s, CaseHealReport{})
 }
@@ -212,8 +215,8 @@ func TestReconcileCasesWithdrawsThePlanQuestionsANewerRevisionReplaced(t *testin
 	}
 
 	reconcile(t, s, CaseHealReport{Withdrawn: 2})
-	withdrawnFor(t, s, open[0].ID, "plan revision 2 replaced it")
-	withdrawnFor(t, s, open[1].ID, "plan revision 2 replaced it")
+	withdrawnFor(t, s, open[0].ID, "plan revision 2 replaced it", 0)
+	withdrawnFor(t, s, open[1].ID, "plan revision 2 replaced it", 0)
 	if live := onlyOpenCase(t, s); live.ID != open[2].ID {
 		t.Fatalf("live case = %+v; want revision 2's question", live)
 	}
@@ -238,9 +241,9 @@ func TestReconcileCasesKeepsAQuestionALaterRevisionAsksAgain(t *testing.T) {
 	}
 
 	reconcile(t, s, CaseHealReport{Withdrawn: 1})
-	withdrawnFor(t, s, first.ID, "plan revision 2 replaced it")
-	if live := onlyOpenCase(t, s); live.ID != open[1].ID || live.Status != CaseAtHuman {
-		t.Fatalf("live case = %+v; want revision 2's question at the human", live)
+	withdrawnFor(t, s, first.ID, "plan revision 2 replaced it", 0)
+	if live := onlyOpenCase(t, s); live.ID != open[1].ID || live.Status != CaseOpen {
+		t.Fatalf("live case = %+v; want revision 2's question open on its rungs", live)
 	}
 }
 
@@ -251,22 +254,21 @@ func TestReconcileCasesKeepsThePlanCaseOfACardWithNoRevision(t *testing.T) {
 	c := onlyOpenCase(t, s)
 
 	reconcile(t, s, CaseHealReport{})
-	if got := caseByID(t, s, c.ID); got.Status != CaseAtHuman {
-		t.Fatalf("plan case = %+v; want it at the human", got)
+	if got := caseByID(t, s, c.ID); got.Status != CaseOpen {
+		t.Fatalf("plan case = %+v; want it open on its rungs", got)
 	}
 }
 
 func TestReconcileCasesWithdrawsTheAsksOfACardThatMovedOn(t *testing.T) {
 	ctx := context.Background()
 	s := cardCaseStore(t, "cases_heal")
-	askCap(t, s, 27001)
-	capCase := onlyOpenCase(t, s)
+	capCase := facedCap(t, s, 27001)
 	askPlan(t, s, "Which database?", 1, "")
 	openMerge(t, s, "abc1479")
 	setCaseTaskStatus(t, s, "running")
 
 	reconcile(t, s, CaseHealReport{Moved: 1})
-	withdrawnFor(t, s, capCase.ID, "the card moved on to running")
+	withdrawnFor(t, s, capCase.ID, "the card moved on to running", 1)
 	open, err := s.OpenCasesOf(ctx, caseTask)
 	if err != nil || len(open) != 2 || open[0].Kind != CasePlanQuestion || open[1].Kind != CaseMergeApproval {
 		t.Fatalf("OpenCasesOf = %+v, %v; want the plan question and the merge live", open, err)

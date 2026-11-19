@@ -60,10 +60,10 @@ func TestAttachAnalysisTool(t *testing.T) {
 		status int
 		want   string
 	}{
-		{&factoryd.AskSettledError{Kind: "question", Word: "answered", By: "sebastian"}, http.StatusConflict,
+		{&factoryd.AskSettledError{Word: "answered", By: "sebastian"}, http.StatusConflict,
 			"The question of #13 is answered by sebastian. A settled ask is done; escalate files a new one when you need a person."},
-		{&factoryd.AskSettledError{Kind: "criteria", Word: "superseded"}, http.StatusConflict,
-			"The criteria request of #13 is superseded. A settled ask is done; escalate files a new one when you need a person."},
+		{&factoryd.AskSettledError{Word: "moved on"}, http.StatusConflict,
+			"The question of #13 is moved on. A settled ask is done; escalate files a new one when you need a person."},
 		{factoryd.ErrNoAsk, http.StatusNotFound,
 			"Card #13 asks nothing in the chat; escalate files an ask when you need a person."},
 		{errors.New("the store is down"), http.StatusBadGateway,
@@ -76,15 +76,6 @@ func TestAttachAnalysisTool(t *testing.T) {
 		var no *refusal
 		if !errors.As(got, &no) || no.status != tc.status || no.msg != tc.want {
 			t.Fatalf("the refusal = %v, want %d %q", got, tc.status, tc.want)
-		}
-	}
-}
-
-// An ask's noun reads as words, its kind's underscore a space.
-func TestAskNounReadsAsWords(t *testing.T) {
-	for kind, want := range map[string]string{factoryd.ApprovalMerge: "merge request", factoryd.ApprovalCriteriaRerun: "criteria rerun request", "": "question"} {
-		if got := askNoun(kind); got != want {
-			t.Errorf("askNoun(%q) = %q, want %q", kind, got, want)
 		}
 	}
 }

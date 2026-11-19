@@ -537,7 +537,7 @@ func (s *acceptanceStore) UnconfirmedFactoryCloses(_ context.Context, olderThan 
 	defer s.mu.Unlock()
 	var out []factoryd.IntakeEvent
 	for _, e := range s.events {
-		if e.Kind == factoryd.IntakeFactoryClosed && !s.confirmedCloses[[2]any{e.TaskID, e.CommentID}] && time.Since(e.CreatedAt) > olderThan && len(out) < limit {
+		if e.Kind == factoryd.IntakeFactoryClosed && !s.confirmedCloses[[2]any{e.TaskID, e.CommentID}] && (e.CommentID == 0 || time.Since(e.CreatedAt) > olderThan) && len(out) < limit {
 			out = append(out, e)
 		}
 	}
@@ -693,6 +693,10 @@ func (s *acceptanceStore) QueuePause(context.Context, string) (factoryd.QueuePau
 
 func (s *acceptanceStore) SetQueuePauseRevert(context.Context, string, string) error { return nil }
 
+func (s *acceptanceStore) ChainHeadRow(context.Context, string) (string, string, bool, error) {
+	return "", "", false, nil
+}
+
 func (s *acceptanceStore) ClearQueuePause(context.Context, string) error { return nil }
 
 func (s *acceptanceStore) PutLiveSession(context.Context, factoryd.LiveSession) error { return nil }
@@ -711,9 +715,11 @@ func (s *acceptanceStore) TakeLiveSession(context.Context, string, string, strin
 	return true, nil
 }
 
-// CreateHumanCard writes the card and records its ask, as the store's one
-// transaction does: an ask that is not recorded leaves no card.
+// CreateHumanCard writes the card, in the status its source files in, and
+// records its ask, as the store's one transaction does: an ask that is not
+// recorded leaves no card.
 func (s *acceptanceStore) CreateHumanCard(ctx context.Context, t factoryd.Task, ask factoryd.HumanAsk) (factoryd.Task, bool, error) {
+	t.Kind, t.Status = "human", factoryd.HumanCardStatus(t.Source)
 	s.mu.Lock()
 	have, ok := s.tasks[t.ID]
 	s.mu.Unlock()
@@ -725,7 +731,7 @@ func (s *acceptanceStore) CreateHumanCard(ctx context.Context, t factoryd.Task, 
 	}
 	if ok {
 		s.mu.Lock()
-		have.Kind, have.Status = "human", "waiting-human"
+		have.Kind, have.Status = "human", t.Status
 		s.tasks[t.ID] = have
 		s.mu.Unlock()
 		return t, true, nil
@@ -1001,13 +1007,14 @@ func (s *acceptanceStore) CloseClearedCard(ctx context.Context, alertID int64, t
 		return a.ID == alertID && a.Kind == factoryd.AlertSigNoz && a.Verdict == ""
 	})
 	s.mu.Unlock()
-	if !ok || t.Status != "waiting-human" || !open {
+	waits := []string{"waiting-agent", "waiting-human"}
+	if !ok || !slices.Contains(waits, t.Status) || !open {
 		return fmt.Errorf("task %s or alert %d: %w", taskID, alertID, factoryd.ErrNotFound)
 	}
 	if err := s.ResolveAlert(ctx, alertID, factoryd.AlertSigNoz, factoryd.VerdictUnjudged, factoryd.FactoryDecider, map[string]any{"closed": "cleared"}); err != nil {
 		return err
 	}
-	return s.TransitionTask(ctx, taskID, []string{"waiting-human"}, "closed")
+	return s.TransitionTask(ctx, taskID, waits, "closed")
 }
 
 func (s *acceptanceStore) ResolveAlert(_ context.Context, id int64, kind, verdict, by string, detail map[string]any) error {
@@ -1599,7 +1606,7 @@ func (s *acceptanceStore) EnsureChatTask(context.Context, string, string, float6
 	return factoryd.Task{}, nil
 }
 
-func (s *acceptanceStore) SetCaseStatus(context.Context, int64, string) error { return nil }
+func (s *acceptanceStore) ToHuman(context.Context, int64) error { return nil }
 
 func (s *acceptanceStore) StartRung1Step(context.Context, string, int, factoryd.CaseStep) (int64, bool, error) {
 	return 0, false, nil

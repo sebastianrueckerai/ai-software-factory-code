@@ -1339,6 +1339,18 @@ func (r *rig) forgetWriters() {
 
 // ownCasesOf are the cases the rig holds for a task: those a test seats, else
 // the one live case of a card waiting on a human.
+// liveCasesOf are card taskID's live cases: its own, and its pending
+// requests' cases, at the human, where none of its own holds the request.
+func (r *rig) liveCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
+	base, err := r.ownCasesOf(ctx, taskID)
+	for _, q := range r.requestCases(ctx, taskID) {
+		if !slices.ContainsFunc(base, func(k factoryd.Case) bool { return approvalOf(q.req, k) }) {
+			base = append(base, q.c)
+		}
+	}
+	return base, err
+}
+
 func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 	if r.openCases != nil {
 		return r.openCases[taskID], nil
@@ -1355,12 +1367,15 @@ func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, e
 	if bt.Question != nil {
 		problem = bt.Question.Ask
 	}
+	key := ""
 	if k.Track == policy.TrackPlan {
 		if open := r.tasks.planCases(taskID); len(open) > 0 {
 			return open, nil
 		}
-		// a plan's case is its first open question
+		// a plan's case is its first open question, keyed on the newest
+		// revision as caseFromAsk keys it
 		if rev, ok, _ := r.tasks.PlanRevision(ctx, taskID, 0); ok {
+			key = fmt.Sprintf("rig@r%d", rev.Revision)
 			qs, _ := r.tasks.PlanQuestions(ctx, taskID, rev.Revision)
 			if i := slices.IndexFunc(qs, func(q factoryd.PlanQuestion) bool { return !q.Answered() }); i >= 0 {
 				problem = qs[i].Text
@@ -1374,7 +1389,7 @@ func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, e
 	case k.Track == policy.TrackPlan:
 		kind = factoryd.CasePlanQuestion
 	}
-	return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: kind, Status: factoryd.CaseAtHuman, Problem: problem, CommentID: bt.QuestionComment}}, nil
+	return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: kind, StateKey: key, Status: factoryd.CaseAtHuman, Problem: problem, CommentID: bt.QuestionComment}}, nil
 }
 
 // planCases are the cases of a plan's newest revision at the human, one for
@@ -1505,15 +1520,7 @@ func newRig(t *testing.T) *rig {
 		BoardDigest: func(_ context.Context, repository string) (factoryd.BoardDigest, error) {
 			return r.boardDigests[repository], nil
 		},
-		OpenCasesOf: func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
-			base, err := r.ownCasesOf(ctx, taskID)
-			for _, q := range r.requestCases(ctx, taskID) {
-				if !slices.ContainsFunc(base, func(k factoryd.Case) bool { return approvalOf(q.req, k) }) {
-					base = append(base, q.c)
-				}
-			}
-			return base, err
-		},
+		OpenCasesOf: r.liveCasesOf,
 		CaseByID: func(ctx context.Context, id int64) (factoryd.Case, error) {
 			all := slices.Clone(r.endedCases)
 			for _, open := range r.openCases {
@@ -1541,8 +1548,19 @@ func newRig(t *testing.T) *rig {
 			for id, ask := range r.caseAsks {
 				d.Asks[id] = ask
 			}
+			// a pending request's case is on the desk, its card on the board or not
+			for _, a := range r.approvals.rows {
+				if a.Project == repository && !slices.ContainsFunc(tasks, func(bt factoryd.BoardTask) bool { return bt.ID == a.TaskID }) {
+					tasks = append(tasks, factoryd.BoardTask{Task: factoryd.Task{ID: a.TaskID, Repository: repository}})
+				}
+			}
 			for _, bt := range tasks {
 				open, _ := r.ownCasesOf(ctx, bt.ID)
+				for _, q := range r.requestCases(ctx, bt.ID) {
+					if !slices.ContainsFunc(open, func(k factoryd.Case) bool { return approvalOf(q.req, k) }) {
+						open = append(open, q.c)
+					}
+				}
 				for _, k := range open {
 					d.Cases = append(d.Cases, k)
 					// a case reaches the human with its offers stored on its ask, as the Runner's passes write them
@@ -1551,7 +1569,7 @@ func newRig(t *testing.T) *rig {
 						if ok && ask.Detail != nil {
 							detail = ask.Detail
 						}
-						if offers, refusals := factoryd.OffersFor(factoryd.FactsOf(k)); factoryd.AnswersByOffers(k, bt.Kind) {
+						if offers, refusals := factoryd.OffersFor(factoryd.FactsOf(k)); factoryd.AnswersByOffers(k) {
 							detail["offers"], detail["refusals"] = offers, refusals
 						}
 						d.Asks[k.ID] = factoryd.CaseAsk{At: ask.At, Detail: detail}
@@ -2819,11 +2837,14 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 9}})
 	// the human lane's approvals column is the wide view's, its cards as
 	// brief as the narrow view's: each title opens its task's drawer,
-	// which holds the facts in full
+	// which holds the facts in full. A merge request, faced, is its case's
+	// row among the escalations, which hosts it
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	start := strings.Index(body, `id="col-approvals"`)
-	end := strings.Index(body[start:], "</section>")
-	lane := body[start : start+end]
+	column := func(id string) string {
+		start := strings.Index(body, `id="`+id+`"`)
+		return body[start : start+strings.Index(body[start:], "</section>")]
+	}
+	lane, escalations := column("col-approvals"), column("col-escalations")
 	for _, want := range []string{
 		// the resource request: type, purpose, lease, monthly cost, project, the task
 		`<article class="card approval" data-card="t-res"`,
@@ -2838,6 +2859,12 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		`<p class="why">a lease of 300 minutes exceeds the envelope&#39;s 4 h</p>`,
 		`<span class="effect">commissions the server for this lease; the project&#39;s envelope is its file&#39;s</span>`,
 		`<span class="effect">refuses the request; the agent is told your reason</span>`,
+	} {
+		if !strings.Contains(lane, want) {
+			t.Errorf("approval lane lacks %q", want)
+		}
+	}
+	for _, want := range []string{
 		// the merge request: the PR, the chips and the one decide block;
 		// the whole text lives in the drawer
 		`<article class="card approval" data-card="t-m"`,
@@ -2852,19 +2879,13 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		`sends the pull request back to its agent with your note`,
 		`name="csrf" value="` + s.csrf + `"`, `<label for="note-t-m">Note, posted on the issue as you; the actions marked "stays on the step" keep it there</label>`, `<textarea id="note-t-m" name="note"`,
 	} {
-		if !strings.Contains(lane, want) {
-			t.Errorf("approval lane lacks %q", want)
+		if !strings.Contains(escalations, want) {
+			t.Errorf("the merge's case row lacks %q", want)
 		}
 	}
-	// each asking face of the lane holds exactly one decide: one send,
-	// one fund control, one note box (the one-face contract)
-	for _, id := range []string{"t-res", "t-m"} {
-		at := strings.Index(lane, `data-card="`+id+`"`)
-		if at < 0 {
-			t.Fatalf("the lane holds no %s card", id)
-		}
-		begin := strings.LastIndex(lane[:at], "<article")
-		kard := lane[begin : begin+strings.Index(lane[begin:], "</article>")]
+	// each asking face holds exactly one decide: one send, one fund
+	// control, one note box (the one-face contract)
+	for id, kard := range map[string]string{"t-res": approvalFaceOf(t, lane, "t-res"), "t-m": hostedFaceOf(t, escalations, "t-m")} {
 		for what, want := range map[string]int{`<form`: 1, `class="decide resolve"`: 1, `name="fund_eur"`: 1, `<textarea`: 1} {
 			if got := strings.Count(kard, what); got != want {
 				t.Errorf("the %s card's decide carries %s %d times, want %d:\n%s", id, what, got, want, kard)
@@ -2880,11 +2901,11 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		}
 	}
 	for _, wall := range []string{"<dl class=\"facts\">", "Risk class", "Earlier review", "Security audit", "Why a human", "Agent's recommendation", "Red in the log"} {
-		if strings.Contains(lane, wall) {
+		if strings.Contains(lane+escalations, wall) {
 			t.Errorf("the wide approval card shows the facts wall %q", wall)
 		}
 	}
-	if strings.Contains(lane, "/approvals/5/") || !strings.Contains(lane, `Approvals <span class="count">2</span>`) {
+	if strings.Contains(lane+escalations, "/approvals/5/") || !strings.Contains(lane, `Approvals <span class="count">1</span>`) {
 		t.Error("the lane shows a decided request")
 	}
 }

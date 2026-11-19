@@ -253,9 +253,10 @@ func rungTwoRig(t *testing.T, judgment string) (rungRig, *Waker, *fakeWakeStarte
 // branch of a card.
 type chainForgejo struct {
 	mu       sync.Mutex
-	issues   []string // "title\n\nbody" of every issue filed
-	comments []string // "repository#issue body" of every comment posted
-	closed   []string // "repository#issue" of every issue closed
+	issues   []string         // "title\n\nbody" of every issue filed
+	comments []string         // "repository#issue body" of every comment posted
+	closed   []string         // "repository#issue" of every issue closed
+	runs     []map[string]any // the action runs every repository lists
 }
 
 func (f *chainForgejo) srv(t *testing.T) *Forgejo {
@@ -279,7 +280,7 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 		}
 		switch {
 		case p == "/actions/runs":
-			reply(map[string]any{"workflow_runs": nil})
+			reply(map[string]any{"workflow_runs": f.runs})
 		case r.Method == "GET" && p == "/commits" && r.URL.Query().Get("not") != "":
 			q := r.URL.Query()
 			base, head := q.Get("not"), q.Get("sha")
@@ -306,7 +307,7 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 			f.issues = append(f.issues, in["title"]+"\n\n"+in["body"])
 			w.WriteHeader(http.StatusCreated)
 			reply(map[string]any{"number": 30 + len(f.issues)})
-		case r.Method == "PUT" && strings.HasSuffix(p, "/labels"):
+		case r.Method == "PUT" && strings.HasSuffix(p, "/labels"), r.Method == "GET" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/labels"):
 			reply([]any{})
 		case r.Method == "POST" && strings.HasPrefix(p, "/actions/runs/") && strings.HasSuffix(p, "/rerun"):
 			w.WriteHeader(http.StatusNoContent)

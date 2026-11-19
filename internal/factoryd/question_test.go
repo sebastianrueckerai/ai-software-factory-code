@@ -842,3 +842,33 @@ func TestQuestionCapIsTheQuestionsOwnField(t *testing.T) {
 		t.Errorf("QuestionCap of a plain ask = %q, want none", got)
 	}
 }
+
+// A merge case's face asks what its request's opening poke asked: on green
+// checks the merge at its risk, which Approve answers; on a factory pull
+// request's red checks a run of them again, which the re-run answers; on
+// an agent's red checks a send back or a close, which no choice answers.
+// Its why is the merge gate's class, with why the review did not run, and
+// its info is the rungs' alone.
+func TestMergeQuestionAsksWhatTheRequestsPokeAsked(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		facts   map[string]any
+		ask     string
+		why     string
+		choices []string
+	}{
+		{"green", map[string]any{"pr": float64(612), "class": "high", "factory": false, "red_checks": false},
+			"Merge PR #612, high risk.", "The merge gate classes the change high: a human decides its merge.", []string{"Approve"}},
+		{"a factory pull request on red checks", map[string]any{"pr": float64(612), "class": "normal", "factory": true, "red_checks": true},
+			"The checks of PR #612 are red, so it cannot merge: run them again, or close it with your words.",
+			"The merge gate classes the change normal: a human decides its merge.", []string{ChoiceRerun}},
+		{"an agent's on red checks", map[string]any{"pr": int64(612), "class": "normal", "factory": false, "red_checks": true, "review_not_run": "The review did not run: its money ran out."},
+			"PR #612 cannot merge, its checks are red: send it back to the agent with what to change, or close it.",
+			"The merge gate classes the change normal: a human decides its merge. The review did not run: its money ran out.", []string{}},
+	} {
+		q := mergeQuestion(Case{Kind: CaseMergeApproval, Facts: tc.facts})
+		if q.Ask != tc.ask || q.Why != tc.why || q.Info != "" || !slices.Equal(q.Labels(), tc.choices) {
+			t.Errorf("%s: the face = %+v, want ask %q, why %q, no info, choices %q", tc.name, q, tc.ask, tc.why, tc.choices)
+		}
+	}
+}

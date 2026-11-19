@@ -13,8 +13,9 @@ import (
 // judged line's commit, h2. A wait keys on its kind and start: a run quiet
 // since 11:00, a queue held since 09:00, whose wait_over_bound is left to
 // queued_over_bound. A failed dependency opens no case: the run's own
-// trip takes it. An ended card opens a case only for what it left open
-// where Finish closes it, a merged or closing one none.
+// trip takes it. An ended card opens a case only for a case at the human
+// no rung judged and for what it left open where Finish closes it, a
+// merged or closing one none.
 func TestMonitorFlagStates(t *testing.T) {
 	at := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
 	held := at.Add(-3 * time.Hour)
@@ -37,6 +38,7 @@ func TestMonitorFlagStates(t *testing.T) {
 		{running, "finding_confirmed_twice", "0123456789ab", "0123456789ab"},
 		{running, "budget_moved_no_event", "3.00 EUR not 5.00 EUR", "3.00 EUR not 5.00 EUR"},
 		{running, "answer_changed_nothing", "h1", "h1"},
+		{running, "faced_unjudged", "7", "7"},
 		{running, "review_refused_not_run", "review: the gateway refused the call", "h2"},
 		{running, "money_ask_hides_findings", "", "h2"},
 		{running, "dependency_failed", "#5", "-"},
@@ -46,6 +48,7 @@ func TestMonitorFlagStates(t *testing.T) {
 		{closes(digest(DigestHead{Status: "done"})), "issue_open_after_end", "session_cap", "h2"},
 		{digest(DigestHead{Status: "failed"}), "issue_open_after_end", "session_cap", "-"},
 		{digest(DigestHead{Status: "failed"}), "budget_moved_no_event", "3.00 EUR not 5.00 EUR", "-"},
+		{digest(DigestHead{Status: "done"}), "faced_unjudged", "7", "7"},
 		{digest(DigestHead{Status: "merged"}), "review_refused_not_run", "review: x", "-"},
 		{digest(DigestHead{Status: "closing"}), "checkin_cut", "+0:20", "-"},
 	} {

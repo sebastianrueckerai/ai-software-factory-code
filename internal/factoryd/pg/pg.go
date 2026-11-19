@@ -10,8 +10,10 @@ var (
 	holdsSlot            = factoryd.PgHoldsSlot
 	errHeld              = factoryd.PgErrHeld
 	toInt                = factoryd.PgToInt
-	rungsOff             = factoryd.PgRungsOff
+	rung1Off             = factoryd.PgRung1Off
 	monthCapCardQuestion = factoryd.PgMonthCapCardQuestion
+	depFailedReason      = factoryd.PgDepFailedReason
+	planCardFailedReason = factoryd.PgPlanCardFailedReason
 )
 
 type tripAttempt = factoryd.PgTripAttempt
@@ -82,6 +84,7 @@ var (
 	BudgetQuestion            = factoryd.BudgetQuestion
 	CapReached                = factoryd.CapReached
 	CaseMonthCap              = factoryd.CaseMonthCap
+	CaseFactoryMonthCap       = factoryd.CaseFactoryMonthCap
 	CasePlanCriteria          = factoryd.CasePlanCriteria
 	CatchDelta                = factoryd.CatchDelta
 	CatchDeltaFiled           = factoryd.CatchDeltaFiled
@@ -112,7 +115,7 @@ var (
 	CheckinAnswerTool         = factoryd.CheckinAnswerTool
 	CheckinSpendAsk           = factoryd.CheckinSpendAsk
 	CheckinStopCallCap        = factoryd.CheckinStopCallCap
-	ChoiceCase                = factoryd.ChoiceCase
+	ChoiceKind                = factoryd.ChoiceKind
 	ConsoleApproved           = factoryd.ConsoleApproved
 	CriterionInvariant        = factoryd.CriterionInvariant
 	CriterionTest             = factoryd.CriterionTest
@@ -120,6 +123,7 @@ var (
 	ErrDrawRefused            = factoryd.ErrDrawRefused
 	ErrNotDonePlan            = factoryd.ErrNotDonePlan
 	ErrNotHeld                = factoryd.ErrNotHeld
+	CriteriaSourceGate        = factoryd.CriteriaSourceGate
 	ErrNotPerson              = factoryd.ErrNotPerson
 	ErrNotFound               = factoryd.ErrNotFound
 	ErrPlanClosed             = factoryd.ErrPlanClosed
@@ -130,6 +134,7 @@ var (
 	EventCardExtended         = factoryd.EventCardExtended
 	EventCardFunded           = factoryd.EventCardFunded
 	EventCaseClimbed          = factoryd.EventCaseClimbed
+	EventCriteriaGateRun      = factoryd.EventCriteriaGateRun
 	EventGateHead             = factoryd.EventGateHead
 	EventModelReview          = factoryd.EventModelReview
 	EventPlanClosed           = factoryd.EventPlanClosed
@@ -219,6 +224,7 @@ var (
 	ProofProposed             = factoryd.ProofProposed
 	SettleOf                  = factoryd.SettleOf
 	SignalCaseFaced           = factoryd.SignalCaseFaced
+	SignalApproved            = factoryd.SignalApproved
 	SourceSizing              = factoryd.SourceSizing
 	resendCaseSignals         = factoryd.PgResendCaseSignals
 	sessionRoom               = factoryd.PgSessionRoom
@@ -274,6 +280,7 @@ var (
 	Cents                     = factoryd.Cents
 	EventChatBudgetSpent      = factoryd.EventChatBudgetSpent
 	FinalStatuses             = factoryd.FinalStatuses
+	ApproveMerge              = factoryd.ApproveMerge
 	GateApproval              = factoryd.GateApproval
 	GateChecks                = factoryd.GateChecks
 	GateMergeQueue            = factoryd.GateMergeQueue

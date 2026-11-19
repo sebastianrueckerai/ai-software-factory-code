@@ -193,9 +193,30 @@ func TestChatEscalateRefusalNamesTheError(t *testing.T) {
 		"Try again, or post the question on the card's issue.")
 }
 
+// In a wake on a case escalate is refused naming the case: the case reaches
+// the human by its hand-up, and a card of its own would ask a second time.
+// Nothing is filed.
+func TestChatEscalateInACaseWakeNamesTheCase(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	_, s := r.loggedIn(t)
+	filed := 0
+	r.c.cfg.Escalate = func(context.Context, string, factoryd.HumanQuestion, string) (int64, error) {
+		filed++
+		return 42, nil
+	}
+	var events []string
+	trn := r.chatTurnOf(t, s, &events)
+	trn.a.wake, trn.a.birth = true, factoryd.EventCaseClimbed
+	r.c.books.add(trn.key(), []int64{61})
+	_, err := trn.escalate("Which store?", "the ledger is short", "the pool is dry", "Postgres", []string{"Postgres", "SQLite"})
+	refusedAs(t, err, http.StatusConflict, "You hold case 61: hand it up with attach_analysis, its case_id and your recommendation, and it reaches the human with your analysis; a second card would ask twice.")
+	equal(t, "filings", filed, 0)
+}
+
 // An answer that approves a merge needs an approver, as the board's
-// button and the chat's tool do: a writer on the notify list hears the
-// refusal, and the request stays pending.
+// button and the chat's tool do: a writer on the notify list who presses
+// Approve on the merge case's face hears the refusal, and the request
+// stays pending.
 func TestChatAnswerNeedsAnApprover(t *testing.T) {
 	r, _ := newReadsRig(t)
 	r.ledger.approvers = []string{"alice"}
@@ -205,11 +226,16 @@ func TestChatAnswerNeedsAnApprover(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	ctx := t.Context()
 	inbox, _ := r.chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	const question = "Merge PR #9, low risk."
+	if _, err := r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-e", IssueNumber: 13, Kind: factoryd.EventQuestionAsked,
+		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: map[string]any{"question": question, "case_kind": string(factoryd.CaseMergeApproval)}}); err != nil {
+		t.Fatal(err)
+	}
 	for _, e := range []struct{ task, text, choice string }{
-		{"t-e", "#13 waits for you: merge PR #9, low risk.", "Approve"},
+		{"t-e", "#13 needs you: " + question, "Approve"},
 	} {
 		if _, err := r.chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
-			Content: e.text, Choices: []string{e.choice}, TaskID: e.task, Conversation: inbox, BirthKind: factoryd.EventApprovalRequested}); err != nil {
+			Content: e.text, Choices: []string{e.choice}, TaskID: e.task, Conversation: inbox, BirthKind: factoryd.EventQuestionAsked}); err != nil {
 			t.Fatal(err)
 		}
 		if code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {strconv.FormatInt(inbox, 10)},

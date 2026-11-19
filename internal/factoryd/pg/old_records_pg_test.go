@@ -9,12 +9,13 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// A trip that reaches the human writes its face and its question_asked row
-// and nothing else: no escalation intake row and no escalation alert.
+// A trip that reaches the human, through rung 2's hand-up, writes its face
+// and its question_asked row and nothing else: no escalation intake row and
+// no escalation alert.
 func TestATripWritesNoEscalationRowAndNoAlert(t *testing.T) {
 	g := newTripRig(t, "success")
-	rungsOff(g.r)
-	out := g.trip(t, tripCap)
+	rung1Off(g.r)
+	out := g.faced(t, tripCap)
 	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseAtHuman {
 		t.Fatalf("case %+v, want it at the human", c)
 	}
@@ -37,9 +38,9 @@ func TestATripWritesNoEscalationRowAndNoAlert(t *testing.T) {
 // The withdrawal goes through the activity a gate beside the checks uses.
 func TestReconcileReadsTheAnswersByTheAnchorsOfTheAskCases(t *testing.T) {
 	g := newTripRig(t, "success")
-	rungsOff(g.r)
+	rung1Off(g.r)
 	ctx := context.Background()
-	out := g.trip(t, tripCap)
+	out := g.faced(t, tripCap)
 	if out.Comment != 501 {
 		t.Fatalf("the face's comment = %d, want 501", out.Comment)
 	}

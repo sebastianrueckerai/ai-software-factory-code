@@ -274,6 +274,16 @@ func (s *PGStore) ChainLadder(ctx context.Context, repository, sha string) (Chai
 	return l, err
 }
 
+// ChainHeadRow is repository's head row: the commit the chain is at and
+// its status; false with none.
+func (s *PGStore) ChainHeadRow(ctx context.Context, repository string) (sha, status string, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx, `SELECT sha, status FROM chain_runs WHERE repository = $1 AND pr_number = 0`, repository).Scan(&sha, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", false, nil
+	}
+	return sha, status, err == nil, err
+}
+
 // MarkChainRerun stamps repository's head row of sha re-run now.
 func (s *PGStore) MarkChainRerun(ctx context.Context, repository, sha string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE chain_runs SET rerun_at = now()
@@ -1498,7 +1508,7 @@ func (p *ChainPoller) askStall(ctx context.Context, proj Project, sha string, si
 		log.Printf("chain poller: %s: file the stall card: %v", repository, err)
 		return
 	}
-	log.Printf("chain poller: %s: head %s pending since %s: stall card %s, issue #%d", repository, sha, since.UTC().Format(time.RFC3339), t.ID, t.IssueNumber)
+	log.Printf("chain poller: %s: head %s pending since %s: stall card %s", repository, sha, since.UTC().Format(time.RFC3339), cardName(t))
 }
 
 // settleChainCards closes repository's open stall and repair cards once
@@ -1516,7 +1526,7 @@ func (p *ChainPoller) settleChainCards(ctx context.Context, repository, sha, ver
 			log.Printf("chain poller: %s: read the %s card: %v", repository, source, err)
 			continue
 		}
-		if !ok || Final(card.Status) || card.IssueNumber == 0 {
+		if !ok || Final(card.Status) || card.IssueNumber == 0 && card.Kind != "human" {
 			continue
 		}
 		repair := source == SourceChainRepair
@@ -1538,7 +1548,7 @@ func (p *ChainPoller) closeChainCard(ctx context.Context, repository string, car
 		what = "the red this card was filed for"
 	}
 	if err := closeIssueAsFactory(ctx, p.Store, p.Forgejo, card, "factoryd: "+why+"; "+what+" no longer stands. Closing this issue."); err != nil {
-		log.Printf("chain poller: %s: close #%d: %v", repository, card.IssueNumber, err)
+		log.Printf("chain poller: %s: close card %s: %v", repository, cardName(card), err)
 	}
 }
 
@@ -1655,7 +1665,7 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 	if ok {
 		switch held, err := p.repairHeld(ctx, card, run.CommitSHA); {
 		case err != nil:
-			log.Printf("chain poller: %s: read the close of repair card #%d: %v", repository, card.IssueNumber, err)
+			log.Printf("chain poller: %s: read the close of repair card %s: %v", repository, cardName(card), err)
 			return
 		case held:
 			return
@@ -1679,13 +1689,13 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 		runURL = fmt.Sprintf("%s/%s/actions/runs/%d", p.Forgejo.PublicURL, repository, run.Index)
 	}
 	if proj.Agents == policy.AgentsNone {
-		t, number, err := fileHumanTask(ctx, p.Store, p.Forgejo, p.Timeline, proj.Repo(), repairQuestion(repository, run.CommitSHA, findings, runURL, issues), nil,
+		t, _, err := fileHumanTask(ctx, p.Store, p.Forgejo, p.Timeline, proj.Repo(), repairQuestion(repository, run.CommitSHA, findings, runURL, issues), nil,
 			Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", SHA: run.CommitSHA, Source: SourceChainRepair, Author: p.Forgejo.BotUser}, "")
 		if err != nil {
 			log.Printf("chain poller: %s: file the repair card: %v", repository, err)
 			return
 		}
-		log.Printf("chain poller: %s: head %s red: human repair card %s, issue #%d", repository, run.CommitSHA, t.ID, number)
+		log.Printf("chain poller: %s: head %s red: human repair card %s", repository, run.CommitSHA, cardName(t))
 		return
 	}
 	short := run.CommitSHA[:min(7, len(run.CommitSHA))]

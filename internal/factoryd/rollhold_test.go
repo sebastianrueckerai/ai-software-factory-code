@@ -282,8 +282,8 @@ func TestRollerRetryWhileHeldSaysWhen(t *testing.T) {
 			ask = t
 		}
 	}
-	if ask.IssueNumber != 31 {
-		t.Fatalf("the question's card %+v, want issue #31", ask)
+	if ask.ID == "" || ask.IssueNumber != 0 || ask.Status != "waiting-agent" {
+		t.Fatalf("the question's card %+v, want it waiting for its face with no issue", ask)
 	}
 	if err := RetryRoll(ctx, store, roller.Forgejo, ask); err != nil {
 		t.Fatal(err)
@@ -291,11 +291,11 @@ func TestRollerRetryWhileHeldSaysWhen(t *testing.T) {
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	want := "31 factoryd: retry ordered: the failed attempts' bound is reset and one roll task of main's newest green images starts once no plan is open on main. Closing this issue."
-	if !slices.Equal(f.closed, []string{"31"}) || !slices.Equal(f.comments, []string{want}) {
-		t.Fatalf("closed %v, comments %q; want #31 closed with %q", f.closed, f.comments, want)
+	want := "factoryd: retry ordered: the failed attempts' bound is reset and one roll task of main's newest green images starts once no plan is open on main. Closing this issue."
+	if closes := factoryCloses(store, ask.ID); len(f.closed) != 0 || len(f.comments) != 0 || !slices.Equal(closes, []string{want}) {
+		t.Fatalf("closed %v, comments %q, records %q; want the card's close recorded alone as %q", f.closed, f.comments, closes, want)
 	}
-	if len(store.rolls) != 0 || len(wf.started) != 0 || len(f.issues) != 1 {
+	if len(store.rolls) != 0 || len(wf.started) != 0 || len(f.issues) != 0 {
 		t.Fatalf("roll requests %+v, started %v, issues %d; want the ladder reset and no roll", store.rolls, wf.started, len(f.issues))
 	}
 	if !slices.Equal(f.reported, []string{commitC1 + " failure " + rollStatusContext, commitC1 + " success " + rollStatusContext}) {

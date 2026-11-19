@@ -1778,18 +1778,18 @@ func TestRequestApprovalOpensTheCard(t *testing.T) {
 
 // A factory pull request card's merge request says what its approval
 // offers (roadmap 264): it is a factory pull request's, and whether its
-// checks were red, which its row carries to the inbox's poke too: a re-run
-// on red, the approval on green.
+// checks were red, which its case's face reads from the spec: a re-run on
+// red, the approval on green. Its row pokes nobody: the case climbs first.
 func TestRequestApprovalOfAFactoryPullRequest(t *testing.T) {
 	task := gateTask
 	task.Source, task.Kind, task.IssueNumber = SourceTemplateUpdate, "agent", 36
 	for _, c := range []struct {
 		red     bool
-		content string
+		ask     string
 		choices []string
 	}{
-		{true, "#36 waits for you: the checks of PR #9 are red, so it cannot merge; run them again, or close it with your words.", []string{ChoiceRerun}},
-		{false, "#36 waits for you: merge PR #9, high risk.", []string{"Approve"}},
+		{true, "The checks of PR #9 are red, so it cannot merge: run them again, or close it with your words.", []string{ChoiceRerun}},
+		{false, "Merge PR #9, high risk.", []string{"Approve"}},
 	} {
 		r, store, _ := newGateRunner(t, task, &gateForgejo{})
 		rows := &fakeEventRecorder{}
@@ -1817,8 +1817,12 @@ func TestRequestApprovalOfAFactoryPullRequest(t *testing.T) {
 				}
 			}
 		}
-		if m, ok := pokeOf(e, task); !ok || m.Content != c.content || !slices.Equal(m.Choices, c.choices) {
-			t.Fatalf("red %t: the poke = %+v, want %q with %q", c.red, m, c.content, c.choices)
+		if m, ok := pokeOf(e, task); ok {
+			t.Fatalf("red %t: the request's row pokes %+v, want none", c.red, m)
+		}
+		face := mergeQuestion(Case{Kind: CaseMergeApproval, Facts: map[string]any{"pr": float64(9), "class": spec.RiskClass, "factory": spec.Factory, "red_checks": spec.RedChecks}})
+		if face.Ask != c.ask || !slices.Equal(face.Labels(), c.choices) {
+			t.Fatalf("red %t: the face asks %q with %q, want %q with %q", c.red, face.Ask, face.Labels(), c.ask, c.choices)
 		}
 	}
 }

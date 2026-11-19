@@ -3,9 +3,11 @@ package pg
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
@@ -45,7 +47,7 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 	}
 	a.OpenedAt = capped.OpenedAt
 	want := capped
-	want.ID, want.Status, want.OwnerRung, want.WakeOn = a.ID, CaseOpen, 3, []string{}
+	want.ID, want.Status, want.OwnerRung, want.WakeOn = a.ID, CaseOpen, 0, []string{}
 	if !reflect.DeepEqual(a, want) {
 		t.Fatalf("opened case\n%+v\nwant\n%+v", a, want)
 	}
@@ -56,8 +58,8 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 	if err != nil || opened || got.ID != a.ID || got.Status != CaseOpen || got.Problem != capped.Problem {
 		t.Fatalf("OpenCase k1 again = %+v, %v, %v; want case %d unchanged", got, opened, err, a.ID)
 	}
-	if err := s.SetCaseStatus(ctx, a.ID, CaseAtHuman); err != nil {
-		t.Fatalf("SetCaseStatus: %v", err)
+	if _, err := s.DB().ExecContext(ctx, `UPDATE cases SET status = 'at_human', owner_rung = 3 WHERE id = $1`, a.ID); err != nil {
+		t.Fatal(err)
 	}
 	got, opened, err = s.OpenCase(ctx, capped)
 	if err != nil || opened || got.ID != a.ID || got.Status != CaseAtHuman {
@@ -70,13 +72,13 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 	if err != nil || !opened || b.ID == a.ID {
 		t.Fatalf("OpenCase k2 = %d, %v, %v; want a new case beside %d", b.ID, opened, err, a.ID)
 	}
-	if err := s.SetCaseStatus(ctx, b.ID, CaseResolved); err == nil || errors.Is(err, ErrNotFound) {
-		t.Fatalf("SetCaseStatus to resolved = %v, want a refusal that names ResolveCase", err)
-	}
-	ended := k2
-	ended.StateKey, ended.Status = "k3", CaseResolved
-	if _, _, err := s.OpenCase(ctx, ended); err == nil {
-		t.Fatal("OpenCase of a resolved case = nil error, want a refusal")
+	const refused = "OpenCase opens a case only as open: the door moves it to the human"
+	for _, status := range []string{CaseResolved, CaseAtHuman} {
+		ended := k2
+		ended.StateKey, ended.Status = "k3", status
+		if _, _, err := s.OpenCase(ctx, ended); err == nil || err.Error() != refused {
+			t.Fatalf("OpenCase of a case %s = %v, want %q", status, err, refused)
+		}
 	}
 
 	step, err := s.AppendCaseStep(ctx, CaseStep{CaseID: a.ID, Rung: 3, Actor: "sebastian", Outcome: StepInProgress})
@@ -113,8 +115,8 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 	if err := s.ResolveCase(ctx, a.ID+1000, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ResolveCase of no case = %v, want ErrNotFound", err)
 	}
-	if err := s.SetCaseStatus(ctx, a.ID, CaseOpen); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("SetCaseStatus of a resolved case = %v, want ErrNotFound", err)
+	if err := s.ToHuman(ctx, a.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ToHuman of a resolved case = %v, want ErrNotFound", err)
 	}
 
 	open, err := s.OpenCasesOf(ctx, "t1")
@@ -230,9 +232,9 @@ func TestOpenCasesInListsOnlyTheRepositorysOpenCases(t *testing.T) {
 	if err := s.ResolveCase(ctx, r.ID, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil, nil); err != nil {
 		t.Fatalf("ResolveCase: %v", err)
 	}
-	b := open("t3", "sf/b", CaseMergeApproval)
-	if err := s.SetCaseStatus(ctx, b.ID, CaseAtHuman); err != nil {
-		t.Fatalf("SetCaseStatus: %v", err)
+	b, _, err := openAtHuman(ctx, s, Case{TaskID: "t3", Repository: "sf/b", Kind: CaseMergeApproval, StateKey: "k", Problem: "p"})
+	if err != nil {
+		t.Fatal(err)
 	}
 	inA, err := s.OpenCasesIn(ctx, "sf/a")
 	if err != nil || !slices.Equal(caseIDs(inA), []int64{a.ID}) {
@@ -254,7 +256,11 @@ func TestBrieflessCasesAndTheLastAnswer(t *testing.T) {
 	s := caseStore(t)
 	mk := func(key string, status string) int64 {
 		t.Helper()
-		c, _, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "sf/r", Kind: CaseOther, StateKey: key, Problem: key, Status: status})
+		open := s.OpenCase
+		if status == CaseAtHuman {
+			open = func(ctx context.Context, c Case) (Case, bool, error) { return openAtHuman(ctx, s, c) }
+		}
+		c, _, err := open(ctx, Case{TaskID: "t1", Repository: "sf/r", Kind: CaseOther, StateKey: key, Problem: key})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -299,7 +305,7 @@ func TestBrieflessCasesTakeAShareOfEachRepository(t *testing.T) {
 	s := caseStore(t)
 	mk := func(repo, key string) int64 {
 		t.Helper()
-		c, _, err := s.OpenCase(ctx, Case{TaskID: "t-" + repo, Repository: repo, Kind: CaseOther, StateKey: key, Problem: key, Status: CaseAtHuman})
+		c, _, err := openAtHuman(ctx, s, Case{TaskID: "t-" + repo, Repository: repo, Kind: CaseOther, StateKey: key, Problem: key})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -311,4 +317,61 @@ func TestBrieflessCasesTakeAShareOfEachRepository(t *testing.T) {
 	if err != nil || !slices.Equal(caseIDs(got), []int64{a1, a2, b1}) {
 		t.Fatalf("BrieflessCases(2) = %v, %v; want %v (a's third %d waits for the next pass)", caseIDs(got), err, []int64{a1, a2, b1}, a3)
 	}
+}
+
+// The door, ToHuman, is the one writer of at_human. It refuses a case of
+// kind other with only a step of rung 0, naming the case, its kind and the
+// action that fits, and leaves it open with its wake; after rung 2's
+// hand-up it moves the same case to the human, on rung 3 with no wake. It
+// passes a judgment_budget case with no step, and a case whose problem ends
+// with the provider's not-judged mark.
+func TestTheDoorMovesOnlyAClimbedExceptedOrUnjudgedCase(t *testing.T) {
+	ctx := context.Background()
+	s := caseStore(t)
+	due := time.Now().UTC().Truncate(time.Millisecond)
+	open := func(kind CaseKind, key, problem string) Case {
+		t.Helper()
+		c, opened, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "sf/r", Kind: kind, StateKey: key, Problem: problem, NextWakeAt: &due})
+		if err != nil || !opened {
+			t.Fatalf("OpenCase %s = %v, %v", key, opened, err)
+		}
+		return c
+	}
+	atHuman := func(name string, id int64) {
+		t.Helper()
+		c, err := s.CaseByID(ctx, id)
+		if err != nil || c.Status != CaseAtHuman || c.OwnerRung != 3 || c.NextWakeAt != nil {
+			t.Fatalf("%s = %+v, %v; want it at the human on rung 3 with no wake", name, c, err)
+		}
+	}
+	other := open(CaseOther, "other", "Which file?")
+	if _, err := s.AppendCaseStep(ctx, CaseStep{CaseID: other.ID, Rung: 0, Actor: FactoryDecider, Found: "no resolver fits", Outcome: StepHandedUp}); err != nil {
+		t.Fatal(err)
+	}
+	refusal := fmt.Sprintf("case %d (other) has no rung 1 or rung 2 step and no exception: the case climbs first", other.ID)
+	if err := s.ToHuman(ctx, other.ID); err == nil || err.Error() != refusal {
+		t.Fatalf("ToHuman of a case rung 0 alone worked = %v, want %q", err, refusal)
+	}
+	if c, err := s.CaseByID(ctx, other.ID); err != nil || c.Status != CaseOpen || c.OwnerRung != 0 || c.NextWakeAt == nil || !c.NextWakeAt.Equal(due) {
+		t.Fatalf("the refused case = %+v, %v; want it open on rung 0, due at %s", c, err, due)
+	}
+	if _, err := s.AppendCaseStep(ctx, CaseStep{CaseID: other.ID, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ToHuman(ctx, other.ID); err != nil {
+		t.Fatalf("ToHuman after rung 2's hand-up = %v", err)
+	}
+	atHuman("the case rung 2 handed up", other.ID)
+
+	budget := open(CaseJudgmentBudget, "budget", "The judgment budget of 10.00 EUR is spent: raise it?")
+	if err := s.ToHuman(ctx, budget.ID); err != nil {
+		t.Fatalf("ToHuman of the judgment budget's case = %v", err)
+	}
+	atHuman("the judgment budget's case", budget.ID)
+
+	refused := open(CaseOther, "refused", "Which store? (not judged: the model provider refused)")
+	if err := s.ToHuman(ctx, refused.ID); err != nil {
+		t.Fatalf("ToHuman of a case the provider kept from every rung = %v", err)
+	}
+	atHuman("the case no rung could judge", refused.ID)
 }

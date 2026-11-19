@@ -24,7 +24,7 @@ func TestProposesByLevel(t *testing.T) {
 		{policy.AutonomyAutonomous, ActExtend, false},
 		{policy.AutonomyAutonomous, ActRetry, false},
 		{policy.AutonomyAutonomous, ActClose, false},
-		{policy.AutonomyAutonomous, ActApproveMerge, true},
+		{policy.AutonomyAutonomous, ActApproveMerge, false},
 		{policy.AutonomyAssisted, ActRetry, true},
 		{policy.AutonomyAssisted, ActRouteApproval, false},
 		{policy.AutonomyManual, ActRouteApproval, false},
@@ -36,9 +36,10 @@ func TestProposesByLevel(t *testing.T) {
 			t.Errorf("Proposes(%s, %s) = %v, want %v", tc.state, tc.action, got, tc.want)
 		}
 	}
+	// a merge decision below full auto is refused before it could propose
 	for _, a := range Actions {
-		if got := Proposes(policy.AutonomyAutonomous, a.Name); got != (a.Name == ActApproveMerge) {
-			t.Errorf("action %s proposes at autonomous = %v: only the merge approval does", a.Name, got)
+		if Proposes(policy.AutonomyAutonomous, a.Name) {
+			t.Errorf("action %s proposes at autonomous: none does", a.Name)
 		}
 	}
 }
@@ -259,6 +260,34 @@ func TestQueuedOverBoundGoesToRung2WithoutRung1(t *testing.T) {
 	g.settle()
 	if out.Rung != 2 || g.chat.calls != 0 || len(g.stepsOfRung(t, out.CaseID, 1)) != 0 || len(g.stepsOfRung(t, out.CaseID, 2)) != 1 {
 		t.Fatalf("outcome %+v, rung 1 calls %d; want rung 2 on the flag with rung 1 untouched", out, g.chat.calls)
+	}
+}
+
+// A faced_unjudged flag is the human's, since only a commit fixes the door:
+// it goes to rung 2 with no rung 1 conversation, rung 2 may not settle it,
+// and its analysis takes it to the human.
+func TestFacedUnjudgedReachesTheHumanWithRung2sAnalysisOnly(t *testing.T) {
+	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+	ctx := context.Background()
+	out, err := g.r.OpenTrip(ctx, TripInput{TaskID: "t1", Reason: monitorFlagPrefix + "faced_unjudged(7)", Head: "h2", Kind: CaseMonitorFlag,
+		StateKey: "faced_unjudged|7", Extra: map[string]any{"flag": "faced_unjudged"}}, tripAttempt{N: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.settle()
+	if out.Rung != 2 || g.chat.calls != 0 || len(g.stepsOfRung(t, out.CaseID, 1)) != 0 {
+		t.Fatalf("outcome %+v, rung 1 calls %d; want rung 2 on the flag with rung 1 untouched", out, g.chat.calls)
+	}
+	_, err = g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActSettle, Note: "a stray case"}})
+	want := "this case is the human's by its kind (only a commit fixes the door): record your analysis and recommended option with attach_analysis"
+	if err == nil || err.Error() != want {
+		t.Fatalf("Act settle = %v, want %q", err, want)
+	}
+	if _, err := g.r.HandUpRung2(ctx, "t1", out.CaseID, "case 7 faced with no rung 1 or rung 2 step", RungTwoRecommendation{Action: ActSettle, Grounds: "a stray case"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseAtHuman {
+		t.Fatalf("the flag's case is %s, want it at the human", c.Status)
 	}
 }
 

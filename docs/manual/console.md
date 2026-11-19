@@ -55,6 +55,11 @@ decimals: a task's model calls cost fractions of a cent.
   shows the task's time in all (from the
   issue's `created_at`) and the gate it is in with the gate's age, from the
   row's `gate` and `gate_since`; a plan child's drawer has a Plan row: the plan's `#n`, its name and the card's key.
+  factoryd's own human card sits in In progress (Running in the wide
+  view) while it is `waiting-agent`, and counts as working, not in Needs
+  you: its case climbs to the project agent first. An answer on it is
+  refused, naming its case, until its face moves it to `waiting-human`;
+  rung 2's own turn on the case answers it.
 - The production hold: while a plan's group is open on the project's main,
   for the factory's own project or a project whose CI asked `/release`,
   the status strip shows the cell `production held · <time>` after the
@@ -86,6 +91,9 @@ decimals: a task's model calls cost fractions of a cent.
   case: it runs at autonomous and full auto and is a proposal at
   assisted and manual. A human's press runs the same action. The ask
   closes itself once no plan is open on main and after a Deploy now.
+  The ask waits for its case's face like every factoryd human card: rung
+  2 may deploy, and may wait only once no plan is open on main; its
+  issue is filed only when the case reaches the human.
   Each release of held production is recorded as the project's
   `production_released` row: `how` (`closed` when the last plan closed,
   by factoryd; `deploy_now` with the `commit` and its `decider`),
@@ -100,22 +108,33 @@ decimals: a task's model calls cost fractions of a cent.
   a direct or plan card `queued` on its track, and the scheduler starts
   it once a work slot is free.
 - The plan card: a pending approval of kind `plan` is the record of a
-  revision's open questions. It shows the spec's first lines, the
-  summary, the cards (key, role, title, size, depends on, factoryd's
-  edges included) and each open question with its choices and a free
-  answer, posted on the issue as the human. The answers go to the
-  planner, and its next revision with no open question files the cards,
-  `queued` on the direct track, and the plan card ends done. A stale
-  revision shows `the plan changed to revision <m>; reload` on the card.
-  "Request changes" posts a comment as the human, which the planner
-  revises the plan with. A done plan lists its cards by issue and state. A
-  done plan with rounds shows `round <k>: <n> cards, <d> done.` and what
-  is still to plan in place of its rollup, on its card; its drawer and
-  the chat's plan read list the rounds, one line each, the current one
-  marked, then the parts still to plan. A plan's escalation shows on its
-  card only when newer than the pending request. The card's forms keep
-  the project filter; a browser's form is answered with a redirect to
-  the board, htmx with the board itself.
+  revision's open questions. Each question and the confirmation opens a
+  case at rung 0, which climbs to rung 2, rung 1 skipped. At full auto
+  rung 2 answers a question, and confirms a revision that takes nothing
+  off main once every hold-out of its round is decided; else it hands the
+  case up with its analysis and its recommended answer. The plan card
+  reaches Needs you and the card's drawer only once a case of its
+  revision is at the human; until then the plan sits in In progress and
+  the chat's answer to a climbing question refuses, naming the case and
+  its rung. The plan's own comment on its issue is the revision's record;
+  the face posts one more comment per revision, edited at each later
+  face, naming the questions at the human with their recommendations and
+  that a reply asks the planner for a new revision. The card shows the
+  spec's first lines, the summary, the cards (key, role, title, size,
+  depends on, factoryd's edges included) and each open question with its
+  choices and a free answer, posted on the issue as the human. The
+  answers go to the planner, and its next revision with no open question
+  files the cards, `queued` on the direct track, and the plan card ends
+  done. A stale revision shows `the plan changed to revision <m>; reload`
+  on the card. "Request changes" posts a comment as the human, which the
+  planner revises the plan with, and ends the revision's cases with that
+  revise. A done plan lists its cards by issue and state. A done plan
+  with rounds shows `round <k>: <n> cards, <d> done.` and what is still
+  to plan in place of its rollup, on its card; its drawer and the chat's
+  plan read list the rounds, one line each, the current one marked, then
+  the parts still to plan. The card's forms keep the project filter; a
+  browser's form is answered with a redirect to the board, htmx with the
+  board itself.
 - `/tasks/{id}/timeline`: a gates table above the raw steps, one row per
   step that ended a gate (`factoryd.StepGates`, each carrying `started`)
   with its attempt, start, duration, outcome and a `<meter>` against the
@@ -356,9 +375,14 @@ decimals: a task's model calls cost fractions of a cent.
   other than auto the inbox decides no merge: a turn there refuses
   `approve_merge` and `deny_merge` before any proposal, naming
   `attach_analysis`. The agent never approves a GitHub sync's pull
-  request: a human approves the GitHub commits it carries, its refusal
-  names `attach_analysis`, and a wake's line for its merge row says a
-  human approves. A wake counts its asks and its merge rows apart. A project
+  request: a human approves the GitHub commits it carries, and its refusal
+  names `attach_analysis`. No ask row wakes the agent, and neither does a
+  merge request's row: each case climbs to rung 2, whose wake is the
+  case's `case_climbed` row, or reaches the human with no rung able to
+  run. In that wake the plan's
+  `answer` and `request_changes` run as the agent at every level, and
+  below full auto the plan's guard refuses them, naming `attach_analysis`.
+  A wake counts its cases. A project
   without a chat token gets no wake; the refusal names `tokens.chat`.
   `steer` reaches a running session on the supervisor's message path
   (`Runner.MessageSession`). The conversation

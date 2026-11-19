@@ -1307,6 +1307,7 @@ func (t *turn) run(id, notice string) {
 				return
 			}
 			if errors.As(err, &refusal) {
+				t.refused("the gateway refused the call: " + refusal.Reason)
 				t.fail("The gateway refused the call: " + refusal.Reason)
 				return
 			}
@@ -1315,6 +1316,7 @@ func (t *turn) run(id, notice string) {
 			// aside: those pass, the router already retried them)
 			if errors.As(err, &status) && status.Code >= 400 && status.Code < 500 &&
 				status.Code != http.StatusTooManyRequests && status.Code != http.StatusRequestTimeout {
+				t.refused("the model refused the call (" + strconv.Itoa(status.Code) + "): " + status.Body)
 				t.fail("The model refused the call (" + strconv.Itoa(status.Code) + "): " + status.Body +
 					" Retrying will not change it; the refusal needs a fix.")
 				return
@@ -1519,7 +1521,7 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status
 			break
 		}
 		confirm := slices.Contains(t.cfg.Confirm, tool.name) || tool.name == "close" && t.c.waivesCriteria(t.r.Context(), in.TaskID)
-		if !tool.memberOnly && (!confirm || tool.name == "answer" && in.CaseID != 0 && t.a.caseWake()) {
+		if !tool.memberOnly && (!confirm || t.a.caseWake() && rungTwoEnds(tool.name, in)) {
 			t.a.decider = "agent"
 			out, code := t.runTool(tool, args, in)
 			return out, "", code
@@ -1551,6 +1553,14 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status
 	}
 	t.block(call.Name, args, 0, result)
 	return result, "", status
+}
+
+// rungTwoEnds says call in of tool name ends rung 2's case in its wake, so
+// it runs as the agent at every level, past the confirm list: an answer to
+// the case, or a plan's answer or request for changes, whose guard
+// refuses rung 2 below full auto with the hand-up's words.
+func rungTwoEnds(name string, in toolInput) bool {
+	return name == "answer" && (in.CaseID != 0 || in.Revision != 0) || name == "request_changes"
 }
 
 // tokenMask stands in for a GitHub token in every message, row and log

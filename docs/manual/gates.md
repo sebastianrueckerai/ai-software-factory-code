@@ -274,7 +274,17 @@ activities, each with a timeline step and a comment on the pull request:
    last message, `tasks.agent_summary`) and why no auto merge). A task
    has one pending merge request; a new attempt denies it as `factoryd`,
    and the task's end denies its pending requests of both kinds (a
-   resource request survives a new attempt).
+   resource request survives a new attempt). The request's case opens at
+   rung 0 and climbs as a stop's does, rung 1 skipped: on the merge rule
+   `auto` rung 2 approves or denies the merge, but approves one head once
+   and no class the policy keeps a human on (a migration, the runner
+   image); on any other rule it
+   hands the merge up with `approve_merge` or `deny_merge` as its
+   recommendation. Only then does the request reach Needs you, the card's
+   drawer and the inbox, whose row offers Approve, or Re-run the checks on
+   a factory pull request's red checks; until then the chat's merge tools
+   refuse, naming the case and its rung. The face posts no comment and
+   keeps the card in review.
 
 The workflow then waits, without a timer, for `approved`, a change
 request, `pr_merged`, `pr_closed` or `issue_closed`. The console approves

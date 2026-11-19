@@ -159,6 +159,13 @@ func (t *turn) cardText(in toolInput) (string, error) {
 			if spec.Recommendation != "" {
 				b.WriteString("; recommendation: " + spec.Recommendation)
 			}
+			c, climbs, err := t.c.climbing(ctx, q)
+			if err != nil {
+				return "", err
+			}
+			if climbs {
+				fmt.Fprintf(&b, "; its case %d is open at rung %d, so no human decides it yet", c.ID, c.OwnerRung)
+			}
 		}
 	}
 	if m := newest(steps, "model_review"); m != nil {

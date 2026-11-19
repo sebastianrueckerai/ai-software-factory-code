@@ -452,6 +452,7 @@ func main() {
 	})
 	passes.Run(ctx, "releases", time.Minute, 4*time.Minute, releases.Pass)
 	passes.Run(ctx, "monitor_sweep", time.Minute, 4*time.Minute, monitor.Sweep)
+	passes.Run(ctx, "case_wake", 5*time.Second, 4*time.Minute, monitor.WakeCases)
 	passes.Run(ctx, "branch_sweep", time.Hour, 10*time.Minute, func(ctx context.Context) error {
 		return runner.SweepBranches(ctx, time.Now())
 	})
@@ -740,6 +741,7 @@ func main() {
 		},
 		AttachAnalysis: store.AttachAnalysis,
 		HandUpRung2:    runner.HandUpRung2,
+		RefusedRung2:   runner.RefusedRung2,
 		AddStepCost:    store.AddRungCost,
 		Operator:       operator,
 		Web:            &factoryd.WebTools{GatewayURL: gatewayURL, Token: gatewayToken},

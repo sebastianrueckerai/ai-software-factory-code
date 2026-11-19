@@ -9,11 +9,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // scriptedChat answers a check-in's conversations in order. Fails makes
@@ -155,7 +157,7 @@ func (b *boardStub) act(r *Runner, in ActInput) (ActResult, error) {
 }
 
 // mergeRig is the rung rig with a pending merge request on t1's pull request 9
-// at head h2, whose case is at the human.
+// at head h2, whose case is open at rung 0.
 func mergeRig(t *testing.T, checks string) (rungRig, *boardStub, int64) {
 	t.Helper()
 	g := newRungRig(t, checks)
@@ -170,6 +172,49 @@ func mergeRig(t *testing.T, checks string) (rungRig, *boardStub, int64) {
 	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalMerge, "pr": int64(9)})
 	stub := &boardStub{s: g.s, approval: id}
 	return g, stub, id
+}
+
+// mergeWakeRig is the rung 2 rig at autonomy state whose card t1 is in
+// review, its pull request 9 at head h2 reviewed and audited, with a
+// pending merge request of class standard at h2, whose case is open at
+// rung 0 and due at the request's opening, with no step yet; the stub
+// decides the request.
+func mergeWakeRig(t *testing.T, state string) (rungRig, *Waker, *fakeWakeStarter, *boardStub, Case) {
+	t.Helper()
+	g, w, starter := rungTwoRig(t, policy.JudgmentAlways)
+	g.atAutonomy(state)
+	ctx := context.Background()
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'in-review' WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	g.record(t, EventGateAudit, map[string]any{"commit": "h2", "ran": true})
+	spec, err := json.Marshal(MergeSpec{RiskClass: "standard", HeadSHA: "h2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := g.s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "demo-app/demo-app", PRNumber: 9, Spec: spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalMerge, "pr": int64(9), "class": "standard", "factory": false, "red_checks": false})
+	c := g.liveCase(t, CaseMergeApproval)
+	var opened time.Time
+	if err := g.s.PgDB().QueryRowContext(ctx, `SELECT created_at FROM approval_requests WHERE id = $1`, id).Scan(&opened); err != nil {
+		t.Fatal(err)
+	}
+	if c.Status != CaseOpen || c.OwnerRung != 0 || c.NextWakeAt == nil || !c.NextWakeAt.Equal(opened) || len(g.steps(t, c.ID)) != 0 {
+		t.Fatalf("case = %+v with steps %+v, want it open at rung 0, due at the request's opening %s, with no step", c, g.steps(t, c.ID), opened)
+	}
+	return g, w, starter, &boardStub{s: g.s, approval: id}, c
+}
+
+// approveWork is the console's approve of t1's pull request 9 as approver,
+// whose decision signals wf: Act's work for approve_merge.
+func (g rungRig) approveWork(wf Workflows, approver string) func(context.Context) (int64, error) {
+	return func(ctx context.Context) (int64, error) {
+		at := func(context.Context, int64) (policy.Version, bool) { return g.r.PgCfg().Policy(), true }
+		return 0, ApproveMerge(ctx, g.s, at, wf, "t1", 9, approver)
+	}
 }
 
 func (g rungRig) record(t *testing.T, kind string, detail map[string]any) {
@@ -196,8 +241,8 @@ func (g rungRig) liveCase(t *testing.T, kind CaseKind) Case {
 }
 
 // criteriaRig is the rung rig whose card t1 is a done plan, the only state
-// in which a criteria request opens, with its request's plan_criteria case at
-// the human.
+// in which a criteria request opens, with its request's plan_criteria case
+// open at rung 0, due at the request's opening, with no step yet.
 func criteriaRig(t *testing.T) (rungRig, *boardStub, Case) {
 	t.Helper()
 	g, stub, _ := mergeRig(t, "success")
@@ -213,10 +258,163 @@ func criteriaRig(t *testing.T) (rungRig, *boardStub, Case) {
 	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalCriteria})
 	stub.approval = id
 	c := g.liveCase(t, CasePlanCriteria)
-	if c.Status != CaseAtHuman || c.Problem != "criteria not met: c1" {
-		t.Fatalf("case = %+v, want at the human with the request's reason", c)
+	var opened time.Time
+	if err := g.s.PgDB().QueryRowContext(ctx, `SELECT created_at FROM approval_requests WHERE id = $1`, id).Scan(&opened); err != nil {
+		t.Fatal(err)
+	}
+	if c.Status != CaseOpen || c.OwnerRung != 0 || c.NextWakeAt == nil || !c.NextWakeAt.Equal(opened) || c.Problem != "criteria not met: c1" || len(g.steps(t, c.ID)) != 0 {
+		t.Fatalf("case = %+v with steps %+v, want it open at rung 0, due at the request's opening %s, with the request's reason and no step", c, g.steps(t, c.ID), opened)
 	}
 	return g, stub, c
+}
+
+// criteriaFace is the words planCriteriaRig's request asks its face to post.
+const criteriaFace = "factoryd: every card of the plan has ended with a criterion still unmet.\n\n- k1 (test): the page k1 loads\n- k2 (test): the page k2 loads\n- k3 (test): the page k3 loads\n\nGrant one more bounded card, or waive a criterion with your reason."
+
+// planCriteriaRig is the rung 2 rig whose card t1 is a done plan with three
+// test criteria, k1 to k3, which the gate rows of its integration card
+// t1-int, done at 09:00 on 17 November, found unmet, on a main whose head
+// is head. The gate's runs on record are one cut run at each of cuts,
+// attempt after attempt, for the cards as they stand. The plan's criteria
+// request waits with criteriaFace as its face's words, and its case is
+// open; the stub decides the request.
+func planCriteriaRig(t *testing.T, head string, cuts ...string) (rungRig, *Waker, *fakeWakeStarter, *boardStub, Case) {
+	t.Helper()
+	g, w, starter := rungTwoRig(t, policy.JudgmentAlways)
+	ctx := context.Background()
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'done', track = 'plan', finished_at = now() WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	g.forge.mu.Lock()
+	g.forge.mainHead = head
+	g.forge.mu.Unlock()
+	p := Plan{Summary: "the pages", Cards: []PlanCard{{Key: "integration", Role: RoleIntegration, Title: "Integration", Directories: []string{"a"}}}}
+	var ids []string
+	for _, id := range []string{"k1", "k2", "k3"} {
+		p.Criteria = append(p.Criteria, PlanCriterion{ID: id, Kind: CriterionTest, Claim: "the page " + id + " loads", Inputs: "GET /" + id, Expected: "200"})
+		ids = append(ids, id)
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.s.AddPlanRevision(ctx, "t1", b, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.s.CreateTask(ctx, Task{ID: "t1-int", Kind: "agent", Status: "done", Objective: "x", Repository: "demo-app/demo-app",
+		Parent: "t1", Source: SourcePlan, PlanKey: "integration", Track: policy.TrackPlan, Size: "large", BudgetEUR: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET finished_at = '2026-11-17T09:00:00Z' WHERE id = 't1-int'`); err != nil {
+		t.Fatal(err)
+	}
+	var rows []CriterionVerdict
+	for _, id := range ids {
+		rows = append(rows, CriterionVerdict{Criterion: id, Verdict: "unmet", Kind: CriterionTest})
+	}
+	if err := g.s.PutCriteriaVerdicts(ctx, "t1-int", CriteriaSourceGate, FactoryDecider, rows); err != nil {
+		t.Fatal(err)
+	}
+	for i, commit := range cuts {
+		g.record(t, EventCriteriaGateRun, map[string]any{"task": "t1-int", "pr": 0, "commit": commit, "outcome": "cut", "attempt": fmt.Sprint(i + 1),
+			"cards": "rev 1 t1-int:done@2026-11-17T09:00:00Z"})
+	}
+	spec, err := json.Marshal(map[string]any{"task": "t1-int", "criteria": ids, "face": criteriaFace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := g.s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t1", Project: "demo-app/demo-app", Spec: spec,
+		Reason: "criteria not met once every card of the plan ended: k1, k2, k3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalCriteria, "criteria": ids})
+	return g, w, starter, &boardStub{s: g.s, approval: id}, g.liveCase(t, CasePlanCriteria)
+}
+
+// planWakeRig is the rung 2 rig at autonomy state whose card t1 is a plan
+// waiting for its answers at revision, under plan: its questions qs come
+// through AskQuestions, a confirmation among them as AskConfirmation's row
+// asks it, and its plan request is pending. Each question's case is open
+// at rung 0 with no step. It answers the request's id.
+func planWakeRig(t *testing.T, state string, revision int, plan Plan, qs ...PlanQuestion) (rungRig, *Waker, *fakeWakeStarter, int64) {
+	t.Helper()
+	g, w, starter := rungTwoRig(t, policy.JudgmentAlways)
+	g.atAutonomy(state)
+	ctx := context.Background()
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE tasks SET status = 'waiting-human', track = 'plan' WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for n := 1; n <= revision; n++ {
+		if _, err := g.s.AddPlanRevision(ctx, "t1", raw, fmt.Sprint("s", n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	task, _, err := g.r.PgTask(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asked []PlanQuestion
+	for _, q := range qs {
+		if q.Kind != QuestionConfirmation {
+			asked = append(asked, q)
+		}
+	}
+	if err := g.r.AskQuestions(ctx, task, revision, asked); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range qs {
+		if q.Kind != QuestionConfirmation {
+			continue
+		}
+		idx, _, err := g.s.PutPlanConfirmation(ctx, "t1", revision, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.record(t, EventQuestionAsked, map[string]any{"question": q.Text, "revision": revision, "index": idx, "kind": QuestionConfirmation})
+	}
+	spec, err := json.Marshal(factoryd.PlanSpec{Revision: revision, SHA256: fmt.Sprint("s", revision)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := g.s.OpenApproval(ctx, ApprovalRequest{Kind: factoryd.ApprovalPlan, TaskID: "t1", Project: "demo-app/demo-app", Spec: spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": factoryd.ApprovalPlan, "revision": revision, "cards": len(plan.Cards)})
+	return g, w, starter, id
+}
+
+// commentBodies are the bodies of the comments on t1's issue, oldest first,
+// as the last write left each.
+func (g rungRig) commentBodies(t *testing.T) []string {
+	t.Helper()
+	g.forge.mu.Lock()
+	defer g.forge.mu.Unlock()
+	out := make([]string, len(g.forge.comments))
+	for i, raw := range g.forge.comments {
+		var c struct{ Body string }
+		if err := json.Unmarshal([]byte(raw), &c); err != nil {
+			t.Fatal(err)
+		}
+		out[i] = c.Body
+	}
+	return out
+}
+
+// wakePass runs the case-wake pass on g's store and runner a second past
+// now, so the case its request opened is due.
+func (g rungRig) wakePass(t *testing.T) {
+	t.Helper()
+	v := g.r.PgCfg().Policy()
+	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: func() time.Time { return time.Now().Add(time.Second) }}
+	if err := m.WakeCases(context.Background()); err != nil {
+		t.Fatalf("WakeCases: %v", err)
+	}
 }
 
 // recordAsk writes the ask row of card t as a human card is born with it,

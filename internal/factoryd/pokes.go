@@ -45,7 +45,7 @@ const (
 const ChoiceRerun = "Re-run the checks"
 
 // pokeKinds are the events a poke may answer.
-var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventApprovalRequested, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
+var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
 	EventCardFiled, EventCardRetried, EventSessionGranted, EventRoutineRan, EventChatBudgetSpent,
 	EventPullRequestMerged, EventCardHoldStranded}
 
@@ -255,6 +255,11 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 			// the factory answered the ask as it asked it: no one is needed
 			return m, false
 		}
+		if revision, _ := toInt(e.Detail["revision"]); revision > 0 && str("case_kind") == "" || bl("held") {
+			// the planner's row or factoryd's own human card's: its case
+			// climbs, and its face's row asks
+			return m, false
+		}
 		m.Kind = MessageEscalation
 		m.Content = TitledRef(ref, t) + " needs you: " + str("question")
 		m.Decider = str("decider_line")
@@ -275,6 +280,9 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		// a row after the card's escalation: the inbox offers its answer
 		// row no more. A monitor's case sits beside the card's own ask, so
 		// its row names the flag; the case id stays in the event's detail
+		if bl("held") {
+			return m, false
+		}
 		who := ref
 		if e.Detail["case_kind"] == string(CaseMonitorFlag) {
 			who = "The flag on " + TitledRef(ref, t)
@@ -299,13 +307,6 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 			}
 			m.Content += "."
 		}
-	case EventApprovalRequested:
-		m.Kind = MessageEscalation
-		content, choices, ok := approvalPoke(e, t)
-		if !ok {
-			return m, false
-		}
-		m.Content, m.Choices = content, choices
 	case EventTaskEnded:
 		switch {
 		case t.Kind != "agent":
@@ -382,33 +383,6 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 // schedule its schedule in words.
 func routineDecider(routine string, n int, schedule string) string {
 	return fmt.Sprintf("routine %s · run %d · %s", routine, n, schedule)
-}
-
-// approvalPoke is an approval request's poke row, its content and its
-// choices, false for a kind that pokes nobody: the one the Poker writes
-// and the analysis rebuilds to find the rows it rewrites.
-func approvalPoke(e Event, t Task) (string, []string, bool) {
-	ref := cardRef(e, t)
-	str := func(k string) string { s, _ := e.Detail[k].(string); return s }
-	num := func(k string) int64 { n, _ := e.Detail[k].(float64); return int64(n) }
-	bl := func(k string) bool { v, _ := e.Detail[k].(bool); return v }
-	switch str("kind") {
-	case ApprovalMerge:
-		if bl("red_checks") {
-			if !bl("factory") {
-				return fmt.Sprintf("%s waits for you: PR #%d cannot merge, its checks are red; send it back to the agent with what to change, or close it.", ref, num("pr")), nil, true
-			}
-			return fmt.Sprintf("%s waits for you: the checks of PR #%d are red, so it cannot merge; run them again, or close it with your words.", ref, num("pr")), []string{ChoiceRerun}, true
-		}
-		return fmt.Sprintf("%s waits for you: merge PR #%d, %s risk.", ref, num("pr"), str("class")), []string{"Approve"}, true
-	case ApprovalPlan:
-		return fmt.Sprintf("Plan %s %q waits for your answers: revision %d, %d cards; the planner revises it with them.", ref, CardTitle(t), num("revision"), num("cards")), nil, true
-	case ApprovalCriteria:
-		return fmt.Sprintf("Plan %s %q waits for you: every card of it has ended with a criterion still unmet. Waive one with your reason, grant one more bounded card, or confirm the delivered cards satisfy them.", ref, CardTitle(t)), nil, true
-	case ApprovalCriteriaRerun:
-		return fmt.Sprintf("Plan %s %q waits for you: its cards have ended and no verdict on main settles its criteria. Waive one with your reason, grant one more bounded card, or confirm with your evidence that the delivered cards meet them.", ref, CardTitle(t)), nil, true
-	}
-	return "", nil, false
 }
 
 // cardRef is how a poke names e's card: its issue, else its task id.

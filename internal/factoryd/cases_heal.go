@@ -56,9 +56,9 @@ func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHe
 	// face, so a case goes once it has its face (at the human with its
 	// comment, or with none on a card with no issue) or once it sat past
 	// the ten minutes a face takes at most, unless a rung below the human
-	// owns it with a wake on a card a run still holds: the monitor's sweep
+	// owns it with a wake on a card a run still holds: the case-wake pass
 	// faces it at the wake, and a face that fails keeps the wake for the
-	// next sweep. The run ends the case of a wait it leaves. A merged card
+	// next pass. The run ends the case of a wait it leaves. A merged card
 	// takes no face, so its case goes as any other
 	if r.Moved, err = s.withdrawCases(ctx, `SELECT c.id, 'the card moved on to ' || t.status FROM cases c JOIN tasks t ON t.id = c.task_id
 		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND c.kind NOT IN ($2, $3, $4, $6, $7)
