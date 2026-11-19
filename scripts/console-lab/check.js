@@ -110,7 +110,7 @@ const mustHave = {
 const mustOpen = {
   busy: {
     [labID(603)]: ["The agent asks: Which store keeps the nightly board snapshots?", "Postgres", "SQLite", "Ask the author", "Not now"],
-    [labID(607)]: ["pull request #612", "Merge this card's pull request?", "high risk", "Migration", "Merge it", "Send it back", "Reject and close it"],
+    [labID(607)]: ["pull request #612", "Merge “Chat proposals survive a restart: keep them in Postgres”?", "high risk", "Migration", "Merge it", "Send it back", "Reject and close it"],
     [labID(558)]: ["How far back does the feed page by default?", "One day", "One week", "The 500 newest rows", "Answer in my words"],
     [labID(601)]: ["pull request #605"],
     "ai-software-factory-code/weekly-bump": ["Skip the next run", "Run it now", "The routine misses its next run."],
@@ -360,8 +360,12 @@ async function cardPress(page, fails) {
   }, sel);
   const before = await where();
   if (!before || before.col.indexOf("waiting-human") < 0 || !before.live || before.drawer) return fails.push("card press: #607 is not a live card in Needs you: " + JSON.stringify(before));
+  // the merge is answered through its case's door, whose path the form holds
+  const merge = '#drawer .o-answers form[data-answer="approve_merge"]';
+  const post = await page.evaluate((m) => { const f = document.querySelector(m); return f && f.getAttribute("action"); }, merge);
+  if (!post) return fails.push("card press: the drawer of #607 holds no Merge it form");
   let posts = 0, answer;
-  const answers = (u) => u.pathname === "/approvals/51/approve";
+  const answers = (u) => u.pathname === post;
   await page.route(answers, async (r) => {
     posts++;
     await new Promise((ok) => setTimeout(ok, 1200));
@@ -373,7 +377,7 @@ async function cardPress(page, fails) {
   if (!now || now.col.indexOf("in-review") < 0 || now.at !== 0 || now.busy !== "true" || now.live || now.drawer !== "true") {
     fails.push("card press: right after the press the card stands " + JSON.stringify(now) + ", want the top of In progress, busy, no live button, the drawer's answers locked");
   }
-  await page.evaluate(() => document.querySelector('#drawer .o-answers form[action$="/approve"]').requestSubmit());
+  await page.evaluate((m) => document.querySelector(m).requestSubmit(), merge);
   await page.waitForTimeout(200);
   if (posts !== 1) fails.push("card press: two presses on the card sent " + posts + " answers");
   await page.waitForTimeout(1400);
