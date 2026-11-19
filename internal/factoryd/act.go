@@ -343,7 +343,10 @@ func (r *Runner) act(ctx context.Context, in ActInput) (_ ActResult, err error) 
 			draw.RunGrants = grants
 		}
 	}
-	ends := c.ID != 0 && !keepsOpen(c, t, res)
+	// a re-run of a merge case's checks with its work decides the request,
+	// whose decision ends the case and whose signal the run takes
+	byRequest := in.Work != nil && res.Action == ActRerunChecks && c.Kind == CaseMergeApproval
+	ends := c.ID != 0 && !keepsOpen(c, t, res) && !byRequest
 	answers := ends && res.Action != ActWithdraw
 	if choice && c.ID != 0 && t.Kind == "human" {
 		// every choice taken writes how the issue's close ends the card, which

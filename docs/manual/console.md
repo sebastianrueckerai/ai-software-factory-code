@@ -221,7 +221,7 @@ decimals: a task's model calls cost fractions of a cent.
   is retried) notes why on the pending request, and the card shows it. A
   pull request factoryd opened has no agent (roadmap 264): its card offers
   “Merge it” on green checks and “Run the failed checks again” on red ones
-  (`POST /approvals/{id}/rerun`, an empty commit on its head, and the card
+  (the answer `rerun_checks` at the case's door, an empty commit on its head, and the card
   asks again once they settle), with “Reject and close it” beside either:
   the reason goes to its workflow as a change request,
   which closes the card and its pull request and issue with it.

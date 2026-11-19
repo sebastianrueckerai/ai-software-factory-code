@@ -3139,7 +3139,7 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 
 	factory(true)
 	got := item()
-	for _, want := range []string{`action="/approvals/4/rerun"`, `<button type="submit" class="pick">Run the failed checks again</button>`,
+	for _, want := range []string{`name="action" value="rerun_checks"`, `<button type="submit" class="pick">Run the failed checks again</button>`,
 		`<input type="hidden" name="action" value="deny_merge/reject">`, `data-press="deny_merge/reject">Reject and close it</button>`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the red factory request lacks %q:\n%s", want, got)
@@ -3151,7 +3151,7 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 		}
 	}
 	r.fg.calls = nil
-	if rec := r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
+	if rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActRerunChecks)), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("re-run = %d: %s", rec.Code, rec.Body)
 	}
 	if rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActDenyMerge+"/reject", "note", "the template's CI file is not ours")), ck); rec.Code != http.StatusSeeOther {
@@ -3167,17 +3167,17 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 			t.Errorf("the green factory request lacks %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, `action="/approvals/4/rerun"`) || strings.Contains(got, "Send it back") || strings.Contains(got, "fund") {
+	if strings.Contains(got, `name="action" value="rerun_checks"`) || strings.Contains(got, "Send it back") || strings.Contains(got, "fund") {
 		t.Errorf("the green factory request offers a re-run, a return or a fund:\n%s", got)
 	}
 	r.fg.calls = nil
-	rec := r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck)
+	rec := r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActRerunChecks)), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Pull request #9's checks are green, so nothing runs again: “Merge it” merges it, and “Reject and close it” closes it.") ||
 		len(r.fg.calls) != 0 {
 		t.Fatalf("re-run on green = %d %q, calls %q", rec.Code, rec.Body, r.fg.calls)
 	}
 	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"high","head_sha":"abc123"}`)
-	rec = r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck)
+	rec = r.do(post("/tasks/t-m/resolve", askForm(s.csrf, 4, factoryd.ActRerunChecks)), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "The factory did not open pull request #9, so it runs no checks again. Its checks run again when its author pushes, and “Merge it” or “Send it back” decides it.") ||
 		len(r.fg.calls) != 0 {
 		t.Fatalf("re-run of an agent's pull request = %d %q, calls %q", rec.Code, rec.Body, r.fg.calls)
@@ -3215,7 +3215,7 @@ func TestAgentApprovalOnRedChecksOffersReturnAndClose(t *testing.T) {
 			t.Errorf("the red agent request lacks %q:\n%s", want, got)
 		}
 	}
-	for _, not := range []string{`name="action" value="approve_merge"`, `action="/approvals/4/rerun"`, "Run the failed checks again"} {
+	for _, not := range []string{`name="action" value="approve_merge"`, `name="action" value="rerun_checks"`, "Run the failed checks again"} {
 		if strings.Contains(got, not) {
 			t.Errorf("the red agent request shows %q:\n%s", not, got)
 		}
@@ -3282,7 +3282,7 @@ func TestHealedRedChecksCardOffersApprove(t *testing.T) {
 			t.Errorf("the healed card lacks %q:\n%s", want, got)
 		}
 	}
-	for _, not := range []string{`action="/approvals/4/rerun"`, "are red"} {
+	for _, not := range []string{`name="action" value="rerun_checks"`, "are red"} {
 		if strings.Contains(got, not) {
 			t.Errorf("the healed card shows %q:\n%s", not, got)
 		}

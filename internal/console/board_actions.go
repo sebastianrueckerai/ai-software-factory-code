@@ -33,11 +33,18 @@ func (c *Console) answerRequest(ctx context.Context, a actor, q factoryd.Approva
 	if i < 0 {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Approval request %d has no live ask yet. Reload the board.", q.ID))
 	}
-	if !factoryd.IsBoardAction(res.Action) {
+	if !boardWorks(open[i], res) {
 		out, err := c.actOn(ctx, a, t, open[i].ID, res, nil)
 		return out.Text, err
 	}
 	return c.boardAct(ctx, a, t, open[i], res)
+}
+
+// boardWorks says the console's code does the work of answer res on case
+// k: a board action, and the re-run of a merge case's checks, which
+// decides the case's request.
+func boardWorks(k factoryd.Case, res factoryd.Resolution) bool {
+	return factoryd.IsBoardAction(res.Action) || res.Action == factoryd.ActRerunChecks && k.Kind == factoryd.CaseMergeApproval
 }
 
 // boardAct answers case k of card t with board action res through Act,
@@ -88,12 +95,14 @@ func approvalIDOf(k factoryd.Case) int64 {
 func (c *Console) boardWork(ctx context.Context, a actor, t factoryd.Task, k factoryd.Case, res factoryd.Resolution) (string, error) {
 	arg := func(key string) string { s, _ := res.Args[key].(string); return s }
 	switch res.Action {
-	case factoryd.ActApproveMerge, factoryd.ActDenyMerge, factoryd.ActAnswerCriteria, factoryd.ActGrantCriteria, factoryd.ActConfirmCriteria:
+	case factoryd.ActApproveMerge, factoryd.ActDenyMerge, factoryd.ActAnswerCriteria, factoryd.ActGrantCriteria, factoryd.ActConfirmCriteria, factoryd.ActRerunChecks:
 		q, err := c.pendingRequest(ctx, a, approvalIDOf(k))
 		if err != nil {
 			return "", err
 		}
 		switch res.Action {
+		case factoryd.ActRerunChecks:
+			return c.rerunChecks(ctx, a, q)
 		case factoryd.ActApproveMerge:
 			fund, _ := res.Args["fund_eur"].(float64)
 			return c.approveMerge(ctx, a, q, fund, res.Note)

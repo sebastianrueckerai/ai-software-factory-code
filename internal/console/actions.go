@@ -1435,7 +1435,7 @@ func (c *Console) answerCase(ctx context.Context, a actor, id string, caseID int
 			return said, err
 		}
 	}
-	if factoryd.IsBoardAction(res.Action) {
+	if boardWorks(open[i], res) {
 		return c.boardAct(ctx, a, t, open[i], res)
 	}
 	out, err := c.actOn(ctx, a, t, caseID, res, post)
@@ -3666,14 +3666,21 @@ func (c *Console) confirmCriteria(ctx context.Context, a actor, q factoryd.Appro
 }
 
 // doRerun runs the red checks of a factory pull request card again
-// (roadmap 264), a writer's act: its merge request, whose head cannot
-// merge, is decided as the human's, and the card asks again once the
-// checks settle. Any other request refuses, naming what decides it.
+// (roadmap 264), a writer's act: the answer rerun_checks of the merge
+// case of request id, through Act (rerunChecks).
 func (c *Console) doRerun(ctx context.Context, a actor, id int64) (string, error) {
 	q, err := c.pendingRequest(ctx, a, id)
 	if err != nil {
 		return "", err
 	}
+	return c.answerRequest(ctx, a, q, factoryd.Resolution{Action: factoryd.ActRerunChecks})
+}
+
+// rerunChecks is the work of the re-run Act runs for a on merge request q:
+// the request, whose head cannot merge, is decided as the human's, the
+// card's run hears the re-run, and the card asks again once the checks
+// settle. Any other request refuses, naming what decides it.
+func (c *Console) rerunChecks(ctx context.Context, a actor, q factoryd.ApprovalRequest) (string, error) {
 	var spec factoryd.MergeSpec
 	if q.Kind == factoryd.ApprovalMerge {
 		if err := json.Unmarshal(q.Spec, &spec); err != nil {

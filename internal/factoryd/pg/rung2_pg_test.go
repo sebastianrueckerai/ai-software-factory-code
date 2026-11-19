@@ -1454,3 +1454,30 @@ func TestAnAgentCardsMonthCapStopClimbs(t *testing.T) {
 		t.Fatalf("case_climbed rows %+v, comments %d; want one for case %d and no face", rows, len(g.forge.comments), out.CaseID)
 	}
 }
+
+// A human's re-run of a factory pull request's red checks is an answer of
+// the merge case, taken through Act: its work decides the request and
+// sends the run its re-run signal, the request's decision ends the case,
+// and the run hears no second signal for the case.
+func TestARerunOfAMergeCasesChecksGoesThroughActOnce(t *testing.T) {
+	g, _, _, _, c := mergeWakeRig(t, policy.AutonomyAutonomous)
+	ctx := context.Background()
+	g.forge.checks["h2"] = "failure"
+	work := func(ctx context.Context) (int64, error) {
+		return 0, factoryd.RerunFactoryChecks(ctx, g.s, g.signals, "t1", 9, "sebastian")
+	}
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaButton, Rung: 3, Res: Resolution{Action: ActRerunChecks}, Work: work}); err != nil {
+		t.Fatalf("the re-run: %v", err)
+	}
+	if reruns := g.signalsOf(factoryd.SignalRerunChecks); len(reruns) != 1 || reruns[0].taskID != "t1" || reruns[0].sig.Author != "sebastian" || reruns[0].sig.PR != 9 {
+		t.Fatalf("rerun signals = %+v, want one for t1 by sebastian for #9", reruns)
+	}
+	if resolved := g.signalsOf(SignalCaseResolved); len(resolved) != 0 {
+		t.Fatalf("case_resolved signals = %+v, want none: the run takes the re-run signal alone", resolved)
+	}
+	got := caseByID(t, g.s, c.ID)
+	if got.Status != CaseResolved || got.Resolution == nil || got.Resolution.By != "sebastian" || got.Resolution.Action != ActDenyMerge ||
+		got.Resolution.Reason != "the checks run again; a new request follows" {
+		t.Fatalf("case = %+v, resolution %+v; want it ended by the request's decision", got, got.Resolution)
+	}
+}

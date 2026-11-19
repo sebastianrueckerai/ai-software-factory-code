@@ -484,12 +484,6 @@ func (c *Console) resourceRequest(ctx context.Context, a actor, id int64) error 
 	return nil
 }
 
-// rerun runs the red checks of the factory pull request card whose merge
-// request the path names again (doRerun).
-func (c *Console) rerun(w http.ResponseWriter, r *http.Request) {
-	c.decideButton(w, r, c.doRerun)
-}
-
 // decideButton runs a button's decision on the approval request the path
 // names and answers the press.
 func (c *Console) decideButton(w http.ResponseWriter, r *http.Request, decision func(ctx context.Context, a actor, id int64) (string, error)) {

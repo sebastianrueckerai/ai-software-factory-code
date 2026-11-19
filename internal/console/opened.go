@@ -653,13 +653,15 @@ func casePress(v *boardView, k card, row caseRow, a factoryd.Answer, key string)
 		}
 		return p, name
 	}
-	if requestPage(row.Case) || row.Approval != nil && a.Action == factoryd.ActRerunChecks {
-		// a factory pull request's re-run is its request's: the workflow
-		// waits on the request, not on the case
+	if requestPage(row.Case) {
 		if row.Approval == nil {
 			return nil, nil
 		}
 		return requestPress(v, k, *row.Approval, a, key)
+	}
+	if a.Action == factoryd.ActRerunChecks && row.Approval != nil && !row.Approval.Rerun() {
+		// only a factory pull request's red checks run again from its merge ask
+		return nil, nil
 	}
 	p := &pressForm{CSRF: v.csrf, Filter: k.Filter, DataTo: dataTo(k, a)}
 	named := func(note string) func(string) string {
@@ -787,10 +789,9 @@ func requestAsk(ask *askBlock, ap approvalCard) {
 }
 
 // requestPress is the press of answer a by key on approval request ap of
-// card k: a resource request's decision, which no case holds, and the
-// re-run of a factory pull request's checks; nil for an answer the request
-// does not take, or one only an approver may press that the viewer may
-// not.
+// card k, a resource request's decision, which no case holds; nil for an
+// answer the request does not take, or one only an approver may press that
+// the viewer may not.
 func requestPress(v *boardView, k card, ap approvalCard, a factoryd.Answer, key string) (*pressForm, func(string) string) {
 	if approverOnly(v, k, ap, a) {
 		return nil, nil
@@ -821,8 +822,6 @@ func requestForm(v *boardView, k card, ap approvalCard, a factoryd.Answer) (*pre
 		p.Post, p.Values = base+"approve", []hidden{{"action", "approve"}}
 	case a.Action == factoryd.AnswerDeny:
 		p.Post = base + "deny"
-	case a.Action == factoryd.ActRerunChecks && ap.Rerun():
-		p.Post = base + "rerun"
 	default:
 		return nil, nil
 	}

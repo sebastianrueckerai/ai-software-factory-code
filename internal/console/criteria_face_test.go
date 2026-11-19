@@ -135,8 +135,8 @@ func TestEveryMergeStateHasItsFace(t *testing.T) {
 					t.Errorf("the other actions hold the merge's %q", label)
 				}
 			}
-			if rerun := strings.Contains(card, `action="/approvals/4/rerun"`); rerun != slices.Contains(tc.answers, "Run the failed checks again") {
-				t.Errorf("a re-run posts to the request's door: %t", rerun)
+			if rerun := strings.Contains(card, `name="action" value="rerun_checks"`); rerun != slices.Contains(tc.answers, "Run the failed checks again") || strings.Contains(card, "/approvals/4/") {
+				t.Errorf("the card holds a re-run's form: %t, or posts to the request's door", rerun)
 			}
 		})
 	}
