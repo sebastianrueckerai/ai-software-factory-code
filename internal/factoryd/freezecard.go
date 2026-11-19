@@ -225,6 +225,9 @@ type FreezeCard struct {
 	// classes is one pass's view of the cards, built from the rows at its
 	// start: nothing in it outlives the pass.
 	classes map[string]*freezeClass
+	// pressed is, by class, the newest press's class_resumed row among
+	// the rows the pass read: the press answered every arm before it.
+	pressed map[string]int64
 	// refused is, by repository and class, the standing freeze whose
 	// filing Forgejo refused for good: only a newer arm files again.
 	refused map[string]int64
@@ -286,8 +289,7 @@ func (w *FreezeCard) Loop(ctx context.Context, every time.Duration) {
 // The cursor moves past a row whose effect is written, and past an arm
 // that did not finish, whatever stopped it: each pass makes that arm
 // again while its freeze stands (stand), and once more when the pass
-// comes to the class's own resume, before it applies the resume
-// (resumeArms). An arm that
+// comes to the class's resume, before it applies the resume. An arm that
 // fails then too is over with its freeze, and the wake of its frozen
 // cards comes from the rows (wakeHeld). So no repository and no row holds
 // another class's rows. The rest of the pass runs whatever a row did.
@@ -321,11 +323,25 @@ func (w *FreezeCard) Check(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// the gateway writes a press's row on the pressed freeze card
+	w.pressed = map[string]int64{}
+	for _, ev := range events {
+		if ev.Kind != "class_resumed" {
+			continue
+		}
+		if t, ok, err := w.Store.Task(ctx, ev.TaskID); err != nil {
+			return err
+		} else if ok && t.Source == SourceFreezeCard {
+			w.pressed[ev.Class] = ev.ID
+		}
+	}
 	var stopped error
 	applied := 0
 	for i, ev := range events {
 		if ev.Kind == "class_resumed" {
-			stopped = w.resumeArms(ctx, ev, armsBefore(standing, events[:i], ev.Class))
+			// the freeze ends: what its arms did not finish is made once
+			// more, so the resume meets the cards a run with no failure has
+			stopped = w.stand(ctx, armsBefore(standing, events[:i], ev.Class))
 		}
 		if stopped == nil {
 			stopped = w.event(ctx, ev)
@@ -350,20 +366,6 @@ func (w *FreezeCard) Check(ctx context.Context) error {
 		return err
 	}
 	return errors.Join(stopped, w.stand(ctx, standing), w.wakeHeld(ctx, held), w.tick(ctx))
-}
-
-// resumeArms makes arms, the class's arms before its class_resumed row
-// resumed, once more when the freeze ends on its own: what they did not
-// finish is then done, so the resume meets the cards a run with no failure
-// has. A press's row, which the gateway writes on the pressed freeze card,
-// makes none again: the press closes the class's cards.
-func (w *FreezeCard) resumeArms(ctx context.Context, resumed FreezeEvent, arms []FreezeEvent) error {
-	if t, ok, err := w.Store.Task(ctx, resumed.TaskID); err != nil {
-		return err
-	} else if ok && t.Source == SourceFreezeCard {
-		return nil
-	}
-	return w.stand(ctx, arms)
 }
 
 // armsBefore is what StandingFreezes would answer for class right before
@@ -398,8 +400,8 @@ func armsBefore(standing, batch []FreezeEvent, class string) []FreezeEvent {
 }
 
 // stand applies again each of arms whose reset is ahead: the standing
-// freezes in every pass, and a class's arms once more when it resumes on
-// its own (resumeArms). What an arm did not finish, this does. An open
+// freezes in every pass, and a class's arms once more when it resumes
+// (Check). What an arm did not finish, this does. An open
 // card that holds the freeze's reset stays quiet (frozen); a filing, a
 // re-arm or a reopen that Forgejo or the store stopped is made again. The
 // gateway's rows alone say which freeze stands: a press answered the arms
@@ -673,6 +675,10 @@ func (w *FreezeCard) event(ctx context.Context, ev FreezeEvent) error {
 	}
 	switch ev.Kind {
 	case "class_frozen":
+		if ev.ID < w.pressed[ev.Class] {
+			// a press's row follows the arm: the press answered it
+			return nil
+		}
 		pressed, err := w.pressClosedCards(ctx, ev.Class, ev.At)
 		if err != nil {
 			return err

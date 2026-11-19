@@ -3852,13 +3852,13 @@ func TestFreezeCardAFailedReadOfTheStandingFreezesLosesNoArm(t *testing.T) {
 // the press's one comment, its end counted once, and the press's resume
 // that held wakes the frozen card once. A press that was lost leaves #1
 // open: the pass puts it on its resumed face, which takes no press, and it
-// closes itself at 14:05 with the self-resume's comment and no end
-// counted.
+// closes itself at 14:05 with the self-resume's comment, its end counted
+// once, as every card's end is.
 func TestFreezeCardFaultsOfALapseAndItsReArmRightBeforeThePress(t *testing.T) {
 	freezeScenario(t, frozenCard, func(h *freezeTable) {
 		h.row("class_resumed", 5)
 		h.row("class_frozen", 5)
 		h.press()
 		h.pass()
-	}, "#1 done pressed R1 | open  | 1 comments, 1 ends, 1 wakes", lostPress("#1 done resumed R1 | open  | 1 comments, 0 ends, 1 wakes"))
+	}, "#1 done pressed R1 | open  | 1 comments, 1 ends, 1 wakes", lostPress("#1 done resumed R1 | open  | 1 comments, 1 ends, 1 wakes"))
 }

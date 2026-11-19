@@ -269,7 +269,10 @@ func (s *Server) armClassHold(ctx context.Context, pv *policy.Version, task Task
 // class_resumed event on task first (reset, words as held), also when no
 // hold is armed, as after a restart: the row's place among the class's
 // class_frozen rows is what tells factoryd which arms the press answered.
-// A row the store refuses is the error, and the hold stays.
+// A row the store refuses is the error, and the hold stays. The row is
+// written under the lock, as the lapse's is (holdFor), so the rows of a
+// class's ends keep the order of the hold's changes; eventWriteTimeout
+// bounds how long a stalled store holds the lock.
 func (s *Server) ClearClassHold(ctx context.Context, task Task, class string) error {
 	s.holdMu.Lock()
 	defer s.holdMu.Unlock()
@@ -292,8 +295,13 @@ func (s *Server) writeEvent(ctx context.Context, task Task, kind, class, reset, 
 	}
 }
 
+// eventWriteTimeout bounds one events-table write: the lapse's and the
+// clear's are made under holdMu, which every model call takes.
+const eventWriteTimeout = 3 * time.Second
+
 func (s *Server) insertEvent(ctx context.Context, task Task, kind, class, reset, words string) error {
-	ctx = context.WithoutCancel(ctx)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), eventWriteTimeout)
+	defer cancel()
 	detail := map[string]any{"class": class}
 	if reset != "" {
 		detail["reset"] = reset
