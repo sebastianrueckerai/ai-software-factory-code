@@ -646,13 +646,17 @@ func TestRunReportCarriesTheAnswersToItsSession(t *testing.T) {
 
 // Hand-derived from report tasks that outlived their cards: a human closed
 // card t-card while its sizing task t-size waited frozen to the
-// provider's reset, card t-failed failed under its screening t-screen, and
-// a human closed plan t-plan while its prover t-prove waited. The heal
-// pass reads the rows and sends each of the three issue_closed, the
-// factory's own close. It sends none to a report task that is final, to a
-// work card a plan cut, to the report task of a card that lives, to the
-// prover of a done plan, which still writes its proofs, or to the prover
-// of a failed plan, which a replan takes up again.
+// provider's reset, card t-failed failed under its screening t-screen,
+// whose run completed while its row stayed queued, a human closed plan
+// t-plan while its prover t-prove waited, and t-card's second report task
+// t-closing stands in closing with its run gone. The heal pass reads the
+// rows and ends each of the four closed, with the reason that its card is
+// gone, whatever became of its run, and sends issue_closed, the factory's
+// own close, to each run that did not complete, so that run stops. It ends
+// none of: a report task that is final, a work card a plan cut, the
+// report task of a card that lives, the prover of a done plan, which
+// still writes its proofs, and the prover of a failed plan, which a
+// replan takes up again.
 func TestHealPassEndsTheOpenReportTasksOfAnEndedCard(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
@@ -663,6 +667,7 @@ func TestHealPassEndsTheOpenReportTasksOfAnEndedCard(t *testing.T) {
 		{ID: "t-size", Status: "running", Source: SourceSizing, Parent: "t-card"},
 		{ID: "t-failed", Status: "failed"},
 		{ID: "t-screen", Status: "queued", Source: SourceScreening, Parent: "t-failed"},
+		{ID: "t-closing", Status: "closing", Source: SourceSizing, Parent: "t-failed"},
 		{ID: "t-plan", Status: "closed", Track: policy.TrackPlan},
 		{ID: "t-prove", Status: "waiting-human", Source: SourceProver, Parent: "t-plan"},
 		{ID: "t-cut", Status: "running", Parent: "t-plan"},
@@ -681,7 +686,18 @@ func TestHealPassEndsTheOpenReportTasksOfAnEndedCard(t *testing.T) {
 	}
 	wf := &fakeWorkflows{}
 	forgejo, _ := newAlertForgejo(t)
-	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"}, &Completion{Store: store}, noneCompleted, nil)
+	gone := func(_ context.Context, id string) (bool, error) { return id == "t-screen" || id == "t-closing", nil }
+	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"}, &Completion{Store: store}, gone, nil)
+	for _, id := range []string{"t-size", "t-screen", "t-closing", "t-prove"} {
+		if c := store.tasks[id]; c.Status != "closed" || !strings.HasPrefix(c.ClosingReason, ReasonCardGone) {
+			t.Fatalf("%s stands %s for %q, want it closed as its card is gone", id, c.Status, c.ClosingReason)
+		}
+	}
+	for id, want := range map[string]string{"t-card-screen": "done", "t-cut": "running", "t-live-size": "running", "t-done-prove": "running", "t-failed-prove": "running"} {
+		if got := store.tasks[id].Status; got != want {
+			t.Fatalf("%s stands %s, want it left %s", id, got, want)
+		}
+	}
 	var closes []string
 	for _, s := range wf.signals {
 		if strings.Contains(s, " "+SignalIssueClosed+" ") {
@@ -689,12 +705,15 @@ func TestHealPassEndsTheOpenReportTasksOfAnEndedCard(t *testing.T) {
 		}
 	}
 	slices.Sort(closes)
-	want := []string{"t-prove issue_closed factoryd #0: ", "t-screen issue_closed factoryd #0: ", "t-size issue_closed factoryd #0: "}
+	want := []string{"t-prove issue_closed factoryd #0: ", "t-size issue_closed factoryd #0: "}
 	if !slices.Equal(closes, want) {
-		t.Fatalf("the heal pass sent the closes %q, want %q", closes, want)
+		t.Fatalf("the heal pass sent the closes %q, want %q: one to each run that did not complete", closes, want)
 	}
-	if slices.ContainsFunc(wf.started, func(id string) bool { return id == "t-size" || id == "t-screen" || id == "t-prove" }) {
-		t.Fatalf("the heal pass started %q, want no run started for a report task it ends", wf.started)
+	ran := func(id string) bool {
+		return slices.Contains([]string{"t-size", "t-screen", "t-closing", "t-prove"}, id)
+	}
+	if slices.ContainsFunc(wf.started, ran) || slices.ContainsFunc(wf.reopens, func(r reopenCall) bool { return ran(r.taskID) }) {
+		t.Fatalf("the heal pass started %q and reopened %+v, want no run for a report task it ends", wf.started, wf.reopens)
 	}
 }
 
@@ -704,20 +723,25 @@ func TestHealPassEndsTheOpenReportTasksOfAnEndedCard(t *testing.T) {
 // report task is opened again, queued with a new run, and the wait ends
 // with the report that run writes. A report task that ends closed under
 // the wait, as when the heal pass read the card's row before the revival,
-// is opened once more. A report task that is done is taken as it is.
+// is opened once more. A report task a human closed stands as the report's
+// answer: the wait takes it closed and starts no run.
 func TestAwaitReportOpensAClosedReportAgain(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
 	card := Task{ID: "t-card", Kind: "agent", Status: "running", Repository: "demo/app", Track: policy.TrackDirect, SHA: "abc"}
 	store.tasks[card.ID] = card
-	store.tasks["t-size"] = Task{ID: "t-size", Kind: "agent", Status: "closed", Repository: "demo/app", Track: policy.TrackDirect, Source: SourceSizing, Parent: card.ID}
+	store.tasks["t-size"] = Task{ID: "t-size", Kind: "agent", Status: "closed", Repository: "demo/app", Track: policy.TrackDirect, Source: SourceSizing, Parent: card.ID,
+		ClosingFinal: "closed", ClosingReason: ReasonCardGone + "t-card closed"}
 	wf := &fakeWorkflows{}
 	// each new run of the report task ends: closed under the wait first,
 	// then done
 	ends := []string{"closed", "done"}
 	wf.onReopen = func(id string) {
 		c := store.tasks[id]
-		c.Status, ends = ends[0], ends[1:]
+		c.Status = "done"
+		if len(ends) > 0 {
+			c.Status, ends = ends[0], ends[1:]
+		}
 		store.tasks[id] = c
 	}
 	child, err := awaitReport(ctx, store, wf, policy.Budget{}, time.Millisecond, card, SourceSizing)
@@ -726,5 +750,13 @@ func TestAwaitReportOpensAClosedReportAgain(t *testing.T) {
 	}
 	if len(wf.reopens) != 2 || wf.reopens[0].taskID != "t-size" || len(wf.started) != 0 {
 		t.Fatalf("reopens %+v, starts %q; want the closed report task run again twice and no other start", wf.reopens, wf.started)
+	}
+
+	human := store.tasks["t-size"]
+	human.Status, human.ClosingReason = "closed", ReasonIssueClosed+" without merge"
+	store.tasks["t-size"] = human
+	child, err = awaitReport(ctx, store, wf, policy.Budget{}, time.Millisecond, card, SourceSizing)
+	if err != nil || child.Status != "closed" || len(wf.reopens) != 2 || len(wf.started) != 0 || store.tasks["t-size"].Status != "closed" {
+		t.Fatalf("awaitReport of a report task a human closed = %s, %v, reopens %+v, starts %q; want it taken closed and no run", child.Status, err, wf.reopens, wf.started)
 	}
 }

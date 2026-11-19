@@ -46,6 +46,10 @@ type freezeFault struct {
 	at    int
 	ops   []string
 	fired bool
+	// after fails a Forgejo call that changes something after its effect:
+	// Forgejo took the call and its answer is lost. owed is that failure,
+	// due when the call ends.
+	after, owed bool
 	// paused counts nothing: a webhook's own writes and calls
 	paused bool
 }
@@ -2623,13 +2627,23 @@ func (h *freezeTable) rowIn(repo, kind string, days int) {
 
 // arm starts the fault run that fails the write or call numbered failAt;
 // 0 fails none and counts them.
-func (h *freezeTable) arm(failAt int) {
-	h.fault = &freezeFault{at: failAt}
+func (h *freezeTable) arm(failAt int, after bool) {
+	h.fault = &freezeFault{at: failAt, after: after}
 	h.store.fault = h.fault
 	h.fj.mu.Lock()
 	h.fj.fault = func(r *http.Request) bool {
 		_, call, _ := strings.Cut(r.URL.Path, "/issues")
-		return h.fault.fail(strings.ReplaceAll(r.Method+" issues"+call, "/", " "))
+		hit := h.fault.fail(strings.ReplaceAll(r.Method+" issues"+call, "/", " "))
+		if hit && h.fault.after {
+			h.fault.owed = true
+			return false
+		}
+		return hit
+	}
+	h.fj.faultAfter = func(*http.Request) bool {
+		owed := h.fault.owed
+		h.fault.owed = false
+		return owed
 	}
 	h.fj.mu.Unlock()
 }
@@ -2863,7 +2877,9 @@ type freezeFaultException struct{ why, reaches string }
 // and event applies what happens to it. It runs once without a fault and
 // counts the store's writes and Forgejo's calls, then once for each with
 // that one failing once, without a restart and with one right after the
-// pass or the press it failed in; a press that failed is made again, at
+// pass or the press it failed in. A Forgejo call that changes something
+// fails in two ways: before its effect, and after it, the answer lost.
+// A a press that failed is made again, at
 // once and later: a press after the next pass, a human's console close
 // not at all. Each run settles a minute after the
 // event, where check reads the run without a fault, and then three times
@@ -2875,12 +2891,12 @@ type freezeFaultException struct{ why, reaches string }
 // It answers the run without a fault, settled.
 func freezeFaults(t *testing.T, build, event, check func(h *freezeTable), except map[string]freezeFaultException) *freezeTable {
 	t.Helper()
-	run := func(t *testing.T, failAt int, restart, pressLater bool) *freezeTable {
+	run := func(t *testing.T, failAt int, after, restart, pressLater bool) *freezeTable {
 		t.Helper()
 		h := newFreezeTable(t)
 		build(h)
 		h.restartOnFault, h.pressLater = restart, pressLater
-		h.arm(failAt)
+		h.arm(failAt, after)
 		event(h)
 		h.now = h.now.Add(time.Minute)
 		h.settle()
@@ -2893,7 +2909,7 @@ func freezeFaults(t *testing.T, build, event, check func(h *freezeTable), except
 		}
 		return h
 	}
-	base := run(t, 0, false, false)
+	base := run(t, 0, false, false, false)
 	if t.Failed() {
 		return base
 	}
@@ -2904,9 +2920,18 @@ func freezeFaults(t *testing.T, build, event, check func(h *freezeTable), except
 		if seen[op] > 1 {
 			op = fmt.Sprintf("%s (%d)", op, seen[op])
 		}
-		for _, restart := range []bool{false, true} {
+		for _, mode := range []struct{ after, restart bool }{{false, false}, {false, true}, {true, false}, {true, true}} {
+			// only a Forgejo call that changes something has an effect to
+			// keep while its answer is lost
+			if mode.after && !slices.ContainsFunc([]string{"POST ", "PATCH ", "PUT "}, func(m string) bool { return strings.HasPrefix(op, m) }) {
+				continue
+			}
+			after, restart := mode.after, mode.restart
 			for _, pressLater := range []bool{false, true} {
 				name := op
+				if after {
+					name += "/after its effect"
+				}
 				if restart {
 					name += "/restart"
 				}
@@ -2915,7 +2940,7 @@ func freezeFaults(t *testing.T, build, event, check func(h *freezeTable), except
 				}
 				var h *freezeTable
 				t.Run("fault "+name, func(t *testing.T) {
-					h = run(t, i+1, restart, pressLater)
+					h = run(t, i+1, after, restart, pressLater)
 					if e, named := except[name]; named {
 						used[name] = true
 						if got := h.reached(); got != e.reaches {
@@ -3472,20 +3497,16 @@ func TestFreezeCardFaultsOfAReopenTheResumeFollows(t *testing.T) {
 // Hand-derived from a freeze that arms and resumes in one pass with no
 // card: the dated refusal of 14:00 files #1 and the resume of the same
 // pass puts it on its resumed face. At 14:05 #1 closes itself with one
-// comment, its end counted, and the frozen card wakes once. A filing whose
-// write the store failed is made again by the next pass, which reads both
-// rows again. A filing Forgejo did not take is not: the freeze is over in
-// the same pass, no other class waits on that repository's Forgejo, and
-// the frozen card still wakes once.
+// comment, its end counted, and the frozen card wakes once. A filing that
+// failed is made once more when the pass comes to the class's resume, and
+// takes on the issue of a filing Forgejo made and answered with an error,
+// so no issue stands without its card.
 func TestFreezeCardFaultsOfAFilingTheResumeFollows(t *testing.T) {
-	over := freezeFaultException{"Forgejo did not take the filing and the class resumed in the same pass: no card shows the freeze, which is over, and the frozen card wakes",
-		" | open  | 0 comments, 0 ends, 1 wakes"}
 	freezeScenario(t, func(h *freezeTable) { h.at(2 * time.Hour) }, func(h *freezeTable) {
 		h.row("class_frozen", 5)
 		h.row("class_resumed", 5)
 		h.pass()
-	}, "#1 done resumed R1 | open  | 1 comments, 1 ends, 1 wakes",
-		map[string]freezeFaultException{"GET issues": over, "GET issues/restart": over, "POST issues": over, "POST issues/restart": over})
+	}, "#1 done resumed R1 | open  | 1 comments, 1 ends, 1 wakes", nil)
 }
 
 // Hand-derived from a press and a re-arm in one second and a human's close
@@ -3652,6 +3673,34 @@ func TestFreezeCardOneRepositorysForgejoStopsNoOtherClass(t *testing.T) {
 		if got := h.cards(); h.store.storedCursor != wantCursor || got != wantCard || !slices.Equal(h.wakes, wantWakes) || h.fj.repos[0] != "sf/acme" {
 			t.Fatalf("at %s: cursor %d, cards %q in %q, wakes %q; want cursor %d, %q in sf/acme, wakes %q",
 				h.now.Format("15:04"), h.store.storedCursor, got, h.fj.repos, h.wakes, wantCursor, wantCard, wantWakes)
+		}
+	}
+}
+
+// Hand-derived from a gateway row whose repository is no owner/name: one
+// pass reads the big class's dated refusal in "nonsense", the big class's
+// resume, and the small class's dated refusal in sf/acme. No card can be
+// filed in "nonsense". The pass still ends past all three rows, sf/acme
+// files small's #1, and the next pass does the same nothing: one row that
+// cannot be served holds no other class.
+func TestFreezeCardAMalformedRepositoryStopsNoOtherClass(t *testing.T) {
+	h := newFreezeTable(t)
+	for i, row := range []FreezeEvent{
+		{Repository: "nonsense", Kind: "class_frozen", Class: "big"},
+		{Repository: "nonsense", Kind: "class_resumed", Class: "big"},
+		{Repository: "sf/acme", Kind: "class_frozen", Class: "small"},
+	} {
+		row.ID, row.At, row.Words = int64(i+1), h.now, "free quota exhausted"
+		row.Reset = freezeTableBase.Add(120 * time.Hour).Format(time.RFC3339)
+		h.store.rows = append(h.store.rows, row)
+	}
+	for minute := range 3 {
+		h.at(time.Duration(minute) * time.Minute)
+		if err := h.w.Check(context.Background()); err != nil {
+			t.Logf("the pass at %s: %v", h.now.Format("15:04"), err)
+		}
+		if got := h.cards(); h.store.storedCursor != 3 || got != "#1 waiting frozen R1" || len(h.fj.repos) != 1 || h.fj.repos[0] != "sf/acme" {
+			t.Fatalf("at %s: cursor %d, cards %q in %q; want cursor 3 and small's #1 in sf/acme", h.now.Format("15:04"), h.store.storedCursor, got, h.fj.repos)
 		}
 	}
 }

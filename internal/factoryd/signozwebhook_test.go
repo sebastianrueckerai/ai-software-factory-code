@@ -54,8 +54,9 @@ type alertForgejo struct {
 	// listOpen makes the issue search answer the open issues, as Forgejo
 	// does; without it the search answers none
 	listOpen bool
-	// fault, when set and true for a request, answers it 500
-	fault func(r *http.Request) bool
+	// fault, when set and true for a request, answers it 500 with no
+	// effect; faultAfter lets the request take effect and answers 500
+	fault, faultAfter func(r *http.Request) bool
 	// downRepos are the repositories whose every call answers 500
 	downRepos map[string]bool
 	// refuseAll is the status every call on an issue answers, its reads
@@ -83,6 +84,12 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 		if fj.fault != nil && fj.fault(r) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
+		}
+		if fj.faultAfter != nil && fj.faultAfter(r) {
+			// the call takes effect and its answer is lost
+			answer := w
+			w = httptest.NewRecorder()
+			defer answer.WriteHeader(http.StatusInternalServerError)
 		}
 		if fj.downRepos[parts[4]+"/"+parts[5]] {
 			w.WriteHeader(http.StatusInternalServerError)

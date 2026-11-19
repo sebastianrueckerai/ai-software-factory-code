@@ -228,6 +228,10 @@ func (tl *Timeline) RecordFact(ctx context.Context, e Event) {
 // done (one factoryd replica).
 var allDoneMu sync.Mutex
 
+// ReasonCardGone opens the closing reason of a report task the factory
+// ended because its card was gone.
+const ReasonCardGone = "its card is gone: "
+
 // endOrphanReport ends report task c when its card is gone: closed, or
 // failed for a screening or a sizing, whose gate belongs to the card's
 // run. It sends c the factory's own close, issue_closed, which a report
