@@ -7,10 +7,11 @@ import "github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd
 
 // Unexported factoryd names the moved files reach through the surface.
 var (
-	holdsSlot = factoryd.PgHoldsSlot
-	errHeld   = factoryd.PgErrHeld
-	toInt     = factoryd.PgToInt
-	rungsOff  = factoryd.PgRungsOff
+	holdsSlot            = factoryd.PgHoldsSlot
+	errHeld              = factoryd.PgErrHeld
+	toInt                = factoryd.PgToInt
+	rung1Off             = factoryd.PgRung1Off
+	planCardFailedReason = factoryd.PgPlanCardFailedReason
 )
 
 type tripAttempt = factoryd.PgTripAttempt
@@ -54,6 +55,7 @@ var (
 	FaceOf                    = factoryd.FaceOf
 	RecommendationOf          = factoryd.RecommendationOf
 	MonthCapCardQuestion      = factoryd.MonthCapCardQuestion
+	DepFailedReason           = factoryd.DepFailedReason
 	IssueQuestion             = factoryd.IssueQuestion
 	ActAnswerCriteria         = factoryd.ActAnswerCriteria
 	ActApproveMerge           = factoryd.ActApproveMerge
@@ -130,6 +132,7 @@ var (
 	ErrDrawRefused            = factoryd.ErrDrawRefused
 	ErrNotDonePlan            = factoryd.ErrNotDonePlan
 	ErrNotHeld                = factoryd.ErrNotHeld
+	CriteriaSourceGate        = factoryd.CriteriaSourceGate
 	ErrNotPerson              = factoryd.ErrNotPerson
 	ErrNotFound               = factoryd.ErrNotFound
 	ErrPlanClosed             = factoryd.ErrPlanClosed
@@ -140,6 +143,7 @@ var (
 	EventCardExtended         = factoryd.EventCardExtended
 	EventCardFunded           = factoryd.EventCardFunded
 	EventCaseClimbed          = factoryd.EventCaseClimbed
+	EventCriteriaGateRun      = factoryd.EventCriteriaGateRun
 	EventGateHead             = factoryd.EventGateHead
 	EventModelReview          = factoryd.EventModelReview
 	EventPlanClosed           = factoryd.EventPlanClosed

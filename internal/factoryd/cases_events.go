@@ -356,9 +356,10 @@ func resolvePlanCase(ctx context.Context, q rowQuerier, e Event) error {
 }
 
 // RequestCase is the case pending approval request a opens: a merge
-// request's merge case, its pull request at the head the gates passed, a
-// resource request's, which holds the request's spec and opens no row, or
-// a plan's criteria request's plan_criteria case.
+// request's merge case at the human, its pull request at the head the
+// gates passed, a resource request's, which holds the request's spec and
+// opens no row, or a plan's criteria request's plan_criteria case, open at
+// rung 0 and due at the request's opening, with the words its face posts.
 func RequestCase(a ApprovalRequest) (Case, error) {
 	c := Case{TaskID: a.TaskID, Repository: a.Project, Status: CaseAtHuman}
 	if a.Kind == ApprovalMerge {
@@ -409,12 +410,16 @@ func RequestCase(a ApprovalRequest) (Case, error) {
 		c.Facts["approval"], c.Facts["approval_kind"] = a.ID, a.Kind
 		return c, nil
 	}
-	c.Kind = CasePlanCriteria
+	c.Kind, c.Status, c.NextWakeAt = CasePlanCriteria, CaseOpen, &a.CreatedAt
 	c.StateKey = fmt.Sprintf("%s:%d", a.Kind, a.ID)
 	c.Problem = cmp.Or(a.Reason, "The plan's criteria wait for a verdict")
 	c.Facts = map[string]any{"approval": a.ID, "approval_kind": a.Kind}
 	var spec CriteriaSpec
-	if json.Unmarshal(a.Spec, &spec) == nil && spec.NotRun != "" {
+	_ = json.Unmarshal(a.Spec, &spec)
+	if spec.Face != "" {
+		c.Facts["face"] = spec.Face
+	}
+	if spec.NotRun != "" {
 		c.Facts["not_run"] = spec.NotRun
 	}
 	if len(spec.Runnable) > 0 {
@@ -439,15 +444,13 @@ func RequestRow(a ApprovalRequest) (map[string]any, error) {
 }
 
 // openRequestCase opens the case of approval request id while it is
-// pending: a merge request's merge case, its pull request at the head the
-// gates passed, or a plan's criteria request's plan_criteria case. It
-// tells whether it opened one.
+// pending, as RequestCase makes it. It tells whether it opened one.
 func openRequestCase(ctx context.Context, q rowQuerier, id int64) (bool, error) {
 	a := ApprovalRequest{ID: id}
 	var raw []byte
-	err := q.QueryRowContext(ctx, `SELECT kind, task_id, project, COALESCE(pr_number, 0), spec, reason FROM approval_requests
+	err := q.QueryRowContext(ctx, `SELECT kind, task_id, project, COALESCE(pr_number, 0), spec, reason, created_at FROM approval_requests
 		WHERE id = $1 AND kind IN ($2, $3, $4) AND status = 'pending'`, id, ApprovalMerge, ApprovalCriteria, ApprovalCriteriaRerun).
-		Scan(&a.Kind, &a.TaskID, &a.Project, &a.PRNumber, &raw, &a.Reason)
+		Scan(&a.Kind, &a.TaskID, &a.Project, &a.PRNumber, &raw, &a.Reason, &a.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -463,8 +466,8 @@ func openRequestCase(ctx context.Context, q rowQuerier, id int64) (bool, error) 
 		return false, err
 	}
 	got, opened, err := openCase(ctx, q, c)
-	if err != nil || !opened {
-		return false, err
+	if err != nil || !opened || c.Status == CaseOpen {
+		return opened, err
 	}
 	_, err = appendCaseStep(ctx, q, CaseStep{CaseID: got.ID, Rung: 3, Actor: FactoryDecider})
 	return err == nil, err
@@ -657,22 +660,24 @@ func caseRung(by string) int {
 
 // pendFaced writes the case_faced of case id's face at comment as pending,
 // in the transaction that gives the case that comment, for a card whose run
-// waits on the case: none for a monitor flag's case, which sits beside the
-// run, or a human card's, which runs none.
+// hears the case (runHears) and waits on its face: none for a case beside
+// the run (caseBesideRun).
 func pendFaced(ctx context.Context, tx *sql.Tx, id, comment int64) error {
 	if comment == 0 {
 		return nil
 	}
-	var taskID string
-	err := tx.QueryRowContext(ctx, `SELECT c.task_id FROM cases c JOIN tasks t ON t.id = c.task_id WHERE c.id = $1 AND c.kind <> $2 AND t.kind <> 'human'`,
-		id, CaseMonitorFlag).Scan(&taskID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
+	c, err := scanCase(tx.QueryRowContext(ctx, `SELECT `+caseColumns+` FROM cases WHERE id = $1`, id))
 	if err != nil {
 		return err
 	}
-	return pendCaseSignal(ctx, tx, id, taskID, SignalCaseFaced, facedSignal(id, comment))
+	t, err := scanTask(tx.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = $1`, c.TaskID).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil || !runHears(t, c) || caseBesideRun(c, t) {
+		return err
+	}
+	return pendCaseSignal(ctx, tx, id, t.ID, SignalCaseFaced, facedSignal(id, comment))
 }
 
 // caseEnded drops ErrNotFound from err: the case had ended already.

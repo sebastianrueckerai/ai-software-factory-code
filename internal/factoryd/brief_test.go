@@ -838,8 +838,8 @@ func (c frozenChat) Call(ctx context.Context, taskID, alias string, in CheckinRe
 // the freeze recorded a row whenever the gateway's refusal words differed
 // per call. Today the named refusal sets the case's wake and the pass
 // skips a case whose wake is ahead, so whatever re-drove the brief inside
-// a freeze waits at the wake and the monitor sweep is the retry driver:
-// one row per freeze, the wake at the reset plus the margin, the sweep
+// a freeze waits at the wake and the case-wake pass is the retry driver:
+// one row per freeze, the wake at the reset plus the margin, the pass
 // waking the case then. A check-in inside the same hold records "not
 // run, the class is frozen until <reset>" and raises no flag.
 func TestBriefWakeAtReset(t *testing.T) {
@@ -894,14 +894,12 @@ func TestBriefWakeAtReset(t *testing.T) {
 		t.Fatalf("DueCases before the reset = %v, %v; want none", due, err)
 	}
 
-	// the sweep wakes it at the reset plus the margin, and the writer
-	// takes the case again only then
+	// the case-wake pass wakes it at the reset plus the margin, and the
+	// writer takes the case again only then
 	g.m.Now = func() time.Time { return wake }
-	if err := g.m.Sweep(ctx); err != nil {
-		t.Fatal(err)
-	}
+	g.wakeCases(t)
 	if woken := caseByID(t, g.s, c.ID); woken.NextWakeAt != nil || woken.Status != CaseAtHuman {
-		t.Fatalf("the sweep left the frozen case = %+v; want it woken at the human with no wake", woken)
+		t.Fatalf("the wake pass left the frozen case = %+v; want it woken at the human with no wake", woken)
 	}
 	if steps := caseStepsOf(t, g.s, c.ID); len(steps) == 0 || steps[len(steps)-1].Rung != 0 ||
 		steps[len(steps)-1].Found != "the same stop again: the stop" {

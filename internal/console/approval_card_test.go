@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
@@ -399,4 +400,64 @@ func TestAMergeAskHoldsNoTailOfItsLongParts(t *testing.T) {
 	}
 	checkRows(t, r.events, before,
 		wantRow{kind: factoryd.EventMergeApproved, repo: "sf/code", taskID: "t-m", detail: map[string]any{"pr": int64(9)}})
+}
+
+// A plan's criteria request waits for its case's face: while the case is
+// open on its rungs Needs you holds no row for the plan and its opened
+// card asks nothing; once the case is at the human the plan's row stands
+// in Needs you, and each page of its promises carries the rungs' view and
+// the answer they suggest, from the case's ask. A done plan outside the
+// board's finished page is listed all the same.
+func TestACriteriaRequestWaitsForItsCasesFace(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		onBoard bool
+	}{{"on the board", true}, {"past the finished page", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			verdictRig(r)
+			if !tc.onBoard {
+				// the plan, done 30 days ago, behind 51 cards finished in the last hour
+				now := time.Now()
+				done := now.Add(-30 * 24 * time.Hour)
+				r.tasks.tasks[0].FinishedAt = &done
+				for i := range 51 {
+					at := now.Add(-time.Duration(i+1) * time.Minute)
+					r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: fmt.Sprintf("t-f%02d", i), Kind: "agent", Status: "done",
+						Repository: "sf/code", IssueNumber: int64(100 + i), Objective: "Ship it.", CreatedAt: at.Add(-time.Hour), FinishedAt: &at}})
+				}
+			}
+			r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 41, TaskID: "t-plan", Repository: "sf/code", Kind: factoryd.CasePlanCriteria,
+				Status: factoryd.CaseOpen, Problem: "criteria not met once every card of the plan ended: c2, c3",
+				Facts: map[string]any{"approval": 30.0, "approval_kind": factoryd.ApprovalCriteria}}}}
+			ck, _ := r.loggedIn(t)
+			if got := needsOf(t, r, ck, "/?project=ai-software-factory-code"); strings.Contains(got, `data-card="t-plan"`) || strings.Contains(got, "promises") {
+				t.Fatalf("Needs you lists the request while its case is open:\n%s", got)
+			}
+			if tc.onBoard {
+				if drawer := criteriaPage(t, r, ck, ""); strings.Contains(drawer, `<section class="o-ask"`) {
+					t.Fatalf("the plan's opened card asks while its case is open:\n%s", drawer)
+				}
+			}
+			r.openCases["t-plan"][0].Status = factoryd.CaseAtHuman
+			r.caseAsks = map[int64]factoryd.CaseAsk{41: {Detail: map[string]any{"info": "The factory agent found:\n\n> c3 fails on main's head.",
+				"preselected": map[string]any{"action": factoryd.ActGrantCriteria}, "recommendation": "One more card fixes the suite.", "recommended_by": "the factory agent"}}}
+			small := faceOf(t, needsOf(t, r, ck, "/?project=ai-software-factory-code"), "t-plan")
+			if !strings.Contains(small, "Plan “Shortener” finished, but 2 of 3 promises are not met. Settle each one.") {
+				t.Fatalf("the plan's row in Needs you lacks its ask once the case is at the human:\n%s", small)
+			}
+			if !tc.onBoard {
+				return
+			}
+			for _, key := range []string{"", "41.2"} {
+				page := criteriaPage(t, r, ck, key)
+				for _, want := range []string{"c3 fails on main's head.",
+					`<p class="o-by">suggested by the factory agent: <span class="quote">One more card fixes the suite.</span></p>`} {
+					if !strings.Contains(page, want) {
+						t.Fatalf("the page %q lacks %q once the case is at the human:\n%s", key, want, askBlockOf(t, page))
+					}
+				}
+			}
+		})
+	}
 }

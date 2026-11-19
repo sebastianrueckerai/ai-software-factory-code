@@ -624,8 +624,21 @@ func noEvidenceRefusal(f CaseFacts, note string) string {
 
 // humanWordActions settle a plan's criteria by word: a verdict on a
 // criterion, a waiver among them, a confirmation and a denial. A person
-// takes them (ErrNotPerson); rung 2 hands them up.
+// takes them (ErrNotPerson); rung 2 hands them up (CriteriaWordRefusal).
 var humanWordActions = []string{ActAnswerCriteria, ActConfirmCriteria}
+
+// CriteriaWordRefusal is rung 2's refusal of a plan's criteria settled by
+// word on a case of kind k, which names what rung 2 may do instead: on a
+// plan's criteria case the grant or the hand-up, on a criteria card's
+// merge the hand-up.
+func CriteriaWordRefusal(k CaseKind) string {
+	const human = "settling a plan's criteria by word is the human's: "
+	if k == CasePlanCriteria {
+		return human + "take `" + ActGrantCriteria + "` for one more bounded card, or hand the case up (`hand_up`) with `" +
+			ActAnswerCriteria + "` (waive) or `" + ActConfirmCriteria + "` as the recommendation"
+	}
+	return human + "hand the case up (`hand_up`) with `" + ActAnswerCriteria + "` as the recommendation"
+}
 
 // fileCardKinds are the cases whose cause may lie outside the card: the
 // work is filed as a card of its own.
@@ -797,7 +810,7 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 		}
 	}
 	if rung == 2 && slices.Contains(humanWordActions, a.Name) && criteriaCaseRefusal(f, a.Name) == "" {
-		return ErrNotPerson.Error()
+		return CriteriaWordRefusal(f.Kind)
 	}
 	if why := a.Applies(f, r); why != "" {
 		return why

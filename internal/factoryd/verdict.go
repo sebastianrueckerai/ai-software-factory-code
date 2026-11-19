@@ -1661,7 +1661,8 @@ func duesDetail(dues []PlanCatch) []string {
 
 // CriteriaSpec is the criteria approval's spec: the plan revision the gap
 // is under, the task that carries the verdict rows, the criteria the ask
-// names, which a denied ask is matched on, and why no test ran.
+// names, which a denied ask is matched on, why no test ran, and the words
+// its case's face posts on the plan's issue.
 type CriteriaSpec struct {
 	Revision int    `json:"revision"`
 	Task     string `json:"task"`
@@ -1679,6 +1680,8 @@ type CriteriaSpec struct {
 	Open      []string `json:"open,omitempty"`
 	Unchecked []string `json:"unchecked,omitempty"`
 	Of        int      `json:"of,omitempty"`
+	// Face are the words the case's face posts on the plan's issue.
+	Face string `json:"face,omitempty"`
 }
 
 // planClosed says plan id has its plan_closed row, the fact the open
@@ -1857,7 +1860,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 	if len(never) > 0 && (r.planClosed(ctx, parent) || !r.planAtRest(ctx, t)) {
 		return
 	}
-	wanted, err := r.gateWanted(ctx, t, never, g)
+	wanted, err := r.gateWanted(ctx, t, p, rows, g)
 	switch {
 	case err != nil:
 		log.Printf("plan %s: the criteria gate: %s", parent, r.Scrub.String(err.Error()))
@@ -1880,7 +1883,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 			return
 		}
 		asked.Runnable = runIDs(runnableRuns(p, proofs, rows))
-		r.askRerun(ctx, t, repo, asked, never, unmet, integration, g.runs)
+		r.askRerun(ctx, t, asked, never, unmet, integration, g.runs)
 		return
 	}
 	// a waiver or a confirmation judged what a rerun ask named: it has
@@ -1889,7 +1892,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		log.Printf("plan %s: resolve the criteria rerun: %v", parent, err)
 		return
 	}
-	r.openGap(ctx, t, repo, asked, open, integration)
+	r.openGap(ctx, t, asked, open, integration)
 }
 
 // holdPlan puts the ask of plan t, closed by a human while promises were
@@ -1978,6 +1981,10 @@ const (
 	// gateAsked is a human's press of Run the tests now, on record before
 	// any pass runs it, so a restart cannot lose it
 	gateAsked = "asked"
+	// gateRerun is rung 0's row on a criteria case whose gate it runs once
+	// more on main (rerunCriteriaGate): the attempts before it count no
+	// more, and the gate judges every open criterion it judges at all.
+	gateRerun = "rerun"
 )
 
 // criteriaGateBound is the bound of a criteria gate run, the one the gate
@@ -2017,13 +2024,22 @@ func gateRan(runs []Event, outcome string) bool {
 	return slices.ContainsFunc(runs, func(e Event) bool { return e.Detail["outcome"] == outcome })
 }
 
-// gateAttempts counts the attempts runs record: a run that started and
-// recorded no outcome, a restart's or a lost write's, was cut. An attempt
-// that is pending and has no other outcome is not spent, and a press that
-// only asked for a run is none.
+// sinceRerun are the runs of runs, newest first, newer than the newest
+// rerun row: all of them with none.
+func sinceRerun(runs []Event) []Event {
+	if i := slices.IndexFunc(runs, func(e Event) bool { return e.Detail["outcome"] == gateRerun }); i >= 0 {
+		return runs[:i]
+	}
+	return runs
+}
+
+// gateAttempts counts the attempts runs record since a rerun row: a run
+// that started and recorded no outcome, a restart's or a lost write's, was
+// cut. An attempt that is pending and has no other outcome is not spent,
+// and a press that only asked for a run is none.
 func gateAttempts(runs []Event) int {
 	seen, pending, ended := map[any]bool{}, map[any]bool{}, map[any]bool{}
-	for _, e := range runs {
+	for _, e := range sinceRerun(runs) {
 		a := e.Detail["attempt"]
 		switch e.Detail["outcome"] {
 		case gateAsked:
@@ -2045,11 +2061,11 @@ func gateAttempts(runs []Event) int {
 }
 
 // gatePendingSince is when the checks first read pending: the since of the
-// newest pending record of runs, zero when a record of an outcome (ran, cut
-// or no_room) is newer or there is none. A started record after it, a
-// restart's, does not renew it.
+// newest pending record of runs since a rerun row, zero when a record of an
+// outcome (ran, cut or no_room) is newer or there is none. A started record
+// after it, a restart's, does not renew it.
 func gatePendingSince(runs []Event) time.Time {
-	for _, e := range runs {
+	for _, e := range sinceRerun(runs) {
 		switch e.Detail["outcome"] {
 		case gatePending:
 			since, _ := e.Detail["since"].(string)
@@ -2063,19 +2079,34 @@ func gatePendingSince(runs []Event) time.Time {
 }
 
 // due tells whether the criteria gate is still to run for the plan's
-// cards as they stand: no attempt for them ran or found no room, and fewer
-// than two were cut. A card that ends since makes it due again.
+// cards as they stand: no attempt for them since a rerun row ran or found
+// no room, and fewer than two were cut. A card that ends since makes it due
+// again.
 func (g planGate) due() bool {
-	return !gateRan(g.runs, gateDone) && !gateRan(g.runs, gateNoRoom) && gateAttempts(g.runs) < 2
+	runs := sinceRerun(g.runs)
+	return !gateRan(runs, gateDone) && !gateRan(runs, gateNoRoom) && gateAttempts(runs) < 2
 }
 
-// gateWanted tells whether plan's criteria gate runs now: gate-judged
-// criteria hold no row that settles them (never), the plan is at rest and
-// not closed, every card of the plan is final (g), a failed one too, and
-// the gate is due. A read that fails is an error: the gate waits and no
-// ask opens.
-func (r *Runner) gateWanted(ctx context.Context, plan Task, never []PlanCriterion, g planGate) (bool, error) {
-	gate, _ := judgeIDs(never)
+// gateWanted tells whether plan p's criteria gate runs now: it may run
+// (gateMayRun) on the criteria no row of rows settles, or, while a rerun
+// row stands, on those that stand open, and it is due.
+func (r *Runner) gateWanted(ctx context.Context, plan Task, p Plan, rows []CriterionVerdict, g planGate) (bool, error) {
+	judge := neverJudged(p, rows)
+	if gateRan(g.runs, gateRerun) {
+		judge = openCriteria(p, rows)
+	}
+	if may, err := r.gateMayRun(ctx, plan, judge, g); err != nil || !may {
+		return false, err
+	}
+	return g.due(), nil
+}
+
+// gateMayRun tells whether plan's criteria gate may run on criteria
+// judge: the gate judges one of them, the plan is at rest and not closed,
+// and every card of the plan is final (g), a failed one too. A read that
+// fails is an error: the gate waits and no ask opens.
+func (r *Runner) gateMayRun(ctx context.Context, plan Task, judge []PlanCriterion, g planGate) (bool, error) {
+	gate, _ := judgeIDs(judge)
 	if len(gate) == 0 || plan.Status == "closed" || !Final(plan.Status) ||
 		slices.ContainsFunc(g.cards, func(c Task) bool { return !Final(c.Status) }) {
 		return false, nil
@@ -2086,7 +2117,77 @@ func (r *Runner) gateWanted(ctx context.Context, plan Task, never []PlanCriterio
 	if _, pending, err := r.pendingReplan(ctx, plan); err != nil || pending {
 		return false, err
 	}
-	return g.due(), nil
+	return true, nil
+}
+
+// rerunFound starts the rung 0 step of a criteria case whose gate rung 0
+// runs once more; the step names main's head after it.
+const rerunFound = "criteria gate run again at main "
+
+// criteriaRerunHold is how long rung 0 holds a criteria case for the gate
+// it runs once more: the gate's bound and one criteria pass, whose close
+// check reads the outcome.
+const criteriaRerunHold = criteriaGateBound + time.Minute
+
+// rerunCriteriaGate is rung 0's row on plan criteria case c: once per case,
+// when the gate may run on the criteria that stand open (gateMayRun) and
+// main's head is not the commit of the gate's newest run (no run on record
+// counts as moved), it records a rerun row, queues the gate and holds the
+// case until the gate's outcome can stand. While the gate runs or waits in its queue for the
+// plan, it holds the case again. It answers whether it holds the case; a
+// read that fails is its error, which hands the case up.
+func (r *Runner) rerunCriteriaGate(ctx context.Context, c Case) (bool, error) {
+	hold := func() (bool, error) {
+		until := r.Clock().Add(criteriaRerunHold)
+		return true, r.store.SetCaseWake(ctx, c.ID, 0, c.WakeOn, &until)
+	}
+	if r.gateBusy(c.TaskID) {
+		return hold()
+	}
+	steps, err := r.store.CaseSteps(ctx, c.ID)
+	if err != nil || slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 0 && strings.HasPrefix(s.Found, rerunFound) }) {
+		return false, err
+	}
+	plan, repo, err := r.task(ctx, c.TaskID)
+	if err != nil {
+		return false, err
+	}
+	p, _, err := planOfStore(ctx, r.store, plan.ID, "")
+	if err != nil {
+		return false, err
+	}
+	integration, err := IntegrationCard(ctx, r.store, plan.ID, p)
+	if err != nil {
+		return false, err
+	}
+	rows, err := r.store.CriteriaVerdicts(ctx, integration.ID)
+	if err != nil {
+		return false, err
+	}
+	g, err := planGateOf(ctx, r.store, plan.ID, integration)
+	if err != nil {
+		return false, err
+	}
+	if may, err := r.gateMayRun(ctx, plan, openCriteria(p, g.settling(rows)), g); err != nil || !may {
+		return false, err
+	}
+	head, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
+	if err != nil {
+		return false, err
+	}
+	commit := func(e Event) string { s, _ := e.Detail["commit"].(string); return s }
+	if i := slices.IndexFunc(g.runs, func(e Event) bool { return commit(e) != "" }); i >= 0 && commit(g.runs[i]) == head {
+		return false, nil
+	}
+	if err := r.timeline.WriteRow(ctx, plan.ID, EventCriteriaGateRun, FactoryDecider, ViaFactoryd,
+		map[string]any{"task": integration.ID, "cards": g.mark, "outcome": gateRerun, "commit": head}); err != nil {
+		return false, err
+	}
+	r.queueGate(plan.ID)
+	if _, err := r.store.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 0, Actor: FactoryDecider, Found: rerunFound + head, Outcome: StepHandedUp}); err != nil {
+		return false, err
+	}
+	return hold()
 }
 
 // queueTests hands plan id's untested promises to the criteria gate pass.
@@ -2103,6 +2204,14 @@ func (r *Runner) gateRunning(id string) bool {
 	r.gateMu.Lock()
 	defer r.gateMu.Unlock()
 	return r.gateRun == id
+}
+
+// gateBusy tells whether plan id's criteria gate runs in this process or
+// waits in its queue.
+func (r *Runner) gateBusy(id string) bool {
+	r.gateMu.Lock()
+	defer r.gateMu.Unlock()
+	return r.gateRun == id || slices.Contains(r.gateQueue, id)
 }
 
 // queueGate hands plan id to the criteria gate pass.
@@ -2144,8 +2253,9 @@ func (r *Runner) CriteriaGatePass(ctx context.Context) {
 }
 
 // runCriteriaGate runs plan id's criteria gate on the integration card,
-// at the head of its pull request or of main (planGate), and records the
-// outcome on the plan with the cards' states it judged. A run on main
+// at the head of its pull request or of main (planGate), on main's while a
+// rerun row stands, and records the outcome on the plan with the cards'
+// states it judged. A run on main
 // first withdraws the rows that judge no head on main.
 // The card gets the whole gate reserve free first, raised by what its
 // spend left short of it, so the gate draws on the reserve as the review
@@ -2171,7 +2281,7 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 					var g planGate
 					if g, err = planGateOf(ctx, r.store, id, integration); err == nil {
 						var want bool
-						if want, err = r.gateWanted(ctx, plan, neverJudged(p, g.settling(rows)), g); err == nil {
+						if want, err = r.gateWanted(ctx, plan, p, g.settling(rows), g); err == nil {
 							return plan, repo, integration, g, want
 						}
 					}
@@ -2193,6 +2303,9 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 	}
 	runs := g.runs
 	try := &gateTry{plan: plan, card: integration, attempt: fmt.Sprint(gateAttempts(runs) + 1), pr: g.pr, mark: g.mark}
+	if gateRan(runs, gateRerun) {
+		try.pr = 0
+	}
 	var head string
 	var err error
 	if try.pr != 0 {
@@ -2473,10 +2586,10 @@ var criteriaKinds = []string{ApprovalCriteria, ApprovalCriteriaRerun}
 // openGap opens the plan's criteria approval once per shape of gap, while
 // the plan is at rest: open are criteria whose rows say not met, as spec
 // counts them.
-func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, spec CriteriaSpec, open []PlanCriterion, integration Task) {
+func (r *Runner) openGap(ctx context.Context, t Task, spec CriteriaSpec, open []PlanCriterion, integration Task) {
 	ids, lines := criteriaLines(open, "")
 	spec.Criteria = ids
-	r.openPlanAsk(ctx, t, repo, ApprovalCriteria, spec, CriteriaGapReason(ids),
+	r.openPlanAsk(ctx, t, ApprovalCriteria, spec, CriteriaGapReason(ids),
 		"Every card of the plan has ended with a criterion still unmet.\n\n"+strings.Join(lines, "\n")+
 			"\n\nGrant one more bounded card, or waive a criterion with your reason.", integration)
 }
@@ -2496,7 +2609,7 @@ func promiseIDs(cs []PlanCriterion) []string {
 // those whose rows say not met, named beside them; spec counts them and
 // names those a run can check; runs the gate's runs for the plan's cards
 // as they stand.
-func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, spec CriteriaSpec, never, unmet []PlanCriterion, integration Task, runs []Event) {
+func (r *Runner) askRerun(ctx context.Context, t Task, spec CriteriaSpec, never, unmet []PlanCriterion, integration Task, runs []Event) {
 	gate, human := byJudge(never)
 	var parts []string
 	if gate != "" {
@@ -2530,7 +2643,7 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, spec CriteriaS
 		ids, lines = append(ids, more...), append(lines, unmetLines...)
 	}
 	spec.NotRun, spec.Criteria = notRun, ids
-	r.openPlanAsk(ctx, t, repo, ApprovalCriteriaRerun, spec, reason,
+	r.openPlanAsk(ctx, t, ApprovalCriteriaRerun, spec, reason,
 		"Every card of the plan has ended, and no verdict on main settles these criteria: "+why+".\n\n"+
 			strings.Join(lines, "\n")+"\n\nGrant one more bounded card, waive a criterion with your reason, or confirm with your evidence that the delivered cards meet them.", integration)
 }
@@ -2576,13 +2689,14 @@ func asksFor(q ApprovalRequest, ids []string) bool {
 }
 
 // openPlanAsk opens plan t's ask of kind, one of criteriaKinds, with
-// reason, comments it on the plan's issue and pokes: never beside a
-// pending ask of either kind, so the two never stack, nor again after a
-// denied one of the same kind naming the same criteria ids, nor while a
-// delta due stands undrafted, only once the plan is at rest.
-// Its spec names the integration card, whose rows the decisions read, why
-// no test ran, the promises it asks about and those a run can check.
-func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind string, spec CriteriaSpec, reason, comment string, integration Task) {
+// reason: never beside a pending ask of either kind, so the two never
+// stack, nor again after a denied one of the same kind naming the same
+// criteria ids, nor while a delta due stands undrafted, only once the plan
+// is at rest. Its spec names the integration card, whose rows the
+// decisions read, why no test ran, the promises it asks about and those a
+// run can check, and carries comment, which its case's face posts on the
+// plan's issue once the case reaches the human.
+func (r *Runner) openPlanAsk(ctx context.Context, t Task, kind string, spec CriteriaSpec, reason, comment string, integration Task) {
 	if due, err := r.undraftedDues(ctx, t.ID); err != nil || len(due) > 0 {
 		if err != nil {
 			log.Printf("plan %s: the gap check: %v", t.ID, err)
@@ -2607,7 +2721,7 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind string
 	if !r.planAtRest(ctx, t) {
 		return
 	}
-	spec.Task = integration.ID
+	spec.Task, spec.Face = integration.ID, comment
 	raw, err := json.Marshal(spec)
 	if err != nil {
 		return
@@ -2617,7 +2731,6 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind string
 		log.Printf("plan %s: open the %s approval: %v", t.ID, kind, err)
 		return
 	}
-	r.commentOnce(ctx, t, repo, t.IssueNumber, comment)
 	r.record(ctx, t.ID, "approval_requested", map[string]any{"approval": a.ID, "kind": kind, "criteria": spec.Open})
 	row, err := RequestRow(a)
 	if err != nil {

@@ -23,7 +23,7 @@ var monitorKinds = []string{EventTaskStatus, EventTaskEnded, EventSessionEnd, Ev
 	EventApprovalRequested, EventMergeApproved, EventMergeDenied, EventPullRequestMerged, EventCardCreated, EventIssueClosed}
 
 // monitorBatch bounds the events one read takes and the due cases one
-// sweep wakes.
+// case-wake pass wakes.
 const monitorBatch = 100
 
 // Monitor opens a case for every flag a card's digest raises that is new
@@ -87,10 +87,9 @@ func (m *Monitor) Pass(ctx context.Context) error {
 	}
 }
 
-// Sweep runs card on every live card of every project, wakes the due cases
-// (rung 0 again through OpenTrip's repeat path) and expires the steps past
-// their bound. Its own pass runs it every minute. A merged or closing
-// card raises no case, so the sweep reads neither.
+// Sweep runs card on every live card of every project. Its own pass runs
+// it every minute. A merged or closing card raises no case, so the sweep
+// reads neither.
 func (m *Monitor) Sweep(ctx context.Context) error {
 	var errs []error
 	tree := m.Policy()
@@ -125,9 +124,19 @@ func (m *Monitor) Sweep(ctx context.Context) error {
 			return err
 		}
 	}
+	return errors.Join(errs...)
+}
+
+// WakeCases is the case-wake pass, run every 5 seconds: it ends the steps
+// past their bound and climbs their cases, then wakes each due case
+// through OpenTrip's repeat path (wake), at most monitorBatch. A case on a
+// card that cannot wait for a human is left to the heal pass, unless it
+// outlives its card.
+func (m *Monitor) WakeCases(ctx context.Context) error {
+	var errs []error
 	now := m.Now()
 	// a rung's step past its bound ends first, so the wake of its case,
-	// due at the same time, finds the case at the human
+	// due at the same time, finds the case climbed
 	expired, err := m.Store.ExpireSteps(ctx, now)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("expire steps: %w", err))
@@ -140,12 +149,8 @@ func (m *Monitor) Sweep(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("due cases: %w", err))
 	}
 	for _, c := range due {
-		if c.Kind != CaseMonitorFlag {
-			// no run waits on a human on a card that cannot wait for one:
-			// the heal pass ends the case
-			if t, ok, err := m.Store.Task(ctx, c.TaskID); err == nil && ok && !slices.Contains(openStatuses, t.Status) {
-				continue
-			}
+		if t, ok, err := m.Store.Task(ctx, c.TaskID); err == nil && ok && !slices.Contains(openStatuses, t.Status) && !outlivesCard(c, t) {
+			continue
 		}
 		if err := m.wake(ctx, c); err != nil && ctx.Err() == nil {
 			log.Printf("monitor: wake case %d of card %s: %v", c.ID, c.TaskID, err)
@@ -281,8 +286,9 @@ func (m *Monitor) closedOnForge(ctx context.Context, taskID string, d CardDigest
 }
 
 // wake runs rung 0 on due case c again through OpenTrip's repeat path, on
-// the case's kind, key, reason and head, and clears its wake: the rung
-// that holds the case after owns it.
+// the case's kind, key, reason and head, and clears the wake it was due
+// at: the rung that holds the case after owns it. A rung that took the
+// case set its own wake at its step's due, which stays.
 func (m *Monitor) wake(ctx context.Context, c Case) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -292,6 +298,13 @@ func (m *Monitor) wake(ctx context.Context, c Case) error {
 		tripAttempt{})
 	if err != nil {
 		return err
+	}
+	live, err := m.Store.CaseByID(ctx, c.ID)
+	if err != nil {
+		return err
+	}
+	if live.NextWakeAt == nil || c.NextWakeAt != nil && !live.NextWakeAt.Equal(*c.NextWakeAt) {
+		return nil
 	}
 	// a case rung 0 resolved has no wake left
 	return caseEnded(m.Store.SetCaseWake(ctx, c.ID, out.Rung, c.WakeOn, nil))

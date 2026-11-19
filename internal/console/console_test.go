@@ -1388,6 +1388,18 @@ func (r *rig) forgetWriters() {
 	r.c.mu.Unlock()
 }
 
+// liveCasesOf are card taskID's live cases: its own, and its pending
+// requests' cases, at the human, where none of its own holds the request.
+func (r *rig) liveCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
+	base, err := r.ownCasesOf(ctx, taskID)
+	for _, q := range r.requestCases(ctx, taskID) {
+		if !slices.ContainsFunc(base, func(k factoryd.Case) bool { return factoryd.RequestAnswers(q.req, k) }) {
+			base = append(base, q.c)
+		}
+	}
+	return base, err
+}
+
 // ownCasesOf are the cases the rig holds for a task: those a test seats, else
 // the one live case of a card waiting on a human, of the kind its stop
 // opens in production.
@@ -1585,15 +1597,7 @@ func newRig(t *testing.T) *rig {
 		SessionBriefs: func(_ context.Context, taskID string) ([]factoryd.SessionBrief, error) {
 			return r.briefs[taskID], nil
 		},
-		OpenCasesOf: func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
-			base, err := r.ownCasesOf(ctx, taskID)
-			for _, q := range r.requestCases(ctx, taskID) {
-				if !slices.ContainsFunc(base, func(k factoryd.Case) bool { return factoryd.RequestAnswers(q.req, k) }) {
-					base = append(base, q.c)
-				}
-			}
-			return base, err
-		},
+		OpenCasesOf: r.liveCasesOf,
 		CaseByID: func(ctx context.Context, id int64) (factoryd.Case, error) {
 			all := slices.Clone(r.endedCases)
 			for _, open := range r.openCases {

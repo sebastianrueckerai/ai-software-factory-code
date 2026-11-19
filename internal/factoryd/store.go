@@ -977,7 +977,7 @@ type Store interface {
 	// the count and the insert one write.
 	StartRung1Step(ctx context.Context, taskID string, limit int, st CaseStep) (id int64, atLimit bool, err error)
 	// SetCaseWake sets who owns the next move on case id, the events that
-	// end its wait, and when the sweep wakes it if none does.
+	// end its wait, and when the case-wake pass wakes it if none does.
 	SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error
 	// DueCases lists the live cases whose next_wake_at passed, oldest
 	// first.

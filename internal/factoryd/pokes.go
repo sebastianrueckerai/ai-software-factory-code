@@ -246,7 +246,8 @@ func pokeTo(tree policy.Tree, repository string) []string {
 
 // PokeOf is event e's poke, t the card it names, false for an event that
 // pokes nobody. A message about a card's ask is its face's words
-// (askMessage); a notice is one line of at most noticeMax runes. A helper
+// (askMessage), with the ask of a criteria request, whose case's face asks
+// for it; a notice is one line of at most noticeMax runes. A helper
 // task's message names its step on parent, the card the step stands on:
 // its ask is the parent's, and says which step asks.
 func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
@@ -272,6 +273,10 @@ func PokeOf(e Event, t, parent Task) (ChatMessage, bool) {
 		if q := cmp.Or(str("question"), str("ask")); why == "" && !strings.Contains(q, "\n") && utf8.RuneCountInString(name+q) <= askLead {
 			// an ask whose row stores no why says its question where it fits
 			why = q
+		}
+		if e.Detail["case_kind"] == string(CasePlanCriteria) {
+			// the face of a criteria request's case says the request's ask
+			step = str("ask")
 		}
 		m.Content = askMessage(name, step, why, suggestion(e.Detail, offersOf(e.Detail["offers"])))
 		m.Decider = str("decider_line")
@@ -512,9 +517,10 @@ func RoutineDecider(routine string, n int, schedule string) string {
 // choices, false for a kind that pokes nobody: its message from the face
 // of the request's case, and for a merge the answer the inbox can press.
 // A plan's request is its revision's bookkeeping, which pokes nobody: the
-// rows of its questions and its confirmation ask. The row is the request
-// case's facts (RequestRow); a merge whose promises a human judges first
-// opens on the first one's page, as its card does.
+// rows of its questions and its confirmation ask. A criteria request pokes
+// nobody either: its case climbs first, and its face's ask pokes. The row
+// is the request case's facts (RequestRow); a merge whose promises a human
+// judges first opens on the first one's page, as its card does.
 func approvalPoke(e Event, t Task) (string, []string, bool) {
 	kind, _ := e.Detail["kind"].(string)
 	c := Case{TaskID: e.TaskID, Repository: e.Repository, Status: CaseAtHuman, Kind: CaseMergeApproval, Facts: e.Detail}
@@ -532,8 +538,6 @@ func approvalPoke(e Event, t Task) (string, []string, bool) {
 		if open := factStrings(c, "open"); len(open) > 0 {
 			c, choices = OnPromise(c, PromiseFact{ID: open[0], Kind: CriterionHuman}), nil
 		}
-	case ApprovalCriteria, ApprovalCriteriaRerun:
-		c.Kind, c.Facts = CasePlanCriteria, withFacts(e.Detail, map[string]any{"approval_kind": kind})
 	default:
 		return "", nil, false
 	}

@@ -149,7 +149,8 @@ func TestLongMessagesFold(t *testing.T) {
 // the question its opened card asks: the card's ask is the message's one
 // source, red checks included. The row is the request case's facts and
 // problem, as factoryd writes them; a plan's request pokes nobody, as its
-// questions' rows ask.
+// questions' rows ask, and a criteria request's case pokes with its face's
+// ask row.
 func TestTheInboxSaysWhatTheCardAsks(t *testing.T) {
 	question := regexp.MustCompile(`<p class="o-question">(.*?)</p>`)
 	tags := regexp.MustCompile(`<[^>]*>`)
@@ -163,7 +164,20 @@ func TestTheInboxSaysWhatTheCardAsks(t *testing.T) {
 			t.Fatal(err)
 		}
 		c.Facts["kind"], c.Facts["problem"] = fx.Approval.Kind, c.Problem
-		m, ok := factoryd.PokeOf(factoryd.Event{Kind: factoryd.EventApprovalRequested, TaskID: fx.Task.ID, Repository: fx.Task.Repository, Detail: c.Facts}, fx.Task, factoryd.Task{})
+		e := factoryd.Event{Kind: factoryd.EventApprovalRequested, TaskID: fx.Task.ID, Repository: fx.Task.Repository, Detail: c.Facts}
+		if fx.Approval.Kind == factoryd.ApprovalCriteria || fx.Approval.Kind == factoryd.ApprovalCriteriaRerun {
+			// a criteria request pokes nobody: its case's face does, with
+			// the ask row it writes as the case reaches the human
+			if m, ok := factoryd.PokeOf(e, fx.Task, factoryd.Task{}); ok {
+				t.Errorf("%s/%s: the criteria request's own row pokes with %q", fx.Group, fx.Kind, m.Content)
+			}
+			if fx.Ask == nil {
+				t.Errorf("%s/%s: the criteria request's case holds no ask", fx.Group, fx.Kind)
+				continue
+			}
+			e = factoryd.Event{Kind: factoryd.EventQuestionAsked, TaskID: fx.Task.ID, Repository: fx.Task.Repository, Detail: fx.Ask.Detail}
+		}
+		m, ok := factoryd.PokeOf(e, fx.Task, factoryd.Task{})
 		if !ok {
 			continue
 		}

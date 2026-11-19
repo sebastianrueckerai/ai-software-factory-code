@@ -106,8 +106,8 @@ func TestApproveMergeAtAutonomousRung2IsAProposal(t *testing.T) {
 //
 // A done plan's criteria request is answered through Act (the ended-card
 // check lets the criteria's actions and the restart through): a verdict keeps
-// the case at the human; a grant and a confirmation each resolve it under
-// their own name; restart_plan resolves it too.
+// the case open where it stands; a grant and a confirmation each resolve it
+// under their own name; restart_plan resolves it too.
 func TestCriteriaActionsRunOnADonePlansCase(t *testing.T) {
 	for _, tc := range []struct {
 		action  string
@@ -116,7 +116,7 @@ func TestCriteriaActionsRunOnADonePlansCase(t *testing.T) {
 		status  string
 		resolve string
 	}{
-		{ActAnswerCriteria, map[string]any{"criterion": "c1", "verdict": "waive"}, "out of scope", CaseAtHuman, ""},
+		{ActAnswerCriteria, map[string]any{"criterion": "c1", "verdict": "waive"}, "out of scope", CaseOpen, ""},
 		{ActGrantCriteria, nil, "", CaseResolved, ActGrantCriteria},
 		{ActConfirmCriteria, nil, "the cards deliver it", CaseResolved, ActConfirmCriteria},
 		{ActRestartPlan, nil, "split it in two", CaseResolved, ActRestartPlan},
@@ -146,12 +146,12 @@ func TestCriteriaActionsRunOnADonePlansCase(t *testing.T) {
 
 // Settling a plan's criteria by word is a human's act, on every path. At
 // autonomous, where rung 2's answers run and propose nothing, its waiver,
-// denial and confirmation through Act are each refused with the hand-up
-// and run no work; the store refuses the project agent's denial of a
+// denial and confirmation through Act are each refused, naming the grant
+// and the hand-up, and run no work; the store refuses the project agent's denial of a
 // criteria request too. The human's press takes each, and rung 2's grant,
 // which waives nothing, runs.
 func TestRung2SettlesNoCriteriaByWord(t *testing.T) {
-	const want = "settling a plan's criteria by word is the human's, who waives or confirms them: hand it up with your recommendation"
+	const want = "settling a plan's criteria by word is the human's: take `grant_criteria` for one more bounded card, or hand the case up (`hand_up`) with `answer_criteria` (waive) or `confirm_criteria` as the recommendation"
 	words := []struct {
 		name string
 		res  Resolution
@@ -168,7 +168,7 @@ func TestRung2SettlesNoCriteriaByWord(t *testing.T) {
 			if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
 				t.Fatalf("rung 2's %s = %v, want a refusal starting %q", w.name, err, want)
 			}
-			if len(stub.calls) != 0 || caseByID(t, g.s, c.ID).Status != CaseAtHuman {
+			if len(stub.calls) != 0 || caseByID(t, g.s, c.ID).Status != CaseOpen {
 				t.Fatalf("board calls %d, case %s: a refused answer runs nothing and ends nothing", len(stub.calls), caseByID(t, g.s, c.ID).Status)
 			}
 			if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: w.res}); err != nil {

@@ -227,7 +227,7 @@ var storyWriterKinds = []CaseKind{CaseCheckinHuman, CasePolicyClass, CaseOther}
 // BrieflessCases are the live at_human cases of the writer's kinds without
 // their story lines, oldest first, at most perRepo of each repository. A
 // case whose wake is still ahead is not among them: a freeze the writer
-// refused holds the retry at the case wake, and the sweep wakes it then.
+// refused holds the retry at the case wake, and the case-wake pass wakes it then.
 func (s *PGStore) BrieflessCases(ctx context.Context, perRepo int) ([]Case, error) {
 	kinds := make([]string, len(storyWriterKinds))
 	for i, k := range storyWriterKinds {

@@ -267,7 +267,7 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 		if settled, _ := e.Detail["settled"].(string); e.Kind == EventQuestionAsked && settled != "" {
 			continue // the factory answered the ask as it asked it: it wakes nobody
 		}
-		if (e.Kind == EventQuestionAsked || e.Kind == EventCaseClimbed || isMergeRow(e)) && judges {
+		if e.Kind == EventCaseClimbed || (e.Kind == EventQuestionAsked || isMergeRow(e)) && judges {
 			if worked, err := w.staleCaseEvent(ctx, e); err != nil {
 				return err
 			} else if worked {

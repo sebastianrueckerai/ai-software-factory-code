@@ -1271,14 +1271,22 @@ func (b *builder) humanMerge(p *factoryd.Plan) Fixture {
 	return fx
 }
 
-// request is card t holding the case its pending request a opens.
+// request is card t holding the case its pending request a opens. A
+// criteria request's case reaches the human through its face, so it holds
+// the ask AskHuman writes then.
 func (b *builder) request(group, name string, t factoryd.Task, a *factoryd.ApprovalRequest, age time.Duration) Fixture {
 	opened, err := factoryd.RequestCase(*a)
 	if err != nil {
 		panic(err)
 	}
 	c := b.atHuman(opened, 7000+a.ID, age)
-	return Fixture{Group: group, Kind: name, Task: t, Facts: factoryd.FactsOf(*c), Case: c, Approval: a}
+	fx := Fixture{Group: group, Kind: name, Task: t, Facts: factoryd.FactsOf(*c), Case: c, Approval: a}
+	if a.Kind == factoryd.ApprovalCriteria || a.Kind == factoryd.ApprovalCriteriaRerun {
+		face := factoryd.FaceRow(*c, t, fx.Facts, "", nil, same, same)
+		ask, _ := face["ask"].(string)
+		fx.Ask = &factoryd.CaseAsk{At: c.OpenedAt, Detail: roundTrip(factoryd.AskRow(*c, t, a.Reason, ask, c.CommentID, face, nil, nil, same))}
+	}
+	return fx
 }
 
 // planAsk is a plan card waiting on its revision's open question, or on its
@@ -1324,7 +1332,7 @@ func (b *builder) planAsk(group, name string, confirm bool) Fixture {
 // were open: its ask to close it and drop them, or keep it open.
 func (b *builder) heldPlan(group, name string) Fixture {
 	fx := b.criteriaGap(group, name)
-	fx.Task.Status, fx.Approval = "closed", nil
+	fx.Task.Status, fx.Approval, fx.Ask = "closed", nil, nil
 	open := fx.Plan.Criteria[1:3]
 	var ids, promises []string
 	for _, c := range open {

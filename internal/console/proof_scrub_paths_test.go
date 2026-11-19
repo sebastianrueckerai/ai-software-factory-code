@@ -127,12 +127,8 @@ func TestAnalysisRefusalIsScrubbed(t *testing.T) {
 func TestGrantRefusalIsScrubbed(t *testing.T) {
 	r, _, g := newChatRig(t)
 	verdictRig(r)
-	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
 	r.c.cfg.GrantCriteria = func(context.Context, string, string, int64) (int, error) { return 0, leakyError() }
-	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "answer_criteria", `{"task_id":"t-plan","action":"grant"}`)}, {say("No.")}}
-	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"grant the plan one more bounded card"}})
-	maskedLeak(t, "the grant refusal", strings.Join(events, "\n"))
+	maskedLeak(t, "the grant refusal", strings.Join(grantOnDoIt(t, r, g, []string{say("No.")}), "\n"))
 }
 
 // forgejoFailed shows Forgejo's reason, masked, without method, path, status or body.

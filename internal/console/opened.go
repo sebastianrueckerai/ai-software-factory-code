@@ -227,9 +227,6 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		problem("cases", "Reload the board.", err)
 	}
 	v.cases = cs
-	// a resource request opens no case of its own: it leads the card's
-	// asks, as the first page of its cases (pagesOf) or of its requests
-	lead := slices.IndexFunc(o.Brief.Approvals, func(ap approvalCard) bool { return ap.Kind == factoryd.ApprovalResource })
 	var row *caseRow
 	if cs.holds(bt.Task) {
 		// a plan's case that names no question of a revision is answered
@@ -319,15 +316,22 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 	case casesRead && k.Status == "waiting-human" && len(o.Brief.Approvals) == 0:
 		o.Sent = true
 	}
-	if o.Ask == nil && !o.Sent && len(o.Brief.Approvals) > 0 {
-		pending := make([]factoryd.ApprovalRequest, len(o.Brief.Approvals))
-		for i, ap := range o.Brief.Approvals {
+	// a criteria request asks through its case, once that is at the human
+	asking := slices.DeleteFunc(slices.Clone(o.Brief.Approvals), func(ap approvalCard) bool {
+		return ap.Kind == factoryd.ApprovalCriteria || ap.Kind == factoryd.ApprovalCriteriaRerun
+	})
+	if o.Ask == nil && !o.Sent && len(asking) > 0 {
+		pending := make([]factoryd.ApprovalRequest, len(asking))
+		for i, ap := range asking {
 			pending[i] = ap.ApprovalRequest
 		}
-		ap := o.Brief.Approvals[max(lead, 0)]
+		// a resource request opens no case of its own: it leads the card's
+		// asks, as the first page of its cases (pagesOf) or of its requests
+		lead := max(slices.IndexFunc(asking, func(ap approvalCard) bool { return ap.Kind == factoryd.ApprovalResource }), 0)
+		ap := asking[lead]
 		page := factoryd.CardPages(bt, nil, nil, pending, func(a factoryd.ApprovalRequest) factoryd.Request {
-			return o.Brief.Approvals[slices.IndexFunc(o.Brief.Approvals, func(ap approvalCard) bool { return ap.ID == a.ID })].Request
-		})[max(lead, 0)]
+			return asking[slices.IndexFunc(asking, func(ap approvalCard) bool { return ap.ID == a.ID })].Request
+		})[lead]
 		kase, face := page.Case, page.Face
 		press := func(an factoryd.Answer, key string) (*pressForm, func(string) string) {
 			if approverOnly(v, k, ap, an) {

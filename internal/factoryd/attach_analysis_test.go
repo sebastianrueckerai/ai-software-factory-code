@@ -277,10 +277,10 @@ func TestAttachAnalysisRefusesAnsweredAsk(t *testing.T) {
 
 // seedApprovalAsk seeds over seedAsk's card the criteria approval the gap
 // check opens: the question answered, then the request's event, its
-// pending row and its escalation row, as the Poker writes the row — the
-// fault's shape, the answered question no longer the ask that waits. It
-// answers the request row's words.
-func seedApprovalAsk(t *testing.T, s *PGStore, repository, taskID string, issue int64) string {
+// pending row and no inbox row, as a criteria request pokes nobody before
+// its case reaches the human — the fault's shape, the answered question no
+// longer the ask that waits.
+func seedApprovalAsk(t *testing.T, s *PGStore, repository, taskID string, issue int64) {
 	t.Helper()
 	if _, err := s.Record(t.Context(), Event{Repository: repository, TaskID: taskID, IssueNumber: issue,
 		Kind: EventQuestionAnswered, Actor: "sebastian", Via: ViaChat, Detail: map[string]any{"answer": "One replica"}}); err != nil {
@@ -297,11 +297,18 @@ func seedApprovalAsk(t *testing.T, s *PGStore, repository, taskID string, issue 
 	if _, err := s.Record(t.Context(), e); err != nil {
 		t.Fatal(err)
 	}
-	card, _, err := s.Task(t.Context(), taskID)
-	if err != nil {
+}
+
+// requestRows counts the task's inbox rows a request was born as.
+func requestRows(t *testing.T, s *PGStore, repository, taskID string) int {
+	t.Helper()
+	var n int
+	if err := s.db.QueryRowContext(t.Context(), `SELECT count(*) FROM chat_messages
+		WHERE repository = $1 AND task_id = $2 AND kind = $3 AND birth_kind = $4`,
+		repository, taskID, MessageEscalation, EventApprovalRequested).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	return seedRow(t, s, e, card)
+	return n
 }
 
 // rowContent reads the task's escalation row content of birth kind birth.
@@ -322,7 +329,7 @@ func rowContent(t *testing.T, s *PGStore, repository, taskID, birth string) stri
 func TestAttachAnalysisReachesTheOpenApprovalAsk(t *testing.T) {
 	s := newAskStore(t)
 	_, seededRow := seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
-	approvalAskRow := seedApprovalAsk(t, s, "sf/wake", "t-1", 40)
+	seedApprovalAsk(t, s, "sf/wake", "t-1", 40)
 	if err := s.AttachAnalysis(t.Context(), "t-1",
 		"The replica adds 12 ms of lag, and the board reads it fine.", "Waive c1", sebastiansAnalysis); err != nil {
 		t.Fatalf("AttachAnalysis: %v", err)
@@ -338,8 +345,8 @@ func TestAttachAnalysisReachesTheOpenApprovalAsk(t *testing.T) {
 	if got, want := d.Asks[d.Cases[i].ID].Analysis, "The project agent found: The replica adds 12 ms of lag, and the board reads it fine.\n\nIt recommends: Waive c1"; got != want {
 		t.Fatalf("the request's card shows %q, want %q", got, want)
 	}
-	if got := rowContent(t, s, "sf/wake", "t-1", EventApprovalRequested); got != approvalAskRow {
-		t.Fatalf("the request's row = %q, want it as written", got)
+	if n := requestRows(t, s, "sf/wake", "t-1"); n != 0 {
+		t.Fatalf("%d inbox rows of the request, want none", n)
 	}
 	if got := rowContent(t, s, "sf/wake", "t-1", EventQuestionAsked); got != seededRow {
 		t.Fatalf("the answered question's row = %q, want %q", got, seededRow)
@@ -371,7 +378,7 @@ func TestAttachAnalysisReachesTheApprovalAskBehindANewerAnswer(t *testing.T) {
 func TestAttachAnalysisRefusalNamesTheAsk(t *testing.T) {
 	s := newAskStore(t)
 	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
-	approvalAskRow := seedApprovalAsk(t, s, "sf/wake", "t-1", 40)
+	seedApprovalAsk(t, s, "sf/wake", "t-1", 40)
 	if _, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: "t-1", IssueNumber: 40,
 		Kind: EventPlanChangesRequested, Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"changes": "one more card"}}); err != nil {
 		t.Fatal(err)
@@ -381,8 +388,8 @@ func TestAttachAnalysisRefusalNamesTheAsk(t *testing.T) {
 	if !errors.As(err, &se) || se.Kind != ApprovalCriteria || se.Word != "rejected" || se.By != "sebastian" {
 		t.Fatalf("the refusal = %v, want the criteria request rejected by sebastian", err)
 	}
-	if got := rowContent(t, s, "sf/wake", "t-1", EventApprovalRequested); got != approvalAskRow {
-		t.Fatalf("the settled request's row changed: %q", got)
+	if n := requestRows(t, s, "sf/wake", "t-1"); n != 0 {
+		t.Fatalf("%d inbox rows of the settled request, want none", n)
 	}
 	if rows := analyses(t, s, "t-1"); len(rows) != 0 {
 		t.Fatalf("%d analysis rows on a settled ask, want 0", len(rows))
@@ -515,5 +522,56 @@ func TestAttachAnalysisOnAPlanTakesItsOpenQuestion(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A plan's criteria case faced on the done plan: its ask, the face's row,
+// waits while the request pends, and takes the analysis, which its card
+// shows; the request's own row pokes nobody.
+func TestAttachAnalysisReachesACriteriaCasesFace(t *testing.T) {
+	s := newAskStore(t)
+	ctx := t.Context()
+	// a card of its own: the store keeps the cases of the run before
+	card := Task{ID: "t-criteria", Kind: "agent", Status: "done", Repository: "sf/wake", IssueNumber: 43, Objective: "Members page", Track: "plan"}
+	if err := s.CreateTask(ctx, card); err != nil {
+		t.Fatal(err)
+	}
+	reason := CriteriaGapReason([]string{"c1"})
+	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: card.ID, Project: "sf/wake", Spec: []byte(`{"task":"t-int"}`), Reason: reason})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := Event{Repository: "sf/wake", TaskID: card.ID, IssueNumber: 43, Kind: EventApprovalRequested, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"approval": id, "kind": ApprovalCriteria, "criteria": []string{"c1"}, "problem": reason}}
+	if _, err := s.Record(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	if m, ok := PokeOf(request, card, Task{}); ok {
+		t.Fatalf("the request's own row pokes with %q, want no poke", m.Content)
+	}
+	cases, err := s.OpenCasesOf(ctx, card.ID)
+	if err != nil || len(cases) != 1 || cases[0].Kind != CasePlanCriteria || cases[0].Status != CaseOpen {
+		t.Fatalf("the plan's live cases = %+v, %v, want its criteria case open at rung 0", cases, err)
+	}
+	c := cases[0]
+	c.Status = CaseAtHuman
+	face := FaceRow(c, card, FactsOf(c), "", nil, func(s string) string { return s }, func(s string) string { return s })
+	ask, _ := face["ask"].(string)
+	if _, err := s.Record(ctx, Event{Repository: "sf/wake", TaskID: card.ID, IssueNumber: 43, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: AskRow(c, card, reason, ask, 0, face, nil, nil, func(s string) string { return s })}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AttachAnalysis(ctx, card.ID, "c1 fails on main's head.", "grant_criteria", sebastiansAnalysis); err != nil {
+		t.Fatalf("AttachAnalysis: %v", err)
+	}
+	rows := analyses(t, s, card.ID)
+	if len(rows) != 1 {
+		t.Fatalf("%d analysis rows, want 1", len(rows))
+	}
+	if named, _ := toInt(rows[0].Detail["case_id"]); int64(named) != c.ID {
+		t.Fatalf("the analysis names %v, want the face's case %d", rows[0].Detail, c.ID)
+	}
+	if got, want := deskAnalysis(t, s, "sf/wake", c.ID), "The project agent found: c1 fails on main's head.\n\nIt recommends: grant_criteria"; got != want {
+		t.Fatalf("the criteria case shows %q, want %q", got, want)
 	}
 }

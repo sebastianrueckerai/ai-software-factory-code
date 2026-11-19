@@ -325,7 +325,7 @@ func TestRungScrubsWhatTheDaemonScrubs(t *testing.T) {
 	r := &Runner{Scrub: redact.New(token, "hunter2secretvalue")}
 	err := errors.New("forgejo: 401 for header Authorization: token " + token + "; database password hunter2secretvalue")
 	out := r.runRung(context.Background(), &errChat{err}, "t-1", "rung", rungFacts, 1, "system", "statement", nil, scriptedTools{}, 6, time.Hour)
-	const want = "the rung's calls were refused: forgejo: 401 for header Authorization: token [redacted]; database password [redacted]"
+	const want = "not judged: the model provider refused: forgejo: 401 for header Authorization: token [redacted]; database password [redacted]"
 	if out.Found != want {
 		t.Fatalf("found %q, want %q", out.Found, want)
 	}

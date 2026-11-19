@@ -2217,6 +2217,12 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		if cs.holds(v.byID[a.TaskID]) {
 			continue
 		}
+		// a plan's criteria request waits for its case to reach the human,
+		// whose pages the card's row carries
+		if (a.Kind == factoryd.ApprovalCriteria || a.Kind == factoryd.ApprovalCriteriaRerun) &&
+			!slices.ContainsFunc(cs.byCard[a.TaskID], func(k factoryd.Case) bool { return factoryd.RequestAnswers(a, k) }) {
+			continue
+		}
 		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver, true)
 		k.Filter, k.Writer = f, d.Writes
 		d.Status.NeedYou++

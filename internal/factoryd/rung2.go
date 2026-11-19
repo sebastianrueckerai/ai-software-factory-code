@@ -174,6 +174,25 @@ func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, f
 	return c.ID, err
 }
 
+// RefusedRung2 hands up each of cases whose rung 2 turn the model provider
+// refused with detail: its step in progress ends handed up, found "not
+// judged: the model provider refused: <detail>", and the case climbs at
+// once, as HandUpRung2 climbs it. A case rung 2 no longer holds is left as
+// it is.
+func (r *Runner) RefusedRung2(ctx context.Context, cases []int64, detail string) error {
+	var errs []error
+	for _, id := range cases {
+		c, err := r.store.CaseByID(ctx, id)
+		if err == nil {
+			_, err = r.HandUpRung2(ctx, c.TaskID, c.ID, markProviderRefused+": "+detail, RungTwoRecommendation{}, nil)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("case %d: %w", id, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // scrubArgs is args with every string value masked, nested ones included.
 func (r *Runner) scrubArgs(args map[string]any) map[string]any {
 	if args == nil {

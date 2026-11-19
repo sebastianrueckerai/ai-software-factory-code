@@ -703,10 +703,13 @@ func casePage(owner BoardTask, c Case, part int, r *Request, asks map[int64]Case
 	}
 	ask := asks[c.ID]
 	switch {
+	case k.Kind == CasePlanCriteria && r != nil:
+		if part == 0 {
+			k = r.onPromises(k)
+		}
+		ask = criteriaAsk(ask, k)
 	case part > 0:
 		ask = CaseAsk{}
-	case k.Kind == CasePlanCriteria && r != nil:
-		k, ask = r.onPromises(k), CaseAsk{}
 	case r != nil && r.Healed:
 		k = healed(k)
 	}
@@ -715,6 +718,27 @@ func casePage(owner BoardTask, c Case, part int, r *Request, asks map[int64]Case
 		face.Story.Left = healedLeft
 	}
 	return CardPage{Case: k, Part: part, Request: r, Owner: owner, Face: face}
+}
+
+// criteriaAsk is ask as page of a criteria request reads it: the rungs'
+// view and their recommendation, without the face the ask stored, which
+// the request's rows write anew. A recommendation that names one promise
+// stands on that promise's page alone.
+func criteriaAsk(ask CaseAsk, page Case) CaseAsk {
+	out := CaseAsk{At: ask.At, Analysis: ask.Analysis, Detail: map[string]any{}}
+	for _, k := range []string{"info", "recommendation", "recommended_by", "preselected"} {
+		if v, ok := ask.Detail[k]; ok {
+			out.Detail[k] = v
+		}
+	}
+	if pre, ok := out.Detail["preselected"].(map[string]any); ok {
+		args, _ := pre["args"].(map[string]any)
+		criterion, _ := args["criterion"].(string)
+		if p, on := PromiseOn(page); criterion != "" && (!on || p.ID != criterion) {
+			delete(out.Detail, "preselected")
+		}
+	}
+	return out
 }
 
 // requestPage is the page of request r of card, which no case of the card

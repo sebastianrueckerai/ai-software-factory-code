@@ -161,6 +161,16 @@ func (b *wakeBooks) noted(key string, row int64) []int64 {
 	return nil
 }
 
+// cases are the cases the thread's unsettled wakes named.
+func (b *wakeBooks) cases(key string) []int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if w := b.by[key]; w != nil {
+		return slices.Clone(w.cases)
+	}
+	return nil
+}
+
 // handUpStopped hands each case of the turn's wakes (wakeCases) that rung 2
 // still holds to the human: the turn stopped on its refused rounds, and no
 // human reads a wake's stop row at once. A case of a wake queued behind the
@@ -178,6 +188,18 @@ func (t *turn) handUpStopped() {
 		if err != nil {
 			log.Printf("console: the hand-up of case %d at the stop of a turn on %s: %v", id, t.p.Repository, err)
 		}
+	}
+}
+
+// refused hands up the cases the thread's wakes named, whose turn the model
+// provider refused with detail: no rung 2 answer can come of it.
+func (t *turn) refused(detail string) {
+	cases := t.c.books.cases(t.key())
+	if t.c.cfg.RefusedRung2 == nil || len(cases) == 0 {
+		return
+	}
+	if err := t.c.cfg.RefusedRung2(context.WithoutCancel(t.r.Context()), cases, detail); err != nil {
+		log.Printf("console: hand up the cases %v of thread %d on %s: %v", cases, t.conv, t.p.Repository, err)
 	}
 }
 

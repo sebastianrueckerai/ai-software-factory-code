@@ -94,6 +94,43 @@ func TestAWakesFailureStaysInItsThread(t *testing.T) {
 	}
 }
 
+// A wake turn whose call the model refuses hands up at once the cases its
+// thread's wakes named, so no rung 2 step waits out its bound for an answer
+// that cannot come: a 400 calls the hook with case 7 and the refusal's
+// words. A model that cannot be reached (503) refuses nothing: the hook is
+// not called, and the step keeps its bound.
+func TestARefusedWakeHandsItsCasesUp(t *testing.T) {
+	for _, tc := range []struct {
+		status string
+		want   [][]int64
+		detail string
+	}{
+		{"STATUS 400 bad request", [][]int64{{7}}, "the model refused the call (400): bad request"},
+		{"STATUS 503 upstream down", nil, ""},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			r, chat, g := newChatRig(t)
+			var got [][]int64
+			var detail string
+			r.c.cfg.RefusedRung2 = func(_ context.Context, cases []int64, d string) error {
+				got, detail = append(got, cases), d
+				return nil
+			}
+			g.replies = [][]string{{tc.status}}
+			conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, factoryd.EventCaseClimbed, "Rung 2: case 7.", 7); err != nil {
+				t.Fatalf("StartWake: %v", err)
+			}
+			if !slices.EqualFunc(got, tc.want, slices.Equal) || detail != tc.detail {
+				t.Fatalf("the hook got %v with %q, want %v with %q", got, detail, tc.want, tc.detail)
+			}
+		})
+	}
+}
+
 // The inbox takes presses only, so an ask there without choices is
 // refused, naming choices and attach_analysis, and stores no ask row,
 // whatever started the turn: a wake or a press. A wake in a thread of the

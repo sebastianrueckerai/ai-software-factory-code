@@ -79,13 +79,15 @@ func TestPokeOf(t *testing.T) {
 		{"a plan's confirmation says why", Event{Kind: EventQuestionAsked, TaskID: "t-plan", Detail: ConfirmationRow(PlanQuestion{Kind: QuestionConfirmation,
 			Text: "Confirmation of the spec and the criteria of plan revision 2:\nConfirm the plan fixes them."}, 2, 1)}, plan,
 			ChatMessage{Kind: MessageEscalation, Content: "#558 (Members page) needs you. The plan's cards and promises are fixed only once a human confirms them."}, true},
-		// a row as the store reads it back: the request's promise ids, whatever its reason's prose
+		// a criteria request's case climbs first: its face's ask is the poke
 		{"a criteria gap", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria", "open": []any{"c1", "c2"}, "of": float64(3),
-			"problem": CriteriaGapReason([]string{"c1", "c2"})}}, plan,
+			"problem": CriteriaGapReason([]string{"c1", "c2"})}}, plan, ChatMessage{}, false},
+		{"criteria never judged", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria_rerun", "open": []any{"a", "b", "c"},
+			"unchecked": []any{"a", "b", "c"}, "of": float64(3), "problem": "criteria never judged: the criteria gate has not settled a, b. c is yours to settle on this card"}}, plan, ChatMessage{}, false},
+		{"a criteria gap's face", Event{Kind: EventQuestionAsked, TaskID: "t-plan", Detail: criteriaAskRow(plan, ApprovalCriteria, []string{"c1", "c2"}, nil, 3)}, plan,
 			ChatMessage{Kind: MessageEscalation, Content: "#558 (Members page) needs you. Plan “Members page” finished, but 2 of 3 promises are not met. Settle each one. " +
 				"Until both are settled, the plan stays open and holds production deploys."}, true},
-		{"criteria never judged", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria_rerun", "open": []any{"a", "b", "c"},
-			"unchecked": []any{"a", "b", "c"}, "of": float64(3), "problem": "criteria never judged: the criteria gate has not settled a, b. c is yours to settle on this card"}}, plan,
+		{"the face of criteria never judged", Event{Kind: EventQuestionAsked, TaskID: "t-plan", Detail: criteriaAskRow(plan, ApprovalCriteriaRerun, []string{"a", "b", "c"}, []string{"a", "b", "c"}, 3)}, plan,
 			ChatMessage{Kind: MessageEscalation, Content: "#558 (Members page) needs you. Plan “Members page” finished, but no test checked its 3 promises. Settle each one. " +
 				"Until all 3 are settled, the plan stays open and holds production deploys."}, true},
 		{"a merge whose promise a human judges first opens on its page", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612),
@@ -856,4 +858,19 @@ func TestAStrandedHoldPokesTheHumanOnce(t *testing.T) {
 			t.Errorf("%s's open cases = %+v, %v, want none", id, open, err)
 		}
 	}
+}
+
+// criteriaAskRow is the ask row the face of plan's criteria case of kind
+// writes as it reaches the human, as AskHuman writes it: open its open
+// promises, unchecked those nothing judged, of the plan's count.
+func criteriaAskRow(plan Task, kind string, open, unchecked []string, of int) map[string]any {
+	same := func(s string) string { return s }
+	c := OnOpen(Case{ID: 7, TaskID: plan.ID, Kind: CasePlanCriteria, Status: CaseAtHuman, Facts: map[string]any{"approval": 30, "approval_kind": kind}}, open, unchecked, of)
+	face := FaceRow(c, plan, FactsOf(c), "", nil, same, same)
+	ask, _ := face["ask"].(string)
+	row := AskRow(c, plan, "criteria wait", ask, 0, face, nil, nil, same)
+	b, _ := json.Marshal(row)
+	var read map[string]any
+	_ = json.Unmarshal(b, &read)
+	return read
 }

@@ -76,7 +76,7 @@ func (r *Runner) runRung(ctx context.Context, chat checkinChat, taskID, alias st
 	case convCallCap:
 		out.End, out.Found = RungCallCap, fmt.Sprintf("the rung's call cap of %d calls ended it before an answer", callCap)+refusedText(end.Refusals)
 	case convRefused:
-		out.End, out.Found = RungRefused, "the rung's calls were refused: "+end.Detail
+		out.End, out.Found = RungRefused, markProviderRefused+": "+end.Detail
 	case convUnreadable:
 		out.End, out.Found = RungUnreadable, "the rung's answers were refused twice: "+strings.Join(end.Refusals, "; ")
 	}

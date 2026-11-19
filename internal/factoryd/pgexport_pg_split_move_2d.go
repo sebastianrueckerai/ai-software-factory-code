@@ -21,10 +21,10 @@ func PgRigRunner(store Store, objects ObjectStore, cfg RunnerConfig, timeline *T
 	return &Runner{store: store, objects: objects, cfg: cfg, timeline: timeline, forgejo: forgejo}
 }
 
-// PgRungsOff is the moved rungsOff: v with every project at manual under
-// escalation judgment autonomous_and_above, so no rung judges and a stop
-// faces the human at once.
-func PgRungsOff(r *Runner) {
+// PgRung1Off is the moved rung1Off: v with every project at manual under
+// escalation judgment autonomous_and_above, so rung 1 does not judge and
+// rung 2 takes a stop before its face.
+func PgRung1Off(r *Runner) {
 	v := r.cfg.Policy()
 	projects := maps.Clone(v.Projects)
 	for name, p := range projects {

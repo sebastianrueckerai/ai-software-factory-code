@@ -31,8 +31,8 @@ type Document struct {
 	Limits Limits `yaml:"limits" json:"limits"`
 	// Escalation bounds what a card's escalation may extend and grant: a
 	// pool per project and UTC month, the most one card may draw from it,
-	// and when the check-in and the factory agent judge a case. Absent
-	// keys take their defaults one by one.
+	// and when the check-in judges a case. Absent keys take their defaults
+	// one by one.
 	Escalation Escalation `yaml:"escalation,omitempty" json:"escalation"`
 	// Waits bound the waits the AI owns, one bound per wait kind: a wait
 	// past its bound opens a case. Each bound lies between 1m and 7 days.

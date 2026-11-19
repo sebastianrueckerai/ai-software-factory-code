@@ -189,9 +189,9 @@ func plFrozenVersion(r *parkRig) policy.Tree {
 // reaches the provider, which names a reset an hour out: the gateway
 // freezes the class and answers the named refusal, and the writer records
 // exactly one brief_failed row carrying the reset and sets the case's wake
-// to the reset plus its two-minute margin. The monitor's sweep at that
-// wake wakes the case; the writer's next call is answered by the hold
-// itself, no provider call, and records no second row; a sweep a second
+// to the reset plus its two-minute margin. The monitor's case-wake pass at
+// that wake wakes the case; the writer's next call is answered by the hold
+// itself, no provider call, and records no second row; a pass a second
 // before the wake leaves the case asleep. A check-in for the card inside
 // the same hold is refused with the reset, and the not-run record such a
 // refusal leaves raises no flag. [brief_wakes_at_reset]
@@ -273,20 +273,20 @@ func TestBriefWakeAtReset(t *testing.T) {
 		t.Fatalf("BrieflessCases inside the freeze = %v, %v; want none: the pass waits at the case's wake", cases, err)
 	}
 
-	// a sweep a second before the wake leaves the case asleep; the sweep at
-	// the wake wakes it, and the writer takes it again
-	sweep := func(at time.Time) {
+	// the case-wake pass a second before the wake leaves the case asleep;
+	// the pass at the wake wakes it, and the writer takes it again
+	pass := func(at time.Time) {
 		t.Helper()
 		m := &factoryd.Monitor{Store: r.store, Runner: r.runner, Policy: func() policy.Tree { return v.Tree }, Now: func() time.Time { return at }}
-		if err := m.Sweep(ctx); err != nil {
+		if err := m.WakeCases(ctx); err != nil {
 			t.Fatal(err)
 		}
 	}
-	sweep(wake.Add(-time.Second))
+	pass(wake.Add(-time.Second))
 	wokeAt("a second before the wake")
-	sweep(wake)
+	pass(wake)
 	if woken, err := r.store.CaseByID(ctx, c.ID); err != nil || woken.NextWakeAt != nil || woken.Status != factoryd.CaseAtHuman {
-		t.Fatalf("the sweep left the frozen case = %+v, %v; want it woken at the human with no wake", woken, err)
+		t.Fatalf("the case-wake pass left the frozen case = %+v, %v; want it woken at the human with no wake", woken, err)
 	}
 	if cases, err := r.store.BrieflessCases(ctx, 5); err != nil || !slices.ContainsFunc(cases, func(b factoryd.Case) bool { return b.ID == c.ID }) {
 		t.Fatalf("BrieflessCases after the wake = %v, %v; want the case again", cases, err)

@@ -409,7 +409,7 @@ const EventBriefFailed = "brief_failed"
 // so each pass recorded its own row; today the refusal sets the case's
 // wake (SetCaseWake) and the pass skips a case whose wake is in the
 // future, so whatever re-drove the brief inside a freeze waits at the
-// case wake, and the monitor sweep wakes it then.
+// case wake, and the case-wake pass wakes it then.
 type frozenError struct{ at time.Time }
 
 func (e frozenError) Error() string {

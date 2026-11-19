@@ -271,3 +271,20 @@ func TestReasonLineNamesTheFactorysAnswerAndItsWithdrawal(t *testing.T) {
 		}
 	}
 }
+
+// A plan's criteria case faces the human on the done plan: its ask row
+// waits as an approval row does, open while its request pends, and moved
+// on once the request is decided.
+func TestACriteriaFaceStaysOpenWhileItsRequestPends(t *testing.T) {
+	at := time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)
+	const question = "criteria not met once every card of the plan ended: c1, c3"
+	birth := Event{ID: 1, Kind: EventQuestionAsked, TaskID: "t-plan", At: at, Actor: FactoryDecider,
+		Detail: map[string]any{"question": question, "case_id": float64(7), "case_kind": string(CasePlanCriteria)}}
+	m := ChatMessage{Kind: MessageEscalation, BirthKind: EventQuestionAsked, TaskID: "t-plan", At: at.Add(time.Second), Content: "#1 needs you: " + question}
+	if s := SettleOf(m, []Event{birth}, "done", true); !s.Open {
+		t.Fatalf("the face on the done plan, its request pending = %+v, want it open", s)
+	}
+	if s := SettleOf(m, []Event{birth}, "done", false); s.Open || s.Word != "moved on" {
+		t.Fatalf("the face once its request is decided = %+v, want it moved on", s)
+	}
+}

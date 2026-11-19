@@ -428,6 +428,10 @@ type Config struct {
 	// (factoryd.Runner.HandUpRung2); handled is the case handed up, 0 when
 	// rung 2 holds no such case. Nil: an analysis only records itself in the ask.
 	HandUpRung2 func(ctx context.Context, taskID string, caseID int64, found string, rec factoryd.RungTwoRecommendation, reads []factoryd.CaseRead) (handled int64, err error)
+	// RefusedRung2 hands up at once each of cases, the cases a thread's
+	// wakes named, whose rung 2 turn the model provider refused with detail
+	// (factoryd.Runner.RefusedRung2). Nil: their steps wait out their bound.
+	RefusedRung2 func(ctx context.Context, cases []int64, detail string) error
 	// AddStepCost adds eur to the cost of a case's newest step of a rung
 	// (factoryd.PGStore.AddRungCost); nil books none.
 	AddStepCost func(ctx context.Context, caseID int64, rung int, eur float64) error

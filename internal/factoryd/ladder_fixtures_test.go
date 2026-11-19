@@ -122,6 +122,12 @@ func (g tripRig) trip(t *testing.T, reason string) TripOutcome {
 	return out
 }
 
+// faced is trip with rung 2's turn after it (rung2Faces).
+func (g tripRig) faced(t *testing.T, reason string) TripOutcome {
+	t.Helper()
+	return rung2Faces(t, g.r, "t1", g.trip(t, reason))
+}
+
 // rungRig is tripRig's card t1 with a check-in model: a medium card of the
 // coder class, whose head h2 on pull request 9 is green and not approved,
 // and the review's one finding, rungFindingText, on h2. The check-in's
@@ -159,9 +165,10 @@ func (g rungRig) settle() { g.r.rungs.Wait() }
 
 func (g rungRig) steps(t *testing.T, id int64) []CaseStep { return caseStepsOf(t, g.s, id) }
 
-// policyRungsOff is v with every project at manual under escalation.judgment
-// autonomous_and_above: no rung judges, so a stop faces the human at once.
-func policyRungsOff(v policy.Version) policy.Version {
+// policyRung1Off is v with every project at manual under escalation.judgment
+// autonomous_and_above: rung 1 does not judge, and rung 2 takes a stop
+// before its face (rung2Faces).
+func policyRung1Off(v policy.Version) policy.Version {
 	projects := maps.Clone(v.Projects)
 	for name, p := range projects {
 		p.Autonomy = policy.AutonomyManual
@@ -172,8 +179,28 @@ func policyRungsOff(v policy.Version) policy.Version {
 	return v
 }
 
-func rungsOff(r *Runner) {
-	v := policyRungsOff(r.cfg.Policy())
+// rung2Faces is trip outcome out of card taskID after rung 2's turn: a
+// case rung 2 holds is handed up with nothing found, so it faces the human,
+// and the outcome names that face as a trip's names it. Any other outcome
+// stands.
+func rung2Faces(t *testing.T, r *Runner, taskID string, out TripOutcome) TripOutcome {
+	t.Helper()
+	if out.Rung != 2 {
+		return out
+	}
+	ctx := context.Background()
+	if _, err := r.HandUpRung2(ctx, taskID, out.CaseID, "", RungTwoRecommendation{}, nil); err != nil {
+		t.Fatalf("rung 2's hand-up of case %d: %v", out.CaseID, err)
+	}
+	c, err := r.store.CaseByID(ctx, out.CaseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return TripOutcome{CaseID: c.ID, Comment: c.CommentID, Rung: 3}
+}
+
+func rung1Off(r *Runner) {
+	v := policyRung1Off(r.cfg.Policy())
 	r.cfg.Policy = func() policy.Version { return v }
 }
 

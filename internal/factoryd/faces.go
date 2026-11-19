@@ -173,6 +173,8 @@ func RecommendationOf(detail map[string]any) Recommendation {
 	var r Recommendation
 	if p, ok := detail["preselected"].(map[string]any); ok {
 		r.Action, _ = p["action"].(string)
+		args, _ := p["args"].(map[string]any)
+		r.Action = verdictKey(r.Action, args)
 	}
 	r.Grounds, _ = detail["recommendation"].(string)
 	if r.Action == "" {
@@ -181,6 +183,15 @@ func RecommendationOf(detail map[string]any) Recommendation {
 	by, _ := detail["recommended_by"].(string)
 	r.By = cmp.Or(by, "the factory")
 	return r
+}
+
+// verdictKey is the key of the answer that action with args presses: a
+// verdict on a promise other than met is that answer's variant.
+func verdictKey(action string, args map[string]any) string {
+	if v, _ := args["verdict"].(string); action == ActAnswerCriteria && (v == "not_met" || v == "waive") {
+		return action + "/" + v
+	}
+	return action
 }
 
 // mostAnswers bounds the answers of one face.

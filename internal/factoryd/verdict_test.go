@@ -4053,9 +4053,12 @@ func TestCloseHeldPlanRecordsPlanClosedWithTheWaivers(t *testing.T) {
 	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Kind != ApprovalCriteriaRerun {
 		t.Fatalf("the sweep's ask: %+v, want one pending criteria_rerun", pending)
 	}
-	if got := commentBodies(fj); len(got) != 1 ||
-		!strings.HasPrefix(got[0], "#1 Every card of the plan has ended, and no verdict on main settles these criteria: the criteria gate has not settled k1, k2,") {
-		t.Errorf("the ask's comment = %q, want it to say every card ended and nothing on main settles the criteria", got)
+	// the ask's words wait in its spec for the face of its case
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	var spec struct{ Face string }
+	if err := json.Unmarshal(pending[0].Spec, &spec); err != nil || len(commentBodies(fj)) != 0 ||
+		!strings.HasPrefix(spec.Face, "Every card of the plan has ended, and no verdict on main settles these criteria: the criteria gate has not settled k1, k2,") {
+		t.Errorf("comments %q, the ask's face %q (%v); want no comment, and words saying every card ended and nothing on main settles the criteria", commentBodies(fj), spec.Face, err)
 	}
 	n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "the cards moved to the rebuild", true)
 	if err != nil || n != 10 {
@@ -4150,6 +4153,211 @@ func gateOutcomes(s *fakeStore) []string {
 		}
 	}
 	return out
+}
+
+// rerunAt is the rerun rig's clock.
+var rerunAt = time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)
+
+// rerunRig is gatePlanOn over a main whose head is head: the approver met
+// c2, the gate found c1 and c3 unmet, and, when ran is set, its one run on
+// record ran on main at commit ran. The plan's criteria request waits, its
+// case open at rung 0. calls lists each gate call as task#pr@commit, and
+// the gate writes answer's rows; the runner's clock stands at rerunAt.
+func rerunRig(t *testing.T, head, ran string, answer func(ctx context.Context, s *fakeStore, taskID string) error) (*Runner, *fakeStore, *prForgejo, Case, *[]string) {
+	t.Helper()
+	ctx := context.Background()
+	fj := &prForgejo{pulls: map[int64]string{9: `{"number":9,"state":"closed","merged":true,"head":{"sha":"h9"},"base":{"ref_name":"main"}}`}, mainHead: head}
+	calls := new([]string)
+	r, s := gatePlanOn(t, fj, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(ctx context.Context, taskID string, pr int64, commit, _ string) (CriteriaResult, error) {
+			*calls = append(*calls, fmt.Sprintf("%s#%d@%s", taskID, pr, commit))
+			return CriteriaResult{}, answer(ctx, s, taskID)
+		}
+	})
+	r.now = func() time.Time { return rerunAt }
+	if err := s.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+		{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest}, {Criterion: "c3", Verdict: "unmet", Kind: CriterionInvariant}}); err != nil {
+		t.Fatal(err)
+	}
+	if ran != "" {
+		g, err := planGateOf(ctx, s, "t-plan", s.tasks["t-int"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.events = append(s.events, Event{TaskID: "t-plan", Kind: EventCriteriaGateRun,
+			Detail: map[string]any{"task": "t-int", "pr": int64(0), "commit": ran, "outcome": gateDone, "attempt": "1", "cards": g.mark}})
+	}
+	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t-plan", Project: "sf/code", Reason: "criteria not met once every card of the plan ended: c1, c3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _, err := s.OpenCase(ctx, Case{TaskID: "t-plan", Repository: "sf/code", Kind: CasePlanCriteria, StateKey: fmt.Sprintf("%s:%d", ApprovalCriteria, id),
+		Facts: map[string]any{"approval": id}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r, s, fj, c, calls
+}
+
+// reruns are the plan's criteria gate rows of outcome rerun.
+func reruns(s *fakeStore) []Event {
+	return slices.DeleteFunc(slices.Clone(s.events), func(e Event) bool {
+		return e.Kind != EventCriteriaGateRun || e.Detail["outcome"] != "rerun"
+	})
+}
+
+// A plan's criteria case whose gate last ran on aaa while main stands at
+// bbb runs the gate once more, on main, on rung 0: one rerun row naming
+// the integration card, the cards' mark and bbb, the plan in the gate's
+// queue, the gate due again past its done run, one step of rung 0, and the
+// case held at rung 0 for the gate's 50 minutes and one minute's pass. The
+// queued gate holds it again, and once the gate left the queue the step
+// stops the row, wherever main stands then.
+func TestTheCriteriaGateRunsOnceMoreWhenMainMoved(t *testing.T) {
+	ctx := context.Background()
+	r, s, fj, c, _ := rerunRig(t, "bbb", "aaa", nil)
+	plan := s.tasks["t-plan"]
+	res, found, err := r.rungZero(ctx, plan, c, CaseFacts{}, nil)
+	if err != nil || res != nil || found != "" {
+		t.Fatalf("rung 0 = %+v, %q, %v; want the case held, no resolution and no hand-up", res, found, err)
+	}
+	g, err := planGateOf(ctx, s, "t-plan", s.tasks["t-int"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := reruns(s)
+	if len(rows) != 1 || !maps.Equal(rows[0].Detail, map[string]any{"task": "t-int", "cards": g.mark, "outcome": "rerun", "commit": "bbb"}) {
+		t.Fatalf("rerun rows = %+v, want one for t-int on %q at bbb", rows, g.mark)
+	}
+	if !slices.Equal(r.gateQueue, []string{"t-plan"}) || !g.due() {
+		t.Fatalf("gate queue %v, due %t; want t-plan queued and the gate due", r.gateQueue, g.due())
+	}
+	steps, _ := s.CaseSteps(ctx, c.ID)
+	if len(steps) != 1 || steps[0].Rung != 0 || steps[0].Found != "criteria gate run again at main bbb" || steps[0].Outcome != StepHandedUp {
+		t.Fatalf("steps = %+v, want rung 0's rerun step", steps)
+	}
+	hold := rerunAt.Add(51 * time.Minute)
+	if got, _ := s.CaseByID(ctx, c.ID); got.OwnerRung != 0 || got.NextWakeAt == nil || !got.NextWakeAt.Equal(hold) {
+		t.Fatalf("case owner %d, wake %v; want rung 0 holding it until %s", got.OwnerRung, got.NextWakeAt, hold)
+	}
+
+	later := rerunAt.Add(51 * time.Minute)
+	r.now = func() time.Time { return later }
+	if res, found, err := r.rungZero(ctx, plan, c, CaseFacts{}, nil); err != nil || res != nil || found != "" {
+		t.Fatalf("rung 0 with the gate queued = %+v, %q, %v; want the case held again", res, found, err)
+	}
+	steps, _ = s.CaseSteps(ctx, c.ID)
+	if got, _ := s.CaseByID(ctx, c.ID); len(reruns(s)) != 1 || len(steps) != 1 || !got.NextWakeAt.Equal(later.Add(51*time.Minute)) {
+		t.Fatalf("rerun rows %d, steps %d, wake %v; want the one rerun, its one step and the hold renewed", len(reruns(s)), len(steps), got.NextWakeAt)
+	}
+
+	r.gateQueue = nil
+	fj.mainHead = "ccc"
+	if res, found, err := r.rungZero(ctx, plan, c, CaseFacts{}, nil); err != nil || res != nil || found != "no resolver fits" {
+		t.Fatalf("rung 0 after its rerun = %+v, %q, %v; want no row to fire", res, found, err)
+	}
+	if len(reruns(s)) != 1 || len(r.gateQueue) != 0 {
+		t.Fatalf("rerun rows %d, gate queue %v; want no second rerun", len(reruns(s)), r.gateQueue)
+	}
+}
+
+// The rerun row fires where main moved past the gate's last judgment and
+// a gate-judged criterion is open: not on main still at the run's commit,
+// not on a case whose open criterion only a human judges, and on a gap the
+// integration card's own pull request gate left, with no run on record.
+// A main it cannot read hands the case up with why.
+func TestTheRerunRowFiresOnlyWhereTheGateCouldMeetACriterion(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name, head, ran string
+		human           bool
+		fires           bool
+	}{
+		{"main unmoved", "aaa", "aaa", false, false},
+		{"only a human criterion open", "bbb", "aaa", true, false},
+		{"no run on record", "bbb", "", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, s, _, c, _ := rerunRig(t, tc.head, tc.ran, nil)
+			if tc.human {
+				if err := gateMet(ctx, s, "t-int"); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.PutCriteriaVerdicts(ctx, "t-int", "approver", "sebastian", []CriterionVerdict{{Criterion: "c2", Verdict: "unmet", Kind: CriterionHuman}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			res, found, err := r.rungZero(ctx, s.tasks["t-plan"], c, CaseFacts{}, nil)
+			if err != nil || res != nil {
+				t.Fatalf("rung 0 = %+v, %v", res, err)
+			}
+			if fired := found == ""; fired != tc.fires || len(reruns(s)) != len(r.gateQueue) || tc.fires != (len(reruns(s)) == 1) {
+				t.Fatalf("found %q, rerun rows %d, gate queue %v; want the row to fire %t", found, len(reruns(s)), r.gateQueue, tc.fires)
+			}
+		})
+	}
+	t.Run("main unreadable", func(t *testing.T) {
+		r, s, fj, c, _ := rerunRig(t, "bbb", "aaa", nil)
+		fj.branchGone = true
+		res, found, err := r.rungZero(ctx, s.tasks["t-plan"], c, CaseFacts{}, nil)
+		if err != nil || res != nil || !strings.HasPrefix(found, "rerun_criteria_gate failed: ") || len(reruns(s)) != 0 {
+			t.Fatalf("rung 0 = %+v, %q, %v, rerun rows %d; want a hand-up naming the failed read and no rerun", res, found, err, len(reruns(s)))
+		}
+	})
+}
+
+// The rerun row fires only where the gate would run on main now: under a
+// pending replan, on a closed plan card and on a plan whose close row
+// stands it does not fire, with main moved past the gate's run, and the
+// case climbs at once, with no hold.
+func TestTheRerunRowFiresOnlyWhereTheGateWouldRun(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		set  func(t *testing.T, r *Runner, s *fakeStore)
+	}{
+		{"a pending replan", func(t *testing.T, r *Runner, _ *fakeStore) {
+			if err := r.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanPerson, "by": "sebastian", "revision": 1}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a closed plan card", func(_ *testing.T, _ *Runner, s *fakeStore) { setStatus(s, "t-plan", "closed") }},
+		{"the plan's close row", func(_ *testing.T, _ *Runner, s *fakeStore) { s.closed["t-plan"] = rerunAt.Add(-time.Hour) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, s, _, c, _ := rerunRig(t, "bbb", "aaa", nil)
+			tc.set(t, r, s)
+			res, found, err := r.rungZero(ctx, s.tasks["t-plan"], c, CaseFacts{}, nil)
+			got, _ := s.CaseByID(ctx, c.ID)
+			if err != nil || res != nil || found != "no resolver fits" || len(reruns(s)) != 0 || len(r.gateQueue) != 0 || got.NextWakeAt != nil {
+				t.Fatalf("rung 0 = %+v, %q, %v, rerun rows %d, gate queue %v, wake %v; want no rerun and the case handed up at once",
+					res, found, err, len(reruns(s)), r.gateQueue, got.NextWakeAt)
+			}
+		})
+	}
+}
+
+// The gate run again meets every open criterion on main: it runs on main's
+// head, not on the integration card's pull request, the close check then
+// resolves the criteria request by factoryd, and the outcomes on record
+// are the old run, the rerun and the new run, each the first attempt.
+func TestARerunThatMeetsTheCriteriaResolvesTheRequestByFactoryd(t *testing.T) {
+	ctx := context.Background()
+	r, s, _, c, calls := rerunRig(t, "bbb", "aaa", gateMet)
+	if _, found, err := r.rungZero(ctx, s.tasks["t-plan"], c, CaseFacts{}, nil); err != nil || found != "" {
+		t.Fatalf("rung 0 = %q, %v; want the rerun", found, err)
+	}
+	sweep(ctx, r)
+	r.CriteriaPass(ctx)
+	if !slices.Equal(*calls, []string{"t-int#0@bbb"}) {
+		t.Fatalf("gate calls = %v, want one on main's head bbb", *calls)
+	}
+	if got, want := gateOutcomes(s), []string{"ran#1", "rerun#<nil>", "ran#1"}; !slices.Equal(got, want) {
+		t.Fatalf("gate outcomes = %v, want %v", got, want)
+	}
+	if a := s.approvals[0]; a.Kind != ApprovalCriteria || a.Status != "approved" || a.DecidedBy != FactoryDecider || a.DecisionNote != "every criterion is met or waived" {
+		t.Fatalf("request = %+v, want it approved by factoryd: every criterion is met", a)
+	}
 }
 
 // pendingGate is a plan whose gate answers pending on its first call and
