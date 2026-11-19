@@ -154,8 +154,11 @@ type CaseFacts struct {
 	BranchHead   string    `json:"branch_head,omitempty"`
 	Dependencies []DepFact `json:"dependencies,omitempty"`
 	// Waiters counts the cards that wait for this one and have not ended
-	Waiters int  `json:"waiters,omitempty"`
-	Planner bool `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
+	Waiters int `json:"waiters,omitempty"`
+	// answersFor is the rung a refusal lists a stop's answers for
+	// (stopAnswers), 0 for the card's whole list
+	answersFor int
+	Planner    bool `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
 	// PlannerRetry: the plan's automatic second session, topped up to half
 	// its agent time, is still to come (plannerTime).
 	PlannerRetry bool   `json:"planner_retry,omitempty"`

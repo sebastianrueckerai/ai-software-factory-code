@@ -200,7 +200,7 @@ var Actions = []Action{
 		case f.Head == "":
 			return "no head reached the gates"
 		case f.Running:
-			return "a session is running"
+			return sessionRuns
 		}
 		return ""
 	}},
@@ -355,7 +355,7 @@ var Actions = []Action{
 			return ""
 		}
 		if f.Plan == "" && f.Running {
-			return "a session is running on this direct card"
+			return "a session is running on this direct card: wait for it to end, then answer again"
 		}
 		return ""
 	}},
@@ -965,6 +965,9 @@ func (f CaseFacts) withDraw(r Resolution) CaseFacts {
 	return f
 }
 
+// sessionRuns refuses an answer that needs the card's session ended.
+const sessionRuns = "a session is running: wait for it to end, then answer again"
+
 // sessionRoom is why f leaves no room to open a session, "" when it has
 // it: none running, an attempt under the cap, the agent time a session
 // needs (SessionLeastS), and the money an opening needs, each stop with
@@ -973,9 +976,9 @@ func sessionRoom(f CaseFacts) string {
 	limit, left, need := f.agentTime()
 	switch {
 	case f.Running:
-		return "a session is running"
+		return sessionRuns
 	case !f.Planner && capWaitDecision(f.CapWait) != "":
-		return "a cap binds before a session can start: " + f.CapWait
+		return "a cap binds before a session can start, so wait for it to turn or lift it: " + f.CapWait
 	case f.Attempts >= f.SessionCap:
 		return fmt.Sprintf("the session cap of %d is reached", f.SessionCap) + stopAnswers(CaseSessionCap, f)
 	case slices.Contains(f.Partial, "config"):
@@ -992,31 +995,44 @@ func sessionRoom(f CaseFacts) string {
 	return ""
 }
 
-// stopAnswers ends a refusal that names a stop on f with the answers the
-// stop's face holds, by key: no reader of the refusal is left without its
-// ways out. The stop is the card's own, else the one of kind that keeps a
-// session off. "" when the face holds none. It is set in init because the
-// action table's rows call it and it reads the table.
+// stopAnswers ends a refusal that names a stop of kind on f with the
+// answers that stop's face holds, by key: no reader of the refusal is left
+// without its ways out. A rung's statement and its answer's parse list the
+// answers their rung may take (forRung). "" when the list holds none. It is
+// set in init because the action table's rows call it and it reads the
+// table.
 var stopAnswers func(kind CaseKind, f CaseFacts) string
 
 func init() { stopAnswers = faceAnswerKeys }
 
 func faceAnswerKeys(kind CaseKind, f CaseFacts) string {
-	// a card that waits at a stop of its own shows that stop's face
-	if f.Kind != CaseSessionCap && f.Kind != CaseAgentTimeCap && f.Kind != CaseBudgetFloor {
-		f.Kind = kind
-	}
+	rung := f.answersFor
+	f.Kind, f.answersFor = kind, 0
 	facts := Facts{CaseFacts: f}
 	var names []string
-	for _, key := range CaseFaces[f.Kind].Answers(facts) {
-		if a, ok := AnswerFor(key, facts); ok && answerHolds(a, facts) && !slices.Contains(names, "`"+a.Action+"`") {
+	for _, key := range CaseFaces[kind].Answers(facts) {
+		a, ok := AnswerFor(key, facts)
+		if act, known := ActionByName(a.Action); !ok || !answerHolds(a, facts) || rung != 0 && known && !act.Rungs[rung] {
+			continue
+		}
+		if !slices.Contains(names, "`"+a.Action+"`") {
 			names = append(names, "`"+a.Action+"`")
 		}
 	}
 	if len(names) == 0 {
 		return ""
 	}
+	if rung != 0 {
+		return " (the card's answers at this stop that " + who(rung) + " may take: " + textutil.AndList(names) + ")"
+	}
 	return " (the card's answers at this stop: " + textutil.AndList(names) + ")"
+}
+
+// forRung is f for a refusal rung alone reads: the stop's answers it lists
+// are those rung may take.
+func (f CaseFacts) forRung(rung int) CaseFacts {
+	f.answersFor = rung
+	return f
 }
 
 // retriedAs names the card that replaced failed dependency id of f's card

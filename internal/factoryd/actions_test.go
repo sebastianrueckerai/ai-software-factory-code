@@ -103,7 +103,7 @@ func TestResumeAppliesOnlyWithRoom(t *testing.T) {
 		// 0.70 left less the 0.40 gate reserve is 0.30 for a session, under the 0.60 floor
 		{"under the reserve", ActResume, with(func(f *CaseFacts) { f.LeftEUR, f.ReserveEUR, f.FloorEUR = 0.7, 0.4, 0.6 }), Resolution{},
 			"0.30 EUR is left for a session and an opening needs 0.60 EUR" + moneyAnswers},
-		{"running", ActResume, with(func(f *CaseFacts) { f.Running = true }), Resolution{}, "a session is running"},
+		{"running", ActResume, with(func(f *CaseFacts) { f.Running = true }), Resolution{}, "a session is running: wait for it to end, then answer again"},
 		// 1200 s cap, 1100 s used: 100 s left, under the 5 minutes a session needs
 		{"time short", ActResume, with(func(f *CaseFacts) { f.AgentTimeS = 1100 }), Resolution{},
 			"the agent time cap of 20 minutes leaves 2 minutes and a session needs 5 minutes" + capAnswers},
@@ -1861,5 +1861,33 @@ func TestCaseFactsCountThePlansOpenCriteria(t *testing.T) {
 	}
 	if f, err := r.tripFacts(ctx, s.tasks["card-1"], "", ""); err != nil || f.OpenCriteria != 0 {
 		t.Fatalf("tripFacts after the waivers = %d open criteria, %v; want 0", f.OpenCriteria, err)
+	}
+}
+
+// A refusal lists the answers of the stop its sentence names. By hand: a
+// card that waits at its budget floor (0.10 EUR left, an opening needs 0.30
+// EUR) has also used its 20 minutes of agent time. The resume is refused at
+// the agent time, which an extend buys and money does not, so the list holds
+// the extend and no fund.
+func TestARefusalListsTheAnswersOfTheStopItNames(t *testing.T) {
+	f := CaseFacts{Kind: CaseBudgetFloor, Attempts: 1, SessionCap: 3, AgentTimeS: 1200, AgentTimeCapS: 1200, SessionLeastS: 300,
+		BudgetEUR: 2, SpentEUR: 1.9, LeftEUR: 0.1, FloorEUR: 0.3, CeilingEUR: 10,
+		PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
+	resume, _ := ActionByName(ActResume)
+	want := "the agent time cap of 20 minutes is reached (the card's answers at this stop: `extend`, `close` and `note`)"
+	if got := resume.refusal(f, 3, Resolution{Action: ActResume}); got != want {
+		t.Errorf("the resume's refusal = %q, want %q", got, want)
+	}
+}
+
+// A cap that binds before a session can start refuses with the action that
+// fits beside the state: the wait for the cap's turn, or its lift, which the
+// cap's own line names with the time.
+func TestACapWaitRefusalNamesTheWaitAndTheLift(t *testing.T) {
+	line, _, _ := strings.Cut(CapWaitReason(policy.RefusedDayCap, "the gateway", "the day's cap", time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)), "\n")
+	f := CaseFacts{Kind: CaseSessionCap, FloorEUR: 1, LeftEUR: 0.2, SessionCap: 3, Attempts: 1, AgentTimeS: 100, AgentTimeCapS: 1200, SessionLeastS: 300, CapWait: line}
+	want := "a cap binds before a session can start, so wait for it to turn or lift it: " + line
+	if got := sessionRoom(f); got != want || !strings.Contains(line, "turns at 2026-11-12T00:00:00Z") || !strings.Contains(line, "Raise the day cap in policy.yaml") {
+		t.Errorf("the refusal = %q, want %q, whose line names the turn and the lift", got, want)
 	}
 }

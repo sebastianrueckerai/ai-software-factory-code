@@ -785,7 +785,7 @@ func TestFactsReadASessionRunningOnlyFromItsLiveRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	f, err = g.r.PgTripFacts(ctx, card, "", "")
-	if err != nil || !f.Running || sessionRoom(f) != "a session is running" {
+	if err != nil || !f.Running || sessionRoom(f) != "a session is running: wait for it to end, then answer again" {
 		t.Fatalf("running with a live row = %v (%v), room %q, want true and a session is running", f.Running, err, sessionRoom(f))
 	}
 }

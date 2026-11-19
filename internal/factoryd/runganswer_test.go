@@ -400,9 +400,10 @@ func TestParseRungAnswerRefusesAHandoverAtTheCapWithNoDraw(t *testing.T) {
 	}
 	_, err := ParseRungAnswer(f, 1, handover(map[string]any{"sessions": 0, "agent_time_s": 0, "eur": 0}))
 	// the card has an open pull request, so its cap's face holds a successor
-	// beside the extend, the close and the note
+	// beside the extend, the close and the note; the check-in takes the
+	// first two
 	want := "the answer handover is refused on these facts: the session cap of 3 is reached" +
-		" (the card's answers at this stop: `extend`, `successor`, `close` and `note`);" +
+		" (the card's answers at this stop that the check-in may take: `extend` and `successor`);" +
 		" the rung answers with handover, route_approval, reverify, extend, successor and replan, or hand_up when it cannot resolve"
 	if err == nil || err.Error() != want {
 		t.Fatalf("with no draw: %v, want the refusal naming the cap and the answers: %s", err, want)

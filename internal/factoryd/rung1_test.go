@@ -132,15 +132,17 @@ func TestRung1StatementOrderMoneyAndRefusals(t *testing.T) {
 }
 
 // At a budget floor each action the stop keeps off is listed as not offered
-// with the stop and the answers the card holds there. By hand: 0.00 EUR is
-// left of a 2.00 EUR opening under an 18.00 EUR spend limit, so the face
-// holds the fund and no raise, and with no branch no successor.
+// with the stop and the answers the card holds there that the rung may
+// take. By hand: 0.00 EUR is left of a 2.00 EUR opening under an 18.00 EUR
+// spend limit, so the face holds the fund and no raise, and with no branch
+// no successor. The face's close and note are the factory agent's and the
+// human's, so the check-in's list holds the fund alone.
 func TestRung1StatementNamesTheAnswersOfAMoneyStop(t *testing.T) {
 	floor := CaseFacts{Kind: CaseBudgetFloor, Attempts: 1, SessionCap: 3, AgentTimeS: 600, AgentTimeCapS: 7200, SessionLeastS: 300,
 		BudgetEUR: 4, SpentEUR: 4, LeftEUR: 0, FloorEUR: 2, CeilingEUR: 18,
 		PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
 	got := (&Runner{}).rungStatement(Case{Kind: CaseBudgetFloor, Problem: "PROBLEM"}, floor, "DIGEST", nil, 1)
-	const answers = " (the card's answers at this stop: `fund`, `close` and `note`)\n"
+	const answers = " (the card's answers at this stop that the check-in may take: `fund`)\n"
 	for _, w := range []string{
 		"- extend: not offered: this card waits on money, not a session" + answers,
 		"- resume: not offered: 0.00 EUR is left for a session and an opening needs 2.00 EUR" + answers,
@@ -149,6 +151,11 @@ func TestRung1StatementNamesTheAnswersOfAMoneyStop(t *testing.T) {
 		if !strings.Contains(got, w) {
 			t.Errorf("statement lacks %q:\n%s", w, got)
 		}
+	}
+	// the factory agent takes all three
+	got = (&Runner{}).rungStatement(Case{Kind: CaseBudgetFloor, Problem: "PROBLEM"}, floor, "DIGEST", nil, 2)
+	if w := "- extend: not offered: this card waits on money, not a session (the card's answers at this stop that the factory agent may take: `fund`, `close` and `note`)\n"; !strings.Contains(got, w) {
+		t.Errorf("rung 2's statement lacks %q:\n%s", w, got)
 	}
 }
 
