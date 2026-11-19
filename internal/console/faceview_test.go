@@ -18,7 +18,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 	"golang.org/x/net/html"
 )
 
@@ -144,7 +143,7 @@ var faceCutting = regexp.MustCompile(`text-overflow:\s*ellipsis|line-clamp|white
 // whose file holds no why line; its place when it belongs to a plan; why
 // it waits when it is queued; at most 300 characters of prose; at most
 // one button that acts and no field; every #N a link but its own number;
-// the guide's mechanical checks and none of the factory's own words.
+// none of the factory's own machinery.
 func TestEverySmallCardMeetsTheContract(t *testing.T) {
 	css, err := os.ReadFile("static/console.css")
 	if err != nil {
@@ -292,11 +291,6 @@ func checkSmallCard(t *testing.T, it smallItem) {
 	for _, name := range []string{"para", "part", "foot", "band", "ask-row"} {
 		for _, p := range classed(it.n, name) {
 			texts = append(texts, nodeText(p))
-		}
-	}
-	for _, s := range texts {
-		if faults := writingguide.Lint(s); len(faults) > 0 {
-			t.Errorf("%q: %v", s, faults)
 		}
 	}
 	for d := range it.n.Descendants() {

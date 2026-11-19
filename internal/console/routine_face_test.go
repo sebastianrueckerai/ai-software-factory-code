@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // A routine's card meets the card contract (C16, C46): its small card is
@@ -57,11 +56,6 @@ func TestRoutineCardMeetsTheContract(t *testing.T) {
 		a, ok := factoryd.AnswerOf(x.key)
 		if !ok {
 			t.Fatalf("the vocabulary has no %s", x.key)
-		}
-		for _, text := range []string{a.Label, a.Effect} {
-			if faults := writingguide.Lint(text); len(faults) > 0 {
-				t.Errorf("%s: %q: %v", x.key, text, faults)
-			}
 		}
 		form := `action="/routines/` + bumpKey + `/` + x.act + `" hx-post="/routines/` + bumpKey + `/` + x.act + `" hx-target="#drawer" hx-swap="innerHTML" class="answer" data-answer="` + a.Key() + `">`
 		button := `<button type="submit" class="pick">` + a.Label + `</button> <span class="effect">` + template.HTMLEscapeString(a.Effect) + `</span>`

@@ -314,11 +314,11 @@ func askOwn(t *testing.T, store interface {
 	}
 }
 
-// Rung 2's proposal meets the guide where Act turns it into one: at manual
-// autonomy a note the human would read as the proposal's grounds with a
-// fault is refused with the fault named, so the agent writes it again,
+// Rung 2's proposal names none of the factory's machinery where Act turns
+// it into one: at manual autonomy a note the human would read as the
+// proposal's grounds with such a name is refused with the name, so the agent writes it again,
 // and no step ends and no face is asked.
-func TestRung2ProposalsNoteMeetsTheGuide(t *testing.T) {
+func TestRung2ProposalsNoteNamesNoMachinery(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, fj, _ := newRetryRig(t)
 	atLevel(t, r, policy.AutonomyManual)
@@ -327,10 +327,10 @@ func TestRung2ProposalsNoteMeetsTheGuide(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Via: ViaChat, Rung: 2,
-		Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Note: "The dependency failed on a cap; retry it."}})
+		Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Note: "The dependency failed on a cap, as factory-chat found."}})
 	var refused ErrActRefused
-	if want := "the note, which the human reads as the grounds of your proposal: The text holds a semicolon. Write two sentences."; !errors.As(err, &refused) || string(refused) != want {
-		t.Fatalf("a proposal with a semicolon = %v, want the refusal %q", err, want)
+	if want := `the note, which the human reads as the grounds of your proposal: The text holds "factory-chat", a name of the factory's own machinery. Say what it means for the reader.`; !errors.As(err, &refused) || string(refused) != want {
+		t.Fatalf("a proposal with a decider's name = %v, want the refusal %q", err, want)
 	}
 	steps := store.caseSteps[3]
 	if len(steps) != 1 || steps[0].Outcome != StepInProgress || fj.issues[9] != nil ||

@@ -21,7 +21,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 	"golang.org/x/net/html"
 )
 
@@ -78,8 +77,8 @@ var openedProse = []string{"o-title", "o-why", "o-question", "o-askwhy", "o-stor
 // label stands twice; a
 // plan's card has the plan
 // with its own row marked; every card says what each session got; a live
-// card can be ended; and the texts pass the guide's checks and name none
-// of the factory's own words.
+// card can be ended; and the texts name none of the factory's own
+// machinery.
 func TestEveryOpenedCardMeetsTheContract(t *testing.T) {
 	for _, e := range galleryEntries() {
 		t.Run(e.Group+"/"+e.Kind, func(t *testing.T) {
@@ -344,8 +343,8 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 			}
 		}
 	}
-	// the texts a human reads: the factory's own words pass the guide, and
-	// no word of any, a writer's quoted words too, is a forbidden one
+	// the texts a human reads: no word of any, a writer's quoted words too,
+	// is a forbidden one
 	var texts, whole []string
 	read := func(n *html.Node) {
 		texts, whole = append(texts, textOutside(n, quoted)), append(whole, textOutside(n, func(*html.Node) bool { return false }))
@@ -375,9 +374,6 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 		return s == "" || captured && (strings.Contains(s, factoryd.CardTitle(*card)) || card.Summary != "" && strings.Contains(s, card.Summary))
 	}
 	for _, s := range slices.DeleteFunc(texts, drop) {
-		if faults := writingguide.Lint(s); len(faults) > 0 {
-			t.Errorf("%q: %v", s, faults)
-		}
 		for _, re := range facefixtures.Forbidden {
 			if m := re.FindString(s); m != "" {
 				t.Errorf("%q names %q", s, m)
@@ -392,7 +388,7 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 	for _, by := range classed(o, "o-by") {
 		for _, q := range classed(by, "quote") {
 			if faults := factoryd.GroundsFaults(nodeText(q)); len(faults) > 0 {
-				t.Errorf("the grounds %q fail the guide: %v", nodeText(q), faults)
+				t.Errorf("the grounds %q name the machinery: %v", nodeText(q), faults)
 			}
 		}
 	}

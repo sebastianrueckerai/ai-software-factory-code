@@ -14,14 +14,14 @@ import (
 var digits = regexp.MustCompile(`\d+`)
 
 // Over every fixture of the gallery that holds an ask, the factory's words
-// pass the guide's checks and the face's: the comment that asks on the
+// show no machine artefact: the comment that asks on the
 // card's issue and the comment each answer posts there, which a human
 // reads (facefixtures.HumanFaults), and every refusal Act's table gives an
 // answer on the ask's facts, whoever decides: a human's as the board shows
 // it (factoryd.ForHuman), an agent's with the keys it types
 // (facefixtures.TextFaults). A text that differs from one checked only in
 // its numbers is checked once.
-func TestTheFactorysWordsOnAnAskPassTheGuide(t *testing.T) {
+func TestTheFactorysWordsOnAnAskShowNoMachineArtefact(t *testing.T) {
 	seen := map[string]bool{}
 	check := func(where, text string, faultsOf func(string) []string) {
 		key := digits.ReplaceAllString(text, "N")

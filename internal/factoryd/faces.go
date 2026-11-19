@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // FieldKind is what a field of an answer takes.
@@ -147,16 +146,14 @@ var factoryNames = func() *regexp.Regexp {
 // "" for none.
 func FactoryName(s string) string { return factoryNames.FindString(s) }
 
-// GroundsFaults are the faults of a suggestion's grounds: the guide's
-// (writingguide.Lint) and a name of the factory's own machinery. Every
-// door where a rung or a writer files grounds refuses them with these
-// lines, so the writer corrects itself.
+// GroundsFaults are the faults of a suggestion's grounds: a name of the
+// factory's own machinery. Every door where a rung or a writer files
+// grounds refuses them with these lines, so the writer corrects itself.
 func GroundsFaults(grounds string) []string {
-	faults := writingguide.Lint(grounds)
 	if m := FactoryName(grounds); m != "" {
-		faults = append(faults, fmt.Sprintf("The text holds %q, a name of the factory's own machinery. Say what it means for the reader.", m))
+		return []string{fmt.Sprintf("The text holds %q, a name of the factory's own machinery. Say what it means for the reader.", m)}
 	}
-	return faults
+	return nil
 }
 
 // shownGrounds are grounds as a face shows them: none when they fail

@@ -11,7 +11,6 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // Every birth kind the factory writes has its inbox rule, every rule
@@ -90,9 +89,6 @@ func TestWakeNotesFoldToOneLine(t *testing.T) {
 		}
 		if msgs[0].Line != c.want || utf8.RuneCountInString(msgs[0].Line) > 160 || msgs[0].Content != note {
 			t.Errorf("%s: the line = %q (%d characters), want %q over the whole note", c.name, msgs[0].Line, utf8.RuneCountInString(msgs[0].Line), c.want)
-		}
-		if faults := writingguide.Lint(msgs[0].Line); len(faults) > 0 {
-			t.Errorf("%s: the line %q: %v", c.name, msgs[0].Line, faults)
 		}
 	}
 }

@@ -44,7 +44,6 @@ func TestPromiseIsChecked(t *testing.T) {
 	}{
 		{"none", "", "plan: criterion redirect_302: promise empty: write the claim in plain words for a human who did not read the plan, at most 80 characters"},
 		{"81 runes", long, "plan: criterion redirect_302: promise has 81 characters, at most 80"},
-		{"a semicolon", "A short link redirects; it counts the click.", "plan: criterion redirect_302: promise: The text holds a semicolon. Write two sentences."},
 	} {
 		got := file(func(p *Plan) { p.Criteria[1].Promise = tc.promise })
 		if !slices.Equal(got, []string{tc.want}) {
@@ -536,8 +535,7 @@ func TestTheAskedTestsMeetTheGatesGuard(t *testing.T) {
 }
 
 // A plan question's choices each say what they change: the door refuses a
-// question without a line per choice, and one whose line fails the
-// guide's check, naming the choice and the fault. On its face each
+// question without a line per choice. On its face each
 // choice's effect is its line, and the story names the plan's outcome in
 // one line. A question stored before the lines were asked sends its
 // choice to the planner.
@@ -558,19 +556,10 @@ func TestAPlanQuestionSaysWhatEachChoiceChanges(t *testing.T) {
 	if got := file(q); len(got) != 0 {
 		t.Fatalf("a question whose every choice says what it changes is refused: %q", got)
 	}
-	none, semicolon := q, q
+	none := q
 	none.Changes = nil
-	semicolon.Changes = []string{"The feed reads one day; it pages less.", "The feed reads a week of rows."}
-	for name, tc := range map[string]struct {
-		q    PlanQuestion
-		want string
-	}{
-		"no lines":    {none, "plan: question 1: changes: 0 lines for 2 choices; write one short line per choice, in its order, saying what the choice changes in the plan"},
-		"a semicolon": {semicolon, `plan: question 1: changes of "One day": The text holds a semicolon. Write two sentences.`},
-	} {
-		if got := file(tc.q); !slices.Equal(got, []string{tc.want}) {
-			t.Errorf("%s: findings %q, want %q", name, got, tc.want)
-		}
+	if got, want := file(none), []string{"plan: question 1: changes: 0 lines for 2 choices; write one short line per choice, in its order, saying what the choice changes in the plan"}; !slices.Equal(got, want) {
+		t.Errorf("no lines: findings %q, want %q", got, want)
 	}
 	plan := Task{ID: "t-plan", Track: policy.TrackPlan, Status: "waiting-human", PlanName: "feed"}
 	face := func(q PlanQuestion) AskFace {

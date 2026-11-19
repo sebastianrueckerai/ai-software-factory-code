@@ -500,14 +500,13 @@ func TestTheWritersLeftFitsBesideTheLongestComposedLeft(t *testing.T) {
 	}
 }
 
-// A story line past 160 characters, or one the guide's lint faults, refuses
-// the answer: nothing is stored, so the template's story stands, the mark
+// A story line past 160 characters refuses the answer: nothing is stored, so the template's story stands, the mark
 // names each fault, and the next call reads the refusal and its answer is
 // stored.
 func TestBriefWriterRefusesAStoryLinePastItsBound(t *testing.T) {
 	var bodies []string
 	answers := []string{
-		fmt.Sprintf(`{"happened": %q, "left": "The tests are left; they fail."}`, strings.Repeat("The check-in found a fault. ", 9)),
+		fmt.Sprintf(`{"happened": %q, "left": "The tests are left."}`, strings.Repeat("The check-in found a fault. ", 9)),
 		`{"happened": "The check-in found a fault in the importer.", "left": "The tests of the importer are left."}`,
 	}
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -523,9 +522,8 @@ func TestBriefWriterRefusesAStoryLinePastItsBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	mark := store.caseFailed[5]
-	if len(store.caseBrief) != 0 || !strings.HasPrefix(mark, noBriefMark) || !strings.Contains(mark, "happened has 251 characters, at most 160") ||
-		!strings.Contains(mark, "left: ") {
-		t.Fatalf("story %v, mark %q; want none stored and the mark naming the long line and the semicolon", store.caseBrief, mark)
+	if len(store.caseBrief) != 0 || !strings.HasPrefix(mark, noBriefMark) || !strings.Contains(mark, "happened has 251 characters, at most 160") {
+		t.Fatalf("story %v, mark %q; want none stored and the mark naming the long line", store.caseBrief, mark)
 	}
 	if err := w.Pass(context.Background()); err != nil {
 		t.Fatal(err)

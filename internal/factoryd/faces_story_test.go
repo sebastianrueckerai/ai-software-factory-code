@@ -11,7 +11,6 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // Every ask on a work card tells its story from the facts of its case:
@@ -89,12 +88,6 @@ func TestWorkAsksTellTheirStory(t *testing.T) {
 		if got != want {
 			t.Errorf("%s:\n planned  %q\n happened %q\n left     %q\nwant\n planned  %q\n happened %q\n left     %q", kind,
 				got.Planned, got.Happened, got.Left, want.Planned, want.Happened, want.Left)
-		}
-		for _, l := range []string{got.Planned, got.Happened, got.Left} {
-			// the agent's question is its own words, which the face quotes
-			if faults := writingguide.Lint(l); len(faults) > 0 && !strings.HasPrefix(l, agentWords) {
-				t.Errorf("%s: %q: %v", kind, l, faults)
-			}
 		}
 	}
 }

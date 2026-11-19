@@ -8,7 +8,6 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // fixtureOf is the fixture of group and kind.
@@ -44,10 +43,10 @@ func TestCardMessageComesFromTheFace(t *testing.T) {
 }
 
 // Every template of the inbox's pokes, written with the gallery's facts,
-// passes the writing guide's check: an ask's message is at most 280
-// characters, a notice one line of at most 160, and a button the factory
-// offers takes the vocabulary's label.
-func TestEveryPokePassesLint(t *testing.T) {
+// keeps its bound: an ask's message is at most 280 characters, a notice
+// one line of at most 160, and a button the factory offers takes the
+// vocabulary's label.
+func TestEveryPokeKeepsItsBound(t *testing.T) {
 	var events []struct {
 		e    factoryd.Event
 		card factoryd.Task
@@ -107,16 +106,6 @@ func TestEveryPokePassesLint(t *testing.T) {
 			continue
 		}
 		seen[x.e.Kind] = true
-		// the card's title and the why its writer filed pass their own doors
-		own := m.Content
-		for _, writer := range []any{factoryd.CardTitle(x.card), x.e.Detail["why"]} {
-			if w, _ := writer.(string); w != "" {
-				own = strings.ReplaceAll(own, w, "")
-			}
-		}
-		if faults := writingguide.Lint(own); len(faults) > 0 {
-			t.Errorf("%s of %s: %q: %v", x.e.Kind, x.card.ID, m.Content, faults)
-		}
 		bound := 160
 		if m.Kind == factoryd.MessageEscalation || x.e.Kind == factoryd.EventChatBudgetSpent {
 			bound = 280

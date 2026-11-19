@@ -648,10 +648,6 @@ func questionBounds(qs []PlanQuestion) []string {
 				change("%d characters, at most %d", n, maxChange)
 			case strings.ContainsAny(line, "\r\n"):
 				change("one line")
-			default:
-				if faults := writingguide.Lint(line); len(faults) > 0 {
-					change("%s", strings.Join(faults, " "))
-				}
 			}
 		}
 		switch {
@@ -688,7 +684,7 @@ const MaxPromise = 80
 // PromiseBounds are the findings on the criteria's promises, which only
 // the planner's filing judges, so a revision stored before them still
 // reads: each criterion states its promise, one line of at most MaxPromise
-// runes that passes the guide.
+// runes.
 func PromiseBounds(cs []PlanCriterion) []string {
 	var out []string
 	for _, c := range cs {
@@ -702,10 +698,6 @@ func PromiseBounds(cs []PlanCriterion) []string {
 			add("promise has %d characters, at most %d", n, MaxPromise)
 		case strings.ContainsAny(c.Promise, "\r\n"):
 			add("promise: one line")
-		default:
-			if faults := writingguide.Lint(c.Promise); len(faults) > 0 {
-				add("promise: %s", strings.Join(faults, " "))
-			}
 		}
 	}
 	return out

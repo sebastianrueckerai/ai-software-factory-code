@@ -41,8 +41,8 @@ type shownText struct{ Where, Text string }
 // them.
 var inline = map[string]bool{"a": true, "span": true, "b": true, "i": true, "em": true, "strong": true, "code": true, "abbr": true, "time": true, "br": true}
 
-// writerWords says whether n holds a writer's words, which the guide's
-// checks of the factory's text do not hold: a quote (a span or a quoted
+// writerWords says whether n holds a writer's words, which the checks of
+// the factory's text do not hold: a quote (a span or a quoted
 // block of markup), a writer's own words,
 // a card's body, an exact text (a log, a file, code) and a field a human
 // types into.
@@ -302,13 +302,13 @@ func sourceOf(files map[string]string, s string) string {
 	return at
 }
 
-// Every text a human reads on the gallery's faces passes the guide's
-// checks and the face's (facefixtures.TextFaults): the small card, the
+// No text a human reads on the gallery's faces shows a machine artefact
+// (facefixtures.TextFaults): the small card, the
 // opened card, the card's life fold, the refusal each answer gets on an
 // invalid input, a routine's card and drawer, the status strip and the
 // inbox's rows. A writer's words pass as written. A failing text prints
 // with the file that holds it and the faces it stands on.
-func TestRenderedTextPassesLint(t *testing.T) {
+func TestRenderedTextShowsNoMachineArtefact(t *testing.T) {
 	type fault struct {
 		where []string
 		lines []string
@@ -355,7 +355,7 @@ var (
 	factorydPath = reflect.TypeFor[factoryd.Task]().PkgPath()
 	// exactCalls are the functions that mark their text as exact or as a
 	// writer's words, in a code fence or as a quote of markup, which the
-	// guide's checks pass as written: each by its package's path and its
+	// checks pass as written: each by its package's path and its
 	// name, so a function of the same name elsewhere marks nothing
 	exactCalls = []string{factorydPath + ".fenced", factorydPath + ".Quoted"}
 	// agentTypes are the types of the chat's tools: code that takes one
@@ -861,12 +861,11 @@ func press(no refusal, name string) {
 	}
 }
 
-// Every refusal a door gives and every comment the factory posts passes
-// the guide's checks and the face's in the words the code holds, as its
-// reader reads it (doorFaults): each call of doorCalls, the literal texts
+// No refusal a door gives and no comment the factory posts shows a
+// machine artefact in the words the code holds, as its reader reads it (doorFaults): each call of doorCalls, the literal texts
 // its argument can write (doorTexts), through a variable, a struct field
 // or a function of its package, with each value as "X".
-func TestEveryRefusalAndCommentPassesTheGuide(t *testing.T) {
+func TestEveryRefusalAndCommentShowsNoMachineArtefact(t *testing.T) {
 	fs := token.NewFileSet()
 	imp := exported(t, fs, slices.Sorted(maps.Keys(doorCalls)))
 	for pkg, calls := range doorCalls {

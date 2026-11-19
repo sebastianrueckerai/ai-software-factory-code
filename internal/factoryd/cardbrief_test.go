@@ -120,15 +120,8 @@ func TestCheckBriefRefuses(t *testing.T) {
 			"The text names the branch factory/t-d9321927378c. The factory adds the start line itself. Remove the branch."},
 		{"a branch in a human's title", titled("Merge branch card/2084"), BriefHumanIssue,
 			"The text names the branch card/2084. The factory adds the start line itself. Remove the branch."},
-		{"Lint in the why line", with(func(b *BriefText) { b.Why = "So a plan closes; the waiver goes." }), BriefWork,
-			"The why line holds a semicolon. Write two sentences."},
 		{"a reference after a code span", with(func(b *BriefText) { b.Body = "It follows the fix of`the cache`#999 on the board." }), BriefWork,
 			"#999 is no card or pull request of this project."},
-		{"Lint in the title", titled("Leverage the close refusal"), BriefWork, `The title holds "Leverage". Write "use" instead.`},
-		{"Lint in an ask", BriefText{Title: "Fund the rung?", Why: "So the card goes on."}, BriefAsk,
-			`The ask holds "rung", a word of the factory's own machinery. Say what it means for the reader.`},
-		{"Lint in the summary", with(func(b *BriefText) { b.Summary = "The card waits — a test closes it." }), BriefWork,
-			"The summary holds an em dash. Write two sentences, or use a comma."},
 	} {
 		if got := CheckBrief(tc.b, tc.job, briefRefs{}); !slices.Contains(got, tc.want) {
 			t.Errorf("%s: CheckBrief = %q, want it to hold %q", tc.name, got, tc.want)

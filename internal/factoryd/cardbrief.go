@@ -14,7 +14,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/doclinks"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // BriefText is a card's brief: its title, the opening paragraph of its
@@ -209,11 +208,6 @@ func checkBrief(b BriefText, job BriefJob, refs RefResolver, on [4]bool) []strin
 		if i > 0 || job == BriefHumanIssue {
 			for _, x := range branches(f) {
 				add("The text names the branch " + x + ". The factory adds the start line itself. Remove the branch.")
-			}
-		}
-		if i < 3 && job != BriefHumanIssue {
-			for _, l := range writingguide.Lint(f) {
-				add([3]string{titleName(job), "The why line", "The summary"}[i] + strings.TrimPrefix(l, "The text"))
 			}
 		}
 	}

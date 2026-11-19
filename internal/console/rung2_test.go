@@ -487,7 +487,7 @@ func TestAWakesStopHandsItsCaseToTheHuman(t *testing.T) {
 	r.ledger.files = map[string]policy.ProjectConfig{holdProject: {Repository: "sf/code", Autonomy: policy.AutonomyAutonomous, MergeRule: policy.MergeHuman}}
 	r.tasks.tasks = append(r.tasks.tasks, holdAsk())
 	r.c.cfg.CaseByID, r.c.cfg.HandUpRung2 = ra.pg.CaseByID, ra.runner.HandUpRung2
-	no := factoryd.ErrActRefused("the note, which the human reads as the grounds of your proposal: The text holds a semicolon. Write two sentences.")
+	no := factoryd.ErrActRefused(`the note, which the human reads as the grounds of your proposal: The text holds "factory-chat", a name of the factory's own machinery. Say what it means for the reader.`)
 	r.actErrs = map[int]error{}
 	for i := 1; i <= 6; i++ {
 		r.actErrs[i] = no
@@ -551,7 +551,7 @@ func TestAHumansStopLeavesAQueuedWakesCase(t *testing.T) {
 	r.ledger.files = map[string]policy.ProjectConfig{holdProject: {Repository: "sf/code", Autonomy: policy.AutonomyAutonomous, MergeRule: policy.MergeHuman}}
 	r.tasks.tasks = append(r.tasks.tasks, holdAsk())
 	r.c.cfg.CaseByID, r.c.cfg.HandUpRung2 = ra.pg.CaseByID, ra.runner.HandUpRung2
-	no := factoryd.ErrActRefused("the note, which the human reads as the grounds of your proposal: The text holds a semicolon. Write two sentences.")
+	no := factoryd.ErrActRefused(`the note, which the human reads as the grounds of your proposal: The text holds "factory-chat", a name of the factory's own machinery. Say what it means for the reader.`)
 	r.actErrs = map[int]error{}
 	for i := 1; i <= 5; i++ {
 		r.actErrs[i] = no

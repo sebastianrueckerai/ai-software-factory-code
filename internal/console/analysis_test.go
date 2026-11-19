@@ -91,11 +91,11 @@ func TestAskNounReadsAsWords(t *testing.T) {
 	}
 }
 
-// The chat's doors that file a recommendation hold it to the guide, as
-// every writer of grounds is held (factoryd.GroundsFaults): a fault is
-// refused with the fault named, so the agent writes it again, and nothing
-// is filed.
-func TestTheChatsRecommendationsMeetTheGuide(t *testing.T) {
+// The chat's doors that file a recommendation hold it to the check every
+// writer of grounds meets (factoryd.GroundsFaults): a name of the
+// factory's machinery is refused and named, so the agent writes it again,
+// and nothing is filed.
+func TestTheChatsRecommendationsNameNoMachinery(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	_, s := r.loggedIn(t)
 	var events []string
@@ -108,14 +108,14 @@ func TestTheChatsRecommendationsMeetTheGuide(t *testing.T) {
 		t.Error("an escalation with a faulty recommendation was filed")
 		return 0, nil
 	}
-	const want = "recommendation: The text holds a semicolon. Write two sentences."
+	const want = `recommendation: The text holds "factory-chat", a name of the factory's own machinery. Say what it means for the reader.`
 	tool, _ := r.c.chatTool("attach_analysis")
-	_, _, analysis := tool.run(trn, toolInput{TaskID: "t-e", Found: "found", Recommendation: "Keep one replica; the lag is 12 ms."})
-	_, escalation := trn.escalate("Which store?", "Postgres runs out of connections at the peak.", "The counts say so.", "Postgres; plan section 3", "Postgres", []string{"Postgres", "SQLite"})
+	_, _, analysis := tool.run(trn, toolInput{TaskID: "t-e", Found: "found", Recommendation: "Keep one replica, as factory-chat found."})
+	_, escalation := trn.escalate("Which store?", "Postgres runs out of connections at the peak.", "The counts say so.", "Postgres, as factory-chat found", "Postgres", []string{"Postgres", "SQLite"})
 	for door, err := range map[string]error{"attach_analysis": analysis, "escalate": escalation} {
 		var no *refusal
 		if !errors.As(err, &no) || no.status != http.StatusBadRequest || no.msg != want {
-			t.Errorf("%s with a semicolon = %v, want 400 %q", door, err, want)
+			t.Errorf("%s with a decider's name = %v, want 400 %q", door, err, want)
 		}
 	}
 }

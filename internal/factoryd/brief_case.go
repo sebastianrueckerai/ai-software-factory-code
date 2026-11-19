@@ -143,8 +143,8 @@ Name no button, answer or action: the card shows them. Every fact you state come
 	"\n\n" + writingguide.For(writingguide.JobAsk)
 
 // parseCaseBrief is the model's answer as the two story lines: a JSON
-// object, in a code fence or not. A line past the story's bound or with a
-// fault of the guide refuses the answer, naming each fault.
+// object, in a code fence or not. A line past the story's bound or one
+// that names an answer refuses the answer, naming each fault.
 func parseCaseBrief(content string) (happened, left string, err error) {
 	s := strings.TrimSpace(content)
 	s = strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(s, "```json"), "```"), "```")
@@ -163,9 +163,6 @@ func parseCaseBrief(content string) (happened, left string, err error) {
 	}{{"happened", happened, writerHappenedMax}, {"left", left, writerLeftMax}} {
 		if n := utf8.RuneCountInString(l.text); n > l.max {
 			faults = append(faults, fmt.Sprintf("%s has %d characters, at most %d", l.name, n, l.max))
-		}
-		for _, f := range writingguide.Lint(l.text) {
-			faults = append(faults, l.name+": "+f)
 		}
 		if label := NamedLabel(l.text); label != "" {
 			faults = append(faults, fmt.Sprintf("%s names the answer \u201c%s\u201d, which the card shows below the story: tell what happened in words of the work", l.name, label))

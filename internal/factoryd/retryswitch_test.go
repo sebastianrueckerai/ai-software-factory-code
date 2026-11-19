@@ -20,7 +20,6 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // switchGateway is the real gateway (gateway.NewServer) at
@@ -465,9 +464,6 @@ func retrySwitchEndsFreeze(t *testing.T, press func(sw *RetrySwitch, r *Runner, 
 	op := &OperatorModel{GatewayURL: "http://gateway", Token: "gateway-token", HTTP: gw.client()}
 	ends := ". The class is frozen until " + stamp(at(125*time.Minute)) + ", and the work goes on by itself then. " +
 		`An approver ends the freeze sooner with the answer "Retry now" on the class's freeze card, or with a retry of a frozen card in the chat.`
-	if faults := writingguide.Lint("The digest was refused" + ends); len(faults) > 0 {
-		t.Errorf("the refusal's words %q: %q", ends, faults)
-	}
 	frozenUntil := " was refused (refused_provider_limit): " + strings.TrimSuffix(zaiWords(at(125*time.Minute)), ".") + ends
 	for _, tool := range []struct {
 		serve      http.HandlerFunc

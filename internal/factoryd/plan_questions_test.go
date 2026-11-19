@@ -114,12 +114,11 @@ func TestQuestionBoundsRefuseATextOverTheBound(t *testing.T) {
 	}
 }
 
-// A plan question's choice is a button a human presses: file_plan holds it
-// to the guide's check of an offered answer.
-func TestQuestionBoundsHoldEachChoiceToTheGuide(t *testing.T) {
+// A plan question's choice is a button a human presses: file_plan refuses
+// one in the planner's own voice.
+func TestQuestionBoundsRefuseAChoiceInTheFirstPerson(t *testing.T) {
 	qs := []PlanQuestion{{Text: "t", Choices: []string{"Keep 7 days", "I keep 30 days; it is safer"}, Recommended: "Keep 7 days", Grounds: "g", Changes: []string{"A week.", "A month."}}}
-	want := []string{`plan: question 1: choice "I keep 30 days; it is safer": The text holds a semicolon. Write two sentences. ` +
-		`The answer says "I". Name what happens, for example "Send the new pins to the agent".`}
+	want := []string{`plan: question 1: choice "I keep 30 days; it is safer": The answer says "I". Name what happens, for example "Send the new pins to the agent".`}
 	if got := questionBounds(qs); !slices.Equal(got, want) {
 		t.Errorf("findings %q, want %q", got, want)
 	}
@@ -876,12 +875,12 @@ func (w *signalLog) Terminate(context.Context, string, string, string) error { r
 func (w *signalLog) Alive(context.Context, string) (bool, error)       { return true, nil }
 func (w *signalLog) RunningRuns(context.Context) ([]RunningRun, error) { return nil, nil }
 
-// A question's grounds meet the guide where the planner files them: a
-// fault is a finding with the fault named.
-func TestQuestionBoundsHoldTheGroundsToTheGuide(t *testing.T) {
+// A question's grounds name none of the factory's machinery where the
+// planner files them: a name is a finding that names it.
+func TestQuestionBoundsRefuseGroundsThatNameMachinery(t *testing.T) {
 	q := []PlanQuestion{{Text: "Which rows does the feed read?", Choices: []string{"The 500 newest rows", "Every row"}, Recommended: "The 500 newest rows",
-		Grounds: "The feed reads one table; a row bound keeps its page small.", Changes: []string{"The feed reads 500 rows.", "The feed reads every row."}}}
-	if got, want := questionBounds(q), []string{"plan: question 1: grounds: The text holds a semicolon. Write two sentences."}; !slices.Equal(got, want) {
+		Grounds: "The feed reads one table, as factory-chat found.", Changes: []string{"The feed reads 500 rows.", "The feed reads every row."}}}
+	if got, want := questionBounds(q), []string{`plan: question 1: grounds: The text holds "factory-chat", a name of the factory's own machinery. Say what it means for the reader.`}; !slices.Equal(got, want) {
 		t.Errorf("questionBounds = %q, want %q", got, want)
 	}
 }

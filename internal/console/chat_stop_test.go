@@ -469,7 +469,7 @@ func TestChatStopReachesThePressBeforeAMessageThatWaits(t *testing.T) {
 // why it stopped. A round whose call ran starts the count anew: four
 // refused rounds, one that ran and four more refused end no turn.
 func TestATurnEndsWhenItsRoundsAreAllRefused(t *testing.T) {
-	const grounds = "the note, which the human reads as the grounds of your proposal: The text holds a semicolon. Write two sentences."
+	const grounds = `the note, which the human reads as the grounds of your proposal: The text holds "factory-chat", a name of the factory's own machinery. Say what it means for the reader.`
 	rounds := func(n int) [][]string {
 		var out [][]string
 		for i := range n {

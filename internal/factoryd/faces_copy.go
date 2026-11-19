@@ -1340,7 +1340,8 @@ func agentAsk(fallback string) func(Facts) string {
 
 // agentParts are the agent's question as the face shows it: what it said
 // before the sentence that asks, and that sentence, "" for a question no
-// ask can show.
+// ask can show. The last sentence is the ask only when a story line holds
+// the first of what stands before it.
 func agentParts(f Facts) (before, ask string) {
 	q := capitalize(agentQuestion(f))
 	if q != "" && readsAsAsk(q) {
@@ -1348,8 +1349,9 @@ func agentParts(f Facts) (before, ask string) {
 	}
 	if b := sentenceBreaks(q); len(b) > 0 {
 		last := q[b[len(b)-1][3]:]
-		if strings.HasSuffix(last, "?") && readsAsAsk(last) {
-			return strings.TrimSpace(q[:b[len(b)-1][3]]), last
+		before := strings.TrimSpace(q[:b[len(b)-1][3]])
+		if strings.HasSuffix(last, "?") && readsAsAsk(last) && line(endSentence(firstSentence(before))) != "" {
+			return before, last
 		}
 	}
 	return q, ""
@@ -1433,8 +1435,8 @@ func sayKeys(f Facts) []string {
 	return out
 }
 
-// offerable says words a writer offered as an answer pass the guide's
-// check of a button.
+// offerable says words a writer offered as an answer pass the check of a
+// button.
 func offerable(words string) bool { return len(writingguide.ChoiceFaults(words)) == 0 }
 
 // agentLine is the line of the agent's stop that "key: " opens, "" for none.

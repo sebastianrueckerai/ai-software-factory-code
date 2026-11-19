@@ -13,7 +13,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 func TestEveryKindHasAFace(t *testing.T) {
@@ -68,11 +67,6 @@ func TestEveryActionHasOneLabel(t *testing.T) {
 		keys[a.Key()] = true
 		if a.Label == "" || a.Effect == "" {
 			t.Errorf("%s: label %q, effect %q: each row has both", a.Key(), a.Label, a.Effect)
-		}
-		for _, text := range []string{a.Label, a.Effect} {
-			if faults := writingguide.Lint(text); len(faults) > 0 {
-				t.Errorf("%s: %q: %v", a.Key(), text, faults)
-			}
 		}
 		for _, f := range a.Fields {
 			switch {
@@ -135,12 +129,11 @@ func facedFixtures(t *testing.T) []faced {
 }
 
 var (
-	taskID       = regexp.MustCompile(`\bt-[0-9a-f]{6,}`)
-	hash         = regexp.MustCompile(`\b[0-9a-f]{12,}\b`)
-	branch       = regexp.MustCompile(`\bcard/\d+`)
-	factoryWords = regexp.MustCompile(`(?i)\b(rungs?|cases?|offers?|premade|slots?)\b`)
-	snakeCase    = regexp.MustCompile(`\b[a-z]+_[a-z_]+\b`)
-	gateNames    = regexp.MustCompile(`\b(` + strings.Join([]string{factoryd.ActivityRunSession, factoryd.ActivityWaitChecks, factoryd.ActivityGateReproduction,
+	taskID    = regexp.MustCompile(`\bt-[0-9a-f]{6,}`)
+	hash      = regexp.MustCompile(`\b[0-9a-f]{12,}\b`)
+	branch    = regexp.MustCompile(`\bcard/\d+`)
+	snakeCase = regexp.MustCompile(`\b[a-z]+_[a-z_]+\b`)
+	gateNames = regexp.MustCompile(`\b(` + strings.Join([]string{factoryd.ActivityRunSession, factoryd.ActivityWaitChecks, factoryd.ActivityGateReproduction,
 		factoryd.ActivityGateCriteria, factoryd.ActivityModelReview, factoryd.ActivityGateAudit}, "|") + `)\b`)
 )
 
@@ -207,10 +200,7 @@ func TestFaceContract(t *testing.T) {
 			texts = append(texts, a.Label, a.Effect)
 		}
 		for _, s := range texts {
-			if faults := writingguide.Lint(s); len(faults) > 0 {
-				t.Errorf("%s: %q: %v", name, s, faults)
-			}
-			for _, re := range []*regexp.Regexp{taskID, hash, branch, factoryWords, snakeCase, gateNames} {
+			for _, re := range []*regexp.Regexp{taskID, hash, branch, snakeCase, gateNames} {
 				if m := re.FindString(s); m != "" {
 					t.Errorf("%s: %q names %q", name, s, m)
 				}
@@ -609,8 +599,9 @@ func TestClearingTheAuditClearsOnlyTheTickedFindings(t *testing.T) {
 	}
 }
 
-// An agent's question the ask cannot carry shows whole on the face: the
-// ask falls back, and the story quotes the question, cut nowhere.
+// An agent's question the ask cannot carry shows whole on the face: its
+// last sentence asks, but no story line holds the sentence before it, so
+// the ask falls back, and the story quotes the question, cut nowhere.
 func TestAnAgentsQuestionShowsWholeOnItsFace(t *testing.T) {
 	x := fixture(t, "case", string(factoryd.CaseAgentEscalate))
 	if want := "The agent asked a question it cannot answer alone. How should it go on?"; x.face.Ask != want {
@@ -766,19 +757,18 @@ func TestAFactoryPullRequestsMergeFaceClosesIt(t *testing.T) {
 }
 
 // A face shows only grounds that pass the one check every writer of
-// grounds meets at its door (GroundsFaults: the guide and the names of the
-// factory's own machinery). Grounds filed before the check that fail it
+// grounds meets at its door (GroundsFaults: the names of the factory's
+// own machinery). Grounds filed before the check that fail it
 // leave the face, live and stored alike, and the pick they came with
 // still leads under its writer. Plain words stay: a case in English, a
 // file's path and a commit's hash.
-func TestAFaceShowsOnlyGroundsThatPassTheGuide(t *testing.T) {
+func TestAFaceShowsOnlyGroundsThatNameNoMachinery(t *testing.T) {
 	c := factoryd.Case{ID: 3, TaskID: "t1", Kind: factoryd.CaseGateStop, Status: factoryd.CaseAtHuman, Facts: map[string]any{"gate": "review"}}
 	card := factoryd.Task{ID: "t1", Kind: "agent", Status: "waiting-human", IssueNumber: 4}
 	for grounds, want := range map[string]string{
 		"The deciding rung (factory-chat) chose successor.":                  "",
 		"Card t-e758758121d7 merged the fix.":                                "",
 		"The gate_stop is the review's.":                                     "",
-		"Scenario 2 fails; the rest is green.":                               "",
 		"The case already holds the answer.":                                 "The case already holds the answer.",
 		"The head 4d03448ea6d0 is red.":                                      "The head 4d03448ea6d0 is red.",
 		"The findings at acceptance/price_floor_acceptance_test.go:71 hold.": "The findings at acceptance/price_floor_acceptance_test.go:71 hold.",
@@ -797,7 +787,6 @@ func TestAFaceShowsOnlyGroundsThatPassTheGuide(t *testing.T) {
 		}
 	}
 	if got, want := factoryd.GroundsFaults("The deciding rung (factory-chat) chose successor."), []string{
-		`The text holds "rung", a word of the factory's own machinery. Say what it means for the reader.`,
 		`The text holds "factory-chat", a name of the factory's own machinery. Say what it means for the reader.`,
 	}; !slices.Equal(got, want) {
 		t.Errorf("the faults of a rung's name = %q, want %q", got, want)
@@ -900,9 +889,6 @@ func TestACapsWhyNamesTheFileOfItsLimit(t *testing.T) {
 		got := factoryd.FaceOf(c.f.Case, c.f).Why
 		if got != c.want {
 			t.Errorf("%s: %q, want %q", name, got, c.want)
-		}
-		if faults := writingguide.Lint(got); len(faults) > 0 {
-			t.Errorf("%s: the guide refuses %q: %v", name, got, faults)
 		}
 	}
 }

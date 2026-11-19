@@ -803,14 +803,14 @@ func TestEscalateDropsAnOversizedChoiceList(t *testing.T) {
 }
 
 // A choice is a button a human reads: one past 60 characters, empty, or
-// with a fault of the guide is refused, naming the fault, so the agent
+// in the first person is refused, naming the fault, so the agent
 // writes it again; a refused call reaches no factoryd.
 func TestEscalateRefusesAChoiceTheGuideFaults(t *testing.T) {
 	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
 	for choice, want := range map[string]string{
-		strings.Repeat("a", 61):          "The answer has 61 characters, at most 60.",
-		" ":                              "The answer is empty.",
-		"Use MIT; it matches the others": "The text holds a semicolon.",
+		strings.Repeat("a", 61): "The answer has 61 characters, at most 60.",
+		" ":                     "The answer is empty.",
+		"I use MIT":             `The answer says "I".`,
 	} {
 		text, isErr := e.call(t, policy.ToolEscalate, map[string]any{"question": "Which license?", "reason": "none named", "recommendation": "MIT",
 			"choices": []string{"MIT", choice}})

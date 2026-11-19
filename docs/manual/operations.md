@@ -492,8 +492,8 @@ port 8090 only.
 - Audit the board's text: `factoryd audit-board` in the factoryd pod
   (`kubectl -n factory exec deploy/factoryd -- env
   FACTORYD_DATABASE_URL='<replica DSN>' factoryd audit-board`) prints a
-  line for each card text on every project's board that breaks the
-  writing guide, then the count of cards to fix and of cards that keep a
+  line for each card text on every project's board that the brief's door
+  refuses, then the count of cards to fix and of cards that keep a
   human's own issue as written. It reads the database and Forgejo and
   writes nothing. It takes no arguments and needs the daemon's secrets,
   so that it scrubs every one. Exit 0 means no card is left to fix, 1

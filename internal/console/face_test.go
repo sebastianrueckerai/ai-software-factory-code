@@ -747,8 +747,8 @@ func TestBriefPost(t *testing.T) {
 		t.Fatalf("an edit that changes nothing = %d: %s", rec.Code, rec.Body)
 	}
 	before = ev.count()
-	rec := brief("So a plan closes; the waiver goes.", "")
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "The why line holds a semicolon. Write two sentences.") || ev.count() != before {
+	rec := brief("So a plan closes. The waiver goes.", "")
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "The why line gives the reason in one sentence: who needs this, or which problem it removes.") || ev.count() != before {
 		t.Fatalf("a refused brief = %d with %d rows: %s", rec.Code, ev.count()-before, rec.Body)
 	}
 	if k := stored(); k.Why != "So the board loads at once." {
