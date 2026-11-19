@@ -336,7 +336,7 @@ func TestGoHandsTheCardOver(t *testing.T) {
 	if len(runs) != 1 || runs[0].TaskID != n.ID || runs[0].Issue != 71 || runs[0].Outcome != "filed" || !runs[0].Ended.IsZero() {
 		t.Fatalf("runs %+v, want the open run on the hand-over", runs)
 	}
-	if _, err := r.Go(ctx, waiting.ID, "sebastian"); err == nil || err.Error() != "Card "+waiting.ID+" was already handed over." {
+	if _, err := r.Go(ctx, waiting.ID, "sebastian"); err == nil || err.Error() != "Card “Update the fixed versions of outside software every week” was already handed over." {
 		t.Fatalf("the second go: %v, want the refusal", err)
 	}
 	if len(store.tasks) != 2 || len(issues.issues) != 1 {
@@ -368,7 +368,7 @@ func TestGoFilesOnceWhenTwoHandsRace(t *testing.T) {
 	if err := <-first; err != nil {
 		t.Fatal(err)
 	}
-	if racing == nil || racing.Error() != "Card "+waiting.ID+" was already handed over." {
+	if racing == nil || racing.Error() != "Card “Update the fixed versions of outside software every week” was already handed over." {
 		t.Fatalf("the racing go: %v, want the refusal", racing)
 	}
 	if len(issues.issues) != 1 || len(store.tasks) != 2 {

@@ -1684,5 +1684,15 @@ func actText(in ActInput, t Task, c Case, res Resolution, did []CaseAction) stri
 	return text
 }
 
-// cardName is how a refusal names card t: its issue, else its task id.
-func cardName(t Task) string { return cardRef(Event{TaskID: t.ID}, t) }
+// cardName is how a refusal, a comment or a result names card t: its
+// issue; its title, quoted, for a card with no issue, as one that waits
+// for its face is; its task id for a card with neither.
+func cardName(t Task) string {
+	if t.IssueNumber != 0 {
+		return fmt.Sprintf("#%d", t.IssueNumber)
+	}
+	return cmp.Or(CardName(t, 0), t.ID)
+}
+
+// logName is how a log line names card t: its issue, else its task id.
+func logName(t Task) string { return cardRef(Event{TaskID: t.ID}, t) }

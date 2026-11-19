@@ -201,10 +201,12 @@ agent, may take one of the card's choices, though it may end the card
 condition gone, and never park it out of sight. A card rung 2 decides
 ends with no issue. Otherwise its face files the issue (a card that has
 one gets a comment), moves the card to `waiting-human` and pokes. The
-chat's escalation, the month cap's card and the judgment budget's card
-ask a human at once: the escalation's filing is rung 2's step, and the two
-caps' cases (`factory_month_cap`, `judgment_budget`) are the kind table's
-exceptions, since no rung can run while they stand. The table names two
+chat's escalation, the month cap's card, the judgment budget's card and
+the provider freeze's card ask a human at once: the escalation's filing is
+rung 2's step, and the cases of the two caps and of the freeze
+(`factory_month_cap`, `judgment_budget`, `provider_freeze`) are the kind
+table's exceptions, since no rung can run while a cap stands, and a
+provider's limit can hold the rungs' own model calls. The table names two
 more exceptions: an agent's request to its issue's author
 (`agent_request_info`), whose answer alone the card's wait takes, and the
 ask of a plan whose card a human closed with promises open (`plan_held`),

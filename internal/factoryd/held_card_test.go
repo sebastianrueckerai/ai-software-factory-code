@@ -74,7 +74,7 @@ func TestFactorydsHumanCardWaitsForItsFace(t *testing.T) {
 	}
 	_, err = EscalateToHuman(ctx, store, silentForge(t), Repo{Owner: "sf", Name: "r"}, HumanQuestion{Ask: "The chain is pending. Re-run it?", Why: "w", Info: "i"},
 		"the chain poller", Task{ID: "t-held", Source: SourceChainStall, SHA: "c2c2"})
-	if want := "card t-held stands already (waiting-agent), so this second filing of it is refused: its case asks"; err == nil || err.Error() != want || len(store.events) != 1 {
+	if want := "card “The chain is pending. Re-run it?” stands already (waiting-agent), so this second filing of it is refused: its case asks"; err == nil || err.Error() != want || len(store.events) != 1 {
 		t.Fatalf("a second filing = %v with %d rows, want %q and no second ask", err, len(store.events), want)
 	}
 	chatAsk := Event{Kind: EventQuestionAsked, Via: ViaChat, Detail: map[string]any{"ask": "Write the criteria?", "source": "agent"}}
@@ -84,11 +84,11 @@ func TestFactorydsHumanCardWaitsForItsFace(t *testing.T) {
 	}
 }
 
-// The chat's escalation, the month cap's card and the judgment budget's
-// card ask a human at their filing; every other source's card waits for
-// its face.
+// The chat's escalation, the month cap's card, the judgment budget's card
+// and the provider freeze's card ask a human at their filing; every other
+// source's card waits for its face.
 func TestOnlyTheChatAndTheCapsAskAtOnce(t *testing.T) {
-	for source, want := range map[string]string{SourceChat: "waiting-human", SourceMonthCap: "waiting-human", SourceChatBudget: "waiting-human",
+	for source, want := range map[string]string{SourceChat: "waiting-human", SourceMonthCap: "waiting-human", SourceChatBudget: "waiting-human", SourceFreezeCard: "waiting-human",
 		SourceChainStall: "waiting-agent", SourceStillRed: "waiting-agent", SourceRoutine: "waiting-agent", SourcePlan: "waiting-agent", "": "waiting-agent"} {
 		if got := HumanCardStatus(source); got != want {
 			t.Errorf("HumanCardStatus(%q) = %s, want %s", source, got, want)
@@ -226,6 +226,37 @@ func TestAFaceTakesOnTheIssueAFailedFaceLeft(t *testing.T) {
 	}
 	if got.IssueNumber != 44 || store.tasks["t-h"].IssueNumber != 44 || len(f.issues) != 0 || !reflect.DeepEqual(f.labelled, []string{"sf/r#44 human state/waiting-human"}) {
 		t.Fatalf("card on #%d (stored #%d), issues %q, labels %q; want #44 taken on, labelled, no issue filed", got.IssueNumber, store.tasks["t-h"].IssueNumber, f.issues, f.labelled)
+	}
+}
+
+// The issue a face files lists the face's answers by the labels the card
+// shows, and its recommendation names one of them: the held question's own
+// label of its close, "Fixed, close", gives way to the face's "End the
+// card" in the list, where the recommendation finds it.
+func TestAFacesIssueListsTheLabelsItRecommendsBy(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	f := &chainForgejo{}
+	forge := f.srv(t)
+	repo := Repo{Owner: "sf", Name: "r"}
+	q := HumanQuestion{Ask: "Main of sf/r is red: revert or fix?", Why: "w", Info: "i",
+		Choices: []QuestionChoice{{Value: ActClose, Label: "Fixed, close"}, {Value: AnswerPark, Label: "Not now"}}}
+	if _, _, err := FileHumanCard(ctx, store, forge, repo, BriefText{Title: q.Ask, Body: "body"}, []string{"human"}, Task{ID: "t-h", Source: SourceStillRed},
+		HumanAsk{Q: q, By: "factoryd", Asker: SourceStillRed, Via: ViaFactoryd}); err != nil {
+		t.Fatal(err)
+	}
+	held := store.events[0].Detail
+	if held["held"] != true {
+		t.Fatalf("events %+v, want the card's held ask", store.events)
+	}
+	face := map[string]any{"recommendation": "main is green again", "preselected": map[string]any{"action": ActClose},
+		"offers": []AskOffer{{Value: ActClose, Label: "End the card"}, {Value: AnswerPark, Label: "Not now"}}}
+	if _, err := (&Runner{store: store, forgejo: forge}).fileFace(ctx, store.tasks["t-h"], repo, held, face); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.issues) != 1 || !strings.Contains(f.issues[0], "\n\nRecommendation: \u201cEnd the card\u201d: main is green again\n\nChoices:\n- End the card\n- Not now\n") ||
+		strings.Contains(f.issues[0], "Fixed, close") {
+		t.Fatalf("the filed issue %q; want its list and its recommendation to say “End the card”", f.issues)
 	}
 }
 

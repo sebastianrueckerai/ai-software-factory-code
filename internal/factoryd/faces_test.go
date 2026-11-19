@@ -175,13 +175,13 @@ func TestFaceContract(t *testing.T) {
 			}
 		}
 		keys, shown := map[string]bool{}, map[string]bool{}
-		for _, a := range slices.Concat(face.Answers, face.More) {
+		for _, a := range slices.Concat(face.Answers, face.Over, face.More) {
 			if keys[a.Key()] || shown[a.Label] {
 				t.Errorf("%s: %s %q shows twice among the answers %v and More %v", name, a.Key(), a.Label, labels(face.Answers), labels(face.More))
 			}
 			keys[a.Key()], shown[a.Label] = true, true
 		}
-		for _, a := range slices.Concat(face.Answers, face.More) {
+		for _, a := range slices.Concat(face.Answers, face.Over, face.More) {
 			if why := actRefusal(x, a); why != "" {
 				t.Errorf("%s: the face offers %q, which Act refuses: %s", name, a.Label, why)
 			}
@@ -196,7 +196,7 @@ func TestFaceContract(t *testing.T) {
 			}
 		}
 		texts := append([]string{face.Ask, face.Why}, story...)
-		for _, a := range slices.Concat(face.Answers, face.More) {
+		for _, a := range slices.Concat(face.Answers, face.Over, face.More) {
 			texts = append(texts, a.Label, a.Effect)
 		}
 		for _, s := range texts {
@@ -729,7 +729,7 @@ func TestAnAgentsQuestionAtEveryCapIsTheCapsFace(t *testing.T) {
 		if face.Ask != tc.ask || !slices.Equal(labels(face.Answers), tc.answers) || face.Story.Happened != question {
 			t.Errorf("%s: %q with %v and the story line %q; want %q with %v and the question whole", tc.cap, face.Ask, labels(face.Answers), face.Story.Happened, tc.ask, tc.answers)
 		}
-		for _, a := range slices.Concat(face.Answers, face.More) {
+		for _, a := range slices.Concat(face.Answers, face.Over, face.More) {
 			if a.Variant == "say" {
 				t.Errorf("%s: the agent's answer %q shows at the cap", tc.cap, a.Label)
 			}

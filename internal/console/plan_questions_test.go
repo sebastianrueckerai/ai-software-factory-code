@@ -63,14 +63,15 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 	if strings.Count(card, `action="/tasks/t-plan/plan/answer"`) != 4 || strings.Contains(card, "suggested") || strings.Contains(card, "Accept plan") {
 		t.Errorf("want an answer per choice and the own words, none suggested, and no Accept:\n%s", card)
 	}
-	// the question's four answers fill the face, so Ask for changes is the
-	// page's one other action, below them
+	// the question has five answers, one more than a small card holds: the
+	// opened card shows Ask for changes with the other four, after them and
+	// above the folds, and not under the other actions
 	page := planDrawer(t, r, ck)
 	const changes = `action="/tasks/t-plan/plan/changes"`
-	_, other, _ := strings.Cut(page, `<details class="fold" data-sec="more">`)
-	if strings.Count(page, changes) != 1 || strings.LastIndex(page, `action="/tasks/t-plan/plan/answer"`) > strings.Index(page, changes) ||
-		!strings.Contains(other, changes) || !strings.Contains(other, "Ask for changes") || !strings.Contains(other, `name="text"`) {
-		t.Errorf("want one Ask for changes form with its note field under the other actions, below the answers:\n%s", page)
+	ask, folds, _ := strings.Cut(page, `<div class="o-folds">`)
+	if strings.Count(page, changes) != 1 || strings.LastIndex(ask, `action="/tasks/t-plan/plan/answer"`) > strings.Index(ask, changes) ||
+		!strings.Contains(ask, changes) || !strings.Contains(ask, "Ask for changes") || !strings.Contains(ask, `name="text"`) || strings.Contains(folds, "Ask for changes") {
+		t.Errorf("want one Ask for changes form with its note field among the question's answers, below the other four and under no fold:\n%s", page)
 	}
 	const comments = "/api/v1/repos/linkshort/linkshort/issues/1/comments"
 	answer := func(revision, index, text string) *httptest.ResponseRecorder {

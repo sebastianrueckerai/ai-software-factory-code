@@ -1977,19 +1977,27 @@ func (r *Runner) heldAsk(ctx context.Context, t Task, c Case) map[string]any {
 
 // fileFace files the issue of factoryd's own human card t, which has none,
 // at its face: the held row's question, the card's own, with the rungs'
-// view under its info and the face's recommendation, labelled with the
-// row's labels and the wait on a human. A face that failed after its issue
+// view under its info, the face's answers by their labels and the face's
+// recommendation, which names one of them, labelled with the row's labels
+// and the wait on a human. A face that failed after its issue
 // was filed takes that issue on again. A routine's run follows its card to
 // the issue.
 func (r *Runner) fileFace(ctx context.Context, t Task, repo Repo, held, face map[string]any) (Task, error) {
 	q := *questionOfAsk(held)
 	str := func(k string) string { s, _ := face[k].(string); return s }
 	q.Info = strings.TrimSpace(q.Info + "\n\n" + str("info"))
+	offers, _ := face["offers"].([]AskOffer)
+	if len(offers) > 0 {
+		// the issue lists the answers as the card labels them
+		q.Choices = nil
+		for _, o := range offers {
+			q.Choices = append(q.Choices, QuestionChoice{Value: o.Value, Label: o.Label})
+		}
+	}
 	if rec := str("recommendation"); rec != "" {
 		// the answer the face suggests, by its label, then its grounds
 		q.Recommendation = rec
 		pick, _ := face["preselected"].(map[string]any)
-		offers, _ := face["offers"].([]AskOffer)
 		if i := slices.IndexFunc(offers, func(o AskOffer) bool { return o.Value == pick["action"] }); i >= 0 {
 			q.Recommendation = "\u201c" + offers[i].Label + "\u201d: " + rec
 		}

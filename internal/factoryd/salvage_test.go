@@ -110,7 +110,7 @@ func TestSalvageRefusals(t *testing.T) {
 // among its answers or the others.
 func salvageOn(f CaseFacts) bool {
 	face := FaceOf(Case{Kind: CaseSessionCap}, Facts{CaseFacts: f})
-	return slices.ContainsFunc(slices.Concat(face.Answers, face.More), func(a Answer) bool { return a.Action == ActSalvage })
+	return slices.ContainsFunc(slices.Concat(face.Answers, face.Over, face.More), func(a Answer) bool { return a.Action == ActSalvage })
 }
 
 // The human's face holds the salvage only while the run is gone.

@@ -167,7 +167,7 @@ func TestARewordedFindingIsStillOpen(t *testing.T) {
 func TestNoFaceHoldsARawStopReason(t *testing.T) {
 	for _, x := range facedFixtures(t) {
 		texts := []string{x.face.Ask, x.face.Why, x.face.Story.Planned, x.face.Story.Happened, x.face.Story.Left, x.face.Story.View}
-		for _, a := range slices.Concat(x.face.Answers, x.face.More) {
+		for _, a := range slices.Concat(x.face.Answers, x.face.Over, x.face.More) {
 			texts = append(texts, a.Label, a.Effect)
 		}
 		for _, s := range texts {

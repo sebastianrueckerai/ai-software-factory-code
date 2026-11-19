@@ -95,7 +95,7 @@ func TestAnEndedCardsOpenIssueCanBeAnswered(t *testing.T) {
 		if slices.Contains(more, "Send back to the planner") || slices.Contains(more, "It is fine, go on") {
 			t.Errorf("Other actions %v offer a replan Act refuses on an ended card, or a second settle", more)
 		}
-		for _, a := range slices.Concat(f.Answers, f.More) {
+		for _, a := range slices.Concat(f.Answers, f.Over, f.More) {
 			if why := factoryd.OfferRefusal(x.facts, a.Action); why != "" {
 				t.Errorf("%q is refused on the ended card: %s", a.Label, why)
 			}
@@ -124,7 +124,7 @@ func TestNoAnswerOnAnEndedCardIsRefused(t *testing.T) {
 		}
 		seen++
 		name := x.fx.Group + "/" + x.fx.Kind
-		for _, a := range slices.Concat(x.face.Answers, x.face.More) {
+		for _, a := range slices.Concat(x.face.Answers, x.face.Over, x.face.More) {
 			if _, table := factoryd.ActionByName(a.Action); !table || a.Value != "" {
 				continue
 			}

@@ -283,7 +283,7 @@ func (r *Roller) stillRed(ctx context.Context, pause QueuePause, run ActionRun, 
 	if _, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: pause.Since, FixTask: t.ID}); err != nil {
 		return false, err
 	}
-	log.Printf("roller: main is still red at %s (run %d) after %s merged: the merge queue of %s stays paused; human card %s", run.CommitSHA, run.ID, remedy, p.Repository, cardName(t))
+	log.Printf("roller: main is still red at %s (run %d) after %s merged: the merge queue of %s stays paused; human card %s", run.CommitSHA, run.ID, remedy, p.Repository, logName(t))
 	if fix.ID == "" || fixMerged || fix.Status != "failed" && !stoppable(fix) {
 		return true, nil
 	}
@@ -427,7 +427,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun, since time.Time) erro
 	if _, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: since, FixTask: t.ID}); err != nil {
 		return err
 	}
-	log.Printf("roller: main is red at %s (run %d): the merge queue of %s pauses; %s %s", run.CommitSHA, run.ID, p.Repository, card, cardName(t))
+	log.Printf("roller: main is red at %s (run %d): the merge queue of %s pauses; %s %s", run.CommitSHA, run.ID, p.Repository, card, logName(t))
 	return nil
 }
 
@@ -745,7 +745,7 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 		}
 		return err
 	}
-	log.Printf("roller: main red since %s with no fix landed: revert card %s, pull request #%d", pause.Since.Format(time.RFC3339), cardName(t), pr.Number)
+	log.Printf("roller: main red since %s with no fix landed: revert card %s, pull request #%d", pause.Since.Format(time.RFC3339), logName(t), pr.Number)
 	return r.replaceFix(ctx, pause, fix, t)
 }
 

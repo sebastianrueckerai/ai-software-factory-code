@@ -295,19 +295,31 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		// so of the card's own actions only its end stands beside it
 		onCase = row.Case.Kind != factoryd.CaseMonitorFlag || row.Owner != nil
 		helperPage = row.Owner != nil
+		// a face holds four answers, and the opened card hides none of an
+		// ask that has more: they stand with the face's answers. An answer
+		// that holds only since the face was written is another action
 		live := factoryd.FaceOf(row.Case, f)
-		for _, a := range append(live.Answers, live.More...) {
+		asks := 0
+		if len(live.Over) > 0 {
+			asks = len(live.Answers) + len(live.Over)
+		}
+		for i, a := range slices.Concat(live.Answers, live.Over, live.More) {
+			has := func(m answerView) bool { return m.Label == a.Label }
 			if !mayAnswer(v, k, a.Action) || slices.ContainsFunc(row.Face.Offers, func(m factoryd.AskOffer) bool { return m.Value == a.Key() || m.Label == a.Label }) ||
-				slices.ContainsFunc(o.More, func(m answerView) bool { return m.Label == a.Label }) {
+				slices.ContainsFunc(o.More, has) || slices.ContainsFunc(o.Ask.Answers, has) {
 				continue
 			}
-			o.More = append(o.More, c.answerOf(ctx, v, k, k.ID, a.Key(), a, f, func(a factoryd.Answer, key string) (*pressForm, func(string) string) {
+			view := c.answerOf(ctx, v, k, k.ID, a.Key(), a, f, func(a factoryd.Answer, key string) (*pressForm, func(string) string) {
 				return casePress(v, k, *row, a, key)
-			}, seen))
-		}
-		if row.Approval != nil {
-			// a request's page holds only the answers its request takes
-			o.More = slices.DeleteFunc(o.More, func(m answerView) bool { return m.Press == nil && m.Thread == "" })
+			}, seen)
+			switch {
+			case row.Approval != nil && view.Press == nil && view.Thread == "":
+				// a request's page holds only the answers its request takes
+			case i < asks:
+				o.Ask.Answers = append(o.Ask.Answers, view)
+			default:
+				o.More = append(o.More, view)
+			}
 		}
 		o.Brief.Evidence = c.evidenceOf(ctx, v, k, row.Face)
 		if k.Reason != "" {

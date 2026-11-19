@@ -400,9 +400,9 @@ func TestEndTheCardSaysTheWaitingCardsAsk(t *testing.T) {
 		f := FactsOf(c)
 		f.Waiters = waiters
 		face := FaceOf(c, Facts{CaseFacts: f, Card: card})
-		i := slices.IndexFunc(slices.Concat(face.Answers, face.More), func(a Answer) bool { return a.Key() == ActClose })
-		if i < 0 || slices.Concat(face.Answers, face.More)[i].Effect != want {
-			t.Errorf("End the card with %d cards waiting: %+v, want %q", waiters, slices.Concat(face.Answers, face.More), want)
+		i := slices.IndexFunc(slices.Concat(face.Answers, face.Over, face.More), func(a Answer) bool { return a.Key() == ActClose })
+		if i < 0 || slices.Concat(face.Answers, face.Over, face.More)[i].Effect != want {
+			t.Errorf("End the card with %d cards waiting: %+v, want %q", waiters, slices.Concat(face.Answers, face.Over, face.More), want)
 		}
 	}
 }

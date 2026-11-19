@@ -313,7 +313,7 @@ func TestRollerStillRedAfterTheRemedyGoesToAHuman(t *testing.T) {
 			continue
 		}
 		card := store.tasks[got.FixTask]
-		if want := []string{"40 Main is still red at commit c2c2c2c after the revert #42 merged: the human card " + card.ID + " replaces this card. Closing this issue."}; !slices.Equal(f.comments, want) || !slices.Equal(f.closed, []string{"40"}) {
+		if want := []string{"40 Main is still red at commit c2c2c2c after the revert #42 merged: the human card “Fix main by hand or revert the change, as main stays red after its…” replaces this card. Closing this issue."}; !slices.Equal(f.comments, want) || !slices.Equal(f.closed, []string{"40"}) {
 			t.Errorf("%s: comments %q, closed %q; want the failed fix card closed with %q", tc.name, f.comments, f.closed, want)
 		}
 		if got.RunID != 60 || got.SHA != commitC2 || !got.Since.Equal(since) || got.RevertTask != "rev1" ||

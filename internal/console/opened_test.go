@@ -69,7 +69,8 @@ var openedProse = []string{"o-title", "o-why", "o-question", "o-askwhy", "o-stor
 
 // Every opened card of the gallery meets the contract: the head, the ask
 // block, the summary and the folds in that order; at most 900 characters
-// of prose above the folds, effect, problem and quoted lines counted; 2 to 4 answers in the ask block, each a
+// of prose above the folds, effect, problem and quoted lines counted; 2 to 4 answers in the ask block,
+// or all five of an ask that has five (fiveAnswers), each a
 // button with its effect line, and beside an answer the viewer may not
 // press, or in place of all, the line that names who can; no field shows
 // before a press; every fold is
@@ -79,6 +80,12 @@ var openedProse = []string{"o-title", "o-why", "o-question", "o-askwhy", "o-stor
 // with its own row marked; every card says what each session got; a live
 // card can be ended; and the texts name none of the factory's own
 // machinery.
+// fiveAnswers are the gallery's asks with five answers, one more than a
+// small card holds, which the opened card shows whole: a planner's
+// question with three choices, the human's own words and the changes, and
+// an agent's question with three choices, the wait and the card's end.
+var fiveAnswers = []string{"case/plan_question", "board/a long suggested choice"}
+
 func TestEveryOpenedCardMeetsTheContract(t *testing.T) {
 	for _, e := range galleryEntries() {
 		t.Run(e.Group+"/"+e.Kind, func(t *testing.T) {
@@ -100,7 +107,11 @@ func TestEveryOpenedCardMeetsTheContract(t *testing.T) {
 				_, ok, err := r.tasks.TaskByIssue(t.Context(), labCodeProject.Repository, n)
 				return ok && err == nil
 			}
-			checkOpenedCard(t, rec.Body.String(), card, known)
+			most := 4
+			if slices.Contains(fiveAnswers, e.Group+"/"+e.Kind) {
+				most = 5
+			}
+			checkOpenedCard(t, rec.Body.String(), card, known, most)
 		})
 	}
 }
@@ -152,7 +163,10 @@ func TestOpenedCardSaysItsAskOnce(t *testing.T) {
 	}
 }
 
-func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(int64) bool) {
+// checkOpenedCard checks body, card's opened card, against the contract;
+// most is how many answers its ask block holds at most, and exactly when
+// that is more than a face's four.
+func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(int64) bool, most int) {
 	t.Helper()
 	o := openedOf(t, body)
 	var b strings.Builder
@@ -231,8 +245,8 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 		switch who := classed(ask, "o-who"); {
 		case len(who) > 0 && len(answers) > 0 && !disabled:
 			t.Errorf("the ask block names who can answer beside answers the viewer may all press:\n%s", shown)
-		case len(answers) > 4 || len(who) == 0 && len(answers) < 2:
-			t.Errorf("the ask block holds %d answers, want 2 to 4:\n%s", len(answers), shown)
+		case len(answers) > most || most > 4 && len(answers) != most || len(who) == 0 && len(answers) < 2:
+			t.Errorf("the ask block holds %d answers, want 2 to 4, or the %d of an ask with more:\n%s", len(answers), most, shown)
 		}
 		for _, a := range answers {
 			picks, effects := classed(a, "pick"), classed(a, "effect")

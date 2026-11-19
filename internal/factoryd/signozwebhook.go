@@ -984,9 +984,9 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 		return err
 	}
 	if err := in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"issue": t.IssueNumber, "repro_base": t.ReproBase}); err != nil {
-		log.Printf("signoz webhook: alert row %d: record card %s: %v", row.ID, cardName(t), err)
+		log.Printf("signoz webhook: alert row %d: record card %s: %v", row.ID, logName(t), err)
 	}
-	log.Printf("signoz webhook: alert %s in %s: card %s on %s", strconv.Quote(a.Labels["alertname"]), ns, cardName(t), repo) // #nosec G706 -- quoted, ns is a checked DNS label
+	log.Printf("signoz webhook: alert %s in %s: card %s on %s", strconv.Quote(a.Labels["alertname"]), ns, logName(t), repo) // #nosec G706 -- quoted, ns is a checked DNS label
 	return nil
 }
 

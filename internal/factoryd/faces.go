@@ -107,13 +107,14 @@ type Facts struct {
 type Recommendation struct{ Action, By, Grounds string }
 
 // AskFace is a face as a human reads it: one question, why it came up, the
-// story, at most four answers with the suggested one first, and every
-// other answer that holds in More. Findings are the texts of the findings
-// its ask and story count.
+// story, at most four answers with the suggested one first, the ask's own
+// answers past the four in Over, which the opened card shows with them, and
+// every other answer that holds in More. Findings are the texts of the
+// findings its ask and story count.
 type AskFace struct {
 	Ask, Why                        string
 	Story                           Story
-	Answers                         []Answer
+	Answers, Over                   []Answer
 	Suggested, SuggestedBy, Grounds string
 	More                            []Answer
 	Findings                        []string
@@ -343,8 +344,7 @@ func FaceOf(c Case, f Facts) AskFace {
 		}
 	}
 	if len(answers) > mostAnswers {
-		face.More = append(face.More, answers[mostAnswers:]...)
-		answers = answers[:mostAnswers]
+		answers, face.Over = answers[:mostAnswers], answers[mostAnswers:]
 	}
 	if len(answers) < 2 && f.ApprovalKind == "" && AnsweredOnCard(c.Kind) {
 		for _, key := range []string{ActNote, ActClose} {
@@ -373,7 +373,7 @@ func FaceOf(c Case, f Facts) AskFace {
 		}
 	}
 	for _, a := range more {
-		if !slices.ContainsFunc(slices.Concat(answers, face.More), func(o Answer) bool {
+		if !slices.ContainsFunc(slices.Concat(answers, face.Over, face.More), func(o Answer) bool {
 			// a settle ends the case and does nothing else: one is enough
 			return o.Key() == a.Key() || o.Label == a.Label || o.Action == a.Action && (o.Effect == a.Effect || a.Action == ActSettle)
 		}) {
