@@ -185,7 +185,7 @@ var Actions = []Action{
 		case !f.PROpen:
 			return "no pull request is open"
 		case f.Checks != "green":
-			return fmt.Sprintf("the checks on the head are %s, not green", cmp.Or(f.Checks, "unread"))
+			return fmt.Sprintf("the checks on the head are %s, not green", cmp.Or(f.Checks, "not known yet"))
 		case !f.ReviewApproved && f.Kind != CasePolicyClass:
 			return "the newest review of the head did not approve it"
 		}
@@ -209,7 +209,7 @@ var Actions = []Action{
 		case !f.PROpen:
 			return "no pull request is open"
 		case f.Checks != "red":
-			return fmt.Sprintf("the checks on the head are %s, so there is nothing to run again", cmp.Or(f.Checks, "unread"))
+			return fmt.Sprintf("the checks on the head are %s, so there is nothing to run again", cmp.Or(f.Checks, "not known yet"))
 		case f.RerunOnHead:
 			return "the checks on this head were run again once already"
 		}
@@ -367,7 +367,7 @@ var Actions = []Action{
 		case !f.PROpen:
 			return "the pull request is not open, so there is nothing to approve"
 		case f.Checks != "green":
-			return fmt.Sprintf("the checks on %s are %s, not green: `approve_merge` waits for green checks on the head", ShortSHA(f.Head), cmp.Or(f.Checks, "unread"))
+			return fmt.Sprintf("the checks on %s are %s, not green: `approve_merge` waits for green checks on the head", ShortSHA(f.Head), cmp.Or(f.Checks, "not known yet"))
 		}
 		return ""
 	}},

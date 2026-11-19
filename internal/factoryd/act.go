@@ -322,7 +322,7 @@ func (r *Runner) act(ctx context.Context, in ActInput) (_ ActResult, err error) 
 	}
 	if res.Action == ActRerunChecks && c.Kind == CaseMergeApproval && in.Work == nil {
 		// the run waits on the request's own signal, which the console's work sends
-		return ActResult{}, ErrActRefused("`" + ActRerunChecks + "` on a merge ask is the console's work: take it from the board or the chat")
+		return ActResult{}, ErrActRefused("`" + ActRerunChecks + "` on a merge ask needs the re-run's work, which only a human's button on the board or the chat carries: ask the human to press it")
 	}
 	via := cmp.Or(in.Via, ViaFactoryd)
 	var out ActResult

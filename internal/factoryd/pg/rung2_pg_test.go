@@ -1485,7 +1485,7 @@ func TestARerunOfAMergeCasesChecksGoesThroughActOnce(t *testing.T) {
 	// reads: Act refuses it
 	g.forge.checks["h2"] = "failure"
 	_, err = g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaButton, Rung: 3, Res: Resolution{Action: ActRerunChecks}})
-	if want := "`rerun_checks` on a merge ask is the console's work: take it from the board or the chat"; err == nil || err.Error() != want || !pending() {
+	if want := "`rerun_checks` on a merge ask needs the re-run's work, which only a human's button on the board or the chat carries: ask the human to press it"; err == nil || err.Error() != want || !pending() {
 		t.Fatalf("the re-run with no work = %v, pending %t; want %q and the request still pending", err, pending(), want)
 	}
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaButton, Rung: 3, Res: Resolution{Action: ActRerunChecks}, Work: work}); err != nil {

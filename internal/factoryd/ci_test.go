@@ -1367,6 +1367,8 @@ type smokeHub struct {
 	tasks    []ActionTask
 	runs     []ActionRun
 	runsFail bool
+	// failList is a label whose job list answers 500
+	failList string
 	deleted  []string
 	next     int64
 }
@@ -1388,6 +1390,10 @@ func (h *smokeHub) spawner(t *testing.T, kube *fakeKube) (*CISpawner, CIRepo) {
 		}
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/actions/runners/jobs"):
+			if h.failList != "" && r.URL.Query().Get("labels") == h.failList {
+				http.Error(w, "the job list is down", http.StatusInternalServerError)
+				return
+			}
 			var out []CIJob
 			for _, j := range h.jobs {
 				if slices.Contains(j.RunsOn, r.URL.Query().Get("labels")) {
@@ -2002,5 +2008,31 @@ func TestCISpawnerRetriesSlowlyASmokeRunnerWhoseImageCannotBePulled(t *testing.T
 	failPull() // 10:32: the fourth failure waits again
 	if _, ok := kube.namespaces[ns]; ok || spawned() != 4 {
 		t.Fatalf("after the fourth failure: namespace %v, %d pods; want no fifth pod", kube.namespaces[ns], spawned())
+	}
+}
+
+// A smoke job list Forgejo fails to answer forgets no count: a smoke job held
+// after its tries stays held through that poll and the next.
+func TestCISpawnerKeepsThePullCountsOfASmokeRepositoryItCouldNotList(t *testing.T) {
+	kube := newFakeKube()
+	hub := &smokeHub{jobs: []CIJob{smokeJob(21, "waiting", "h-21", 0)}}
+	spawner, _ := hub.spawner(t, kube)
+	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	spawner.now = func() time.Time { return now }
+	ctx := context.Background()
+	spawner.pullFails[21] = pullFail{tries: ciPullTries, at: now, why: "ErrImagePull: " + pullDenied, repo: "demo/demo"}
+	hub.set(func(h *smokeHub) { h.failList = "demo-smoke" })
+	spawner.poll(ctx)
+	if got := spawner.pullFails[21]; got.tries != ciPullTries {
+		t.Fatalf("pull counts = %v after a failed smoke list, want the job's %d tries kept", spawner.pullFails, ciPullTries)
+	}
+	hub.set(func(h *smokeHub) { h.failList = "" })
+	now = now.Add(time.Minute)
+	spawner.poll(ctx)
+	hub.mu.Lock()
+	spawned := hub.next - 100
+	hub.mu.Unlock()
+	if spawned != 0 {
+		t.Fatalf("%d pods: the job held after its tries got a pod once its list was read again", spawned)
 	}
 }
