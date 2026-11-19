@@ -312,7 +312,7 @@ func (c *Console) placeOf(ctx context.Context, v *boardView, k card, asks bool) 
 			}
 			words += fmt.Sprintf("%s%d %s", sep, len(p.Cards), plural(len(p.Cards), "card"))
 		}
-		return template.HTML(template.HTMLEscapeString(words))
+		return template.HTML(template.HTMLEscapeString(words)) // #nosec G203 -- the words are escaped above
 	case t.PlanCard():
 		name := k.PlanName
 		if name == "" {
@@ -327,7 +327,7 @@ func (c *Console) placeOf(ctx context.Context, v *boardView, k card, asks bool) 
 				out += fmt.Sprintf(" %d/%d", i+1, len(p.Cards))
 			}
 		}
-		return template.HTML(out)
+		return template.HTML(out) // #nosec G203 -- name, parent and the ids are escaped; the rest is constant markup and numbers
 	case t.Source == factoryd.SourceRoutine:
 		name := "routine"
 		if c.cfg.Routines != nil {
@@ -339,7 +339,7 @@ func (c *Console) placeOf(ctx context.Context, v *boardView, k card, asks bool) 
 				name = run.Routine
 			}
 		}
-		return template.HTML("↻ " + template.HTMLEscapeString(name))
+		return template.HTML("↻ " + template.HTMLEscapeString(name)) // #nosec G203 -- the routine name is escaped
 	}
 	return ""
 }
@@ -403,7 +403,7 @@ func (k card) helperRuns() bool { return k.Helper != nil && k.Helper.Status == "
 // how it went live. A finished card on which work still runs wears the
 // hue of running work.
 func (c *Console) stateOf(ctx context.Context, v *boardView, f *faceView, k card) {
-	word := template.HTML(template.HTMLEscapeString(c.stateWord(ctx, v, k.Task)))
+	word := template.HTML(template.HTMLEscapeString(c.stateWord(ctx, v, k.Task))) // #nosec G203 -- stateWord is escaped
 	f.Hue = k.StatusClass
 	switch {
 	case c.working(ctx, v, k):
@@ -413,15 +413,15 @@ func (c *Console) stateOf(ctx context.Context, v *boardView, f *faceView, k card
 	}
 	switch {
 	case k.helperRuns():
-		word = template.HTML(template.HTMLEscapeString(helperWords[k.Helper.Source]))
+		word = template.HTML(template.HTMLEscapeString(helperWords[k.Helper.Source])) // #nosec G203 -- a constant helper word, escaped
 	case k.Status == "merged" && k.Stage != "":
 		f.Hue = k.ChainHue()
 		stage := template.HTMLEscapeString(k.Stage)
 		switch {
 		case k.RollID != "":
-			word = template.HTML(`<a href="#card=` + template.HTMLEscapeString(k.RollID) + `">` + stage + `</a>`)
+			word = template.HTML(`<a href="#card=` + template.HTMLEscapeString(k.RollID) + `">` + stage + `</a>`) // #nosec G203 -- the card id and stage are escaped
 		case k.StageURL != "":
-			word = template.HTML(`<a href="` + template.HTMLEscapeString(k.StageURL) + `" target="_blank" rel="noopener">` + stage + `</a>`)
+			word = template.HTML(`<a href="` + template.HTMLEscapeString(k.StageURL) + `" target="_blank" rel="noopener">` + stage + `</a>`) // #nosec G203 -- the forge address is configuration and escaped, the stage is escaped
 		default:
 			word = c.linkRefs(ctx, v, k.Repository, k.Stage)
 		}

@@ -247,7 +247,7 @@ func routineAnswers(rv factoryd.RoutineView, f boardFilter, csrf, tab string) []
 	answer := func(key, act string, values ...hidden) answerView {
 		a, _ := factoryd.AnswerOf(key)
 		values = append([]hidden{{"from", "drawer"}, {"tab", tab}}, values...)
-		return answerView{Action: a.Key(), Label: a.Label, Effect: template.HTML(template.HTMLEscapeString(a.Effect)),
+		return answerView{Action: a.Key(), Label: a.Label, Effect: template.HTML(template.HTMLEscapeString(a.Effect)), // #nosec G203 -- the effect text is escaped
 			Press: &pressForm{Post: door + act, Target: "#drawer", Values: values, CSRF: csrf, Filter: f}}
 	}
 	out := []answerView{answer(factoryd.AnswerSkipRun, "skip")}

@@ -289,9 +289,10 @@ func (s *PGStore) fillCards(ctx context.Context, tasks []BoardTask) error {
 		err = s.fillAsks(ctx, helpers)
 	}
 	for i := range tasks {
+		t := &tasks[i]
 		for _, h := range helpers {
-			if h.Parent == tasks[i].ID {
-				tasks[i].Helpers = append(tasks[i].Helpers, h)
+			if h.Parent == t.ID {
+				t.Helpers = append(t.Helpers, h)
 			}
 		}
 	}

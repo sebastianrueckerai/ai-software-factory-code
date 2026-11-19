@@ -606,7 +606,7 @@ func (c *Console) answerOf(ctx context.Context, v *boardView, k card, scope, key
 			// what the human typed (hx-preserve) only while the default
 			// stands
 			h := fnv.New32a()
-			h.Write([]byte(fv.Value))
+			h.Write([]byte(fv.Value)) // #nosec G104 -- a hash's Write never fails
 			fv.ID += fmt.Sprintf("-%08x", h.Sum32())
 		}
 		view.Fields = append(view.Fields, fv)
@@ -761,10 +761,10 @@ func (c *Console) pinMerge(ctx context.Context, a actor, t factoryd.Task, answer
 	if err != nil {
 		log.Printf("console: the head of %s#%d: %v", t.Repository, t.PRNumber, err)
 		answers[i].Press = nil
-		answers[i].Effect = template.HTML(fmt.Sprintf("The head of pull request #%d could not be read, so it does not merge from here. Reload the card.", t.PRNumber))
+		answers[i].Effect = template.HTML(fmt.Sprintf("The head of pull request #%d could not be read, so it does not merge from here. Reload the card.", t.PRNumber)) // #nosec G203 -- a constant sentence and a number
 		return
 	}
-	answers[i].Effect = template.HTML(template.HTMLEscapeString(factoryd.HumanMergeEffect(head)))
+	answers[i].Effect = template.HTML(template.HTMLEscapeString(factoryd.HumanMergeEffect(head))) // #nosec G203 -- the effect line is escaped
 	answers[i].Press.Values = append(answers[i].Press.Values, hidden{"head", head})
 }
 
@@ -916,7 +916,7 @@ func (c *Console) planFoldOf(ctx context.Context, v *boardView, k card, p *facto
 	f := &planFold{Name: clean(p.Name), Outcome: clean(p.Outcome), Whole: "#card=" + p.Task}
 	ended := 0
 	for i, ref := range p.Cards {
-		row := planRow{Issue: ref.Issue, Title: template.HTML(template.HTMLEscapeString(clean(ref.Title))), State: ref.State, This: i+1 == p.Index && p.Index > 0}
+		row := planRow{Issue: ref.Issue, Title: template.HTML(template.HTMLEscapeString(clean(ref.Title))), State: ref.State, This: i+1 == p.Index && p.Index > 0} // #nosec G203 -- the title is escaped
 		if ref.Issue > 0 {
 			row.Title = c.linkRefs(ctx, v, k.Repository, fmt.Sprintf("#%d", ref.Issue))
 		}

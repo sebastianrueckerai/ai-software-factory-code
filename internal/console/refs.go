@@ -52,7 +52,7 @@ func (c *Console) linkRefs(ctx context.Context, v *boardView, repo, text string)
 		}
 	}
 	b.WriteString(c.issueLinks(v, r.issues, text[at:]))
-	return template.HTML(b.String())
+	return template.HTML(b.String()) // #nosec G203 -- issueLinks escapes every card, issue and model text; code spans are escaped here
 }
 
 // linkMarkup is raw, markdown of repo, as markup renders it, with each #N
@@ -447,7 +447,7 @@ func explainTerms(h template.HTML, seen map[string]int) template.HTML {
 	for {
 		switch tt := z.Next(); tt {
 		case html.ErrorToken:
-			return template.HTML(b.String())
+			return template.HTML(b.String()) // #nosec G203 -- its own and linkRefs's markup, whose text it escapes again
 		case html.TextToken:
 			text := string(z.Text())
 			switch {
